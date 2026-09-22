@@ -4044,15 +4044,21 @@ def build_investigation_context(
                 hypothesis_str = ""
 
     # 10. INQUIRY State — surfaces an unconfirmed proposed_problem_statement
-    # to the LLM in one of two modes:
-    #   NOT_YET_CONFIRMED — default; instructs the LLM not to re-propose the
-    #     same statement and to focus on the user's current message.
-    #   HANDSHAKE_DEFERRED — fires only on the turn immediately following a
-    #     same-turn-confirmation guard fire (see INV-01); instructs the LLM
-    #     to re-present the statement and ask for confirmation explicitly.
-    # The two modes are mutually exclusive and gated on
-    # case.inquiry.handshake_deferred_at_turn (set by _apply_inquiry_updates
-    # in milestone_engine when the guard rejects a same-turn collapse).
+    # to the LLM with ONE rule, not a fork.
+    #
+    # There used to be two modes. NOT_YET_CONFIRMED told the LLM "do NOT
+    # re-propose it"; HANDSHAKE_DEFERRED, on the single turn after a same-turn
+    # guard fire, told it the opposite — "RE-PRESENT the statement verbatim".
+    # Both existed because PRESENTING the statement was the LLM's job, so the
+    # prompt had to say, turn by turn, whether this was a presenting turn.
+    #
+    # It is the engine's job now (#1607): on every Gate-1-pending turn the
+    # engine composes the standing statement into the reply alongside the
+    # confirm/refine pair, so the statement is on screen whenever the user is
+    # asked to confirm it — which is what INV-01 required all along and what
+    # the prompt could not be relied on to deliver. With presentation
+    # guaranteed, the fork collapses: the LLM never presents, and the flag
+    # that selected between the two modes is gone with it.
     inquiry_state_str = ""
     if case.state == CaseState.INQUIRY and case.inquiry:
         inq = case.inquiry
@@ -4063,46 +4069,23 @@ def build_investigation_context(
             )
             inquiry_state_str += f"CONFIRMED: {inq.problem_statement_confirmed}\n"
             if not inq.problem_statement_confirmed:
-                handshake_deferred = (
-                    inq.handshake_deferred_at_turn is not None
-                    and inq.handshake_deferred_at_turn == case.current_turn - 1
+                # State fact plus one directive. Deliberately NOT present-tense
+                # about the user ("the user has not confirmed") — that is false
+                # on the very turn they do, and confirmation detection lives in
+                # the static TWO-STEP CONFIRMATION prose plus the
+                # user_confirmed_investigation schema field.
+                inquiry_state_str += (
+                    "ENGINE_PRESENTS_THIS: You proposed this statement on an "
+                    "earlier turn (unconfirmed going into this turn). The ENGINE "
+                    "appends it to your reply and offers the confirm/refine "
+                    "buttons, so do NOT restate it and do NOT ask for "
+                    "confirmation yourself — the user would be asked twice. "
+                    "Answer the user's current message. If your understanding "
+                    "of the problem has CHANGED, write the revised statement "
+                    "to proposed_problem_statement; the engine will present the "
+                    "new wording, and you must not set "
+                    "user_confirmed_investigation on that same turn.\n"
                 )
-                if handshake_deferred:
-                    # Previous turn: LLM emitted user_confirmed_investigation=True
-                    # the same turn it first wrote proposed_problem_statement.
-                    # The engine deferred the transition to preserve the User-
-                    # Agent Handshake. This turn, the LLM MUST re-present the
-                    # statement and ask for confirmation — overrides the
-                    # default NOT_YET_CONFIRMED "don't re-propose" rule.
-                    # Note: the engine deterministically attaches the canonical
-                    # DECIDE confirmation pair on this turn (see
-                    # _investigation_confirmation_suggestions in milestone_engine),
-                    # so the prompt does not prescribe exact suggestion labels.
-                    inquiry_state_str += (
-                        "HANDSHAKE_DEFERRED: On the previous turn you set "
-                        "user_confirmed_investigation=True the same turn you "
-                        "first wrote proposed_problem_statement. The engine "
-                        "deferred the transition because the user must see "
-                        "the statement before confirming. This turn, RE-"
-                        "PRESENT the statement verbatim — e.g. 'I want to "
-                        "make sure I understand: <statement>. Is that "
-                        "accurate?' Do NOT set user_confirmed_investigation"
-                        "=True this turn — the user has not yet seen the "
-                        "statement.\n"
-                    )
-                else:
-                    # State fact, not a live directive: describe the case as it
-                    # ENTERED this turn (proposed on an earlier turn, unconfirmed),
-                    # never assert present-tense "the user has not confirmed" — that
-                    # is false on the very turn the user confirms, and confirmation
-                    # detection lives in the static TWO-STEP CONFIRMATION prose +
-                    # the user_confirmed_investigation schema field. This block only
-                    # suppresses re-proposing; it adds no confirmation directive.
-                    inquiry_state_str += (
-                        "NOT_YET_CONFIRMED: You already proposed this problem statement "
-                        "on an earlier turn (it was unconfirmed going into this turn). "
-                        "Do NOT re-propose it — respond to the user's current message.\n"
-                    )
             inquiry_state_str += "</inquiry_state>"
 
     # Phase 4c — entity highlights block. Rows pre-fetched by the milestone

@@ -4,45 +4,45 @@ Counters defined in `faultmaven/core/investigation/lifecycle_metrics.py`. They m
 
 Metrics are exposed via Prometheus and gated on `ENABLE_METRICS=true` plus the `prometheus_client` library being installed (graceful no-op otherwise — see `faultmaven/infrastructure/shims/metrics.py`).
 
-## INV-01: handshake-deferred recovery ratio
+## INV-01: Gate 1 ships its statement with its buttons
 
-**Invariant:** INQUIRY → INVESTIGATING requires the user to confirm a `proposed_problem_statement` that was presented on a prior turn. The same-turn-confirmation guard rejects collapses and defers to a recovery turn. See [INV-01 in the matrix](../../architecture/investigation-engine/investigation-lifecycle-logic.md#131-invariant-enforcement-matrix).
+**Invariant:** INQUIRY → INVESTIGATING requires the user to confirm a `proposed_problem_statement` that was **presented** and has stood **unchanged** since the turn began. Presentation is engine-owned: on every Gate-1-pending turn the engine composes the standing statement into the reply beside the confirm/refine pair. See [INV-01 in the matrix](../../architecture/investigation-engine/investigation-invariants.md).
 
 **Counters:**
 
-- `faultmaven_inquiry_handshake_deferred_total` — increments each time the same-turn-confirmation guard fires (an LLM attempted to one-shot the handshake).
-- `faultmaven_inquiry_handshake_recovered_total` — increments when a case that previously had a guard fire reaches INVESTIGATING.
+- `faultmaven_gate1_statement_composed_total` — increments each time the engine composed the standing statement into a reply because Gate 1 was serving.
+- `faultmaven_inquiry_handshake_deferred_total` — increments each time the consent guard refused a confirmation: the statement was written this turn, or REVISED this turn, so the user has not seen the wording they are confirming.
 
 **Load-bearing query:**
 
 ```promql
-# Recovery ratio over the last 24h.
-# Healthy systems: ratio ≈ 1.0 (every deferred case eventually transitions).
-sum(rate(faultmaven_inquiry_handshake_recovered_total[24h]))
+# Statement-with-buttons ratio over the last 24h.
+# Healthy systems: ratio ≈ 1.0 — every Gate-1 turn that served the
+# confirm/refine pair also put the statement on screen.
+sum(rate(faultmaven_gate1_statement_composed_total[24h]))
   /
-sum(rate(faultmaven_inquiry_handshake_deferred_total[24h]))
+sum(rate(faultmaven_engine_owned_affordance_served_total{gate="gate1"}[24h]))
 ```
 
-**What a dropping ratio means.** The guard is firing as expected, but the deferred cases aren't recovering. The composition seam on INV-01 has likely degraded — either the `HANDSHAKE_DEFERRED` prompt instruction is no longer eliciting re-presentation from the LLM (provider model update, prompt drift), or the engine's deterministic suggestion emission has been removed/weakened. This is the regression shape `case_bb917dcd5bb2` exhibited before the fix that introduced these metrics.
+**What a dropping ratio means.** Gate 1 is serving its affordances without the statement they refer to — the user is being asked to confirm text they cannot see. That is the exact defect #1607 closed, and the two production cases that motivated it (`case_79b48eb30837`, and a dropdown turn on a case with no stated problem) would both have shown it. Because composition happens at the same call site as the affordance substitution, a gap means that site has been edited apart — check `_process_turn_impl`'s gate branch and `_gate1_statement_presentation`.
 
 **Suggested alert (tune with production data):**
 
 ```promql
-# Alert when the recovery ratio falls below 0.7 sustained over 1h
-# AND there are at least 10 deferrals in the window (avoid noise on
-# low-volume periods).
+# Alert when a Gate-1 turn served buttons without a statement, sustained
+# over 1h, with enough volume to be meaningful.
 (
-  sum(rate(faultmaven_inquiry_handshake_recovered_total[1h]))
+  sum(rate(faultmaven_gate1_statement_composed_total[1h]))
     /
-  sum(rate(faultmaven_inquiry_handshake_deferred_total[1h]))
-) < 0.7
+  sum(rate(faultmaven_engine_owned_affordance_served_total{gate="gate1"}[1h]))
+) < 0.99
 AND
-sum(increase(faultmaven_inquiry_handshake_deferred_total[1h])) > 10
+sum(increase(faultmaven_engine_owned_affordance_served_total{gate="gate1"}[1h])) > 10
 ```
 
-The thresholds (`< 0.7`, `> 10`) are starting points — adjust once a baseline is established.
+Unlike a recovery ratio, this one has no lag: both counters increment on the **same turn**, in the same branch. Any sustained shortfall is a real split, not a user who has not answered yet. The threshold is `< 0.99` rather than `< 1.0` only to absorb scrape-boundary skew.
 
-**Lag caveat.** A deferred case typically recovers within 1–3 turns, but turn cadence is user-driven and can stretch over hours. Compute the ratio over windows that comfortably exceed expected recovery time (24h above; tighten only when you have data on how long users actually take between turns).
+**Retired.** `faultmaven_inquiry_handshake_recovered_total` and the recovery ratio it anchored are gone. They measured whether a *deferred* case later reached INVESTIGATING, which mattered while a same-turn-guard fire put the case into a special recovery turn that depended on the LLM re-presenting. There is no special turn any more: every pending turn presents, so "recovery" is just the ordinary path and the ratio had no failure mode left to detect.
 
 ## Engine-owned affordance emission (INV-01 / INV-19 / INV-21)
 
@@ -74,7 +74,7 @@ sum(rate(faultmaven_inquiry_turn_total[1h])) > 0
 
 **What a sustained zero on `gate1` means.** The consolidator (`engine_owned_affordances`) isn't returning a `gate1` tuple when it should. Likely causes: predicate logic regressed (`_gate1_is_pending` no longer detects the state), or the response builder stopped calling the consolidator, or some higher-priority branch is short-circuiting. Audit the response-builder branch in `milestone_engine.py` against the predicate definition and `engine_owned_affordances` in lockstep.
 
-**What a sustained zero on `gate2` or `gate3` means.** Same shape, but those gates are reached only after specific case progressions (Gate 1 closed → Gate 2 fires; mitigation_verified on mitigation-first path → Gate 3 fires). Zero on gate2 or gate3 with non-zero gate1 emission could mean cases never close Gate 1 in production — which would also show up in `faultmaven_inquiry_handshake_recovered_total` lagging behind `_deferred_total`. Cross-reference.
+**Note on `gate2` / `gate3`.** These labels are historical. Gate 2 (investigation path selection) and Gate 3 (post-mitigation continuation) were removed in redesign R5 — there is no prospective path fork — so neither label is emitted any more. The live gate labels are `disposition`, `gate1`, `insufficient_evidence`, `insufficient_evidence_restatement_held`, `restatement_held`, `not_yet_productive` and `treatment_blocked`.
 
 **Enable the endpoint.** This counter only exposes via `/metrics` when `METRICS_EXPORTER=prometheus_http` is set in `.env`. With the default (`METRICS_EXPORTER=none`), the counter still records in-process — but `curl http://localhost:8090/metrics` returns 404. Set the env var and restart FM to expose.
 

@@ -88,11 +88,11 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     evidence_need_id_dropped_total,
     evidence_need_status_changed_total,
     evidence_suggestion_unlinked_total,
+    gate1_statement_composed_total,
     hypothesis_dedup_skipped_total,
     hypothesis_root_adoption_refused_total,
     inquiry_classified_without_statement_total,
     inquiry_handshake_deferred_total,
-    inquiry_handshake_recovered_total,
     narration_overclaim_total,
     pending_action_superseded_stale_total,
     prompt_context_recovery_total,
@@ -1733,6 +1733,35 @@ def _get_solution_summary(case) -> str:
     return "Not yet documented"
 
 
+def _gate1_statement_presentation(case: "Case") -> str:
+    """The engine's own presentation of the standing problem statement.
+
+    Gate 1's affordances ask the user to confirm a problem statement, so the
+    statement has to be ON SCREEN on the same turn — INV-01 requires the user
+    to confirm a statement that was *presented*, and an affordance referring to
+    text nobody can see is not a confirmable choice.
+
+    Presentation is engine-owned for exactly the reason the affordance is: the
+    prompt cannot be relied on to do it. Two production cases proved that — a
+    statement written into ``state_updates`` while the prose answered an
+    unrelated how-to question, and a dropdown turn whose prose correctly said
+    no problem could be stated yet. In both, the buttons shipped and the
+    statement did not.
+
+    Rendered as a block quote so a multi-line statement stays visually one
+    quoted unit rather than dissolving into the surrounding reply.
+    """
+    statement = (case.inquiry.proposed_problem_statement or "").strip()
+    quoted = "\n".join(f"> {line}" if line else ">" for line in statement.split("\n"))
+    return (
+        "To make sure we agree on what we're looking at, here is the problem "
+        "as I currently understand it:\n\n"
+        f"{quoted}\n\n"
+        "Is that right? Confirming it starts the focused investigation; if it "
+        "is off, tell me what to change and I'll revise it."
+    )
+
+
 def _investigation_confirmation_suggestions() -> list:
     """Generate DECIDE follow-up suggestions for investigation confirmation.
 
@@ -2559,6 +2588,38 @@ def _sweep_needs_for_terminal_hypotheses(case: "Case") -> int:
         for h_id, h in case.hypotheses.items()
         if h.state in TERMINAL_HYPOTHESIS_STATES
     )
+
+
+def gate1_consent_is_admissible(
+    statement_at_turn_start: "str | None", statement_now: "str | None"
+) -> bool:
+    """Whether a Gate-1 confirmation may be COMMITTED this turn (INV-01).
+
+    INV-01 requires the user to confirm a statement that was **presented on a
+    prior turn**. Two things have to hold, and the engine used to check only
+    the first:
+
+    1. A statement stood when the turn began — otherwise the model is writing
+       and confirming in one shot, collapsing the User-Agent Handshake.
+    2. That statement is still the one standing — otherwise the model revised
+       it *this* turn and the consent is being applied to text the user has
+       never seen. Nothing checked this: the statement update is applied
+       before the confirmation branch runs, so a revise-and-confirm turn read
+       as "a statement existed" and committed on the new wording.
+
+    ONE function, called at all three consent sites (the LLM path, the DECIDE
+    click, and a resolver-minted confirmation). They used to hold three
+    different bars — two of them bare truthiness — so a minted "yes" could
+    commit on a statement the LLM-path guard would have refused (the fm#918
+    shape). A single predicate is what makes them incapable of disagreeing.
+
+    At the click and minted sites both arguments are the same value: those run
+    before ``_apply_inquiry_updates``, so nothing can have revised the
+    statement yet, and the rule correctly degrades to "a statement stands".
+    """
+    before = (statement_at_turn_start or "").strip()
+    now = (statement_now or "").strip()
+    return bool(before) and now == before
 
 
 def _gate1_is_pending(case: "Case") -> bool:
@@ -6049,7 +6110,17 @@ class MilestoneEngine:
                     logger.warning(
                         f"Received confirmation intent for case {case.case_id} but status is {case.state.value}"
                     )
-                elif not case.inquiry.proposed_problem_statement:
+                elif not gate1_consent_is_admissible(
+                    case.inquiry.proposed_problem_statement,
+                    case.inquiry.proposed_problem_statement,
+                ):
+                    # Same predicate as the LLM path and the minted path. This
+                    # site runs BEFORE ``_apply_inquiry_updates``, so nothing
+                    # can have revised the statement yet and both arguments are
+                    # the standing text — the rule degrades to "a statement
+                    # stands", which is what this branch always meant. Routed
+                    # through the shared predicate anyway so the three consent
+                    # sites cannot drift apart again (fm#918).
                     logger.warning(
                         f"Received confirmation intent for case {case.case_id} but no proposed problem statement exists"
                     )
@@ -6824,6 +6895,30 @@ class MilestoneEngine:
                 # on a gate turn comes from the gate opening ONLY when it should
                 # (intent detection — Answer First), not from mixing in the
                 # LLM's premature/duplicate suggestions.
+                # Gate 1 is the one gate whose affordances refer to a piece
+                # of CASE TEXT, so it is the one gate that has to ship that
+                # text with them. INV-26(b) already says the visible transcript
+                # may not contradict the applied state_updates and enforces it
+                # through ``_prose_with_gate_notice`` for every disposition
+                # gate; Gate 1 predates that mechanism and was never brought
+                # under it. It is now.
+                #
+                # Composed, never substituted: whatever the user actually asked
+                # this turn stays above, and the statement lands below it. That
+                # is the #430 boundary holding — the engine owns the gate's
+                # SUGGESTIONS outright, and composes (does not replace) prose.
+                #
+                # ``gate_prose_appended`` is deliberately NOT set: this block
+                # frames the INQUIRY problem, not a disposition, so it does not
+                # contradict a "case resolved" over-claim. INV-40 must still be
+                # free to fire on the same turn.
+                if gate_name == "gate1":
+                    agent_response_text = _prose_with_gate_notice(
+                        agent_response_text,
+                        _gate1_statement_presentation(case_updated),
+                    )
+                    gate1_statement_composed_total.inc()
+
                 follow_ups = gate_affordances
                 engine_owned_affordance_served_total.labels(gate=gate_name).inc()
                 logger.info(
@@ -10007,10 +10102,13 @@ class MilestoneEngine:
         # observed to be violated on first-turn cases with explicit
         # "please investigate" phrasing. This local makes the invariant
         # enforceable independently of prompt compliance.
-        _statement_existed_before_turn = bool(
-            case.inquiry.proposed_problem_statement
-            and case.inquiry.proposed_problem_statement.strip()
-        )
+        #
+        # The TEXT, not a boolean: ``gate1_consent_is_admissible`` compares it
+        # against the statement standing after this turn's updates, so a turn
+        # that REVISES the statement and confirms it in one shot is refused
+        # too. A boolean could only answer "did something stand", which that
+        # turn satisfies with the old wording while consent lands on the new.
+        _statement_at_turn_start = case.inquiry.proposed_problem_statement
 
         if updates.proposed_problem_statement:
             case.inquiry.proposed_problem_statement = updates.proposed_problem_statement
@@ -10079,17 +10177,20 @@ class MilestoneEngine:
         )
 
         # Check if LLM detected user confirmation of the problem statement.
-        # Same-turn-confirmation guard: the proposed_problem_statement must
-        # have existed BEFORE this turn — otherwise the LLM is trying to
-        # write the statement and confirm it in one shot, which collapses
-        # the User-Agent Handshake. See the captured
-        # _statement_existed_before_turn at the top of this method.
+        # Same-turn-confirmation guard: the statement must have stood BEFORE
+        # this turn AND be unchanged by it — otherwise the LLM is writing (or
+        # rewriting) the statement and confirming it in one shot, which
+        # collapses the User-Agent Handshake. See
+        # ``gate1_consent_is_admissible`` and the captured
+        # _statement_at_turn_start at the top of this method.
         if (
             getattr(updates, "user_confirmed_investigation", False)
             and case.inquiry.proposed_problem_statement
             and case.inquiry.proposed_problem_statement.strip()
             and not case.inquiry.problem_statement_confirmed
-            and _statement_existed_before_turn
+            and gate1_consent_is_admissible(
+                _statement_at_turn_start, case.inquiry.proposed_problem_statement
+            )
         ):
             case.inquiry.problem_statement_confirmed = True
             case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
@@ -10104,20 +10205,22 @@ class MilestoneEngine:
             and case.inquiry.proposed_problem_statement
             and case.inquiry.proposed_problem_statement.strip()
             and not case.inquiry.problem_statement_confirmed
-            and not _statement_existed_before_turn
+            and not gate1_consent_is_admissible(
+                _statement_at_turn_start, case.inquiry.proposed_problem_statement
+            )
         ):
             # LLM tried to set the problem statement AND confirm investigation
             # in the same turn — design forbids this (the user must see the
             # statement first, then confirm on a subsequent turn). Refuse
-            # the transition; the agent will re-present the statement on
-            # the next turn. Logged so drift is observable in telemetry.
+            # the transition; Gate 1 stays pending, so the engine composes the
+            # statement into the very next turn and re-offers the pair.
             #
-            # Set handshake_deferred_at_turn so the next turn's
-            # context_builder switches from NOT_YET_CONFIRMED ("don't re-
-            # propose") to HANDSHAKE_DEFERRED ("re-present and ask"), and
-            # so process_turn deterministically emits confirmation
-            # suggestions regardless of LLM compliance.
-            case.inquiry.handshake_deferred_at_turn = case.current_turn
+            # There is no recovery FLAG any more. ``handshake_deferred_at_turn``
+            # existed to tell the following turn to re-present — a narrow proxy
+            # for "the user has not seen this statement", carried because
+            # presentation was the LLM's job and it had to be told. Presentation
+            # is now the engine's, and it happens on EVERY Gate-1-pending turn,
+            # so the recovery the flag arranged is the ordinary path (#1607).
             inquiry_handshake_deferred_total.inc()
             logger.warning(
                 f"Same-turn-confirmation guard rejected INQUIRY→INVESTIGATING "
@@ -11958,14 +12061,6 @@ class MilestoneEngine:
         # Change status (Pydantic validation happens here)
         case.state = CaseState.INVESTIGATING
 
-        # Outcome telemetry for INV-01: count cases that reached
-        # INVESTIGATING after a prior same-turn-confirmation guard fire.
-        # Divided by inquiry_handshake_deferred_total this gives the
-        # recovery ratio — sustained ratio drops are the signal that
-        # the deferral->recovery path has silently broken.
-        if case.inquiry.handshake_deferred_at_turn is not None:
-            inquiry_handshake_recovered_total.inc()
-
         # Initialize investigation progress
         case.progress = InvestigationProgress()
 
@@ -12406,10 +12501,14 @@ class MilestoneEngine:
         # itself is still computed from user-claimed urgency; making the
         # recommendation evidence-derived is deferred follow-up.)
         if case.state == CaseState.INQUIRY:
-            gate1_passed = case.inquiry.decided_to_investigate or (
-                case.inquiry.problem_statement_confirmed
-                and case.inquiry.problem_confirmation
-            )
+            # Gate 1 is the problem-statement confirmation, so that is what
+            # this reads. It used to be an OR across two fields that every
+            # writer sets together — ``decided_to_investigate`` and
+            # ``problem_statement_confirmed and problem_confirmation`` — which
+            # made the second arm load-bearing only for cases carrying no
+            # ``problem_confirmation`` and hid the fact that the first field
+            # has no independent meaning. One condition, one gate (#1607).
+            gate1_passed = case.inquiry.problem_statement_confirmed
             if gate1_passed:
                 await self._transition_to_investigating(case)
                 metadata["status_transitioned"] = True

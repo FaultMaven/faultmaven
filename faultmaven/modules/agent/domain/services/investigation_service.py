@@ -30,6 +30,7 @@ from faultmaven.core.investigation.kb_push import visible_kb_context
 from faultmaven.core.investigation.milestone_engine import (
     MilestoneEngine,
     _evidence_coverage,
+    gate1_consent_is_admissible,
     score_progress,
 )
 from faultmaven.core.investigation.prompts.context_builder import (
@@ -3271,12 +3272,16 @@ class InvestigationService:
             minted.type == IntentType.CONFIRMATION
             and minted.confirmation_value is True
             and case.state == CaseState.INQUIRY
-            and bool(
+            # The SAME predicate the engine's own two consent sites use. This
+            # was bare truthiness, so a minted "yes" could commit Gate 1 on a
+            # statement the LLM-path guard would have refused.
+            and gate1_consent_is_admissible(
                 getattr(
-                    getattr(case, "inquiry", None),
-                    "proposed_problem_statement",
-                    None,
-                )
+                    getattr(case, "inquiry", None), "proposed_problem_statement", None
+                ),
+                getattr(
+                    getattr(case, "inquiry", None), "proposed_problem_statement", None
+                ),
             )
         )
 

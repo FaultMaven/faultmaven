@@ -1190,18 +1190,6 @@ class InquiryData(BaseModel):
         default=None, description="When user confirmed the problem statement"
     )
 
-    handshake_deferred_at_turn: Optional[int] = Field(
-        default=None,
-        description=(
-            "Turn number on which the same-turn-confirmation guard fired. "
-            "When current_turn == this+1, context_builder injects HANDSHAKE_DEFERRED "
-            "(re-present + ask) instead of NOT_YET_CONFIRMED, and the engine "
-            "deterministically emits confirmation suggestions. Self-clears by "
-            "becoming stale on subsequent turns."
-        ),
-        ge=0,
-    )
-
     # ============================================================
     # Investigation Decision
     # ============================================================
@@ -5925,8 +5913,11 @@ class Case(BaseModel):
         carry "we know what the problem is" semantics:
 
         * INVESTIGATING: entry gate — investigation without a stated problem
-          is wandering. Also requires problem_statement_confirmed and
-          decided_to_investigate (separate inquiry-readiness checks).
+          is wandering. Also requires problem_statement_confirmed, the single
+          Gate 1 condition. (It used to require ``decided_to_investigate``
+          as well; every writer sets the two together, so the second check
+          could only ever fire on a hand-built Case, while making the schema
+          disagree with the engine's own gate. One gate, one condition.)
         * RESOLVED: the case must have a known problem to be meaningfully
           resolved (the resolution would otherwise have nothing to attach
           to). Per the legitimate transitions spec (RESOLVED only comes
@@ -5954,10 +5945,6 @@ class Case(BaseModel):
             if not self.inquiry.problem_statement_confirmed:
                 raise ValueError(
                     "INVESTIGATING state requires confirmed problem statement"
-                )
-            if not self.inquiry.decided_to_investigate:
-                raise ValueError(
-                    "INVESTIGATING state requires investigation commitment"
                 )
 
         return self

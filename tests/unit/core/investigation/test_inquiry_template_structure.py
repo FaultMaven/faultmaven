@@ -47,12 +47,23 @@ class TestInquiryDisciplineStructure:
                 f"failure shape."
             )
 
-    def test_refine_and_re_present_operational_rule_present(self):
-        """The 4th discipline's operational corollary: refinements must
-        be SHOWN to the user (not held internally). Without this,
-        'refine internally' is technically discipline-compliant but
-        operationally identical to the failure mode."""
-        assert "REFINE + RE-PRESENT" in INQUIRY_TEMPLATE
+    def test_engine_presents_rule_replaces_re_present_instruction(self):
+        """The 4th discipline's operational corollary: refinements must be
+        SHOWN to the user, never held internally — otherwise "refine
+        internally" is discipline-compliant and operationally identical to the
+        failure mode.
+
+        That guarantee moved from the prompt to the engine (#1607): the engine
+        composes whatever statement currently stands into every Gate-1-pending
+        turn, so the template's job is now the opposite one — telling the LLM
+        NOT to present it, so the user is not shown it twice. The "shown to the
+        user" property itself is pinned by
+        ``TestGate1PresentsItsStatement`` in test_inquiry_transition.py, which
+        can actually observe the rendered turn; a template substring never
+        could.
+        """
+        assert "the engine presents" in INQUIRY_TEMPLATE.lower()
+        assert "REFINE + RE-PRESENT" not in INQUIRY_TEMPLATE
 
 
 @pytest.mark.unit

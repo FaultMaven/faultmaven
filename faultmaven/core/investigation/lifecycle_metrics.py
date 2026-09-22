@@ -38,6 +38,18 @@ from faultmaven.infrastructure.shims.metrics import Counter
 # case persists, no transition ever happens. In a healthy system the
 # two counters should track each other closely (recovery may lag by a
 # turn or two but should eventually catch up).
+gate1_statement_composed_total = Counter(
+    "faultmaven_gate1_statement_composed_total",
+    "INV-01: turns where the engine composed the standing problem statement "
+    "into the reply because Gate 1 was serving its confirm/decline pair. "
+    "Presentation is engine-owned: the affordance asks the user to confirm a "
+    "statement, so the statement must be on screen on the same turn, and the "
+    "prompt cannot be relied on to put it there (#1607). Expect this to track "
+    'faultmaven_engine_owned_affordance_served_total{gate="gate1"} one for '
+    "one; a sustained gap between them means a Gate-1 turn shipped its buttons "
+    "without their statement, which is the defect this metric exists to catch.",
+)
+
 inquiry_classified_without_statement_total = Counter(
     "faultmaven_inquiry_classified_without_statement_total",
     "INQUIRY turns that classified the problem (problem_confirmation set) "
@@ -52,17 +64,13 @@ inquiry_classified_without_statement_total = Counter(
 
 inquiry_handshake_deferred_total = Counter(
     "faultmaven_inquiry_handshake_deferred_total",
-    "INV-01: same-turn-confirmation guard fires (LLM attempted to "
-    "collapse INQUIRY→INVESTIGATING handshake into one turn).",
-)
-
-inquiry_handshake_recovered_total = Counter(
-    "faultmaven_inquiry_handshake_recovered_total",
-    "INV-01: cases that transitioned INQUIRY→INVESTIGATING after a "
-    "prior same-turn-confirmation guard fire. Divide by "
-    "faultmaven_inquiry_handshake_deferred_total to get the recovery "
-    "ratio; sustained ratio drops indicate the recovery path is "
-    "broken even though the guard is firing as expected.",
+    "INV-01: the Gate-1 consent guard refused a confirmation because the "
+    "statement had not stood, unchanged, since the turn began — the LLM "
+    "either wrote it and confirmed it in one shot, or REVISED it and "
+    "confirmed the revision the user has not seen (#1607 widened the guard "
+    "to the second shape). Gate 1 simply stays pending and the engine "
+    "composes the statement into the next turn, so there is no separate "
+    "recovery path and no recovery counter to divide by.",
 )
 
 
