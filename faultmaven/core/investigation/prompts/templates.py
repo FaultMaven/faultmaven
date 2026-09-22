@@ -600,8 +600,10 @@ the regression. Could you share the deployment diff to confirm what changed?"
 # had every reason to win the currency judgement.
 _OBSERVATION_TIME_BLOCK = """
 TIME ATTRIBUTES — two attributes, two different questions:
-  - fresh_this_turn="true" — when YOU received the item. Says nothing about how
-    old its content is.
+  - fresh_this_turn="true" — the item's DATA arrived this turn. For a file that
+    is the turn it was UPLOADED, not the turn an evidence row cited it, so a
+    file you re-cite from an earlier turn does NOT carry it. Says nothing about
+    how old its content is.
   - observed_through="<instant>" age="<Nm|Nh|Nd>" — when the CONTENT was
     observed. This is what settles temporal state (ongoing / historical).
 Both can hold at once: an item received this turn can carry age="7h". That is

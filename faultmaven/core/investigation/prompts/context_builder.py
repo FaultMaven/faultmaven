@@ -1324,7 +1324,7 @@ def _identical_to_prior_attr(uf, hash_first_seen: Dict[str, int]) -> str:
 
 
 def _fresh_this_turn_attr(item_turn: Optional[int], current_turn: int) -> str:
-    """XML attribute marker for items collected/uploaded this turn.
+    """XML attribute marker for items whose DATA arrived this turn.
 
     Returns ``' fresh_this_turn="true"'`` when the item's turn matches the
     current turn, empty string otherwise. The asymmetric encoding (attribute
@@ -1332,12 +1332,54 @@ def _fresh_this_turn_attr(item_turn: Optional[int], current_turn: int) -> str:
     quieter in long evidence blocks and gives the LLM a positional signal
     to distinguish data the user just provided from data being re-cited
     from history.
+
+    ``item_turn`` is the turn the DATA arrived on — never the turn a row
+    ABOUT it was written. The attribute is data-scoped (#512), and the two
+    readings only coincide for an ``<uploaded_file>``, where the item IS the
+    arrival (``uploaded_at_turn``). For file-backed ``<evidence>`` they come
+    apart, and the caller resolves it with :func:`_evidence_data_turn`.
+
+    Keying it on ``Evidence.collected_at_turn`` is what this used to be given,
+    and it flipped an unchanged file from carrying no marker (rendered as
+    ``<uploaded_file>``) to ``fresh_this_turn="true"`` (rendered as
+    ``<evidence>``) purely by the model citing it, with nothing having
+    arrived — losing the one distinction the attribute exists to make, on the
+    34-38% of file-backed evidence rows minted later than their source upload.
     """
     if item_turn is None:
         return ""
     if item_turn == current_turn:
         return ' fresh_this_turn="true"'
     return ""
+
+
+def _evidence_data_turn(ev, ev_file_meta) -> Optional[int]:
+    """The turn an Evidence row's DATA arrived on (#512).
+
+    The ``item_turn`` :func:`_fresh_this_turn_attr` wants. File-backed
+    evidence is a CLAIM ABOUT a file, minted on whichever turn the model
+    cites it; the data itself arrived when the file did. So the answer is the
+    source file's ``uploaded_at_turn`` — the same value
+    :func:`_render_orphan_file_block` passes for that same file, so the two
+    renders of one file now agree on its freshness instead of disagreeing by
+    which element it happens to appear as this turn.
+
+    Chat-extracted evidence (``source_file_id IS NULL``) keeps
+    ``collected_at_turn``, and that is this rule rather than an exception to
+    it: its data IS the user's message, and the message arrived on the turn
+    the row was created.
+
+    ``ev_file_meta`` can be ``None`` while ``source_file_id`` is set — a file
+    the case aggregate did not load, or one removed out from under the
+    evidence. Both render sites already refuse to call such a row file-backed
+    (no ``file_id`` attribute, not ``searchable``), and there is no upload turn
+    to read, so ``collected_at_turn`` is the only turn known about it. A
+    deliberate fallback for an unresolvable source, not the old behaviour left
+    behind.
+    """
+    if ev.source_file_id is not None and ev_file_meta is not None:
+        return ev_file_meta.uploaded_at_turn
+    return ev.collected_at_turn
 
 
 def _symptom_currency_note(case, indicator: str) -> str:
@@ -1401,9 +1443,13 @@ def _observed_attr(item) -> str:
     file's is whatever the extractor parsed — so the caller does the gating and
     this function only formats.
 
-    Distinct from ``fresh_this_turn``, which is about when the AGENT saw the
-    row — a two-hour-old alert pasted this turn is ``fresh_this_turn="true"``
-    and two hours stale at the same time. Reading turn-recency as currency is
+    Distinct from ``fresh_this_turn``, which is about when the item's DATA
+    arrived — a two-hour-old alert pasted this turn is
+    ``fresh_this_turn="true"`` and two hours stale at the same time. (It used
+    to read "when the AGENT saw the row", which was the other of the two
+    definitions this attribute shipped with; #512 settled it on the
+    data-scoped one, which is what :func:`_fresh_this_turn_attr` always
+    claimed to be.) Reading turn-recency as currency is
     exactly the confusion this attribute exists to break, so both are rendered
     and they answer different questions.
 
@@ -2067,7 +2113,9 @@ def _render_evidence_block(
         is_searchable = ev.source_file_id is not None and ev_file_meta is not None
         searchable_attr = ' searchable="true"' if is_searchable else ""
         confidence_attr, confidence_advisory = _confidence_marker(ev)
-        fresh_attr = _fresh_this_turn_attr(ev.collected_at_turn, case.current_turn)
+        fresh_attr = _fresh_this_turn_attr(
+            _evidence_data_turn(ev, ev_file_meta), case.current_turn
+        )
         observed_attr = _observed_attr(ev)
         duplicate_attr = _identical_to_prior_attr(ev_file_meta, hash_first_seen)
         result += (
@@ -2157,7 +2205,9 @@ def _render_evidence_block(
         is_searchable = ev.source_file_id is not None and ev_file_meta is not None
         searchable_attr = ' searchable="true"' if is_searchable else ""
         confidence_attr, _ = _confidence_marker(ev)
-        fresh_attr = _fresh_this_turn_attr(ev.collected_at_turn, case.current_turn)
+        fresh_attr = _fresh_this_turn_attr(
+            _evidence_data_turn(ev, ev_file_meta), case.current_turn
+        )
         observed_attr = _observed_attr(ev)
         duplicate_attr = _identical_to_prior_attr(ev_file_meta, hash_first_seen)
         entry = "  " + fence.open(
@@ -2191,6 +2241,12 @@ def _render_evidence_block(
     for ev in text_evidence[-5:]:  # Cap at 5 most recent items
         label = _evidence_label(ev, case)
         label_attr = _attr("label", label)
+        # ``collected_at_turn`` IS the data turn here, so this reads the same
+        # rule as the two file-backed tiers rather than opting out of it: the
+        # data is the user's message and the message arrived on the turn this
+        # row was created. There is no file to defer to — ``source_file_id`` is
+        # NULL per the source-invariant noted above — so _evidence_data_turn
+        # would return exactly this and is not called for it (#512).
         fresh_attr = _fresh_this_turn_attr(ev.collected_at_turn, case.current_turn)
         observed_attr = _observed_attr(ev)
         quote_block = ""

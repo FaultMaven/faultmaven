@@ -201,6 +201,25 @@ def test_the_prompt_defines_the_pair_it_renders():
         assert "<uploaded_file>" in block
 
 
+def test_the_prompt_says_which_turn_fresh_this_turn_names():
+    """#512 keyed the attribute to when the item's DATA arrived. The model
+    cannot read it that way unless the prompt says which turn it names — and
+    the read that matters is the NEGATIVE one: a re-cited prior-turn file
+    carries no marker, and the model has to know that absence is the answer
+    rather than an omission. Without this clause the prompt still said "when
+    YOU received the item", which a model re-citing a turn-3 file on turn 9
+    can read either way."""
+
+    from faultmaven.core.investigation.prompts.templates import (
+        _EVIDENCE_GROUNDING_BLOCK,
+        INQUIRY_TEMPLATE,
+    )
+
+    for block in (INQUIRY_TEMPLATE, _EVIDENCE_GROUNDING_BLOCK):
+        assert "the turn it was UPLOADED" in block
+        assert "not the turn an evidence row cited it" in block
+
+
 # -- the clock that makes all of the above interpretable ----------------------
 def test_prompt_states_the_current_time():
     """Without this the model cannot compute an age at all: its own sense of
@@ -242,9 +261,9 @@ def test_orphan_file_block_states_when_its_content_was_observed():
 
 
 def test_orphan_file_block_renders_both_halves_of_the_pair():
-    """``fresh_this_turn`` answers when the AGENT looked, ``observed_through``
-    how old the observation is. Emitting the first alone is what made a stale
-    alert read as current."""
+    """``fresh_this_turn`` answers when the item's DATA arrived (#512),
+    ``observed_through`` how old the observation is. Emitting the first alone
+    is what made a stale alert read as current."""
 
     posted = datetime.now(timezone.utc) - timedelta(hours=2)
     block = _orphan(_file(posted, posted))
