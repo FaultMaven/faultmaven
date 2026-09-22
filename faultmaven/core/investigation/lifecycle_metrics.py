@@ -38,6 +38,18 @@ from faultmaven.infrastructure.shims.metrics import Counter
 # case persists, no transition ever happens. In a healthy system the
 # two counters should track each other closely (recovery may lag by a
 # turn or two but should eventually catch up).
+inquiry_classified_without_statement_total = Counter(
+    "faultmaven_inquiry_classified_without_statement_total",
+    "INQUIRY turns that classified the problem (problem_confirmation set) "
+    "without proposing a problem statement. Gate 1 is a pure function of "
+    "``proposed_problem_statement``, so on these turns the gate cannot open "
+    "and a user confirmation commits nothing. A promotion from "
+    "``preliminary_guidance`` used to hide this state by minting a statement "
+    "from a guidance string (#1606); the state is now visible instead. "
+    "Sustained non-zero means the model is classifying without proposing and "
+    "the INQUIRY prompt's step 4 needs attention.",
+)
+
 inquiry_handshake_deferred_total = Counter(
     "faultmaven_inquiry_handshake_deferred_total",
     "INV-01: same-turn-confirmation guard fires (LLM attempted to "

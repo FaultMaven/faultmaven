@@ -97,7 +97,6 @@ _TURN1 = json.dumps(
             "problem_confirmation": {
                 "problem_type": "unavailability",
                 "severity_guess": "high",
-                "preliminary_guidance": "Checkout API returning 503s",
             },
             "preliminary_urgency": {
                 "level": "HIGH",

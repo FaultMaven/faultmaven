@@ -153,11 +153,7 @@ def turn1_payload(rec: dict) -> str:
     inq = rec["inquiry"]
     pc = inq.get("problem_confirmation") or {}
     pu = inq.get("preliminary_urgency") or {}
-    stmt = (
-        inq.get("proposed_problem_statement")
-        or pc.get("preliminary_guidance")
-        or rec["title"]
-    )
+    stmt = inq.get("proposed_problem_statement") or rec["title"]
     return json.dumps(
         {
             "agent_response": f"Let me confirm: {stmt}. Is that right?",
@@ -165,7 +161,6 @@ def turn1_payload(rec: dict) -> str:
                 "problem_confirmation": {
                     "problem_type": pc.get("problem_type") or "error",
                     "severity_guess": pc.get("severity_guess") or "medium",
-                    "preliminary_guidance": stmt,
                 },
                 "preliminary_urgency": {
                     "level": (pu.get("level") or "high").upper(),

@@ -1095,10 +1095,6 @@ class ProblemConfirmation(BaseModel):
         max_length=50,
     )
 
-    preliminary_guidance: str = Field(
-        description="Initial guidance or suggestions", max_length=2000
-    )
-
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         description="When this confirmation was created",

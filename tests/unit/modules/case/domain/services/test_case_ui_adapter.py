@@ -222,7 +222,6 @@ class TestTransformInquiry:
         case.inquiry.problem_confirmation = ProblemConfirmation(
             problem_type="unavailability",
             severity_guess="high",
-            preliminary_guidance="Check DNS servers",
         )
 
         result = transform_case_for_ui(case)

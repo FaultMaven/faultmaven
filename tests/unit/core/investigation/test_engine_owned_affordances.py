@@ -60,7 +60,6 @@ def _inquiry_case(
         inquiry.problem_confirmation = ProblemConfirmation(
             problem_type="unavailability",
             severity_guess="high",
-            preliminary_guidance="API down",
         )
         inquiry.preliminary_urgency = PreliminaryUrgency(
             level=UrgencyLevel.CRITICAL,

@@ -1045,9 +1045,6 @@ class ProblemConfirmation(BaseModel):
             "on INQUIRY → INVESTIGATING transition when the LLM returns it."
         )
     )
-    preliminary_guidance: str = Field(
-        description="Initial guidance or suggestions provided"
-    )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
