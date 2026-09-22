@@ -12,7 +12,7 @@ Test Coverage:
 6. Multi-turn escalation → Stays INQUIRY until user confirms
 7. Original bug scenario → No transition (development context)
 8. HIGH + ongoing → Stays INQUIRY (waits for confirmation)
-9. Proposed problem statement fallback → Stays INQUIRY (waits for confirmation)
+9. LLM-proposed statement is the one used → Stays INQUIRY (waits for confirmation)
 10. User confirms → Transition to INVESTIGATING
 11. Multi-turn confirmation flow → Turn 1 present, Turn 2 confirm, transition fires
 """
@@ -115,7 +115,6 @@ class TestInquiryTransitionLogic:
                     "problem_confirmation": {
                         "problem_type": "unavailability",
                         "severity_guess": "critical",
-                        "preliminary_guidance": "Production API unavailable - all requests failing with 500 errors",
                     },
                     "preliminary_urgency": {
                         "level": "CRITICAL",
@@ -123,6 +122,7 @@ class TestInquiryTransitionLogic:
                         "is_incident_report": True,
                         "impact_assessment": "All users blocked from accessing production",
                     },
+                    "proposed_problem_statement": "Production API unavailable - all requests failing with 500 errors",
                 },
             }
         )
@@ -222,7 +222,6 @@ class TestInquiryTransitionLogic:
                     "problem_confirmation": {
                         "problem_type": "unavailability",
                         "severity_guess": "high",
-                        "preliminary_guidance": "Historical outage occurred last Tuesday requiring root cause analysis",
                     },
                     "preliminary_urgency": {
                         "level": "LOW",
@@ -270,7 +269,6 @@ class TestInquiryTransitionLogic:
                     "problem_confirmation": {
                         "problem_type": "slowness",
                         "severity_guess": "medium",
-                        "preliminary_guidance": None,  # LLM may not always provide this
                     },
                     "preliminary_urgency": {
                         "level": "MEDIUM",
@@ -316,7 +314,6 @@ class TestInquiryTransitionLogic:
                     "problem_confirmation": {
                         "problem_type": "other",
                         "severity_guess": "unknown",
-                        "preliminary_guidance": None,
                     },
                     "proposed_problem_statement": "API behavior anomaly - details unclear",
                 },
@@ -344,7 +341,6 @@ class TestInquiryTransitionLogic:
                     "problem_confirmation": {
                         "problem_type": "error",
                         "severity_guess": "critical",
-                        "preliminary_guidance": "All users receiving 403 forbidden errors in production",
                     },
                     "preliminary_urgency": {
                         "level": "CRITICAL",
@@ -387,13 +383,13 @@ class TestInquiryTransitionLogic:
                     "problem_confirmation": {
                         "problem_type": "error",
                         "severity_guess": "medium",
-                        "preliminary_guidance": "Development environment errors suspected in agent workflow",
                     },
                     "preliminary_urgency": {
                         "level": "LOW",
                         "is_ongoing": False,
                         "impact_assessment": "Development/debugging context, not production impact",
                     },
+                    "proposed_problem_statement": "Development environment errors suspected in agent workflow",
                 },
             }
         )
@@ -435,7 +431,6 @@ class TestInquiryTransitionLogic:
                     "problem_confirmation": {
                         "problem_type": "error",
                         "severity_guess": "high",
-                        "preliminary_guidance": "Payment processing failures affecting customers",
                     },
                     "preliminary_urgency": {
                         "level": "HIGH",
@@ -460,17 +455,17 @@ class TestInquiryTransitionLogic:
         assert updated_case.inquiry.decided_to_investigate is False
 
     @pytest.mark.asyncio
-    async def test_fallback_to_proposed_problem_statement(
+    async def test_llm_proposed_statement_is_used(
         self, mock_llm, mock_repo, inquiry_case
     ):
-        """Test Stage 1 fallback when preliminary_guidance is None — stays INQUIRY"""
+        """The statement the LLM deliberately wrote is the one used — stays INQUIRY"""
         engine = MilestoneEngine(
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
         )
 
-        # Mock LLM response with proposed_problem_statement but no preliminary_guidance
+        # Mock LLM response carrying an explicit proposed_problem_statement
         mock_response = json.dumps(
             {
                 "agent_response": "Let me confirm: API latency has spiked to 8 seconds affecting dashboards. Is this accurate?",
@@ -478,7 +473,6 @@ class TestInquiryTransitionLogic:
                     "problem_confirmation": {
                         "problem_type": "slowness",
                         "severity_guess": "high",
-                        "preliminary_guidance": None,  # Explicitly None
                     },
                     "proposed_problem_statement": "API latency spike to 8 seconds affecting dashboards",
                     "preliminary_urgency": {
@@ -535,7 +529,6 @@ class TestInquiryTransitionLogic:
                     "problem_confirmation": {
                         "problem_type": "unavailability",
                         "severity_guess": "critical",
-                        "preliminary_guidance": "Database connection timeouts causing service failures",
                     },
                     "preliminary_urgency": {
                         "level": "CRITICAL",
@@ -609,7 +602,6 @@ class TestInquiryTransitionLogic:
                     "problem_confirmation": {
                         "problem_type": "error",
                         "severity_guess": "high",
-                        "preliminary_guidance": "API 503 errors affecting users",
                     },
                     "preliminary_urgency": {
                         "level": "HIGH",
@@ -691,7 +683,6 @@ class TestInquiryTransitionLogic:
                     "problem_confirmation": {
                         "problem_type": "unavailability",
                         "severity_guess": "high",
-                        "preliminary_guidance": "API returning 503 errors",
                     },
                     "preliminary_urgency": {
                         "level": "HIGH",
@@ -756,7 +747,6 @@ class TestInquiryTransitionLogic:
                     "problem_confirmation": {
                         "problem_type": "unavailability",
                         "severity_guess": "high",
-                        "preliminary_guidance": "API returning 503 errors",
                     },
                     "preliminary_urgency": {
                         "level": "HIGH",
@@ -1003,7 +993,6 @@ class TestHandshakeDeferredRecovery:
                     "problem_confirmation": {
                         "problem_type": "unavailability",
                         "severity_guess": "high",
-                        "preliminary_guidance": "API returning 503 errors",
                     },
                     "preliminary_urgency": {
                         "level": "HIGH",
@@ -1113,7 +1102,6 @@ class TestEngineOwnedGate1OnFirstDetect:
                     "problem_confirmation": {
                         "problem_type": "unavailability",
                         "severity_guess": "high",
-                        "preliminary_guidance": "API down",
                     },
                     "preliminary_urgency": {
                         "level": "HIGH",
@@ -1210,3 +1198,103 @@ class TestInquiryConfirmationSchemaContract:
             "reappear — engagement is not confirmation of a direction-setting step."
         )
         assert "engagement is not confirmation" in desc
+
+
+class TestProblemStatementSingleWriter:
+    """``proposed_problem_statement`` has exactly ONE writer (#1606).
+
+    A second writer used to promote ``problem_confirmation.preliminary_guidance``
+    into the statement whenever none existed yet. That field carried no
+    description on the LLM-facing schema and was named nowhere in the INQUIRY
+    prompt, so a model filled it from its name alone — with guidance — and the
+    guidance became the problem statement, then ``case.description``, then the
+    frame for the whole investigation.
+    """
+
+    @pytest.mark.asyncio
+    async def test_problem_confirmation_alone_mints_no_statement(
+        self, mock_llm, mock_repo, inquiry_case
+    ):
+        """Classifying the problem does NOT propose a statement.
+
+        The engine may only carry a statement the model deliberately wrote as
+        one. A turn that classifies (``problem_confirmation`` +
+        ``preliminary_urgency``) without proposing leaves the statement unset,
+        so Gate 1 stays shut.
+        """
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+        )
+
+        mock_llm.generate.return_value = json.dumps(
+            {
+                "agent_response": (
+                    "Which service is returning the errors, and when did they start?"
+                ),
+                "state_updates": {
+                    "problem_confirmation": {
+                        "problem_type": "error",
+                        "severity_guess": "unknown",
+                    },
+                    "preliminary_urgency": {
+                        "level": "MEDIUM",
+                        "is_ongoing": True,
+                        "is_incident_report": False,
+                        "impact_assessment": "Not yet established.",
+                    },
+                },
+            }
+        )
+
+        result = await engine.process_turn(inquiry_case, "Something is erroring.")
+        updated_case = result["case_updated"]
+
+        assert updated_case.inquiry.proposed_problem_statement is None
+        assert updated_case.state == CaseState.INQUIRY
+        assert updated_case.inquiry.problem_statement_confirmed is False
+
+        # Gate 1 is a pure function of the statement, so it must stay shut.
+        labels = {
+            (f or {}).get("label") for f in (result.get("suggested_follow_ups") or [])
+        }
+        assert "Yes, let's investigate" not in labels
+
+    def test_apply_inquiry_updates_assigns_the_statement_exactly_once(self):
+        """Source-level pin: one assignment target, not two.
+
+        The behavioural test above only catches a promotion that fires on the
+        shape it exercises. This one catches ANY second writer, whatever
+        guards it. Mutation check: add a second assignment to
+        ``case.inquiry.proposed_problem_statement`` in ``_apply_inquiry_updates``
+        and this goes red.
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        src = textwrap.dedent(inspect.getsource(MilestoneEngine._apply_inquiry_updates))
+        tree = ast.parse(src)
+
+        def is_statement_target(node):
+            return (
+                isinstance(node, ast.Attribute)
+                and node.attr == "proposed_problem_statement"
+                and isinstance(node.value, ast.Attribute)
+                and node.value.attr == "inquiry"
+            )
+
+        writes = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+            if is_statement_target(target)
+        ]
+
+        assert len(writes) == 1, (
+            f"expected exactly 1 writer of case.inquiry.proposed_problem_statement "
+            f"in _apply_inquiry_updates, found {len(writes)} "
+            f"at lines {[w.lineno for w in writes]}"
+        )

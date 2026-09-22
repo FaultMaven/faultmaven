@@ -371,7 +371,6 @@ class ProblemConfirmation(BaseModel):
 
     problem_type: Literal["error", "slowness", "unavailability", "data_issue", "other"]
     severity_guess: Literal["critical", "high", "medium", "low", "unknown"]
-    preliminary_guidance: Optional[str] = None
 
 
 class PreliminaryUrgency(NullTolerantModel):

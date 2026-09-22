@@ -10023,8 +10023,6 @@ class MilestoneEngine:
             case.inquiry.problem_confirmation = DomainProblemConfirmation(
                 problem_type=updates.problem_confirmation.problem_type,
                 severity_guess=updates.problem_confirmation.severity_guess,
-                preliminary_guidance=updates.problem_confirmation.preliminary_guidance
-                or "",  # Convert None to empty string
             )
 
         # Convert and store preliminary_urgency from LLM schema to domain model
@@ -10046,18 +10044,16 @@ class MilestoneEngine:
                 assessed_at_turn=case.current_turn,  # Use current turn number
             )
 
-        # STAGE 1: Extract problem statement from LLM (first turn only)
-        # Extract problem statement but DON'T auto-confirm yet
-        if updates.problem_confirmation and not case.inquiry.proposed_problem_statement:
-            if updates.problem_confirmation.preliminary_guidance:
-                case.inquiry.proposed_problem_statement = (
-                    updates.problem_confirmation.preliminary_guidance
-                )
-                logger.info(
-                    f"Problem statement extracted from preliminary_guidance: {updates.problem_confirmation.problem_type}"
-                )
-            # If no preliminary_guidance but proposed_problem_statement exists in updates,
-            # it was already set above at line 685-686
+        # ``proposed_problem_statement`` has exactly ONE writer: the block
+        # above, where the LLM sets it deliberately. A second writer used to
+        # sit here and promote ``problem_confirmation.preliminary_guidance``
+        # into the statement whenever none existed yet. That field carried no
+        # description on the LLM-facing schema and was named nowhere in the
+        # INQUIRY prompt, so a model filled it from its name alone — with
+        # guidance. The guidance then became the problem statement, and on
+        # confirmation became ``case.description`` and the frame for the whole
+        # investigation. Removed together with the field (#1606); a statement
+        # is now only ever what the model deliberately wrote as one.
 
         # STAGE 2: Two-Step Confirmation (Design Doc Section 1.2)
         #

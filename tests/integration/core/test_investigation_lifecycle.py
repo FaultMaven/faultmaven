@@ -166,7 +166,6 @@ def _inquiry_response_low_urgency() -> InquiryResponse:
             problem_confirmation=ProblemConfirmation(
                 problem_type="slowness",
                 severity_guess="medium",
-                preliminary_guidance="API latency spike affecting production, likely related to recent deployment",
             ),
             proposed_problem_statement="API experiencing latency spikes in production with p99 response times exceeding 5 seconds",
             preliminary_urgency=PreliminaryUrgency(
@@ -189,7 +188,6 @@ def _inquiry_response_high_urgency() -> InquiryResponse:
             problem_confirmation=ProblemConfirmation(
                 problem_type="slowness",
                 severity_guess="high",
-                preliminary_guidance="Critical API latency spike affecting all production traffic",
             ),
             proposed_problem_statement="API experiencing critical latency spikes in production with p99 > 5s affecting all users",
             preliminary_urgency=PreliminaryUrgency(
@@ -232,7 +230,6 @@ def _inquiry_response_high_urgency_with_confirmation() -> InquiryResponse:
             problem_confirmation=ProblemConfirmation(
                 problem_type="slowness",
                 severity_guess="high",
-                preliminary_guidance="Critical API latency spike affecting production",
             ),
             preliminary_urgency=PreliminaryUrgency(
                 level="HIGH",
