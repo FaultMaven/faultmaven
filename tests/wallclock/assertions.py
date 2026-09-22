@@ -14,12 +14,25 @@ spellings, none of which the first version of the scan could see because
 its vocabulary was built from the benchmark suite's names.
 ``tests/unit/ci/test_benchmark_calibration.py`` scans both trees and fails
 if a further spelling appears.
+
+Being the one site is also what makes #1567's A/B possible without a
+per-suite vocabulary: each function records the statistic it was handed
+(``record.py``) before asserting it, so nothing has to teach the
+recorder a suite's spellings and it cannot fall behind a new test.
+
+‼ Recorded is not compared. Both suites write records, but the A/B job
+runs ``pytest tests/benchmarks/`` only, so ``tests/performance/``'s
+comparisons are recorded under ``FM_WALLCLOCK_RECORD`` and no job ever
+diffs them. Pointing the A/B at that tree as well is a separate decision
+— it would widen what the median is taken over, which the #1567 null
+experiment measured at 50 benchmarks a side.
 """
 
 from typing import Tuple
 
 from .budgets import Budget, LatencyBudget, ThroughputBudget, asserted_target
 from .calibration import calibration_scale
+from .record import LATENCY_METRIC, THROUGHPUT_METRIC, record_comparison
 
 
 def _threshold(budget: Budget, expected: type) -> Tuple[float, str, float]:
@@ -81,6 +94,16 @@ def assert_latency_within(
     target_seconds, kind, scale = _threshold(budget, LatencyBudget)
     limit = target_seconds * scale
     suffix = f" {detail}" if detail else ""
+    # Before the assert, so a site that is already over its absolute
+    # budget still contributes its number to the A/B (#1567).
+    record_comparison(
+        metric=LATENCY_METRIC,
+        label=label,
+        observed=observed_seconds,
+        budget=target_seconds,
+        kind=kind,
+        scale=scale,
+    )
     assert observed_seconds < limit, (
         f"{label}: {observed_seconds * 1000:.1f}ms exceeds "
         f"{limit * 1000:.1f}ms budget "
@@ -109,6 +132,14 @@ def assert_throughput_at_least(
     target_per_second, kind, scale = _threshold(budget, ThroughputBudget)
     floor = target_per_second / scale
     suffix = f" {detail}" if detail else ""
+    record_comparison(
+        metric=THROUGHPUT_METRIC,
+        label=label,
+        observed=observed_per_second,
+        budget=target_per_second,
+        kind=kind,
+        scale=scale,
+    )
     assert observed_per_second > floor, (
         f"{label}: {observed_per_second:.1f}/s below "
         f"{floor:.1f}/s floor "

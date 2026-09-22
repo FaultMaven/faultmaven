@@ -24,8 +24,9 @@ on:
         default: false
         type: boolean
 
-# Default-deny for the GITHUB_TOKEN. The benchmarks job overrides this with
-# the writes it needs to post its PR comment; the other two only read.
+# Default-deny for the GITHUB_TOKEN. Two jobs override it with the writes
+# they need to post their pull-request comment — `benchmarks` and
+# `ab-regression`; `nightly-absolute` and `memory-benchmarks` only read.
 permissions:
   contents: read
 
@@ -255,6 +256,300 @@ jobs:
             performance_results_absolute.json
             performance_output_absolute.txt
           retention-days: 90
+
+  ab-regression:
+    name: A/B Against the Merge Base
+    # Pull requests only. The comparison needs two commits with a defined
+    # relationship; a push to `main` has no "before" to check out, and the
+    # schedule has nothing to compare at all.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    env:
+      # ‼ The threshold, and the one place it lives.
+      #
+      # The gate is the MEDIAN of ~50 head/base ratios: "did the data
+      # layer get slower overall". The number is not 1.30 because the
+      # issue asks for 30%; it is 1.30 because of a null experiment — 12
+      # full runs of this suite on one box with IDENTICAL code on both
+      # sides, 132 ordered pairs, so every ratio measured was pure noise.
+      # That median ranged 0.822x-1.216x, and 1.30 clears the worst of it
+      # by 7% and was red on 0 of the 132.
+      #
+      # Detection is probabilistic and is stated as such, because the
+      # noise is on the same scale as the signal. Injecting a uniform
+      # regression into all 132 real pairs at this threshold:
+      #
+      #     +30% -> caught on  50%      +50% -> caught on  97%
+      #     +40% -> caught on  83%      +60% -> caught on 100%
+      #
+      # The absolute budgets next door need +146% for the same call, on
+      # every runner, so this is where a uniform slowdown became
+      # detectable at all rather than where it became certain. 1.25 is
+      # the next step down (also 0/132 red, +30% caught on 69%) and is
+      # worth taking on evidence, not now: every run prints its own
+      # median, so re-anchor from ~20 green `main` runs the way
+      # `tests/benchmarks/budgets.py` was anchored.
+      #
+      # The job always runs base first, so an earlier-versus-later
+      # offset does not cancel. Measured on the same null, forward
+      # pairs only: the later run is 1.038x slower by geometric mean.
+      # That is already inside the distribution above — the worst
+      # observation, 1.216x, IS a forward pair, and forward-only is 0
+      # red of 66 — and it biases toward false positives, not misses.
+      #
+      # Two more sensitive-looking rules were measured on the same data
+      # and rejected by their own numbers — a per-test residual rule
+      # (null range 1.18x-3.38x, so a clean threshold is ~3.5x, which
+      # every absolute budget already beats at 2.46x-3.57x) and a count
+      # rule (at 1.30x the null count reached 19 of 50 while slowing HALF
+      # the suite by 30% produced 15). `tests/wallclock/ab.py`'s
+      # docstring carries both. #1567 has the method and how contended
+      # the box was.
+      FM_AB_SUITE: '1.30'
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+
+    steps:
+      - name: Checkout head
+        uses: actions/checkout@v6
+        with:
+          # `git worktree add` needs the base commit present locally, and
+          # a shallow clone does not contain it.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Check out the base beside the head
+        id: base
+        run: |
+          set -euo pipefail
+          # `pull_request.base.sha` is the tip of the branch this merges
+          # INTO, and GitHub checks out the MERGE commit as the head — so
+          # the difference between the two trees is exactly this pull
+          # request's changes. `git merge-base` would instead attribute
+          # everything landed on main since the branch point. Both carry
+          # a CI verdict; only this one answers "what did THIS change
+          # do".
+          if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            echo "base commit ${BASE_SHA} is not in this clone" >&2
+            exit 1
+          fi
+          git worktree add --detach "${RUNNER_TEMP}/base" "${BASE_SHA}"
+
+          # Can the base side take part at all? The recorder that writes
+          # the numbers is #1567's own code, so any base older than it
+          # produces an empty file — which is NOT the same as "nothing
+          # regressed". The comparator refuses an empty comparison, so
+          # the case is settled here, by reading the base tree, and
+          # reported as skipped rather than mis-reported as either. It
+          # also saves the twenty minutes of runner time a comparison
+          # that cannot happen would otherwise spend.
+          #
+          # ‼ Read the base's file into a FILE and grep the file. Never
+          # `git show ... | grep -q` here: this step runs under
+          # `pipefail`, `grep -q` exits on its first match and closes the
+          # pipe, the producer dies with SIGPIPE, and pipefail propagates
+          # 141 — so the `if` takes the else branch and the gate reports
+          # "the base predates the recorder" on EVERY pull request, green
+          # and silent. Measured on this repository with the real
+          # producer: `git show <blob> | grep -q .` returns 141 for a
+          # 74 KB source file (12 of 12 runs) and 0 for today's 6 KB
+          # `record.py`. It is not predictable from size either — an
+          # 81 KB file returned 0 every time — so no author can tell
+          # locally whether their own site is one of the ones that
+          # fires. `tests/unit/ci/test_benchmark_ab.py` bans the form.
+          #
+          # ‼ And test the record FORMAT, not a function name. The base
+          # is an arbitrary commit on `main`, so a base that carries the
+          # recorder but writes an older row shape is a hard parse
+          # failure in the comparator — every pull request red until main
+          # catches up, which is the same mis-report this probe exists to
+          # prevent, in the other direction.
+          base_record="${RUNNER_TEMP}/base_record.py"
+          git show "${BASE_SHA}:tests/wallclock/record.py" > "${base_record}" \
+            2>/dev/null || : > "${base_record}"
+          base_version="$(sed -n \
+            's/^RECORD_FORMAT_VERSION *= *\([0-9][0-9]*\).*/\1/p' \
+            "${base_record}" | head -n 1)"
+          if [ -z "${base_version}" ]; then
+            echo 'comparable=false' >> "$GITHUB_OUTPUT"
+            echo "reason=The base commit \`${BASE_SHA}\` predates the A/B recorder, so it produces no measurements to compare against. This clears itself once the base branch carries \`tests/wallclock/record.py\`; a pull request branched from an older \`main\` clears it by merging \`main\` in." >> "$GITHUB_OUTPUT"
+            echo "base ${BASE_SHA} predates the A/B recorder" >&2
+          elif python -c 'import sys; from tests.wallclock.ab import SUPPORTED_RECORD_VERSIONS; sys.exit(0 if int(sys.argv[1]) in SUPPORTED_RECORD_VERSIONS else 1)' "${base_version}"; then
+            echo 'comparable=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'comparable=false' >> "$GITHUB_OUTPUT"
+            echo "reason=The base commit \`${BASE_SHA}\` writes record format v${base_version}, which this head's comparator does not read. A record-schema change skips the comparison for the commits between it and the next base that carries the new shape, rather than failing them." >> "$GITHUB_OUTPUT"
+            echo "base ${BASE_SHA} writes record format v${base_version}" >&2
+          fi
+
+      - name: Install dependencies (base)
+        if: steps.base.outputs.comparable == 'true'
+        working-directory: ${{ runner.temp }}/base
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[test]
+
+      # Base runs FIRST so it runs against its own pinned dependencies;
+      # the head install below may move them, and a base measured under
+      # the head's dependency set is not the base.
+      - name: Run benchmarks at base
+        if: steps.base.outputs.comparable == 'true'
+        # A benchmark over its ABSOLUTE budget is the `benchmarks` job's
+        # verdict, not this one's, and its number is recorded before the
+        # assertion — so a red side still contributes to the comparison.
+        continue-on-error: true
+        working-directory: ${{ runner.temp }}/base
+        run: |
+          set -o pipefail
+          # ‼ Which tree `import faultmaven` resolves to is decided by
+          # three things at once — this step's working directory,
+          # PYTHONPATH, and the editable install's own finder — and their
+          # precedence is a property of setuptools, not of this workflow.
+          # Measured against the pinned setuptools 84.0.0, `_EditableFinder`
+          # is appended AFTER `PathFinder` in `sys.meta_path`, so cwd and
+          # PYTHONPATH both win and all three agree; a setuptools that
+          # registered it first, or an install step that quietly failed,
+          # would make this side measure the OTHER tree. The A/B would then
+          # compare head against head, report 1.00x forever, and never fail
+          # — the one failure of this design that is silent by
+          # construction. So each side asserts its own root instead of
+          # relying on the order.
+          python -c 'import os, sys, faultmaven; root = os.environ["AB_EXPECTED_ROOT"]; print("imports faultmaven from", faultmaven.__file__); sys.exit(0 if faultmaven.__file__.startswith(root.rstrip("/") + "/") else 1)'
+          pytest tests/benchmarks/ -m benchmark -q --no-cov
+        env:
+          AB_EXPECTED_ROOT: ${{ runner.temp }}/base
+          PYTHONPATH: ${{ runner.temp }}/base
+          SKIP_SERVICE_CHECKS: 'true'
+          FM_WALLCLOCK_RECORD: ${{ runner.temp }}/base.jsonl
+
+      - name: Install dependencies (head)
+        if: steps.base.outputs.comparable == 'true'
+        run: pip install -e .[test]
+
+      - name: Run benchmarks at head
+        if: steps.base.outputs.comparable == 'true'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python -c 'import os, sys, faultmaven; root = os.environ["AB_EXPECTED_ROOT"]; print("imports faultmaven from", faultmaven.__file__); sys.exit(0 if faultmaven.__file__.startswith(root.rstrip("/") + "/") else 1)'
+          pytest tests/benchmarks/ -m benchmark -q --no-cov
+        env:
+          AB_EXPECTED_ROOT: ${{ github.workspace }}
+          PYTHONPATH: ${{ github.workspace }}
+          SKIP_SERVICE_CHECKS: 'true'
+          FM_WALLCLOCK_RECORD: ${{ runner.temp }}/head.jsonl
+
+      - name: Compare
+        id: compare
+        if: always() && steps.base.outputs.comparable == 'true'
+        # The verdict is deliberately NOT this step's exit status. The
+        # summary and the pull-request comment have to be written whether
+        # it passed or failed, and a step that aborts the job first is how
+        # a gate's detail goes missing exactly when it matters. The
+        # `Verdict` step at the end turns this into the job's result.
+        run: |
+          status=0
+          python -m tests.wallclock.ab \
+            --base "${RUNNER_TEMP}/base.jsonl" \
+            --head "${RUNNER_TEMP}/head.jsonl" \
+            --base-label "${BASE_SHA}" \
+            --head-label "${GITHUB_SHA}" \
+            --suite-threshold "${FM_AB_SUITE}" \
+            --markdown-out ab_report.md \
+            --json-out ab_report.json || status=$?
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+      - name: Report
+        if: always()
+        # Three states, not two. "The base cannot take part" and "the base
+        # step never finished" are different things, and printing the
+        # first for the second would explain away a broken job.
+        env:
+          COMPARABLE: ${{ steps.base.outputs.comparable }}
+          # Why it cannot take part, decided where it was detected. A
+          # skip has more than one cause now (a base older than the
+          # recorder, a base writing a record format this head cannot
+          # read) and printing one cause for the other is how a reader
+          # stops trusting the line.
+          SKIP_REASON: ${{ steps.base.outputs.reason }}
+        run: |
+          {
+            if [ "${COMPARABLE}" = 'true' ]; then
+              cat ab_report.md 2>/dev/null \
+                || echo 'The comparison produced no report — see the job log.'
+            elif [ "${COMPARABLE}" = 'false' ]; then
+              echo '### Benchmark A/B against the merge base'
+              echo
+              echo "**Skipped.** ${SKIP_REASON}"
+            else
+              echo '### Benchmark A/B against the merge base'
+              echo
+              echo '**The base checkout did not complete**, so no comparison'
+              echo 'was attempted. See the job log — this is a broken job, not'
+              echo 'a clean benchmark result.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload A/B results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-ab
+          path: |
+            ab_report.md
+            ab_report.json
+          retention-days: 90
+          if-no-files-found: ignore
+
+      - name: Comment on PR
+        if: always() && steps.base.outputs.comparable == 'true'
+        # A pull request from a fork gets a read-only token whatever this
+        # block says, so the comment cannot be posted there. That must not
+        # turn a green comparison red: the verdict belongs to the next
+        # step, and the job summary already carries the detail.
+        continue-on-error: true
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            let body;
+            try {
+              body = fs.readFileSync('ab_report.md', 'utf8');
+            } catch (error) {
+              body = '### Benchmark A/B against the merge base\n\n' +
+                     'The comparison step produced no report — see the job log.';
+            }
+            const MAX_BODY = 60000;
+            if (body.length > MAX_BODY) {
+              body = body.slice(0, MAX_BODY) + '\n\n…truncated (see artifacts).';
+            }
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });
+
+      - name: Verdict
+        if: always() && steps.base.outputs.comparable == 'true'
+        env:
+          COMPARE_STATUS: ${{ steps.compare.outputs.status }}
+        run: |
+          if [ "${COMPARE_STATUS}" != '0' ]; then
+            echo 'A/B comparison failed — see the job summary above.' >&2
+            exit 1
+          fi
 
   memory-benchmarks:
     name: Memory Usage Benchmarks
