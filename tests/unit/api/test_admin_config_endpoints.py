@@ -767,9 +767,38 @@ class TestLLMConnectionCheck:
 
     @pytest.mark.asyncio
     async def test_failed_connection(self, mock_admin_user, mock_llm_provider):
-        """Failed provider test returns connected=False with error message."""
+        """The failure body carries the exception's CLASS, never its message.
+
+        The body used to carry ``str(e)``. It is a 200 rather than a 5xx, but
+        the arm is a broad ``except`` and the text is whatever the provider SDK
+        threw — a request URL, a proxy ``host:port``, an upstream body — so
+        #1400 swept it with the rest of the API surface.
+
+        Both halves are asserted, because each fails differently and the test
+        is worth nothing with only one. **Absence** alone passes on the empty
+        string and on a constant — which is what the first cut of this sweep
+        shipped, and it is a regression rather than a fix: the Dashboard's LLM
+        Config page renders ``error_message`` verbatim
+        (``ProviderCard.tsx:293``) with no other diagnostic channel, so a
+        constant makes a wrong key, a wrong base URL, a rate limit and a DNS
+        failure render identically on the one endpoint that exists to say
+        which. **Presence** alone passes on a body that appends the message
+        after the class name.
+
+        The exception is named rather than a bare ``Exception`` so the test
+        exercises the distinction the carve-out exists for, and so the class
+        name cannot be confused with a hardcoded word in the sentence.
+        """
+
+        class AuthenticationError(Exception):
+            """Stands in for the provider SDK's own error class."""
+
         mock_provider = MagicMock()
-        mock_provider.generate = AsyncMock(side_effect=Exception("API key invalid"))
+        mock_provider.generate = AsyncMock(
+            side_effect=AuthenticationError(
+                "invalid x-api-key at https://api.anthropic.com/v1/messages"
+            )
+        )
         mock_llm_provider.registry.get_provider.return_value = mock_provider
 
         request = LLMConnectionTestRequest(provider="anthropic")
@@ -782,7 +811,11 @@ class TestLLMConnectionCheck:
 
         assert result.provider == "anthropic"
         assert result.connected is False
-        assert "API key invalid" in result.error_message
+        # The SDK's message is absent, including the URL it embedded.
+        assert "invalid x-api-key" not in (result.error_message or "")
+        assert "api.anthropic.com" not in (result.error_message or "")
+        # ...and the class, which is what an admin acts on, is present.
+        assert result.error_message == "Connection test failed (AuthenticationError)"
 
     @pytest.mark.asyncio
     async def test_uninitialized_provider(self, mock_admin_user, mock_llm_provider):

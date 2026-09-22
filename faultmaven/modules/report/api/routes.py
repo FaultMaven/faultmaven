@@ -405,7 +405,14 @@ async def generate_report(
         # contract as the /turns endpoint. Otherwise a generic 500.
         if is_quota_exhausted_service_error(e):
             raise quota_exhausted_http_exception()
-        raise HTTPException(status_code=500, detail=str(e))
+        # ``ServiceException`` is a wrapper, not a caller-facing domain error:
+        # the case module's guard documents it carrying SQLAlchemy statement
+        # and table names, and ``host:port`` on a Redis failure. Every other
+        # 500 in this router already answers with a static sentence; this arm
+        # was the holdout, and it was also the one arm that never logged, so
+        # the text is recorded here rather than discarded.
+        logger.error(f"Error generating reports for case {case_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to generate reports")
 
 
 @router.get(

@@ -1127,7 +1127,15 @@ class ConversionService:
         except Exception as e:
             logger.error(f"Failed to parse analysis response: {e}")
             raise ConversionRejectedError(
-                f"LLM analysis response could not be parsed: {e}",
+                # Static. ``ConversionRejectedError`` is serialized to the
+                # caller by ``conversion_routes`` as ``detail=str(e)``, on the
+                # strength of every other construction being a hand-written
+                # caller-facing sentence. This arm is a broad ``except`` over a
+                # JSON decode and a Pydantic construction, so the text is a
+                # decoder message or a ValidationError echoing the model's raw
+                # output — the one place that promise was not kept (#1400).
+                # Already logged immediately above.
+                "LLM analysis response could not be parsed",
                 error_code=ConversionErrorCode.LLM_PARSE_ERROR,
             ) from e
 

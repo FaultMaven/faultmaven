@@ -166,6 +166,12 @@ class ContractProbeMiddleware(BaseHTTPMiddleware):
             }
         except Exception as e:
             logger.debug(f"Response shape analysis failed: {e}")
+            # Safe in place, and allowlisted as such in
+            # ``tests/unit/api/test_api_surface_error_text_not_echoed.py``:
+            # the dict this lands in is ``probe_data``, whose only consumer is
+            # ``_log_contract_probe``. Nothing in this middleware writes to the
+            # response — ``dispatch`` returns the downstream ``response``
+            # object untouched — so this text reaches the log and nowhere else.
             return {"analysis_error": str(e)}
 
     def _detect_violations(

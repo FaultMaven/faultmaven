@@ -207,7 +207,7 @@ async def get_llm_config(
         logger.error(f"Failed to get LLM config: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get LLM configuration: {str(e)}",
+            detail="Failed to get LLM configuration",
         )
 
 
@@ -357,7 +357,7 @@ async def update_llm_config(
         logger.error(f"Failed to update LLM config: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update LLM configuration: {str(e)}",
+            detail="Failed to update LLM configuration",
         )
 
 
@@ -451,7 +451,33 @@ async def check_llm_connection(
             provider=provider_name,
             connected=False,
             response_time_ms=elapsed_ms,
-            error_message=str(e),
+            # The exception's CLASS, never its message. A 200 body, but the
+            # same leak as a 5xx ``detail`` when it carries the message: the
+            # arm is a broad ``except`` and the text is whatever the provider
+            # SDK threw — a request URL, a proxy ``host:port``, an upstream
+            # body.
+            #
+            # The class name is safe for a different reason than "it is
+            # short": it is a literal in the SDK's source, chosen at import
+            # time, and is never assembled from anything the request touched.
+            # No URL, host, key fragment or upstream body can reach it.
+            #
+            # It is also the part a caller acts on, which is why this is not
+            # simply redacted. The Dashboard's LLM Config page renders
+            # ``error_message`` verbatim
+            # (``faultmaven-dashboard/src/components/ProviderCard.tsx:293``)
+            # and has no other diagnostic channel for a failed test, so a
+            # boolean-equivalent string makes a wrong key, a wrong base URL, a
+            # rate limit and a DNS failure render identically on the one
+            # endpoint whose entire purpose is to say which. The WARNING line
+            # below is not a substitute: on Kubernetes it rolls out of
+            # ``kubectl logs``, and the admin at the console is usually not
+            # the operator at the logs.
+            #
+            # `tests/unit/api/test_api_surface_error_text_not_echoed.py`
+            # reports this site — its analysis cannot know `type` is safe —
+            # and carries it as an allowlist entry with this reasoning.
+            error_message=f"Connection test failed ({type(e).__name__})",
             timestamp=datetime.now(timezone.utc),
         )
 
@@ -1379,7 +1405,7 @@ async def get_env_config_status(
         logger.error(f"Failed to get env config status: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get configuration status: {str(e)}",
+            detail="Failed to get configuration status",
         )
 
 

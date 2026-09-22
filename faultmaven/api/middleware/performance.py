@@ -405,7 +405,10 @@ class PerformanceMetricsEndpoint:
         except Exception as e:
             self.logger.error(f"Failed to get performance metrics: {e}")
             return {
-                "error": f"Failed to get performance metrics: {e}",
+                # Static: this dict is returned VERBATIM by ``GET
+                # /metrics/performance``, and the arm is a broad ``except``.
+                # The text is already on the ERROR line above.
+                "error": "Failed to get performance metrics",
                 "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             }
 
@@ -445,6 +448,11 @@ class PerformanceMetricsEndpoint:
         except Exception as e:
             self.logger.error(f"Failed to get real-time metrics: {e}")
             return {
-                "error": f"Failed to get real-time metrics: {e}",
+                # Static, for the same reason as the sibling above. No route
+                # calls this method today — ``GET /metrics/realtime``
+                # reimplements it inline — but it is a public method on the
+                # class whose sibling IS wired to a route, so leaving the text
+                # here just parks the leak one wiring change away.
+                "error": "Failed to get real-time metrics",
                 "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             }

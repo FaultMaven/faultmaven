@@ -320,6 +320,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         except RateLimitError as e:
             check_duration = time.time() - start_time
             self._update_metrics(check_duration, blocked=True)
+            # Safe in place, and allowlisted as such in
+            # ``tests/unit/api/test_api_surface_error_text_not_echoed.py``:
+            # ``RateLimitError`` is a TYPED domain exception this codebase
+            # raises itself, and the 429 body is built from its declared
+            # fields (``message``/``retry_after``/``error_code``) rather than
+            # from ``str(e)``. A caller told to back off has to be told what it
+            # exceeded, which is the #866/#966 carve-out exactly.
             return self._create_rate_limit_response(e, request)
 
         except Exception as e:
