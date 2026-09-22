@@ -27,10 +27,13 @@ and one wrote through a subscript (``cleanup_results["resource_cleanup"] = ...``
 which the alias-following skipped entirely. Both gaps are fixed in
 ``tests/error_text_ast`` rather than here, so every module's guard gains them.
 
-Scope is ``main.py``. ``api/routes/admin.py``, ``api/routes/admin_config.py``,
-``api/protection.py``, ``api/v1/auth_dependencies.py``, the three middlewares and
-``modules/report/api/routes.py`` have sites of the same class and no guard; they
-are queued separately and are knowingly not covered here.
+Scope is ``main.py``. The nine files that used to be listed here as "same
+class, no guard, queued separately" were swept by #1400, and the guard that
+covers them is scoped to the whole response-producing surface rather than to a
+file list — ``tests/unit/api/test_api_surface_error_text_not_echoed.py``. That
+one now also covers ``main.py``, deliberately: this file keeps the ``main.py``
+handler-count floor and the two ``main.py``-specific facts below, which a
+surface-wide floor cannot express.
 """
 
 import ast

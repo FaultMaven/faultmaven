@@ -175,7 +175,7 @@ async def list_users(
         logger.error(f"Failed to list users: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to list users: {str(e)}",
+            detail="Failed to list users",
         )
 
 
@@ -245,7 +245,7 @@ async def get_user_details(
         logger.error(f"Failed to get user details: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get user details: {str(e)}",
+            detail="Failed to get user details",
         )
 
 
@@ -312,7 +312,7 @@ async def deactivate_user(
         logger.error(f"Failed to deactivate user: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to deactivate user: {str(e)}",
+            detail="Failed to deactivate user",
         )
 
 
@@ -370,7 +370,7 @@ async def activate_user(
         logger.error(f"Failed to activate user: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to activate user: {str(e)}",
+            detail="Failed to activate user",
         )
 
 
@@ -452,7 +452,7 @@ async def assign_role(
         logger.error(f"Failed to assign role: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to assign role: {str(e)}",
+            detail="Failed to assign role",
         )
 
 
@@ -526,7 +526,7 @@ async def remove_role(
         logger.error(f"Failed to remove role: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to remove role: {str(e)}",
+            detail="Failed to remove role",
         )
 
 
@@ -588,5 +588,5 @@ async def get_llm_routing_health(
         logger.error(f"Failed to get LLM routing health: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get LLM routing health: {str(e)}",
+            detail="Failed to get LLM routing health",
         )

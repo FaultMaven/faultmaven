@@ -402,9 +402,15 @@ async def check_auth_services_health(request: Request) -> dict:
             "type": type(revocation_store).__name__ if revocation_store else None,
         }
     except Exception as e:
+        # ``GET /auth/health`` is UNAUTHENTICATED and returns
+        # ``health_status["authentication"]`` verbatim on its success path, so
+        # whatever this broad arm writes here goes to any caller. The text goes
+        # to the log instead — and it has to be logged, because it was never
+        # logged before: the body was its only record.
+        logger.warning(f"Token revocation store probe failed: {e}")
         health_status["authentication"]["services"]["token_revocation_store"] = {
             "status": "error",
-            "error": str(e),
+            "error": "Probe failed",
         }
 
     # Check user store
@@ -415,9 +421,10 @@ async def check_auth_services_health(request: Request) -> dict:
             "type": type(user_store).__name__ if user_store else None,
         }
     except Exception as e:
+        logger.warning(f"User store probe failed: {e}")
         health_status["authentication"]["services"]["user_store"] = {
             "status": "error",
-            "error": str(e),
+            "error": "Probe failed",
         }
 
     # Determine overall status

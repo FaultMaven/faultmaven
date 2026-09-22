@@ -207,7 +207,7 @@ async def get_llm_config(
         logger.error(f"Failed to get LLM config: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get LLM configuration: {str(e)}",
+            detail="Failed to get LLM configuration",
         )
 
 
@@ -357,7 +357,7 @@ async def update_llm_config(
         logger.error(f"Failed to update LLM config: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update LLM configuration: {str(e)}",
+            detail="Failed to update LLM configuration",
         )
 
 
@@ -451,7 +451,13 @@ async def check_llm_connection(
             provider=provider_name,
             connected=False,
             response_time_ms=elapsed_ms,
-            error_message=str(e),
+            # A 200 body, but the same leak as a 5xx ``detail``: the arm is a
+            # broad ``except`` and the text is whatever the provider SDK threw
+            # — a request URL, a proxy ``host:port``, an upstream body. The
+            # provider is already named in the response and the full text is on
+            # the WARNING line above, so the caller loses nothing it could act
+            # on and the operator loses nothing at all.
+            error_message="Connection test failed",
             timestamp=datetime.now(timezone.utc),
         )
 
@@ -1379,7 +1385,7 @@ async def get_env_config_status(
         logger.error(f"Failed to get env config status: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get configuration status: {str(e)}",
+            detail="Failed to get configuration status",
         )
 
 

@@ -224,6 +224,16 @@ async def convert_document(
             ConversionErrorCode.LLM_PARSE_ERROR: 422,
         }
         status = status_map.get(error_code, 422)
+        # Safe in place, and allowlisted as such in
+        # ``tests/unit/api/test_api_surface_error_text_not_echoed.py``:
+        # ``ConversionRejectedError`` is a TYPED domain exception whose every
+        # construction is a hand-written caller-facing sentence ("No LLM
+        # provider is configured. Set CHAT_PROVIDER…"), which is the whole
+        # point of the error-code map above. That held for ten of the eleven
+        # construction sites; the eleventh interpolated a parse exception and
+        # was made static under #1400, so the promise this arm relies on is
+        # now true for all of them. The broad ``except Exception`` directly
+        # below is separately sanitised.
         return JSONResponse(
             status_code=status,
             content={"detail": str(e), "error_code": error_code},

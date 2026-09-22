@@ -767,7 +767,18 @@ class TestLLMConnectionCheck:
 
     @pytest.mark.asyncio
     async def test_failed_connection(self, mock_admin_user, mock_llm_provider):
-        """Failed provider test returns connected=False with error message."""
+        """Failed provider test returns connected=False WITHOUT the provider's text.
+
+        The body used to carry ``str(e)``. It is a 200 rather than a 5xx, but
+        the arm is a broad ``except`` and the text is whatever the provider SDK
+        threw — a request URL, a proxy ``host:port``, an upstream body — so
+        #1400 swept it with the rest of the API surface. This test asserted the
+        leak; it now asserts its absence, which is the assertion that would
+        have failed had the sweep missed this site.
+
+        Nothing diagnostic is lost: the route logs the full text at WARNING,
+        and the response still names the provider and says the test failed.
+        """
         mock_provider = MagicMock()
         mock_provider.generate = AsyncMock(side_effect=Exception("API key invalid"))
         mock_llm_provider.registry.get_provider.return_value = mock_provider
@@ -782,7 +793,8 @@ class TestLLMConnectionCheck:
 
         assert result.provider == "anthropic"
         assert result.connected is False
-        assert "API key invalid" in result.error_message
+        assert "API key invalid" not in (result.error_message or "")
+        assert result.error_message == "Connection test failed"
 
     @pytest.mark.asyncio
     async def test_uninitialized_provider(self, mock_admin_user, mock_llm_provider):

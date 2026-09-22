@@ -138,3 +138,32 @@ class TestGenerateReportRouteMapsBillingTo402:
             await self._call(ServiceException("disk on fire"))
 
         assert exc.value.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_generic_service_error_500_does_not_echo_the_exception(self):
+        """The 500 arm answers a static sentence, not ``str(e)`` (#1400).
+
+        ``ServiceException`` is a wrapper: the case module's guard documents it
+        carrying SQLAlchemy statement and table names, and ``host:port`` on a
+        Redis failure. This arm was the last 500 in the report router still
+        passing it through, and the only one that never logged it.
+
+        The class guard in
+        ``tests/unit/api/test_api_surface_error_text_not_echoed.py`` pins the
+        pattern across the whole API surface; this pins what a caller of THIS
+        route actually receives, which source analysis cannot tell you.
+        """
+        from fastapi import HTTPException
+
+        internal = (
+            "(psycopg2.OperationalError) FATAL: relation "
+            'sqlalchemy table "reports" does not exist at db.internal:5432'
+        )
+        with pytest.raises(HTTPException) as exc:
+            await self._call(ServiceException(internal))
+
+        assert exc.value.status_code == 500
+        detail = str(exc.value.detail)
+        assert "psycopg2" not in detail
+        assert "db.internal:5432" not in detail
+        assert detail == "Failed to generate reports"

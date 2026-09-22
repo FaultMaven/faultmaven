@@ -27,9 +27,12 @@ one statement earlier and passes ``error_response.model_dump()``, and two of
 them *return* a body instead of raising. Those are fixed and the guards now
 follow local aliases and cover returned bodies — see ``tests/error_text_ast``.
 
-Scope is ``routes.py``, as before. ``modules/case/api/replay.py`` has its own
-sites and is knowingly not covered here; it is queued with the remaining
-unswept modules.
+Scope is ``routes.py``, as before. ``modules/case/api/replay.py``, named here
+as the one queued exception, no longer exists. The class assertions below are
+now also made surface-wide by
+``tests/unit/api/test_api_surface_error_text_not_echoed.py`` (#1400); this file
+keeps them because it pairs them with the end-to-end test above, which is what
+proves the source analysis describes a body a client really receives.
 """
 
 import ast

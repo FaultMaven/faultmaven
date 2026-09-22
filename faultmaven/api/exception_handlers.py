@@ -650,8 +650,11 @@ async def service_error_handler(
 #: default (512) is tuned for bounding an *echoed request body* in a 422 — a
 #: different job with a different right answer — and borrowing it silently
 #: truncated admin and LLM error text where callers previously got the whole
-#: message. `admin.py` and `admin_config.py` interpolate `str(e)` into details
-#: at twenty sites, and a provider error body clears 512 easily.
+#: message. The twenty `str(e)` details in `admin.py` and `admin_config.py`
+#: that this used to name are gone (#1400 replaced them with static
+#: sentences), but the bound is not theirs: `_detail_text` bounds EVERY
+#: detail, and the ones that still carry a variable-length message — the LLM
+#: classifier's, and the domain 4xx handlers' `str(exc)` — clear 512 easily.
 #:
 #: Retuning the echo bound for echo reasons must not move error-message length
 #: with it, which is exactly what sharing the constant would have done, with
