@@ -49,11 +49,55 @@ CREATE INDEX idx_case_entities_by_evidence ON case_entities(evidence_id);
 | `case_id`, `evidence_id` | Both cascade on delete. Case or evidence deletion sweeps registry rows without a separate cleanup job. |
 | `entity_type` | Controlled vocabulary (see below). |
 | `entity_value` | Raw string as extracted. Case-sensitive. Capped at 255 chars; anything longer is truncated before insert (lossless truncation is the extractor's job, not the registry's). |
-| `mention_count` | How often the entity appeared in this specific evidence. Aggregated across evidence by `list_top_entities`. |
+| `mention_count` | **The number of distinct lines of this evidence that contain the entity** — one line = one mention, for every entity type. Aggregated across evidence by `list_top_entities`. See *The mention unit* below. |
 | `in_error_context` | True when the entity appeared primarily in error/warning lines. Lets the agent distinguish *"IP X was involved in an error"* from *"IP X showed up in ambient traffic"*. Per-evidence, not global. |
 | `first_seen_ts` | Populated from the evidence's `coverage_start_ts` (Phase 3a) when the evidence is time-bound, else NULL. Lets the registry answer temporal questions without re-opening the evidence. |
 
 The composite primary key makes the write path **idempotent** — re-extracting an evidence (Phase 1.5 reclassification, Phase 2 retry) upserts by the full tuple rather than appending duplicates.
+
+### The mention unit
+
+`mention_count` is **the number of lines the entity appears on**, and it means
+the same thing for every `entity_type` and in every extractor (fm#1587). A
+value named twice on one line is **one** mention; the same value on two lines
+is two.
+
+This is not a formatting detail. `list_top_entities` ranks with
+`SUM(mention_count) DESC` and the top rows are auto-injected into the
+investigation prompt, so the unit has to be comparable across types or the
+ranking is meaningless. It was not, for one release: fm#1574 moved `user` to
+per-line counting and left `ip`, `port`, `pid` and `path` counting regex
+matches, so one column carried two units and a log format with a redundant IP
+field could outrank a genuinely dominant username.
+
+The consequence worth stating explicitly, because it was the argument against
+the ruling and is settled: **an IP that is both source and destination on one
+line is one mention.** A mention answers *"in how many log events did this
+entity appear?"*, and one line is one event. Anyone who later needs
+source-versus-destination back needs a **field**, not a count — overloading
+`mention_count` to carry role information would reintroduce exactly the
+divergence above.
+
+Two things are deliberately NOT per line, and neither reaches this table:
+
+- The logs extractor's Windows Update KB, Windows CBS HRESULT and Apache
+  mod_jk worker-state tallies are *occurrence* counts rendered as prose in the
+  structural index. A line carrying two HRESULTs recorded two events.
+- The `IP auth breakdown` block's `auth total` sums per-event-category counts,
+  so one line matching two categories is added twice. That is a separate
+  defect, tracked as fm#1596.
+
+**Where the rule lives.** The unit is implemented once, at the point matches
+are produced, not at each consumer — `extractors.utils.distinct_on_line` (with
+`split_log_lines` beside it deciding what a line *is*), consumed by
+`entities.line_tally.tally_entity_lines` for the four `EntityExtractor`
+implementations and directly by `LogsAndErrorsExtractor._build_entity_profile`
+for the rendered profile. `log_usernames.extract_usernames` de-duplicates its
+own output for the same reason. Guard:
+`tests/unit/modules/preprocessing/test_mention_unit_is_one_line.py`, which
+feeds every registered extractor a line naming each of its entity types twice
+and fails if any count comes back above 1 — and fails if an extractor is
+registered without such a line.
 
 ## Entity type vocabulary
 
@@ -81,6 +125,8 @@ Initial set — defined in `faultmaven.modules.case.domain.models.EntityType`:
 ## Extractor contribution matrix
 
 `EntityExtractor` is a `Protocol` in `faultmaven.modules.preprocessing.entities.protocol`. One implementation per data type; the dispatch table is `registry.extract_entities_for_data_type(data_type, content, error_line_indices)`.
+
+An implementation declares a table of `EntityRule` — which patterns find a type on a line, an optional validity test, whether it records `in_error_context` — and `entities.line_tally.tally_entity_lines` does the scanning. The extractors own their vocabulary; they do not own the unit (fm#1587), and an extractor that hand-rolls its own `findall` loop fails the census in `tests/unit/modules/preprocessing/test_mention_unit_is_one_line.py`.
 
 | Data type | Extractor | Entities emitted |
 | --- | --- | --- |

@@ -6,6 +6,9 @@ Provides:
 - Input validation (empty/whitespace guard)
 - Output truncation (keep beginning + end, truncate middle)
 - Coverage metadata formatting and timestamp extraction
+- The two halves of the mention unit: what a line is
+  (``split_log_lines``) and what counts as one mention on it
+  (``distinct_on_line``)
 """
 
 import re
@@ -59,6 +62,42 @@ _LINE_ENDING_RE = re.compile(r"\r\n|\r|\n")
 def split_log_lines(content: str) -> list[str]:
     """Split raw log content into physical lines on CRLF, CR or LF."""
     return _LINE_ENDING_RE.split(content)
+
+
+def distinct_on_line(line: str, *patterns: "re.Pattern[str]") -> list[str]:
+    """Values ``patterns`` match on ONE physical line, de-duplicated.
+
+    This is the mention unit, in one place: **one line = one mention**
+    (fm#1587). A value named twice on the same line — an IP that is both
+    source and destination, a port given as ``port 8080`` and again as
+    ``backend:8080`` — is one mention of that value, so every entity count
+    in the codebase means "how many log lines did this appear on".
+
+    The rule lives here, next to :func:`split_log_lines`, because a
+    per-line count is only as right as what the two callers agree a line
+    is; fm#1574 fixed usernames by moving the same rule into
+    ``log_usernames.extract_usernames`` and left the other types behind,
+    which is the divergence fm#1587 is. Anyone who later needs
+    source-versus-destination back needs a *field*, not a count.
+
+    Several patterns are accepted because one entity type is often written
+    two ways on the same line; de-duplication runs across the whole set,
+    not per pattern. Order is first-seen, so callers that render "the first
+    N" keep the order the file gave them.
+
+    Each pattern must have at most one capture group — ``findall`` returns
+    tuples beyond that, and a tuple is not an entity value.
+    """
+    values: dict[str, None] = {}
+    for pattern in patterns:
+        if pattern.groups > 1:
+            raise ValueError(
+                "distinct_on_line needs 0 or 1 capture groups, "
+                f"{pattern.groups} given: {pattern.pattern!r}"
+            )
+        for value in pattern.findall(line):
+            values.setdefault(value, None)
+    return list(values)
 
 
 def has_content(content: str) -> bool:

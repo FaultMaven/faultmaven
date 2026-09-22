@@ -21,21 +21,28 @@ login accounts (fm#522).
 from __future__ import annotations
 
 import re
-from collections import Counter
 
 from faultmaven.modules.case.contracts import EntityType
+from faultmaven.modules.preprocessing.entities.line_tally import (
+    EntityRule,
+    is_pid,
+    is_port,
+    tally_entity_lines,
+)
 from faultmaven.modules.preprocessing.entities.protocol import EntityObservation
-from faultmaven.modules.preprocessing.extractors.utils import split_log_lines
 from faultmaven.modules.preprocessing.log_usernames import extract_usernames
 
 # Regexes mirror ``logs_extractor.py``. Kept local so this module can
 # evolve independently if the logs extractor's formatting changes
 # (e.g. if it dropped the entity profile). The cost is a second compile
-# — negligible. Two things are the exception and are imported rather than
-# mirrored: the username rule, because a second copy of it cost fm#522, and
-# the line split, because a per-line count is only as right as what it calls
-# a line — ``split("\n")`` read a bare-``\r`` file as one line and floored
-# every count at 1 (fm#1574 review).
+# — negligible. What is NOT mirrored is anything that decides a count:
+# the username rule, because a second copy of it cost fm#522; the line
+# split, because a per-line count is only as right as what it calls a line
+# — ``split("\n")`` read a bare-``\r`` file as one line and floored every
+# count at 1 (fm#1574 review); and the mention unit itself, because one
+# copy per extractor is exactly how USER ended up counting something
+# different from IP (fm#1587). Those live in ``line_tally`` /
+# ``extractors.utils``.
 _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 # Private-network detection is noisy in practice; we index every IP we
 # see and let the agent/context-builder decide relevance.
@@ -53,12 +60,28 @@ _PORT_KEYWORD_RE = re.compile(r"\bport[= :]+(\d{1,5})\b", re.IGNORECASE)
 _HOST_PORT_RE = re.compile(r"(?<![\w.-])[\w-]*[A-Za-z.][\w.-]*:(\d{1,5})\b")
 _PID_KEYWORD_RE = re.compile(r"\bpid[= ]+(\d{1,7})\b", re.IGNORECASE)
 _PID_BRACKET_RE = re.compile(r"\[(\d{1,7})\]")
-_PID_MAX = 4_194_304
 _HTTP_PATH_RE = re.compile(r"\b(?:GET|POST|PUT|DELETE|PATCH)\s+(/[^\s\?]*)\b")
 
 
 class LogsEntityExtractor:
     """Extractor for LOGS_AND_ERRORS content."""
+
+    #: Rule order is the order observations are emitted in, which is the
+    #: order this extractor emitted before ``tally_entity_lines`` owned the
+    #: loop. ``in_error_context`` is recorded for IP and USER only — the
+    #: information exists for the other three, but reporting it would be a
+    #: separate change from fm#1587's unit fix.
+    _RULES = (
+        EntityRule(EntityType.IP, patterns=(_IPV4_RE, _IPV6_RE), error_context=True),
+        EntityRule(EntityType.USER, matcher=extract_usernames, error_context=True),
+        EntityRule(
+            EntityType.PORT, patterns=(_PORT_KEYWORD_RE, _HOST_PORT_RE), keep=is_port
+        ),
+        EntityRule(
+            EntityType.PID, patterns=(_PID_KEYWORD_RE, _PID_BRACKET_RE), keep=is_pid
+        ),
+        EntityRule(EntityType.PATH, patterns=(_HTTP_PATH_RE,)),
+    )
 
     @property
     def data_type_name(self) -> str:
@@ -72,98 +95,8 @@ class LogsEntityExtractor:
         if not content:
             return []
         error_lines = error_line_indices or set()
-        lines = split_log_lines(content)
-
-        # Total mention counts, plus a parallel tally restricted to
-        # lines the logs extractor flagged as errors. Merging them
-        # later preserves "appeared in an error" signal as a boolean
-        # per unique value.
-        ip_total: Counter = Counter()
-        ip_error: Counter = Counter()
-        user_total: Counter = Counter()
-        user_error: Counter = Counter()
-        port_total: Counter = Counter()
-        pid_total: Counter = Counter()
-        path_total: Counter = Counter()
-
-        for i, line in enumerate(lines):
-            is_err = i in error_lines
-
-            for ip in _IPV4_RE.findall(line):
-                ip_total[ip] += 1
-                if is_err:
-                    ip_error[ip] += 1
-            for ip in _IPV6_RE.findall(line):
-                ip_total[ip] += 1
-                if is_err:
-                    ip_error[ip] += 1
-
-            # One mention per line per account — the shared rule
-            # de-duplicates (fm#1574), so this path and the entity profile
-            # count the same thing.
-            for user in extract_usernames(line):
-                user_total[user] += 1
-                if is_err:
-                    user_error[user] += 1
-
-            for port_str in _PORT_KEYWORD_RE.findall(line) + _HOST_PORT_RE.findall(
-                line
-            ):
-                if port_str.isdigit() and 0 < int(port_str) <= 65535:
-                    port_total[port_str] += 1
-
-            for pid_str in _PID_KEYWORD_RE.findall(line) + _PID_BRACKET_RE.findall(
-                line
-            ):
-                if pid_str.isdigit() and 0 < int(pid_str) <= _PID_MAX:
-                    pid_total[pid_str] += 1
-
-            for path in _HTTP_PATH_RE.findall(line):
-                path_total[path] += 1
-
-        observations: list[EntityObservation] = []
-
-        for value, count in ip_total.items():
-            observations.append(
-                EntityObservation(
-                    entity_type=EntityType.IP,
-                    entity_value=value,
-                    mention_count=count,
-                    in_error_context=ip_error.get(value, 0) > 0,
-                )
-            )
-        for value, count in user_total.items():
-            observations.append(
-                EntityObservation(
-                    entity_type=EntityType.USER,
-                    entity_value=value,
-                    mention_count=count,
-                    in_error_context=user_error.get(value, 0) > 0,
-                )
-            )
-        for value, count in port_total.items():
-            observations.append(
-                EntityObservation(
-                    entity_type=EntityType.PORT,
-                    entity_value=value,
-                    mention_count=count,
-                )
-            )
-        for value, count in pid_total.items():
-            observations.append(
-                EntityObservation(
-                    entity_type=EntityType.PID,
-                    entity_value=value,
-                    mention_count=count,
-                )
-            )
-        for value, count in path_total.items():
-            observations.append(
-                EntityObservation(
-                    entity_type=EntityType.PATH,
-                    entity_value=value,
-                    mention_count=count,
-                )
-            )
-
-        return observations
+        return tally_entity_lines(
+            content,
+            self._RULES,
+            is_error=lambda index, _line: index in error_lines,
+        )

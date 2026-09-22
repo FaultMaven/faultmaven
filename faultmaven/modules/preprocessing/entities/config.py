@@ -15,11 +15,21 @@ single regex set handles both.
 from __future__ import annotations
 
 import re
-from collections import Counter
 
 from faultmaven.modules.case.contracts import EntityType
+from faultmaven.modules.preprocessing.entities.line_tally import (
+    EntityRule,
+    is_port,
+    tally_entity_lines,
+)
 from faultmaven.modules.preprocessing.entities.protocol import EntityObservation
 
+# Scanning is per line, like every other entity extractor — one line is
+# one mention (fm#1587). It used to run ``findall`` over the whole file,
+# which counted a key repeated on ONE line twice; the regexes below never
+# crossed a newline anyway (see the next paragraph), so per-line matching
+# finds exactly the same values.
+#
 # Separator regexes use ``[ \t]*`` instead of ``\s*`` on purpose: a
 # key/value pair like ``host:\n  port: 5432`` must *not* be interpreted
 # as host=port — which is what ``\s*`` allowed, because the value
@@ -55,6 +65,16 @@ _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 class ConfigEntityExtractor:
     """Extractor for STRUCTURED_CONFIG content."""
 
+    #: Rule order is the emission order. Configs are declarative and
+    #: carry no error lines, so no rule records ``error_context``.
+    _RULES = (
+        EntityRule(EntityType.HOSTNAME, patterns=(_HOST_RE,)),
+        EntityRule(EntityType.PORT, patterns=(_PORT_RE,), keep=is_port),
+        EntityRule(EntityType.SERVICE, patterns=(_SERVICE_RE,)),
+        EntityRule(EntityType.PATH, patterns=(_PATH_RE,)),
+        EntityRule(EntityType.IP, patterns=(_IPV4_RE,)),
+    )
+
     @property
     def data_type_name(self) -> str:
         return "structured_config"
@@ -66,64 +86,4 @@ class ConfigEntityExtractor:
     ) -> list[EntityObservation]:
         if not content:
             return []
-
-        host_total: Counter = Counter()
-        port_total: Counter = Counter()
-        service_total: Counter = Counter()
-        path_total: Counter = Counter()
-        ip_total: Counter = Counter()
-
-        for match in _HOST_RE.findall(content):
-            host_total[match] += 1
-        for match in _PORT_RE.findall(content):
-            if match.isdigit() and 0 < int(match) <= 65535:
-                port_total[match] += 1
-        for match in _SERVICE_RE.findall(content):
-            service_total[match] += 1
-        for match in _PATH_RE.findall(content):
-            path_total[match] += 1
-        for ip in _IPV4_RE.findall(content):
-            ip_total[ip] += 1
-
-        observations: list[EntityObservation] = []
-        for value, count in host_total.items():
-            observations.append(
-                EntityObservation(
-                    entity_type=EntityType.HOSTNAME,
-                    entity_value=value,
-                    mention_count=count,
-                )
-            )
-        for value, count in port_total.items():
-            observations.append(
-                EntityObservation(
-                    entity_type=EntityType.PORT,
-                    entity_value=value,
-                    mention_count=count,
-                )
-            )
-        for value, count in service_total.items():
-            observations.append(
-                EntityObservation(
-                    entity_type=EntityType.SERVICE,
-                    entity_value=value,
-                    mention_count=count,
-                )
-            )
-        for value, count in path_total.items():
-            observations.append(
-                EntityObservation(
-                    entity_type=EntityType.PATH,
-                    entity_value=value,
-                    mention_count=count,
-                )
-            )
-        for value, count in ip_total.items():
-            observations.append(
-                EntityObservation(
-                    entity_type=EntityType.IP,
-                    entity_value=value,
-                    mention_count=count,
-                )
-            )
-        return observations
+        return tally_entity_lines(content, self._RULES)
