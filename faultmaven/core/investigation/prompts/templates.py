@@ -600,10 +600,10 @@ the regression. Could you share the deployment diff to confirm what changed?"
 # had every reason to win the currency judgement.
 _OBSERVATION_TIME_BLOCK = """
 TIME ATTRIBUTES — two attributes, two different questions:
-  - fresh_this_turn="true" — the item's DATA arrived this turn. For a file that
-    is the turn it was UPLOADED, not the turn an evidence row cited it, so a
-    file you re-cite from an earlier turn does NOT carry it. Says nothing about
-    how old its content is.
+  - fresh_this_turn="true" — the item's DATA arrived this turn. For a file,
+    that is the turn it was UPLOADED, not the turn an evidence row cited it, so
+    a file you re-cite from an earlier turn does NOT carry it. Says nothing
+    about how old its content is.
   - observed_through="<instant>" age="<Nm|Nh|Nd>" — when the CONTENT was
     observed. This is what settles temporal state (ongoing / historical).
 Both can hold at once: an item received this turn can carry age="7h". That is
@@ -3693,7 +3693,22 @@ def get_prompt_for_case(
             # agent_meta is waived the same way (#1328): the grounding block is
             # what made "what model are you" a request for deployment manifests.
             waive_grounding = processing_mode == "knowledge_query" or is_agent_meta
-            evidence_grounding = "" if waive_grounding else _EVIDENCE_GROUNDING_BLOCK
+            # Waiving grounding used to take the TIME ATTRIBUTES definition
+            # with it, while the rule that CONSUMES fresh_this_turn ("user
+            # implies new data but no item carries it → ask for the file")
+            # sits unconditionally in INVESTIGATION_BASE. Both modes still
+            # render <evidence_collected> with the attribute on it, so the
+            # model was handed the rule and no statement of which turn the
+            # attribute names — the one reading that has to be stated, since
+            # what a re-cited file carries is ABSENCE (#512). Keep the
+            # definition on those turns and nothing else from the block: a
+            # general-knowledge answer still must not go hunting case evidence,
+            # which is what the waiver is for.
+            evidence_grounding = (
+                _OBSERVATION_TIME_BLOCK
+                if waive_grounding
+                else _EVIDENCE_GROUNDING_BLOCK
+            )
             diagnostic_reasoning = (
                 "" if waive_grounding else _DIAGNOSTIC_REASONING_BLOCK
             )

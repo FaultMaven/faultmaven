@@ -1369,15 +1369,22 @@ def _evidence_data_turn(ev, ev_file_meta) -> Optional[int]:
     it: its data IS the user's message, and the message arrived on the turn
     the row was created.
 
-    ``ev_file_meta`` can be ``None`` while ``source_file_id`` is set — a file
-    the case aggregate did not load, or one removed out from under the
-    evidence. Both render sites already refuse to call such a row file-backed
-    (no ``file_id`` attribute, not ``searchable``), and there is no upload turn
-    to read, so ``collected_at_turn`` is the only turn known about it. A
-    deliberate fallback for an unresolvable source, not the old behaviour left
-    behind.
+    So there are exactly two branches, and ``ev_file_meta`` alone selects
+    between them. ``Case.find_uploaded_file`` returns ``None`` for any falsy
+    id, so a resolved file already implies a source id and testing
+    ``ev.source_file_id is not None`` as well described a state that cannot
+    occur. Tier C passes ``None`` explicitly and takes the second branch by
+    the same rule the other two tiers take the first.
+
+    ``ev_file_meta`` is also ``None`` when ``source_file_id`` IS set but does
+    not resolve — a file the case aggregate did not load, or one removed out
+    from under the evidence. Both file-backed render sites already refuse to
+    call such a row file-backed (no ``file_id`` attribute, not ``searchable``),
+    and there is no upload turn to read, so ``collected_at_turn`` is the only
+    turn known about it. A deliberate fallback for an unresolvable source, not
+    the old behaviour left behind.
     """
-    if ev.source_file_id is not None and ev_file_meta is not None:
+    if ev_file_meta is not None:
         return ev_file_meta.uploaded_at_turn
     return ev.collected_at_turn
 
@@ -1613,9 +1620,13 @@ def _render_orphan_file_block(
     ``observed_attr`` renders the file's observation instant (see
     :func:`_file_observed_attr` for why a ranged span is withheld), the same
     way the three ``<evidence>`` tiers render theirs. Without it this block emitted
-    ``fresh_this_turn`` alone — the half of the pair that answers "when did the
-    AGENT see this", never "how old is the observation" — which is precisely the
-    misreading :func:`_observed_attr` exists to break. It matters most here:
+    ``fresh_this_turn`` alone — the half of the pair that answers "when did this
+    ARRIVE", never "how old is the observation" — which is precisely the
+    misreading :func:`_observed_attr` exists to break. (It read "when did the
+    AGENT see this" until #512, which is the row-scoped definition the
+    attribute no longer carries. Worth naming here in particular: this is the
+    one renderer that actually emits the marker in production, so a retired
+    definition survives longest exactly where it misleads most.) It matters most here:
     INV-07 forbids Evidence creation during INQUIRY, so turn 1 of every
     forwarded alert is rendered by this function and by nothing else, and turn 1
     is where "is this still firing?" decides whether there is an incident at
@@ -2241,13 +2252,18 @@ def _render_evidence_block(
     for ev in text_evidence[-5:]:  # Cap at 5 most recent items
         label = _evidence_label(ev, case)
         label_attr = _attr("label", label)
-        # ``collected_at_turn`` IS the data turn here, so this reads the same
-        # rule as the two file-backed tiers rather than opting out of it: the
-        # data is the user's message and the message arrived on the turn this
-        # row was created. There is no file to defer to — ``source_file_id`` is
-        # NULL per the source-invariant noted above — so _evidence_data_turn
-        # would return exactly this and is not called for it (#512).
-        fresh_attr = _fresh_this_turn_attr(ev.collected_at_turn, case.current_turn)
+        # One rule, three tiers. There is no file to defer to here —
+        # ``source_file_id`` is NULL per the source-invariant noted above — so
+        # ``None`` is the exact and only argument, and it cannot raise the way
+        # passing ``ev_file_meta`` would (not in scope in this loop). The
+        # helper then returns ``collected_at_turn``, which IS the data turn for
+        # chat-extracted evidence: the data is the user's message and the
+        # message arrived on the turn this row was created. Calling it rather
+        # than restating its answer is the point — two copies of one rule is
+        # the divergence #512 exists to close (#512).
+        fresh_attr = _fresh_this_turn_attr(
+            _evidence_data_turn(ev, None), case.current_turn
+        )
         observed_attr = _observed_attr(ev)
         quote_block = ""
         if ev.extract and ev.extract.strip():
