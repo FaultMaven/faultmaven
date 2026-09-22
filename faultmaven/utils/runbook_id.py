@@ -104,6 +104,12 @@ _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _MAX_SLUG_CHARS = 60
 _MAX_SUFFIX_CHARS = 40
 
+#: What ``safe_path_component`` substitutes when its value — and then its
+#: fallback — filters to nothing. A path component only has to be A safe
+#: segment, so a fixed shared literal is right here; an ID must be distinct per
+#: input and mints its own (``runbook_id_from_parts``).
+_UNKNOWN_PATH_COMPONENT = "unknown"
+
 #: Bound for a **persisted runbook id** (``runbook_id_from_parts``). Numerically
 #: equal to ``_MAX_SLUG_CHARS`` today and deliberately a SEPARATE constant: that
 #: one bounds a filename component (NAME_MAX / ``uploaded_files.filename``),
@@ -136,7 +142,9 @@ def _slug(value: str | None) -> str:
     return _SLUG_RE.sub("-", (value or "").lower()).strip("-")
 
 
-def safe_path_component(value: str | None, *, fallback: str = "unknown") -> str:
+def safe_path_component(
+    value: str | None, *, fallback: str = _UNKNOWN_PATH_COMPONENT
+) -> str:
     """One directory-name component, guaranteed to be a single safe segment.
 
     For the identifiers interpolated into scope directories
@@ -153,8 +161,36 @@ def safe_path_component(value: str | None, *, fallback: str = "unknown") -> str:
     The sanitisation was always the real protection and is unchanged; what is
     corrected here is a stated rationale that would otherwise invite someone to
     relax this guard on the strength of a premise that no longer holds.
+
+    **Invariant: the result always matches ``[a-z0-9]+(-[a-z0-9]+)*``** — one
+    component, non-empty, no separator, no traversal sequence, no NUL, no
+    leading dot. Two things are needed to make that true, and both were missing
+    (#1394 review):
+
+    - ``.strip("-")`` AFTER the truncation. ``_slug`` strips the hyphens it
+      produces, but slicing to ``_MAX_SLUG_CHARS`` can land on one and put it
+      back: a 70-character title cut at 60 returned ``"aaa…a-"``, and
+      ``"-".join(["ab"] * 30)`` returned ``"ab-ab-…-ab-"``. ``runbook_filename``
+      has always stripped after slicing; this was the copy that did not.
+    - ``fallback`` goes through ``_slug`` too. It is a PARAMETER, so it is as
+      much an input as ``value`` is, and leaving it unfiltered meant the
+      guarantee held only for callers that never pass one. No caller does
+      today, which is exactly why it could rot unnoticed — and the guarantee is
+      now load-bearing in a way it was not before, because
+      ``.github/codeql/extensions/faultmaven-path-sanitizers`` declares this
+      function a CodeQL ``path-injection`` barrier. An unfiltered
+      ``fallback="../../../../escaped"`` would have been returned verbatim AND
+      had the resulting flow silenced.
+
+    The final literal is the backstop for a fallback that itself filters to
+    nothing; without it the "non-empty" half of the invariant would depend on
+    the caller.
     """
-    return _slug(value)[:_MAX_SLUG_CHARS] or fallback
+    return (
+        _slug(value)[:_MAX_SLUG_CHARS].strip("-")
+        or _slug(fallback)[:_MAX_SLUG_CHARS].strip("-")
+        or _UNKNOWN_PATH_COMPONENT
+    )
 
 
 def runbook_filename(title: str | None, document_id: str | None) -> str:

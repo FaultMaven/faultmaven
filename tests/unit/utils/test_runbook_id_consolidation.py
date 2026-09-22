@@ -50,6 +50,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     generate_runbook_id,
 )
 from faultmaven.utils.runbook_id import (
+    _MAX_SLUG_CHARS,
     is_hash_only_runbook_id,
     runbook_filename,
     runbook_id_from_parts,
@@ -356,3 +357,40 @@ class TestTheFilenamePolicyIsDeliberatelyDifferent:
         assert safe_path_component("...") == safe_path_component("???") == "unknown"
         assert runbook_filename("...", "...").endswith(".md")
         assert runbook_filename("...", "...") != ".md"
+
+
+class TestSafePathComponentFiltersBothOfItsInputs:
+    """Both regressions the #1394 review measured, pinned at the implementation.
+
+    The broad hostile corpus lives in ``tests/unit/ci/test_codeql_config.py``,
+    because that is where the CodeQL ``path-injection`` barrier row asserting
+    this function's guarantee is paid for. These two are here, next to the
+    policy they belong to, so a change to ``safe_path_component`` fails in the
+    file its author is editing rather than only in a CI-config test.
+    """
+
+    def test_the_fallback_is_filtered_like_the_value(self):
+        # `fallback` is a parameter, so it is as much an input as `value`.
+        # Unfiltered, it was returned verbatim — and the barrier row silenced
+        # the flow that carried it to the filesystem.
+        assert safe_path_component("???", fallback="../../../../escaped") == "escaped"
+        assert safe_path_component(None, fallback="/etc/passwd") == "etc-passwd"
+        # ...and a fallback that itself filters to nothing still yields a
+        # segment, rather than making "non-empty" the caller's problem.
+        assert safe_path_component("???", fallback="???") == "unknown"
+
+    def test_truncation_cannot_leave_a_trailing_hyphen(self):
+        # `_slug` strips the hyphens it produces; slicing to the bound can put
+        # one back. `runbook_filename` has always stripped after slicing.
+        for value in ("a" * 59 + " " + "b" * 10, "-".join(["ab"] * 30), "word " * 40):
+            component = safe_path_component(value)
+            assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", component), (
+                value,
+                component,
+            )
+
+    def test_the_bound_survives_both_paths(self):
+        # Stripping after the slice must not become an excuse to drop it, and
+        # the fallback is bounded too — it was not.
+        assert len(safe_path_component("x" * 500)) == _MAX_SLUG_CHARS
+        assert len(safe_path_component("???", fallback="y" * 500)) == _MAX_SLUG_CHARS

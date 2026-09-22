@@ -1,0 +1,165 @@
+# CodeQL configuration, and the decisions this repository has taken about it.
+#
+# ‼ NOT WIRED TODAY, AND DELIBERATELY EMPTY. Read the last section before
+#   adding a key to it. Nothing here is load-bearing: the thing in
+#   `.github/codeql/` that actually changes the analysis is the model pack
+#   under `extensions/`, which code scanning picks up on its own.
+#
+# ---------------------------------------------------------------------------
+# HOW CODE SCANNING IS CONFIGURED HERE
+# ---------------------------------------------------------------------------
+#
+# DEFAULT setup — no workflow file, configured through the repository UI:
+#
+#   $ gh api repos/FaultMaven/faultmaven/code-scanning/default-setup
+#   {"state":"configured","languages":["actions","python"],
+#    "query_suite":"default","schedule":"weekly"}
+#
+# It used to be true that default setup accepted no customisation of any kind,
+# and #1394 was filed on that premise — "items 2, 3 and 4 all depend on a
+# default -> advanced conversion". That is no longer true, and the conversion
+# was NOT done:
+#
+#   * a model pack placed in `.github/codeql/extensions/` is detected and used
+#     by DEFAULT setup, with no `packs:` entry and no registry publish, and it
+#     keeps working if the repository ever does convert to advanced setup;
+#   * a configuration file is reachable from default setup through the
+#     `github-codeql-config-file` repository property, whose contents are
+#     MERGED with the configuration default setup generates ("Customize code
+#     scanning default setup at scale", GA on github.com).
+#
+# So the maintenance cost the conversion would have added — a committed
+# workflow, a pinned action, a CodeQL version this repository owns — buys
+# nothing that #1394 needed. Converting would also have meant a window with no
+# analysis on `main` at all, since default setup and an advanced workflow
+# cannot both be live (`codeql-action` rejects the upload outright:
+# "CodeQL analyses from advanced configurations cannot be processed when the
+# default setup is enabled").
+#
+# ---------------------------------------------------------------------------
+# WHAT THE GATE BLOCKS ON  (#1394 item 4)
+# ---------------------------------------------------------------------------
+#
+# The choice offered was "block on new SINKS" or "block on any alert in the
+# diff, once the backlog is triaged". This is the second one, and the first is
+# not available: the `CodeQL` check is produced server-side by comparing the
+# pull request's alert set against the base branch's. It has no notion of a
+# sink, and "a new flow to a sink that was already flagged" is precisely the
+# distinction its fingerprinting cannot draw. No key in this file, and no
+# workflow, can teach it that distinction — which is why the conversion would
+# not have delivered item 4 either.
+#
+# What CAN be changed is how often the check has anything to say, and the
+# measurement says the whole observed problem was one sink:
+#
+#   #1388   red for three `py/path-injection` alerts that already lived on main
+#   #1423   red because a comment-only edit moved a line by 14 and re-raised one
+#   #66     raised as NEW on line 525 — the same line as dismissed alert #61
+#
+# Four of the five alerts this sink has produced (#60, #61, #65, #66) are the
+# SAME guarded write in `runbook_id.py`, correct-and-guarded on every triage,
+# differing only in which line the fingerprint landed on. Modelling the guard
+# (see `extensions/`) removes them, and with them every red those incidents
+# produced. That is the fix; a sixth dismissal would not have been. The fifth,
+# #59, is the containment check's own `Path.resolve()` and is left dismissed —
+# the model file says why.
+#
+# The policy that follows from it: keep the check at full sensitivity and keep
+# the open backlog at zero, so that anything it reports is worth reading. Two
+# things are needed to hold that, and neither lives in this file:
+#
+#   1. The severity threshold for the pull request check is a repository UI
+#      setting — Settings > Code security > Code scanning > "Protection rules"
+#      > "Alert severities that cause a pull request check failure". It has no
+#      REST API, so its current value is not stated here; read it in the UI
+#      rather than assuming, and set it as low as the backlog can sustain.
+#   2. `CodeQL` is ADVISORY here: ruleset 17737595 requires ten contexts and
+#      CodeQL is not among them, so a red CodeQL check has never blocked a
+#      merge in this repository. Making it required is the literal reading of
+#      "block on", and the model is what makes it affordable: one alert was
+#      open when this was written (#66) and the model closes it. CONFIRM the
+#      count is zero first — `gh api '.../code-scanning/alerts?state=open'` —
+#      then flip it. Left to the owner because it blocks every pull request in
+#      flight the moment it lands:
+#
+#      gh api -X PUT repos/FaultMaven/faultmaven/rulesets/17737595 ...
+#        (add {"context": "CodeQL"} to required_status_checks)
+#
+# ---------------------------------------------------------------------------
+# TWO THINGS THAT ARE DELIBERATELY NOT HERE
+# ---------------------------------------------------------------------------
+#
+# `paths-ignore: [tests/]`. #1394 asked for `tests/` to be scoped out of the
+# rules where a test fixture is not a vulnerability — 4 x
+# `py/incomplete-url-substring-sanitization` and 1 x
+# `py/bind-socket-all-network-interfaces`. That is not expressible: `paths` and
+# `paths-ignore` are analysis-global, and `query-filters` matches query-suite
+# metadata (id, tags), never paths. The choice is excluding `tests/` from EVERY
+# query or from none, and excluding it entirely to close five alerts would
+# blind the scanner to every future finding in a test helper. Those five are
+# dismissed as "used in tests" instead, which is per-alert and reversible.
+#
+# `query-filters` excluding a noisy rule. `py/clear-text-logging-sensitive-data`
+# has produced ten alerts here and ten false positives — it fires on the words
+# around the data (`token`, `password`, `key`) and not on the data, which in
+# each case is a user id, a jti, an env var NAME, a CIDR from configuration, or
+# a database URL with `.split('@')[-1]` already applied. Ten for ten is a
+# tempting case for excluding the rule. It is refused: narrowing a guard until
+# it stops lighting up is how a blind spot gets installed, and the cost of
+# these ten is ten dismissals that are already written. A rule is excluded here
+# only with a measured reason that is not "it was noisy".
+
+# ---------------------------------------------------------------------------
+# DISMISSALS  (#1394 item 5)
+# ---------------------------------------------------------------------------
+#
+# The issue was filed at "58 open, 0 dismissed, ever", which is what made the
+# backlog able only to grow. There are 20 dismissals now and every one carries
+# its reasoning in the note, so a later reader reverses a call instead of
+# re-deriving it. Two rules, both learned from getting one wrong:
+#
+#   * The REASON has to match the code. Alert #65 sat as "used in tests" on
+#     `faultmaven/utils/runbook_id.py`, with no note at all. It was the only
+#     defective entry of the twenty, and it was invisible until the reasons were
+#     audited against the paths:
+#
+#       gh api "repos/FaultMaven/faultmaven/code-scanning/alerts?state=dismissed&per_page=100" \
+#         --paginate --jq '.[] | select(.dismissed_reason=="used in tests")
+#                              | select(.most_recent_instance.location.path
+#                                       | startswith("tests/") | not)'
+#
+#   * A FAMILY is dismissed one alert at a time. All ten
+#     `py/clear-text-logging-sensitive-data` alerts are false positives, and
+#     they were re-read individually for this issue rather than sampled: three
+#     log `database_url.split('@')[-1]`, which strips the credential; three log
+#     a `user_id` and a `jti` under a message containing the word "token"; two
+#     log an environment variable's NAME; one logs a malformed proxy CIDR that
+#     came from configuration; one logs a code's LENGTH. Ten for ten — and the
+#     same rule was the one that nearly buried a live quadratic regex, so the
+#     family is dismissed per alert and the rule stays enabled.
+#
+# Dismissals are per-alert and reversible; a rule exclusion is neither. Prefer
+# the dismissal, and prefer a fix to both.
+#
+name: FaultMaven
+
+# ---------------------------------------------------------------------------
+# BEFORE YOU ADD A KEY BELOW
+# ---------------------------------------------------------------------------
+#
+# Nothing reads this file yet. Default setup only loads it once the repository
+# property names it, so a key added here takes effect at exactly no point until
+# someone runs:
+#
+#   gh api -X PATCH repos/FaultMaven/faultmaven/properties/values \
+#     -f 'properties[][property_name]=github-codeql-config-file' \
+#     -f 'properties[][value]=.github/codeql/codeql-config.yml'
+#
+# Wire it in the same change that adds the key, and check the next analysis
+# actually ran (`gh api repos/FaultMaven/faultmaven/code-scanning/analyses`) —
+# a config file that cannot be read fails the analysis rather than degrading,
+# and a repository whose scan has stopped looks exactly like a repository with
+# no findings.
+#
+# `tests/unit/ci/test_codeql_config.py` fails if a key appears here, so this note
+# cannot be missed by someone who did not read it.
