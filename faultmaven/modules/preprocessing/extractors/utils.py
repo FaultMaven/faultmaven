@@ -37,6 +37,30 @@ _HEAD_SCAN_LINES = 10
 _TAIL_SCAN_LINES = 100
 
 
+# The three line endings a log file actually carries. ``str.split("\n")``
+# treats a bare ``\r`` file as ONE line, which made every per-line count on
+# such a file report 1 (fm#1574 review). ``str.splitlines()`` is the obvious
+# alternative and is wrong twice over, measured rather than assumed:
+#
+#   * it also breaks on ``\x0b \x0c \x1c \x1d \x1e \x85 \u2028 \u2029``,
+#     none of which ends a line in any log format — a form feed inside a
+#     Windows CBS line would be reported as two lines the file does not have;
+#   * it drops the trailing empty element, so ``len()`` of the result falls by
+#     one on every file ending in a newline, and that number is rendered as
+#     "N severity-flagged lines out of M total".
+#
+# This pattern is element-for-element identical to ``split("\n")`` on any
+# content without a bare ``\r`` — same count, so line indices computed either
+# way still agree — and differs only by stripping the ``\r`` of a ``\r\n``
+# pair off the end of each line, which no caller wants kept.
+_LINE_ENDING_RE = re.compile(r"\r\n|\r|\n")
+
+
+def split_log_lines(content: str) -> list[str]:
+    """Split raw log content into physical lines on CRLF, CR or LF."""
+    return _LINE_ENDING_RE.split(content)
+
+
 def has_content(content: str) -> bool:
     """Check if content is non-empty and worth analyzing.
 

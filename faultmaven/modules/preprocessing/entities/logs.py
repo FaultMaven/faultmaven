@@ -25,13 +25,17 @@ from collections import Counter
 
 from faultmaven.modules.case.contracts import EntityType
 from faultmaven.modules.preprocessing.entities.protocol import EntityObservation
-from faultmaven.modules.preprocessing.log_usernames import distinct_usernames
+from faultmaven.modules.preprocessing.extractors.utils import split_log_lines
+from faultmaven.modules.preprocessing.log_usernames import extract_usernames
 
 # Regexes mirror ``logs_extractor.py``. Kept local so this module can
 # evolve independently if the logs extractor's formatting changes
 # (e.g. if it dropped the entity profile). The cost is a second compile
-# — negligible. Usernames are the exception: a second copy of that rule
-# cost fm#522, so it is imported rather than mirrored.
+# — negligible. Two things are the exception and are imported rather than
+# mirrored: the username rule, because a second copy of it cost fm#522, and
+# the line split, because a per-line count is only as right as what it calls
+# a line — ``split("\n")`` read a bare-``\r`` file as one line and floored
+# every count at 1 (fm#1574 review).
 _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 # Private-network detection is noisy in practice; we index every IP we
 # see and let the agent/context-builder decide relevance.
@@ -68,7 +72,7 @@ class LogsEntityExtractor:
         if not content:
             return []
         error_lines = error_line_indices or set()
-        lines = content.split("\n")
+        lines = split_log_lines(content)
 
         # Total mention counts, plus a parallel tally restricted to
         # lines the logs extractor flagged as errors. Merging them
@@ -94,9 +98,10 @@ class LogsEntityExtractor:
                 if is_err:
                     ip_error[ip] += 1
 
-            # Distinct per line: this path counts lines, the entity profile
-            # counts matches. See ``distinct_usernames``.
-            for user in distinct_usernames(line):
+            # One mention per line per account — the shared rule
+            # de-duplicates (fm#1574), so this path and the entity profile
+            # count the same thing.
+            for user in extract_usernames(line):
                 user_total[user] += 1
                 if is_err:
                     user_error[user] += 1

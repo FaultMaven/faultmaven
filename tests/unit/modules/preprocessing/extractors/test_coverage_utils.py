@@ -7,7 +7,88 @@ import pytest
 from faultmaven.modules.preprocessing.extractors.utils import (
     extract_time_range,
     extract_timestamp,
+    split_log_lines,
 )
+
+
+@pytest.mark.unit
+class TestSplitLogLines:
+    """``split_log_lines`` — and why it is not ``str.splitlines()``.
+
+    Two callers count usernames per line (fm#1574), so what counts as a line
+    is now load-bearing rather than cosmetic. ``str.split("\n")`` read a
+    bare-``\r`` file as ONE line and floored every per-line count at 1.
+    ``str.splitlines()`` is the obvious replacement and is wrong twice; both
+    ways are pinned here, because a reader who does not know that will
+    "simplify" this helper into ``splitlines()`` and the username tests
+    alone would not notice.
+    """
+
+    @pytest.mark.parametrize(
+        "ending",
+        [
+            pytest.param("\n", id="LF"),
+            pytest.param("\r", id="CR"),
+            pytest.param("\r\n", id="CRLF"),
+        ],
+    )
+    def test_all_three_line_endings_split(self, ending):
+        """What the helper exists for."""
+        assert split_log_lines(f"alpha{ending}beta{ending}gamma")[:3] == [
+            "alpha",
+            "beta",
+            "gamma",
+        ]
+
+    def test_a_crlf_leaves_no_carriage_return_on_the_line(self):
+        """``split("\\n")`` left a trailing ``\r`` on every CRLF line."""
+        assert split_log_lines("alpha\r\nbeta") == ["alpha", "beta"]
+
+    @pytest.mark.parametrize(
+        "char,name",
+        [
+            ("\x0b", "vertical-tab"),
+            ("\x0c", "form-feed"),
+            ("\x1c", "file-separator"),
+            ("\x1d", "group-separator"),
+            ("\x1e", "record-separator"),
+            ("\x85", "NEL"),
+            ("\u2028", "LINE-SEPARATOR"),
+            ("\u2029", "PARAGRAPH-SEPARATOR"),
+        ],
+    )
+    def test_no_other_code_point_ends_a_line(self, char, name):
+        """The first reason this is not ``str.splitlines()``.
+
+        ``splitlines()`` breaks on all eight of these. None ends a line in
+        any log format, and a form feed inside a Windows CBS line would be
+        reported as two lines the file does not have — inventing a line
+        inflates every per-line count taken over it.
+        """
+        assert split_log_lines(f"alpha{char}beta") == [f"alpha{char}beta"]
+        assert len(f"alpha{char}beta".splitlines()) == 2  # the rejected remedy
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            pytest.param("alpha\nbeta\n", id="trailing-LF"),
+            pytest.param("alpha\nbeta", id="no-trailing-LF"),
+            pytest.param("alpha\r\nbeta\r\n", id="CRLF"),
+            pytest.param("", id="empty"),
+            pytest.param("\n", id="lone-LF"),
+        ],
+    )
+    def test_line_count_matches_split_on_lf_when_no_bare_cr(self, content):
+        """The second reason, and what keeps line INDICES in step.
+
+        ``splitlines()`` drops the trailing empty element, so ``len()`` falls
+        by one on every file ending in a newline — and that number is
+        rendered as "N severity-flagged lines out of M total". This helper is
+        element-count-identical to ``split("\\n")`` wherever there is no bare
+        ``\r``, which is also why the entity profile's line index still
+        agrees with the error-line set computed beside it.
+        """
+        assert len(split_log_lines(content)) == len(content.split("\n"))
 
 
 @pytest.mark.unit
