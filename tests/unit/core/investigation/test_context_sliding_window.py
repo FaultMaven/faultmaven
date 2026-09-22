@@ -1364,12 +1364,25 @@ class TestPageCaptureRerankingIntegration:
 # ============================================================
 
 
-class TestFreshThisTurnAttribute:
-    """``fresh_this_turn="true"`` partitions current-turn evidence from
-    prior context so the LLM has a positional signal to distinguish
-    data the user just provided from data being re-cited."""
+def _set_file_turn(case, file_id: str, turn: int) -> None:
+    """Point a synthesized fixture file at the turn its data actually arrived.
 
-    def test_evidence_collected_at_current_turn_gets_fresh_marker(self):
+    ``_make_case_with_evidence`` hardcodes ``uploaded_at_turn=1`` on every file
+    it synthesizes, which makes every fixture with ``collected_at_turn > 1`` a
+    silent re-cite. Harmless while ``fresh_this_turn`` was keyed on the evidence
+    ROW's turn; since #512 it is keyed on the DATA's, so a test about freshness
+    has to say when the file arrived.
+    """
+    uf = next(f for f in case.uploaded_files if f.file_id == file_id)
+    uf.uploaded_at_turn = turn
+
+
+class TestFreshThisTurnAttribute:
+    """``fresh_this_turn="true"`` partitions evidence whose DATA arrived this
+    turn from prior context, so the LLM has a positional signal to distinguish
+    data the user just provided from data being re-cited (#512)."""
+
+    def test_evidence_whose_file_arrived_this_turn_gets_fresh_marker(self):
         ev_old = _make_evidence(
             summary="Earlier evidence",
             collected_at_turn=3,
@@ -1382,6 +1395,11 @@ class TestFreshThisTurnAttribute:
         )
         case = _make_case_with_evidence([ev_old, ev_new])
         case.current_turn = 7
+        # The fixture the old assertion needed all along: each row's data
+        # arrived on the turn the row was written, so "just-uploaded evidence"
+        # is genuinely just-uploaded instead of a six-turn re-cite.
+        _set_file_turn(case, "file_0a0a0a0a0a01", 3)
+        _set_file_turn(case, "file_0b0b0b0b0b02", 7)
         result = _build_evidence_context(case)
 
         # Each evidence row appears once; only the current-turn one
@@ -1394,6 +1412,133 @@ class TestFreshThisTurnAttribute:
         )
         assert 'fresh_this_turn="true"' not in old_line
         assert 'fresh_this_turn="true"' in new_line
+
+    def test_a_row_minted_this_turn_on_a_prior_turn_file_is_not_fresh(self):
+        """#512: the whole defect. Nothing arrived — the model merely cited a
+        file it already had — so the attribute must not say something did."""
+        ev = _make_evidence(
+            summary="re-cited on turn 9",
+            collected_at_turn=9,
+            source_file_id="file_0a0a0a0a0a01",
+        )
+        case = _make_case_with_evidence([ev])
+        case.current_turn = 9
+        _set_file_turn(case, "file_0a0a0a0a0a01", 3)
+        result = _build_evidence_context(case)
+
+        line = next(line for line in result.splitlines() if ev.evidence_id in line)
+        assert 'fresh_this_turn="true"' not in line
+
+    def test_the_degraded_render_keys_freshness_the_same_way(self):
+        """Tier B is a second, independent render of the same attribute. A
+        budget decision must not change what an item claims about itself, so
+        the summary-only render answers the re-cite question identically."""
+        recite = _make_evidence(
+            summary="R" * 40,
+            extract="R" * 4000,
+            collected_at_turn=9,
+            source_file_id="file_0a0a0a0a0a01",
+        )
+        arrived = _make_evidence(
+            summary="A" * 40,
+            extract="A" * 4000,
+            collected_at_turn=9,
+            source_file_id="file_0b0b0b0b0b02",
+        )
+        case = _make_case_with_evidence([arrived, recite])
+        case.current_turn = 9
+        _set_file_turn(case, "file_0a0a0a0a0a01", 3)
+        _set_file_turn(case, "file_0b0b0b0b0b02", 9)
+        # Tight budget: the reserve is spent by the first item, so the second
+        # degrades out of Tier A into the summary-only Tier B render.
+        result = _build_evidence_context(case, char_budget_override=6000)
+
+        recite_line = next(
+            line for line in result.splitlines() if recite.evidence_id in line
+        )
+        arrived_line = next(
+            line for line in result.splitlines() if arrived.evidence_id in line
+        )
+        # The re-cite is the one that degraded — assert that, or this test
+        # would pass while measuring two Tier A renders.
+        assert 'data_type="' not in recite_line, "expected the Tier B render here"
+        assert 'data_type="' in arrived_line
+        assert 'fresh_this_turn="true"' not in recite_line
+        assert 'fresh_this_turn="true"' in arrived_line
+
+    def test_chat_extracted_evidence_is_fresh_on_the_turn_it_was_created(self):
+        """Not a carve-out from the data-scoped rule — an application of it.
+        Chat-extracted evidence has no file; its data IS the user's message,
+        and the message arrived on the turn the row was written."""
+        ev = _make_evidence(
+            summary="user typed this",
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_file_id=None,
+            collected_at_turn=9,
+        )
+        case = _make_case_with_evidence([ev])
+        case.current_turn = 9
+        result = _build_evidence_context(case)
+
+        line = next(line for line in result.splitlines() if ev.evidence_id in line)
+        assert "file_id=" not in line  # the Tier C render, not a file-backed one
+        assert 'fresh_this_turn="true"' in line
+
+    def test_an_unresolvable_source_file_falls_back_to_the_row_turn(self):
+        """``source_file_id`` set but no file row — a partially loaded
+        aggregate, or a file removed under the evidence. There is no upload
+        turn to read, so the row's own turn is the only turn known about it."""
+        ev = _make_evidence(
+            summary="dangling source",
+            collected_at_turn=9,
+            source_file_id="file_0c0c0c0c0c0c",
+        )
+        case = _make_case_with_evidence([ev])
+        case.current_turn = 9
+        case.uploaded_files = []  # the file the row points at is not loaded
+        result = _build_evidence_context(case)
+
+        line = next(line for line in result.splitlines() if ev.evidence_id in line)
+        assert "file_id=" not in line  # not renderable as file-backed
+        assert 'fresh_this_turn="true"' in line
+
+    def test_one_file_renders_the_same_freshness_as_either_element(self):
+        """The defect stated as an invariant: a file's freshness is a property
+        of the file, not of which element it happens to appear as this turn.
+        Before #512 the same unchanged turn-3 file carried no marker as
+        ``<uploaded_file>`` and ``fresh_this_turn="true"`` as ``<evidence>``."""
+        file_id = "file_0a0a0a0a0a01"
+
+        cited = _make_evidence(
+            summary="cited on turn 9",
+            collected_at_turn=9,
+            source_file_id=file_id,
+        )
+        case_cited = _make_case_with_evidence([cited])
+        case_cited.current_turn = 9
+        _set_file_turn(case_cited, file_id, 3)
+
+        # Same file, same turn, not yet promoted to an Evidence row.
+        case_orphan = _make_case_with_evidence([cited])
+        case_orphan.current_turn = 9
+        _set_file_turn(case_orphan, file_id, 3)
+        case_orphan.evidence = []
+
+        cited_line = next(
+            line
+            for line in _build_evidence_context(case_cited).splitlines()
+            if file_id in line
+        )
+        orphan_line = next(
+            line
+            for line in _build_evidence_context(case_orphan).splitlines()
+            if file_id in line
+        )
+        assert "<evidence" in cited_line and "<uploaded_file" in orphan_line
+        assert ('fresh_this_turn="true"' in cited_line) == (
+            'fresh_this_turn="true"' in orphan_line
+        )
+        assert 'fresh_this_turn="true"' not in cited_line
 
     def test_no_evidence_carries_fresh_when_current_turn_is_zero(self):
         # current_turn=0 (default) and collected_at_turn=1 — nothing is fresh

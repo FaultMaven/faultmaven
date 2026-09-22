@@ -1,8 +1,12 @@
 """Observation time must survive from the caller to the evidence row.
 
-The engine could only ever see WHEN THE AGENT LOOKED (``collected_at_turn``),
-never how old the observation was. So a two-hour-old alert forwarded into a
-case satisfied the symptom gate exactly as a live measurement would.
+The engine could only ever see A TURN NUMBER (``collected_at_turn`` — when the
+row was WRITTEN), never how old the observation was. So a two-hour-old alert
+forwarded into a case satisfied the symptom gate exactly as a live measurement
+would. (That turn number used to be described as "when the agent looked", and
+used to key ``fresh_this_turn``; #512 retired both — the attribute is keyed on
+when the DATA arrived, and the row's own turn answers only for chat-extracted
+evidence, whose data is the message.)
 
 ``Evidence.coverage_start_ts`` / ``coverage_end_ts`` and their DB index have
 existed since the case-timeline work, and the model docstring has always
@@ -201,6 +205,72 @@ def test_the_prompt_defines_the_pair_it_renders():
         assert "<uploaded_file>" in block
 
 
+def test_the_prompt_says_which_turn_fresh_this_turn_names():
+    """#512 keyed the attribute to when the item's DATA arrived. The model
+    cannot read it that way unless the prompt says which turn it names — and
+    the read that matters is the NEGATIVE one: a re-cited prior-turn file
+    carries no marker, and the model has to know that absence is the answer
+    rather than an omission. Without this clause the prompt still said "when
+    YOU received the item", which a model re-citing a turn-3 file on turn 9
+    can read either way."""
+
+    from faultmaven.core.investigation.prompts.templates import (
+        _EVIDENCE_GROUNDING_BLOCK,
+        INQUIRY_TEMPLATE,
+    )
+
+    for block in (INQUIRY_TEMPLATE, _EVIDENCE_GROUNDING_BLOCK):
+        assert "the turn it was UPLOADED" in block
+        assert "not the turn an evidence row cited it" in block
+
+
+@pytest.mark.parametrize(
+    "processing_mode", ["directed_analysis", "knowledge_query", "agent_meta"]
+)
+def test_every_mode_that_states_the_rule_also_states_the_definition(processing_mode):
+    """Driven through ``get_prompt_for_case``, not the template constants — the
+    seam is a ternary, and a substring test over the blocks cannot see it.
+
+    ``knowledge_query`` and ``agent_meta`` waive the EVIDENCE GROUNDING block,
+    which is where TIME ATTRIBUTES lived; the rule that CONSUMES the attribute
+    is unconditional in ``INVESTIGATION_BASE``, and both modes still render
+    ``<evidence_collected>`` with the attribute on it. So the model was handed
+    "no item carries fresh_this_turn → ask for the file" with nothing saying
+    which turn the attribute names — and the reading that matters is the
+    negative one, where a re-cited file carries nothing."""
+
+    from faultmaven.core.investigation.prompts.templates import get_prompt_for_case
+    from faultmaven.modules.case.contracts import CaseState, InquiryData
+    from faultmaven.modules.case.domain.models import Case
+
+    case = Case(
+        case_id="case_aabb11223344",
+        title="Nightly OOM kills",
+        description="postgres is OOM-killed every night around 02:00",
+        user_id="user_123",
+        enterprise_id="org_123",
+        state=CaseState.INVESTIGATING,
+        inquiry=InquiryData(
+            problem_statement_confirmed=True,
+            decided_to_investigate=True,
+            proposed_problem_statement="Nightly OOM kills",
+        ),
+        current_turn=6,
+    )
+    prompt = get_prompt_for_case(
+        case,
+        "what changed?",
+        processing_mode=processing_mode,
+        tools_available=True,
+    )
+
+    # Positive control: the consumer rule really is in every one of these
+    # prompts, or this test would pass by asserting nothing about two of them.
+    assert 'no attachment with fresh_this_turn="true"' in prompt
+    assert "the turn it was UPLOADED" in prompt
+    assert "not the turn an evidence row cited it" in prompt
+
+
 # -- the clock that makes all of the above interpretable ----------------------
 def test_prompt_states_the_current_time():
     """Without this the model cannot compute an age at all: its own sense of
@@ -242,9 +312,9 @@ def test_orphan_file_block_states_when_its_content_was_observed():
 
 
 def test_orphan_file_block_renders_both_halves_of_the_pair():
-    """``fresh_this_turn`` answers when the AGENT looked, ``observed_through``
-    how old the observation is. Emitting the first alone is what made a stale
-    alert read as current."""
+    """``fresh_this_turn`` answers when the item's DATA arrived (#512),
+    ``observed_through`` how old the observation is. Emitting the first alone
+    is what made a stale alert read as current."""
 
     posted = datetime.now(timezone.utc) - timedelta(hours=2)
     block = _orphan(_file(posted, posted))
