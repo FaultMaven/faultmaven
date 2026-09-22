@@ -221,8 +221,8 @@ def test_the_degrade_policy_is_keyed_on_the_profile_not_the_environment(
     ALL_ENVIRONMENTS,
     ids=[str(getattr(e, "value", e)) for e in ALL_ENVIRONMENTS],
 )
-@pytest.mark.parametrize("key", [None, "true", "false"])
-def test_a_cloud_deployment_pins_fail_closed_whatever_the_environment_and_key_say(
+@pytest.mark.parametrize("key", [None, "false"])
+def test_a_cloud_deployment_defaults_fail_closed_whatever_the_environment_says(
     monkeypatch, environment, key
 ):
     """The posture fm#1566 left alone, pinned so that leaving it alone is checked.
@@ -237,6 +237,10 @@ def test_a_cloud_deployment_pins_fail_closed_whatever_the_environment_and_key_sa
     explicit ``PROTECTION_PROFILE=cloud`` — the latter being how a self-hosted
     deployment that *does* run several replicas asks for the fleet posture
     without claiming cloud mode.
+
+    The key sweep stops at ``None`` and ``"false"`` because this is about the
+    **default**: an explicit ``PROTECTION_RATE_LIMIT_FAIL_OPEN=true`` overrides
+    it, which is the next test.
     """
     monkeypatch.delenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", raising=False)
     monkeypatch.delenv("PROTECTION_PROFILE", raising=False)
@@ -316,6 +320,42 @@ def test_an_explicit_hardened_profile_is_not_silently_upgraded_on_a_cloud_box(ca
     assert any(
         "hardened" in message and "cloud" in message for message in warnings
     ), f"the override was silent; warnings were {warnings}"
+
+
+@pytest.mark.parametrize(
+    "environment",
+    ALL_ENVIRONMENTS,
+    ids=[str(getattr(e, "value", e)) for e in ALL_ENVIRONMENTS],
+)
+def test_an_explicit_key_overrides_the_cloud_default(monkeypatch, environment):
+    """The escape hatch the ruling's third point asks for, on every profile.
+
+    > ``RATE_LIMIT_FAIL_OPEN`` exists as an explicit per-deployment override,
+    > so an operator who wants the other posture is not forced to lie about
+    > their profile.
+
+    The first implementation honoured that on two profiles and ignored it on
+    ``cloud``. Because the deployment shape can RAISE a profile to ``cloud``
+    without anybody writing it down (``DEPLOYMENT_MODE=cloud``), that left a
+    whole class of deployment — a cloud-mode process with no shared Redis,
+    which is what the tenancy integration suites are — with **no configuration
+    at all** that yields a working limiter: it answered 503 to every request.
+    A posture nobody can reach is not a posture, it is a dead end, and this is
+    the test that says the hatch is open.
+
+    Swept over every environment, because the override must not be a function
+    of the environment either.
+    """
+    monkeypatch.delenv("PROTECTION_PROFILE", raising=False)
+    monkeypatch.setenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", "true")
+
+    app, info = _install(environment, is_cloud_deployment=True)
+
+    assert info["protection_profile"] == "cloud", (
+        "the shape floor stopped applying; this test would then be measuring "
+        "the hardened profile's default rather than the cloud override"
+    )
+    assert _resolved_settings(app).fail_open_on_redis_error is True
 
 
 def test_a_cloud_deployment_cannot_arm_the_bypass_headers_by_naming_development(

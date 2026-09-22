@@ -543,7 +543,7 @@ def _installed_fail_open_on_redis_error(app) -> Optional[bool]:
     from ``PROTECTION_PROFILE`` or ``PROTECTION_RATE_LIMIT_FAIL_OPEN``, for the
     reason ``_rate_limiting_installed`` gives: a key states an intention and
     this states what is running. Three things can make them differ — the
-    ``cloud`` profile ignores the key, a caller-supplied ``ProtectionSettings``
+    ``cloud`` profile has the opposite default, a caller-supplied ``ProtectionSettings``
     bypasses both, and the profile itself is resolved from two inputs
     (``PROTECTION_PROFILE`` and ``DEPLOYMENT_MODE``) that an operator reading
     one of them cannot combine by eye.
@@ -1049,10 +1049,11 @@ async def get_env_config_status(
                 config_hint=(
                     "Decided by the protection profile (fm#1566), not by "
                     "ENVIRONMENT: the 'cloud' profile — PROTECTION_PROFILE="
-                    "cloud, or DEPLOYMENT_MODE=cloud — pins fail-closed and "
-                    "ignores the key; 'hardened' (the self-hosted default) and "
-                    "'development' honour PROTECTION_RATE_LIMIT_FAIL_OPEN, "
-                    "which defaults to true"
+                    "cloud, or DEPLOYMENT_MODE=cloud — defaults to "
+                    "fail-closed, 'hardened' (the self-hosted default) and "
+                    "'development' to fail-open. An explicitly set "
+                    "PROTECTION_RATE_LIMIT_FAIL_OPEN overrides the default on "
+                    "any of the three"
                 ),
             ),
             "llm_tracing": FeatureStatus(

@@ -18,9 +18,9 @@ through the composition root:
   headers, and ``cloud`` (also implied by ``DEPLOYMENT_MODE=cloud``) is the
   multi-replica fleet posture.
 * ``PROTECTION_RATE_LIMIT_FAIL_OPEN`` — the Redis degrade policy, read by
-  ``_fail_open_default`` and applied by ``resolve_rate_limit_fail_open``.
-  Honoured on the ``development`` and ``hardened`` profiles; the ``cloud``
-  profile pins fail-*closed* and ignores it (fm#1566).
+  ``_fail_open_default`` and applied by ``resolve_rate_limit_fail_open``. The
+  profile sets the DEFAULT — ``cloud`` fail-*closed*, the other two
+  fail-*open* — and this key, when set, overrides it on all three (fm#1566).
 * ``PROTECTION_TRUSTED_PROXIES`` — which proxies' forwarding headers may be
   believed, read by ``get_trusted_proxies``. Honoured by both presets, empty by
   default.
@@ -350,41 +350,64 @@ def resolve_rate_limit_fail_open(profile: ProtectionProfile) -> bool:
 
     Two answers, one per posture:
 
-    * ``CLOUD`` pins fail-**closed** and does not read the key. Unchanged by
-      fm#1566 and deliberately out of its scope: rung 2 is per-replica, so
-      during a shared-Redis outage a fleet of N replicas enforces N independent
-      copies of a limit whose configured value only means anything when it is
-      shared, and the trade a fleet wants is a 503 over a hole in a control that
-      is both a security and a cost boundary. The full argument is in
+    **The profile sets the DEFAULT; the key overrides it on every profile.**
+
+    * ``CLOUD`` defaults fail-**closed**. Unchanged by fm#1566 and deliberately
+      out of its scope: rung 2 is per-replica, so during a shared-Redis outage
+      a fleet of N replicas enforces N independent copies of a limit whose
+      configured value only means anything when it is shared, and the trade a
+      fleet wants is a 503 over a hole in a control that is both a security and
+      a cost boundary. The full argument is in
       ``get_production_protection_settings``' docstring.
-    * ``HARDENED`` and ``DEVELOPMENT`` honour ``PROTECTION_RATE_LIMIT_FAIL_OPEN``
-      (default ``true``), so a self-hosted operator who wants the other posture
-      sets one key rather than lying about their profile.
+    * ``HARDENED`` and ``DEVELOPMENT`` default fail-**open**.
+
+    ``PROTECTION_RATE_LIMIT_FAIL_OPEN``, when it is **set**, wins on all three.
+    That is the ruling's third point read as written — *"an explicit override,
+    so an operator who wants the other posture is not forced to lie about their
+    profile"* — and the first implementation of this function got it wrong by
+    honouring the key on two profiles and ignoring it on the third. Nothing
+    about the cloud posture moves: a cloud deployment that sets nothing still
+    fails closed, which is every cloud deployment there is. What changes is
+    that the posture is now *reachable*, and it has to be: since the deployment
+    shape can RAISE a profile to ``cloud`` on its own
+    (``DEPLOYMENT_MODE=cloud``), an unoverridable pin left a cloud-mode process
+    with no shared Redis — the tenancy integration suites are exactly that —
+    unable to obtain a working limiter by any configuration at all. It refused
+    every request with a 503 instead, which is how this was found.
 
     One decider, for the same reason ``_fail_open_default`` is one reader and
     ``resolve_protection_profile`` is one selector: no two producers of a
     ``ProtectionSettings`` may disagree about the posture the deployment asked
     for.
     """
-    if profile is ProtectionProfile.CLOUD:
-        if _fail_open_key() is not None:
-            # Never silently ignored. A key that is read on two of three
-            # profiles and inert on the third is exactly the "left looking
-            # configurable" class fm#985 items 12 and 16 closed; the cheapest
-            # correction is to say so where the operator is looking.
-            logger.warning(
-                "%s is set but ignored on the "
-                "'%s' protection profile, which pins the rate limiter "
-                "fail-CLOSED: a multi-replica fleet's degraded rung is "
-                "per-replica, so it is a floor rather than a substitute. "
-                "Remove the key, or run the 'hardened' profile if this "
-                "deployment is a single self-hosted replica.",
-                FAIL_OPEN_ENV_VAR,
-                profile.value,
-            )
+    if profile is ProtectionProfile.CLOUD and _fail_open_key() is None:
         return False
 
-    return _fail_open_default()
+    # ``_fail_open_default`` for every profile that gets this far, so the key
+    # has ONE interpretation. Spelling the comparison out again here — even
+    # as the same ``== "true"`` — would be the second reader this module
+    # forbids, and the two would have differed on the first attempt: this
+    # branch had a ``.strip()`` the other does not.
+    fail_open = _fail_open_default()
+
+    if profile is ProtectionProfile.CLOUD and fail_open:
+        # Only when the key actually MOVES the answer. An explicit ``false``
+        # agrees with the cloud default and says nothing worth a line; this is
+        # a fleet stepping off the posture its shape implies, which is worth
+        # one — the more so because the previous behaviour was to ignore the
+        # key outright, so an operator who set it and saw no effect needs to
+        # know that changed.
+        logger.warning(
+            "%s overrides the '%s' profile's fail-CLOSED default: this "
+            "deployment will serve unlimited rather than refuse on a Redis "
+            "outage. A multi-replica fleet's degraded rung is the per-replica "
+            "in-process stand-in, so it is a floor rather than a substitute "
+            "for a shared limit.",
+            FAIL_OPEN_ENV_VAR,
+            profile.value,
+        )
+
+    return fail_open
 
 
 #: The environment variable ``_fail_open_key`` reads, named for the same reason

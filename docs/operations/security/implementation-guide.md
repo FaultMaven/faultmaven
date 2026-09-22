@@ -124,12 +124,13 @@ Three keys do still reach the presets, and only these three:
    it runs. `hardened` (the default, and what anything unrecognised resolves
    to), `development`, or `cloud` (also implied by `DEPLOYMENT_MODE=cloud`).
    One reader, `config.protection.resolve_protection_profile`.
-2. `PROTECTION_RATE_LIMIT_FAIL_OPEN` — the Redis degrade policy. Read on the
-   `development` and `hardened` profiles; the `cloud` profile pins
-   fail-*closed* and ignores it, with a warning if it is set. Keyed on
-   `PROTECTION_PROFILE`, not on `ENVIRONMENT`, since fm#1566 — a self-hosted
-   box setting `ENVIRONMENT=production` is no longer moved to fail-closed on a
-   single replica.
+2. `PROTECTION_RATE_LIMIT_FAIL_OPEN` — the Redis degrade policy. The profile
+   sets the default (`cloud` fail-*closed*, `development` and `hardened`
+   fail-*open*) and this key overrides it on all three; overriding the
+   `cloud` default is logged at WARNING. Keyed on `PROTECTION_PROFILE`, not on
+   `ENVIRONMENT`, since fm#1566 — a self-hosted box setting
+   `ENVIRONMENT=production` is no longer moved to fail-closed on a single
+   replica.
 3. `PROTECTION_TRUSTED_PROXIES` — which proxies' `X-Forwarded-For` may be
    believed. Honoured by both presets; empty by default.
 

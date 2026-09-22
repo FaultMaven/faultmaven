@@ -250,11 +250,13 @@ def test_the_general_loaders_honour_the_fail_open_key_in_both_directions(
     assert loader().fail_open_on_redis_error is expected
 
 
-@pytest.mark.parametrize("env_value", ["true", "false", None])
-def test_the_cloud_profile_fails_closed_whatever_the_key_says(
-    cloud_discrete_credentials, monkeypatch, env_value
+@pytest.mark.parametrize(
+    "env_value,expected", [(None, False), ("false", False), ("true", True)]
+)
+def test_the_cloud_profile_defaults_fail_closed_and_the_key_overrides_it(
+    cloud_discrete_credentials, monkeypatch, env_value, expected
 ):
-    """A multi-replica fleet pins fail-closed, and no key value opens it.
+    """A multi-replica fleet DEFAULTS fail-closed; an explicit key overrides.
 
     **This test used to assert a different thing and went on passing through
     the change that made it wrong.** It was
@@ -269,10 +271,19 @@ def test_the_cloud_profile_fails_closed_whatever_the_key_says(
     to catch is measuring a constant.
 
     Re-pointed at the resolved posture, which is where the decision now lives.
-    ``cloud`` is the profile that keeps the pin, and the reason is unchanged:
-    rung 2 of the degrade ladder is the in-process FakeRedis stand-in, so N
-    replicas enforce N independent copies of a limit whose configured value
-    only means anything when it is shared. A floor, not a substitute.
+    ``cloud`` is the profile that keeps the fail-closed DEFAULT, and the reason
+    is unchanged: rung 2 of the degrade ladder is the in-process FakeRedis
+    stand-in, so N replicas enforce N independent copies of a limit whose
+    configured value only means anything when it is shared. A floor, not a
+    substitute.
+
+    The ``"true"`` leg is the correction to a first implementation that
+    ignored the key here entirely. Since ``DEPLOYMENT_MODE=cloud`` can raise a
+    profile to ``cloud`` on its own, an unoverridable pin left a cloud-mode
+    process with no shared Redis unable to obtain a working limiter by any
+    configuration — it answered 503 to everything, which is how it was found.
+    The ``None`` leg is what keeps "the cloud posture is unchanged" true: every
+    cloud deployment that sets nothing still fails closed.
     """
     if env_value is None:
         monkeypatch.delenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", raising=False)
@@ -280,9 +291,11 @@ def test_the_cloud_profile_fails_closed_whatever_the_key_says(
         monkeypatch.setenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", env_value)
     reset_settings()
 
-    assert resolve_rate_limit_fail_open(ProtectionProfile.CLOUD) is False, (
-        "the cloud profile honoured PROTECTION_RATE_LIMIT_FAIL_OPEN; a fleet's "
-        "degraded rung is per-replica and therefore a floor, not a substitute"
+    assert resolve_rate_limit_fail_open(ProtectionProfile.CLOUD) is expected, (
+        "the cloud profile's degrade policy moved: it defaults fail-closed "
+        "because a fleet's degraded rung is per-replica and therefore a floor "
+        "rather than a substitute, and an explicitly set "
+        "PROTECTION_RATE_LIMIT_FAIL_OPEN is what overrides that default"
     )
 
 

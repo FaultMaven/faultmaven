@@ -933,6 +933,11 @@ _PROBE_ENV_KEYS = (
     "SKIP_SERVICE_CHECKS",
     "OAUTH_ENABLED",
     "ENVIRONMENT",
+    # Both pinned below rather than inherited. A key set by the fixture and
+    # missing from this tuple is a key the teardown cannot put back, which is
+    # the same session-wide leak the tuple exists to prevent.
+    "CORS_ALLOW_ORIGINS",
+    "PROTECTION_RATE_LIMIT_FAIL_OPEN",
 )
 
 
@@ -1194,29 +1199,64 @@ def probe_app():
     # built — so an ambient ``ENVIRONMENT=production`` would drop
     # ``/debug/cases/{case_id}/causal-graph`` from the live set and the
     # inventory's stale-entry half would fail for a reason that has nothing to do
-    # with tenancy. Pinning it also fixes the protection preset, so the module
-    # does not inherit a different rate-limit shape per machine.
+    # with tenancy.
     os.environ["ENVIRONMENT"] = "development"
+
+    # ``ENVIRONMENT=development`` no longer carries the protection and CORS
+    # shape with it, so the two things this fixture needs from that shape are
+    # declared (fm#1566). ``DEPLOYMENT_MODE=cloud`` above raises the protection
+    # profile to ``cloud`` whatever the environment is called — deliberately,
+    # because a fleet must not be loosened by naming a development environment
+    # — and this app is a cloud-mode app in every respect but one: it has no
+    # Redis. Left undeclared, both of those bite:
+    #
+    #   * the limiter would pin fail-CLOSED, which also disables the
+    #     per-replica in-process stand-in, so every request in this module
+    #     would be answered 503 "Rate limiting service unavailable" rather
+    #     than reaching the tenancy checks it exists to make;
+    #   * the shipped-default CORS origins carry ``chrome-extension://*``, and
+    #     a deployed box refuses to boot on a wildcard — so ``rebuild_app()``
+    #     would raise, and because that happens BEFORE the ``yield`` the
+    #     restore below would never run and this module's cloud/multi/limited
+    #     environment would leak into every later test in the session.
+    #
+    # Both are the honest declaration rather than a workaround: a cloud
+    # deployment configures its own origins, and one with no shared Redis has
+    # to say which way it degrades.
+    os.environ["CORS_ALLOW_ORIGINS"] = '["https://app.probe.invalid"]'
+    os.environ["PROTECTION_RATE_LIMIT_FAIL_OPEN"] = "true"
 
     from faultmaven.config.settings import reset_settings
     from faultmaven.infrastructure.persistence.database import reset_engine
     from tests.integration._app_rebuild import rebuild_app
 
-    reset_settings()
-    reset_engine()
-    app = rebuild_app()
-    _wire_services(app, _fresh_chroma())
+    # ``try``/``finally`` around the build as well as the yield, not just the
+    # yield. The restore is load-bearing across MODULES — the docstring above
+    # says so — and a bare post-yield restore does not run when the setup
+    # raises, so any failure between here and the ``yield`` leaves
+    # ``DEPLOYMENT_MODE=cloud``, ``TENANT_PROVIDER=multi`` and the LIMITED
+    # ``DATABASE_URL`` set for the rest of the session. Measured: one
+    # ``rebuild_app()`` refusal produced 121 setup errors here and then 18
+    # unrelated failures in ``test_postgresql_repository_roundtrip.py``, all
+    # reported as "new row violates row-level security policy" — a signature
+    # that points nowhere near the actual cause. That file passes alone on the
+    # same commit.
+    try:
+        reset_settings()
+        reset_engine()
+        app = rebuild_app()
+        _wire_services(app, _fresh_chroma())
 
-    yield SimpleNamespace(app=app, superuser_url=superuser_url)
-
-    for key, value in saved.items():
-        if value is None:
-            os.environ.pop(key, None)
-        else:
-            os.environ[key] = value
-    reset_settings()
-    reset_engine()
-    asyncio.run(drop_limited_role(superuser_url, _LIMITED_ROLE))
+        yield SimpleNamespace(app=app, superuser_url=superuser_url)
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        reset_settings()
+        reset_engine()
+        asyncio.run(drop_limited_role(superuser_url, _LIMITED_ROLE))
 
 
 # =============================================================================

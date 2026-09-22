@@ -307,11 +307,17 @@ def test_the_cloud_profile_still_pins_fail_closed():
     the per-replica stand-in. Read from ``resolve_rate_limit_fail_open``, which
     is where the decision moved, so a future unpinning has to edit this file.
     """
+    import os
+
     from faultmaven.config.protection import (
         ProtectionProfile,
         resolve_rate_limit_fail_open,
     )
 
+    assert os.getenv("PROTECTION_RATE_LIMIT_FAIL_OPEN") is None, (
+        "this asserts the DEFAULT, so the key must be unset; an ambient value "
+        "would make both legs below measure the override instead"
+    )
     assert resolve_rate_limit_fail_open(ProtectionProfile.CLOUD) is False
 
     # And the half that DID move, asserted beside it so this file states the

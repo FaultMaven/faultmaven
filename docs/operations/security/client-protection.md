@@ -396,8 +396,8 @@ ENVIRONMENT=production
 
 # Degrade policy for rate limiting and deduplication when Redis is
 # unreachable. Governs nothing else — in particular not PII redaction.
-# Read on the `development` and `hardened` profiles; the `cloud` profile pins
-# it closed and warns if this key is set.
+# The profile sets the default (`cloud` closed, the other two open); this key
+# overrides it on all three, and overriding `cloud` is logged at WARNING.
 PROTECTION_RATE_LIMIT_FAIL_OPEN=true
 
 # Proxies whose X-Forwarded-For may be believed when deciding which client a
@@ -464,6 +464,13 @@ value only means anything when it is shared. That is a floor, not a substitute.
 A **self-hosted deployment that runs more than one replica** is in the same
 position and should say so, with either `PROTECTION_PROFILE=cloud` or
 `PROTECTION_RATE_LIMIT_FAIL_OPEN=false`.
+
+The table gives each profile's **default**. `PROTECTION_RATE_LIMIT_FAIL_OPEN`,
+when set, overrides it on any of the three — including `cloud`, which logs the
+override at WARNING. That hatch matters because `DEPLOYMENT_MODE=cloud` raises
+the profile on its own: without it, a cloud-mode process with no reachable
+Redis has no configuration at all that yields a serving limiter, and answers
+`503` to everything.
 
 ### Preflight OPTIONS are not metered in-process
 

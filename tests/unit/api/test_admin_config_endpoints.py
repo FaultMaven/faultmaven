@@ -966,14 +966,17 @@ class TestGetEnvConfigStatus:
 
         Both answers are exercised through the real install path, because the
         point of reading it off ``user_middleware`` is that it cannot disagree
-        with what runs: the ``cloud`` profile ignores
-        ``PROTECTION_RATE_LIMIT_FAIL_OPEN``, so a report derived from the key
-        would say "fails open" about a fleet that refuses.
+        with what runs. The KEY IS UNSET here, deliberately: these are the two
+        profiles' defaults, and the two boxes differ only in
+        ``is_cloud_deployment``. A report derived from configuration would have
+        to combine ``PROTECTION_PROFILE`` (unset) with ``DEPLOYMENT_MODE`` to
+        get either answer, which is the combination no operator can do by eye
+        and the reason this field is read off the installed middleware.
         """
         from faultmaven.api.protection import setup_protection_middleware
 
         monkeypatch.delenv("PROTECTION_PROFILE", raising=False)
-        monkeypatch.setenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", "true")
+        monkeypatch.delenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", raising=False)
 
         self_hosted = FastAPI()
         setup_protection_middleware(self_hosted, environment=Environment.PRODUCTION)
@@ -998,7 +1001,8 @@ class TestGetEnvConfigStatus:
         closed_posture = fleet_result.features["request_protection_fails_open"]
         assert closed_posture.enabled is False, (
             "a cloud fleet was reported as failing open while its installed "
-            "limiter pins fail-closed — the key was reported, not the limiter"
+            "limiter defaults fail-closed — the key was reported, not the "
+            "limiter"
         )
         assert "503" in closed_posture.description
 

@@ -98,10 +98,12 @@ service-wide 503 — a coupling neither policy asked for.
 ### The cloud profile fails closed
 
 `resolve_rate_limit_fail_open` returns `False` for `ProtectionProfile.CLOUD`
-and does not read `PROTECTION_RATE_LIMIT_FAIL_OPEN`. It is the only profile
-that pins the policy, and it is selected by `PROTECTION_PROFILE=cloud` or by
+when `PROTECTION_RATE_LIMIT_FAIL_OPEN` is unset — which is every cloud
+deployment that has not said otherwise. It is the only profile whose default
+is closed, and it is selected by `PROTECTION_PROFILE=cloud` or by
 `DEPLOYMENT_MODE=cloud` — a multi-replica fleet, not merely a box that calls
-itself production.
+itself production. An explicitly set key overrides that default, and the
+override is logged at WARNING.
 
 Defaulting production open would rest on the claim that rung 3 is nearly
 unreachable because rungs 1 and 2 enforce limits first. **That claim is false
@@ -123,10 +125,10 @@ a security *and* cost control, and the trade-off against a total API outage is
 only answerable once the intermediate rungs limit anything. Revisit this pin
 then — not before.
 
-The `development` and `hardened` profiles honour
-`PROTECTION_RATE_LIMIT_FAIL_OPEN` (default `true`), which is what removes the
-hardcode; `cloud` opts out explicitly rather than by omission, and says so in
-a warning when the key is set on it.
+The `development` and `hardened` profiles default to fail-open, which is what
+removes the hardcode; `cloud` defaults the other way, explicitly rather than
+by omission. All three read `PROTECTION_RATE_LIMIT_FAIL_OPEN` when it is set,
+and an override of the `cloud` default says so at WARNING.
 
 **Initialization latches in neither direction.** A failed
 `RateLimitMiddleware._initialize` leaves `_initialized` false so a later
