@@ -180,10 +180,6 @@ class TestObservabilityIntegration:
         traced_methods = [
             ("process_turn", InvestigationService.process_turn),
             ("get_progress", InvestigationService.get_progress),
-            (
-                "transition_to_investigating",
-                InvestigationService.transition_to_investigating,
-            ),
             ("close_case", CaseService.close_case),
         ]
 

@@ -1508,7 +1508,19 @@ class InquiryResponse(BaseInteractionResponse):
         # signal at the structured-output parse step instead of
         # tightening the schema.
         problem_confirmation: Optional[ProblemConfirmation] = None
-        proposed_problem_statement: Optional[str] = None
+        proposed_problem_statement: Optional[str] = Field(
+            default=None,
+            description=(
+                "The problem being investigated, in ONE sentence: symptom, "
+                "scope, and temporal state (ongoing or historical). Set it "
+                "only when you are proposing that problem to the user for "
+                "confirmation — it is what they are asked to confirm, and on "
+                "confirmation it becomes the case description and the frame "
+                "for the whole investigation. Never a diagnostic procedure, a "
+                "next step, or a remedy; those are not problems. Leave unset "
+                "while still clarifying what is wrong."
+            ),
+        )
         preliminary_urgency: Optional[PreliminaryUrgency] = None
         knowledge_match: Optional[KnowledgeMatch] = None
         knowledge_resolution: Optional[KnowledgeResolution] = None

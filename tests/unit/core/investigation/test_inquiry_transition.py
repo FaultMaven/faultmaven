@@ -438,6 +438,10 @@ class TestInquiryTransitionLogic:
                         "is_incident_report": True,
                         "impact_assessment": "Customer payments failing, revenue impact",
                     },
+                    "proposed_problem_statement": (
+                        "Payment processing is failing, blocking customer "
+                        "purchases (ongoing)"
+                    ),
                 },
             }
         )
@@ -451,6 +455,10 @@ class TestInquiryTransitionLogic:
         # Verify stays in INQUIRY (user hasn't confirmed yet)
         updated_case = result["case_updated"]
         assert updated_case.state == CaseState.INQUIRY
+        # The case must be AWAITING confirmation of a presented statement —
+        # without this the assertions below pass for the trivial reason that
+        # nothing was ever proposed, and the scenario goes unexercised.
+        assert updated_case.inquiry.proposed_problem_statement is not None
         assert updated_case.inquiry.problem_statement_confirmed is False
         assert updated_case.inquiry.decided_to_investigate is False
 
@@ -609,6 +617,9 @@ class TestInquiryTransitionLogic:
                         "is_incident_report": True,
                         "impact_assessment": "Users getting 503 errors",
                     },
+                    "proposed_problem_statement": (
+                        "API returning 503 errors affecting users (ongoing)"
+                    ),
                 },
             }
         )
@@ -619,6 +630,12 @@ class TestInquiryTransitionLogic:
         )
         case_after_turn1 = result1["case_updated"]
         assert case_after_turn1.state == CaseState.INQUIRY
+        # Turn 2 is a CORRECTION, so turn 1 must have produced something to
+        # correct; otherwise the decline path below is never exercised.
+        assert (
+            case_after_turn1.inquiry.proposed_problem_statement
+            == "API returning 503 errors affecting users (ongoing)"
+        )
 
         # Turn 2: User corrects the problem statement
         mock_response_turn2 = json.dumps(
@@ -1212,8 +1229,31 @@ class TestProblemStatementSingleWriter:
     """
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "urgency",
+        [
+            pytest.param(
+                {
+                    "level": "MEDIUM",
+                    "is_ongoing": True,
+                    "is_incident_report": False,
+                    "impact_assessment": "Not yet established.",
+                },
+                id="benign",
+            ),
+            pytest.param(
+                {
+                    "level": "CRITICAL",
+                    "is_ongoing": True,
+                    "is_incident_report": True,
+                    "impact_assessment": "All users blocked.",
+                },
+                id="incident",
+            ),
+        ],
+    )
     async def test_problem_confirmation_alone_mints_no_statement(
-        self, mock_llm, mock_repo, inquiry_case
+        self, mock_llm, mock_repo, inquiry_case, urgency
     ):
         """Classifying the problem does NOT propose a statement.
 
@@ -1221,6 +1261,12 @@ class TestProblemStatementSingleWriter:
         one. A turn that classifies (``problem_confirmation`` +
         ``preliminary_urgency``) without proposing leaves the statement unset,
         so Gate 1 stays shut.
+
+        Both urgency shapes are exercised because they take different arms in
+        ``_apply_inquiry_updates``: the benign one only logs, while the
+        CRITICAL/ongoing/incident one is the branch a future change is most
+        likely to touch — and the branch where a statement-less case would be
+        presented to the user as a confirmable incident.
         """
         engine = MilestoneEngine(
             mock_llm,
@@ -1238,12 +1284,7 @@ class TestProblemStatementSingleWriter:
                         "problem_type": "error",
                         "severity_guess": "unknown",
                     },
-                    "preliminary_urgency": {
-                        "level": "MEDIUM",
-                        "is_ongoing": True,
-                        "is_incident_report": False,
-                        "impact_assessment": "Not yet established.",
-                    },
+                    "preliminary_urgency": urgency,
                 },
             }
         )
@@ -1255,20 +1296,30 @@ class TestProblemStatementSingleWriter:
         assert updated_case.state == CaseState.INQUIRY
         assert updated_case.inquiry.problem_statement_confirmed is False
 
-        # Gate 1 is a pure function of the statement, so it must stay shut.
+        # Surface check, not a restatement of the line above: this pins the
+        # wiring from state to affordance, so a Gate 1 keyed off anything
+        # other than the statement would still be caught here.
         labels = {
             (f or {}).get("label") for f in (result.get("suggested_follow_ups") or [])
         }
         assert "Yes, let's investigate" not in labels
 
     def test_apply_inquiry_updates_assigns_the_statement_exactly_once(self):
-        """Source-level pin: one assignment target, not two.
+        """Source-level pin: one write, whatever shape it takes.
 
         The behavioural test above only catches a promotion that fires on the
-        shape it exercises. This one catches ANY second writer, whatever
-        guards it. Mutation check: add a second assignment to
-        ``case.inquiry.proposed_problem_statement`` in ``_apply_inquiry_updates``
-        and this goes red.
+        shapes it exercises. This one catches any second WRITE, including ones
+        that reach the attribute through a local alias
+        (``_inq = case.inquiry; _inq.proposed_problem_statement = ...``), a
+        tuple unpack, an augmented assignment, or ``setattr``.
+
+        Matching on ``ast.Store`` context rather than on the base expression is
+        what makes that true: every assignment form marks its target attribute
+        Store, so none of them can slip past by renaming the base.
+
+        Mutation check: add any second write of
+        ``proposed_problem_statement`` to ``_apply_inquiry_updates`` and this
+        goes red.
         """
         import ast
         import inspect
@@ -1277,24 +1328,31 @@ class TestProblemStatementSingleWriter:
         src = textwrap.dedent(inspect.getsource(MilestoneEngine._apply_inquiry_updates))
         tree = ast.parse(src)
 
-        def is_statement_target(node):
-            return (
-                isinstance(node, ast.Attribute)
-                and node.attr == "proposed_problem_statement"
-                and isinstance(node.value, ast.Attribute)
-                and node.value.attr == "inquiry"
-            )
-
         writes = [
             node
             for node in ast.walk(tree)
-            if isinstance(node, ast.Assign)
-            for target in node.targets
-            if is_statement_target(target)
+            if isinstance(node, ast.Attribute)
+            and node.attr == "proposed_problem_statement"
+            and isinstance(node.ctx, ast.Store)
         ]
 
+        setattr_writes = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "setattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value == "proposed_problem_statement"
+        ]
+
+        assert not setattr_writes, (
+            f"setattr write of proposed_problem_statement at lines "
+            f"{[n.lineno for n in setattr_writes]}"
+        )
         assert len(writes) == 1, (
-            f"expected exactly 1 writer of case.inquiry.proposed_problem_statement "
-            f"in _apply_inquiry_updates, found {len(writes)} "
+            f"expected exactly 1 write of proposed_problem_statement in "
+            f"_apply_inquiry_updates, found {len(writes)} "
             f"at lines {[w.lineno for w in writes]}"
         )

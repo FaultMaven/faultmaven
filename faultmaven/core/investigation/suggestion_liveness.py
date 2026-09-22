@@ -31,10 +31,12 @@ wrong (it claimed "one mechanism answers both"):
   age bound does answer this — and, since fm#918, the one such writer that
   ANSWERS a clarification question (``reclassify_evidence``) retires it
   exactly rather than waiting for the window, because the age bound is a bound
-  and not a correction. The others of this shape — ``close_case``,
-  ``transition_to_investigating``, ``case_service.add_message`` — answer no
-  question and have nothing to retire, so for them the age bound is the whole
-  mechanism.
+  and not a correction. The others of this shape — ``close_case`` and
+  ``case_service.add_message`` — answer no question and have nothing to
+  retire, so for them the age bound is the whole mechanism.
+  (``transition_to_investigating`` was a third until #1606 deleted it: a
+  dead public writer that minted ``proposed_problem_statement`` from a
+  caller-supplied string, bypassing the Gate 1 handshake entirely.)
 - A **mid-turn save** is NOT answered by the age bound. Measured: the two saves
   that can commit a row mid-turn run BEFORE the turn is recorded, so the row
   carries N-1 in the persisted counter *and* a stamp of N-1 — age 1, inside

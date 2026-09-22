@@ -90,6 +90,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     evidence_suggestion_unlinked_total,
     hypothesis_dedup_skipped_total,
     hypothesis_root_adoption_refused_total,
+    inquiry_classified_without_statement_total,
     inquiry_handshake_deferred_total,
     inquiry_handshake_recovered_total,
     narration_overclaim_total,
@@ -10054,8 +10055,14 @@ class MilestoneEngine:
         # confirmation became ``case.description`` and the frame for the whole
         # investigation. Removed together with the field (#1606); a statement
         # is now only ever what the model deliberately wrote as one.
+        #
+        # What the promotion hid is now COUNTED rather than papered over: a
+        # turn that classified the problem but proposed nothing leaves Gate 1
+        # shut, so a user confirmation on it commits nothing.
+        if updates.problem_confirmation and not case.inquiry.proposed_problem_statement:
+            inquiry_classified_without_statement_total.inc()
 
-        # STAGE 2: Two-Step Confirmation (Design Doc Section 1.2)
+        # Two-Step Confirmation (Design Doc Section 1.2)
         #
         # The design requires explicit user confirmation before INQUIRY → INVESTIGATING.
         # Auto-confirm is NOT used — even for CRITICAL/HIGH urgency issues.
