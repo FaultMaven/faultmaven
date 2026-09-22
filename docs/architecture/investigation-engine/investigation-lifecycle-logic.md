@@ -85,7 +85,10 @@ Confirmations reduce errors but create friction. Use conditional logic:
 
 **Two-Step Confirmation Flow** (when required):
 
-1. Agent presents what will happen (problem statement, action, etc.)
+1. The statement is presented — for Gate 1 the **engine** does this, composing
+   the standing `proposed_problem_statement` into the reply beside the
+   confirm/refine pair on every pending turn (INV-01). The LLM's job is to keep
+   the field right; it does not present and does not ask.
 2. User explicitly confirms with Yes/No buttons or typed response
 
 **Natural flow (Section 1.2)**:
@@ -95,12 +98,28 @@ Confirmations reduce errors but create friction. Use conditional logic:
 - Turn N+1: User clicks [Yes] or types confirmation
 - Turn N+1 response: Agent transitions status
 
-**Deferred recovery (when the LLM tries to collapse the handshake)**:
+**Consent arriving with a statement write** — two different shapes, two
+different answers (INV-01):
 
-- Turn N: LLM emits proposed_problem_statement AND `user_confirmed_investigation=True` in one shot
-- Engine: same-turn-confirmation guard rejects (see INV-01); sets `handshake_deferred_at_turn = N`
-- Turn N+1 context: `<inquiry_state>` switches from `NOT_YET_CONFIRMED` to `HANDSHAKE_DEFERRED` — LLM is told to re-present
-- Turn N+1 response: engine deterministically attaches the [Yes/No] confirmation suggestions, so the user has a clickable path regardless of LLM compliance with the re-present instruction
+- *First write + confirm in one shot.* Nothing stood for the user to have
+  seen, so the consent is **refused** by `gate1_statement_is_confirmable`. The
+  statement is kept, because the next turn needs something to present.
+  Turn N+1 then does nothing special, which is the point: Gate 1 is still
+  pending, so the engine composes the statement and offers the pair exactly as
+  it does on every pending turn.
+- *Revision + confirm in one shot.* A statement the user saw already stood, so
+  the consent is honoured — against **that** wording. The revision is
+  **dropped**, not applied. Refusing here instead would loop: the engine would
+  re-present the reword, the user would say yes again, and a model that
+  re-emits the field with cosmetic edits would reword again, forever. This is
+  also what protects the DECIDE click, where section 0c commits Gate 1 *before*
+  the LLM call and the same-turn rewording would otherwise reach
+  `case.description` through `_transition_to_investigating`.
+
+There is no recovery FLAG and no recovery turn. `handshake_deferred_at_turn`
+existed to tell the following turn to re-present — a proxy for "the user has
+not seen this", needed only while presentation was the LLM's job. It was
+retired with the fork it selected (#1607).
 
 **Manual flow (Section 1.5)**:
 
@@ -856,10 +875,11 @@ The engine's `status_transition` handler (in `_process_turn_impl`) branches by t
 status. Each branch honors the User-Agent Handshake — none of them auto-execute.
 
 **→ INVESTIGATING (from INQUIRY)**: falls through to the normal INQUIRY LLM pipeline.
-The LLM presents the existing problem statement for confirmation. When the LLM sets
-`user_confirmed_investigation=True` on a subsequent turn (gated by the same-turn
-guard — the statement must have been presented on a prior turn), the transition
-fires via `_check_automatic_transitions`.
+If a statement stands, the **engine** presents it for confirmation (INV-01) — this
+branch does not depend on the LLM doing so. If none stands, none is invented: the
+agent asks what is failing, Gate 1 stays shut, and no confirmation affordance is
+offered. When `user_confirmed_investigation=True` arrives on a later turn, gated by
+`gate1_statement_is_confirmable`, the transition fires via `_check_automatic_transitions`.
 
 **→ CLOSED (from INQUIRY or INVESTIGATING)**: the engine calls `propose_transition`
 directly, returns a closure-readiness summary plus the canonical Yes/No confirmation

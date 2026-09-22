@@ -806,15 +806,17 @@ class TestInquiryTransitionLogic:
 
 
 class TestContextBuilderConfirmationInjection:
-    """Tests for Fix 2: AWAITING_CONFIRMATION replaced with NOT_YET_CONFIRMED.
+    """The ``<inquiry_state>`` block carries ONE rule, not a fork.
 
-    When a proposed_problem_statement exists but is not confirmed, the context
-    builder should inject NOT_YET_CONFIRMED (not AWAITING_CONFIRMATION) to prevent
-    the LLM from re-evaluating confirmation every turn.
+    It used to alternate between NOT_YET_CONFIRMED ("do NOT re-propose it")
+    and HANDSHAKE_DEFERRED ("RE-PRESENT it verbatim") because PRESENTING the
+    statement was the LLM's job and the prompt had to say, turn by turn,
+    whether this was a presenting turn. The engine presents now (#1607), so
+    the LLM is told once: the statement is already on screen, don't restate it.
     """
 
-    def test_not_yet_confirmed_injected_when_unconfirmed(self):
-        """Context builder outputs NOT_YET_CONFIRMED for unconfirmed problem statement."""
+    def test_engine_presents_rule_injected_when_unconfirmed(self):
+        """An unconfirmed statement gets the engine-presents directive."""
         from faultmaven.core.investigation.prompts.context_builder import (
             build_investigation_context,
         )
@@ -834,20 +836,21 @@ class TestContextBuilderConfirmationInjection:
         )
 
         context = build_investigation_context(case, user_message="test message")
-
-        # Check all values in the returned dict for the markers
         context_str = str(context.values())
-        assert "NOT_YET_CONFIRMED" in context_str
+
+        assert "ENGINE_PRESENTS_THIS" in context_str
+        # The retired fork must not come back in either direction.
+        assert "HANDSHAKE_DEFERRED" not in context_str
         assert "AWAITING_CONFIRMATION" not in context_str
 
-    def test_not_yet_confirmed_states_prior_turn_fact_not_present_tense(self):
-        """NOT_YET_CONFIRMED must describe the case as it ENTERED the turn, not
-        assert a present-tense "the user has not confirmed it yet" — which is
-        false on the very turn the user confirms and mis-primes the model to
-        keep waiting. The block still suppresses re-proposing and adds NO
-        confirmation-detection directive (detection lives in the static
-        TWO-STEP CONFIRMATION prose + the user_confirmed_investigation schema
-        field)."""
+    def test_block_states_prior_turn_fact_not_present_tense(self):
+        """The block describes the case as it ENTERED the turn.
+
+        A present-tense "the user has not confirmed it yet" is false on the
+        very turn they do confirm, and mis-primes the model to keep waiting.
+        Confirmation DETECTION lives in the static TWO-STEP CONFIRMATION prose
+        and the ``user_confirmed_investigation`` schema field, not here.
+        """
         from faultmaven.core.investigation.prompts.context_builder import (
             build_investigation_context,
         )
@@ -869,15 +872,14 @@ class TestContextBuilderConfirmationInjection:
         context = build_investigation_context(case, user_message="test message")
         normalized = " ".join(str(context.values()).split())
 
-        # Prior-turn framing present; the false present-tense absolute gone.
         assert "unconfirmed going into this turn" in normalized
         assert "has not confirmed it yet" not in normalized, (
-            "NOT_YET_CONFIRMED re-asserts the present-tense 'has not confirmed "
-            "it yet' fact that is false on the confirming turn."
+            "the block re-asserts the present-tense 'has not confirmed it yet' "
+            "fact that is false on the confirming turn."
         )
 
     def test_no_injection_when_confirmed(self):
-        """No NOT_YET_CONFIRMED injection when problem statement is confirmed."""
+        """A confirmed statement gets no directive — Gate 1 is closed."""
         from faultmaven.core.investigation.prompts.context_builder import (
             build_investigation_context,
         )
@@ -897,183 +899,163 @@ class TestContextBuilderConfirmationInjection:
         )
 
         context = build_investigation_context(case, user_message="test message")
-
         context_str = str(context.values())
-        assert "NOT_YET_CONFIRMED" not in context_str
+
+        assert "ENGINE_PRESENTS_THIS" not in context_str
         assert "AWAITING_CONFIRMATION" not in context_str
 
 
-class TestHandshakeDeferredRecovery:
-    """Pinning tests for the recovery path after the same-turn-confirmation guard fires.
+@pytest.mark.unit
+class TestGate1PresentsItsStatement:
+    """INV-01: a Gate-1 turn ships its statement with its buttons.
 
-    The guard at _apply_inquiry_updates rejects the same-turn collapse and sets
-    case.inquiry.handshake_deferred_at_turn. On the NEXT turn, two things must
-    happen so the user has a deterministic recovery path:
-
-    1. context_builder switches the inquiry_state block from NOT_YET_CONFIRMED
-       ("don't re-propose") to HANDSHAKE_DEFERRED (re-present + ask).
-    2. The engine emits confirmation suggestions deterministically, even if the
-       LLM disobeys the prompt and fails to surface its own confirmation pair.
+    The affordances ask the user to confirm a problem statement, so the
+    statement has to be on screen on the same turn. Two production cases
+    proved the prompt cannot be relied on to put it there, so the engine
+    composes it — on EVERY pending turn, which is also what makes the old
+    deferral/recovery flag unnecessary.
     """
 
-    def test_handshake_deferred_block_injected_on_recovery_turn(self):
-        """Context builder injects HANDSHAKE_DEFERRED on turn following guard fire."""
-        from faultmaven.core.investigation.prompts.context_builder import (
-            build_investigation_context,
-        )
-
-        # Guard fired on turn 3; we're now processing turn 4.
-        case = Case(
-            case_id="case_1234567890ab",
-            title="Test",
-            state=CaseState.INQUIRY,
-            user_id="user_123",
-            enterprise_id="org_123",
-            description="",
-            current_turn=4,
-            inquiry=InquiryData(
-                thread_id="thread_123",
-                proposed_problem_statement="API timeout errors affecting users",
-                problem_statement_confirmed=False,
-                handshake_deferred_at_turn=3,
-            ),
-        )
-
-        context = build_investigation_context(case, user_message="anything")
-
-        context_str = str(context.values())
-        assert "HANDSHAKE_DEFERRED" in context_str, (
-            "Recovery-turn prompt did not include HANDSHAKE_DEFERRED — LLM has "
-            "no signal to re-present the statement."
-        )
-        assert "NOT_YET_CONFIRMED" not in context_str, (
-            "Recovery-turn prompt still includes NOT_YET_CONFIRMED — the two "
-            "blocks are mutually exclusive and the guard's deferral assumption "
-            "depends on the LLM being told to re-present, not to stay quiet."
-        )
-
-    def test_not_yet_confirmed_block_used_when_flag_is_stale(self):
-        """Stale flag (older than one turn) falls back to NOT_YET_CONFIRMED."""
-        from faultmaven.core.investigation.prompts.context_builder import (
-            build_investigation_context,
-        )
-
-        # Guard fired on turn 3; recovery turn 4 has come and gone; we're on turn 5.
-        # The flag is stale and the default NOT_YET_CONFIRMED behavior resumes.
-        case = Case(
-            case_id="case_1234567890ab",
-            title="Test",
-            state=CaseState.INQUIRY,
-            user_id="user_123",
-            enterprise_id="org_123",
-            description="",
-            current_turn=5,
-            inquiry=InquiryData(
-                thread_id="thread_123",
-                proposed_problem_statement="API timeout errors affecting users",
-                problem_statement_confirmed=False,
-                handshake_deferred_at_turn=3,
-            ),
-        )
-
-        context = build_investigation_context(case, user_message="anything")
-
-        context_str = str(context.values())
-        assert "NOT_YET_CONFIRMED" in context_str
-        assert "HANDSHAKE_DEFERRED" not in context_str
-
     @pytest.mark.asyncio
-    async def test_deterministic_confirmation_suggestions_on_recovery_turn(
+    async def test_statement_is_composed_into_a_pending_turn(
         self, mock_llm, mock_repo, inquiry_case
     ):
-        """Engine emits confirmation suggestions on the recovery turn even when
-        the LLM ignores HANDSHAKE_DEFERRED and emits no suggestions of its own.
+        """The standing statement appears verbatim beside the confirm pair.
 
-        This is the Code-guarded backstop — the user must have a clickable path
-        regardless of LLM compliance with the re-present instruction.
+        The LLM answers something unrelated and never mentions the statement —
+        the exact shape of the production defect. The engine supplies it.
+
+        Mutation check: delete the gate1 composition block in
+        ``_process_turn_impl`` and this goes red.
         """
-        engine = MilestoneEngine(
-            mock_llm,
-            mock_repo,
-            investigation_tools=MagicMock(),
+        statement = "Checkout API returns 503 for all users since 14:00 UTC"
+        inquiry_case.inquiry.proposed_problem_statement = statement
+        inquiry_case.inquiry.problem_statement_confirmed = False
+
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        mock_llm.generate.return_value = json.dumps(
+            {
+                "agent_response": "Kubernetes RBAC denies a request when no rule matches.",
+                "state_updates": {},
+            }
         )
 
-        # The engine assumes current_turn was incremented by investigation_service
-        # before each process_turn call (see milestone_engine.py:1574). Simulate that.
-        inquiry_case.current_turn = 1
+        result = await engine.process_turn(inquiry_case, "What does a 403 mean?")
 
-        # Turn 1: LLM one-shots — guard will fire.
-        mock_response_turn1 = json.dumps(
+        assert statement in result["agent_response"], (
+            "Gate 1 served its confirm/refine pair without the statement the "
+            "pair refers to."
+        )
+        labels = {
+            (f or {}).get("label") for f in (result.get("suggested_follow_ups") or [])
+        }
+        assert "Yes, let's investigate" in labels
+
+    @pytest.mark.asyncio
+    async def test_click_consent_does_not_adopt_a_same_turn_reword(
+        self, mock_llm, mock_repo, inquiry_case
+    ):
+        """The click path binds consent to the wording the user clicked on.
+
+        Section 0c commits Gate 1 BEFORE the LLM call, and the turn still
+        renders an InquiryResponse. Without a guard the model's same-turn
+        rewording replaced the statement after consent, and the transition
+        copied the new text into ``case.description`` — framing the whole
+        investigation on wording the user never saw.
+        """
+        seen = "Checkout API returns 503 for all users since 14:00 UTC"
+        inquiry_case.inquiry.proposed_problem_statement = seen
+        inquiry_case.inquiry.problem_statement_confirmed = False
+
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        mock_llm.generate.return_value = json.dumps(
             {
-                "agent_response": "Starting investigation into API 503 errors.",
+                "agent_response": "Starting the investigation.",
                 "state_updates": {
-                    "problem_confirmation": {
-                        "problem_type": "unavailability",
-                        "severity_guess": "high",
-                    },
-                    "preliminary_urgency": {
-                        "level": "HIGH",
-                        "is_ongoing": True,
-                        "is_incident_report": True,
-                        "impact_assessment": "Users seeing errors",
-                    },
-                    "proposed_problem_statement": "API returning 503 errors affecting users",
+                    "proposed_problem_statement": "Checkout is broken somehow",
+                },
+            }
+        )
+
+        result = await engine.process_turn(
+            inquiry_case,
+            "Yes, that's correct. Let's investigate.",
+            intent_type="confirmation",
+            intent_data={"value": True},
+        )
+        updated = result["case_updated"]
+
+        assert updated.inquiry.proposed_problem_statement == seen
+        assert updated.description == seen
+
+    @pytest.mark.asyncio
+    async def test_reword_on_a_consent_turn_is_dropped_not_adopted(
+        self, mock_llm, mock_repo, inquiry_case
+    ):
+        """Consent commits against the wording the user saw; the reword is lost.
+
+        A model relaying a plain "yes" may re-emit ``proposed_problem_statement``
+        with cosmetic edits — it is a required-feeling field. REFUSING the
+        consent there would be worse than useless: the engine re-presents the
+        reword, the user says yes again, the model rewords again, and the case
+        never leaves INQUIRY. The turn's reword is dropped instead, and the
+        consent commits against the text it was actually given for.
+        """
+        seen = "Checkout API returns 503 for all users since 14:00 UTC"
+        inquiry_case.inquiry.proposed_problem_statement = seen
+        inquiry_case.inquiry.problem_statement_confirmed = False
+        inquiry_case.current_turn = 2
+
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        mock_llm.generate.return_value = json.dumps(
+            {
+                "agent_response": "Confirmed — starting the investigation.",
+                "state_updates": {
+                    "proposed_problem_statement": (
+                        "Checkout API is returning 503s for all users since 14:00 UTC"
+                    ),
                     "user_confirmed_investigation": True,
                 },
             }
         )
-        mock_llm.generate.return_value = mock_response_turn1
-        result1 = await engine.process_turn(
-            inquiry_case,
-            "My API is returning 503s, please investigate.",
-        )
-        case_after_turn1 = result1["case_updated"]
 
-        # Guard fired: flag set to this turn, no transition.
-        assert case_after_turn1.state == CaseState.INQUIRY
-        assert case_after_turn1.inquiry.handshake_deferred_at_turn == 1
+        result = await engine.process_turn(inquiry_case, "yes, that's right")
+        updated = result["case_updated"]
 
-        # Simulate investigation_service incrementing current_turn for turn 2.
-        case_after_turn1.current_turn = 2
+        assert updated.inquiry.problem_statement_confirmed is True
+        assert updated.inquiry.proposed_problem_statement == seen
+        assert updated.description == seen
 
-        # Turn 2 (recovery): LLM disobeys HANDSHAKE_DEFERRED and emits no
-        # follow-up suggestions. Engine must still emit them deterministically.
-        mock_response_turn2 = json.dumps(
+    @pytest.mark.asyncio
+    async def test_first_write_with_consent_keeps_the_statement_and_refuses(
+        self, mock_llm, mock_repo, inquiry_case
+    ):
+        """Writing and confirming in one shot: statement kept, consent refused.
+
+        Nothing stood for the user to have seen, so the consent cannot bind —
+        but the statement must persist, or the next turn has nothing to present
+        and the model has to rediscover it.
+        """
+        inquiry_case.inquiry.proposed_problem_statement = None
+        inquiry_case.inquiry.problem_statement_confirmed = False
+
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        mock_llm.generate.return_value = json.dumps(
             {
-                "agent_response": "Looking at this more...",
+                "agent_response": "Let's investigate.",
                 "state_updates": {
-                    "user_confirmed_investigation": False,
+                    "proposed_problem_statement": "Checkout API returns 503",
+                    "user_confirmed_investigation": True,
                 },
-                "suggested_follow_ups": [],
             }
         )
-        mock_llm.generate.return_value = mock_response_turn2
-        result2 = await engine.process_turn(case_after_turn1, "ok")
 
-        follow_ups = result2["suggested_follow_ups"]
-        confirmation_labels = {f.get("label") for f in follow_ups}
-        assert any(
-            "investigate" in (lbl or "").lower() for lbl in confirmation_labels
-        ), (
-            f"Recovery turn did not emit a confirmation suggestion. "
-            f"follow_ups={follow_ups}"
-        )
-        # The positive suggestion carries the deterministic confirmation intent,
-        # so clicking it hits the engine's CONFIRMATION intent path and transitions
-        # without further LLM involvement.
-        positive = next(
-            (
-                f
-                for f in follow_ups
-                if f.get("intent", {}).get("confirmation_value") is True
-            ),
-            None,
-        )
-        assert positive is not None, (
-            "Recovery turn emitted suggestions but none carried "
-            "intent.confirmation_value=True — clicking provides no deterministic "
-            "transition path."
-        )
+        result = await engine.process_turn(inquiry_case, "please investigate")
+        updated = result["case_updated"]
+
+        assert updated.state == CaseState.INQUIRY
+        assert updated.inquiry.problem_statement_confirmed is False
+        assert updated.inquiry.proposed_problem_statement == "Checkout API returns 503"
 
 
 class TestEngineOwnedGate1OnFirstDetect:
@@ -1356,3 +1338,92 @@ class TestProblemStatementSingleWriter:
             f"_apply_inquiry_updates, found {len(writes)} "
             f"at lines {[w.lineno for w in writes]}"
         )
+
+
+@pytest.mark.unit
+class TestGate1ConsentPredicate:
+    """``gate1_statement_is_confirmable`` — the one rule, and its three callers."""
+
+    @pytest.mark.parametrize(
+        "statement,expected",
+        [
+            (None, False),  # nothing stood — written this turn, if at all
+            ("", False),
+            ("   ", False),  # whitespace is not a statement
+            ("\n\t ", False),
+            ("A problem", True),
+            ("  A problem  ", True),
+        ],
+    )
+    def test_truth_table(self, statement, expected):
+        from faultmaven.core.investigation.milestone_engine import (
+            gate1_statement_is_confirmable,
+        )
+
+        assert gate1_statement_is_confirmable(statement) is expected
+
+    def test_agrees_with_the_gate_predicate_on_emptiness(self):
+        """Both must judge a whitespace-only statement the same way.
+
+        If ``_gate1_is_pending`` called it a statement and this did not, Gate 1
+        would pend forever: an empty block quote above buttons whose every
+        click is refused.
+        """
+        from faultmaven.core.investigation.milestone_engine import (
+            _gate1_is_pending,
+            gate1_statement_is_confirmable,
+        )
+
+        case = Case(
+            case_id="case_1234567890ab",
+            title="Test",
+            state=CaseState.INQUIRY,
+            user_id="user_123",
+            enterprise_id="org_123",
+            description="",
+            inquiry=InquiryData(
+                thread_id="thread_123",
+                proposed_problem_statement="   ",
+                problem_statement_confirmed=False,
+            ),
+        )
+
+        assert _gate1_is_pending(case) is False
+        assert gate1_statement_is_confirmable("   ") is False
+
+    def test_all_three_consent_sites_call_the_predicate(self):
+        """Source-level pin: the three sites share one rule.
+
+        They held three different bars before — two of them bare truthiness —
+        so a resolver-minted "yes" could commit on a statement the LLM-path
+        guard would have refused (fm#918). Nothing stopped them drifting apart
+        again, and a site reverting to ``bool(statement)`` would break no test.
+        This is that test.
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+        from faultmaven.modules.agent.domain.services.investigation_service import (
+            InvestigationService,
+        )
+
+        def calls_predicate(func) -> bool:
+            tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+            return any(
+                isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Name)
+                and n.func.id == "gate1_statement_is_confirmable"
+                for n in ast.walk(tree)
+            )
+
+        assert calls_predicate(
+            MilestoneEngine._apply_inquiry_updates
+        ), "the LLM consent path no longer routes through the shared predicate"
+        assert calls_predicate(
+            MilestoneEngine._process_turn_impl
+        ), "the DECIDE click path (section 0c) no longer routes through it"
+        assert calls_predicate(
+            InvestigationService._minted_intent_swallows_gate_consent
+        ), "the resolver-minted path no longer routes through it"

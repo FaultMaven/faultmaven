@@ -344,20 +344,23 @@ def build_orientation(case: Any, kind: OrientationKind) -> dict[str, Any]:
 
     # ── Inquiry, problem statement proposed but not yet confirmed ─────
     if proposed and not confirmed:
-        opener = _opener(kind, fresh=False)
-        body = (
-            f"We were about to confirm the problem statement: “{proposed[:200]}”. "
-            "Confirm it to start the investigation, or tell me what to change."
+        # Gate 1 is pending on this turn like any other, so it gets the SAME
+        # presentation and the SAME clickable pair the engine composes
+        # everywhere else. This branch used to render its own wording, truncate
+        # the statement at 200 characters mid-sentence, and offer a FREE_SPEECH
+        # suggestion — so an orientation turn was the one pending turn with no
+        # clickable consent path, showing a different (and possibly cut-off)
+        # rendering of the same text (#1607).
+        from faultmaven.core.investigation.milestone_engine import (
+            _gate1_statement_presentation,
+            _investigation_confirmation_suggestions,
         )
+
+        opener = _opener(kind, fresh=False)
+        body = _gate1_statement_presentation(case)
         return {
-            "agent_response": " ".join(p for p in (opener, body) if p),
-            "suggested_follow_ups": [
-                {
-                    "label": "Confirm or refine the problem statement",
-                    "action_type": "FREE_SPEECH",
-                    "hints": ["yes, that's it", "what to change"],
-                },
-            ],
+            "agent_response": "\n\n".join(p for p in (opener, body) if p),
+            "suggested_follow_ups": _investigation_confirmation_suggestions(),
         }
 
     # ── Fresh inquiry ─────────────────────────────────────────────────

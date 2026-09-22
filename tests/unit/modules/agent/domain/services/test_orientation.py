@@ -138,13 +138,35 @@ class TestBuild:
             assert "Hello!" not in text
 
     def test_proposed_statement_awaiting_confirmation(self):
+        """An orientation turn presents Gate 1 the way every other turn does.
+
+        This branch used to render its own wording, truncate the statement at
+        200 characters and offer a FREE_SPEECH suggestion — making it the one
+        Gate-1-pending turn with no clickable consent path (#1607).
+        """
         reply = build_orientation(
             _inquiry(proposed="Checkout pods crash-loop after deploy"),
             OrientationKind.GREETING,
         )
-        assert "about to confirm the problem statement" in reply["agent_response"]
         assert "Checkout pods crash-loop after deploy" in reply["agent_response"]
         assert "describe the problem" not in reply["agent_response"]
+
+        # The canonical pair, with its confirmation intents — not a FREE_SPEECH
+        # stand-in that cannot commit the gate.
+        follow_ups = reply["suggested_follow_ups"]
+        assert {f["label"] for f in follow_ups} == {
+            "Yes, let's investigate",
+            "Not quite, let me clarify",
+        }
+        assert all(f["action_type"] == "DECIDE" for f in follow_ups)
+
+    def test_long_proposed_statement_is_not_truncated(self):
+        """The old 200-char slice cut statements mid-sentence."""
+        statement = "Checkout pods crash-loop after deploy. " + ("x" * 300)
+        reply = build_orientation(
+            _inquiry(proposed=statement), OrientationKind.GREETING
+        )
+        assert statement in reply["agent_response"]
 
     def test_investigating_recaps_instead_of_onboarding(self, monkeypatch):
         case = _investigating(

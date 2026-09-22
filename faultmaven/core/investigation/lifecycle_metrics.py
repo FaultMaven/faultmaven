@@ -26,18 +26,30 @@ Adding a metric here:
 
 from faultmaven.infrastructure.shims.metrics import Counter
 
-# INV-01 outcome telemetry (composition seam between the same-turn-
-# confirmation guard and the recovery-turn affordances). The ratio
-# ``handshake_recovered_total / handshake_deferred_total`` measures
-# whether deferred handshakes are actually recovering in production.
-# A ratio that drops far below 1.0 (e.g., < 0.7) signals dynamic drift
-# — most likely the recovery prompt or the deterministic suggestion
-# emission has weakened without anyone noticing.
+# INV-01 outcome telemetry. The ratio
+# ``gate1_statement_composed_total / engine_owned_affordance_served_total
+# {gate="gate1"}`` measures whether a Gate-1 turn that served its
+# confirm/refine pair also put the statement those buttons refer to in front
+# of the user. Below 1.0 means it did not — the defect observed on
+# case_79b48eb30787 and on a dropdown turn with no stated problem.
 #
-# Captures the failure shape observed on case_bb917dcd5bb2: guard fires,
-# case persists, no transition ever happens. In a healthy system the
-# two counters should track each other closely (recovery may lag by a
-# turn or two but should eventually catch up).
+# The numerator is checked against the RETURNED reply, not incremented where
+# the composition happens: counting at the composition site would make the
+# ratio 1.0 by construction and blind to everything downstream of it.
+gate1_statement_composed_total = Counter(
+    "faultmaven_gate1_statement_composed_total",
+    "INV-01: Gate-1 turns whose RETURNED reply contains the standing problem "
+    "statement. Presentation is engine-owned — the affordance asks the user to "
+    "confirm a statement, so the statement must be on screen on the same turn, "
+    "and the prompt cannot be relied on to put it there (#1607). Incremented "
+    "at the return boundary after verifying the text survived into the reply, "
+    "so it is an outcome and not a second count of the same rule fire. Expect "
+    "it to track faultmaven_engine_owned_affordance_served_total"
+    '{gate="gate1"} one for one; a sustained gap means a Gate-1 turn shipped '
+    "its buttons without their statement. A single miss also logs "
+    "gate1_statement_missing_from_reply at ERROR.",
+)
+
 inquiry_classified_without_statement_total = Counter(
     "faultmaven_inquiry_classified_without_statement_total",
     "INQUIRY turns that classified the problem (problem_confirmation set) "
@@ -52,17 +64,13 @@ inquiry_classified_without_statement_total = Counter(
 
 inquiry_handshake_deferred_total = Counter(
     "faultmaven_inquiry_handshake_deferred_total",
-    "INV-01: same-turn-confirmation guard fires (LLM attempted to "
-    "collapse INQUIRY→INVESTIGATING handshake into one turn).",
-)
-
-inquiry_handshake_recovered_total = Counter(
-    "faultmaven_inquiry_handshake_recovered_total",
-    "INV-01: cases that transitioned INQUIRY→INVESTIGATING after a "
-    "prior same-turn-confirmation guard fire. Divide by "
-    "faultmaven_inquiry_handshake_deferred_total to get the recovery "
-    "ratio; sustained ratio drops indicate the recovery path is "
-    "broken even though the guard is firing as expected.",
+    "INV-01: the Gate-1 consent guard refused a confirmation because the "
+    "statement had not stood, unchanged, since the turn began — the LLM "
+    "either wrote it and confirmed it in one shot, or REVISED it and "
+    "confirmed the revision the user has not seen (#1607 widened the guard "
+    "to the second shape). Gate 1 simply stays pending and the engine "
+    "composes the statement into the next turn, so there is no separate "
+    "recovery path and no recovery counter to divide by.",
 )
 
 
