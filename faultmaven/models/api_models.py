@@ -43,6 +43,31 @@ VALID_NEXT_STATES_DESCRIPTION = (
     "root-cause elimination. Requesting either is refused."
 )
 
+#: The WHOLE ``disposition_eligibility`` description, for the same reason as
+#: ``VALID_NEXT_STATES_DESCRIPTION``: it was written out three times in
+#: ``case_ui.py``, and three copies of a contract description is three chances
+#: to correct two of them. Ends with the delta paragraph below.
+DISPOSITION_ELIGIBILITY_DESCRIPTION = (
+    "Per-disposition eligibility. ‼ The two keys answer for DIFFERENT "
+    "audiences: ``closed`` gates a user CONTROL, ``resolved`` gates nothing in "
+    "the UI — it is the engine's own readiness verdict, and what it decides is "
+    "whether the agent OFFERS the resolution handshake. Shape: "
+    "``{'resolved': str, 'closed': str}`` where each value is one of:\n"
+    "- ``ready`` — case content supports this disposition with no follow-up. "
+    "On the CLOSED side: render the control. On the RESOLVED side: the agent "
+    "proposes the handshake; render nothing.\n"
+    "- ``needs_info`` — content is partial; the user must supply more (root "
+    "cause / solution / confirmation the problem is gone). Resolve side only, "
+    "and no control either way — the agent asks in conversation.\n"
+    "- ``suggests_alternative`` — Close side only, and it means DO NOT RENDER "
+    "CLOSE. It is set exactly when a qualifying causal-absence row is on the "
+    "case, which is exactly when every close pivots back to a resolve "
+    "proposal — so a Close control there could only ever produce 'shall I mark "
+    "this resolved?'. The honest rendering is no status control at all: the "
+    "case has one terminal destination and the agent is already offering it.\n"
+    "- ``not_eligible`` — not available; render nothing.\n\n"
+)
+
 #: The delta paragraph appended to ``disposition_eligibility`` descriptions.
 DISPOSITION_ELIGIBILITY_DELTA = (
     "Different from ``valid_next_states`` — that field is which actions the "
