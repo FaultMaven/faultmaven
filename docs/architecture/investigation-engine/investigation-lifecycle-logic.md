@@ -163,8 +163,6 @@ async def handle_inquiry_turn(case: Case, user_message: str) -> str:
     if confirmation_click_intent(intent) or llm_confirmation_accepted(updates, case):
         case.inquiry.problem_statement_confirmed = True
         case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
-        case.inquiry.decided_to_investigate = True
-        case.inquiry.decision_made_at = datetime.now(timezone.utc)
 
         # Now can_start_investigation returns True
         return await transition_to_investigating(case)
@@ -223,7 +221,6 @@ def _apply_inquiry_updates(case: Case, updates: Any, metadata: Dict[str, Any],
             and case.inquiry.proposed_problem_statement
             and statement_existed_before_turn):
         case.inquiry.problem_statement_confirmed = True
-        case.inquiry.decided_to_investigate = True
         # ... transition fires via _check_automatic_transitions
 ```
 

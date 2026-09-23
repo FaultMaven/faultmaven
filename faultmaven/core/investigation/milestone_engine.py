@@ -5414,8 +5414,7 @@ class MilestoneEngine:
         if case.state == CaseState.INQUIRY:
             logger.info(
                 f"Turn {case.current_turn} starting: state={case.state.value}, "
-                f"confirmed={case.inquiry.problem_statement_confirmed}, "
-                f"confirmed_at={case.inquiry.problem_statement_confirmed_at}"
+                f"confirmed={case.inquiry.problem_statement_confirmed}"
             )
         else:
             logger.info(

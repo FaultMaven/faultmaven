@@ -305,8 +305,8 @@ def mock_case_service():
     async def get_case_mock(case_id, user_id):
         # Return the stored case if it exists, otherwise create a new one.
         # Note: INVESTIGATING cases require Gate 1 (the problem statement
-        # confirmed) to construct. The unified
-        # opportunistic flow no longer has a path-selection gate.
+        # confirmed) to construct. The unified opportunistic flow no longer
+        # has a path-selection gate.
         if case_id in created_cases:
             return created_cases[case_id]
         else:

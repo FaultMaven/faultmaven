@@ -5911,7 +5911,7 @@ class Case(BaseModel):
           is wandering. Also requires problem_statement_confirmed, the single
           Gate 1 condition. (It used to require ``decided_to_investigate``
           as well — a field that was always written alongside this one and
-          never read to decide anything. #1615 made this the single condition;
+          never read to decide anything. #1611 made this the single condition;
           the field itself is gone.)
         * RESOLVED: the case must have a known problem to be meaningfully
           resolved (the resolution would otherwise have nothing to attach

@@ -283,7 +283,7 @@ async def test_full_case_lifecycle(db_repository: SQLiteCaseRepository):
 
     # Step 3: Update case
     case.title = "Updated Lifecycle Test"
-    # INVESTIGATING requires confirmed problem statement and decision - SET BEFORE STATUS CHANGE
+    # INVESTIGATING requires a confirmed problem statement - SET BEFORE STATUS CHANGE
     case.inquiry.problem_statement_confirmed = True
     case.inquiry.proposed_problem_statement = "Test problem statement"
     case.state = CaseState.INVESTIGATING

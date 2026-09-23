@@ -198,7 +198,7 @@ There are two gates, and #721 guarded only the first:
 | Gate | "Would commit" means |
 |---|---|
 | The pending terminal transition | the case has a `pending_transition` (always `resolved`/`closed`) AND the mint is a `confirmation` with `confirmation_value=True`, or a `status_transition` matching the pending target |
-| **Gate 1** (problem statement) | the case is INQUIRY with a `proposed_problem_statement`, and the mint is a `confirmation` with `confirmation_value=True` — whereupon the engine's section 0c sets `problem_statement_confirmed` + `decided_to_investigate` and `_check_automatic_transitions` fires INQUIRY → INVESTIGATING. **Says nothing about `pending_transition`, deliberately** — see below |
+| **Gate 1** (problem statement) | the case is INQUIRY with a `proposed_problem_statement`, and the mint is a `confirmation` with `confirmation_value=True` — whereupon the engine's section 0c sets `problem_statement_confirmed` and `_check_automatic_transitions` fires INQUIRY → INVESTIGATING. **Says nothing about `pending_transition`, deliberately** — see below |
 
 #721 scoped this to the first gate on the reasoning that a mint with no pending transition "cannot execute a terminal transition". True, and beside the point: it can still commit Gate 1, so `"correct — is the problem statement about the replica or the primary?"` started investigations off a statement the user was questioning (fm#918 exposure 3).
 
