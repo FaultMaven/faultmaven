@@ -525,6 +525,26 @@ class TestLogsExtractorProfileCountsLines:
         assert "attempt count" not in header.lower(), header
         assert "upper bound" in header.lower(), header
 
+    def test_the_prompt_routing_agrees_with_the_header(self):
+        """The model reads ``auth total`` through two channels; both hedge it.
+
+        The table's own header is one. The evidence-grounding block routes
+        "auth counts per IP" questions to that table — the other. When the
+        header learned that the total is an upper bound, the routing line
+        still offered the table as the auth count with no caveat. This pins
+        the routing line to the same claim rather than to its wording.
+        """
+        from faultmaven.core.investigation.prompts.templates import (
+            _EVIDENCE_GROUNDING_BLOCK,
+        )
+
+        routing = " ".join(_EVIDENCE_GROUNDING_BLOCK.split())
+        start = routing.index("For auth counts per IP")
+        clause = routing[start : routing.index('For "list all X"', start)]
+        assert "IP auth breakdown" in clause, clause
+        assert "upper bound" in clause.lower(), clause
+        assert "attempt count" not in clause.lower(), clause
+
 
 @pytest.mark.unit
 class TestTheMentionRule:
