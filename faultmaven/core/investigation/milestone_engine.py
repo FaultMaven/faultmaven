@@ -207,6 +207,9 @@ from faultmaven.modules.case.contracts import (
     TurnProgress,
     UrgencyLevel,
 )
+from faultmaven.modules.case.domain.services.case_action_manager import (
+    earned_edge_refusal,
+)
 from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.knowledge.contracts import IKnowledgeService
 
@@ -3926,9 +3929,9 @@ def _terminal_confirmation_response(case) -> str:
 def _compose_terminal_reply(case, summary_payload: str | None) -> str:
     """Compose the closure-turn chat reply for the *deterministic* paths.
 
-    Used by the two paths where the engine controls the reply text
-    directly: the explicit confirm-button path and the dropdown-resolution
-    path. Prepends a deterministic status line (e.g. "Case closed.") and
+    Used where the engine controls the reply text directly: the explicit
+    confirm-button path. The dropdown-resolution path was the other caller
+    until RESOLVED left the menu. Prepends a deterministic status line (e.g. "Case closed.") and
     appends the auto-generated summary content (or skip / failure note).
 
     Not used by the LLM-driven transition path (end of process_turn), where
@@ -4483,22 +4486,29 @@ def check_if_progress_made(metadata: dict[str, Any]) -> bool:
 def confirmed_transition_arms(case: "Case", executed: bool) -> dict[str, Any]:
     """Arms for a deterministic branch that just confirmed a terminal proposal.
 
-    Two branches confirm a standing terminal proposal without an LLM call — the
-    step-0b pending-transition short-circuit and the 0c status-transition
-    dropdown — and they were hand-writing this answer differently for the SAME
-    state change: 0c passed ``milestones_completed=["solution_verified"]`` and
-    0b passed none, so a consumer counting gate completions off the #1142 stream
-    mis-counted by which UI affordance the user happened to use.
+    TWO branches used to confirm a standing terminal proposal without an LLM
+        call — the step-0b pending-transition short-circuit and the 0c
+        status-transition dropdown — and they hand-wrote this answer differently
+        for the SAME state change: 0c passed
+        ``milestones_completed=["solution_verified"]`` and 0b passed none, so a
+        consumer counting gate completions off the #1142 stream mis-counted by
+        which UI affordance the user happened to use.
 
-    Derived from what actually happened rather than from which branch is asking:
+        The resolve arm of 0c went when RESOLVED left the menu, so there is ONE
+        caller now and the disagreement is structurally impossible rather than
+        merely reconciled. This stays as the single definition of the arms — the
+        close path still reaches it, and a second confirm branch would otherwise
+        start the divergence over.
 
-    * ``status_transitioned`` is ``executed`` — the value
-      ``confirm_pending_transition`` RETURNED, not an assumption. It returns
-      ``False`` when a pending CLOSE pivots to a RESOLVED proposal, in which
-      case nothing terminal committed and the arm would be a lie.
-    * ``solution_verified`` is claimed only for a RESOLVED landing. It is a
-      resolution milestone, so asserting it on a CLOSED confirmation — which
-      0b also serves — would manufacture a gate completion the case never had.
+        Derived from what actually happened rather than from which branch is asking:
+
+        * ``status_transitioned`` is ``executed`` — the value
+          ``confirm_pending_transition`` RETURNED, not an assumption. It returns
+          ``False`` when a pending CLOSE pivots to a RESOLVED proposal, in which
+          case nothing terminal committed and the arm would be a lie.
+        * ``solution_verified`` is claimed only for a RESOLVED landing. It is a
+          resolution milestone, so asserting it on a CLOSED confirmation — which
+          0b also serves — would manufacture a gate completion the case never had.
     """
     transitioned = bool(executed)
     resolved = transitioned and case.state == CaseState.RESOLVED
@@ -5657,15 +5667,21 @@ class MilestoneEngine:
         # ``InvestigationService._handle_status_transition`` rejects this at
         # the boundary with a 422, so this is the backstop for direct engine
         # callers rather than the path a client takes.
-        if (
-            intent_type == "status_transition"
-            and (intent_data or {}).get("to_state") == CaseState.INVESTIGATING.value
-        ):
-            raise ValueError(
-                "INVESTIGATING is not a user-selectable case action. It is "
-                "reached by confirming the problem statement (Gate 1), not by "
-                "requesting the state."
+        #
+        # ONE guard, DERIVED from ``USER_SELECTABLE_ACTIONS``. It was two
+        # hand-written comparisons, and the second one blinded the static test
+        # that pins the first's placement: that test anchors on the phrase
+        # "not a user-selectable case action", ``str.find`` returns the FIRST
+        # occurrence, and both refusals sat above the mutators — so deleting
+        # the Gate-1 refusal entirely left all 58 lifecycle-invariant tests
+        # green. Verified by mutation. One guard, one anchor, and the refusal
+        # now moves with the dict instead of alongside it.
+        if intent_type == "status_transition":
+            _refusal = earned_edge_refusal(
+                case.state, (intent_data or {}).get("to_state") or ""
             )
+            if _refusal:
+                raise ValueError(_refusal)
 
         # Add intent information to logger for tracing
         # Note: current_turn has already been incremented by investigation_service before this point
@@ -6058,19 +6074,21 @@ class MilestoneEngine:
             # - CLOSED (without solution): User abandons investigation without finding solution
             # - RESOLVED (with solution): User confirms problem is fixed/resolved
             #
-            # TWO COMPLEMENTARY PATHS (Intent-Based Routing Design):
-            # 1. EXPLICIT INTENT (frontend buttons/actions) → Skip pattern matching, use intent_data
-            # 2. NATURAL LANGUAGE (user types in chat) → Pattern matching fallback (below)
+            # ‼ ONE PATH, not two. This described "TWO COMPLEMENTARY PATHS"
+            # — an explicit intent, and a NATURAL LANGUAGE "pattern matching
+            # fallback (below)" with a 2026-02-08 fix for "close as
+            # unresolved" matching resolution patterns. There is no such
+            # fallback below, and there is no natural-language transition
+            # detector anywhere: ``_user_confirms_transition`` /
+            # ``_user_declines_transition`` only answer a STANDING pending, and
+            # ``IntentResolver`` matches typed text against suggestions already
+            # on screen. A typed "mark this resolved" with nothing standing
+            # reaches the state machine solely by the MODEL emitting
+            # ``proposed_transition``.
             #
-            # Pattern matching order matters: Check abandonment FIRST, then resolution.
-            # This prevents "close as unresolved" from matching resolution patterns.
-            #
-            # BUG FIX (2026-02-08): User said "Close this case as unresolved" but system went to RESOLVED
-            # ROOT CAUSE: Patterns were too specific ("close as unresolved" exact match)
-            # FIX: Use key phrases that work with variations:
-            #   - "as unresolved" matches: "close as unresolved", "close this case as unresolved"
-            #   - "without solution" matches: "close without solution", "close this without solution"
-            # This handles natural language variations while maintaining correct intent detection.
+            # So: a structured ``status_transition`` intent is handled below
+            # (CLOSE only — the earned edges are refused at the top of this
+            # method), and everything else is the model's job.
             # ============================================================
             # USER INTENT DETECTION - EXPLICIT STATUS TRANSITION (Frontend Buttons)
             # ============================================================
@@ -6173,196 +6191,15 @@ class MilestoneEngine:
                         "metadata": turn_metadata,
                     }
 
-                elif to_status_str == "resolved":
-                    if case.state != CaseState.INVESTIGATING:
-                        raise ValueError(
-                            f"Cannot transition to RESOLVED from {case.state.value}"
-                        )
-
-                    from faultmaven.modules.case.domain.services.case_action_manager import (
-                        CaseActionManager,
-                    )
-
-                    if not user_message or not user_message.strip():
-                        user_message = (
-                            CaseActionManager.get_agent_message(
-                                CaseState.INVESTIGATING, CaseState.RESOLVED
-                            )
-                            or "The issue is resolved."
-                        )
-
-                    # If a pending transition to resolved already exists, this
-                    # dropdown click is a confirmation of the existing proposal.
-                    # Execute the transition (User-Agent Handshake: confirm step).
-                    if (
-                        hasattr(case, "pending_transition")
-                        and case.pending_transition
-                        and case.pending_transition.get("to_state") == "resolved"
-                    ):
-                        from faultmaven.core.investigation.terminal_transitions import (
-                            confirm_pending_transition,
-                        )
-
-                        executed = confirm_pending_transition(case, case.user_id)
-
-                        logger.info(
-                            f"INVESTIGATING->RESOLVED dropdown: confirmed existing pending "
-                            f"transition for case {case.case_id}"
-                        )
-
-                        # Persist terminal state before synthesis (Report
-                        # row FKs to case_id), then synthesize, then record
-                        # the composed reply.
-                        await self.repository.save(case)
-                        (
-                            summary_payload,
-                            summary_failed,
-                        ) = await self._auto_generate_report(case)
-                        _resp = _compose_terminal_reply(case, summary_payload)
-                        turn_metadata = self._finish_deterministic_turn(
-                            case,
-                            user_message or "",
-                            _resp,
-                            upload_report,
-                            progress_made=True,
-                            # Both confirm branches answer this the SAME way, from
-                            # what the transition actually did — including
-                            # ``confirm_pending_transition``'s return value rather
-                            # than an assumption that it committed. The arm used to
-                            # be written onto the OUTER metadata here, which this
-                            # branch never returns, so it was reported by one of the
-                            # two confirm paths and not the other.
-                            **confirmed_transition_arms(case, executed),
-                        )
-                        await self.repository.save(case)
-
-                        remaining = await self._remaining_regens_for(case)
-                        return {
-                            "agent_response": _resp,
-                            "suggested_follow_ups": _select_ack_follow_ups(
-                                case, summary_failed, remaining
-                            ),
-                            "case_updated": case,
-                            "metadata": turn_metadata,
-                        }
-
-                    # No pending transition — check resolution readiness before proposing.
-                    from faultmaven.core.investigation.terminal_transitions import (
-                        assess_resolution_readiness,
-                        propose_transition,
-                    )
-
-                    readiness = assess_resolution_readiness(case)
-
-                    if readiness.verdict == readiness.SUGGEST_CLOSE:
-                        # Case lacks fundamentals — pivot to CLOSED. Propose the
-                        # closed transition so the DECIDE pair the user
-                        # sees matches what they will be confirming.
-                        logger.info(
-                            f"INVESTIGATING->RESOLVED dropdown: case {case.case_id} "
-                            f"verdict=SUGGEST_CLOSE (missing: {readiness.missing}). "
-                            f"Pivoting to CLOSED."
-                        )
-                        propose_transition(
-                            case=case,
-                            to_state="closed",
-                            summary=readiness.message,
-                        )
-                        turn_metadata = self._finish_deterministic_turn(
-                            case,
-                            user_message or "",
-                            readiness.message,
-                            upload_report,
-                            progress_made=False,
-                        )
-                        await self.repository.save(case)
-                        return {
-                            "agent_response": readiness.message,
-                            "suggested_follow_ups": _close_confirmation_suggestions(),
-                            "case_updated": case,
-                            "metadata": turn_metadata,
-                        }
-
-                    if readiness.verdict == readiness.NEEDS_INFO:
-                        # Partially ready — ask user for the missing pieces but
-                        # remember their resolve intent so a follow-up turn
-                        # with the missing detail can move forward.
-                        logger.info(
-                            f"INVESTIGATING->RESOLVED dropdown: case {case.case_id} "
-                            f"verdict=NEEDS_INFO (missing: {readiness.missing}). "
-                            f"Remembering resolve intent."
-                        )
-                        propose_transition(
-                            case=case,
-                            to_state="resolved",
-                            summary=readiness.message,
-                        )
-                        case.pending_transition["needs_info"] = True
-                        turn_metadata = self._finish_deterministic_turn(
-                            case,
-                            user_message or "",
-                            readiness.message,
-                            upload_report,
-                            progress_made=False,
-                        )
-                        await self.repository.save(case)
-                        return {
-                            "agent_response": readiness.message,
-                            "suggested_follow_ups": _resolution_confirmation_suggestions(),
-                            "case_updated": case,
-                            "metadata": turn_metadata,
-                        }
-
-                    # READY — propose transition via User-Agent Handshake
-                    propose_transition(
-                        case=case,
-                        to_state="resolved",
-                        summary="Case meets resolution criteria. Awaiting user confirmation.",
-                    )
-                    # (The same-turn-confirm guard flag the LLM path sets here
-                    # was written onto the OUTER metadata dict, which this branch
-                    # never returns — it returns ``turn_metadata`` below. Its two
-                    # readers are both on the generation path this branch exits
-                    # before reaching, so the write was dead. Removed rather than
-                    # rerouted: the guard exists to stop a proposal being
-                    # confirmed by the message that produced it, and returning
-                    # here already guarantees that.)
-
-                    logger.info(
-                        f"INVESTIGATING->RESOLVED dropdown: proposed transition for "
-                        f"case {case.case_id} (pending user confirmation)"
-                    )
-
-                    # Return immediately with confirmation prompt + canonical
-                    # confirm/decline pair (alignment with agent-initiated path).
-                    _resp = (
-                        "You've indicated this issue is resolved.\n\n"
-                        + _build_resolution_confirmation(case)
-                    )
-                    turn_metadata = self._finish_deterministic_turn(
-                        case,
-                        user_message or "",
-                        _resp,
-                        upload_report,
-                        # A PROPOSAL is not an advancement (#1284). Nothing
-                        # transitioned: the handshake (§1.2) makes the case
-                        # action happen on the user's LATER confirm turn, which
-                        # scores it through ``confirmed_transition_arms``. This
-                        # asserted True with every arm 0 — the shape
-                        # ``case_telemetry`` calls a lying counter — and it made
-                        # the SAME event score or not by which affordance the
-                        # user reached for: the three LLM-path proposal sites
-                        # let the predicate decide, and the NEEDS_INFO sibling a
-                        # few lines above already passes False.
-                        progress_made=False,
-                    )
-                    await self.repository.save(case)
-                    return {
-                        "agent_response": _resp,
-                        "suggested_follow_ups": _resolution_confirmation_suggestions(),
-                        "case_updated": case,
-                        "metadata": turn_metadata,
-                    }
+                # ``resolved`` never reaches here either — the same guard
+                # refuses it. The branch that used to live here ran the
+                # readiness check AFTER the pick and then argued with it
+                # (propose / pivot to close / ask for what is missing), and
+                # one of its arms confirmed a standing ``needs_info``
+                # proposal without re-reading readiness — executing RESOLVED
+                # on a case carrying no qualifying ``causal_absence_evidence``
+                # row. Deciding whether to OFFER retires the argument and the
+                # bypass together.
 
                 # ``investigating`` never reaches here — the guard at the top
                 # of this method refuses it before any state is touched. The
@@ -7076,7 +6913,7 @@ class MilestoneEngine:
                 # LLM proposed RESOLVED but readiness check returned NEEDS_INFO.
                 # Append the readiness ask below the LLM's agent_response so
                 # the user sees both the turn's analysis and the same
-                # missing-info ask the UI dropdown path produces.
+                # missing-info ask the readiness gate produces.
                 agent_response_text = _prose_with_gate_notice(
                     response_obj.agent_response,
                     metadata["resolution_needs_info_message"],
@@ -7143,9 +6980,11 @@ class MilestoneEngine:
                 # ProposedTransition was emitted by the LLM this turn (either
                 # detecting solution success or routing user-expressed
                 # transition intent). Replace the LLM's follow-ups with the
-                # canonical confirm/decline pair so all three trigger paths
-                # (UI click, NL via this branch, agent-initiated) converge on
-                # the same deterministic confirmation UX. NOTE: no prose is
+                # canonical confirm/decline pair so both remaining openers
+                # (the model's proposed_transition via this branch, and the
+                # engine's own INV-43 backstop) converge on the same
+                # deterministic confirmation UX. There used to be a third, the
+                # resolve dropdown; it went when RESOLVED left the menu. NOTE: no prose is
                 # appended here, so the INV-40 guard below still runs — an
                 # over-claiming narration on this branch is corrected.
                 follow_ups = metadata["override_suggestions"]
@@ -12982,11 +12821,11 @@ class MilestoneEngine:
                 # The LLM emits only to_state (and optional evidence_ids).
                 # Engine handles everything else: closure_reason is derived
                 # inside propose_transition; summary is built programmatically
-                # via the same helpers the UI dropdown path uses, so all
-                # three trigger paths produce identical confirmation prompts.
+                # via the same helpers every opener uses, so they produce
+                # identical confirmation prompts.
                 #
                 # When the LLM proposes RESOLVED, run the same readiness
-                # check the UI dropdown path uses so the user sees a
+                # check every other opener uses, so the user sees a
                 # coherent prompt + suggestion pair:
                 #   SUGGEST_CLOSE → pivot to CLOSED (close suggestion pair)
                 #   NEEDS_INFO    → keep RESOLVED but flag needs_info; the
@@ -13047,14 +12886,14 @@ class MilestoneEngine:
                     case.pending_transition["needs_info"] = True
                     # The response builder reads this to override the LLM's
                     # agent_response with the readiness message, matching the
-                    # UI dropdown path's first-pass behavior.
+                    # readiness gate's first-pass behavior.
                     metadata["resolution_needs_info_first_pass"] = True
                     metadata["resolution_needs_info_message"] = needs_info_message
                 metadata["transition_proposed_this_turn"] = True
                 # Override LLM-emitted suggestions with the canonical
-                # confirm/decline pair, so all three trigger paths
-                # (UI click, NL via this branch, agent-initiated) produce
-                # the same structured DECIDE confirmation UX. The
+                # confirm/decline pair, so every opener produces the same
+                # structured DECIDE confirmation UX — this branch, the engine's
+                # INV-43 backstop, and a CLOSE pick from the menu. The
                 # response builder consumes metadata["override_suggestions"]
                 # at the final assembly point.
                 if effective_to_status == "resolved":
@@ -13286,8 +13125,9 @@ class MilestoneEngine:
         """Close out a deterministic early-return turn: ONE progress decision,
         applied to all three surfaces that report it (#1229).
 
-        The deterministic branches (pending resolve/close gates, the
-        status-transition dropdown handlers) answer without an LLM call. They
+        The deterministic branches (the pending resolve/close gate, and the
+        CLOSE status-transition handler — the resolve one went with the menu
+        entry) answer without an LLM call. They
         used to record a hardcoded ``progress_made=False`` ``TurnProgress`` in
         one place and build a hand-written metadata dict in another, and
         neither consulted the turn's uploads. This is both, from one reading,

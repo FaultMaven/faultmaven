@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 8.0.0
+**Version:** 9.0.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -5281,7 +5281,7 @@ Detailed case information for single case view.
 - `turns_without_progress` (integer, required)
 - `updated_at` (string, required)
 - `user_id` (string, required)
-- `valid_next_states` (array, optional) — Case actions the USER may select from the status menu — selectability, not legality. A strict subset of the transitions the state machine permits: INQUIRY → INVESTIGATING is legal and performed by the Gate 1 handshake, but it is earned by a confirmed problem statement rather than requested, so it never appears here. Every entry is a disposition.
+- `valid_next_states` (array, optional) — Case actions the USER may select from the status menu — selectability, not legality. Only CLOSED is ever listed, because closing is the one decision that needs no precondition. The two legal edges that never appear here are earned from case content and offered by the agent through a confirmation handshake: INQUIRY → INVESTIGATING by a confirmed problem statement (Gate 1), and INVESTIGATING → RESOLVED by a confirmed root-cause elimination. Requesting either is refused.
 
 ---
 
@@ -5435,7 +5435,7 @@ Minimal case information for list views.
 - `turns_without_progress` (integer, required)
 - `updated_at` (string, required)
 - `user_id` (string, required)
-- `valid_next_states` (array, optional) — Case actions the USER may select from the status menu — selectability, not legality. A strict subset of the transitions the state machine permits: INQUIRY → INVESTIGATING is legal and performed by the Gate 1 handshake, but it is earned by a confirmed problem statement rather than requested, so it never appears here. Every entry is a disposition.
+- `valid_next_states` (array, optional) — Case actions the USER may select from the status menu — selectability, not legality. Only CLOSED is ever listed, because closing is the one decision that needs no precondition. The two legal edges that never appear here are earned from case content and offered by the agent through a confirmation handshake: INQUIRY → INVESTIGATING by a confirmed problem statement (Gate 1), and INVESTIGATING → RESOLVED by a confirmed root-cause elimination. Requesting either is refused.
 
 ---
 
@@ -5451,20 +5451,20 @@ User hasn't committed to full investigation yet.
 - `case_id` (string, required) — Case identifier
 - `created_at` (string, required) — When case was created
 - `current_turn` (integer, required) — The MESSAGE clock: every persisted exchange advances it, asides included. It is what `Message.turn_number`, evidence `uploaded_at_turn` and the conversation anchors are keyed on, so keep using it to ADDRESS a turn — and prefer `investigation_turn` to DISPLAY one.
-- `disposition_eligibility` (object, optional) — Per-disposition eligibility for UI affordance gating. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:
-- ``ready`` — disposition is appropriate; render the affordance enabled with the default 'click to confirm' UX.
-- ``needs_info`` — disposition is allowed but the case is partial; user must ADD information (root cause / solution) before transitioning. UX: prompt the user for the missing data. Currently only the Resolve side surfaces this.
-- ``suggests_alternative`` — disposition is allowed but the system recommends the OTHER disposition for this case. UX: warn and offer the alternative; if the user confirms anyway, proceed. Distinct from ``needs_info`` — no data is missing; the user is asked to RE-DIRECT, not to add. Currently only the Close side surfaces this (when the case has root cause + solution → resolving preserves attribution).
-- ``not_eligible`` — disposition is not available; hide the affordance entirely.
+- `disposition_eligibility` (object, optional) — Per-disposition eligibility. ‼ The two keys answer for DIFFERENT audiences: ``closed`` gates a user CONTROL, ``resolved`` gates nothing in the UI — it is the engine's own readiness verdict, and what it decides is whether the agent OFFERS the resolution handshake. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:
+- ``ready`` — case content supports this disposition with no follow-up. On the CLOSED side: render the control. On the RESOLVED side: the agent proposes the handshake; render nothing.
+- ``needs_info`` — content is partial; the user must supply more (root cause / solution / confirmation the problem is gone). Resolve side only, and no control either way — the agent asks in conversation.
+- ``suggests_alternative`` — Close side only, and it means DO NOT RENDER CLOSE. It is set exactly when a qualifying causal-absence row is on the case, which is exactly when every close pivots back to a resolve proposal — so a Close control there could only ever produce 'shall I mark this resolved?'. The honest rendering is no status control at all: the case has one terminal destination and the agent is already offering it.
+- ``not_eligible`` — not available; render nothing.
 
-Different from ``valid_next_states`` — that field is which actions the user may SELECT, this field is the content-readiness layer on top of them.
+Different from ``valid_next_states`` — that field is which actions the user may SELECT, this field is what the case CONTENT supports. The two no longer overlap on the resolve side: ``resolved`` here is the engine's own readiness verdict, which decides whether the agent offers the resolution handshake, not whether a control is rendered.
 - `inquiry` (object, required) — Nested inquiry phase data
 - `investigation_turn` (object, optional) — How many of this case's turns so far were investigation work (#1329/#1387) — the same quantity `TurnResponse.investigation_turn` reports, carried on the case read so a header or a resolution summary can show it without having just submitted a turn. Excludes out-of-band turns (small talk, trivia, questions about FaultMaven itself), which are answered outside the investigation: an aside advances `current_turn` and leaves this alone. Null when the server predates the field.
 - `state` (string, optional) — Always 'inquiry' for this response type
 - `title` (string, required) — Case title
 - `updated_at` (string, required) — Last update timestamp
 - `uploaded_files_count` (integer, required) — Total files uploaded
-- `valid_next_states` (array, optional) — Case actions the USER may select from the status menu — selectability, not legality. A strict subset of the transitions the state machine permits: INQUIRY → INVESTIGATING is legal and performed by the Gate 1 handshake, but it is earned by a confirmed problem statement rather than requested, so it never appears here. Every entry is a disposition.
+- `valid_next_states` (array, optional) — Case actions the USER may select from the status menu — selectability, not legality. Only CLOSED is ever listed, because closing is the one decision that needs no precondition. The two legal edges that never appear here are earned from case content and offered by the agent through a confirmation handshake: INQUIRY → INVESTIGATING by a confirmed problem statement (Gate 1), and INVESTIGATING → RESOLVED by a confirmed root-cause elimination. Requesting either is refused.
 
 ---
 
@@ -5482,13 +5482,13 @@ User has committed to investigation and agent is working through milestones.
 - `case_id` (string, required) — Case identifier
 - `created_at` (string, required) — When case was created
 - `current_turn` (integer, required) — The MESSAGE clock: every persisted exchange advances it, asides included. It is what `Message.turn_number`, evidence `uploaded_at_turn` and the conversation anchors are keyed on, so keep using it to ADDRESS a turn — and prefer `investigation_turn` to DISPLAY one.
-- `disposition_eligibility` (object, optional) — Per-disposition eligibility for UI affordance gating. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:
-- ``ready`` — disposition is appropriate; render the affordance enabled with the default 'click to confirm' UX.
-- ``needs_info`` — disposition is allowed but the case is partial; user must ADD information (root cause / solution) before transitioning. UX: prompt the user for the missing data. Currently only the Resolve side surfaces this.
-- ``suggests_alternative`` — disposition is allowed but the system recommends the OTHER disposition for this case. UX: warn and offer the alternative; if the user confirms anyway, proceed. Distinct from ``needs_info`` — no data is missing; the user is asked to RE-DIRECT, not to add. Currently only the Close side surfaces this (when the case has root cause + solution → resolving preserves attribution).
-- ``not_eligible`` — disposition is not available; hide the affordance entirely.
+- `disposition_eligibility` (object, optional) — Per-disposition eligibility. ‼ The two keys answer for DIFFERENT audiences: ``closed`` gates a user CONTROL, ``resolved`` gates nothing in the UI — it is the engine's own readiness verdict, and what it decides is whether the agent OFFERS the resolution handshake. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:
+- ``ready`` — case content supports this disposition with no follow-up. On the CLOSED side: render the control. On the RESOLVED side: the agent proposes the handshake; render nothing.
+- ``needs_info`` — content is partial; the user must supply more (root cause / solution / confirmation the problem is gone). Resolve side only, and no control either way — the agent asks in conversation.
+- ``suggests_alternative`` — Close side only, and it means DO NOT RENDER CLOSE. It is set exactly when a qualifying causal-absence row is on the case, which is exactly when every close pivots back to a resolve proposal — so a Close control there could only ever produce 'shall I mark this resolved?'. The honest rendering is no status control at all: the case has one terminal destination and the agent is already offering it.
+- ``not_eligible`` — not available; render nothing.
 
-Different from ``valid_next_states`` — that field is which actions the user may SELECT, this field is the content-readiness layer on top of them.
+Different from ``valid_next_states`` — that field is which actions the user may SELECT, this field is what the case CONTENT supports. The two no longer overlap on the resolve side: ``resolved`` here is the engine's own readiness verdict, which decides whether the agent offers the resolution handshake, not whether a control is rendered.
 - `investigation_turn` (object, optional) — How many of this case's turns so far were investigation work (#1329/#1387) — the same quantity `TurnResponse.investigation_turn` reports, carried on the case read so a header or a resolution summary can show it without having just submitted a turn. Excludes out-of-band turns (small talk, trivia, questions about FaultMaven itself), which are answered outside the investigation: an aside advances `current_turn` and leaves this alone. Null when the server predates the field.
 - `latest_evidence` (array, optional) — Most recent evidence collected (last 5)
 - `next_actions` (array, optional) — Suggested next steps for investigation
@@ -5500,7 +5500,7 @@ Different from ``valid_next_states`` — that field is which actions the user ma
 - `title` (string, required) — Case title
 - `updated_at` (string, required) — Last update timestamp
 - `uploaded_files_count` (integer, optional) — Number of uploaded files
-- `valid_next_states` (array, optional) — Case actions the USER may select from the status menu — selectability, not legality. A strict subset of the transitions the state machine permits: INQUIRY → INVESTIGATING is legal and performed by the Gate 1 handshake, but it is earned by a confirmed problem statement rather than requested, so it never appears here. Every entry is a disposition.
+- `valid_next_states` (array, optional) — Case actions the USER may select from the status menu — selectability, not legality. Only CLOSED is ever listed, because closing is the one decision that needs no precondition. The two legal edges that never appear here are earned from case content and offered by the agent through a confirmation handshake: INQUIRY → INVESTIGATING by a confirmed problem statement (Gate 1), and INVESTIGATING → RESOLVED by a confirmed root-cause elimination. Requesting either is refused.
 - `working_conclusion` (object, optional) — Agent's current understanding of the problem
 
 ---
@@ -5517,13 +5517,13 @@ Investigation complete, case closed with solution.
 - `case_id` (string, required) — Case identifier
 - `created_at` (string, required) — When case was created
 - `current_turn` (integer, required) — The MESSAGE clock: every persisted exchange advances it, asides included. It is what `Message.turn_number`, evidence `uploaded_at_turn` and the conversation anchors are keyed on, so keep using it to ADDRESS a turn — and prefer `investigation_turn` to DISPLAY one.
-- `disposition_eligibility` (object, optional) — Per-disposition eligibility for UI affordance gating. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:
-- ``ready`` — disposition is appropriate; render the affordance enabled with the default 'click to confirm' UX.
-- ``needs_info`` — disposition is allowed but the case is partial; user must ADD information (root cause / solution) before transitioning. UX: prompt the user for the missing data. Currently only the Resolve side surfaces this.
-- ``suggests_alternative`` — disposition is allowed but the system recommends the OTHER disposition for this case. UX: warn and offer the alternative; if the user confirms anyway, proceed. Distinct from ``needs_info`` — no data is missing; the user is asked to RE-DIRECT, not to add. Currently only the Close side surfaces this (when the case has root cause + solution → resolving preserves attribution).
-- ``not_eligible`` — disposition is not available; hide the affordance entirely.
+- `disposition_eligibility` (object, optional) — Per-disposition eligibility. ‼ The two keys answer for DIFFERENT audiences: ``closed`` gates a user CONTROL, ``resolved`` gates nothing in the UI — it is the engine's own readiness verdict, and what it decides is whether the agent OFFERS the resolution handshake. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:
+- ``ready`` — case content supports this disposition with no follow-up. On the CLOSED side: render the control. On the RESOLVED side: the agent proposes the handshake; render nothing.
+- ``needs_info`` — content is partial; the user must supply more (root cause / solution / confirmation the problem is gone). Resolve side only, and no control either way — the agent asks in conversation.
+- ``suggests_alternative`` — Close side only, and it means DO NOT RENDER CLOSE. It is set exactly when a qualifying causal-absence row is on the case, which is exactly when every close pivots back to a resolve proposal — so a Close control there could only ever produce 'shall I mark this resolved?'. The honest rendering is no status control at all: the case has one terminal destination and the agent is already offering it.
+- ``not_eligible`` — not available; render nothing.
 
-Different from ``valid_next_states`` — that field is which actions the user may SELECT, this field is the content-readiness layer on top of them.
+Different from ``valid_next_states`` — that field is which actions the user may SELECT, this field is what the case CONTENT supports. The two no longer overlap on the resolve side: ``resolved`` here is the engine's own readiness verdict, which decides whether the agent offers the resolution handshake, not whether a control is rendered.
 - `investigation_turn` (object, optional) — How many of this case's turns so far were investigation work (#1329/#1387) — the same quantity `TurnResponse.investigation_turn` reports, carried on the case read so a header or a resolution summary can show it without having just submitted a turn. Excludes out-of-band turns (small talk, trivia, questions about FaultMaven itself), which are answered outside the investigation: an aside advances `current_turn` and leaves this alone. Null when the server predates the field.
 - `problem_statement` (object, optional) — Confirmed problem statement carried over from INQUIRY (sourced from case.description).
 - `reports_available` (array, optional) — Available reports (incident report, post-mortem, runbook)
@@ -5535,7 +5535,7 @@ Different from ``valid_next_states`` — that field is which actions the user ma
 - `title` (string, required) — Case title
 - `updated_at` (string, required) — Last update timestamp
 - `uploaded_files_count` (integer, optional) — Number of uploaded files
-- `valid_next_states` (array, optional) — Case actions the USER may select from the status menu — selectability, not legality. A strict subset of the transitions the state machine permits: INQUIRY → INVESTIGATING is legal and performed by the Gate 1 handshake, but it is earned by a confirmed problem statement rather than requested, so it never appears here. Every entry is a disposition.
+- `valid_next_states` (array, optional) — Case actions the USER may select from the status menu — selectability, not legality. Only CLOSED is ever listed, because closing is the one decision that needs no precondition. The two legal edges that never appear here are earned from case content and offered by the agent through a confirmation handshake: INQUIRY → INVESTIGATING by a confirmed problem statement (Gate 1), and INVESTIGATING → RESOLVED by a confirmed root-cause elimination. Requesting either is refused.
 - `verification_status` (object, required) — How solution effectiveness was verified
 
 ---

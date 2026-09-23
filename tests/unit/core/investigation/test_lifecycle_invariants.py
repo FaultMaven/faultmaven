@@ -39,6 +39,7 @@ from faultmaven.modules.case.domain.models import (
 )
 from faultmaven.modules.case.domain.services.case_action_manager import (
     USER_SELECTABLE_ACTIONS,
+    earned_edge_refusal,
 )
 
 
@@ -365,14 +366,54 @@ class TestINV04_NoDirectInquiryToResolved:
                 f"machine does not permit."
             )
 
-        # The one edge where they are intended to differ. Pinned explicitly so
-        # re-adding it to the menu is a deliberate act, not a silent one.
-        assert (
-            CaseState.INVESTIGATING in LEGAL_TRANSITIONS[CaseState.INQUIRY]
-        ), "Gate 1 performs this edge — it must stay legal"
-        assert (
-            CaseState.INVESTIGATING not in USER_SELECTABLE_ACTIONS[CaseState.INQUIRY]
-        ), "INVESTIGATING is earned, not requested — it is not a user action"
+        # The TWO edges where they are intended to differ, pinned explicitly so
+        # re-adding either to the menu is a deliberate act, not a silent one.
+        # This said "the one edge" while ``models.py`` said two; only the
+        # Gate-1 half was asserted, so restoring RESOLVED to the menu left the
+        # whole unit suite green — and `valid_next_states` would advertise it
+        # on every investigating case again, with every click a 422.
+        earned = [
+            (CaseState.INQUIRY, CaseState.INVESTIGATING, "Gate 1"),
+            (
+                CaseState.INVESTIGATING,
+                CaseState.RESOLVED,
+                "the resolution handshake",
+            ),
+        ]
+        for from_state, to_state, performer in earned:
+            assert to_state in LEGAL_TRANSITIONS[from_state], (
+                f"{performer} performs {from_state.value} → {to_state.value} "
+                f"— it must stay legal"
+            )
+            assert to_state not in USER_SELECTABLE_ACTIONS[from_state], (
+                f"{to_state.value} is earned, not requested — it is not a "
+                f"user action"
+            )
+
+    def test_inv04_the_refusal_is_derived_from_the_menu(self):
+        """Adding an earned edge back to the menu must stop it being refused.
+
+        The refusal used to be hand-enumerated at four sites, none of which
+        read ``USER_SELECTABLE_ACTIONS`` — so the dict and the guards were
+        independent facts that could disagree in either direction with nothing
+        failing. This pins the link itself, rather than its two current
+        instances: whatever the dict says is selectable is not refused, and
+        whatever it omits is.
+        """
+        for from_state in (CaseState.INQUIRY, CaseState.INVESTIGATING):
+            for to_state in (
+                CaseState.INQUIRY,
+                CaseState.INVESTIGATING,
+                CaseState.RESOLVED,
+                CaseState.CLOSED,
+            ):
+                selectable = to_state in USER_SELECTABLE_ACTIONS[from_state]
+                refused = earned_edge_refusal(from_state, to_state.value) is not None
+                assert refused != selectable, (
+                    f"{from_state.value} → {to_state.value}: the menu says "
+                    f"selectable={selectable} but the refusal says "
+                    f"refused={refused}. These must be one fact."
+                )
 
     def test_inv04_legal_graph_agrees_with_its_validator(self):
         """``LEGAL_TRANSITIONS`` and ``is_valid_action`` cannot disagree.
@@ -880,40 +921,39 @@ class TestINV14_DropdownUsesStandardHandshake:
         assert updated.closed_at is None
 
     @pytest.mark.asyncio
-    async def test_inv14_dropdown_investigating_to_resolved_thin_does_not_execute(
+    async def test_inv14_dropdown_investigating_to_resolved_is_refused(
         self,
     ):
-        """Dropdown INVESTIGATING → RESOLVED on a case lacking root cause /
-        solution pivots to propose CLOSED (assess_resolution_readiness
-        verdict SUGGEST_CLOSE). Either way, the case is NOT auto-resolved
-        and NOT auto-closed — a pending_transition is written for user
-        confirmation.
+        """INVESTIGATING → RESOLVED is not a menu pick, so it is refused.
 
-        Pins that the readiness-pivot branch (lines 1850-1873) honors the
-        handshake just like the direct-resolve branch.
+        This used to pin that the readiness pivot honoured the handshake: a
+        thin case picking Resolve got a CLOSED proposal rather than an
+        execution. That whole negotiation is gone — the readiness check now
+        decides whether the offer is MADE, so there is no pick to argue with.
+
+        What INV-14 still says about this edge is that nothing executes, and
+        the refusal says it more strongly than the pivot did: no
+        pending_transition is written either.
         """
         engine, _ = self._engine_and_repo()
         case = _make_investigating_case()
-        # No root cause, no solutions → SUGGEST_CLOSE verdict
 
-        result = await engine.process_turn(
-            case=case,
-            user_message="Mark this resolved.",
-            intent_type="status_transition",
-            intent_data={
-                "from_state": "investigating",
-                "to_state": "resolved",
-                "user_confirmed": True,
-            },
-        )
+        with pytest.raises(ValueError, match="not a user-selectable case action"):
+            await engine.process_turn(
+                case=case,
+                user_message="Mark this resolved.",
+                intent_type="status_transition",
+                intent_data={
+                    "from_state": "investigating",
+                    "to_state": "resolved",
+                    "user_confirmed": True,
+                },
+            )
 
-        updated = result["case_updated"]
-        # Either RESOLVED or CLOSED could be proposed depending on
-        # readiness verdict. The invariant is: not auto-executed.
-        assert updated.pending_transition is not None
-        assert updated.state == CaseState.INVESTIGATING
-        assert updated.resolved_at is None
-        assert updated.closed_at is None
+        assert case.pending_transition is None
+        assert case.state == CaseState.INVESTIGATING
+        assert case.resolved_at is None
+        assert case.closed_at is None
 
     def test_inv14_investigating_request_is_refused_before_any_mutation(self):
         """The INVESTIGATING refusal must come BEFORE section 0b's mutations.
@@ -931,10 +971,19 @@ class TestINV14_DropdownUsesStandardHandshake:
         """
         source = inspect.getsource(MilestoneEngine._process_turn_impl)
 
-        guard_idx = source.find("not a user-selectable case action")
+        # Anchor on the DERIVATION, not on the message. This test used to look
+        # for the phrase "not a user-selectable case action", and when a second
+        # refusal carrying the same phrase was added for RESOLVED, ``str.find``
+        # started returning whichever came first — so deleting the Gate-1
+        # refusal outright left all 58 tests in this file green (verified by
+        # mutation). There is one guard now and it is derived from
+        # ``USER_SELECTABLE_ACTIONS``, so this anchor is unambiguous and cannot
+        # be shadowed by adding another refusal beside it.
+        guard_idx = source.find("earned_edge_refusal(")
         assert guard_idx >= 0, (
-            "the INVESTIGATING refusal is gone from _process_turn_impl; "
-            "INQUIRY → INVESTIGATING must not be requestable (#1608)"
+            "the earned-edge refusal is gone from _process_turn_impl; neither "
+            "INQUIRY → INVESTIGATING (#1608) nor INVESTIGATING → RESOLVED "
+            "(contract 9.0.0) may be requestable"
         )
 
         for mutator in (
@@ -944,7 +993,7 @@ class TestINV14_DropdownUsesStandardHandshake:
             mutator_idx = source.find(mutator)
             assert mutator_idx >= 0, f"{mutator} no longer present — update this test"
             assert guard_idx < mutator_idx, (
-                f"INV-14 violation: the INVESTIGATING refusal is raised AFTER "
+                f"INV-14 violation: the earned-edge refusal is raised AFTER "
                 f"{mutator} runs. That unwinds past a mutation the turn never "
                 f"saves, dropping the fm#1122 decline signature and letting "
                 f"the engine re-nag with the offer the user contradicted."

@@ -176,65 +176,46 @@ async def test_ui_dropdown_investigating_to_closed_emits_canonical_close_pair():
 
 
 @pytest.mark.asyncio
-async def test_ui_dropdown_investigating_to_resolved_ready_emits_resolve_pair():
-    """READY case (root cause + solution): dropdown lands in the READY branch
-    and emits the canonical RESOLVED confirm/decline pair."""
+async def test_ui_dropdown_resolve_is_refused():
+    """RESOLVED is not user-selectable, so the engine refuses the pick.
+
+    It used to be, and the branch behind it ran the readiness check AFTER the
+    click and then argued with it — proposing, pivoting to close, or asking for
+    what was missing. Three tests lived here, one per answer. The check now
+    decides whether the offer is MADE, so there is one answer and it does not
+    depend on case content: a case rich enough for the old READY branch and one
+    too thin for it are refused identically.
+
+    ``InvestigationService._handle_status_transition`` turns this into a 422
+    before the engine is reached; this is the backstop for direct callers.
+    """
     engine = MilestoneEngine(
         MagicMock(),
         _make_repo(),
         investigation_tools=MagicMock(),
     )
-    case = _make_investigating_case()
-    case.progress.symptom_verified = True
-    _fill_for_resolution_ready(case)
+    ready = _make_investigating_case()
+    ready.progress.symptom_verified = True
+    _fill_for_resolution_ready(ready)
 
-    result = await engine.process_turn(
-        case=case,
-        user_message="Mark as resolved.",
-        intent_type="status_transition",
-        intent_data={
-            "from_state": "investigating",
-            "to_state": "resolved",
-            "user_confirmed": True,
-        },
-    )
-    assert result["case_updated"].pending_transition is not None
-    assert result["case_updated"].pending_transition["to_state"] == "resolved"
-    assert not result["case_updated"].pending_transition.get("needs_info")
-    _assert_canonical_confirm_pair(result["suggested_follow_ups"], "resolved")
+    thin = _make_investigating_case()
+    thin.progress.symptom_verified = True
 
-
-@pytest.mark.asyncio
-async def test_ui_dropdown_resolve_pivots_to_close_when_thin():
-    """SUGGEST_CLOSE pivot: when the user picks Resolve via dropdown but the
-    case has no root cause / solution / evidence, the engine must propose
-    CLOSED (not RESOLVED) and emit the canonical CLOSE pair so the user's
-    confirm click matches what they're actually being asked to do."""
-    engine = MilestoneEngine(
-        MagicMock(),
-        _make_repo(),
-        investigation_tools=MagicMock(),
-    )
-    case = _make_investigating_case()
-    case.progress.symptom_verified = True
-    # Deliberately no root_cause_conclusion, no solutions, no evidence.
-
-    result = await engine.process_turn(
-        case=case,
-        user_message="Mark as resolved.",
-        intent_type="status_transition",
-        intent_data={
-            "from_state": "investigating",
-            "to_state": "resolved",
-            "user_confirmed": True,
-        },
-    )
-    pending = result["case_updated"].pending_transition
-    assert pending is not None
-    assert pending["to_state"] == "closed"
-    # closure_reason engine-derived: investigating + no mitigation
-    assert pending.get("closure_reason") == "closed_insufficient_evidence"
-    _assert_canonical_confirm_pair(result["suggested_follow_ups"], "close")
+    for label, case in (("resolution-ready", ready), ("thin", thin)):
+        with pytest.raises(ValueError, match="not a user-selectable case action"):
+            await engine.process_turn(
+                case=case,
+                user_message="Mark as resolved.",
+                intent_type="status_transition",
+                intent_data={
+                    "from_state": "investigating",
+                    "to_state": "resolved",
+                    "user_confirmed": True,
+                },
+            )
+        assert (
+            case.pending_transition is None
+        ), f"{label}: the refusal must touch no state"
 
 
 @pytest.mark.asyncio
@@ -277,62 +258,6 @@ async def test_ui_dropdown_close_pivots_to_resolve_when_resolution_grade():
     )
     # closure_reason is None for RESOLVED (resolution itself is the categorization)
     assert pending.get("closure_reason") is None
-    _assert_canonical_confirm_pair(result["suggested_follow_ups"], "resolved")
-
-
-@pytest.mark.asyncio
-async def test_ui_dropdown_resolve_needs_info_keeps_resolve_pair():
-    """NEEDS_INFO branch: case has substance (root cause + evidence) but no
-    ``causal_absence_evidence`` row confirming the cause was eliminated.
-    Engine keeps the resolve intent so a follow-up turn confirming the cause
-    is gone can move forward, and shows the RESOLVED confirm pair while
-    flagging needs_info."""
-    engine = MilestoneEngine(
-        MagicMock(),
-        _make_repo(),
-        investigation_tools=MagicMock(),
-    )
-    case = _make_investigating_case()
-    case.progress.symptom_verified = True
-    # Substance (root cause + evidence) but NO causal_absence row → readiness
-    # routes to NEEDS_INFO (ask user to confirm elimination) instead of
-    # SUGGEST_CLOSE.
-    case.root_cause_conclusion = RootCauseConclusion(
-        root_cause="Alignment test root cause",
-        confidence_level=ConfidenceLevel.CONFIDENT,
-        likelihood=0.8,
-        mechanism="Test mechanism",
-    )
-    case.evidence.append(
-        Evidence(
-            summary="Test evidence",
-            category=EvidenceCategory.SYMPTOM_EVIDENCE,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
-            collected_at=datetime.now(timezone.utc),
-            collected_by="user_test",
-            primary_purpose="Alignment test",
-            preprocessed_content="Sample log line",
-            content_size_bytes=100,
-            preprocessing_method="manual",
-            source_file_id=None,
-            collected_at_turn=1,
-        )
-    )
-
-    result = await engine.process_turn(
-        case=case,
-        user_message="Mark as resolved.",
-        intent_type="status_transition",
-        intent_data={
-            "from_state": "investigating",
-            "to_state": "resolved",
-            "user_confirmed": True,
-        },
-    )
-    pending = result["case_updated"].pending_transition
-    assert pending is not None
-    assert pending["to_state"] == "resolved"
-    assert pending.get("needs_info") is True
     _assert_canonical_confirm_pair(result["suggested_follow_ups"], "resolved")
 
 

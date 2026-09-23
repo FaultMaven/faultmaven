@@ -355,10 +355,10 @@ async def test_the_guard_survives_a_short_circuited_decision():
         mp.setattr(me, "check_if_progress_made", counting_pred)
         mp.setattr(me, "score_progress", recording_score)
         result = await engine.process_turn(
-            case=_case_awaiting_confirmation("resolved", needs_info=False),
+            case=_case_awaiting_confirmation("resolved"),
             user_message="yes, resolved",
-            intent_type="status_transition",
-            intent_data={"to_state": "resolved"},
+            intent_type="confirmation",
+            intent_data={"value": True},
         )
 
     assert result["case_updated"].state == CaseState.RESOLVED
@@ -413,13 +413,17 @@ def _terminal_confirm_engine():
     return engine
 
 
-def _case_awaiting_confirmation(to_state: str, *, needs_info: bool):
+def _case_awaiting_confirmation(to_state: str):
     """An INVESTIGATING case with a standing terminal proposal.
 
-    ``needs_info`` is the router: step 0b's confirm short-circuit is guarded by
-    ``elif not needs_info``, so setting it sends the same click to the 0c
-    dropdown handler instead. That is what lets one fixture drive BOTH confirm
-    branches and compare them.
+    This took a ``needs_info`` flag, which was a ROUTER: step 0b's confirm
+    short-circuit is guarded by ``elif not needs_info``, so setting it sent the
+    same click to the 0c dropdown handler instead — which is what let one
+    fixture drive BOTH confirm branches and compare them. The resolve arm of 0c
+    is gone, so there is one confirm branch and nothing left to route to. The
+    parameter went with it rather than sitting here as a knob every call site
+    passes ``False`` to, inviting a later reader to re-derive a distinction the
+    code can no longer produce.
     """
     from datetime import UTC, datetime
 
@@ -459,67 +463,49 @@ def _case_awaiting_confirmation(to_state: str, *, needs_info: bool):
         # unguarded, so a hand-built pending without it never reaches the branch
         # under test.
         pending["closure_reason"] = "solution_deferred"
-    if needs_info:
-        pending["needs_info"] = True
     case.pending_transition = pending
     return case
 
 
 @pytest.mark.asyncio
-async def test_both_confirm_branches_answer_a_resolve_identically():
-    """One state change, one set of arms — whichever branch served the click.
+async def test_the_confirm_branch_reports_the_state_change_once():
+    """One state change, one set of arms.
 
-    Two branches confirm a standing terminal proposal without an LLM call: the
-    step-0b pending-transition short-circuit and the 0c status-transition
-    dropdown. They disagreed twice about the SAME event — 0c wrote
-    ``status_transitioned`` onto the outer working dict it never returns (so its
-    row reported no transition), and they hand-wrote ``milestones_completed``
-    differently (0c ``["solution_verified"]``, 0b none), so a consumer counting
-    gate completions off the stream mis-counted by which affordance was used.
+    This was a cross-BRANCH agreement test. Two branches confirmed a standing
+    terminal proposal without an LLM call — the step-0b pending-transition
+    short-circuit and the 0c status-transition dropdown — and they disagreed
+    twice about the SAME event: 0c wrote ``status_transitioned`` onto the outer
+    working dict it never returns (so its row reported no transition), and they
+    hand-wrote ``milestones_completed`` differently (0c ``["solution_verified"]``,
+    0b none), so a consumer counting gate completions off the stream mis-counted
+    by which affordance was used.
 
-    Driving ONE branch cannot see that: it is a cross-branch agreement, so the
-    test drives both and compares. The earlier version of this test drove 0c
-    only — and would not have caught the milestone half at all.
+    The second branch is gone: RESOLVED left the status menu, and the 0c resolve
+    arm went with it. Two implementations of one answer cannot disagree when
+    there is one implementation — that is the simplification the removal buys,
+    and it is why this test no longer compares. What remains worth pinning is
+    that the surviving branch reports the change it made.
     """
-    engine_0b = _terminal_confirm_engine()
-    result_0b = await engine_0b.process_turn(
-        case=_case_awaiting_confirmation("resolved", needs_info=False),
+    engine = _terminal_confirm_engine()
+    result = await engine.process_turn(
+        case=_case_awaiting_confirmation("resolved"),
         user_message="yes, resolved",
-        intent_type="status_transition",
-        intent_data={"to_state": "resolved"},
+        intent_type="confirmation",
+        intent_data={"value": True},
     )
 
-    engine_0c = _terminal_confirm_engine()
-    result_0c = await engine_0c.process_turn(
-        case=_case_awaiting_confirmation("resolved", needs_info=True),
-        user_message="yes, resolved",
-        intent_type="status_transition",
-        intent_data={"to_state": "resolved"},
-    )
+    assert result["case_updated"].state == CaseState.RESOLVED
+    assert engine._auto_generate_report.await_count == 1
 
-    # Denominators: BOTH branches ran, both reached RESOLVED, and they are
-    # genuinely different branches — 0c is the one that composes its reply
-    # through _auto_generate_report after the 0b guard has been routed past.
-    for label, result in (("0b", result_0b), ("0c", result_0c)):
-        assert result["case_updated"].state == CaseState.RESOLVED, label
-    assert engine_0b._auto_generate_report.await_count == 1
-    assert engine_0c._auto_generate_report.await_count == 1
+    arms = result["metadata"][TELEMETRY_HANDOFF_KEY]["arms"]
+    assert (
+        arms["status_transitioned"] == 1
+    ), f"the confirm turn transitioned the case but its row does not say so: {arms}"
+    assert arms["milestones_completed"] == 1, arms
 
-    arms_0b = result_0b["metadata"][TELEMETRY_HANDOFF_KEY]["arms"]
-    arms_0c = result_0c["metadata"][TELEMETRY_HANDOFF_KEY]["arms"]
-
-    assert arms_0b == arms_0c, (
-        "the two confirm branches report different arms for the same state "
-        f"change: 0b={arms_0b} 0c={arms_0c}"
-    )
-    assert arms_0b["status_transitioned"] == 1
-    assert arms_0b["milestones_completed"] == 1
-    for label, result in (("0b", result_0b), ("0c", result_0c)):
-        assert result["metadata"]["progress_made"] is True, label
-        assert result["metadata"]["status_transitioned"] is True, label
-        assert result["metadata"]["milestones_completed"] == [
-            "solution_verified"
-        ], label
+    assert result["metadata"]["progress_made"] is True
+    assert result["metadata"]["status_transitioned"] is True
+    assert result["metadata"]["milestones_completed"] == ["solution_verified"]
 
 
 @pytest.mark.asyncio
@@ -534,7 +520,7 @@ async def test_a_confirmed_close_does_not_claim_a_resolution_milestone():
     """
     engine = _terminal_confirm_engine()
     result = await engine.process_turn(
-        case=_case_awaiting_confirmation("closed", needs_info=False),
+        case=_case_awaiting_confirmation("closed"),
         user_message="yes, close it",
         intent_type="status_transition",
         intent_data={"to_state": "closed"},

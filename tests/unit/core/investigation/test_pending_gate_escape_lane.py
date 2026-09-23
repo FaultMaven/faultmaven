@@ -33,11 +33,22 @@ from faultmaven.core.investigation.milestone_engine import (
     MilestoneEngine,
     MilestoneEngineError,
 )
+from faultmaven.core.investigation.terminal_transitions import (
+    closure_verdict,
+    deferred_disposition_signature,
+)
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseState,
+    ConfidenceLevel,
+    Evidence,
+    EvidenceCategory,
+    EvidenceSourceType,
     InvestigationProgress,
     ProblemVerification,
+    RootCauseConclusion,
+    Solution,
+    SolutionType,
 )
 
 # The two messages that were swallowed in the live incident.
@@ -66,6 +77,43 @@ def _engine():
     engine = MilestoneEngine(MagicMock(), _make_repo(), investigation_tools=MagicMock())
     engine._generate_structured_output = AsyncMock(side_effect=_SeamReached())
     return engine
+
+
+def _resolution_ready_case() -> Case:
+    """An INVESTIGATING case carrying a qualifying causal-absence row.
+
+    ``SUGGEST_RESOLVE`` and ``assess_resolution_readiness`` READY both gate on
+    exactly this, so it is the only shape on which a SIGNED resolve offer can
+    exist — which is what makes it the only shape worth testing the
+    contradicting pick against.
+    """
+    case = _investigating_case_with_pending_close()
+    case.pending_transition = None
+    case.progress.symptom_verified = True
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause="etcd peer certificate expired on member 2",
+        mechanism="Expired peer cert drops the member from the quorum.",
+        confidence_level=ConfidenceLevel.CONFIDENT,
+        likelihood=0.85,
+    )
+    case.solutions = [
+        Solution(
+            solution_type=SolutionType.CONFIG_CHANGE,
+            title="Rotate the etcd peer certificate",
+            longterm_fix="Automate peer-cert rotation before expiry.",
+        )
+    ]
+    case.evidence.append(
+        Evidence(
+            category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            primary_purpose="confirm the cause was eliminated",
+            summary="After the cert rotation the member rejoined and the alerts stopped.",
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            collected_by="user",
+            collected_at_turn=1,
+        )
+    )
+    return case
 
 
 def _investigating_case_with_pending_close(re_presented: bool = False) -> Case:
@@ -288,38 +336,59 @@ class TestWithdrawalRecordsTheEngineOffer:
         ]
 
     @pytest.mark.asyncio
-    async def test_contradicting_status_pick_records_the_refusal(self):
-        """Picking a different disposition while a close offer stands is a
-        refusal of that offer.
+    async def test_contradicting_status_pick_on_a_resolvable_case_records_nothing(
+        self,
+    ):
+        """A refusal the engine immediately OVERRIDES is not a refusal.
 
-        Was "pick Investigating", which is no longer a user action at all
-        (#1608) and is now refused before any state is touched — deliberately,
-        because clicking a button that no longer exists is not a considered
-        refusal of the close. "Mark as resolved" is the contradiction that
-        still exists, and it carries the same meaning.
+        The shape has moved twice as the menu shed entries — originally "pick
+        Investigating" (#1608), then a standing CLOSE contradicted by "Mark as
+        resolved" (gone with the resolve entry). What is left is a standing
+        RESOLVE picked against with CLOSED, and on that shape the arm must
+        record NOTHING.
+
+        Why: a signed resolve offer exists only where an engine proposer made
+        it, and both require SUGGEST_RESOLVE — which is exactly where INV-37
+        pivots the close pick straight back to a resolve proposal, on this same
+        turn. Recording "the user refused resolve" would log "not re-proposing
+        until the justifying state changes" and then re-propose in the next
+        breath, while permanently poisoning the signature the INV-43 backstop
+        keys on.
+
+        ‼ An earlier version of this test asserted the OPPOSITE, on a fixture
+        production cannot produce: a signed resolve pending on a case with no
+        evidence and no root cause. It was green because the thin case misses
+        SUGGEST_RESOLVE, so the override guard never fired — a configuration
+        that cannot occur, pinned as if it were the rule.
         """
         engine = _engine()
-        case = self._engine_proposed_case()
+        case = _resolution_ready_case()
+        case.pending_transition = {
+            "to_state": "resolved",
+            "summary": "Shall I mark this case resolved?",
+            "evidence_ids": [],
+            "proposed_at": datetime.now(UTC).isoformat(),
+            "justifying_signature": deferred_disposition_signature(
+                case, closure_verdict(case)
+            ),
+        }
 
-        # A disposition pick is handled deterministically — it does not reach
-        # the LLM seam, so there is no sentinel to catch here.
         await engine.process_turn(
             case=case,
             user_message="",
             intent_type="status_transition",
-            intent_data={"to_state": "resolved"},
+            intent_data={"to_state": "closed"},
         )
 
-        # The subject: the refusal is RECORDED, so the engine cannot re-fire
-        # the same deferred close from state the user just contradicted.
-        #
-        # Deliberately not asserting what now occupies ``pending_transition``.
-        # On a thin case INV-37's SUGGEST_CLOSE pivot turns the resolve request
-        # back into a close offer of its own, so the slot is filled either way;
-        # the signature is what stops the re-nag.
-        assert case.progress.deferred_disposition_declined_signatures == [
-            "SUGGEST_CLOSE|1|chain"
-        ]
+        assert case.progress.deferred_disposition_declined_signatures == [], (
+            "a refusal was recorded for an offer the engine re-made on the "
+            "same turn; that suppresses the backstop for a decision the user "
+            "never got to take"
+        )
+        assert (case.pending_transition or {}).get("to_state") == "resolved", (
+            "premise: INV-37 pivots the close pick back to resolve here — "
+            "without that pivot this test is asserting the wrong rule"
+        )
 
     @pytest.mark.asyncio
     async def test_withdrawal_of_another_proposers_offer_records_nothing(self):

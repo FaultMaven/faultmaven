@@ -15,6 +15,7 @@ logging.basicConfig(
 from unittest.mock import AsyncMock, MagicMock
 
 from faultmaven.core.investigation.schemas import TurnPayload
+from faultmaven.exceptions import ValidationException
 from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
@@ -131,19 +132,17 @@ async def test_intent_routing():
     # =========================================================================
     print("\n🧪 Test 3: Explicit Status Transition")
 
-    # Mock logic inside _handle_status_transition would need full implementation,
-    # but we can verify it routes correctly by mocking the handler method on the instance
-    # (Checking if it calls engine with correct intent data)
-
-    # We will just verify it calls engine with structured intent for now,
-    # since we mocked the engine.
-
+    # CLOSED, not RESOLVED. RESOLVED stopped being a user-selectable case
+    # action (contract 9.0.0) — it is earned by a confirmed root-cause
+    # elimination and offered by the agent — so the service refuses it at the
+    # boundary and the engine is never reached. Routing is still the subject
+    # here, so it is exercised on the one disposition a user may still pick.
     mock_case.messages = []  # Reset messages
 
     payload_transition = TurnPayload(
-        query="Resolve this",
+        query="Close this",
         intent=QueryIntent(
-            type=IntentType.STATUS_TRANSITION, to_state=CaseState.RESOLVED
+            type=IntentType.STATUS_TRANSITION, to_state=CaseState.CLOSED
         ),
     )
 
@@ -155,13 +154,38 @@ async def test_intent_routing():
         kwargs = call_args.kwargs
         if (
             kwargs.get("intent_type") == "status_transition"
-            and kwargs.get("intent_data", {}).get("to_state") == "resolved"
+            and kwargs.get("intent_data", {}).get("to_state") == "closed"
         ):
             print("✅ Engine called with correct 'status_transition' intent and data")
         else:
             print(f"❌ Engine called with incorrect args: {kwargs}")
     else:
         print("❌ Engine was not called (or logic bypassed engine unexpectedly)")
+
+    # =========================================================================
+    # Test 4: The refused edges never reach the engine
+    # =========================================================================
+    print("\n🧪 Test 4: Earned edges are refused at the boundary")
+
+    for refused in (CaseState.RESOLVED, CaseState.INVESTIGATING):
+        mock_engine.process_turn.reset_mock()
+        mock_case.messages = []
+        try:
+            await service.process_turn(
+                case_id,
+                user_id,
+                TurnPayload(
+                    query=f"Set {refused.value}",
+                    intent=QueryIntent(
+                        type=IntentType.STATUS_TRANSITION, to_state=refused
+                    ),
+                ),
+            )
+            print(f"❌ {refused.value} was accepted; it must be refused")
+        except ValidationException as exc:
+            assert "not a user-selectable case action" in str(exc)
+            assert not mock_engine.process_turn.called
+            print(f"✅ {refused.value} refused at the boundary, engine untouched")
 
     print("\nDONE")
 

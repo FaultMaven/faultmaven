@@ -291,7 +291,15 @@ def _investigation_verification_response() -> InvestigationResponse_Diagnosis:
 
 
 def _investigation_propose_resolved_response() -> InvestigationResponse_Treatment:
-    """Investigation response: agent proposes resolution."""
+    """Investigation response: agent proposes resolution.
+
+    Co-emits the backing ``causal_absence_evidence`` row, as the COMPLETION
+    prompt requires ("emit both this turn or emit neither"). Without it the
+    readiness gate returns NEEDS_INFO and the proposal is flagged accordingly —
+    which is what these tests used to produce, and they then confirmed it
+    anyway through the dropdown arm that did not re-read readiness. The bar is
+    the row; a fixture that proposes without one is testing the bypass.
+    """
     return InvestigationResponse_Treatment(
         agent_response=(
             "The root cause has been identified: a connection leak in the new "
@@ -309,6 +317,17 @@ def _investigation_propose_resolved_response() -> InvestigationResponse_Treatmen
                 solution_proposed=True,
                 solution_accepted=True,
             ),
+            evidence_to_add=[
+                EvidenceToAdd(
+                    summary=(
+                        "Root cause no longer present after the rollback: the "
+                        "connection leak is gone and p99 is back to 200ms"
+                    ),
+                    category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+                    source_type=EvidenceSourceType.USER_DESCRIPTION,
+                    extract="p99 is back to 200ms, no further connection errors",
+                ),
+            ],
             proposed_transition=ProposedTransition(
                 to_state="resolved",
                 reason="Root cause identified and fix applied.",
@@ -590,13 +609,13 @@ class TestInvestigationLifecycle:
         assert case.pending_transition is not None
         assert case.pending_transition["to_state"] == "resolved"
 
-        # === Turn 5: User confirms resolution via explicit intent ===
+        # === Turn 5: User confirms resolution by clicking the DECIDE pair ===
         case.current_turn = 5
         result = await engine.process_turn(
             case,
             "yes",
-            intent_type="status_transition",
-            intent_data={"to_state": "resolved", "from_state": "investigating"},
+            intent_type="confirmation",
+            intent_data={"value": True},
         )
         case = result["case_updated"]
         assert case.state == CaseState.RESOLVED
@@ -741,13 +760,16 @@ class TestCheckpointing:
         assert cp.metadata["from_state"] == "inquiry"
         assert cp.metadata["to_state"] == "investigating"
 
-    async def test_explicit_ui_resolve_proposes_then_confirms(
+    async def test_agent_proposed_resolve_then_confirm_is_checkpointed(
         self, engine, case_repo, checkpoint_service
     ):
-        """Explicit UI resolve via status_transition proposes transition, then confirms.
+        """A proposed resolution is checkpointed before the confirm executes it.
 
-        Design: Dropdown = message. First click proposes transition via
-        User-Agent Handshake. Second click (or confirm) executes it.
+        Was "explicit UI resolve via status_transition": first Resolve click
+        proposes, second confirms. RESOLVED is no longer a menu pick, so the
+        two turns are the ones that actually happen — the agent proposes, the
+        user clicks the DECIDE pair — and the checkpoint boundary this test
+        exists for is unchanged.
         """
         from faultmaven.modules.case.contracts import (
             RootCauseConclusion,
@@ -772,31 +794,48 @@ class TestCheckpointing:
         ]
         await case_repo.save(case)
 
-        # Turn 1: First Resolve dropdown — proposes transition, does NOT execute
-        result = await engine.process_turn(
-            case,
-            "Mark as resolved",
-            intent_type="status_transition",
-            intent_data={"to_state": "resolved", "from_state": "investigating"},
-        )
+        # Turn 1: the agent proposes — does NOT execute
+        with patch.object(
+            engine,
+            "_generate_structured_output",
+            return_value=_investigation_propose_resolved_response(),
+        ):
+            result = await engine.process_turn(
+                case, "I applied the config change and latency is back to normal"
+            )
 
         case = result["case_updated"]
         assert case.state == CaseState.INVESTIGATING  # NOT resolved yet
         assert case.pending_transition is not None
         assert case.pending_transition["to_state"] == "resolved"
 
-        # Turn 2: Second Resolve dropdown — confirms pending transition
+        # Turn 2: the user clicks the DECIDE pair — confirms the pending
         case.current_turn = 6
         result = await engine.process_turn(
             case,
             "yes",
-            intent_type="status_transition",
-            intent_data={"to_state": "resolved", "from_state": "investigating"},
+            intent_type="confirmation",
+            intent_data={"value": True},
         )
 
         assert result["case_updated"].state == CaseState.RESOLVED
         persisted = await case_repo.get(case.case_id)
         assert persisted.state == CaseState.RESOLVED
+
+        # The checkpoint this test is NAMED for. It asserted only the state
+        # change, so deleting the ``create_checkpoint`` call in section 0b's
+        # confirm arm left it green while its name claimed to cover it — and
+        # `checkpoint_service` was injected and never read. Asserted the way
+        # its sibling above does, against the persisted record.
+        checkpoints = await case_repo.get_checkpoints(case.case_id)
+        pre_change_cps = [cp for cp in checkpoints if cp.trigger == "pre_case_action"]
+        assert pre_change_cps, (
+            "no pre_case_action checkpoint was taken before the terminal "
+            "transition — the confirm arm's checkpoint is the point of this test"
+        )
+        cp = pre_change_cps[-1]
+        assert cp.case_id == case.case_id
+        assert cp.metadata["to_state"] == "resolved"
 
 
 # ============================================================

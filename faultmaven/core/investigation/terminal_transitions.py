@@ -551,38 +551,59 @@ def derive_closure_reason(case: "Case") -> str:
 # helper produces a stable per-disposition shape suitable for read-time
 # consumption and listed queries.
 #
-# Each value carries a single, disposition-independent semantic so the
-# frontend can render copy / icon / tooltip per-value without needing to
-# branch on which disposition it's looking at.
+# ‼ The two keys answer for DIFFERENT AUDIENCES, and conflating them is how a
+# client ends up rendering a control that cannot do what it says.
+#
+#   "closed"   — gates a user CONTROL. Closing is user-selectable, so this key
+#                says whether to render it.
+#   "resolved" — gates NOTHING in the UI. RESOLVED left the status menu when
+#                the engine learned to see the bar itself: this is the engine's
+#                own readiness verdict, and what it decides is whether the
+#                agent OFFERS the resolution handshake (INV-43). It is
+#                published because it is a real fact about the case — useful
+#                for a list badge, a triage view, or a simulator's affordance
+#                block — not because something should be clickable.
 #
 # Values:
 #   "ready"
-#       Disposition is a valid action and case content supports it
-#       without follow-up prompts. Frontend should render the
-#       affordance enabled with the default "click to confirm" UX.
+#       Case content supports this disposition with no follow-up. On the
+#       CLOSED side: render the control. On the RESOLVED side: the engine
+#       proposes the handshake; render nothing.
 #
 #   "needs_info"
-#       Disposition is a valid action but the case is partial. The
-#       user must provide MORE information (root cause / solution)
-#       before the transition can complete. UX: prompt the user to
-#       ADD data. Currently only applies to the Resolve side.
+#       Content is partial — the user must supply MORE (root cause /
+#       solution / confirmation the problem is gone) before the disposition
+#       can complete. Resolve side only. No control either way: the agent
+#       asks for the missing pieces in conversation.
 #
 #   "suggests_alternative"
-#       Disposition is a valid action but the system recommends the
-#       OTHER disposition based on case content. UX: warn the user
-#       and offer the alternative; if they confirm anyway, proceed.
-#       Currently only applies to the Close side (when the case has
-#       root cause + solution → resolving is recommended; closing
-#       would discard attribution). Different UX from "needs_info":
-#       the user isn't asked to add data, they're asked to RE-DIRECT
-#       to a different action.
+#       Close side only, and it means DO NOT RENDER CLOSE. It is set exactly
+#       when ``assess_closure_readiness`` returns SUGGEST_RESOLVE, which holds
+#       exactly when a qualifying ``causal_absence_evidence`` row is on the
+#       case — the same predicate as resolution READY. On such a case INV-37
+#       pivots every close to a resolve proposal, at the proposal boundary and
+#       again at the confirm boundary, so a Close control there is one that can
+#       only ever produce "shall I mark this resolved?". The honest rendering
+#       is no status control at all: the case has one terminal destination and
+#       the engine is already offering it.
 #
 #   "not_eligible"
-#       Disposition is not a valid edge from the current status, OR
-#       readiness verdict says this disposition shouldn't be offered
-#       at all (e.g., SUGGEST_CLOSE pivots resolve→close, so
-#       "resolved" is not_eligible). Frontend should hide the
-#       affordance entirely.
+#       Not a valid edge from the current status, or the readiness verdict
+#       says this disposition should not be offered at all (SUGGEST_CLOSE
+#       pivots resolve→close, so "resolved" reads not_eligible). Render
+#       nothing.
+#
+# ‼ KNOWN ASYMMETRY, stated rather than hidden. ``resolved`` was removed from
+# ``valid_next_states`` outright, on the argument that a description is not a
+# gate — one client honoured it, the legacy fallback did not. ``closed`` on a
+# SUGGEST_RESOLVE case is still LISTED and gated only by this description, so
+# the same argument applies to it. The consequence differs in kind, which is
+# why the two were not treated alike: a rendered Resolve produced a validation
+# ERROR, while a rendered Close produces a coherent REDIRECT — the engine
+# pivots it to "shall I mark this resolved?" and nothing is lost. Closing the
+# gap properly means making ``valid_next_states`` depend on case content, which
+# it deliberately does not today (a static dict lookup, no case read), and that
+# is a contract decision rather than a wording one.
 
 DISPOSITION_ELIGIBILITY_READY = "ready"
 DISPOSITION_ELIGIBILITY_NEEDS_INFO = "needs_info"
@@ -605,13 +626,12 @@ def derive_disposition_eligibility(case: "Case") -> dict[str, str]:
     labels — keep it in sync with ``assess_resolution_readiness`` and
     ``assess_closure_readiness`` outputs.
 
-    Each eligibility value carries a single, disposition-independent
-    semantic (see module-level constant docs above) so the frontend
-    can render copy / icon / tooltip per value without having to
-    branch on which disposition column it's looking at. ``needs_info``
-    means "add data"; ``suggests_alternative`` means "consider the
-    other action". The two are deliberately distinct because they
-    drive different UX patterns.
+    ‼ The two keys answer for DIFFERENT audiences — see the constants block
+    above, which is authoritative. ``closed`` gates a user CONTROL.
+    ``resolved`` gates nothing in the UI: RESOLVED left the status menu, so it
+    is the engine's own readiness verdict and what it decides is whether the
+    agent OFFERS the resolution handshake. A client that reads the two the same
+    way renders a control that cannot do what it says.
 
     Semantics by current state:
 
@@ -619,14 +639,15 @@ def derive_disposition_eligibility(case: "Case") -> dict[str, str]:
       (resolution requires investigation work). Returns
       ``{"resolved": "not_eligible", "closed": "ready"}``.
 
-    - INVESTIGATING: both edges are valid. Resolved eligibility derives
-      from ``assess_resolution_readiness`` (READY → ready,
-      NEEDS_INFO → needs_info, SUGGEST_CLOSE → not_eligible).
-      Closed eligibility is ``ready`` by default; if
-      ``assess_closure_readiness`` returns SUGGEST_RESOLVE (case has
-      root cause + solution), closed → ``suggests_alternative`` so
-      the frontend can warn the user that resolving would preserve
-      attribution.
+    - INVESTIGATING: only CLOSED is user-selectable. Resolved eligibility
+      derives from ``assess_resolution_readiness`` (READY → ready,
+      NEEDS_INFO → needs_info, SUGGEST_CLOSE → not_eligible) and drives the
+      engine's own handshake rather than a control. Closed eligibility is
+      ``ready`` by default; if ``assess_closure_readiness`` returns
+      SUGGEST_RESOLVE, closed → ``suggests_alternative``, which means DO NOT
+      RENDER: that verdict holds exactly when a qualifying absence row is on
+      the case, which is exactly when INV-37 pivots every close back to a
+      resolve proposal.
 
     - Terminal (RESOLVED / CLOSED): no further actions. Returns all
       ``not_eligible``.
@@ -649,21 +670,22 @@ def derive_disposition_eligibility(case: "Case") -> dict[str, str]:
     if resolution.verdict == ResolutionReadiness.READY:
         resolved_eligibility = DISPOSITION_ELIGIBILITY_READY
     elif resolution.verdict == ResolutionReadiness.NEEDS_INFO:
-        # Case is partial; user needs to ADD data before resolving.
+        # Partial: the agent asks for what is missing rather than proposing.
         resolved_eligibility = DISPOSITION_ELIGIBILITY_NEEDS_INFO
     else:  # SUGGEST_CLOSE
-        # Resolved-readiness says the case is too thin for resolution;
-        # closing is the right disposition. Frontend should not offer
-        # Resolved on a SUGGEST_CLOSE case.
+        # Too thin for resolution; closing is the right disposition. No
+        # frontend consequence either way — the resolve key gates nothing in
+        # the UI, it decides whether the AGENT offers the handshake.
         resolved_eligibility = DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE
 
     closure = assess_closure_readiness(case)
     if closure.verdict == ClosureReadiness.SUGGEST_RESOLVE:
-        # Case qualifies for resolved; closing would discard the
-        # resolution attribution. Surface as ``suggests_alternative``
-        # so the frontend can warn the user and offer the resolve
-        # path instead — distinct UX from ``needs_info`` which asks
-        # the user to add data.
+        # ``suggests_alternative`` means DO NOT RENDER CLOSE. This verdict
+        # holds exactly when a qualifying absence row is on the case, which is
+        # exactly when INV-37 pivots every close back to a resolve proposal —
+        # so a Close control here could only ever produce "shall I mark this
+        # resolved?". It does NOT mean "warn and offer anyway"; there is no
+        # alternative control to offer, because resolve is not one.
         closed_eligibility = DISPOSITION_ELIGIBILITY_SUGGESTS_ALTERNATIVE
     else:
         # HAS_SUBSTANCE or TRIVIAL — closing is always ready as a

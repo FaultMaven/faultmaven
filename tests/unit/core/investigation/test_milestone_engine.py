@@ -651,12 +651,16 @@ class TestMilestoneEngine:
     ):
         """Integration test: Complete User-Agent Handshake flow for terminal transition
 
-        Drives the engine via structured status_transition intents (the
-        same shape produced by both UI clicks and
-        InvestigationService._detect_transition_intent for typed text):
-        1. Turn N: status_transition → resolved → engine proposes transition
-        2. Turn N+1: status_transition → resolved with pending exists →
-           engine confirms and executes the transition.
+        1. Turn N: the case is resolution-READY and nobody has opened the
+           handshake, so the engine opens it itself (INV-43) and proposes.
+        2. Turn N+1: the user confirms with the DECIDE pair's ``confirmation``
+           intent and the engine executes the transition.
+
+        Both turns used to be driven by a ``status_transition resolved``
+        intent, described here as "the same shape produced by UI clicks and
+        InvestigationService._detect_transition_intent". Neither is true any
+        more: RESOLVED left the status menu, and that detector never existed.
+        The handshake itself is unchanged, which is what this test is for.
         """
         engine = MilestoneEngine(
             mock_llm,
@@ -669,18 +673,19 @@ class TestMilestoneEngine:
         base_case.progress.symptom_verified = True
         _make_resolution_ready(base_case)
 
-        # ===== TURN N: structured RESOLVED request → proposes transition =====
+        # ===== TURN N: the engine sees READY and opens the handshake =====
 
-        result_turn_n = await engine.process_turn(
-            base_case,
-            "the fix worked",
-            intent_type="status_transition",
-            intent_data={
-                "from_state": CaseState.INVESTIGATING,
-                "to_state": "resolved",
-                "user_confirmed": False,
-            },
+        # The model proposes NOTHING — which is the point. The case carries a
+        # qualifying causal_absence row, so the backstop opens the handshake
+        # regardless of what the model did or did not emit.
+        mock_llm.generate.return_value = json.dumps(
+            {
+                "agent_response": "Good — the pool timeout change held.",
+                "state_updates": {"outcome": "conversation"},
+            }
         )
+
+        result_turn_n = await engine.process_turn(base_case, "the fix worked")
 
         updated_case = result_turn_n["case_updated"]
 
@@ -701,17 +706,12 @@ class TestMilestoneEngine:
         )
         mock_llm.generate.return_value = mock_response_content_confirm
 
-        # User explicitly confirms via structured status_transition
-        # (same shape a UI confirm button would produce).
+        # User confirms by clicking the DECIDE pair the engine just emitted.
         result_turn_n1 = await engine.process_turn(
             updated_case,
             "yes, go ahead",
-            intent_type="status_transition",
-            intent_data={
-                "from_state": CaseState.INVESTIGATING,
-                "to_state": "resolved",
-                "user_confirmed": True,
-            },
+            intent_type="confirmation",
+            intent_data={"value": True},
         )
 
         final_case = result_turn_n1["case_updated"]
@@ -939,242 +939,38 @@ class TestMilestoneEngine:
         assert inquiry_case.inquiry.problem_statement_confirmed is False
 
     @pytest.mark.asyncio
-    async def test_resolved_dropdown_proposes_transition(
-        self, mock_llm, mock_repo, base_case
-    ):
-        """Dropdown INVESTIGATING→RESOLVED proposes transition when case is ready.
+    async def test_resolved_dropdown_is_refused(self, mock_llm, mock_repo, base_case):
+        """RESOLVED is not user-selectable, so the pick is refused.
 
-        Design: The first click checks resolution readiness. If the case has
-        root cause + solution, it proposes the transition and returns immediately
-        with a confirmation prompt (skips the full LLM pipeline to avoid timeout).
-        The transition does NOT execute until the user confirms on the next turn.
+        Five tests lived here, one per answer the old branch gave: propose on
+        READY, pivot to close when thin, confirm a standing pending, inject the
+        pre-composed ``CASE_ACTION_MESSAGES`` string, and score no progress.
+        All five described a handler that ran the readiness check AFTER the
+        click and then negotiated with it — including one arm that confirmed a
+        ``needs_info`` proposal without re-reading readiness at all. The check
+        now decides whether the offer is MADE, so there is one answer.
+
+        Mirrors ``INVESTIGATING`` above: refused before the LLM is reached and
+        before any state is touched.
         """
-        from faultmaven.modules.case.contracts import (
-            RootCauseConclusion,
-            Solution,
-            SolutionType,
-        )
-
-        # Set up a case that meets resolution criteria
-        base_case.root_cause_conclusion = RootCauseConclusion(
-            root_cause="Misconfigured connection pool timeout",
-            confidence_level="verified",
-            likelihood=0.9,
-            mechanism="Connection pool timeout set to 1s caused cascading failures under load",
-        )
-        base_case.solutions = [
-            Solution(
-                solution_type=SolutionType.CONFIG_CHANGE,
-                title="Increase connection pool timeout to 30s",
-                longterm_fix="Update pool timeout in application config",
-            )
-        ]
-
-        engine = MilestoneEngine(
-            mock_llm,
-            mock_repo,
-            investigation_tools=MagicMock(),
-        )
-
-        result = await engine.process_turn(
-            case=base_case,
-            user_message="The issue is resolved.",
-            intent_type="status_transition",
-            intent_data={"from_state": "investigating", "to_state": "resolved"},
-        )
-
-        updated_case = result["case_updated"]
-
-        # Case should still be INVESTIGATING (transition proposed, not executed)
-        assert updated_case.state == CaseState.INVESTIGATING
-
-        # Pending transition should be set
-        assert updated_case.pending_transition is not None
-        assert updated_case.pending_transition["to_state"] == "resolved"
-
-        # LLM is NOT called — response is returned immediately with proposal message
-        assert not mock_llm.generate.called
-
-        # Response contains confirmation prompt with root cause and solution
-        assert "resolved" in result["agent_response"].lower()
-        assert "root cause" in result["agent_response"].lower()
-
-        # #1284: a PROPOSAL is not an advancement. This case is not yet
-        # resolution-ready, so it lands on the NEEDS_INFO branch — which always
-        # scored False. The READY branch, which did not, is pinned by
-        # test_ready_dropdown_proposal_scores_no_progress below.
-        meta = result["metadata"]
-        assert meta["progress_made"] is False
-        assert meta["milestones_completed"] == []
-        assert not meta.get("status_transitioned")
-
-    @pytest.mark.asyncio
-    async def test_ready_dropdown_proposal_scores_no_progress(
-        self, mock_llm, mock_repo, base_case
-    ):
-        """#1284: proposing a terminal transition is not progress on ANY affordance.
-
-        The READY branch of the INVESTIGATING->RESOLVED dropdown asserted
-        ``progress_made=True`` with every arm 0 — the shape ``case_telemetry``
-        names a LYING COUNTER — for a turn that transitions nothing. The
-        handshake (§1.2) puts the case action on the user's LATER confirm turn,
-        which scores it through ``confirmed_transition_arms``; counting the
-        proposal too double-counts one case action, and made the same event
-        score or not according to which affordance the user reached for (the
-        three LLM-path proposal sites let the predicate decide, and it says no).
-
-        Reaching this branch needs a genuinely resolution-ready case — a
-        ``causal_absence_evidence`` row, not merely a root cause and a solution.
-        """
-        _make_resolution_ready(base_case)
-
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        result = await engine.process_turn(
-            case=base_case,
-            user_message="The issue is resolved.",
-            intent_type="status_transition",
-            intent_data={"from_state": "investigating", "to_state": "resolved"},
-        )
+        base_case.state = CaseState.INVESTIGATING
 
-        updated_case = result["case_updated"]
-        # Positive control: this is the READY branch, not the NEEDS_INFO one —
-        # otherwise the assertions below would pin a path that always passed.
-        assert updated_case.pending_transition is not None
-        assert not updated_case.pending_transition.get("needs_info")
-        assert updated_case.state == CaseState.INVESTIGATING
-
-        meta = result["metadata"]
-        assert meta["progress_made"] is False
-        assert meta["milestones_completed"] == []
-        assert not meta.get("status_transitioned")
-
-    @pytest.mark.asyncio
-    async def test_resolved_dropdown_suggests_close_when_not_ready(
-        self, mock_llm, mock_repo, base_case
-    ):
-        """Dropdown RESOLVED on a thin case pivots to CLOSED.
-
-        When the case lacks root cause / solution / evidence, the readiness
-        verdict is SUGGEST_CLOSE. The engine pivots to a CLOSED proposal so
-        the prompt the user sees and the DECIDE confirmation pair both
-        align with what they're actually being asked to do.
-        """
-        # base_case has no root_cause_conclusion, no solutions, no evidence
-        engine = MilestoneEngine(
-            mock_llm,
-            mock_repo,
-            investigation_tools=MagicMock(),
-        )
-
-        result = await engine.process_turn(
-            case=base_case,
-            user_message="The issue is resolved.",
-            intent_type="status_transition",
-            intent_data={"from_state": "investigating", "to_state": "resolved"},
-        )
-
-        # Case stays INVESTIGATING; pending transition pivots to CLOSED
-        # (not RESOLVED) so the user's confirm click closes the case.
-        assert result["case_updated"].state == CaseState.INVESTIGATING
-        assert result["case_updated"].pending_transition is not None
-        assert result["case_updated"].pending_transition["to_state"] == "closed"
-        # No needs_info flag — pivot path doesn't carry resolve intent forward.
-        assert not result["case_updated"].pending_transition.get("needs_info")
-
-        # Response suggests closing
-        assert "close" in result["agent_response"].lower()
-
-        # LLM is NOT called
-        assert not mock_llm.generate.called
-
-    @pytest.mark.asyncio
-    async def test_resolved_dropdown_with_pending_confirms(
-        self, mock_llm, mock_repo, base_case
-    ):
-        """Dropdown RESOLVED with existing pending transition confirms it.
-
-        If the user clicks Resolve again when a pending transition already
-        exists, it acts as confirmation and executes the transition.
-        """
-        engine = MilestoneEngine(
-            mock_llm,
-            mock_repo,
-            investigation_tools=MagicMock(),
-        )
-
-        # Set up pending transition from a previous turn
-        base_case.pending_transition = {
-            "to_state": "resolved",
-            "reason": "User indicated resolution",
-            "summary": "Issue resolved",
-            "evidence_ids": [],
-            "proposed_at": "2026-03-01T00:00:00Z",
-            "proposed_by": "agent",
-        }
-
-        result = await engine.process_turn(
-            case=base_case,
-            user_message="yes",
-            intent_type="status_transition",
-            intent_data={"from_state": "investigating", "to_state": "resolved"},
-        )
-
-        updated_case = result["case_updated"]
-
-        # Transition should be executed (confirmed the pending)
-        assert updated_case.state == CaseState.RESOLVED
-        assert updated_case.pending_transition is None
-        assert updated_case.progress.solution_verified is True
-
-    @pytest.mark.asyncio
-    async def test_resolved_dropdown_injects_precomposed_message(
-        self, mock_llm, mock_repo, base_case
-    ):
-        """Dropdown RESOLVED with empty message returns proposal immediately.
-
-        When user clicks the dropdown without typing a message, the system
-        checks readiness and returns a confirmation prompt directly (no LLM call).
-        """
-        from faultmaven.modules.case.contracts import (
-            RootCauseConclusion,
-            Solution,
-            SolutionType,
-        )
-
-        # Set up a case that meets resolution criteria
-        base_case.root_cause_conclusion = RootCauseConclusion(
-            root_cause="Misconfigured connection pool timeout",
-            confidence_level="verified",
-            likelihood=0.9,
-            mechanism="Timeout too low for production load",
-        )
-        base_case.solutions = [
-            Solution(
-                solution_type=SolutionType.CONFIG_CHANGE,
-                title="Increase pool timeout",
-                longterm_fix="Set timeout to 30s",
+        with pytest.raises(ValueError, match="not a user-selectable case action"):
+            await engine.process_turn(
+                case=base_case,
+                user_message="",
+                intent_type="status_transition",
+                intent_data={
+                    "from_state": "investigating",
+                    "to_state": "resolved",
+                    "user_confirmed": True,
+                },
             )
-        ]
 
-        engine = MilestoneEngine(
-            mock_llm,
-            mock_repo,
-            investigation_tools=MagicMock(),
-        )
-
-        result = await engine.process_turn(
-            case=base_case,
-            user_message="",  # Empty — dropdown click only
-            intent_type="status_transition",
-            intent_data={"from_state": "investigating", "to_state": "resolved"},
-        )
-
-        # LLM is NOT called — returns immediately with proposal
         assert not mock_llm.generate.called
-        # Pending transition proposed
-        assert result["case_updated"].pending_transition is not None
-        # Response asks for confirmation
-        assert "resolved" in result["agent_response"].lower()
+        assert base_case.state == CaseState.INVESTIGATING
+        assert base_case.pending_transition is None
 
     @pytest.mark.asyncio
     async def test_closed_transitions_use_handshake(
@@ -2125,9 +1921,15 @@ class TestRunbookSuggestion:
 class TestContradictingIntentCancelsPendingTransition:
     """Tests for Fix 1: Contradicting status_transition cancels pending_transition.
 
-    When a pending_transition exists (e.g., CLOSED) and the user submits a different
-    status_transition intent (e.g., INVESTIGATING), the pending transition should be
-    cancelled and the new intent processed normally.
+    When a pending_transition exists and the user picks a DIFFERENT target from
+    the status menu, the pending proposal is cancelled and the new intent is
+    processed normally.
+
+    The menu has shed two entries since this was written, so the shape that
+    exercises the rule has moved twice: originally pending CLOSE + pick
+    INVESTIGATING, then (after #1608) pending CLOSE + pick RESOLVED, and now
+    pending RESOLVE + pick CLOSED — the only contradiction the menu can still
+    express, since CLOSED is the only thing on it.
     """
 
     @pytest.mark.asyncio
@@ -2136,11 +1938,11 @@ class TestContradictingIntentCancelsPendingTransition:
     ):
         """A contradicting status_transition cancels a pending one.
 
-        Was: pending CLOSE, user clicks "Investigating". That contradiction no
-        longer exists — from INQUIRY the only selectable action is CLOSED
-        (#1608), so there is nothing to contradict it with. The same rule is
-        exercised on the shape that still has one: an INVESTIGATING case with a
-        pending CLOSE, where the user picks "Mark as resolved" instead.
+        The last shape that can express this: an INVESTIGATING case carrying a
+        standing RESOLVE proposal, where the user picks "Close as unresolved"
+        instead. Its predecessor (pending CLOSE + pick "Mark as resolved") died
+        with the resolve menu entry, exactly as the one before it died with
+        #1608's.
         """
         engine = MilestoneEngine(
             mock_llm,
@@ -2162,23 +1964,21 @@ class TestContradictingIntentCancelsPendingTransition:
             ),
         )
 
-        # Set up a pending CLOSE transition (post-simplification shape:
-        # closure_reason is engine-derived enum; reason/proposed_by removed).
+        # A standing RESOLVE proposal — the shape an agent-opened handshake
+        # leaves behind (closure_reason is None for RESOLVED; resolution is
+        # itself the categorization).
         case.pending_transition = {
-            "to_state": "closed",
-            "summary": "Close without resolution",
+            "to_state": "resolved",
+            "summary": "Shall I mark this case resolved?",
             "evidence_ids": [],
             "proposed_at": "2026-04-23T00:00:00+00:00",
-            "closure_reason": "closed_insufficient_evidence",
         }
 
         # Mock LLM response for the new intent processing
         mock_response_content = json.dumps(
             {
-                "agent_response": "Starting investigation.",
-                "state_updates": {
-                    "user_confirmed_investigation": True,
-                },
+                "agent_response": "Understood.",
+                "state_updates": {"outcome": "conversation"},
             }
         )
         mock_llm.generate.return_value = mock_response_content
@@ -2186,18 +1986,16 @@ class TestContradictingIntentCancelsPendingTransition:
         # User submits a contradicting status_transition intent
         result = await engine.process_turn(
             case,
-            "Actually it's fixed — mark it resolved",
+            "Actually, just close it — we are not going to chase this",
             intent_type="status_transition",
-            intent_data={"to_state": "resolved"},
+            intent_data={"to_state": "closed"},
         )
 
         updated_case = result["case_updated"]
 
         # The contradicted proposal must not still be standing. It is
-        # superseded rather than nulled — the resolve request is itself a
-        # proposal, and on a case with nothing investigated INV-37's
-        # SUGGEST_CLOSE pivot turns it back into a close offer with its own
-        # wording. So the slot is occupied either way; what matters is that it
+        # superseded rather than nulled — the close request is itself a
+        # proposal. So the slot is occupied either way; what matters is that it
         # is not the OFFER THE USER CONTRADICTED, because a later confirmation
         # must not be able to land on that. Identity is the ``proposed_at``
         # stamp, which the superseding proposal rewrites.
@@ -2206,8 +2004,9 @@ class TestContradictingIntentCancelsPendingTransition:
             pending is None or pending.get("proposed_at") != "2026-04-23T00:00:00+00:00"
         ), f"the contradicted proposal is still standing: {pending}"
 
-        # Case should NOT have transitioned to CLOSED
-        assert updated_case.state != CaseState.CLOSED
+        # Case should NOT have transitioned — a contradiction proposes, never
+        # executes.
+        assert updated_case.state == CaseState.INVESTIGATING
 
     @pytest.mark.asyncio
     async def test_same_intent_still_confirms(self, mock_llm, mock_repo):
