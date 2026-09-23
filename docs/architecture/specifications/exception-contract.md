@@ -161,15 +161,31 @@ provider condition presented to the user as a FaultMaven bug.
 | direct schema-parse failure (`ValidationError` / `JSONDecodeError`) | 503 | `LLM_INVALID_RESPONSE` | 30 |
 | anything else | 500 | `SERVICE_ERROR` | 10 |
 
-**The mapping is also the global handler** (#552). `get_exception_handlers()`
-registers `service_exception_handler` for both `ServiceException` and
-`LLMException`, and it renders `llm_service_error_http_exception` through the
-`HTTPException` handler — so a route that lets either escape answers exactly
-what a route that catches and maps it answers, less `x-correlation-id`. Before
-that, only routes that remembered the helper got it; the rest answered a bare
-500. The "anything else" body is a static sentence, never the exception text:
-this row now answers for every route, and a `ServiceException`'s message
-carries whatever it wrapped.
+**A narrower version of the mapping is the global handler** (#552).
+`get_exception_handlers()` registers `service_exception_handler` for both
+`ServiceException` and `LLMException`. The table above is for a route where
+every failure is an LLM call; it reads generic signals — a declared
+`retryable`, a `ValidationError`/`JSONDecodeError` on the chain, billing
+*wording* — as provider conditions. On any other route those come from non-LLM
+work (a corrupt record, an object-store timeout), so the global handler
+applies it only on typed evidence:
+
+| Uncaught failure | HTTP | `x-error-code` | Retry-After |
+|------------------|------|----------------|-------------|
+| `QUOTA_EXHAUSTED` declared by type anywhere on the cause chain (no wording fallback) | 402 | `QUOTA_EXHAUSTED` | — |
+| an `LLMException` on the cause chain | the table above | | |
+| anything else | 500 | `SERVICE_ERROR` | — |
+
+For an LLM failure the global answer equals the inline one, less
+`x-correlation-id`. `/turns` keeps calling the helper inline and keeps the
+wide reading. No 500 body carries the exception text: a `ServiceException`'s
+message carries whatever it wrapped.
+
+What the typed predicate still misroutes: an LLM failure re-wrapped into a
+type outside the chain (no `from`, or a `MilestoneEngineError` from the retry
+loop, which deliberately does not chain — it reaches only `/turns`, which maps
+inline) answers 500; a non-LLM failure that links an `LLMException` somewhere
+down its chain is read as an LLM failure.
 
 Two things a global handler cannot reach, and what covers them:
 

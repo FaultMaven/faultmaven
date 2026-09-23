@@ -13,10 +13,13 @@ Four things are pinned here:
 1. **The global path gives the inline path's answer.** A route that raises and
    a route that catches-and-maps return the same status, body and error
    headers, for billing and for a provider 429.
-2. **A non-LLM ServiceException is not misclassified** — it is a 500
-   ``SERVICE_ERROR``, not a 402 or a retryable 503 — and **no body carries the
-   exception text**, which the global handler would otherwise have spread from
-   ``/turns`` to every route.
+2. **A non-LLM ServiceException is not misclassified** — a corrupt record, a
+   corrupt blob, billing WORDING with no typed code, a non-LLM timeout: each
+   is a 500 ``SERVICE_ERROR`` with no ``Retry-After``, not a 402 or a
+   retryable provider 503. The ``/turns`` mapping reads those generic signals
+   as provider conditions, which is sound only where every failure is an LLM
+   call; the global path applies it only on typed evidence (an
+   ``LLMException`` on the chain). And **no body carries the exception text**.
 3. **The inventory of route arms that catch the class themselves** (state N):
    such an arm bypasses the global handler, so each one either calls the
    helper, re-raises, or is listed here with the reason it cannot see an LLM
@@ -29,11 +32,13 @@ Four things are pinned here:
 from __future__ import annotations
 
 import ast
+import json
 import pathlib
 
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from pydantic import BaseModel, ValidationError
 
 import faultmaven
 from faultmaven.api.exception_handlers import (
@@ -47,6 +52,7 @@ from faultmaven.api.exception_handlers import (
 )
 from faultmaven.exceptions import (
     QUOTA_EXHAUSTED,
+    ExternalCallTimeout,
     LLMException,
     ServiceException,
 )
@@ -97,20 +103,61 @@ def _inline(exc_factory):
     return endpoint
 
 
-_CASES = {
+def _wrap(cause: BaseException) -> ServiceException:
+    try:
+        raise ServiceException(f"Operation failed: {cause}") from cause
+    except ServiceException as wrapped:
+        return wrapped
+
+
+def _corrupt_record() -> ServiceException:
+    """A stored row that fails model validation — a data fault, no LLM."""
+
+    class _Row(BaseModel):
+        count: int
+
+    try:
+        _Row.model_validate({"count": "not-a-number"})
+    except ValidationError as e:
+        return _wrap(e)
+    raise AssertionError("unreachable")
+
+
+def _corrupt_blob() -> ServiceException:
+    try:
+        json.loads("{truncated")
+    except json.JSONDecodeError as e:
+        return _wrap(e)
+    raise AssertionError("unreachable")
+
+
+#: LLM failures: an ``LLMException`` is on the chain, so the global path must
+#: answer exactly what the ``/turns`` inline path answers.
+_LLM_CASES = {
     "billing-wrapped": _billing_wrap,
     "billing-raw": lambda: LLMException(_BILLING_TEXT, status_code=402),
     "rate-limit-raw": lambda: LLMException("slow down", status_code=429),
     "overloaded-wrapped": lambda: _wrap(LLMException("upstream", status_code=503)),
-    "plain-service": lambda: ServiceException(_INTERNAL_TEXT),
 }
 
+#: Non-LLM failures that the ``/turns`` mapping would misread as provider
+#: conditions if applied globally (review of #1633). Each must be a plain 500.
+_NON_LLM_CASES = {
+    "plain-service": lambda: ServiceException(_INTERNAL_TEXT),
+    # -> 503 LLM_INVALID_RESPONSE, Retry-After 30 under the /turns mapping
+    "corrupt-record": _corrupt_record,
+    "corrupt-blob": _corrupt_blob,
+    # -> 402 QUOTA_EXHAUSTED under the /turns mapping (English marker fallback)
+    "billing-wording-no-cause": lambda: ServiceException(
+        f"Export failed: {_BILLING_TEXT}"
+    ),
+    # -> 503 LLM_PROVIDER_UNAVAILABLE under the /turns mapping (declared retryable)
+    "non-llm-timeout": lambda: _wrap(
+        ExternalCallTimeout("object store timed out", service="s3", timeout=5.0)
+    ),
+}
 
-def _wrap(cause: BaseException) -> ServiceException:
-    try:
-        raise ServiceException(f"Turn processing failed: {cause}") from cause
-    except ServiceException as wrapped:
-        return wrapped
+_CASES = {**_LLM_CASES, **_NON_LLM_CASES}
 
 
 @pytest.fixture(scope="module")
@@ -136,9 +183,10 @@ def test_both_classes_are_mapped_to_the_llm_handler():
     assert handlers[LLMException] is service_exception_handler
 
 
-@pytest.mark.parametrize("name", sorted(_CASES))
+@pytest.mark.parametrize("name", sorted(_LLM_CASES))
 def test_the_global_path_answers_what_the_inline_path_answers(client, name):
-    """The equality that lets a route stop remembering the mapping."""
+    """For an LLM failure: the equality that lets a route stop remembering
+    the mapping."""
     uncaught = client.post(f"/raise/{name}")
     inline = client.post(f"/inline/{name}")
 
@@ -167,13 +215,34 @@ def test_uncaught_raw_llm_exception_keeps_its_provider_status(client):
     assert resp.headers["retry-after"] == "60"
 
 
-def test_a_non_llm_service_exception_is_not_misclassified(client):
-    """Not a 402, not a retryable provider 503: an internal failure is a 500."""
-    resp = client.post("/raise/plain-service")
+@pytest.mark.parametrize("name", sorted(_NON_LLM_CASES))
+def test_a_non_llm_service_exception_is_not_misclassified(client, name):
+    """Not a 402, not a retryable provider 503: a non-LLM failure is a 500.
+
+    ``Retry-After`` on a permanent data fault tells a client to retry
+    forever, and an LLM/quota code blames the AI provider for it."""
+    resp = client.post(f"/raise/{name}")
 
     assert resp.status_code == 500
-    assert resp.headers["x-error-code"] == "SERVICE_ERROR"
     assert resp.json() == {"detail": SERVICE_ERROR_DETAIL}
+    assert resp.headers["x-error-code"] == "SERVICE_ERROR"
+    assert "retry-after" not in resp.headers
+
+
+@pytest.mark.parametrize(
+    "name, inline_status",
+    [
+        ("corrupt-record", 503),
+        ("corrupt-blob", 503),
+        ("billing-wording-no-cause", 402),
+        ("non-llm-timeout", 503),
+    ],
+)
+def test_the_turns_mapping_is_not_narrowed(client, name, inline_status):
+    """``/turns`` is LLM-only and keeps the wide reading. Pinned so the
+    narrowing above is known to be the GLOBAL path's alone, and so this file
+    notices if the two ever converge by accident."""
+    assert client.post(f"/inline/{name}").status_code == inline_status
 
 
 @pytest.mark.parametrize("prefix", ["raise", "inline"])

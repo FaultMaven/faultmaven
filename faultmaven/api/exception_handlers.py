@@ -8,10 +8,12 @@ This module provides exception handlers for:
 - ValidationException → 422 Unprocessable Entity
 - ConflictError → 409 Conflict
 - ServiceError → 500 Internal Server Error
-- ServiceException / LLMException → the precise LLM-failure status
-  (``llm_service_error_http_exception``: 402 billing, 429/503/504/502 provider
-  conditions, else a static 500), so a route that forgets the mapping does not
-  answer a bare 500 (#552)
+- ServiceException / LLMException → 402 when billing is declared by type on
+  the cause chain; the precise LLM-failure status
+  (``llm_service_error_http_exception``) when an ``LLMException`` is on the
+  chain; otherwise a static 500 ``SERVICE_ERROR`` — so a route that forgets
+  the mapping does not answer a bare 500, and a non-LLM failure is not
+  relabelled as the AI provider's (#552)
 - OAuthProtocolError → the RFC 6749 §5.2 body, at the status it carries
 - HTTPException → `{"detail": "<text>"}`, with the text coerced so a detail
   the encoder cannot render answers its own status instead of crashing the
@@ -815,32 +817,69 @@ async def oauth_protocol_error_handler(
     )
 
 
+def _is_llm_failure(exc: BaseException) -> bool:
+    """Typed evidence that ``exc`` is an LLM-call failure: an ``LLMException``
+    on the ``__cause__`` chain (``exc`` itself included).
+
+    Deliberately NOT: a ``retryable`` flag (``ExternalCallTimeout`` declares
+    one for any external call), a ``ValidationError`` / ``JSONDecodeError``
+    (a corrupt stored record raises those too), an engine ``error_code``
+    (``UNKNOWN_ERROR`` is generic), or wording. Those are LLM signals only
+    where the caller already knows an LLM was called — which is why
+    ``llm_service_error_http_exception`` reads them and ``/turns`` calls it
+    inline, and why the global handler does not.
+    """
+    return any(isinstance(c, LLMException) for c in walk_cause_chain(exc))
+
+
+def global_service_exception_http_exception(exc: BaseException) -> HTTPException:
+    """The global handler's mapping — narrower than the ``/turns`` one (#552).
+
+    1. Billing declared by type anywhere on the chain → 402. The NARROW
+       predicate: no English-marker fallback, so a message that merely says
+       "billing details" is not told to buy credits.
+    2. An ``LLMException`` on the chain → the full LLM mapping. Here an LLM
+       is known to be involved, so every signal it reads is sound.
+    3. Anything else → a static 500 ``SERVICE_ERROR`` with no
+       ``Retry-After``: a data fault is not transient, and it is not the AI
+       provider's.
+    """
+    if is_quota_exhausted_service_error(exc):
+        return quota_exhausted_http_exception()
+    if _is_llm_failure(exc):
+        return llm_service_error_http_exception(exc)
+    return _llm_http(500, "SERVICE_ERROR", SERVICE_ERROR_DETAIL, None, None)
+
+
 async def service_exception_handler(
     request: Request,
     exc: Exception,
 ) -> JSONResponse:
-    """Answer an uncaught ``ServiceException`` / ``LLMException`` precisely (#552).
+    """Answer an uncaught ``ServiceException`` / ``LLMException`` (#552).
 
     An LLM failure reaches a route wrapped as ``ServiceException`` (or, less
     often, as the raw ``LLMException``). Before this handler existed neither
-    class had one, so any route that did not catch it and remember to call
+    class had one, so any route that did not catch it and call
     ``llm_service_error_http_exception`` answered a bare 500 — a billing
-    exhaustion the operator has to act on read as a FaultMaven bug. Now the
-    route that forgets gets the same mapping the route that remembers does:
-    402 for billing, 429/503/504/502 for the provider conditions, and a static
-    500 ``SERVICE_ERROR`` for everything unclassifiable.
+    exhaustion the operator has to act on read as a FaultMaven bug.
 
-    Rendered through ``http_exception_handler`` so the body and headers are
-    byte-identical to what an inline ``raise llm_service_error_http_exception(e)``
-    produces — the only difference is ``x-correlation-id``, which only a route
-    holding one can add (``RequestIdMiddleware`` stamps ``X-Request-ID`` on
-    every response regardless).
+    It does NOT apply the ``/turns`` mapping to everything. That mapping was
+    written for a route where every failure is an LLM call, and it reads
+    generic signals (``retryable``, a parse error on the chain, billing
+    wording) as provider conditions. On any other route those come from
+    non-LLM work — a corrupt record, a non-LLM timeout — and would be answered
+    as a retryable AI-provider failure. ``global_service_exception_http_exception``
+    applies the LLM mapping only on typed evidence of an LLM failure; the rest
+    get a static 500.
+
+    Rendered through ``http_exception_handler`` so, for an LLM failure, body
+    and headers match an inline ``raise llm_service_error_http_exception(e)``
+    except ``x-correlation-id``, which only a route holding one can add.
 
     What this does NOT reach, measured when it was added: a route arm that
     catches ``ServiceException`` itself (inventoried by
     ``test_service_exception_global_handler``), and a broad ``except
-    Exception`` arm ahead of any typed arm — the house idiom on the route
-    surface, which swallows the exception before any global handler sees it.
+    Exception`` arm ahead of any typed arm (#1632).
     """
     logger.error(
         "Unhandled %s: %s %s - %s",
@@ -850,7 +889,9 @@ async def service_exception_handler(
         str(exc),
         exc_info=exc,
     )
-    return await http_exception_handler(request, llm_service_error_http_exception(exc))
+    return await http_exception_handler(
+        request, global_service_exception_http_exception(exc)
+    )
 
 
 def get_exception_handlers() -> dict[Type[Exception], Callable]:
