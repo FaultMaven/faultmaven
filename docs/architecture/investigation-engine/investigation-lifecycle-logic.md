@@ -320,7 +320,7 @@ Step 1 has four openers, and the fourth is the engine's own. Three of them are
 | Opener | Fires when |
 |---|---|
 | The model's `proposed_transition` | COMPLETION's co-emit rule: the fix is verified and the model emits the transition beside its backing `causal_absence_evidence` row |
-| The user | The status menu (`disposition_eligibility.resolved == "ready"`) or natural language ("mark this resolved") |
+| The user | Natural language ("mark this resolved", "the fix worked"). NOT the status menu — RESOLVED is not user-selectable, and a `status_transition` request for it is refused at the service boundary and again in the engine |
 | `_maybe_propose_deferred_close` | `solution_feasible == DEFERRED` — and on a confirmed case its SUGGEST_RESOLVE pivot offers RESOLVED rather than CLOSED |
 | `_maybe_propose_confirmed_resolution` | **Backstop.** The case is resolution-READY and none of the above opened the handshake |
 
@@ -347,7 +347,28 @@ It is a backstop and not a fourth proposer by three rules:
 A decline postpones it rather than counting against it: the refusal is recorded
 against the `deferred_disposition_signature` that justified the offer, in the
 same space the deferred proposer uses, so declining either silences both until a
-premise moves (fm#1122).
+premise moves (fm#1122). The refusal binds whoever opened the offer — an
+LLM-opened one carries no signature of its own, so one is derived at decline
+time; otherwise the backstop, which fires on readiness alone, re-proposes on the
+next turn.
+
+**Why RESOLVED left the status menu.** It was listed in `USER_SELECTABLE_ACTIONS`
+until the engine could see the readiness bar for itself, and the listing was
+never the gate it looked like: the dict is consulted with no case content, so
+`valid_next_states` advertised `resolved` on every investigating case, including
+ones the readiness gate would have refused. One client reconciled that against
+`disposition_eligibility` — a convention, not a rule, and the legacy fallback did
+not follow it. The check now decides whether the offer is MADE rather than
+arguing with a pick already taken, which also retired the arm that could confirm
+a `needs_info` proposal without re-reading readiness.
+
+One consequence worth stating plainly: on a resolution-ready case the status menu
+is **empty**, and that is correct rather than a gap. `closed` reads
+`suggests_alternative` there, which holds exactly when a qualifying
+`causal_absence_evidence` row is on the case — so INV-37 pivots any close back to
+a resolve proposal. A Close control on such a case could only ever produce "shall
+I mark this resolved?". The case has one terminal destination and the engine is
+already offering it.
 
 **MULTIPLE SOLUTIONS HANDLING**:
 

@@ -35,16 +35,21 @@ from faultmaven.modules.case.domain.services.case_action_manager import (
 #: contract-drift failure in CI, far from the edit.
 VALID_NEXT_STATES_DESCRIPTION = (
     "Case actions the USER may select from the status menu — selectability, "
-    "not legality. A strict subset of the transitions the state machine "
-    "permits: INQUIRY → INVESTIGATING is legal and performed by the Gate 1 "
-    "handshake, but it is earned by a confirmed problem statement rather than "
-    "requested, so it never appears here. Every entry is a disposition."
+    "not legality. Only CLOSED is ever listed, because closing is the one "
+    "decision that needs no precondition. The two legal edges that never "
+    "appear here are earned from case content and offered by the agent "
+    "through a confirmation handshake: INQUIRY → INVESTIGATING by a confirmed "
+    "problem statement (Gate 1), and INVESTIGATING → RESOLVED by a confirmed "
+    "root-cause elimination. Requesting either is refused."
 )
 
 #: The delta paragraph appended to ``disposition_eligibility`` descriptions.
 DISPOSITION_ELIGIBILITY_DELTA = (
     "Different from ``valid_next_states`` — that field is which actions the "
-    "user may SELECT, this field is the content-readiness layer on top of them."
+    "user may SELECT, this field is what the case CONTENT supports. The two "
+    "no longer overlap on the resolve side: ``resolved`` here is the engine's "
+    "own readiness verdict, which decides whether the agent offers the "
+    "resolution handshake, not whether a control is rendered."
 )
 
 

@@ -880,40 +880,39 @@ class TestINV14_DropdownUsesStandardHandshake:
         assert updated.closed_at is None
 
     @pytest.mark.asyncio
-    async def test_inv14_dropdown_investigating_to_resolved_thin_does_not_execute(
+    async def test_inv14_dropdown_investigating_to_resolved_is_refused(
         self,
     ):
-        """Dropdown INVESTIGATING → RESOLVED on a case lacking root cause /
-        solution pivots to propose CLOSED (assess_resolution_readiness
-        verdict SUGGEST_CLOSE). Either way, the case is NOT auto-resolved
-        and NOT auto-closed — a pending_transition is written for user
-        confirmation.
+        """INVESTIGATING → RESOLVED is not a menu pick, so it is refused.
 
-        Pins that the readiness-pivot branch (lines 1850-1873) honors the
-        handshake just like the direct-resolve branch.
+        This used to pin that the readiness pivot honoured the handshake: a
+        thin case picking Resolve got a CLOSED proposal rather than an
+        execution. That whole negotiation is gone — the readiness check now
+        decides whether the offer is MADE, so there is no pick to argue with.
+
+        What INV-14 still says about this edge is that nothing executes, and
+        the refusal says it more strongly than the pivot did: no
+        pending_transition is written either.
         """
         engine, _ = self._engine_and_repo()
         case = _make_investigating_case()
-        # No root cause, no solutions → SUGGEST_CLOSE verdict
 
-        result = await engine.process_turn(
-            case=case,
-            user_message="Mark this resolved.",
-            intent_type="status_transition",
-            intent_data={
-                "from_state": "investigating",
-                "to_state": "resolved",
-                "user_confirmed": True,
-            },
-        )
+        with pytest.raises(ValueError, match="not a user-selectable case action"):
+            await engine.process_turn(
+                case=case,
+                user_message="Mark this resolved.",
+                intent_type="status_transition",
+                intent_data={
+                    "from_state": "investigating",
+                    "to_state": "resolved",
+                    "user_confirmed": True,
+                },
+            )
 
-        updated = result["case_updated"]
-        # Either RESOLVED or CLOSED could be proposed depending on
-        # readiness verdict. The invariant is: not auto-executed.
-        assert updated.pending_transition is not None
-        assert updated.state == CaseState.INVESTIGATING
-        assert updated.resolved_at is None
-        assert updated.closed_at is None
+        assert case.pending_transition is None
+        assert case.state == CaseState.INVESTIGATING
+        assert case.resolved_at is None
+        assert case.closed_at is None
 
     def test_inv14_investigating_request_is_refused_before_any_mutation(self):
         """The INVESTIGATING refusal must come BEFORE section 0b's mutations.

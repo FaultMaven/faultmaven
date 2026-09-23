@@ -5667,6 +5667,24 @@ class MilestoneEngine:
                 "requesting the state."
             )
 
+        # RESOLVED, the same, one tier down: earned by a qualifying
+        # ``causal_absence_evidence`` row and offered by the engine (INV-43).
+        # Refused HERE for the placement reason above AND because the two
+        # shapes it would otherwise take are both wrong. Against a standing
+        # non-``needs_info`` resolve pending, section 0b's same-target arm
+        # reads the pick as a confirmation and EXECUTES the transition; against
+        # any other case it falls past the retired per-target branch to
+        # ``Unknown to_state`` — a 500 for what is a client-input error.
+        if (
+            intent_type == "status_transition"
+            and (intent_data or {}).get("to_state") == CaseState.RESOLVED.value
+        ):
+            raise ValueError(
+                "RESOLVED is not a user-selectable case action. It is reached "
+                "by confirming the resolution the agent proposes once the root "
+                "cause is confirmed eliminated, not by requesting the state."
+            )
+
         # Add intent information to logger for tracing
         # Note: current_turn has already been incremented by investigation_service before this point
         intent_info = f" [intent={intent_type}]" if intent_type else ""
@@ -6173,196 +6191,15 @@ class MilestoneEngine:
                         "metadata": turn_metadata,
                     }
 
-                elif to_status_str == "resolved":
-                    if case.state != CaseState.INVESTIGATING:
-                        raise ValueError(
-                            f"Cannot transition to RESOLVED from {case.state.value}"
-                        )
-
-                    from faultmaven.modules.case.domain.services.case_action_manager import (
-                        CaseActionManager,
-                    )
-
-                    if not user_message or not user_message.strip():
-                        user_message = (
-                            CaseActionManager.get_agent_message(
-                                CaseState.INVESTIGATING, CaseState.RESOLVED
-                            )
-                            or "The issue is resolved."
-                        )
-
-                    # If a pending transition to resolved already exists, this
-                    # dropdown click is a confirmation of the existing proposal.
-                    # Execute the transition (User-Agent Handshake: confirm step).
-                    if (
-                        hasattr(case, "pending_transition")
-                        and case.pending_transition
-                        and case.pending_transition.get("to_state") == "resolved"
-                    ):
-                        from faultmaven.core.investigation.terminal_transitions import (
-                            confirm_pending_transition,
-                        )
-
-                        executed = confirm_pending_transition(case, case.user_id)
-
-                        logger.info(
-                            f"INVESTIGATING->RESOLVED dropdown: confirmed existing pending "
-                            f"transition for case {case.case_id}"
-                        )
-
-                        # Persist terminal state before synthesis (Report
-                        # row FKs to case_id), then synthesize, then record
-                        # the composed reply.
-                        await self.repository.save(case)
-                        (
-                            summary_payload,
-                            summary_failed,
-                        ) = await self._auto_generate_report(case)
-                        _resp = _compose_terminal_reply(case, summary_payload)
-                        turn_metadata = self._finish_deterministic_turn(
-                            case,
-                            user_message or "",
-                            _resp,
-                            upload_report,
-                            progress_made=True,
-                            # Both confirm branches answer this the SAME way, from
-                            # what the transition actually did — including
-                            # ``confirm_pending_transition``'s return value rather
-                            # than an assumption that it committed. The arm used to
-                            # be written onto the OUTER metadata here, which this
-                            # branch never returns, so it was reported by one of the
-                            # two confirm paths and not the other.
-                            **confirmed_transition_arms(case, executed),
-                        )
-                        await self.repository.save(case)
-
-                        remaining = await self._remaining_regens_for(case)
-                        return {
-                            "agent_response": _resp,
-                            "suggested_follow_ups": _select_ack_follow_ups(
-                                case, summary_failed, remaining
-                            ),
-                            "case_updated": case,
-                            "metadata": turn_metadata,
-                        }
-
-                    # No pending transition — check resolution readiness before proposing.
-                    from faultmaven.core.investigation.terminal_transitions import (
-                        assess_resolution_readiness,
-                        propose_transition,
-                    )
-
-                    readiness = assess_resolution_readiness(case)
-
-                    if readiness.verdict == readiness.SUGGEST_CLOSE:
-                        # Case lacks fundamentals — pivot to CLOSED. Propose the
-                        # closed transition so the DECIDE pair the user
-                        # sees matches what they will be confirming.
-                        logger.info(
-                            f"INVESTIGATING->RESOLVED dropdown: case {case.case_id} "
-                            f"verdict=SUGGEST_CLOSE (missing: {readiness.missing}). "
-                            f"Pivoting to CLOSED."
-                        )
-                        propose_transition(
-                            case=case,
-                            to_state="closed",
-                            summary=readiness.message,
-                        )
-                        turn_metadata = self._finish_deterministic_turn(
-                            case,
-                            user_message or "",
-                            readiness.message,
-                            upload_report,
-                            progress_made=False,
-                        )
-                        await self.repository.save(case)
-                        return {
-                            "agent_response": readiness.message,
-                            "suggested_follow_ups": _close_confirmation_suggestions(),
-                            "case_updated": case,
-                            "metadata": turn_metadata,
-                        }
-
-                    if readiness.verdict == readiness.NEEDS_INFO:
-                        # Partially ready — ask user for the missing pieces but
-                        # remember their resolve intent so a follow-up turn
-                        # with the missing detail can move forward.
-                        logger.info(
-                            f"INVESTIGATING->RESOLVED dropdown: case {case.case_id} "
-                            f"verdict=NEEDS_INFO (missing: {readiness.missing}). "
-                            f"Remembering resolve intent."
-                        )
-                        propose_transition(
-                            case=case,
-                            to_state="resolved",
-                            summary=readiness.message,
-                        )
-                        case.pending_transition["needs_info"] = True
-                        turn_metadata = self._finish_deterministic_turn(
-                            case,
-                            user_message or "",
-                            readiness.message,
-                            upload_report,
-                            progress_made=False,
-                        )
-                        await self.repository.save(case)
-                        return {
-                            "agent_response": readiness.message,
-                            "suggested_follow_ups": _resolution_confirmation_suggestions(),
-                            "case_updated": case,
-                            "metadata": turn_metadata,
-                        }
-
-                    # READY — propose transition via User-Agent Handshake
-                    propose_transition(
-                        case=case,
-                        to_state="resolved",
-                        summary="Case meets resolution criteria. Awaiting user confirmation.",
-                    )
-                    # (The same-turn-confirm guard flag the LLM path sets here
-                    # was written onto the OUTER metadata dict, which this branch
-                    # never returns — it returns ``turn_metadata`` below. Its two
-                    # readers are both on the generation path this branch exits
-                    # before reaching, so the write was dead. Removed rather than
-                    # rerouted: the guard exists to stop a proposal being
-                    # confirmed by the message that produced it, and returning
-                    # here already guarantees that.)
-
-                    logger.info(
-                        f"INVESTIGATING->RESOLVED dropdown: proposed transition for "
-                        f"case {case.case_id} (pending user confirmation)"
-                    )
-
-                    # Return immediately with confirmation prompt + canonical
-                    # confirm/decline pair (alignment with agent-initiated path).
-                    _resp = (
-                        "You've indicated this issue is resolved.\n\n"
-                        + _build_resolution_confirmation(case)
-                    )
-                    turn_metadata = self._finish_deterministic_turn(
-                        case,
-                        user_message or "",
-                        _resp,
-                        upload_report,
-                        # A PROPOSAL is not an advancement (#1284). Nothing
-                        # transitioned: the handshake (§1.2) makes the case
-                        # action happen on the user's LATER confirm turn, which
-                        # scores it through ``confirmed_transition_arms``. This
-                        # asserted True with every arm 0 — the shape
-                        # ``case_telemetry`` calls a lying counter — and it made
-                        # the SAME event score or not by which affordance the
-                        # user reached for: the three LLM-path proposal sites
-                        # let the predicate decide, and the NEEDS_INFO sibling a
-                        # few lines above already passes False.
-                        progress_made=False,
-                    )
-                    await self.repository.save(case)
-                    return {
-                        "agent_response": _resp,
-                        "suggested_follow_ups": _resolution_confirmation_suggestions(),
-                        "case_updated": case,
-                        "metadata": turn_metadata,
-                    }
+                # ``resolved`` never reaches here either — the same guard
+                # refuses it. The branch that used to live here ran the
+                # readiness check AFTER the pick and then argued with it
+                # (propose / pivot to close / ask for what is missing), and
+                # one of its arms confirmed a standing ``needs_info``
+                # proposal without re-reading readiness — executing RESOLVED
+                # on a case carrying no qualifying ``causal_absence_evidence``
+                # row. Deciding whether to OFFER retires the argument and the
+                # bypass together.
 
                 # ``investigating`` never reaches here — the guard at the top
                 # of this method refuses it before any state is touched. The
