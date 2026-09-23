@@ -14,6 +14,7 @@ from faultmaven.exceptions import (
     NotFoundError,
     PermissionDeniedException,
     ServiceException,
+    ValidationException,
 )
 from faultmaven.models.api_models import (
     AttachmentResult,
@@ -1718,3 +1719,85 @@ class TestObservedAtSeedsFileCoverage:
         )
         assert uploaded.coverage_start_ts is None
         assert uploaded.coverage_end_ts is None
+
+
+class TestEarnedEdgesAreRefusedAtTheBoundary:
+    """The two edges a menu may not carry are refused BEFORE the engine.
+
+    Both refusals had engine-side tests and no service-side one, which left the
+    status-code argument they exist for untested: the whole reason these live
+    at the boundary rather than in ``process_turn`` is that a client-input
+    error deserves a 422, not the 500 + ``Retry-After`` a bare engine raise
+    produces — and old clients keep sending both for as long as an extension
+    takes to auto-update. A drift in either comparison (a raw string where a
+    ``CaseState`` was meant, say) would silently move every refused pick into
+    the error-rate SLO with the engine tests still green.
+    """
+
+    def _service(self):
+        from unittest.mock import MagicMock
+
+        return InvestigationService(
+            milestone_engine=MagicMock(),
+            case_repository=MockCaseRepository(),
+            preprocessing_service=AsyncMock(),
+            file_storage_service=AsyncMock(),
+        )
+
+    @pytest.mark.parametrize(
+        "to_state,reason",
+        [
+            ("investigating", "confirming the problem statement"),
+            ("resolved", "confirming the resolution"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_earned_edge_is_a_validation_error_not_a_server_error(
+        self, to_state, reason
+    ):
+        service = self._service()
+        case = Case(
+            title="Boundary refusal",
+            enterprise_id="org_test",
+            user_id="user_test",
+            description="pods cannot assume the cross-account role",
+        )
+
+        with pytest.raises(ValidationException) as excinfo:
+            await service._handle_status_transition(
+                case=case,
+                user_message="",
+                from_state=case.state.value,
+                to_state=to_state,
+                user_confirmed=True,
+            )
+
+        assert "not a user-selectable case action" in str(excinfo.value)
+        # The engine is never reached, so nothing downstream can mutate state.
+        service.engine.process_turn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_closed_still_reaches_the_engine(self):
+        """The refusals are targeted, not a blanket ban on status pick.
+
+        Without this the pair above would pass just as well if the handler
+        refused everything.
+        """
+        service = self._service()
+        service.engine.process_turn = AsyncMock(return_value={"agent_response": "ok"})
+        case = Case(
+            title="Boundary refusal",
+            enterprise_id="org_test",
+            user_id="user_test",
+            description="pods cannot assume the cross-account role",
+        )
+
+        await service._handle_status_transition(
+            case=case,
+            user_message="",
+            from_state=case.state.value,
+            to_state="closed",
+            user_confirmed=True,
+        )
+
+        service.engine.process_turn.assert_awaited_once()

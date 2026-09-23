@@ -355,7 +355,7 @@ async def test_the_guard_survives_a_short_circuited_decision():
         mp.setattr(me, "check_if_progress_made", counting_pred)
         mp.setattr(me, "score_progress", recording_score)
         result = await engine.process_turn(
-            case=_case_awaiting_confirmation("resolved", needs_info=False),
+            case=_case_awaiting_confirmation("resolved"),
             user_message="yes, resolved",
             intent_type="confirmation",
             intent_data={"value": True},
@@ -413,15 +413,17 @@ def _terminal_confirm_engine():
     return engine
 
 
-def _case_awaiting_confirmation(to_state: str, *, needs_info: bool):
+def _case_awaiting_confirmation(to_state: str):
     """An INVESTIGATING case with a standing terminal proposal.
 
-    ``needs_info`` used to be a ROUTER: step 0b's confirm short-circuit is
-    guarded by ``elif not needs_info``, so setting it sent the same click to
-    the 0c dropdown handler instead, which is what let one fixture drive both
-    confirm branches and compare them. The resolve arm of 0c is gone — RESOLVED
-    is no longer user-selectable — so there is one confirm branch now and the
-    flag only decides whether 0b handles the turn or lets it fall through.
+    This took a ``needs_info`` flag, which was a ROUTER: step 0b's confirm
+    short-circuit is guarded by ``elif not needs_info``, so setting it sent the
+    same click to the 0c dropdown handler instead — which is what let one
+    fixture drive BOTH confirm branches and compare them. The resolve arm of 0c
+    is gone, so there is one confirm branch and nothing left to route to. The
+    parameter went with it rather than sitting here as a knob every call site
+    passes ``False`` to, inviting a later reader to re-derive a distinction the
+    code can no longer produce.
     """
     from datetime import UTC, datetime
 
@@ -461,8 +463,6 @@ def _case_awaiting_confirmation(to_state: str, *, needs_info: bool):
         # unguarded, so a hand-built pending without it never reaches the branch
         # under test.
         pending["closure_reason"] = "solution_deferred"
-    if needs_info:
-        pending["needs_info"] = True
     case.pending_transition = pending
     return case
 
@@ -488,7 +488,7 @@ async def test_the_confirm_branch_reports_the_state_change_once():
     """
     engine = _terminal_confirm_engine()
     result = await engine.process_turn(
-        case=_case_awaiting_confirmation("resolved", needs_info=False),
+        case=_case_awaiting_confirmation("resolved"),
         user_message="yes, resolved",
         intent_type="confirmation",
         intent_data={"value": True},
@@ -520,7 +520,7 @@ async def test_a_confirmed_close_does_not_claim_a_resolution_milestone():
     """
     engine = _terminal_confirm_engine()
     result = await engine.process_turn(
-        case=_case_awaiting_confirmation("closed", needs_info=False),
+        case=_case_awaiting_confirmation("closed"),
         user_message="yes, close it",
         intent_type="status_transition",
         intent_data={"to_state": "closed"},
