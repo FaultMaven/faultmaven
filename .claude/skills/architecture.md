@@ -54,4 +54,4 @@ If the design docs and the existing code appear to contradict each other, **stop
 - Ingestion, classification, chunking of evidence — see `ingestion-pipeline`
 - Product positioning and messaging — see `brand-messaging`
 - Test authoring — see the `test-engineer` agent
-- Things already enforced by tooling (`ruff` — including import sorting, `black`, `mypy`, `import-linter`) — let the tool catch them
+- Things already enforced by CI tooling (`ruff` — including import sorting, `black`, `import-linter`) — let the tool catch them. mypy is not run in CI, so type errors are the reviewer's to catch
