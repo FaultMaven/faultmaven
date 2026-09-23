@@ -8,6 +8,10 @@ This module provides exception handlers for:
 - ValidationException → 422 Unprocessable Entity
 - ConflictError → 409 Conflict
 - ServiceError → 500 Internal Server Error
+- ServiceException / LLMException → the precise LLM-failure status
+  (``llm_service_error_http_exception``: 402 billing, 429/503/504/502 provider
+  conditions, else a static 500), so a route that forgets the mapping does not
+  answer a bare 500 (#552)
 - OAuthProtocolError → the RFC 6749 §5.2 body, at the status it carries
 - HTTPException → `{"detail": "<text>"}`, with the text coerced so a detail
   the encoder cannot render answers its own status instead of crashing the
@@ -54,6 +58,7 @@ from faultmaven.exceptions import (
     LLMException,
     NotFoundError,
     ServiceError,
+    ServiceException,
     ValidationException,
     is_billing_error,
     walk_cause_chain,
@@ -74,14 +79,35 @@ QUOTA_EXHAUSTED_DETAIL = (
 
 
 def is_quota_exhausted_service_error(exc: BaseException) -> bool:
-    """True if ``exc`` carries the ``QUOTA_EXHAUSTED`` error_code in its details.
+    """True if ``QUOTA_EXHAUSTED`` is declared anywhere on ``exc``'s cause chain.
 
     The signal a ServiceException carries when an LLM-calling service hits
     billing/quota exhaustion. Shared by every route's ``except ServiceException``
     block so billing is detected identically (→ 402) instead of each handler
     re-implementing the lookup.
+
+    Reads the whole ``__cause__`` chain, as a ``details["error_code"]`` or as
+    an ``error_code`` attribute, rather than the wrapper's own ``details``
+    alone (#552). The typed code lives on the ``LLMException`` the provider
+    raised; a service that wraps it with ``raise ServiceException(...) from e``
+    and does not copy the code into ``details`` used to lose the billing signal
+    at this predicate and answer 500. Reading the chain is what makes the copy
+    unnecessary — the wrap preserves it by linking, and
+    ``test_service_exception_global_handler`` pins that every in-``except``
+    ``ServiceException`` wrap links.
+
+    Deliberately narrower than ``exceptions.is_billing_error``: no English
+    marker fallback, so a non-LLM message that happens to contain "billing
+    details" is not read as a billing failure here.
     """
-    return (getattr(exc, "details", None) or {}).get("error_code") == QUOTA_EXHAUSTED
+    for cursor in walk_cause_chain(exc):
+        if (getattr(cursor, "details", None) or {}).get(
+            "error_code"
+        ) == QUOTA_EXHAUSTED:
+            return True
+        if getattr(cursor, "error_code", None) == QUOTA_EXHAUSTED:
+            return True
+    return False
 
 
 def quota_exhausted_http_exception(
@@ -201,6 +227,11 @@ _RETRYABLE_ENGINE_CODES = frozenset(
 # Semantic engine codes describing a permanent provider/config rejection — the
 # model is misnamed or the credentials are bad; retrying cannot help.
 _TERMINAL_ENGINE_CODES = frozenset({"MODEL_NOT_FOUND", "AUTH_FAILED", LLM_CONFIG_ERROR})
+
+
+#: The body of the unclassifiable ``SERVICE_ERROR`` 500. Static on purpose —
+#: see arm 5 of ``llm_service_error_http_exception``.
+SERVICE_ERROR_DETAIL = "Unable to process this request. Please try again."
 
 
 def _llm_http(
@@ -383,11 +414,16 @@ def llm_service_error_http_exception(
             correlation_id,
         )
 
-    # 5. Genuinely unclassifiable — bounded message, never internals.
+    # 5. Genuinely unclassifiable — a static sentence, never the exception
+    #    text. This used to append ``str(exc)[:200]``; a ``ServiceException``
+    #    is a wrapper whose message carries whatever it wrapped (SQLAlchemy
+    #    statements, ``host:port``), and once this mapping became the global
+    #    ``ServiceException`` handler (#552) that fallback answers for every
+    #    route, not only ``/turns``. The text is logged by the caller.
     return _llm_http(
         500,
         "SERVICE_ERROR",
-        f"Unable to process your message: {str(exc)[:200]}",
+        SERVICE_ERROR_DETAIL,
         "10",
         correlation_id,
     )
@@ -779,6 +815,44 @@ async def oauth_protocol_error_handler(
     )
 
 
+async def service_exception_handler(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
+    """Answer an uncaught ``ServiceException`` / ``LLMException`` precisely (#552).
+
+    An LLM failure reaches a route wrapped as ``ServiceException`` (or, less
+    often, as the raw ``LLMException``). Before this handler existed neither
+    class had one, so any route that did not catch it and remember to call
+    ``llm_service_error_http_exception`` answered a bare 500 — a billing
+    exhaustion the operator has to act on read as a FaultMaven bug. Now the
+    route that forgets gets the same mapping the route that remembers does:
+    402 for billing, 429/503/504/502 for the provider conditions, and a static
+    500 ``SERVICE_ERROR`` for everything unclassifiable.
+
+    Rendered through ``http_exception_handler`` so the body and headers are
+    byte-identical to what an inline ``raise llm_service_error_http_exception(e)``
+    produces — the only difference is ``x-correlation-id``, which only a route
+    holding one can add (``RequestIdMiddleware`` stamps ``X-Request-ID`` on
+    every response regardless).
+
+    What this does NOT reach, measured when it was added: a route arm that
+    catches ``ServiceException`` itself (inventoried by
+    ``test_service_exception_global_handler``), and a broad ``except
+    Exception`` arm ahead of any typed arm — the house idiom on the route
+    surface, which swallows the exception before any global handler sees it.
+    """
+    logger.error(
+        "Unhandled %s: %s %s - %s",
+        type(exc).__name__,
+        request.method,
+        request.url.path,
+        str(exc),
+        exc_info=exc,
+    )
+    return await http_exception_handler(request, llm_service_error_http_exception(exc))
+
+
 def get_exception_handlers() -> dict[Type[Exception], Callable]:
     """Get all exception handlers as a dictionary.
 
@@ -792,6 +866,8 @@ def get_exception_handlers() -> dict[Type[Exception], Callable]:
         ConflictError: conflict_exception_handler,
         TeamOperationRefused: team_operation_refused_handler,
         ServiceError: service_error_handler,
+        ServiceException: service_exception_handler,
+        LLMException: service_exception_handler,
         OAuthProtocolError: oauth_protocol_error_handler,
     }
 

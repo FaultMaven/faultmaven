@@ -239,7 +239,7 @@ class AnalyticsDashboardService(BaseService):
 
         except Exception as e:
             self.logger.error(f"Failed to generate system overview dashboard: {e}")
-            raise ServiceException(f"Dashboard generation failed: {str(e)}")
+            raise ServiceException(f"Dashboard generation failed: {str(e)}") from e
 
     async def _generate_system_overview(
         self, time_range_hours: int, include_trends: bool, include_alerts: bool
@@ -365,7 +365,9 @@ class AnalyticsDashboardService(BaseService):
             self.logger.error(
                 f"Failed to generate service dashboard for {service_name}: {e}"
             )
-            raise ServiceException(f"Service dashboard generation failed: {str(e)}")
+            raise ServiceException(
+                f"Service dashboard generation failed: {str(e)}"
+            ) from e
 
     async def _generate_service_dashboard(
         self, service_name: str, time_range_hours: int, include_detailed_metrics: bool
@@ -456,7 +458,7 @@ class AnalyticsDashboardService(BaseService):
 
         except Exception as e:
             self.logger.error(f"Failed to generate user analytics dashboard: {e}")
-            raise ServiceException(f"User analytics generation failed: {str(e)}")
+            raise ServiceException(f"User analytics generation failed: {str(e)}") from e
 
     async def _generate_user_analytics(
         self,
@@ -538,7 +540,9 @@ class AnalyticsDashboardService(BaseService):
 
         except Exception as e:
             self.logger.error(f"Failed to generate workflow analytics dashboard: {e}")
-            raise ServiceException(f"Workflow analytics generation failed: {str(e)}")
+            raise ServiceException(
+                f"Workflow analytics generation failed: {str(e)}"
+            ) from e
 
     async def _generate_workflow_analytics(
         self,
@@ -646,7 +650,7 @@ class AnalyticsDashboardService(BaseService):
 
         except Exception as e:
             self.logger.error(f"Failed to execute custom analytics query: {e}")
-            raise ServiceException(f"Custom query execution failed: {str(e)}")
+            raise ServiceException(f"Custom query execution failed: {str(e)}") from e
 
     async def _execute_custom_query(
         self, query_config: Dict[str, Any]

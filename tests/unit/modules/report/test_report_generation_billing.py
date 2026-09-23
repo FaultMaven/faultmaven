@@ -131,6 +131,29 @@ class TestGenerateReportRouteMapsBillingTo402:
         assert "Retry-After" not in exc.value.headers
 
     @pytest.mark.asyncio
+    async def test_billing_maps_to_402_without_the_details_copy(self):
+        """#552 item 2: a wrap that links its cause but does not copy
+        ``error_code`` into ``details`` still reaches 402. The route's
+        predicate used to read ``details`` only, so this answered 500."""
+        from fastapi import HTTPException
+
+        try:
+            raise LLMException(
+                "You exceeded your current quota, please check your plan and "
+                "billing details",
+                status_code=429,
+            )
+        except LLMException as cause:
+            billing = ServiceException("Report generation failed")
+            billing.__cause__ = cause
+
+        with pytest.raises(HTTPException) as exc:
+            await self._call(billing)
+
+        assert exc.value.status_code == 402
+        assert exc.value.headers["x-error-code"] == QUOTA_EXHAUSTED
+
+    @pytest.mark.asyncio
     async def test_generic_service_error_still_500(self):
         from fastapi import HTTPException
 

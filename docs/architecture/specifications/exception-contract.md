@@ -50,7 +50,7 @@ backs it lives in
 | `ConflictError` | 409 Conflict | Resource state conflict (duplicate username, double-close, attempting an operation incompatible with current state). |
 | `NotFoundError` | 404 Not Found | Resource lookup miss (case/session/user does not exist). |
 | `AuthorizationError` | 403 Forbidden | Caller is authenticated but lacks permission for the operation. |
-| `ServiceException` | 500 Internal Server Error | Genuine server failure that the client cannot resolve (database error, wrapped infrastructure failure). |
+| `ServiceException` | 500 Internal Server Error, unless it wraps an LLM failure (see [LLM Provider Failures](#llm-provider-failures-turn-endpoints)) | Genuine server failure that the client cannot resolve (database error, wrapped infrastructure failure). |
 
 All five inherit from `FaultMavenException` (base class). The
 `ServiceError` subclass groups `NotFoundError` / `ConflictError` /
@@ -160,6 +160,32 @@ provider condition presented to the user as a FaultMaven bug.
 | engine `MODEL_NOT_FOUND` / `AUTH_FAILED` / `LLM_CONFIG_ERROR` | 502 | `LLM_PROVIDER_ERROR` | — |
 | direct schema-parse failure (`ValidationError` / `JSONDecodeError`) | 503 | `LLM_INVALID_RESPONSE` | 30 |
 | anything else | 500 | `SERVICE_ERROR` | 10 |
+
+**The mapping is also the global handler** (#552). `get_exception_handlers()`
+registers `service_exception_handler` for both `ServiceException` and
+`LLMException`, and it renders `llm_service_error_http_exception` through the
+`HTTPException` handler — so a route that lets either escape answers exactly
+what a route that catches and maps it answers, less `x-correlation-id`. Before
+that, only routes that remembered the helper got it; the rest answered a bare
+500. The "anything else" body is a static sentence, never the exception text:
+this row now answers for every route, and a `ServiceException`'s message
+carries whatever it wrapped.
+
+Two things a global handler cannot reach, and what covers them:
+
+- **A route arm that catches the class itself.** It must call the helper,
+  re-raise, or be listed with the reason no LLM failure reaches it —
+  `tests/unit/api/test_service_exception_global_handler.py` inventories every
+  such arm on the route surface and fails on a new one.
+- **A broad `except Exception` arm ahead of any typed arm** — the most common
+  shape on the route surface. It swallows the failure before any handler sees
+  it; a route that reaches an LLM needs a typed arm (or a bare re-raise of
+  `FaultMavenException`) in front of it.
+
+The typed signals are read off the `__cause__` chain rather than copied at
+wrap time, so a wrap is lossless only if it links: every
+`raise ServiceException(...)` inside an `except` carries `from e`, and the
+same test file fails on one that does not.
 
 The raw provider status (direct path) is more specific than a threaded
 engine code and takes precedence when both are present. A 4xx other than
