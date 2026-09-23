@@ -1449,7 +1449,7 @@
             "type": "string"
           },
           "valid_next_states": {
-            "description": "Case actions the USER may select from the status menu \u2014 selectability, not legality. A strict subset of the transitions the state machine permits: INQUIRY \u2192 INVESTIGATING is legal and performed by the Gate 1 handshake, but it is earned by a confirmed problem statement rather than requested, so it never appears here. Every entry is a disposition.",
+            "description": "Case actions the USER may select from the status menu \u2014 selectability, not legality. Only CLOSED is ever listed, because closing is the one decision that needs no precondition. The two legal edges that never appear here are earned from case content and offered by the agent through a confirmation handshake: INQUIRY \u2192 INVESTIGATING by a confirmed problem statement (Gate 1), and INVESTIGATING \u2192 RESOLVED by a confirmed root-cause elimination. Requesting either is refused.",
             "items": {
               "type": "string"
             },
@@ -1917,7 +1917,7 @@
             "type": "string"
           },
           "valid_next_states": {
-            "description": "Case actions the USER may select from the status menu \u2014 selectability, not legality. A strict subset of the transitions the state machine permits: INQUIRY \u2192 INVESTIGATING is legal and performed by the Gate 1 handshake, but it is earned by a confirmed problem statement rather than requested, so it never appears here. Every entry is a disposition.",
+            "description": "Case actions the USER may select from the status menu \u2014 selectability, not legality. Only CLOSED is ever listed, because closing is the one decision that needs no precondition. The two legal edges that never appear here are earned from case content and offered by the agent through a confirmation handshake: INQUIRY \u2192 INVESTIGATING by a confirmed problem statement (Gate 1), and INVESTIGATING \u2192 RESOLVED by a confirmed root-cause elimination. Requesting either is refused.",
             "items": {
               "type": "string"
             },
@@ -1978,7 +1978,7 @@
                 "type": "null"
               }
             ],
-            "description": "Per-disposition eligibility for UI affordance gating. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:\n- ``ready`` \u2014 disposition is appropriate; render the affordance enabled with the default 'click to confirm' UX.\n- ``needs_info`` \u2014 disposition is allowed but the case is partial; user must ADD information (root cause / solution) before transitioning. UX: prompt the user for the missing data. Currently only the Resolve side surfaces this.\n- ``suggests_alternative`` \u2014 disposition is allowed but the system recommends the OTHER disposition for this case. UX: warn and offer the alternative; if the user confirms anyway, proceed. Distinct from ``needs_info`` \u2014 no data is missing; the user is asked to RE-DIRECT, not to add. Currently only the Close side surfaces this (when the case has root cause + solution \u2192 resolving preserves attribution).\n- ``not_eligible`` \u2014 disposition is not available; hide the affordance entirely.\n\nDifferent from ``valid_next_states`` \u2014 that field is which actions the user may SELECT, this field is the content-readiness layer on top of them.",
+            "description": "Per-disposition eligibility. \u203c The two keys answer for DIFFERENT audiences: ``closed`` gates a user CONTROL, ``resolved`` gates nothing in the UI \u2014 it is the engine's own readiness verdict, and what it decides is whether the agent OFFERS the resolution handshake. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:\n- ``ready`` \u2014 case content supports this disposition with no follow-up. On the CLOSED side: render the control. On the RESOLVED side: the agent proposes the handshake; render nothing.\n- ``needs_info`` \u2014 content is partial; the user must supply more (root cause / solution / confirmation the problem is gone). Resolve side only, and no control either way \u2014 the agent asks in conversation.\n- ``suggests_alternative`` \u2014 Close side only, and it means DO NOT RENDER CLOSE. It is set exactly when a qualifying causal-absence row is on the case, which is exactly when every close pivots back to a resolve proposal \u2014 so a Close control there could only ever produce 'shall I mark this resolved?'. The honest rendering is no status control at all: the case has one terminal destination and the agent is already offering it.\n- ``not_eligible`` \u2014 not available; render nothing.\n\nDifferent from ``valid_next_states`` \u2014 that field is which actions the user may SELECT, this field is what the case CONTENT supports. The two no longer overlap on the resolve side: ``resolved`` here is the engine's own readiness verdict, which decides whether the agent offers the resolution handshake, not whether a control is rendered.",
             "title": "Disposition Eligibility"
           },
           "inquiry": {
@@ -2024,7 +2024,7 @@
             "type": "integer"
           },
           "valid_next_states": {
-            "description": "Case actions the USER may select from the status menu \u2014 selectability, not legality. A strict subset of the transitions the state machine permits: INQUIRY \u2192 INVESTIGATING is legal and performed by the Gate 1 handshake, but it is earned by a confirmed problem statement rather than requested, so it never appears here. Every entry is a disposition.",
+            "description": "Case actions the USER may select from the status menu \u2014 selectability, not legality. Only CLOSED is ever listed, because closing is the one decision that needs no precondition. The two legal edges that never appear here are earned from case content and offered by the agent through a confirmation handshake: INQUIRY \u2192 INVESTIGATING by a confirmed problem statement (Gate 1), and INVESTIGATING \u2192 RESOLVED by a confirmed root-cause elimination. Requesting either is refused.",
             "items": {
               "type": "string"
             },
@@ -2090,7 +2090,7 @@
                 "type": "null"
               }
             ],
-            "description": "Per-disposition eligibility for UI affordance gating. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:\n- ``ready`` \u2014 disposition is appropriate; render the affordance enabled with the default 'click to confirm' UX.\n- ``needs_info`` \u2014 disposition is allowed but the case is partial; user must ADD information (root cause / solution) before transitioning. UX: prompt the user for the missing data. Currently only the Resolve side surfaces this.\n- ``suggests_alternative`` \u2014 disposition is allowed but the system recommends the OTHER disposition for this case. UX: warn and offer the alternative; if the user confirms anyway, proceed. Distinct from ``needs_info`` \u2014 no data is missing; the user is asked to RE-DIRECT, not to add. Currently only the Close side surfaces this (when the case has root cause + solution \u2192 resolving preserves attribution).\n- ``not_eligible`` \u2014 disposition is not available; hide the affordance entirely.\n\nDifferent from ``valid_next_states`` \u2014 that field is which actions the user may SELECT, this field is the content-readiness layer on top of them.",
+            "description": "Per-disposition eligibility. \u203c The two keys answer for DIFFERENT audiences: ``closed`` gates a user CONTROL, ``resolved`` gates nothing in the UI \u2014 it is the engine's own readiness verdict, and what it decides is whether the agent OFFERS the resolution handshake. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:\n- ``ready`` \u2014 case content supports this disposition with no follow-up. On the CLOSED side: render the control. On the RESOLVED side: the agent proposes the handshake; render nothing.\n- ``needs_info`` \u2014 content is partial; the user must supply more (root cause / solution / confirmation the problem is gone). Resolve side only, and no control either way \u2014 the agent asks in conversation.\n- ``suggests_alternative`` \u2014 Close side only, and it means DO NOT RENDER CLOSE. It is set exactly when a qualifying causal-absence row is on the case, which is exactly when every close pivots back to a resolve proposal \u2014 so a Close control there could only ever produce 'shall I mark this resolved?'. The honest rendering is no status control at all: the case has one terminal destination and the agent is already offering it.\n- ``not_eligible`` \u2014 not available; render nothing.\n\nDifferent from ``valid_next_states`` \u2014 that field is which actions the user may SELECT, this field is what the case CONTENT supports. The two no longer overlap on the resolve side: ``resolved`` here is the engine's own readiness verdict, which decides whether the agent offers the resolution handshake, not whether a control is rendered.",
             "title": "Disposition Eligibility"
           },
           "investigation_turn": {
@@ -2187,7 +2187,7 @@
             "type": "integer"
           },
           "valid_next_states": {
-            "description": "Case actions the USER may select from the status menu \u2014 selectability, not legality. A strict subset of the transitions the state machine permits: INQUIRY \u2192 INVESTIGATING is legal and performed by the Gate 1 handshake, but it is earned by a confirmed problem statement rather than requested, so it never appears here. Every entry is a disposition.",
+            "description": "Case actions the USER may select from the status menu \u2014 selectability, not legality. Only CLOSED is ever listed, because closing is the one decision that needs no precondition. The two legal edges that never appear here are earned from case content and offered by the agent through a confirmation handshake: INQUIRY \u2192 INVESTIGATING by a confirmed problem statement (Gate 1), and INVESTIGATING \u2192 RESOLVED by a confirmed root-cause elimination. Requesting either is refused.",
             "items": {
               "type": "string"
             },
@@ -2250,7 +2250,7 @@
                 "type": "null"
               }
             ],
-            "description": "Per-disposition eligibility for UI affordance gating. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:\n- ``ready`` \u2014 disposition is appropriate; render the affordance enabled with the default 'click to confirm' UX.\n- ``needs_info`` \u2014 disposition is allowed but the case is partial; user must ADD information (root cause / solution) before transitioning. UX: prompt the user for the missing data. Currently only the Resolve side surfaces this.\n- ``suggests_alternative`` \u2014 disposition is allowed but the system recommends the OTHER disposition for this case. UX: warn and offer the alternative; if the user confirms anyway, proceed. Distinct from ``needs_info`` \u2014 no data is missing; the user is asked to RE-DIRECT, not to add. Currently only the Close side surfaces this (when the case has root cause + solution \u2192 resolving preserves attribution).\n- ``not_eligible`` \u2014 disposition is not available; hide the affordance entirely.\n\nDifferent from ``valid_next_states`` \u2014 that field is which actions the user may SELECT, this field is the content-readiness layer on top of them.",
+            "description": "Per-disposition eligibility. \u203c The two keys answer for DIFFERENT audiences: ``closed`` gates a user CONTROL, ``resolved`` gates nothing in the UI \u2014 it is the engine's own readiness verdict, and what it decides is whether the agent OFFERS the resolution handshake. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:\n- ``ready`` \u2014 case content supports this disposition with no follow-up. On the CLOSED side: render the control. On the RESOLVED side: the agent proposes the handshake; render nothing.\n- ``needs_info`` \u2014 content is partial; the user must supply more (root cause / solution / confirmation the problem is gone). Resolve side only, and no control either way \u2014 the agent asks in conversation.\n- ``suggests_alternative`` \u2014 Close side only, and it means DO NOT RENDER CLOSE. It is set exactly when a qualifying causal-absence row is on the case, which is exactly when every close pivots back to a resolve proposal \u2014 so a Close control there could only ever produce 'shall I mark this resolved?'. The honest rendering is no status control at all: the case has one terminal destination and the agent is already offering it.\n- ``not_eligible`` \u2014 not available; render nothing.\n\nDifferent from ``valid_next_states`` \u2014 that field is which actions the user may SELECT, this field is what the case CONTENT supports. The two no longer overlap on the resolve side: ``resolved`` here is the engine's own readiness verdict, which decides whether the agent offers the resolution handshake, not whether a control is rendered.",
             "title": "Disposition Eligibility"
           },
           "investigation_turn": {
@@ -2333,7 +2333,7 @@
             "type": "integer"
           },
           "valid_next_states": {
-            "description": "Case actions the USER may select from the status menu \u2014 selectability, not legality. A strict subset of the transitions the state machine permits: INQUIRY \u2192 INVESTIGATING is legal and performed by the Gate 1 handshake, but it is earned by a confirmed problem statement rather than requested, so it never appears here. Every entry is a disposition.",
+            "description": "Case actions the USER may select from the status menu \u2014 selectability, not legality. Only CLOSED is ever listed, because closing is the one decision that needs no precondition. The two legal edges that never appear here are earned from case content and offered by the agent through a confirmation handshake: INQUIRY \u2192 INVESTIGATING by a confirmed problem statement (Gate 1), and INVESTIGATING \u2192 RESOLVED by a confirmed root-cause elimination. Requesting either is refused.",
             "items": {
               "type": "string"
             },
@@ -6822,7 +6822,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "8.0.0"
+    "version": "9.0.0"
   },
   "openapi": "3.1.0",
   "paths": {

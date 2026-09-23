@@ -1587,4 +1587,32 @@ asked to accept, and it belongs to a person.
 # and absent must read as "no": a client treating a missing value as
 # unknown-therefore-fine renders the dead control again, which is the whole
 # failure being closed.
-API_CONTRACT_VERSION = "8.0.0"
+# 9.0.0 — RESOLVED is no longer a user-selectable case action.
+#
+# MAJOR on two counts. ``valid_next_states`` loses a value it published on
+# every INVESTIGATING case, and a ``status_transition`` request naming
+# ``resolved`` — which this API accepted and answered — is now a 422. A client
+# rendering that menu entry renders a control whose only outcome is a
+# validation error, which is precisely what "an existing client can break"
+# means.
+#
+# The edge itself is unchanged and still reachable: RESOLVED is earned by a
+# confirmed root-cause elimination and offered by the agent through the same
+# confirm/decline handshake it always used. What moved is who may OPEN that
+# handshake. The state machine's legality graph did not change.
+#
+# Symmetric with 7.x's removal of INQUIRY → INVESTIGATING from the same field,
+# and for the same reason: this dict is consulted with no case content, so
+# listing a content-gated edge advertised something the API would not honour on
+# demand. One client reconciled the gap against ``disposition_eligibility``;
+# that was a convention, not a contract, and the fallback path did not follow
+# it.
+#
+# ``disposition_eligibility`` keeps both keys and neither changes shape, but
+# ``resolved`` now describes the ENGINE's readiness verdict rather than a
+# control to render — and ``suggests_alternative`` on the close side means DO
+# NOT RENDER, because on those cases every close pivots back to a resolve
+# proposal. Both are description changes, not structural ones; they are called
+# out here because a client that keeps reading the old meaning renders a
+# button that cannot do what it says.
+API_CONTRACT_VERSION = "9.0.0"
