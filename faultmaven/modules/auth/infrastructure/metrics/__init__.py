@@ -1,7 +1,7 @@
 """Auth module metrics.
 
-Prometheus metrics for OAuth 2.0 + PKCE authentication, and for the
-request-path token revocation check (#1478).
+Prometheus metrics for OAuth 2.0 + PKCE authentication, for the request-path
+token revocation check (#1478), and for operator case reads (ADR-012 D9).
 """
 
 from faultmaven.modules.auth.infrastructure.metrics.oauth_metrics import (
@@ -22,11 +22,20 @@ from faultmaven.modules.auth.infrastructure.metrics.oauth_metrics import (
     oauth_tokens_refreshed,
     oauth_tokens_revoked,
 )
+from faultmaven.modules.auth.infrastructure.metrics.operator_read_metrics import (
+    OPERATOR_READ_DEPLOYMENTS,
+    OPERATOR_READ_SURFACES,
+    operator_case_reads_total,
+)
 from faultmaven.modules.auth.infrastructure.metrics.revocation_metrics import (
     revocation_state_unknown_total,
 )
 
 __all__ = [
+    # Operator case reads (ADR-012 D9)
+    "operator_case_reads_total",
+    "OPERATOR_READ_SURFACES",
+    "OPERATOR_READ_DEPLOYMENTS",
     "oauth_metrics",
     "OAuthMetricsRecorder",
     # Authorization metrics

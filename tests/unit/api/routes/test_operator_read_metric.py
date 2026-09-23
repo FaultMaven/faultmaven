@@ -31,11 +31,10 @@ from faultmaven.api.middleware.auth import require_platform_admin
 from faultmaven.api.operator_audit import get_operator_audit_repository
 from faultmaven.api.operator_grants import get_operator_grant_repository
 from faultmaven.api.routes import admin_cases
-from faultmaven.api.routes.admin_cases import (
+from faultmaven.api.routes.admin_cases import get_case_service, router
+from faultmaven.modules.auth.infrastructure.metrics import (
     OPERATOR_READ_DEPLOYMENTS,
     OPERATOR_READ_SURFACES,
-    get_case_service,
-    router,
 )
 from faultmaven.models.api_models import CaseMessagesResponse
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser

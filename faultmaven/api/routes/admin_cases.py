@@ -50,7 +50,6 @@ from faultmaven.api.operator_grants import (
     validate_identifier,
 )
 from faultmaven.config.settings import get_settings
-from faultmaven.infrastructure.shims.metrics import Counter
 from faultmaven.models.api_models import (
     AdminCaseContentResponse,
     AdminCaseListResponse,
@@ -71,6 +70,7 @@ from faultmaven.models.interfaces_operator_audit import (
 )
 from faultmaven.models.interfaces_operator_grant import IOperatorGrantRepository
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
+from faultmaven.modules.auth.infrastructure.metrics import operator_case_reads_total
 from faultmaven.modules.case.domain.models import CaseState
 from faultmaven.providers.tenancy.factory import (
     BUILTIN_MULTI,
@@ -78,32 +78,6 @@ from faultmaven.providers.tenancy.factory import (
 )
 
 logger = logging.getLogger(__name__)
-
-#: Which operator read was served. Pinned here because a call site that spells a
-#: surface not in this tuple mints a new label silently, and the question below is
-#: then asked of a population that quietly changed shape.
-OPERATOR_READ_SURFACES = ("list", "case_detail", "transcript")
-
-#: ``DeploymentMode`` values (``faultmaven/config/settings.py``), which is what
-#: ``resolved_deployment_mode()`` returns.
-OPERATOR_READ_DEPLOYMENTS = ("standalone", "cloud")
-
-operator_case_reads_total = Counter(
-    "faultmaven_operator_case_reads_total",
-    "Operator case reads served (ADR-012 D9), labeled by ``surface`` "
-    "(list | case_detail | transcript) and ``deployment`` (standalone | cloud). "
-    "It exists to answer ONE question: is the STANDALONE arm of these endpoints "
-    "still being reached? faultmaven-dashboard#178 stopped that client calling "
-    "them in standalone, which leaves the arm serving nobody — but "
-    "docs/development/api-contract-changes.md is explicit that a grep over "
-    "client source is not evidence (\"'Nobody should still be using it' is not "
-    'evidence"), because deployed clients are what matter and self-hosted '
-    "installs pin their image tag. The cloud rows are the denominator: they are "
-    "what distinguishes 'the standalone arm is unused' from 'this counter is not "
-    "wired'. Removing the arm is fm#1613, and waits on standalone reading zero "
-    "across a full deploy cycle.",
-    ["surface", "deployment"],
-)
 
 
 async def get_case_service(request: Request) -> ICaseService:
