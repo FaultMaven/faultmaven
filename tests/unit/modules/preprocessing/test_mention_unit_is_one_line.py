@@ -385,13 +385,20 @@ class TestLogsExtractorProfileCountsLines:
         assert (EntityType.PORT, "9999") in registry
 
     def test_auth_breakdown_does_not_double_a_repeated_ip(self):
-        """fm#1587 item 1, the half entity-level de-duplication reaches.
+        """fm#1587 item 1, plus its residual fm#1596. The total moved 2 -> 1.
 
         ``Failed password for invalid user`` is ONE line matching TWO event
-        categories, and ``auth total`` sums across categories — so the
-        total below is 2 for a single event. That residual is fm#1596 and
-        is deliberately not fixed here; what IS fixed is that naming the IP
-        twice on the line no longer doubles it again to 4.
+        categories. fm#1587 stopped the ENTITY repeating on the line from
+        doubling it again (4 -> 2); this assertion pinned the 2 that was
+        left, and fm#1596 is why the number is now 1: ``auth total`` counts
+        the LINES carrying an auth event instead of summing the categories,
+        so one line recording one attempt reports one attempt. The
+        per-category numbers are unchanged and still say which categories
+        fired.
+
+        Both shapes are kept: they are the two independent ways this one
+        line used to be counted twice, and a regression in either is a
+        different bug.
         """
         one_ip = (
             "Jul 27 14:41:59 combo sshd[1]: Failed password for invalid user "
@@ -401,9 +408,78 @@ class TestLogsExtractorProfileCountsLines:
             "Jul 27 14:41:59 combo sshd[1]: Failed password for invalid user "
             "test from 10.0.0.5 port 1 ssh2 (src 10.0.0.5)\n"
         )
-        expected = "10.0.0.5: failed_password=1, invalid_user=1 \u2192 auth total=2"
+        expected = "10.0.0.5: failed_password=1, invalid_user=1 \u2192 auth total=1"
         assert expected in self._search_map(one_ip)
         assert expected in self._search_map(twice_on_the_line)
+
+    def test_auth_total_is_neither_the_sum_nor_the_largest_category(self):
+        """The shape that separates counting lines from its two near-misses.
+
+        Six lines from one IP: three match BOTH ``failed_password`` and
+        ``invalid_user``, two match ``failed_password`` only, one matches
+        ``invalid_user`` only. So ``failed_password=5``, ``invalid_user=4``,
+        and the number of auth LINES is 6.
+
+        Summing gives 9 (fm#1596, the defect), taking the largest category
+        gives 5, counting lines gives 6. The single-line fixture above
+        cannot tell those three apart, because there all three answer 1.
+        """
+        both = (
+            "Jul 27 14:4{i}:59 combo sshd[1]: Failed password for invalid "
+            "user test from 10.0.0.9 port 1 ssh2"
+        )
+        failed_only = (
+            "Jul 27 14:5{i}:59 combo sshd[1]: Failed password for root "
+            "from 10.0.0.9 port 1 ssh2"
+        )
+        invalid_only = (
+            "Jul 27 14:59:59 combo sshd[1]: Invalid user oracle "
+            "from 10.0.0.9 port 1 ssh2"
+        )
+        content = (
+            "\n".join(
+                [both.format(i=i) for i in range(3)]
+                + [failed_only.format(i=i) for i in range(2)]
+                + [invalid_only]
+            )
+            + "\n"
+        )
+        search_map = self._search_map(content)
+        assert (
+            "10.0.0.9: failed_password=5, invalid_user=4 \u2192 auth total=6"
+            in search_map
+        ), search_map
+
+    def test_auth_total_counts_only_auth_lines(self):
+        """A non-auth event on the same IP is not an auth attempt.
+
+        The categories the table renders are the auth ones; the tally behind
+        the total has to agree, or a ``Connection closed`` line — which
+        carries the IP and matches an event — is reported as an attempt that
+        never happened. Five lines for one IP, three of them auth: the total
+        is 3, and the two connection_closed lines are visible only in the
+        line-occurrence count above the table.
+        """
+        auth = (
+            "Jul 27 14:4{i}:59 combo sshd[1]: Failed password for invalid "
+            "user test from 10.0.0.8 port 1 ssh2"
+        )
+        closed = "Jul 27 14:5{i}:59 combo sshd[1]: Connection closed by 10.0.0.8"
+        content = (
+            "\n".join(
+                [auth.format(i=i) for i in range(3)]
+                + [closed.format(i=i) for i in range(2)]
+            )
+            + "\n"
+        )
+        search_map = self._search_map(content)
+        assert (
+            "10.0.0.8: failed_password=3, invalid_user=3 \u2192 auth total=3"
+            in search_map
+        ), search_map
+        assert (
+            "10.0.0.8: 5 line occurrences (all event types)" in search_map
+        ), search_map
 
 
 @pytest.mark.unit
