@@ -29,6 +29,25 @@ from faultmaven.modules.case.domain.services.case_action_manager import (
 # ============================================================
 
 
+#: One definition for a description serialized into ``openapi.json`` from five
+#: Field declarations across two modules. Duplicated prose in a contract is
+#: worse than duplicated code: a missed copy surfaces only as an opaque
+#: contract-drift failure in CI, far from the edit.
+VALID_NEXT_STATES_DESCRIPTION = (
+    "Case actions the USER may select from the status menu — selectability, "
+    "not legality. A strict subset of the transitions the state machine "
+    "permits: INQUIRY → INVESTIGATING is legal and performed by the Gate 1 "
+    "handshake, but it is earned by a confirmed problem statement rather than "
+    "requested, so it never appears here. Every entry is a disposition."
+)
+
+#: The delta paragraph appended to ``disposition_eligibility`` descriptions.
+DISPOSITION_ELIGIBILITY_DELTA = (
+    "Different from ``valid_next_states`` — that field is which actions the "
+    "user may SELECT, this field is the content-readiness layer on top of them."
+)
+
+
 class CaseCreateRequest(BaseModel):
     """Request to create a new case (v2.0).
 
@@ -156,14 +175,7 @@ class CaseSummary(BaseModel):
     # Status transitions
     valid_next_states: List[str] = Field(
         default_factory=list,
-        description=(
-            "Case actions the USER may select from the status menu — "
-            "selectability, not legality. A strict subset of the transitions "
-            "the state machine permits: INQUIRY → INVESTIGATING is legal and "
-            "performed by the Gate 1 handshake, but it is earned by a "
-            "confirmed problem statement rather than requested, so it never "
-            "appears here. Every entry is a disposition."
-        ),
+        description=VALID_NEXT_STATES_DESCRIPTION,
     )
 
     @classmethod
@@ -265,14 +277,7 @@ class CaseDetail(BaseModel):
     # Status transitions
     valid_next_states: List[str] = Field(
         default_factory=list,
-        description=(
-            "Case actions the USER may select from the status menu — "
-            "selectability, not legality. A strict subset of the transitions "
-            "the state machine permits: INQUIRY → INVESTIGATING is legal and "
-            "performed by the Gate 1 handshake, but it is earned by a "
-            "confirmed problem statement rather than requested, so it never "
-            "appears here. Every entry is a disposition."
-        ),
+        description=VALID_NEXT_STATES_DESCRIPTION,
     )
 
     @classmethod

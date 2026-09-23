@@ -917,52 +917,39 @@ class TestINV14_DropdownUsesStandardHandshake:
         assert updated.resolved_at is None
         assert updated.closed_at is None
 
-    def test_inv14_dropdown_investigating_branch_does_not_directly_execute_resolved(
-        self,
-    ):
-        """Static check: the engine's ``elif to_status_str == "investigating"``
-        branch does NOT contain calls to ``_execute_resolved_transition``,
-        ``_execute_closed_transition``, ``confirm_pending_transition``,
-        or direct state mutations. The branch falls through to the LLM
-        pipeline so the standard handshake handles confirmation.
+    def test_inv14_investigating_request_is_refused_before_any_mutation(self):
+        """The INVESTIGATING refusal must come BEFORE section 0b's mutations.
 
-        Complement to the functional tests above: pins the structural
-        property of the INVESTIGATING branch even without exercising
-        the full LLM pipeline.
+        Placement is the invariant, not merely the refusal. Section 0b cancels
+        a contradicting pending transition and records the fm#1122 decline
+        signature before reaching the per-target branches. A refusal raised
+        from down there unwinds past those mutations with no save, so a
+        standing close offer survives with no decline recorded and the engine
+        re-fires it next turn — the re-nag fm#1122 exists to prevent.
+
+        Static rather than behavioural because the damage is in what is NOT
+        persisted: an in-memory assertion after the raise sees the mutations
+        and passes, which is exactly how the original shape looked correct.
         """
         source = inspect.getsource(MilestoneEngine._process_turn_impl)
 
-        # Find the investigating-target branch within the status_transition
-        # intent handler.
-        investigating_idx = source.find('elif to_status_str == "investigating":')
-        assert investigating_idx >= 0, (
-            "Could not locate the 'investigating' branch of the "
-            "status_transition intent handler. The static check below "
-            "assumes this structure."
+        guard_idx = source.find("not a user-selectable case action")
+        assert guard_idx >= 0, (
+            "the INVESTIGATING refusal is gone from _process_turn_impl; "
+            "INQUIRY → INVESTIGATING must not be requestable (#1608)"
         )
 
-        # Walk to the next sibling branch / end-of-block. The
-        # 'investigating' branch ends when the next major block begins.
-        # Take a generous 1500-char window.
-        branch_region = source[investigating_idx : investigating_idx + 1500]
-
-        # The invariant: this branch must not directly execute a transition.
-        # It should fall through to the LLM pipeline so the standard
-        # ProposedTransition handshake handles disposition.
-        forbidden_calls = [
-            "_execute_resolved_transition",
-            "_execute_closed_transition",
-            "confirm_pending_transition(case, case.user_id)",
-            "case.state = CaseState.INVESTIGATING\n",
-        ]
-        for forbidden in forbidden_calls:
-            assert forbidden not in branch_region, (
-                f"INV-14 violation: the INQUIRY → INVESTIGATING dropdown "
-                f"branch contains '{forbidden}'. The dropdown must not "
-                f"directly execute the transition; it must fall through "
-                f"to the LLM pipeline so user_confirmed_investigation=True "
-                f"drives the transition through the standard handshake. "
-                f"See §1.5 *Core Principle*."
+        for mutator in (
+            "_record_deferred_disposition_decline(",
+            "cancel_pending_transition(",
+        ):
+            mutator_idx = source.find(mutator)
+            assert mutator_idx >= 0, f"{mutator} no longer present — update this test"
+            assert guard_idx < mutator_idx, (
+                f"INV-14 violation: the INVESTIGATING refusal is raised AFTER "
+                f"{mutator} runs. That unwinds past a mutation the turn never "
+                f"saves, dropping the fm#1122 decline signature and letting "
+                f"the engine re-nag with the offer the user contradicted."
             )
 
 

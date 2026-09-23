@@ -376,7 +376,7 @@ chance to see what was accomplished before committing to an irreversible action.
 - `suggests_alternative` — disposition is allowed but the system recommends the OTHER disposition for this case (e.g., resolution-grade case clicked-to-close). User is asked to RE-DIRECT, not to add data. Currently only the Close side surfaces this.
 - `not_eligible` — disposition is not available; hide the affordance entirely.
 
-`needs_info` and `suggests_alternative` are kept as distinct values rather than overloading one label, because they drive different UX patterns (add-data vs reconsider-action). The column is maintained at the **single chokepoint `CaseRepository.save()`** (pattern P3) — every save calls the derive helper and rewrites the column, so the value can never drift from current case content without per-mutation-site update burden. The UI adapter passes the column through to all three `CaseUIResponse_*` variants; the frontend renders the dropdown menu against `disposition_eligibility`, not just `valid_next_states` (the structural action graph). Distinction: `valid_next_states` answers *which edges exist*; `disposition_eligibility` answers *which edges make sense given current content*.
+`needs_info` and `suggests_alternative` are kept as distinct values rather than overloading one label, because they drive different UX patterns (add-data vs reconsider-action). The column is maintained at the **single chokepoint `CaseRepository.save()`** (pattern P3) — every save calls the derive helper and rewrites the column, so the value can never drift from current case content without per-mutation-site update burden. The UI adapter passes the column through to all three `CaseUIResponse_*` variants; the frontend renders the dropdown menu against `disposition_eligibility`, not just `valid_next_states`. Distinction: `valid_next_states` answers *which actions the user may select*; `disposition_eligibility` answers *which of those make sense given current content*. (Neither is the legality graph — that is `LEGAL_TRANSITIONS`, §1.3.)
 
 **needs_info flag for RESOLVED:** When resolution readiness returns `NEEDS_INFO`, the system stores the pending transition with `needs_info=True`. This remembers the user's intent to resolve. On subsequent turns, the system re-evaluates readiness via `assess_resolution_readiness()`:
 
@@ -533,22 +533,39 @@ propose_transition(
 
 ### 1.3 Valid Transitions Summary
 
-The valid-action graph below is realized in code as `ALLOWED_ACTIONS` in `case_action_manager.py` (UI-affordance source for the dropdown) and as the local `valid_actions` dict inside `is_valid_action()` in `models.py` (Pydantic model_validator on every `CaseAction` instantiation). Both surfaces currently agree; see the INV-04 drift notes below for the consolidation status.
+There are **two** graphs, answering different questions. They are not copies of each other and must not be pinned equal.
+
+**`LEGAL_TRANSITIONS`** (`models.py`) — every edge the state machine permits. `is_valid_action()` reads it directly, as the Pydantic model_validator on every `CaseAction` instantiation, and the INV-22 guard validates LLM-emitted `proposed_transition` targets against it.
 
 ```python
-ALLOWED_ACTIONS = {
-    CaseState.INQUIRY: [
-        CaseState.INVESTIGATING,   # Start formal investigation (always required, even for KB-matched cases)
-        CaseState.CLOSED           # Inquiry-only, no investigation
-    ],
-    CaseState.INVESTIGATING: [
+LEGAL_TRANSITIONS = {
+    CaseState.INQUIRY: (
+        CaseState.INVESTIGATING,   # Gate 1 performs this — see below
+        CaseState.CLOSED,          # Inquiry-only, no investigation
+    ),
+    CaseState.INVESTIGATING: (
         CaseState.RESOLVED,        # Solution verified (terminal) — includes the KB-resolution milestone-collapse variant
-        CaseState.CLOSED           # Abandoned (terminal)
-    ],
-    CaseState.RESOLVED: [],        # DISPOSITION - no further case actions
-    CaseState.CLOSED: []           # DISPOSITION - no further case actions
+        CaseState.CLOSED,          # Abandoned (terminal)
+    ),
+    CaseState.RESOLVED: (),        # DISPOSITION - no further case actions
+    CaseState.CLOSED: (),          # DISPOSITION - no further case actions
 }
 ```
+
+**`USER_SELECTABLE_ACTIONS`** (`case_action_manager.py`) — what a user may pick from the status menu, and the source for `valid_next_states`. A strict **subset**:
+
+```python
+USER_SELECTABLE_ACTIONS = {
+    CaseState.INQUIRY: (CaseState.CLOSED,),
+    CaseState.INVESTIGATING: (CaseState.RESOLVED, CaseState.CLOSED),
+    CaseState.RESOLVED: (),
+    CaseState.CLOSED: (),
+}
+```
+
+They differ on exactly one edge. **INQUIRY → INVESTIGATING is legal but not selectable**: it is earned by a problem statement the user has confirmed — which Gate 1 performs and the DB CHECK `cases_description_required_for_investigation` makes structural — so a menu cannot honour it on demand. Requesting it is refused with a 422. Every entry that remains in the menu is a *disposition*: a user decision carrying information the engine cannot derive.
+
+Both are frozen (`MappingProxyType` over tuples) so an importer cannot widen the gate at runtime. See the INV-04 notes in [investigation-invariants.md](./investigation-invariants.md) for the consolidation history.
 
 There is no `INQUIRY → RESOLVED` edge. KB-driven cases route through INVESTIGATING via the KB-resolution milestone collapse documented under [INVESTIGATING → RESOLVED → KB-Resolution Path](#kb-resolution-path-milestone-collapse-variant) — confirming problem understanding is mandatory before any solution is proposed, including for runbook-matched cases.
 
@@ -687,7 +704,7 @@ async def process_turn(case: Case, user_message: str) -> str:
 #   - Disposition: Yes (irreversible)
 #
 # (INQUIRY → RESOLVED is not a valid edge — KB-matched cases route through
-#  INVESTIGATING; see ALLOWED_ACTIONS in §1.3.)
+#  INVESTIGATING; see LEGAL_TRANSITIONS in §1.3.)
 
 
 # ============================================================

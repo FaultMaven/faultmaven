@@ -25,7 +25,8 @@ import re
 from bisect import bisect_right
 from datetime import UTC, datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional, Sequence
+from types import MappingProxyType
+from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -230,12 +231,21 @@ class CaseAction(BaseModel):
 #: v3: INQUIRY → RESOLVED removed. KB-resolution flows through INVESTIGATING via
 #: the milestone collapse — state authored in one turn, disposition still
 #: confirmed on the next (investigation-lifecycle-logic.md §1.2).
-LEGAL_TRANSITIONS: dict[CaseState, list[CaseState]] = {
-    CaseState.INQUIRY: [CaseState.INVESTIGATING, CaseState.CLOSED],
-    CaseState.INVESTIGATING: [CaseState.RESOLVED, CaseState.CLOSED],
-    CaseState.RESOLVED: [],  # Disposition — terminal
-    CaseState.CLOSED: [],  # Disposition — terminal
-}
+#: Frozen deliberately. The graph this replaced was a function-local dict
+#: rebuilt on every call, so it could not be widened at runtime; a plain module
+#: dict of lists can be, by any importer — including a test that mutates and
+#: forgets to restore, which would leak across the process and simultaneously
+#: flip ``is_valid_action``, the ``CaseAction`` validator, the INV-22 guard and
+#: ``derive_disposition_eligibility``. This suite already has order-dependent
+#: failures (#823); a mutable safety net is not one worth adding to them.
+LEGAL_TRANSITIONS: Mapping[CaseState, tuple[CaseState, ...]] = MappingProxyType(
+    {
+        CaseState.INQUIRY: (CaseState.INVESTIGATING, CaseState.CLOSED),
+        CaseState.INVESTIGATING: (CaseState.RESOLVED, CaseState.CLOSED),
+        CaseState.RESOLVED: (),  # Disposition — terminal
+        CaseState.CLOSED: (),  # Disposition — terminal
+    }
+)
 
 
 def is_valid_action(from_state: CaseState, to_state: CaseState) -> bool:
@@ -253,7 +263,7 @@ def is_valid_action(from_state: CaseState, to_state: CaseState) -> bool:
     - CLOSED → * (disposition is terminal)
     - INVESTIGATING → INQUIRY (no backward phase transition)
     """
-    return to_state in LEGAL_TRANSITIONS.get(from_state, [])
+    return to_state in LEGAL_TRANSITIONS.get(from_state, ())
 
 
 # Backward compatibility alias

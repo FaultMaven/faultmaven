@@ -5377,6 +5377,30 @@ class MilestoneEngine:
         user_id: str | None = None,
     ) -> dict[str, Any]:
         """Inner implementation of process_turn, called under per-case lock."""
+        # Refused FIRST, before any state is touched. INVESTIGATING is not a
+        # user-selectable case action (#1608) — it is earned by a confirmed
+        # problem statement, which Gate 1 performs.
+        #
+        # Placement is load-bearing, not tidiness. Section 0b below cancels a
+        # contradicting pending transition and records the fm#1122 decline
+        # signature before reaching the per-target branches, so refusing down
+        # there unwound past those mutations with no save: the standing close
+        # offer survived with no decline recorded, and the engine re-fired it
+        # on the next turn — the re-nag fm#1122 exists to prevent.
+        #
+        # ``InvestigationService._handle_status_transition`` rejects this at
+        # the boundary with a 422, so this is the backstop for direct engine
+        # callers rather than the path a client takes.
+        if (
+            intent_type == "status_transition"
+            and (intent_data or {}).get("to_state") == CaseState.INVESTIGATING.value
+        ):
+            raise ValueError(
+                "INVESTIGATING is not a user-selectable case action. It is "
+                "reached by confirming the problem statement (Gate 1), not by "
+                "requesting the state."
+            )
+
         # Add intent information to logger for tracing
         # Note: current_turn has already been incremented by investigation_service before this point
         intent_info = f" [intent={intent_type}]" if intent_type else ""
@@ -6063,29 +6087,13 @@ class MilestoneEngine:
                         "metadata": turn_metadata,
                     }
 
-                elif to_status_str == "investigating":
-                    # Not a user action. INQUIRY → INVESTIGATING is legal, but
-                    # it is EARNED — by the case carrying a problem statement
-                    # the user has confirmed, which Gate 1 performs and the DB
-                    # CHECK ``cases_description_required_for_investigation``
-                    # makes structural. A request cannot make it true.
-                    #
-                    # This branch used to accept the request and fall through:
-                    # it injected a synthetic user message ("I want to start a
-                    # formal investigation to find the root cause") and let the
-                    # LLM pipeline handle it. That message read to the model as
-                    # established problem-solving intent, so on a case with
-                    # nothing wrong yet it pulled a problem statement out of a
-                    # case that had none — while the reply correctly said no
-                    # problem could be stated. Refusing is the honest answer;
-                    # the UI no longer offers the option (#1608), and this
-                    # closes the same door to older clients and direct API
-                    # callers.
-                    raise ValueError(
-                        "INVESTIGATING is not a user-selectable case action. "
-                        "It is reached by confirming a problem statement "
-                        "(Gate 1), not by requesting the state."
-                    )
+                # ``investigating`` never reaches here — the guard at the top
+                # of this method refuses it before any state is touched. The
+                # branch that used to live here accepted the request and fell
+                # through to the LLM on a synthetic user message ("I want to
+                # start a formal investigation to find the root cause"), which
+                # read as established problem-solving intent and pulled a
+                # problem statement out of cases that had none (#1608).
 
                 else:
                     raise ValueError(f"Unknown to_state: {to_status_str}")

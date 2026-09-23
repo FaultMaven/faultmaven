@@ -291,20 +291,34 @@ class TestWithdrawalRecordsTheEngineOffer:
 
     @pytest.mark.asyncio
     async def test_contradicting_status_pick_records_the_refusal(self):
-        """Picking "Investigating" from the status dropdown while a close
-        offer stands is a refusal of that offer."""
+        """Picking a different disposition while a close offer stands is a
+        refusal of that offer.
+
+        Was "pick Investigating", which is no longer a user action at all
+        (#1608) and is now refused before any state is touched — deliberately,
+        because clicking a button that no longer exists is not a considered
+        refusal of the close. "Mark as resolved" is the contradiction that
+        still exists, and it carries the same meaning.
+        """
         engine = _engine()
         case = self._engine_proposed_case()
 
-        with pytest.raises(MilestoneEngineError):
-            await engine.process_turn(
-                case=case,
-                user_message="",
-                intent_type="status_transition",
-                intent_data={"to_state": "investigating"},
-            )
+        # A disposition pick is handled deterministically — it does not reach
+        # the LLM seam, so there is no sentinel to catch here.
+        await engine.process_turn(
+            case=case,
+            user_message="",
+            intent_type="status_transition",
+            intent_data={"to_state": "resolved"},
+        )
 
-        assert case.pending_transition is None
+        # The subject: the refusal is RECORDED, so the engine cannot re-fire
+        # the same deferred close from state the user just contradicted.
+        #
+        # Deliberately not asserting what now occupies ``pending_transition``.
+        # On a thin case INV-37's SUGGEST_CLOSE pivot turns the resolve request
+        # back into a close offer of its own, so the slot is filled either way;
+        # the signature is what stops the re-nag.
         assert case.progress.deferred_disposition_declined_signatures == [
             "SUGGEST_CLOSE|1|chain"
         ]

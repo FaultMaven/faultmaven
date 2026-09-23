@@ -921,7 +921,7 @@ class TestMilestoneEngine:
         if has_statement:
             inquiry_case.inquiry.proposed_problem_statement = "Test symptom"
 
-        with pytest.raises(MilestoneEngineError, match="not a user-selectable"):
+        with pytest.raises(ValueError, match="not a user-selectable"):
             await engine.process_turn(
                 case=inquiry_case,
                 user_message="",

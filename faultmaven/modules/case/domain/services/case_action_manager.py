@@ -23,7 +23,8 @@ legality graph is ``LEGAL_TRANSITIONS`` in ``modules/case/domain/models.py``.
 """
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from types import MappingProxyType
+from typing import Any, Dict, Mapping, Optional
 
 from faultmaven.modules.case.domain.models import CaseState
 from faultmaven.utils.serialization import to_json_compatible
@@ -48,18 +49,22 @@ from faultmaven.utils.serialization import to_json_compatible
 #: and fell through to the LLM. The user asks for an investigation the way the
 #: design always had them ask: by saying so (see §1.2's natural flow), or by
 #: the agent proposing one. Gate 1 then performs the edge.
-USER_SELECTABLE_ACTIONS = {
-    CaseState.INQUIRY: [
-        CaseState.CLOSED,  # Disposition: "Close without investigating"
-    ],
-    CaseState.INVESTIGATING: [
-        CaseState.RESOLVED,  # Disposition: "Mark as resolved"
-        CaseState.CLOSED,  # Disposition: "Close as unresolved"
-    ],
-    # Dispositions — terminal, no further actions allowed
-    CaseState.RESOLVED: [],
-    CaseState.CLOSED: [],
-}
+#: Frozen for the same reason as ``LEGAL_TRANSITIONS``: a module-level dict of
+#: lists is writable by any importer, and this one drives a user-facing menu.
+USER_SELECTABLE_ACTIONS: Mapping[CaseState, tuple[CaseState, ...]] = MappingProxyType(
+    {
+        CaseState.INQUIRY: (
+            CaseState.CLOSED,  # Disposition: "Close without investigating"
+        ),
+        CaseState.INVESTIGATING: (
+            CaseState.RESOLVED,  # Disposition: "Mark as resolved"
+            CaseState.CLOSED,  # Disposition: "Close as unresolved"
+        ),
+        # Dispositions — terminal, no further actions allowed
+        CaseState.RESOLVED: (),
+        CaseState.CLOSED: (),
+    }
+)
 
 
 # Map: (old_state, new_state) → agent message
@@ -177,7 +182,7 @@ class CaseActionManager:
 
         Selectability, not legality — see ``USER_SELECTABLE_ACTIONS``.
         """
-        return USER_SELECTABLE_ACTIONS.get(current_status, [])
+        return list(USER_SELECTABLE_ACTIONS.get(current_status, ()))
 
     # Backward compatibility alias
     get_allowed_transitions = get_allowed_actions
