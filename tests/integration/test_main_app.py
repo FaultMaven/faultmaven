@@ -66,13 +66,12 @@ _ensure_database()
 from faultmaven.main import app
 
 
-def test_health_check():
+def test_health_check(booted_app_client):
     """
     Tests the /health endpoint to ensure the application is running
     and responding correctly.
     """
-    with TestClient(app) as client:
-        response = client.get("/health")
+    response = booted_app_client.get("/health")
     assert response.status_code == 200
 
     data = response.json()
@@ -123,7 +122,7 @@ def test_health_check():
         ), f"Migration field '{field}' should not be present in health check after Phase 3"
 
 
-def test_capabilities_endpoint_feature_flags():
+def test_capabilities_endpoint_feature_flags(booted_app_client):
     """The extension capabilities endpoint reports the canonical feature flags.
 
     Guards the wire contract consumed by the Copilot extension and the
@@ -132,8 +131,7 @@ def test_capabilities_endpoint_feature_flags():
     Team = the sharing unit), NOT the retired ``teamWorkspaces`` misnomer, and
     the org/team console gate is advertised as ``managementConsole``.
     """
-    with TestClient(app) as client:
-        response = client.get("/v1/meta/capabilities")
+    response = booted_app_client.get("/v1/meta/capabilities")
 
     assert response.status_code == 200
     data = response.json()
@@ -149,7 +147,7 @@ def test_capabilities_endpoint_feature_flags():
         assert flag in features and isinstance(features[flag], bool)
 
 
-def test_conversion_service_composition_root_wiring():
+def test_conversion_service_composition_root_wiring(booted_app_client):
     """ConversionService gets the SAME collaborators the rest of the app uses.
 
     The lifespan constructs ConversionService before it copies the container's
@@ -164,32 +162,31 @@ def test_conversion_service_composition_root_wiring():
         KnowledgeService,
     )
 
-    with TestClient(app):
-        cs = app.state.conversion_service
-        assert cs is not None, "conversion service failed to initialize"
-        # share_repository exists in both modes (ADR-013 §D4), so this
-        # assertion is load-bearing everywhere: a None here means the
-        # construction read app.state too early.
-        assert app.state.share_repository is not None
-        assert cs._share_repo is app.state.share_repository
-        # team_service is None in standalone; identity still pins that the
-        # construction and app.state resolve the same source.
-        assert cs._team_service is app.state.team_service
-        assert cs._db_session_factory is get_db_session
+    cs = app.state.conversion_service
+    assert cs is not None, "conversion service failed to initialize"
+    # share_repository exists in both modes (ADR-013 §D4), so this
+    # assertion is load-bearing everywhere: a None here means the
+    # construction read app.state too early.
+    assert app.state.share_repository is not None
+    assert cs._share_repo is app.state.share_repository
+    # team_service is None in standalone; identity still pins that the
+    # construction and app.state resolve the same source.
+    assert cs._team_service is app.state.team_service
+    assert cs._db_session_factory is get_db_session
 
-        # The KnowledgeService the same lifespan publishes must be DB-capable
-        # from the container, not from a patch applied here. That patch made
-        # the capability web-only: the jobs process initializes the same
-        # container without a lifespan, so ``kb_seed`` refused on every runbook
-        # (#894). One session source for the whole knowledge vertical.
-        ks = app.state.knowledge_service
-        assert isinstance(
-            ks, KnowledgeService
-        ), f"lifespan published a {type(ks).__name__}, not a real KnowledgeService"
-        assert ks._db_session_factory is get_db_session
+    # The KnowledgeService the same lifespan publishes must be DB-capable
+    # from the container, not from a patch applied here. That patch made
+    # the capability web-only: the jobs process initializes the same
+    # container without a lifespan, so ``kb_seed`` refused on every runbook
+    # (#894). One session source for the whole knowledge vertical.
+    ks = app.state.knowledge_service
+    assert isinstance(
+        ks, KnowledgeService
+    ), f"lifespan published a {type(ks).__name__}, not a real KnowledgeService"
+    assert ks._db_session_factory is get_db_session
 
 
-def test_suggestion_service_composition_root_wiring():
+def test_suggestion_service_composition_root_wiring(booted_app_client):
     """``app.state.suggestion_service`` is SET, and holds the real KB service.
 
     It was read in two routes and written in none (#1214), so
@@ -207,29 +204,28 @@ def test_suggestion_service_composition_root_wiring():
         SuggestionService,
     )
 
-    with TestClient(app):
-        svc = app.state.suggestion_service
-        assert svc is not None, "the suggestion service slot is empty again"
-        assert isinstance(
-            svc, SuggestionService
-        ), f"lifespan published a {type(svc).__name__}"
-        assert (
-            svc._knowledge_service is app.state.knowledge_service
-        ), "the suggestion service publishes through a different KnowledgeService"
-        # The collaborator the PII scan needs. Without it every suggestion is
-        # marked CLEAN unscanned, which is a policy the deployment should choose
-        # rather than inherit from a missing wire.
-        assert svc._sanitizer is not None
+    svc = app.state.suggestion_service
+    assert svc is not None, "the suggestion service slot is empty again"
+    assert isinstance(
+        svc, SuggestionService
+    ), f"lifespan published a {type(svc).__name__}"
+    assert (
+        svc._knowledge_service is app.state.knowledge_service
+    ), "the suggestion service publishes through a different KnowledgeService"
+    # The collaborator the PII scan needs. Without it every suggestion is
+    # marked CLEAN unscanned, which is a policy the deployment should choose
+    # rather than inherit from a missing wire.
+    assert svc._sanitizer is not None
 
-        # The container hands back the same object every time — the routes read
-        # app.state, but a getter that rebuilt per call would restore the bug
-        # for anything sourcing it from the container.
-        from faultmaven.container import container
+    # The container hands back the same object every time — the routes read
+    # app.state, but a getter that rebuilt per call would restore the bug
+    # for anything sourcing it from the container.
+    from faultmaven.container import container
 
-        assert container.get_suggestion_service() is svc
+    assert container.get_suggestion_service() is svc
 
 
-def test_capabilities_team_flags_gate_on_team_service():
+def test_capabilities_team_flags_gate_on_team_service(booted_app_client):
     """``teamSharing``/``managementConsole`` follow the live TeamService signal.
 
     They must NOT key on ``deployment_mode == "cloud"`` (which would light them
@@ -237,22 +233,21 @@ def test_capabilities_team_flags_gate_on_team_service():
     ``app.state.team_service is not None`` — None in standalone, set only when a
     multi-tenant TeamService is wired.
     """
-    with TestClient(app) as client:
-        # Standalone bootstrap wires no TeamService → team capabilities OFF.
-        app.state.team_service = None
-        off = client.get("/v1/meta/capabilities").json()["features"]
-        assert off["teamSharing"] is False
-        assert off["managementConsole"] is False
+    # Standalone bootstrap wires no TeamService → team capabilities OFF.
+    app.state.team_service = None
+    off = booted_app_client.get("/v1/meta/capabilities").json()["features"]
+    assert off["teamSharing"] is False
+    assert off["managementConsole"] is False
 
-        # A wired TeamService (multi-tenant/Cloud-ready) → team capabilities ON.
-        app.state.team_service = Mock()
-        try:
-            on = client.get("/v1/meta/capabilities").json()["features"]
-            assert on["teamSharing"] is True
-            assert on["managementConsole"] is True
-        finally:
-            # Restore the standalone default so later tests see a clean state.
-            app.state.team_service = None
+    # A wired TeamService (multi-tenant/Cloud-ready) → team capabilities ON.
+    app.state.team_service = Mock()
+    try:
+        on = booted_app_client.get("/v1/meta/capabilities").json()["features"]
+        assert on["teamSharing"] is True
+        assert on["managementConsole"] is True
+    finally:
+        # Restore the standalone default so later tests see a clean state.
+        app.state.team_service = None
 
 
 #: Headers that say something about the request rather than about the route: a
@@ -338,7 +333,7 @@ _ROUTE_DESCRIBING_HEADERS = frozenset(
 )
 
 
-def test_the_compared_set_is_exactly_the_route_describing_headers():
+def test_the_compared_set_is_exactly_the_route_describing_headers(booted_app_client):
     """An ALLOWLIST, because the filter is a denylist and denylists go stale.
 
     The previous version of this guard checked the wrong direction. It asserted
@@ -358,8 +353,7 @@ def test_the_compared_set_is_exactly_the_route_describing_headers():
     split them over an observability label that says nothing about whether the
     two paths are one handler.
     """
-    with TestClient(app) as client:
-        response = client.get("/api/v1/meta/capabilities")
+    response = booted_app_client.get("/api/v1/meta/capabilities")
 
     assert response.status_code == 200
     surviving = set(_stable_headers(response.headers))
@@ -438,7 +432,7 @@ def test_every_per_request_header_is_one_something_emits():
     )
 
 
-def test_capabilities_is_the_same_response_under_both_paths():
+def test_capabilities_is_the_same_response_under_both_paths(booted_app_client):
     """``/api/v1/meta/capabilities`` and ``/v1/meta/capabilities`` are one route.
 
     The canonical path is the ``/api`` one: it is the only prefix the ingress
@@ -459,30 +453,29 @@ def test_capabilities_is_the_same_response_under_both_paths():
     """
     bodies = []
 
-    with TestClient(app) as client:
-        for wired in (None, Mock()):
-            app.state.team_service = wired
-            try:
-                canonical = client.get("/api/v1/meta/capabilities")
-                alias = client.get("/v1/meta/capabilities")
-            finally:
-                # Restore the standalone default so later tests see a clean state.
-                app.state.team_service = None
+    for wired in (None, Mock()):
+        app.state.team_service = wired
+        try:
+            canonical = booted_app_client.get("/api/v1/meta/capabilities")
+            alias = booted_app_client.get("/v1/meta/capabilities")
+        finally:
+            # Restore the standalone default so later tests see a clean state.
+            app.state.team_service = None
 
-            assert canonical.status_code == 200
-            assert canonical.headers["content-type"].startswith("application/json")
+        assert canonical.status_code == 200
+        assert canonical.headers["content-type"].startswith("application/json")
 
-            assert alias.status_code == canonical.status_code
-            assert alias.content == canonical.content, (
-                "the two paths returned different bytes — they are supposed to "
-                "be one handler"
-            )
-            assert _stable_headers(alias.headers) == _stable_headers(
-                canonical.headers
-            ), "the two paths returned different headers"
-            _assert_rate_limit_agrees(alias, canonical)
+        assert alias.status_code == canonical.status_code
+        assert alias.content == canonical.content, (
+            "the two paths returned different bytes — they are supposed to "
+            "be one handler"
+        )
+        assert _stable_headers(alias.headers) == _stable_headers(
+            canonical.headers
+        ), "the two paths returned different headers"
+        _assert_rate_limit_agrees(alias, canonical)
 
-            bodies.append(canonical.content)
+        bodies.append(canonical.content)
 
     assert bodies[0] != bodies[1], (
         "the capabilities body did not move with app.state.team_service, so "
@@ -506,41 +499,40 @@ def test_the_bare_v1_capabilities_path_is_published_as_deprecated():
     assert not canonical.get("deprecated", False)
 
 
-def test_root_endpoint():
+def test_root_endpoint(booted_app_client):
     """
     Tests the root (/) endpoint to ensure it returns the correct API
     information and is simplified after Phase 3.
     """
-    with TestClient(app) as client:
-        response = client.get("/")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["message"] == "FaultMaven API"
-        assert "version" in data
+    response = booted_app_client.get("/")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["message"] == "FaultMaven API"
+    assert "version" in data
 
-        # Validate response structure - Phase 3 simplified fields
-        required_fields = ["message", "version", "description", "docs", "health"]
-        for field in required_fields:
-            assert field in data, f"Missing required field: {field}"
+    # Validate response structure - Phase 3 simplified fields
+    required_fields = ["message", "version", "description", "docs", "health"]
+    for field in required_fields:
+        assert field in data, f"Missing required field: {field}"
 
-        # Phase 3: Architecture/migration information should NOT be present
-        prohibited_fields = [
-            "architecture",
-            "migration_strategy",
-            "migration_status",
-            "using_new_api",
-            "using_di_container",
-            "refactored_components",
-        ]
+    # Phase 3: Architecture/migration information should NOT be present
+    prohibited_fields = [
+        "architecture",
+        "migration_strategy",
+        "migration_status",
+        "using_new_api",
+        "using_di_container",
+        "refactored_components",
+    ]
 
-        for field in prohibited_fields:
-            assert (
-                field not in data
-            ), f"Prohibited migration field '{field}' should not be present in root endpoint after Phase 3"
+    for field in prohibited_fields:
+        assert (
+            field not in data
+        ), f"Prohibited migration field '{field}' should not be present in root endpoint after Phase 3"
 
-        # Verify essential navigation links
-        assert data["docs"] == "/docs"
-        assert data["health"] == "/health"
+    # Verify essential navigation links
+    assert data["docs"] == "/docs"
+    assert data["health"] == "/health"
 
 
 def test_application_structure():
@@ -607,26 +599,25 @@ def test_multipart_form_field_limit_matches_max_upload_size():
 
 
 @pytest.mark.integration
-def test_api_routes_registration():
+def test_api_routes_registration(booted_app_client):
     """Test that API routes are properly registered"""
-    with TestClient(app) as client:
-        # Test that key endpoints exist (even if they return errors due to missing auth)
-        # Note: /api/v1/data/ingest removed - planned in roadmap but not yet implemented
-        endpoints_to_check = [
-            "/",
-            "/health",
-            "/api/v1/knowledge/search",
-            "/api/v1/sessions",
-        ]
+    # Test that key endpoints exist (even if they return errors due to missing auth)
+    # Note: /api/v1/data/ingest removed - planned in roadmap but not yet implemented
+    endpoints_to_check = [
+        "/",
+        "/health",
+        "/api/v1/knowledge/search",
+        "/api/v1/sessions",
+    ]
 
-        for endpoint in endpoints_to_check:
-            response = (
-                client.get(endpoint)
-                if endpoint in ["/", "/health"]
-                else client.post(endpoint, json={})
-            )
-            # Should not return 404 (route not found)
-            assert response.status_code != 404, f"Route {endpoint} not found"
+    for endpoint in endpoints_to_check:
+        response = (
+            booted_app_client.get(endpoint)
+            if endpoint in ["/", "/health"]
+            else booted_app_client.post(endpoint, json={})
+        )
+        # Should not return 404 (route not found)
+        assert response.status_code != 404, f"Route {endpoint} not found"
 
 
 def test_cors_configuration():
@@ -645,7 +636,7 @@ def test_cors_configuration():
     assert len(app.user_middleware) >= 0  # At least some middleware should be present
 
 
-def test_environment_configuration_handling():
+def test_environment_configuration_handling(booted_app_client):
     """Test that environment variables affect app configuration (Phase 3 updated)"""
     # Test that the app can handle different environment configurations
     # Phase 3: Test with active feature flags only (deprecated migration flags removed)
@@ -662,52 +653,50 @@ def test_environment_configuration_handling():
         assert app.title == "FaultMaven API"
 
     # Test health endpoint still works
-    with TestClient(app) as client:
-        response = client.get("/health")
-        assert response.status_code == 200
+    response = booted_app_client.get("/health")
+    assert response.status_code == 200
 
-        # Verify no migration-related environment variables affect health
-        health_data = response.json()
-        health_str = str(health_data).lower()
+    # Verify no migration-related environment variables affect health
+    health_data = response.json()
+    health_str = str(health_data).lower()
 
-        deprecated_env_vars = [
-            "use_refactored_api",
-            "use_di_container",
-            "enable_migration_logging",
+    deprecated_env_vars = [
+        "use_refactored_api",
+        "use_di_container",
+        "enable_migration_logging",
+    ]
+
+    for var in deprecated_env_vars:
+        assert (
+            var not in health_str
+        ), f"Deprecated environment variable {var} should not affect health check"
+
+
+def test_health_check_with_session_metrics(booted_app_client):
+    """Test health check includes session metrics from configuration manager."""
+    response = booted_app_client.get("/health")
+    assert response.status_code == 200
+
+    data = response.json()
+
+    # Check for session metrics in health response
+    if "session_metrics" in data:
+        session_metrics = data["session_metrics"]
+
+        # Verify expected session metric fields
+        expected_metrics = [
+            "active_sessions",
+            "cleanup_runs",
+            "session_timeout_minutes",
+            "cleanup_interval_minutes",
         ]
 
-        for var in deprecated_env_vars:
-            assert (
-                var not in health_str
-            ), f"Deprecated environment variable {var} should not affect health check"
+        for metric in expected_metrics:
+            if metric in session_metrics:
+                assert isinstance(session_metrics[metric], (int, float, bool))
 
 
-def test_health_check_with_session_metrics():
-    """Test health check includes session metrics from configuration manager."""
-    with TestClient(app) as client:
-        response = client.get("/health")
-        assert response.status_code == 200
-
-        data = response.json()
-
-        # Check for session metrics in health response
-        if "session_metrics" in data:
-            session_metrics = data["session_metrics"]
-
-            # Verify expected session metric fields
-            expected_metrics = [
-                "active_sessions",
-                "cleanup_runs",
-                "session_timeout_minutes",
-                "cleanup_interval_minutes",
-            ]
-
-            for metric in expected_metrics:
-                if metric in session_metrics:
-                    assert isinstance(session_metrics[metric], (int, float, bool))
-
-
-def test_application_uses_configuration_defaults():
+def test_application_uses_configuration_defaults(unshared_app_boot):
     """Test that application can use configuration manager defaults."""
     # Test with minimal environment configuration
     minimal_config = {"CHAT_PROVIDER": "openai", "REDIS_HOST": "localhost"}
@@ -736,28 +725,27 @@ def test_application_uses_configuration_defaults():
             assert data["summary"]["fatal_unhealthy"] == []
 
 
-def test_health_endpoint_configuration_info():
+def test_health_endpoint_configuration_info(booted_app_client):
     """Test health endpoint includes configuration information."""
-    with TestClient(app) as client:
-        response = client.get("/health")
-        assert response.status_code == 200
+    response = booted_app_client.get("/health")
+    assert response.status_code == 200
 
-        data = response.json()
+    data = response.json()
 
-        # Check if configuration information is included
-        if "configuration" in data:
-            config_info = data["configuration"]
+    # Check if configuration information is included
+    if "configuration" in data:
+        config_info = data["configuration"]
 
-            # Should include environment info
-            if "environment" in config_info:
-                assert isinstance(config_info["environment"], str)
+        # Should include environment info
+        if "environment" in config_info:
+            assert isinstance(config_info["environment"], str)
 
-            # Should include configuration validation status
-            if "config_valid" in config_info:
-                assert isinstance(config_info["config_valid"], bool)
+        # Should include configuration validation status
+        if "config_valid" in config_info:
+            assert isinstance(config_info["config_valid"], bool)
 
 
-def test_application_startup_with_invalid_configuration():
+def test_application_startup_with_invalid_configuration(unshared_app_boot):
     """Test application behavior with invalid configuration."""
     # Mock invalid configuration
     invalid_config = {
@@ -788,7 +776,7 @@ def test_application_startup_with_invalid_configuration():
 class TestPhase3MainApplicationValidation:
     """Phase 3 specific validation tests for main application."""
 
-    def test_application_startup_without_migration_overhead(self):
+    def test_application_startup_without_migration_overhead(self, unshared_app_boot):
         """Test that application starts without migration-related overhead."""
 
         # Application should start cleanly without migration dependencies
@@ -812,78 +800,74 @@ class TestPhase3MainApplicationValidation:
                     indicator not in health_str
                 ), f"Migration indicator '{indicator}' found in health response"
 
-    def test_root_endpoint_simplified_structure(self):
+    def test_root_endpoint_simplified_structure(self, booted_app_client):
         """Test that root endpoint has simplified structure after Phase 3."""
 
-        with TestClient(app) as client:
-            response = client.get("/")
-            assert response.status_code == 200
+        response = booted_app_client.get("/")
+        assert response.status_code == 200
 
-            data = response.json()
+        data = response.json()
 
-            # Should have clean, essential structure
-            expected_structure = {
-                "message": str,
-                "version": str,
-                "description": str,
-                "docs": str,
-                "health": str,
-            }
+        # Should have clean, essential structure
+        expected_structure = {
+            "message": str,
+            "version": str,
+            "description": str,
+            "docs": str,
+            "health": str,
+        }
 
-            for field, expected_type in expected_structure.items():
-                assert (
-                    field in data
-                ), f"Expected field '{field}' missing from root endpoint"
-                assert isinstance(
-                    data[field], expected_type
-                ), f"Field '{field}' should be {expected_type.__name__}"
+        for field, expected_type in expected_structure.items():
+            assert field in data, f"Expected field '{field}' missing from root endpoint"
+            assert isinstance(
+                data[field], expected_type
+            ), f"Field '{field}' should be {expected_type.__name__}"
 
-            # Should not have migration/architecture complexity
-            prohibited_keys = [
-                "architecture",
-                "migration_strategy",
-                "migration_status",
-                "feature_flags",
-                "container_status",
-                "refactored_components",
-            ]
+        # Should not have migration/architecture complexity
+        prohibited_keys = [
+            "architecture",
+            "migration_strategy",
+            "migration_status",
+            "feature_flags",
+            "container_status",
+            "refactored_components",
+        ]
 
-            for key in prohibited_keys:
-                assert (
-                    key not in data
-                ), f"Prohibited key '{key}' found in simplified root endpoint"
+        for key in prohibited_keys:
+            assert (
+                key not in data
+            ), f"Prohibited key '{key}' found in simplified root endpoint"
 
-    def test_health_endpoints_streamlined(self):
+    def test_health_endpoints_streamlined(self, booted_app_client):
         """Test that health endpoints are streamlined after Phase 3."""
 
         health_endpoints = ["/health", "/health/dependencies"]
 
-        with TestClient(app) as client:
-            for endpoint in health_endpoints:
-                response = client.get(endpoint)
+        for endpoint in health_endpoints:
+            response = booted_app_client.get(endpoint)
 
-                # Should respond (endpoints should exist)
-                assert (
-                    response.status_code != 404
-                ), f"Health endpoint {endpoint} should exist"
+            # Should respond (endpoints should exist)
+            assert (
+                response.status_code != 404
+            ), f"Health endpoint {endpoint} should exist"
 
-                if response.status_code == 200:
-                    data = response.json()
+            if response.status_code == 200:
+                data = response.json()
 
-                    # Should not contain migration status
-                    data_str = str(data).lower()
-                    migration_terms = [
-                        "migration_strategy",
-                        "migration_safe",
-                        "refactored_api",
-                    ]
+                # Should not contain migration status
+                data_str = str(data).lower()
+                migration_terms = [
+                    "migration_strategy",
+                    "migration_safe",
+                    "refactored_api",
+                ]
 
-                    for term in migration_terms:
-                        assert (
-                            term not in data_str
-                        ), f"Migration term '{term}' found in {endpoint}"
+                for term in migration_terms:
+                    assert (
+                        term not in data_str
+                    ), f"Migration term '{term}' found in {endpoint}"
 
-    def test_feature_flags_integration_clean(self):
+    def test_feature_flags_integration_clean(self, unshared_app_boot):
         """Test that feature flags integration is clean after Phase 3."""
 
         # Test with different active feature flag combinations
@@ -910,7 +894,7 @@ class TestPhase3MainApplicationValidation:
                     assert "status" in health_data
                     assert health_data["status"] in ["healthy", "degraded", "unhealthy"]
 
-    def test_no_migration_configuration_references(self):
+    def test_no_migration_configuration_references(self, unshared_app_boot):
         """Test that no migration configuration is referenced in responses."""
 
         endpoints_to_test = ["/", "/health"]

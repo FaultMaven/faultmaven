@@ -536,6 +536,131 @@ def clean_test_environment():
     # If restoration is needed, save original values before clearing
 
 
+# ---------------------------------------------------------------------------
+# One booted application per module (fm#1569)
+# ---------------------------------------------------------------------------
+#
+# ``faultmaven.main.app`` is a module-level singleton whose lifespan composes
+# the DI container, runs migrations and bootstraps the KB pack. Entering a
+# ``TestClient`` context on it pays that once — measured at ~5.5s per entry on
+# a developer box — and the suite used to pay it 29 times across the six files
+# that boot the real app, because each test opened its own context on the same
+# object.
+#
+# ``booted_app_client`` boots it once per MODULE and lends the started client
+# out. Module rather than session on purpose: a file is the boundary these
+# tests already tore the app down at, so cross-test state sharing stays inside
+# one file, where every sharer can be read at once. Session scope would collapse
+# an estimated three more boots out of this set (not measured) and spread a live
+# application across ~15,600 unrelated tests to do it.
+#
+# A test whose SUBJECT is the lifespan (it boots under a patched environment,
+# or asserts the boot refuses) keeps its own ``TestClient`` context and declares
+# that by taking ``unshared_app_boot``, which stands the shared boot down for
+# the duration. Without that declaration the two boots overlap on one
+# app object: the second lifespan re-composes ``app.state`` with services bound
+# to its own event loop, and its shutdown disposes the database engine the
+# first client is still serving from.
+#
+# ``tests/unit/architecture/test_app_boot_is_shared.py`` holds the census and
+# fails on a site that does neither.
+
+
+def _import_real_app():
+    from faultmaven.main import app
+
+    return app
+
+
+class _RealAppBoot:
+    """Lends out at most ONE started ``faultmaven.main.app`` at a time.
+
+    ``app_factory`` exists so the class can be tested against a throwaway
+    application with a real lifespan — see
+    ``tests/unit/test_shared_app_boot.py``. Nothing in the suite passes it.
+    """
+
+    def __init__(self, app_factory=_import_real_app) -> None:
+        self._app_factory = app_factory
+        self._app = None
+        self._client = None
+        self._state_snapshot = None
+
+    def client(self):
+        """The started client, booting the app on first use."""
+        if self._client is None:
+            from fastapi.testclient import TestClient
+
+            app = self._app_factory()
+            client = TestClient(app)
+            client.__enter__()
+            self._app = app
+            self._client = client
+            # Starlette's ``State`` is a dict behind an attribute facade; a
+            # shallow copy taken after the lifespan is what "clean" means for
+            # every test that borrows this client.
+            self._state_snapshot = dict(app.state._state)
+        return self._client
+
+    def restore_state(self) -> None:
+        """Undo whatever the borrowing test did to ``app.state``.
+
+        Restores keys it replaced, drops keys it added and puts back keys it
+        deleted — the three ways a shared app leaks into the next test.
+        """
+        if self._state_snapshot is None:
+            return
+        self._app.state._state.clear()
+        self._app.state._state.update(self._state_snapshot)
+
+    def release(self) -> None:
+        """Shut the shared boot down, if one is live."""
+        if self._client is not None:
+            client, self._client = self._client, None
+            self._app = None
+            self._state_snapshot = None
+            client.__exit__(None, None, None)
+
+
+@pytest.fixture(scope="module")
+def _real_app_boot():
+    boot = _RealAppBoot()
+    try:
+        yield boot
+    finally:
+        boot.release()
+
+
+@pytest.fixture
+def booted_app_client(_real_app_boot):
+    """A ``TestClient`` over a started ``faultmaven.main.app``, shared per module.
+
+    Use this wherever the test needs *an* application that has completed
+    startup. ``app.state`` is restored to its post-boot contents afterwards, so
+    a test may mutate it without arranging its own ``finally``.
+    """
+    client = _real_app_boot.client()
+    try:
+        yield client
+    finally:
+        _real_app_boot.restore_state()
+
+
+@pytest.fixture
+def unshared_app_boot(_real_app_boot):
+    """Declare that this test boots ``faultmaven.main.app`` itself.
+
+    Stands the module's shared boot down first and leaves it down, so the
+    test's own lifespan is the only one live on that app object and the next
+    borrower gets a freshly composed one.
+    """
+    _real_app_boot.release()
+    try:
+        yield
+    finally:
+        _real_app_boot.release()
+
+
 # Mock _ctypes module for Python 3.11 compatibility when libffi is not available
 # This is needed for protobuf/chromadb imports that depend on ctypes
 if "_ctypes" not in sys.modules:

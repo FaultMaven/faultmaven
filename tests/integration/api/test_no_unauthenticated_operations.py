@@ -1442,8 +1442,7 @@ def test_the_debug_routes_refuse_anonymous_and_non_operator_callers():
         # by the assertion that names the caller identity, rather than as a bare
         # traceback out of ``client.get`` with no indication of which of the
         # three was in play.
-        client_cm = TestClient(served, raise_server_exceptions=False)
-        with client_cm as client:
+        with TestClient(served, raise_server_exceptions=False) as client:
             for path in _DEBUG_PATHS:
                 anonymous = client.get(path)
                 assert anonymous.status_code == 401, (
