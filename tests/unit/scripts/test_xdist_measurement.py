@@ -154,6 +154,7 @@ def _entry(xm, arm, failures, secs=100.0, complete=True, id_=1):
         "label": f"{arm} #{id_}",
         "result": {
             "complete": complete,
+            "status": "complete" if complete else "incomplete",
             "seconds": secs if complete else None,
             "counts": {"passed": 10, "failed": len(failures)} if complete else {},
             "failures": sorted(failures),
@@ -181,7 +182,7 @@ def test_diff_separates_every_run_from_some_runs(xm):
     assert d.xdist_runs_agree is False
     assert (d.serial_runs, d.xdist_runs) == (2, 2)
     # The cancelled run's empty list is not evidence that nothing failed.
-    assert d.incomplete == ["xdist-c #5"]
+    assert d.incomplete == ["xdist-c #5 (incomplete)"]
 
 
 def test_identical_xdist_lists_agree(xm):
@@ -205,7 +206,7 @@ def test_render_states_speedup_against_the_serial_median(xm):
     text = xm.render(runs)
     assert "**3.00x**" in text  # median(1600, 1400) / median(500, 500)
     assert "67% less wall clock" in text
-    assert "identical across 2 complete run(s): **yes**" in text
+    assert "identical across 2 complete/aborted run(s): **yes**" in text
 
 
 def test_fetch_asks_by_commit_for_every_attempt_and_skips_the_rest(
@@ -266,21 +267,35 @@ def test_fetch_asks_by_commit_for_every_attempt_and_skips_the_rest(
     assert loaded[1]["result"]["seconds"] == 512.34
 
 
-# The first measurement run's actual shape (run on 9ddd169fd): every worker
-# crashed in pytest-cov's session start, and pytest exited 3 with no footer.
+# The first measurement run's actual shape (job 107383635657 on 9ddd169fd):
+# every worker crashed in pytest-cov's session start, pytest still printed a
+# footer, and exited 3. Read by the footer alone it was a 4.5-second green run.
 INTERNALERROR_LOG = _gh_log(
     "XDIST_MEASURE nproc=4",
     "XDIST_MEASURE arm=xdist-a",
     "created: 2/2 workers",
     "INTERNALERROR> E     TypeError: expected str, bytes or os.PathLike object, not Mock",
     "INTERNALERROR> E   assert False",
+    "============================ no tests ran in 4.50s =============================",
     "XDIST_MEASURE pytest_exit=3",
+)
+
+# The second run's collection race (job 107386468857 on 7bf463e5d): two
+# workers both created ./data/faultmaven.db at import time, one lost.
+ABORTED_LOG = _gh_log(
+    "XDIST_MEASURE arm=xdist-logical-a",
+    "created: 4/4 workers",
+    "=========================== short test summary info ============================",
+    "ERROR tests/integration/test_main_app.py - sqlalchemy.exc.OperationalError: "
+    "(sqlite3.OperationalError) table enterprises already exists",
+    "ERROR gw1 - Different tests were collected between gw3 and gw1. The difference is:",
+    "============ 1 skipped, 16 warnings, 2 errors in 110.09s (0:01:50) =============",
 )
 
 
 def test_an_internal_error_is_named_not_read_as_a_slow_or_clean_run(xm):
     r = xm.parse_log(INTERNALERROR_LOG)
-    assert r.complete is False
+    assert r.status == "internal_error"
     assert r.internal_error is True
     assert r.exit_code == 3
     assert r.workers == 2
@@ -291,4 +306,50 @@ def test_an_internal_error_is_named_not_read_as_a_slow_or_clean_run(xm):
         "label": "x #7",
         "result": xm.asdict(r),
     }
-    assert "INTERNALERROR, no tests ran" in xm.render([entry])
+    text = xm.render([entry])
+    assert "INTERNALERROR, no tests ran" in text
+    # No list was produced, so agreement is not established -- not "yes".
+    assert "**NOT ESTABLISHED" in text
+
+
+def test_a_collection_abort_keeps_its_failures_but_not_its_time(xm):
+    r = xm.parse_log(ABORTED_LOG)
+    assert r.status == "aborted"
+    assert r.failures == ["gw1", "tests/integration/test_main_app.py"]
+
+    def entry(arm, result, id_):
+        return {
+            "id": id_,
+            "suite": "standalone",
+            "arm": arm,
+            "label": f"#{id_}",
+            "result": result,
+        }
+
+    complete = xm.asdict(xm.parse_log(SERIAL_LOG))
+    fast = xm.asdict(xm.parse_log(XDIST_LOG))
+    runs = [
+        entry("serial", complete, 1),
+        entry("xdist-a", xm.asdict(r), 2),
+        entry("xdist-b", fast, 3),
+    ]
+    text = xm.render(runs)
+    # Timed over the one complete xdist run only: 1640.80 / 512.34.
+    assert "xdist 8m32s (512.3s) over 1 run(s)" in text
+    assert "xdist-logical" not in text
+    assert "ABORTED at collection" in text
+    d = xm.diff_suite("standalone", runs)
+    assert d.xdist_runs == 2
+    assert "tests/integration/test_main_app.py" in d.xdist_only_some_runs
+
+
+def test_auto_and_logical_are_timed_apart(xm):
+    runs = [
+        _entry(xm, "serial", set(), secs=1200.0, id_=1),
+        _entry(xm, "xdist-a", set(), secs=800.0, id_=2),
+        _entry(xm, "xdist-logical-a", set(), secs=400.0, id_=3),
+    ]
+    text = xm.render(runs)
+    assert "xdist 13m20s (800.0s) over 1 run(s) -- **1.50x**" in text
+    assert "xdist-logical 6m40s (400.0s) over 1 run(s) -- **3.00x**" in text
+    assert xm.arm_family("xdist-logical-b") == "xdist-logical"

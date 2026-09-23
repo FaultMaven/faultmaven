@@ -22,8 +22,20 @@ Everything is read from CI, by commit, because a local run measures the box
     # or parse one saved log
     python scripts/xdist_measurement.py parse job.log
 
-A run whose log carries no summary line (cancelled at its cap, crashed before
-the footer) is reported as ``incomplete`` -- never as zero failures.
+Every run gets a ``status``, because a footer alone proves nothing -- the first
+xdist runs here printed ``no tests ran in 4.50s`` after an INTERNALERROR, which
+a footer-only reader takes for a 4.5-second green run:
+
+* ``complete``        the suite ran: a footer, and at least one test passed
+* ``aborted``         a footer but nothing passed -- a collection error ended
+                      the session. Its failure list is real (it names what
+                      broke collection) but its time is not the suite's.
+* ``internal_error``  pytest crashed (``INTERNALERROR>``); no failure list
+* ``incomplete``      no footer at all (cancelled at the cap); no failure list
+
+Only ``complete`` runs are timed. ``complete`` and ``aborted`` runs are diffed;
+the other two are listed as excluded -- their missing failures are unknown,
+never absent.
 """
 
 from __future__ import annotations
@@ -84,6 +96,7 @@ class RunResult:
     # worker's session start ends the run before a single test executes.
     internal_error: bool = False
     exit_code: int | None = None
+    status: str = "incomplete"
 
 
 def strip_line(raw: str) -> str:
@@ -167,6 +180,14 @@ def parse_log(text: str) -> RunResult:
                 failures.add(split_nodeid(outcome["rest"]))
 
     result.failures = sorted(failures)
+    if result.internal_error:
+        result.status = "internal_error"
+    elif not result.complete:
+        result.status = "incomplete"
+    elif result.counts.get("passed", 0) == 0:
+        result.status = "aborted"
+    else:
+        result.status = "complete"
     return result
 
 
@@ -189,6 +210,11 @@ def is_xdist(arm: str) -> bool:
     return arm.startswith("xdist")
 
 
+def arm_family(arm: str) -> str:
+    """``xdist-logical-b`` -> ``xdist-logical``: the repeat letter dropped."""
+    return re.sub(r"-[a-z]$", "", arm)
+
+
 @dataclass
 class SuiteDiff:
     """The failure-list comparison for one suite."""
@@ -205,14 +231,19 @@ class SuiteDiff:
 
 
 def diff_suite(suite: str, runs: list[dict]) -> SuiteDiff:
-    """Compare the failure sets of one suite's complete runs.
+    """Compare the failure sets of one suite's complete and aborted runs.
 
-    ``runs`` are manifest entries carrying ``arm``, ``name`` and a parsed
-    ``result``. An incomplete run is listed and excluded: its missing failures
-    are unknown, not absent.
+    ``runs`` are manifest entries carrying ``arm``, ``label`` and a parsed
+    ``result``. An internal-error or incomplete run is listed and excluded:
+    its missing failures are unknown, not absent.
     """
-    complete = [r for r in runs if r["result"]["complete"]]
-    incomplete = sorted(r["label"] for r in runs if not r["result"]["complete"])
+    listed = ("complete", "aborted")
+    complete = [r for r in runs if r["result"]["status"] in listed]
+    incomplete = sorted(
+        f"{r['label']} ({r['result']['status']})"
+        for r in runs
+        if r["result"]["status"] not in listed
+    )
     serial = [set(r["result"]["failures"]) for r in complete if not is_xdist(r["arm"])]
     xdist = [set(r["result"]["failures"]) for r in complete if is_xdist(r["arm"])]
 
@@ -234,11 +265,25 @@ def diff_suite(suite: str, runs: list[dict]) -> SuiteDiff:
     )
 
 
-def _fmt_secs(secs: float | None, internal_error: bool = False) -> str:
+_STATUS_LABEL = {
+    "internal_error": "INTERNALERROR, no tests ran",
+    "incomplete": "incomplete (no footer)",
+}
+
+
+def _fmt_secs(secs: float | None) -> str:
     if secs is None:
-        return "INTERNALERROR, no tests ran" if internal_error else "incomplete"
+        return "-"
     whole = int(round(secs))
     return f"{whole // 60}m{whole % 60:02d}s ({secs:.1f}s)"
+
+
+def _phase(result: dict) -> str:
+    status = result["status"]
+    if status in _STATUS_LABEL:
+        return _STATUS_LABEL[status]
+    text = _fmt_secs(result["seconds"])
+    return f"ABORTED at collection, {text}" if status == "aborted" else text
 
 
 def _failed(result: dict) -> int:
@@ -258,11 +303,12 @@ def render(entries: list[dict]) -> str:
     )
     for e in ordered:
         r = e["result"]
+        listed = r["status"] in ("complete", "aborted")
         out.append(
             f"| {e['suite']} | {e['arm']} | {e['id']} | {(r['commit'] or e.get('head_sha') or '?')[:9]} "
-            f"| {r['nproc'] or '-'} | {r['workers'] or 1} | {_fmt_secs(r['seconds'], r.get('internal_error', False))} "
-            f"| {r['counts'].get('passed', '-') if r['complete'] else '-'} "
-            f"| {_failed(r) if r['complete'] else '-'} |"
+            f"| {r['nproc'] or '-'} | {r['workers'] or 1} | {_phase(r)} "
+            f"| {r['counts'].get('passed', 0) if listed else '-'} "
+            f"| {_failed(r) if listed else '-'} |"
         )
 
     for suite in sorted({e["suite"] for e in entries}):
@@ -270,31 +316,47 @@ def render(entries: list[dict]) -> str:
         serial_secs = [
             e["result"]["seconds"]
             for e in runs
-            if not is_xdist(e["arm"]) and e["result"]["complete"]
-        ]
-        xdist_secs = [
-            e["result"]["seconds"]
-            for e in runs
-            if is_xdist(e["arm"]) and e["result"]["complete"]
+            if not is_xdist(e["arm"]) and e["result"]["status"] == "complete"
         ]
         out.append("")
         out.append(f"### {suite}")
-        if serial_secs and xdist_secs:
+        if serial_secs:
+            out.append(
+                f"- serial pytest phase: {_fmt_secs(min(serial_secs))} .. "
+                f"{_fmt_secs(max(serial_secs))} over {len(serial_secs)} run(s)"
+            )
+        # Timed per distribution family, never pooled: `-n auto` and
+        # `-n logical` start different worker counts on the same runner.
+        families = sorted({arm_family(e["arm"]) for e in runs if is_xdist(e["arm"])})
+        for family in families:
+            xdist_secs = [
+                e["result"]["seconds"]
+                for e in runs
+                if arm_family(e["arm"]) == family
+                and e["result"]["status"] == "complete"
+            ]
+            if not (serial_secs and xdist_secs):
+                out.append(f"- {family}: no complete run to time")
+                continue
             s, x = statistics.median(serial_secs), statistics.median(xdist_secs)
             out.append(
                 f"- median pytest phase: serial {_fmt_secs(s)} over {len(serial_secs)} run(s), "
-                f"xdist {_fmt_secs(x)} over {len(xdist_secs)} run(s) -- "
+                f"{family} {_fmt_secs(x)} over {len(xdist_secs)} run(s) -- "
                 f"**{s / x:.2f}x**, {100 * (s - x) / s:.0f}% less wall clock"
             )
         d = diff_suite(suite, runs)
+        if d.xdist_runs < 2:
+            verdict = (
+                f"NOT ESTABLISHED ({d.xdist_runs} run(s) produced a list; need 2+)"
+            )
+        else:
+            verdict = "yes" if d.xdist_runs_agree else "NO"
         out.append(
-            f"- xdist failure lists identical across {d.xdist_runs} complete run(s): "
-            f"**{'yes' if d.xdist_runs_agree else 'NO'}**"
+            f"- xdist failure lists identical across {d.xdist_runs} "
+            f"complete/aborted run(s): **{verdict}**"
         )
         if d.incomplete:
-            out.append(
-                f"- incomplete (excluded, failures unknown): {', '.join(d.incomplete)}"
-            )
+            out.append(f"- excluded, failures unknown: {', '.join(d.incomplete)}")
         for title, items in (
             ("fails in serial run(s)", d.serial_failures),
             ("fails only under xdist, in EVERY xdist run", d.xdist_only_every_run),
