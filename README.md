@@ -501,9 +501,9 @@ pytest --cov=faultmaven
 # [tool.ruff.lint].select in pyproject.toml rather than narrowing it.
 ruff check faultmaven/ tests/
 
-# Formatting
-black .
-isort .
+# Formatting — CI runs `black --check faultmaven/ tests/`. Import sorting is
+# ruff's `I` rules (ruff replaced isort in #179); do not run `isort`.
+black faultmaven/ tests/
 
 # Type checking (not a CI gate; `ignore_errors = true` in pyproject.toml)
 mypy faultmaven/
