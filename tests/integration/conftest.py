@@ -1382,7 +1382,19 @@ def in_memory_database_url(monkeypatch):
 
 
 # ``tests/integration`` has its own ``pytest.ini``, so the repository-root
-# ``tests/conftest.py`` is not loaded here. Re-export the shared personal-tenant
-# fixtures rather than growing a second copy of them (#1045 D8 R8): a double
-# that drifts between modules stops being evidence about the same thing.
-from tests.conftest import restore_tenant_context  # noqa: E402,F401
+# ``tests/conftest.py`` is not loaded here. Re-export the shared fixtures rather
+# than growing a second copy of them (#1045 D8 R8): a double that drifts between
+# modules stops being evidence about the same thing.
+#
+# ‼ Note what this file's own rootdir does to a LOCAL run: ``pytest tests/`` (CI)
+# has the repository root as rootdir and loads ``tests/conftest.py``, while
+# ``pytest tests/integration/...`` does not — so a fixture that is not re-exported
+# here is missing in exactly the invocation a developer reaches for.
+# ``tests/unit/architecture/test_app_boot_is_shared.py`` fails when a directory
+# carrying its own ``pytest.ini`` stops re-exporting the shared app boot.
+from tests.conftest import (  # noqa: E402,F401
+    _real_app_boot,
+    booted_app_client,
+    restore_tenant_context,
+    unshared_app_boot,
+)

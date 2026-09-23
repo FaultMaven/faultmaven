@@ -27,7 +27,6 @@ from __future__ import annotations
 import json
 
 import pytest
-from fastapi.testclient import TestClient
 
 pytestmark = [pytest.mark.integration, pytest.mark.api]
 
@@ -38,12 +37,15 @@ def _cap_bytes() -> int:
     return get_settings().upload.max_upload_size_mb * 1024 * 1024
 
 
-@pytest.fixture(scope="module")
-def client():
-    from faultmaven.main import app
+@pytest.fixture
+def client(booted_app_client):
+    """The module's shared booted app (fm#1569).
 
-    with TestClient(app) as c:
-        yield c
+    This file had the only hand-rolled version of that fixture; it now takes
+    the one in ``tests/conftest.py`` so there is a single implementation of
+    "boot the real app once and lend it out".
+    """
+    return booted_app_client
 
 
 #: Every JSON route that reaches a body-size-bound consumer. Four, not the two

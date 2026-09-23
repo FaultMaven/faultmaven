@@ -12,32 +12,30 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from fastapi import FastAPI, Request
-from fastapi.testclient import TestClient
 
 
 class TestCompositionRootPattern:
     """Test that services are wired via Composition Root, not Service Locator"""
 
-    def test_app_state_has_services_after_startup(self):
+    def test_app_state_has_services_after_startup(self, booted_app_client):
         """Test that app.state has services attached after startup"""
         from faultmaven.main import app
 
-        with TestClient(app) as client:
-            # After startup, app.state should have services
-            # Check a sample of critical services
-            # Note: Some services may be None if container initialization fails
-            # in test environment, but the attribute should exist
-            expected_services = [
-                "session_service",
-                "case_service",
-                "knowledge_service",
-            ]
+        # After startup, app.state should have services
+        # Check a sample of critical services
+        # Note: Some services may be None if container initialization fails
+        # in test environment, but the attribute should exist
+        expected_services = [
+            "session_service",
+            "case_service",
+            "knowledge_service",
+        ]
 
-            for service_name in expected_services:
-                # Just check the attribute exists (may be None in test env)
-                assert hasattr(
-                    app.state, service_name
-                ), f"app.state should have {service_name} attribute after startup"
+        for service_name in expected_services:
+            # Just check the attribute exists (may be None in test env)
+            assert hasattr(
+                app.state, service_name
+            ), f"app.state should have {service_name} attribute after startup"
 
     def test_dependency_uses_app_state_not_container(self):
         """Test that dependencies use request.app.state, not container.get_*"""
@@ -220,18 +218,15 @@ class TestNoServiceLocatorInApiLayer:
 class TestCompositionRootIntegration:
     """Integration tests for Composition Root pattern"""
 
-    def test_service_accessible_via_endpoint(self):
+    def test_service_accessible_via_endpoint(self, booted_app_client):
         """Test that services are accessible via endpoints"""
-        from faultmaven.main import app
+        # Health endpoint should work, indicating services are wired
+        response = booted_app_client.get("/health")
+        assert response.status_code == 200
 
-        with TestClient(app) as client:
-            # Health endpoint should work, indicating services are wired
-            response = client.get("/health")
-            assert response.status_code == 200
-
-            # The health check validates that services are available
-            data = response.json()
-            assert "services" in data
+        # The health check validates that services are available
+        data = response.json()
+        assert "services" in data
 
     @pytest.mark.asyncio
     async def test_mock_dependency_injection(self):
