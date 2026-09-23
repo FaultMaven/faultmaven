@@ -822,6 +822,21 @@ class TestCheckpointing:
         persisted = await case_repo.get(case.case_id)
         assert persisted.state == CaseState.RESOLVED
 
+        # The checkpoint this test is NAMED for. It asserted only the state
+        # change, so deleting the ``create_checkpoint`` call in section 0b's
+        # confirm arm left it green while its name claimed to cover it — and
+        # `checkpoint_service` was injected and never read. Asserted the way
+        # its sibling above does, against the persisted record.
+        checkpoints = await case_repo.get_checkpoints(case.case_id)
+        pre_change_cps = [cp for cp in checkpoints if cp.trigger == "pre_case_action"]
+        assert pre_change_cps, (
+            "no pre_case_action checkpoint was taken before the terminal "
+            "transition — the confirm arm's checkpoint is the point of this test"
+        )
+        cp = pre_change_cps[-1]
+        assert cp.case_id == case.case_id
+        assert cp.metadata["to_state"] == "resolved"
+
 
 # ============================================================
 # Test: Concurrent turn locking

@@ -592,6 +592,18 @@ def derive_closure_reason(case: "Case") -> str:
 #       says this disposition should not be offered at all (SUGGEST_CLOSE
 #       pivots resolve→close, so "resolved" reads not_eligible). Render
 #       nothing.
+#
+# ‼ KNOWN ASYMMETRY, stated rather than hidden. ``resolved`` was removed from
+# ``valid_next_states`` outright, on the argument that a description is not a
+# gate — one client honoured it, the legacy fallback did not. ``closed`` on a
+# SUGGEST_RESOLVE case is still LISTED and gated only by this description, so
+# the same argument applies to it. The consequence differs in kind, which is
+# why the two were not treated alike: a rendered Resolve produced a validation
+# ERROR, while a rendered Close produces a coherent REDIRECT — the engine
+# pivots it to "shall I mark this resolved?" and nothing is lost. Closing the
+# gap properly means making ``valid_next_states`` depend on case content, which
+# it deliberately does not today (a static dict lookup, no case read), and that
+# is a contract decision rather than a wording one.
 
 DISPOSITION_ELIGIBILITY_READY = "ready"
 DISPOSITION_ELIGIBILITY_NEEDS_INFO = "needs_info"
@@ -658,21 +670,22 @@ def derive_disposition_eligibility(case: "Case") -> dict[str, str]:
     if resolution.verdict == ResolutionReadiness.READY:
         resolved_eligibility = DISPOSITION_ELIGIBILITY_READY
     elif resolution.verdict == ResolutionReadiness.NEEDS_INFO:
-        # Case is partial; user needs to ADD data before resolving.
+        # Partial: the agent asks for what is missing rather than proposing.
         resolved_eligibility = DISPOSITION_ELIGIBILITY_NEEDS_INFO
     else:  # SUGGEST_CLOSE
-        # Resolved-readiness says the case is too thin for resolution;
-        # closing is the right disposition. Frontend should not offer
-        # Resolved on a SUGGEST_CLOSE case.
+        # Too thin for resolution; closing is the right disposition. No
+        # frontend consequence either way — the resolve key gates nothing in
+        # the UI, it decides whether the AGENT offers the handshake.
         resolved_eligibility = DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE
 
     closure = assess_closure_readiness(case)
     if closure.verdict == ClosureReadiness.SUGGEST_RESOLVE:
-        # Case qualifies for resolved; closing would discard the
-        # resolution attribution. Surface as ``suggests_alternative``
-        # so the frontend can warn the user and offer the resolve
-        # path instead — distinct UX from ``needs_info`` which asks
-        # the user to add data.
+        # ``suggests_alternative`` means DO NOT RENDER CLOSE. This verdict
+        # holds exactly when a qualifying absence row is on the case, which is
+        # exactly when INV-37 pivots every close back to a resolve proposal —
+        # so a Close control here could only ever produce "shall I mark this
+        # resolved?". It does NOT mean "warn and offer anyway"; there is no
+        # alternative control to offer, because resolve is not one.
         closed_eligibility = DISPOSITION_ELIGIBILITY_SUGGESTS_ALTERNATIVE
     else:
         # HAS_SUBSTANCE or TRIVIAL — closing is always ready as a

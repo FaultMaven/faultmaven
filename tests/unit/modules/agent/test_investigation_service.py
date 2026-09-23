@@ -1729,9 +1729,20 @@ class TestEarnedEdgesAreRefusedAtTheBoundary:
     at the boundary rather than in ``process_turn`` is that a client-input
     error deserves a 422, not the 500 + ``Retry-After`` a bare engine raise
     produces — and old clients keep sending both for as long as an extension
-    takes to auto-update. A drift in either comparison (a raw string where a
-    ``CaseState`` was meant, say) would silently move every refused pick into
-    the error-rate SLO with the engine tests still green.
+    takes to auto-update.
+
+    ‼ An earlier version of this docstring claimed to catch "a raw string where
+    a ``CaseState`` was meant". It cannot, and neither can any test written
+    this way: ``CaseState`` subclasses ``str``, so a member and its value
+    compare equal and the two spellings are indistinguishable. The refusal is
+    derived from ``USER_SELECTABLE_ACTIONS`` now, which removes the drift that
+    sentence was worried about rather than detecting it — and the claim is
+    struck instead of left standing, because a test that names a guarantee it
+    does not provide is worse than one that names none.
+
+    What IS pinned here: the refusal reaches the caller as the exception the
+    API maps to 422 (``validation_exception_handler``), the engine is never
+    reached, and a selectable pick still gets through.
     """
 
     def _service(self):
@@ -1775,6 +1786,19 @@ class TestEarnedEdgesAreRefusedAtTheBoundary:
         assert "not a user-selectable case action" in str(excinfo.value)
         # The engine is never reached, so nothing downstream can mutate state.
         service.engine.process_turn.assert_not_called()
+
+        # And the exception raised is the one the API maps to 422 rather than
+        # to a 500 + ``Retry-After``. Asserted against the handler registry so
+        # a change to that mapping fails HERE, where the status code is the
+        # stated reason for the boundary placement.
+        from faultmaven.api.exception_handlers import validation_exception_handler
+        from faultmaven.exceptions import ValidationException as _VE
+
+        assert isinstance(excinfo.value, _VE)
+        assert "422" in (validation_exception_handler.__doc__ or ""), (
+            "the ValidationException → 422 mapping this refusal relies on has "
+            "moved; the boundary placement argument needs re-checking"
+        )
 
     @pytest.mark.asyncio
     async def test_closed_still_reaches_the_engine(self):

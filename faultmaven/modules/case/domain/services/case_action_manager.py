@@ -92,6 +92,61 @@ USER_SELECTABLE_ACTIONS: Mapping[CaseState, tuple[CaseState, ...]] = MappingProx
 )
 
 
+#: Why each earned edge is not requestable, for the refusal message. Keyed by
+#: the TARGET state, and it decides only the WORDING — whether a state is
+#: refused at all is derived from ``USER_SELECTABLE_ACTIONS`` below, so a state
+#: absent from this dict is still refused, just less helpfully.
+_EARNED_EDGE_REASON: Mapping[CaseState, str] = MappingProxyType(
+    {
+        CaseState.INVESTIGATING: (
+            "reached by confirming the problem statement (Gate 1), not by "
+            "requesting the state"
+        ),
+        CaseState.RESOLVED: (
+            "reached by confirming the resolution the agent proposes once the "
+            "root cause is confirmed eliminated, not by requesting the state. "
+            "Tell the agent the issue is resolved and it will check, then "
+            "either propose the transition or ask for what is missing"
+        ),
+    }
+)
+
+
+def earned_edge_refusal(from_state: CaseState, to_state: str) -> Optional[str]:
+    """The message refusing a ``status_transition`` a user may not pick, or None.
+
+    DERIVED from ``USER_SELECTABLE_ACTIONS``, which is the point. This rule was
+    hand-enumerated at four sites — two in the engine, two at the service
+    boundary — each restating "this state is not selectable" as a literal
+    comparison against a ``CaseState`` member. The dict and the refusals were
+    then independent facts that could disagree: re-adding RESOLVED to the menu
+    left every refusal in place, and removing a refusal left the menu alone.
+    Neither direction failed a test, because nothing connected them.
+
+    One derivation means one edit. A third removal needs no new guard, and a
+    re-addition stops being refused — which is what makes the refusal tests the
+    guard on the dict that they were previously only assumed to be.
+
+    Terminal states are NOT refused here even though they select nothing: a
+    terminal case is short-circuited to Q&A upstream (INV-09/INV-10), and that
+    routing owns the answer. Returning a refusal would change it.
+    """
+    if from_state in (CaseState.RESOLVED, CaseState.CLOSED):
+        return None
+    if to_state in {s.value for s in USER_SELECTABLE_ACTIONS.get(from_state, ())}:
+        return None
+    try:
+        target = CaseState(to_state)
+    except ValueError:
+        return f"{to_state!r} is not a case state."
+    reason = _EARNED_EDGE_REASON.get(
+        target, "not something a user selects; the engine performs it"
+    )
+    return (
+        f"{target.value.upper()} is not a user-selectable case action. It is {reason}."
+    )
+
+
 class CaseActionManager:
     """
     Manages case actions (phase transitions and dispositions).

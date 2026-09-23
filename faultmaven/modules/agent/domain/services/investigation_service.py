@@ -101,8 +101,6 @@ from faultmaven.modules.agent.domain.services.query_classifier import (
     QueryClassification,
     classify_query,
 )
-
-# Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.case.contracts import (
     MESSAGE_METADATA_AGENT_EMPTY,
     MESSAGE_METADATA_USER_EMPTY,
@@ -117,6 +115,11 @@ from faultmaven.modules.case.domain.models import (
     Evidence,
     EvidenceSourceType,
     UploadedFile,
+)
+
+# Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
+from faultmaven.modules.case.domain.services.case_action_manager import (
+    earned_edge_refusal,
 )
 from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.utils.serialization import to_json_compatible
@@ -3144,15 +3147,17 @@ class InvestigationService:
                 {"field": "to_state"},
             )
 
-        # INVESTIGATING is not a user-selectable case action (#1608): it is
-        # earned by a confirmed problem statement, which Gate 1 performs.
+        # Neither INVESTIGATING (#1608) nor RESOLVED (contract 9.0.0) is a
+        # user-selectable case action: each is earned from case content — a
+        # confirmed problem statement, a confirmed root-cause elimination — and
+        # performed by a handshake the agent opens.
         #
         # Rejected HERE, at the boundary, for two reasons. It is a client-input
         # error, so it deserves a 422 rather than the 500 + ``Retry-After`` a
-        # bare engine-side raise produces — and older Copilot builds will keep
-        # sending it for as long as the extension takes to auto-update, so the
-        # wrong shape would be told to retry a permanently invalid request and
-        # would land in the error-rate SLO.
+        # bare engine-side raise produces — and older clients will keep sending
+        # it for as long as an extension takes to auto-update, so the wrong
+        # shape would be told to retry a permanently invalid request and would
+        # land in the error-rate SLO.
         #
         # Boundary placement also matters for correctness, not just status
         # codes. ``process_turn`` cancels a contradicting pending transition
@@ -3161,39 +3166,13 @@ class InvestigationService:
         # the standing close offer survives with no decline recorded and the
         # engine re-fires it next turn — the exact re-nag fm#1122 exists to
         # prevent. Refusing before the engine runs touches no state at all.
-        if to_state == CaseState.INVESTIGATING.value:
-            raise ValidationException(
-                "INVESTIGATING is not a user-selectable case action. It is "
-                "reached by confirming the problem statement, not by "
-                "requesting the state.",
-                {"field": "to_state", "value": to_state},
-            )
-
-        # RESOLVED is not a user-selectable case action either, for the same
-        # reason one tier down the lifecycle: it is earned by a qualifying
-        # ``causal_absence_evidence`` row — the cause confirmed eliminated —
-        # and the engine offers the handshake when it sees the case reach that
-        # bar (INV-43), or when the user says so in conversation and the model
-        # routes it. Refused at the SAME boundary and for the same two reasons
-        # the INVESTIGATING refusal above states: a 422 rather than a 500 +
-        # ``Retry-After``, and no state touched before the refusal.
         #
-        # What this closes, beyond the doctrine: the handler behind this
-        # request ran the readiness check AFTER the pick and then argued with
-        # it — proposing, pivoting to close, or asking for what was missing —
-        # and one of its arms confirmed a standing ``needs_info`` proposal
-        # without re-reading readiness at all, executing RESOLVED on a case
-        # carrying no qualifying row. Deciding whether to OFFER removes the
-        # argument and the arm together.
-        if to_state == CaseState.RESOLVED.value:
-            raise ValidationException(
-                "RESOLVED is not a user-selectable case action. It is reached "
-                "by confirming the resolution the agent proposes once the root "
-                "cause is confirmed eliminated, not by requesting the state. "
-                "Tell the agent the issue is resolved and it will check, then "
-                "either propose the transition or ask for what is missing.",
-                {"field": "to_state", "value": to_state},
-            )
+        # DERIVED from ``USER_SELECTABLE_ACTIONS`` rather than restated: the
+        # two used to be independent facts that could disagree in either
+        # direction with nothing failing.
+        refusal = earned_edge_refusal(case.state, to_state)
+        if refusal:
+            raise ValidationException(refusal, {"field": "to_state", "value": to_state})
 
         # Delegate to milestone engine with structured intent
         result = await self.engine.process_turn(
