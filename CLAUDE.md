@@ -290,7 +290,7 @@ modules/auth/
 | Observability | Opik 0.2.1+ (tracing), Prometheus (metrics), structlog (logging) |
 | Security | Presidio 2.2+ (PII redaction), cryptography 41+ |
 | Testing | pytest 8.0+, pytest-asyncio, pytest-cov, factory-boy, locust |
-| Code Quality | ruff 0.2+, black 24.10, isort 5.12+, mypy 1.8+, import-linter 2.0+ |
+| Code Quality | ruff 0.9.10 (lint + import sorting via its `I` rules), black 26.3.1, mypy 1.8+, import-linter 2.0+ |
 
 ### Supported LLM Providers
 
@@ -825,9 +825,10 @@ async def test_llm_provider():
 # config spent months enforcing two different policies.
 ruff check faultmaven/ tests/
 
-# Format
-black .
-isort .
+# Format — the gate's other line, same paths. Import sorting is ruff's `I`
+# rules above (ruff replaced isort in #179); do not run `isort`, which is not a
+# gate and rewrites files across the whole repo.
+black faultmaven/ tests/          # CI runs `black --check faultmaven/ tests/`
 
 # Type check — NOT a gate. Nothing in CI runs mypy and `ignore_errors = true`
 # in pyproject.toml means it reports nothing; pass paths explicitly.
@@ -840,7 +841,7 @@ lint-imports
 python scripts/generate_api_docs.py --check
 ```
 
-`ruff check .` additionally covers `scripts/`, `alembic/` and `docs/`, which CI
+`ruff check .` (like `black .`) additionally covers `scripts/`, `alembic/` and `docs/`, which CI
 deliberately does not lint (#179). Whether those paths pass is therefore a
 measurement rather than a property of the gate, so it is stamped rather than
 claimed: against the rule set above, with ruff 0.9.10, `ruff check alembic/
