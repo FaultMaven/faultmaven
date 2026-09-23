@@ -103,13 +103,27 @@ def is_quota_exhausted_service_error(exc: BaseException) -> bool:
     details" is not read as a billing failure here.
     """
     for cursor in walk_cause_chain(exc):
-        if (getattr(cursor, "details", None) or {}).get(
-            "error_code"
-        ) == QUOTA_EXHAUSTED:
+        if _details_error_code(cursor) == QUOTA_EXHAUSTED:
             return True
         if getattr(cursor, "error_code", None) == QUOTA_EXHAUSTED:
             return True
     return False
+
+
+def _details_error_code(exc: BaseException) -> Optional[str]:
+    """``exc.details["error_code"]``, read only when ``details`` is a dict.
+
+    The chain walks here read attributes off exceptions this codebase did not
+    define, and ``details`` is not ours to assume: grpc's ``RpcError.details``
+    is a METHOD — truthy, with no ``.get`` — so ``(details or {}).get(...)``
+    raised ``AttributeError`` inside the global handler, the one component
+    whose job is not to crash. Read typed, or not at all.
+    """
+    details = getattr(exc, "details", None)
+    if not isinstance(details, dict):
+        return None
+    code = details.get("error_code")
+    return code if isinstance(code, str) else None
 
 
 def quota_exhausted_http_exception(
@@ -197,12 +211,14 @@ def _first_engine_error_code(exc: BaseException) -> Optional[str]:
     The turn service threads it onto the wrapper's ``details["error_code"]``;
     prefer that, then fall back to any ``error_code`` on the ``__cause__`` chain.
     """
-    threaded = (getattr(exc, "details", None) or {}).get("error_code")
+    threaded = _details_error_code(exc)
     if threaded:
         return threaded
     for c in walk_cause_chain(exc):
+        # A string only: a foreign exception's ``error_code`` may be a method
+        # or an int, and neither is an engine code.
         code = getattr(c, "error_code", None)
-        if code:
+        if isinstance(code, str) and code:
             return code
     return None
 

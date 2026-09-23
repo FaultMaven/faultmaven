@@ -157,7 +157,44 @@ _NON_LLM_CASES = {
     ),
 }
 
+
+class RpcLikeError(Exception):
+    """grpc's ``RpcError`` shape: ``details`` is a METHOD, not a dict."""
+
+    def details(self):
+        return "backend unavailable"
+
+    def error_code(self):
+        return "not-a-string"
+
+
+def _rpc_like_wrap() -> ServiceException:
+    try:
+        raise ServiceException("vector store call failed") from RpcLikeError()
+    except ServiceException as wrapped:
+        return wrapped
+
+
+_NON_LLM_CASES["foreign-details-method"] = _rpc_like_wrap
+
 _CASES = {**_LLM_CASES, **_NON_LLM_CASES}
+
+
+def test_a_foreign_details_attribute_does_not_crash_the_classifiers():
+    """The handler's whole job is to be the thing that does not crash. A
+    chained exception whose ``details`` is a method made the chain walk raise
+    ``AttributeError`` inside it (review of #1633)."""
+    from faultmaven.api.exception_handlers import (
+        global_service_exception_http_exception,
+    )
+
+    exc = _rpc_like_wrap()
+    assert is_quota_exhausted_service_error(exc) is False
+    mapped = global_service_exception_http_exception(exc)
+    assert mapped.status_code == 500
+    assert mapped.detail == SERVICE_ERROR_DETAIL
+    # The /turns mapping walks the same chain; it must not raise either.
+    assert llm_service_error_http_exception(exc).status_code == 500
 
 
 @pytest.fixture(scope="module")
