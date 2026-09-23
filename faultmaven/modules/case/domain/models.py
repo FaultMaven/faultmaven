@@ -219,6 +219,25 @@ class CaseAction(BaseModel):
     )
 
 
+#: Every edge the state machine PERMITS. Distinct from what a user may pick
+#: from the UI — see ``USER_SELECTABLE_ACTIONS`` in ``case_action_manager``,
+#: which is a strict subset. INQUIRY → INVESTIGATING is the edge where the two
+#: differ: it is legal, and the Gate 1 handshake performs it, but it is not a
+#: user action. It is earned by the case having a confirmed problem statement
+#: (the DB CHECK ``cases_description_required_for_investigation`` makes that
+#: structural), so a menu cannot honour it on demand.
+#:
+#: v3: INQUIRY → RESOLVED removed. KB-resolution flows through INVESTIGATING via
+#: the milestone collapse — state authored in one turn, disposition still
+#: confirmed on the next (investigation-lifecycle-logic.md §1.2).
+LEGAL_TRANSITIONS: dict[CaseState, list[CaseState]] = {
+    CaseState.INQUIRY: [CaseState.INVESTIGATING, CaseState.CLOSED],
+    CaseState.INVESTIGATING: [CaseState.RESOLVED, CaseState.CLOSED],
+    CaseState.RESOLVED: [],  # Disposition — terminal
+    CaseState.CLOSED: [],  # Disposition — terminal
+}
+
+
 def is_valid_action(from_state: CaseState, to_state: CaseState) -> bool:
     """
     Validate a case action (phase transition or disposition change).
@@ -234,21 +253,7 @@ def is_valid_action(from_state: CaseState, to_state: CaseState) -> bool:
     - CLOSED → * (disposition is terminal)
     - INVESTIGATING → INQUIRY (no backward phase transition)
     """
-    # v3: INQUIRY → RESOLVED edge removed. KB-resolution flows through
-    # INVESTIGATING via the milestone collapse — state authored in one turn,
-    # disposition still confirmed on the next (see
-    # investigation-lifecycle-logic.md §1.2).
-    valid_actions = {
-        CaseState.INQUIRY: [
-            CaseState.INVESTIGATING,
-            CaseState.CLOSED,
-        ],
-        CaseState.INVESTIGATING: [CaseState.RESOLVED, CaseState.CLOSED],
-        CaseState.RESOLVED: [],  # Disposition — terminal
-        CaseState.CLOSED: [],  # Disposition — terminal
-    }
-
-    return to_state in valid_actions.get(from_state, [])
+    return to_state in LEGAL_TRANSITIONS.get(from_state, [])
 
 
 # Backward compatibility alias

@@ -426,14 +426,17 @@ class TestInvestigationLifecycle:
         assert updated.state == CaseState.INQUIRY
 
     async def test_explicit_transition_to_investigating(self, engine, case_repo):
-        """Explicit intent_type='status_transition' routes through normal INQUIRY flow.
+        """A user saying "let's investigate" drives INQUIRY → INVESTIGATING.
 
-        Design: Dropdown = message. The dropdown does NOT bypass the agent.
-        It injects a pre-composed message and lets the LLM handle the
-        multi-turn problem statement flow. Gate 1 (problem confirmation)
-        fires the INQUIRY → INVESTIGATING transition; the unified
-        opportunistic flow then continues straight into symptom
-        verification with no intervening path-selection step.
+        This is the design's natural flow (§1.2): the user asks in chat, Gate 1
+        (problem confirmation) fires the transition, and the unified
+        opportunistic flow continues straight into symptom verification with no
+        intervening path-selection step.
+
+        It used to be driven here by a ``status_transition`` intent, which was
+        always incidental — the transition came from Gate 1 either way. That
+        intent is refused now (#1608): INVESTIGATING is not a user-selectable
+        action, so the test exercises the path that actually exists.
         """
         case = _make_inquiry_case(current_turn=3)
         case.inquiry.proposed_problem_statement = "API latency spikes with p99 > 5s"
@@ -449,8 +452,6 @@ class TestInvestigationLifecycle:
             result = await engine.process_turn(
                 case,
                 "Let's investigate this",
-                intent_type="status_transition",
-                intent_data={"to_state": "investigating", "from_state": "inquiry"},
             )
 
         after_gate1 = result["case_updated"]
@@ -560,8 +561,6 @@ class TestInvestigationLifecycle:
             result = await engine.process_turn(
                 case,
                 "Let's investigate",
-                intent_type="status_transition",
-                intent_data={"to_state": "investigating", "from_state": "inquiry"},
             )
         case = result["case_updated"]
         assert case.state == CaseState.INVESTIGATING
@@ -732,8 +731,6 @@ class TestCheckpointing:
             result = await engine.process_turn(
                 case,
                 "Investigate this",
-                intent_type="status_transition",
-                intent_data={"to_state": "investigating", "from_state": "inquiry"},
             )
 
         assert result["case_updated"].state == CaseState.INVESTIGATING

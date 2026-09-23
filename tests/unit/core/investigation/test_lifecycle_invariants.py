@@ -27,6 +27,7 @@ from faultmaven.core.investigation.terminal_transitions import (
     propose_transition,
 )
 from faultmaven.modules.case.domain.models import (
+    LEGAL_TRANSITIONS,
     Case,
     CaseAction,
     CaseState,
@@ -36,7 +37,9 @@ from faultmaven.modules.case.domain.models import (
     ProblemVerification,
     is_valid_action,
 )
-from faultmaven.modules.case.domain.services.case_action_manager import ALLOWED_ACTIONS
+from faultmaven.modules.case.domain.services.case_action_manager import (
+    USER_SELECTABLE_ACTIONS,
+)
 
 
 def _make_investigating_case() -> Case:
@@ -324,32 +327,60 @@ class TestINV04_NoDirectInquiryToResolved:
         assert case.resolved_at is None
 
     def test_inv04_ui_affordance_omits_resolved_from_inquiry(self):
-        """The UI's ``ALLOWED_ACTIONS`` dict — used by ``get_allowed_transitions``
-        to populate the state-dropdown — does not offer RESOLVED as a
-        target when the case is in INQUIRY.
+        """The status menu does not offer RESOLVED from INQUIRY.
 
-        This is the affordance-surface check (not enforcement). A user
-        looking at the dropdown sees only [INVESTIGATING, CLOSED]; the
-        forbidden edge is invisible.
+        Affordance surface, not enforcement: a user in INQUIRY sees only
+        [CLOSED]; the forbidden edge is invisible. INVESTIGATING is absent too,
+        but for a different reason — it is legal and simply not a user action
+        (#1608), which the subset test below pins.
         """
-        inquiry_targets = ALLOWED_ACTIONS[CaseState.INQUIRY]
+        inquiry_targets = USER_SELECTABLE_ACTIONS[CaseState.INQUIRY]
         assert CaseState.RESOLVED not in inquiry_targets
-        # The two legitimate targets are present:
-        assert CaseState.INVESTIGATING in inquiry_targets
         assert CaseState.CLOSED in inquiry_targets
 
-    def test_inv04_valid_action_graphs_agree_across_definitions(self):
-        """The valid-action graph appears in two places: ``ALLOWED_ACTIONS``
-        (case_action_manager.py) and ``valid_actions`` inside
-        ``is_valid_action()`` (models.py). They MUST agree.
+    def test_inv04_selectable_actions_are_a_subset_of_legal_transitions(self):
+        """Selectability is a strict subset of legality — not the same graph.
 
-        Duplication is a maintenance risk: a future edit to one copy
-        without the other would let the forbidden edge slip through one
-        enforcement surface while the other still rejects it. This test
-        pins agreement so any divergence breaks CI immediately.
+        These used to be pinned EQUAL, which encoded the assumption that
+        anything the state machine permits is something a user may pick. That
+        is false for INQUIRY → INVESTIGATING: the edge is legal and Gate 1
+        performs it, but it is earned by a confirmed problem statement, so a
+        menu cannot honour it on demand.
 
-        Drift to address separately: consolidate to a single source of
-        truth. Until then, this test is the consistency guard.
+        What must still hold is the containment — a menu may never offer an
+        edge the machine would reject — plus agreement between the legality
+        graph and the validator that reads it.
+        """
+        states = [
+            CaseState.INQUIRY,
+            CaseState.INVESTIGATING,
+            CaseState.RESOLVED,
+            CaseState.CLOSED,
+        ]
+
+        for from_state in states:
+            selectable = set(USER_SELECTABLE_ACTIONS.get(from_state, []))
+            legal = set(LEGAL_TRANSITIONS.get(from_state, []))
+            assert selectable <= legal, (
+                f"{from_state.value}: the menu offers "
+                f"{[s.value for s in selectable - legal]}, which the state "
+                f"machine does not permit."
+            )
+
+        # The one edge where they are intended to differ. Pinned explicitly so
+        # re-adding it to the menu is a deliberate act, not a silent one.
+        assert (
+            CaseState.INVESTIGATING in LEGAL_TRANSITIONS[CaseState.INQUIRY]
+        ), "Gate 1 performs this edge — it must stay legal"
+        assert (
+            CaseState.INVESTIGATING not in USER_SELECTABLE_ACTIONS[CaseState.INQUIRY]
+        ), "INVESTIGATING is earned, not requested — it is not a user action"
+
+    def test_inv04_legal_graph_agrees_with_its_validator(self):
+        """``LEGAL_TRANSITIONS`` and ``is_valid_action`` cannot disagree.
+
+        They are now one source of truth — the validator reads the constant —
+        so this guards the consolidation rather than a duplication.
         """
         for from_state in [
             CaseState.INQUIRY,
@@ -363,13 +394,12 @@ class TestINV04_NoDirectInquiryToResolved:
                 CaseState.RESOLVED,
                 CaseState.CLOSED,
             ]:
-                dict_allows = to_state in ALLOWED_ACTIONS.get(from_state, [])
+                dict_allows = to_state in LEGAL_TRANSITIONS.get(from_state, [])
                 func_allows = is_valid_action(from_state, to_state)
                 assert dict_allows == func_allows, (
                     f"Disagreement on {from_state.value} → {to_state.value}: "
-                    f"ALLOWED_ACTIONS says {dict_allows}, "
-                    f"is_valid_action says {func_allows}. "
-                    f"These must agree — see INV-04 drift note."
+                    f"LEGAL_TRANSITIONS says {dict_allows}, "
+                    f"is_valid_action says {func_allows}."
                 )
 
 

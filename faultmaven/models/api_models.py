@@ -156,7 +156,14 @@ class CaseSummary(BaseModel):
     # Status transitions
     valid_next_states: List[str] = Field(
         default_factory=list,
-        description="Allowed state transitions from current state for user-initiated changes",
+        description=(
+            "Case actions the USER may select from the status menu — "
+            "selectability, not legality. A strict subset of the transitions "
+            "the state machine permits: INQUIRY → INVESTIGATING is legal and "
+            "performed by the Gate 1 handshake, but it is earned by a "
+            "confirmed problem statement rather than requested, so it never "
+            "appears here. Every entry is a disposition."
+        ),
     )
 
     @classmethod
@@ -258,7 +265,14 @@ class CaseDetail(BaseModel):
     # Status transitions
     valid_next_states: List[str] = Field(
         default_factory=list,
-        description="Allowed state transitions from current state for user-initiated changes",
+        description=(
+            "Case actions the USER may select from the status menu — "
+            "selectability, not legality. A strict subset of the transitions "
+            "the state machine permits: INQUIRY → INVESTIGATING is legal and "
+            "performed by the Gate 1 handshake, but it is earned by a "
+            "confirmed problem statement rather than requested, so it never "
+            "appears here. Every entry is a disposition."
+        ),
     )
 
     @classmethod

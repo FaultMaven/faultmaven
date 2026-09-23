@@ -809,7 +809,7 @@ State updates occur at specific points within a turn to ensure consistency:
 
 | Current Status | Dropdown Options |
 |---------------|------------------|
-| INQUIRY       | Investigating, Closed |
+| INQUIRY       | Closed |
 | INVESTIGATING | Resolved, Closed |
 | RESOLVED      | *(disabled - disposition)* |
 | CLOSED        | *(disabled - disposition)* |
@@ -874,12 +874,22 @@ the structured payload is unambiguous and skips the LLM's intent classification.
 The engine's `status_transition` handler (in `_process_turn_impl`) branches by target
 status. Each branch honors the User-Agent Handshake — none of them auto-execute.
 
-**→ INVESTIGATING (from INQUIRY)**: falls through to the normal INQUIRY LLM pipeline.
-If a statement stands, the **engine** presents it for confirmation (INV-01) — this
-branch does not depend on the LLM doing so. If none stands, none is invented: the
-agent asks what is failing, Gate 1 stays shut, and no confirmation affordance is
-offered. When `user_confirmed_investigation=True` arrives on a later turn, gated by
-`gate1_statement_is_confirmable`, the transition fires via `_check_automatic_transitions`.
+**→ INVESTIGATING (from INQUIRY)**: **refused.** INVESTIGATING is not a
+user-selectable case action — it is legal, and Gate 1 performs it, but it is
+earned by a problem statement the user has confirmed, which the DB CHECK
+`cases_description_required_for_investigation` makes structural. A request
+cannot make that true, so the engine raises rather than pretending.
+
+The menu no longer offers it (`USER_SELECTABLE_ACTIONS`); the refusal closes
+the same door to older clients and direct API callers. This branch previously
+accepted the request and fell through to the LLM on an injected synthetic
+message ("I want to start a formal investigation to find the root cause") —
+which read to the model as established problem-solving intent and pulled a
+problem statement out of a case that had none, while the reply correctly said
+none could be stated.
+
+Users still ask for an investigation the way §1.2's natural flow always had
+them ask: by saying so, or by the agent proposing one. Gate 1 performs the edge.
 
 **→ CLOSED (from INQUIRY or INVESTIGATING)**: the engine calls `propose_transition`
 directly, returns a closure-readiness summary plus the canonical Yes/No confirmation

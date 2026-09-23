@@ -615,7 +615,7 @@ def derive_disposition_eligibility(case: "Case") -> dict[str, str]:
 
     Semantics by current state:
 
-    - INQUIRY: only CLOSED is a valid edge per ``ALLOWED_ACTIONS``
+    - INQUIRY: only CLOSED is a valid edge per ``LEGAL_TRANSITIONS``
       (resolution requires investigation work). Returns
       ``{"resolved": "not_eligible", "closed": "ready"}``.
 

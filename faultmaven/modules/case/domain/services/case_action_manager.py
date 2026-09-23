@@ -10,10 +10,16 @@ Design Principle:
 - Case actions trigger agent messages
 - Dispositions (RESOLVED, CLOSED) are terminal — no further actions allowed
 
-Case Actions:
-    INQUIRY ─────┬──────► INVESTIGATING ─────┬──────► RESOLVED (disposition)
-                │                            │
-                └───────────────────────────┴──────► CLOSED (disposition)
+User-selectable case actions (all dispositions):
+    INQUIRY ─────────────────────────────────┬──────► CLOSED (disposition)
+                                             │
+    INVESTIGATING ─────┬──────► RESOLVED ────┘
+                       │
+                       └──────► CLOSED
+
+INQUIRY → INVESTIGATING is a legal edge but NOT a user action: it is earned by
+a confirmed problem statement and performed by the Gate 1 handshake. The full
+legality graph is ``LEGAL_TRANSITIONS`` in ``modules/case/domain/models.py``.
 """
 
 from datetime import datetime, timezone
@@ -22,14 +28,28 @@ from typing import Any, Dict, Optional
 from faultmaven.modules.case.domain.models import CaseState
 from faultmaven.utils.serialization import to_json_compatible
 
-# Allowed user-initiated case actions (via UI)
-# v3: INQUIRY → RESOLVED removed. KB-driven cases route through INVESTIGATING
-# via the same-turn milestone collapse path (see
-# docs/architecture/investigation-engine/investigation-lifecycle-logic.md
-# §1.2 INVESTIGATING → RESOLVED → KB-Resolution Path).
-ALLOWED_ACTIONS = {
+#: What a user may PICK from the status menu. A strict subset of
+#: ``LEGAL_TRANSITIONS`` (models.py), which is every edge the state machine
+#: permits — the two are different questions and this module answers only the
+#: second one.
+#:
+#: Every entry here is a DISPOSITION: a user decision carrying information the
+#: engine cannot derive. Closing is the user's call and is always honourable;
+#: "mark resolved" may be true of a fix applied outside the product entirely,
+#: and where the case cannot support it ``assess_resolution_readiness`` pivots
+#: to close with a readiness message rather than refusing.
+#:
+#: INQUIRY → INVESTIGATING is deliberately ABSENT, though it is legal. It is a
+#: phase transition, not a disposition: it is earned by the case carrying a
+#: confirmed problem statement, which the DB CHECK
+#: ``cases_description_required_for_investigation`` makes structural. Offering
+#: it in a menu promised something the engine could not honour on demand — and
+#: the handler never transitioned anyway, it injected a synthetic user message
+#: and fell through to the LLM. The user asks for an investigation the way the
+#: design always had them ask: by saying so (see §1.2's natural flow), or by
+#: the agent proposing one. Gate 1 then performs the edge.
+USER_SELECTABLE_ACTIONS = {
     CaseState.INQUIRY: [
-        CaseState.INVESTIGATING,  # Phase transition: "Start investigation"
         CaseState.CLOSED,  # Disposition: "Close without investigating"
     ],
     CaseState.INVESTIGATING: [
@@ -41,18 +61,10 @@ ALLOWED_ACTIONS = {
     CaseState.CLOSED: [],
 }
 
-# Backward compatibility alias
-ALLOWED_TRANSITIONS = ALLOWED_ACTIONS
-
 
 # Map: (old_state, new_state) → agent message
 # These messages are sent to agent as if user typed them
 CASE_ACTION_MESSAGES = {
-    # Phase transition: INQUIRY → INVESTIGATING
-    (
-        CaseState.INQUIRY,
-        CaseState.INVESTIGATING,
-    ): "I want to start a formal investigation to find the root cause.",
     # Disposition: INQUIRY → CLOSED
     (
         CaseState.INQUIRY,
@@ -161,8 +173,11 @@ class CaseActionManager:
 
     @staticmethod
     def get_allowed_actions(current_status: CaseState) -> list[CaseState]:
-        """Get list of allowed case actions from current state."""
-        return ALLOWED_ACTIONS.get(current_status, [])
+        """The case actions a user may pick from the status menu.
+
+        Selectability, not legality — see ``USER_SELECTABLE_ACTIONS``.
+        """
+        return USER_SELECTABLE_ACTIONS.get(current_status, [])
 
     # Backward compatibility alias
     get_allowed_transitions = get_allowed_actions

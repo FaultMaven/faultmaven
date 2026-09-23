@@ -483,7 +483,14 @@ class CaseUIResponse_Inquiry(BaseModel):
 
     valid_next_states: List[str] = Field(
         default_factory=list,
-        description="Allowed state transitions from current state for user-initiated changes",
+        description=(
+            "Case actions the USER may select from the status menu — "
+            "selectability, not legality. A strict subset of the transitions "
+            "the state machine permits: INQUIRY → INVESTIGATING is legal and "
+            "performed by the Gate 1 handshake, but it is earned by a "
+            "confirmed problem statement rather than requested, so it never "
+            "appears here. Every entry is a disposition."
+        ),
     )
 
     disposition_eligibility: Optional[Dict[str, str]] = Field(
@@ -507,9 +514,9 @@ class CaseUIResponse_Inquiry(BaseModel):
             "has root cause + solution → resolving preserves attribution).\n"
             "- ``not_eligible`` — disposition is not available; hide the "
             "affordance entirely.\n\n"
-            "Different from ``valid_next_states`` — that field is the "
-            "structural action graph (which edges exist), this field is "
-            "the content-readiness layer on top."
+            "Different from ``valid_next_states`` — that field is which "
+            "actions the user may SELECT, this field is the content-readiness "
+            "layer on top of them."
         ),
     )
 
@@ -570,7 +577,14 @@ class CaseUIResponse_Investigating(BaseModel):
 
     valid_next_states: List[str] = Field(
         default_factory=list,
-        description="Allowed state transitions from current state for user-initiated changes",
+        description=(
+            "Case actions the USER may select from the status menu — "
+            "selectability, not legality. A strict subset of the transitions "
+            "the state machine permits: INQUIRY → INVESTIGATING is legal and "
+            "performed by the Gate 1 handshake, but it is earned by a "
+            "confirmed problem statement rather than requested, so it never "
+            "appears here. Every entry is a disposition."
+        ),
     )
 
     disposition_eligibility: Optional[Dict[str, str]] = Field(
@@ -594,9 +608,9 @@ class CaseUIResponse_Investigating(BaseModel):
             "has root cause + solution → resolving preserves attribution).\n"
             "- ``not_eligible`` — disposition is not available; hide the "
             "affordance entirely.\n\n"
-            "Different from ``valid_next_states`` — that field is the "
-            "structural action graph (which edges exist), this field is "
-            "the content-readiness layer on top."
+            "Different from ``valid_next_states`` — that field is which "
+            "actions the user may SELECT, this field is the content-readiness "
+            "layer on top of them."
         ),
     )
 
@@ -703,7 +717,14 @@ class CaseUIResponse_Resolved(BaseModel):
 
     valid_next_states: List[str] = Field(
         default_factory=list,
-        description="Allowed state transitions from current state for user-initiated changes",
+        description=(
+            "Case actions the USER may select from the status menu — "
+            "selectability, not legality. A strict subset of the transitions "
+            "the state machine permits: INQUIRY → INVESTIGATING is legal and "
+            "performed by the Gate 1 handshake, but it is earned by a "
+            "confirmed problem statement rather than requested, so it never "
+            "appears here. Every entry is a disposition."
+        ),
     )
 
     disposition_eligibility: Optional[Dict[str, str]] = Field(
@@ -727,9 +748,9 @@ class CaseUIResponse_Resolved(BaseModel):
             "has root cause + solution → resolving preserves attribution).\n"
             "- ``not_eligible`` — disposition is not available; hide the "
             "affordance entirely.\n\n"
-            "Different from ``valid_next_states`` — that field is the "
-            "structural action graph (which edges exist), this field is "
-            "the content-readiness layer on top."
+            "Different from ``valid_next_states`` — that field is which "
+            "actions the user may SELECT, this field is the content-readiness "
+            "layer on top of them."
         ),
     )
 
