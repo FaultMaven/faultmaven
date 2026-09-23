@@ -206,10 +206,10 @@ def test_render_states_speedup_against_the_serial_median(xm):
     text = xm.render(runs)
     assert "**3.00x**" in text  # median(1600, 1400) / median(500, 500)
     assert "67% less wall clock" in text
-    assert "identical across 2 complete/aborted run(s): **yes**" in text
+    assert "identical across 2 complete run(s): **yes**" in text
 
 
-def test_fetch_asks_by_commit_for_every_attempt_and_skips_the_rest(
+def test_fetch_asks_by_commit_for_every_attempt_and_records_the_unread(
     xm, monkeypatch, tmp_path
 ):
     runs = [
@@ -261,10 +261,14 @@ def test_fetch_asks_by_commit_for_every_attempt_and_skips_the_rest(
         "repos/FaultMaven/faultmaven/commits/deadbeef/check-runs?filter=all&per_page=100"
         in calls[0]
     )
-    assert [e["id"] for e in entries] == [11, 12]
+    # Code Quality is not measured; the in-progress arm is recorded, not read.
+    assert [e["id"] for e in entries] == [11, 12, 13]
     assert json.loads((tmp_path / "manifest.json").read_text())[1]["arm"] == "xdist-a"
     loaded = xm.load_manifest(tmp_path / "manifest.json")
     assert loaded[1]["result"]["seconds"] == 512.34
+    assert loaded[2]["result"]["status"] == "incomplete"
+    assert loaded[2]["result"]["reason"] == "status=in_progress"
+    assert not any("actions/jobs/13/logs" in " ".join(c) for c in calls)
 
 
 # The first measurement run's actual shape (job 107383635657 on 9ddd169fd):
@@ -339,8 +343,10 @@ def test_a_collection_abort_keeps_its_failures_but_not_its_time(xm):
     assert "xdist-logical" not in text
     assert "ABORTED at collection" in text
     d = xm.diff_suite("standalone", runs)
-    assert d.xdist_runs == 2
-    assert "tests/integration/test_main_app.py" in d.xdist_only_some_runs
+    # The aborted run executed no test: it is listed, never diffed.
+    assert d.xdist_runs == 1
+    assert d.aborted == {"#2": ["gw1", "tests/integration/test_main_app.py"]}
+    assert "tests/integration/test_main_app.py" not in d.xdist_only_some_runs
 
 
 def test_auto_and_logical_are_timed_apart(xm):
@@ -353,3 +359,94 @@ def test_auto_and_logical_are_timed_apart(xm):
     assert "xdist 13m20s (800.0s) over 1 run(s) -- **1.50x**" in text
     assert "xdist-logical 6m40s (400.0s) over 1 run(s) -- **3.00x**" in text
     assert xm.arm_family("xdist-logical-b") == "xdist-logical"
+
+
+def _check_run(id_, name, conclusion, status="completed"):
+    return {
+        "id": id_,
+        "name": name,
+        "head_sha": "h",
+        "status": status,
+        "conclusion": conclusion,
+        "started_at": "t",
+    }
+
+
+def test_fetch_survives_a_skipped_job_and_a_refused_log(xm, monkeypatch, tmp_path):
+    """Bug 1: a skipped required job (every docs-only diff) 404s on its log;
+    fetch raised, and the manifest -- with every log already downloaded --
+    was never written."""
+    import subprocess
+
+    runs = [
+        _check_run(21, "xdist Measurement Cloud (xdist-a)", "success"),
+        # skipped by its `if:` -- completed, but never ran a step
+        _check_run(22, "Test Cloud", "skipped"),
+        # cancelled before it started: the log endpoint refuses
+        _check_run(23, "Test Standalone", "cancelled"),
+        _check_run(24, "xdist Measurement Cloud (serial)", "success"),
+    ]
+    asked = []
+
+    def fake_gh(*args):
+        if "--jq" in args:
+            return "\n".join(json.dumps(r) for r in runs)
+        asked.append(args[-1])
+        if args[-1].endswith("/jobs/22/logs") or args[-1].endswith("/jobs/23/logs"):
+            raise subprocess.CalledProcessError(
+                1, ["gh"], output="", stderr="gh: HTTP 404\n"
+            )
+        return XDIST_LOG if "/21/" in args[-1] else SERIAL_LOG
+
+    monkeypatch.setattr(xm, "_gh", fake_gh)
+    entries = xm.fetch("deadbeef", tmp_path)
+
+    assert [e["id"] for e in entries] == [21, 22, 23, 24]
+    # A skipped job is not even asked for; the cancelled one is, and refused.
+    assert not any(a.endswith("/jobs/22/logs") for a in asked)
+    loaded = {
+        e["id"]: e["result"] for e in xm.load_manifest(tmp_path / "manifest.json")
+    }
+    assert loaded[21]["status"] == "complete"
+    assert loaded[24]["status"] == "complete"  # downloaded AFTER the failures
+    assert loaded[22]["status"] == "incomplete"
+    assert loaded[22]["reason"] == "conclusion=skipped"
+    assert loaded[23]["reason"] == "log unavailable: gh: HTTP 404"
+    text = xm.render(xm.load_manifest(tmp_path / "manifest.json"))
+    assert "no log: conclusion=skipped" in text
+    assert "(incomplete: conclusion=skipped)" in text
+
+
+def test_an_aborted_run_does_not_poison_the_intersection(xm):
+    """Bug 2: a test that failed in EVERY xdist run that executed tests was
+    reported unstable, because an aborted run's collection errors were
+    intersected with it."""
+    aborted = _entry(xm, "xdist-b", {"ERROR collecting tests/c.py"}, id_=3)
+    aborted["result"]["status"] = "aborted"
+    aborted["result"]["counts"] = {"errors": 1}
+    runs = [
+        _entry(xm, "serial", set(), id_=1),
+        _entry(xm, "xdist-a", {"tests/t.py::test_T"}, id_=2),
+        aborted,
+        _entry(xm, "xdist-c", {"tests/t.py::test_T"}, id_=4),
+    ]
+    d = xm.diff_suite("cloud", runs)
+    assert d.xdist_only_every_run == ["tests/t.py::test_T"]
+    assert d.xdist_only_some_runs == []
+    assert d.xdist_runs_agree is True
+    assert d.xdist_runs == 2
+    assert d.aborted == {"xdist-b #3": ["ERROR collecting tests/c.py"]}
+    text = xm.render(runs)
+    assert "identical across 2 complete run(s): **yes**" in text
+    assert "aborted at collection (no test executed; kept out of the diff): 1" in text
+
+
+def test_one_complete_run_beside_an_aborted_one_is_not_agreement(xm):
+    aborted = _entry(xm, "xdist-b", {"gw1"}, id_=3)
+    aborted["result"]["status"] = "aborted"
+    runs = [
+        _entry(xm, "serial", set(), id_=1),
+        _entry(xm, "xdist-a", set(), id_=2),
+        aborted,
+    ]
+    assert "**NOT ESTABLISHED (1 complete run(s); need 2+)**" in xm.render(runs)

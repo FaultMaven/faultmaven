@@ -31,11 +31,17 @@ a footer-only reader takes for a 4.5-second green run:
                       the session. Its failure list is real (it names what
                       broke collection) but its time is not the suite's.
 * ``internal_error``  pytest crashed (``INTERNALERROR>``); no failure list
-* ``incomplete``      no footer at all (cancelled at the cap); no failure list
+* ``incomplete``      no footer at all (cancelled at the cap), or no log at
+                      all (a job skipped by its ``if:``, cancelled before it
+                      started, still running); no failure list, and ``reason``
+                      says which
 
-Only ``complete`` runs are timed. ``complete`` and ``aborted`` runs are diffed;
-the other two are listed as excluded -- their missing failures are unknown,
-never absent.
+Only ``complete`` runs are timed, and only ``complete`` runs enter the failure
+diff and the agreement verdict. An ``aborted`` run executed no test, so what
+it did not report is unknown, not absent: letting its collection errors into
+the intersection would make a test that failed in EVERY run that executed
+tests read as unstable. Its collection errors are reported on their own line.
+The other two statuses are listed as excluded.
 """
 
 from __future__ import annotations
@@ -97,6 +103,8 @@ class RunResult:
     internal_error: bool = False
     exit_code: int | None = None
     status: str = "incomplete"
+    # Why there is no result, when the run produced no log to read.
+    reason: str | None = None
 
 
 def strip_line(raw: str) -> str:
@@ -228,21 +236,34 @@ class SuiteDiff:
     xdist_runs: int
     serial_runs: int
     incomplete: list[str]
+    # label -> the collection errors that ended an aborted run
+    aborted: dict[str, list[str]] = field(default_factory=dict)
 
 
 def diff_suite(suite: str, runs: list[dict]) -> SuiteDiff:
-    """Compare the failure sets of one suite's complete and aborted runs.
+    """Compare the failure sets of one suite's COMPLETE runs.
 
     ``runs`` are manifest entries carrying ``arm``, ``label`` and a parsed
-    ``result``. An internal-error or incomplete run is listed and excluded:
-    its missing failures are unknown, not absent.
+    ``result``. Only a run that executed the suite can say a test passed, so
+    only ``complete`` runs enter the union, the intersection and the
+    agreement verdict. An ``aborted`` run is listed with its collection
+    errors; an internal-error or incomplete run is listed as excluded.
     """
-    listed = ("complete", "aborted")
-    complete = [r for r in runs if r["result"]["status"] in listed]
-    incomplete = sorted(
-        f"{r['label']} ({r['result']['status']})"
+    complete = [r for r in runs if r["result"]["status"] == "complete"]
+    aborted = {
+        r["label"]: list(r["result"]["failures"])
         for r in runs
-        if r["result"]["status"] not in listed
+        if r["result"]["status"] == "aborted"
+    }
+
+    def _why(r: dict) -> str:
+        reason = r["result"].get("reason")
+        return f"{r['result']['status']}: {reason}" if reason else r["result"]["status"]
+
+    incomplete = sorted(
+        f"{r['label']} ({_why(r)})"
+        for r in runs
+        if r["result"]["status"] not in ("complete", "aborted")
     )
     serial = [set(r["result"]["failures"]) for r in complete if not is_xdist(r["arm"])]
     xdist = [set(r["result"]["failures"]) for r in complete if is_xdist(r["arm"])]
@@ -262,6 +283,7 @@ def diff_suite(suite: str, runs: list[dict]) -> SuiteDiff:
         xdist_runs=len(xdist),
         serial_runs=len(serial),
         incomplete=incomplete,
+        aborted=aborted,
     )
 
 
@@ -280,6 +302,8 @@ def _fmt_secs(secs: float | None) -> str:
 
 def _phase(result: dict) -> str:
     status = result["status"]
+    if result.get("reason"):
+        return f"no log: {result['reason']}"
     if status in _STATUS_LABEL:
         return _STATUS_LABEL[status]
     text = _fmt_secs(result["seconds"])
@@ -346,22 +370,30 @@ def render(entries: list[dict]) -> str:
             )
         d = diff_suite(suite, runs)
         if d.xdist_runs < 2:
-            verdict = (
-                f"NOT ESTABLISHED ({d.xdist_runs} run(s) produced a list; need 2+)"
-            )
+            verdict = f"NOT ESTABLISHED ({d.xdist_runs} complete run(s); need 2+)"
         else:
             verdict = "yes" if d.xdist_runs_agree else "NO"
         out.append(
             f"- xdist failure lists identical across {d.xdist_runs} "
-            f"complete/aborted run(s): **{verdict}**"
+            f"complete run(s): **{verdict}**"
         )
+        if d.aborted:
+            out.append(
+                f"- aborted at collection (no test executed; kept out of the "
+                f"diff): {len(d.aborted)}"
+            )
+            for label, errors in sorted(d.aborted.items()):
+                out.append(f"  - {label}: " + ", ".join(f"`{e}`" for e in errors))
         if d.incomplete:
             out.append(f"- excluded, failures unknown: {', '.join(d.incomplete)}")
         for title, items in (
-            ("fails in serial run(s)", d.serial_failures),
-            ("fails only under xdist, in EVERY xdist run", d.xdist_only_every_run),
+            ("fails in complete serial run(s)", d.serial_failures),
             (
-                "fails only under xdist, in SOME xdist runs (unstable)",
+                "fails only under xdist, in EVERY complete xdist run",
+                d.xdist_only_every_run,
+            ),
+            (
+                "fails only under xdist, in SOME complete xdist runs (unstable)",
                 d.xdist_only_some_runs,
             ),
             ("fails serially but in no xdist run", d.serial_only),
@@ -377,11 +409,24 @@ def _gh(*args: str) -> str:
     ).stdout
 
 
+# A skipped job never ran a step, so it has no log to ask for. A cancelled job
+# may or may not have one (cancelled at the cap: a partial log, read as
+# incomplete; cancelled before it started: the endpoint 404s), so it is asked
+# for and a refusal is recorded rather than raised.
+_NO_LOG_CONCLUSIONS = frozenset({"skipped"})
+
+
 def fetch(commit: str, out_dir: Path, repo: str = REPO) -> list[dict]:
     """Download every relevant check run's log on ``commit``; write a manifest.
 
     Asks for check runs BY COMMIT with ``filter=all``, so a re-run attempt is
     a further sample rather than silently replacing the first.
+
+    A run with no log to read -- skipped by its ``if:`` (every docs-only diff,
+    and whenever ``code-quality`` fails), cancelled before it started, still
+    running, or whose log endpoint refuses -- is recorded with a ``reason``
+    and read back as ``incomplete``. It never stops the fetch: one missing
+    log must not lose the ones already downloaded.
     """
     raw = _gh(
         "api",
@@ -395,20 +440,34 @@ def fetch(commit: str, out_dir: Path, repo: str = REPO) -> list[dict]:
     for line in raw.splitlines():
         run = json.loads(line)
         kind = classify(run["name"])
-        if kind is None or run["status"] != "completed":
+        if kind is None:
             continue
         suite, arm = kind
-        path = out_dir / f"{run['id']}.log"
-        path.write_text(_gh("api", f"repos/{repo}/actions/jobs/{run['id']}/logs"))
-        entries.append(
-            {
-                **run,
-                "suite": suite,
-                "arm": arm,
-                "label": f"{run['name']} #{run['id']}",
-                "path": str(path),
-            }
-        )
+        entry = {
+            **run,
+            "suite": suite,
+            "arm": arm,
+            "label": f"{run['name']} #{run['id']}",
+            "path": None,
+            "reason": None,
+        }
+        if run["status"] != "completed":
+            entry["reason"] = f"status={run['status']}"
+        elif run["conclusion"] in _NO_LOG_CONCLUSIONS:
+            entry["reason"] = f"conclusion={run['conclusion']}"
+        else:
+            path = out_dir / f"{run['id']}.log"
+            try:
+                path.write_text(
+                    _gh("api", f"repos/{repo}/actions/jobs/{run['id']}/logs")
+                )
+                entry["path"] = str(path)
+            except subprocess.CalledProcessError as exc:
+                detail = (exc.stderr or "").strip().splitlines()
+                entry["reason"] = "log unavailable: " + (
+                    detail[-1] if detail else f"exit {exc.returncode}"
+                )
+        entries.append(entry)
     (out_dir / "manifest.json").write_text(json.dumps(entries, indent=2))
     return entries
 
@@ -416,7 +475,12 @@ def fetch(commit: str, out_dir: Path, repo: str = REPO) -> list[dict]:
 def load_manifest(path: Path) -> list[dict]:
     entries = json.loads(path.read_text())
     for e in entries:
-        e["result"] = asdict(parse_log(Path(e["path"]).read_text()))
+        if e.get("path"):
+            e["result"] = asdict(parse_log(Path(e["path"]).read_text()))
+        else:
+            e["result"] = asdict(
+                RunResult(complete=False, reason=e.get("reason") or "no log")
+            )
     return entries
 
 
