@@ -392,7 +392,6 @@ class TestCaseSchemas:
         case = _case(*_MIXED)
         case.inquiry.proposed_problem_statement = "DNS resolution failing on prod"
         case.inquiry.problem_statement_confirmed = True
-        case.inquiry.decided_to_investigate = True
         case.state = CaseState.INVESTIGATING
         return case
 
@@ -432,7 +431,6 @@ class TestCaseRead:
         case = _case(*outcomes)
         case.inquiry.proposed_problem_statement = "DNS resolution failing on prod"
         case.inquiry.problem_statement_confirmed = True
-        case.inquiry.decided_to_investigate = True
         case.state = CaseState.INVESTIGATING
         return case
 
@@ -465,7 +463,6 @@ class TestCaseRead:
         )
         case.inquiry.proposed_problem_statement = "DNS resolution failing on prod"
         case.inquiry.problem_statement_confirmed = True
-        case.inquiry.decided_to_investigate = True
         case.turn_history = [_turn(i, o) for i, o in enumerate(outcomes, start=1)]
         return case
 

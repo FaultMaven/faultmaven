@@ -291,7 +291,6 @@ def _case_with_kb_entries(
         state=CaseState.INVESTIGATING,
         inquiry=InquiryData(
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
             proposed_problem_statement="why is redis evicting keys?",
         ),
         created_at=now,

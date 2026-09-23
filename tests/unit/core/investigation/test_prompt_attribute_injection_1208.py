@@ -97,7 +97,6 @@ def _case(files, evidence, turn: int = 1) -> Case:
         state=CaseState.INVESTIGATING,
         inquiry=InquiryData(
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
             proposed_problem_statement="Test description",
         ),
         evidence=evidence,

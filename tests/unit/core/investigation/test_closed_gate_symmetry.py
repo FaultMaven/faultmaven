@@ -68,7 +68,6 @@ def _make_investigating_case() -> Case:
         description="Test description",
         inquiry=InquiryData(
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
             proposed_problem_statement="Test problem",
         ),
     )

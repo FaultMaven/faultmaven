@@ -1205,17 +1205,6 @@ class InquiryData(BaseModel):
         default=None, description="When user confirmed the problem statement"
     )
 
-    # ============================================================
-    # Investigation Decision
-    # ============================================================
-    decided_to_investigate: bool = Field(
-        default=False, description="Whether user committed to formal investigation"
-    )
-
-    decision_made_at: Optional[datetime] = Field(
-        default=None, description="When user decided to investigate (or not)"
-    )
-
     inquiry_turns: int = Field(
         default=0, ge=0, description="Number of turns spent in INQUIRY state"
     )
@@ -1253,15 +1242,6 @@ class InquiryData(BaseModel):
         if self.problem_statement_confirmed and not self.problem_statement_confirmed_at:
             # Auto-set confirmation timestamp if missing
             self.problem_statement_confirmed_at = datetime.now(timezone.utc)
-
-        return self
-
-    @model_validator(mode="after")
-    def validate_decision_consistency(self) -> "InquiryData":
-        """Validate investigation decision consistency."""
-        if self.decided_to_investigate and not self.decision_made_at:
-            # Auto-set decision timestamp if missing
-            self.decision_made_at = datetime.now(timezone.utc)
 
         return self
 
@@ -5930,9 +5910,9 @@ class Case(BaseModel):
         * INVESTIGATING: entry gate — investigation without a stated problem
           is wandering. Also requires problem_statement_confirmed, the single
           Gate 1 condition. (It used to require ``decided_to_investigate``
-          as well; every writer sets the two together, so the second check
-          could only ever fire on a hand-built Case, while making the schema
-          disagree with the engine's own gate. One gate, one condition.)
+          as well — a field that was always written alongside this one and
+          never read to decide anything. #1611 made this the single condition;
+          the field itself is gone.)
         * RESOLVED: the case must have a known problem to be meaningfully
           resolved (the resolution would otherwise have nothing to attach
           to). Per the legitimate transitions spec (RESOLVED only comes

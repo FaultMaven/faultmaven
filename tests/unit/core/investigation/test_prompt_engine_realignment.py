@@ -125,7 +125,6 @@ def _case(hyps=None) -> Case:
         inquiry=InquiryData(
             proposed_problem_statement="checkout orders failing with 500s",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
         problem_verification=ProblemVerification(
             symptom_statement="checkout orders failing with 500s",

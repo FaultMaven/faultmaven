@@ -60,8 +60,6 @@ def _make_investigating_case():
     case.inquiry.proposed_problem_statement = "Alignment test"
     case.inquiry.problem_statement_confirmed = True
     case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
-    case.inquiry.decided_to_investigate = True
-    case.inquiry.decision_made_at = datetime.now(timezone.utc)
     case.state = CaseState.INVESTIGATING
     case.progress = InvestigationProgress()
     return case

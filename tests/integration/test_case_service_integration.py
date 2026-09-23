@@ -204,7 +204,6 @@ class TestCaseLifecycle:
             "Database queries are taking 10x longer than normal"
         )
         case_from_repo.inquiry.problem_statement_confirmed = True
-        case_from_repo.inquiry.decided_to_investigate = True
         await case_service.case_repo.save(case_from_repo)
 
         # Finally transition to INVESTIGATING status
@@ -516,7 +515,6 @@ class TestCaseStateTransitions:
         case_from_repo = await case_service.case_repo.get(case.case_id)
         case_from_repo.inquiry.proposed_problem_statement = "Test problem description"
         case_from_repo.inquiry.problem_statement_confirmed = True
-        case_from_repo.inquiry.decided_to_investigate = True
         await case_service.case_repo.save(case_from_repo)
 
         updated = await case_service.update_case(
@@ -545,7 +543,6 @@ class TestCaseStateTransitions:
         case_from_repo = await case_service.case_repo.get(case.case_id)
         case_from_repo.inquiry.proposed_problem_statement = "Test problem description"
         case_from_repo.inquiry.problem_statement_confirmed = True
-        case_from_repo.inquiry.decided_to_investigate = True
         await case_service.case_repo.save(case_from_repo)
 
         await case_service.update_case(

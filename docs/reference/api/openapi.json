@@ -3056,12 +3056,6 @@
       "InquiryResponseData": {
         "description": "Nested inquiry data for INQUIRY phase response.",
         "properties": {
-          "decided_to_investigate": {
-            "default": false,
-            "description": "Whether agent has enough info to start investigation",
-            "title": "Decided To Investigate",
-            "type": "boolean"
-          },
           "inquiry_turns": {
             "default": 0,
             "description": "Number of conversation turns during inquiry phase",
@@ -6828,7 +6822,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "7.2.0"
+    "version": "8.0.0"
   },
   "openapi": "3.1.0",
   "paths": {

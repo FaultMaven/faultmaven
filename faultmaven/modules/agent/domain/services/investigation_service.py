@@ -3210,8 +3210,8 @@ class InvestigationService:
         The premise holds; the conclusion did not follow. A minted
         ``confirmation`` with no pending transition reaches the engine's
         section 0c, which on an INQUIRY case carrying a proposed problem
-        statement commits **Gate 1** (``problem_statement_confirmed`` +
-        ``decided_to_investigate``), and ``_check_automatic_transitions`` then
+        statement commits **Gate 1** (``problem_statement_confirmed``), and
+        ``_check_automatic_transitions`` then
         fires INQUIRY → INVESTIGATING. Measured: "correct — is the problem
         statement about the replica or the primary?" started the
         investigation off a statement the user was in the middle of

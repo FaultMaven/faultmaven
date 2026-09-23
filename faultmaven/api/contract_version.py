@@ -30,6 +30,29 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
+# 8.0.0 — MAJOR. `InquiryResponseData` no longer publishes
+# `decided_to_investigate`. The field is removed from the model entirely, along
+# with the `decision_made_at` timestamp that existed only to keep a second
+# derived fact consistent with it.
+#
+# MAJOR is not a judgement call here: a published field was removed, which this
+# file names as MAJOR outright. The measured impact is nonetheless nil, and
+# client owners deserve both halves of that. Every reference in
+# faultmaven-copilot, faultmaven-dashboard and faultmaven-slack-agent is in a
+# GENERATED types file — no hand-written client code reads the value — and the
+# Slack agent's generated model defaults it to `False`, so a client that adopts
+# late sees no runtime change. What a late-adopting TypeScript client does see
+# is a required property its type declares and the server stops sending, which
+# is exactly the disagreement a pin bump exists to close.
+#
+# Why it went: Gate 1 has been ONE condition since #1611 — `gate1_passed` reads
+# `problem_statement_confirmed` alone, and the `Case` validator dropped its
+# separate requirement in the same change. The field was written by three
+# sites, always in lockstep with `problem_statement_confirmed`, and read by
+# nothing. A field that cannot differ from another invites the belief that it
+# can; this one had two readers of the code concluding INQUIRY → INVESTIGATING
+# was a two-handshake gate.
+
 # 7.2.0 — MINOR. `GET /api/v1/admin/llm/config` publishes `role_routing`, a
 # new list on `LLMConfigResponse` carrying a new `LLMRoleRouting` schema
 # (#1206). Purely additive: no existing property changed, nothing was removed,
@@ -77,8 +100,10 @@ asked to accept, and it belongs to a person.
 # why a liveness probe must not fail on a dependency). So the question the
 # clients are being asked — "can this break you" — has a measured answer of
 # no. A reviewer who reads an undeclared probe response as part of the
-# contract should make this 8.0.0; the fact it turns on is stated above
-# rather than buried, so that call can be made without re-deriving it.
+# contract should have made this a MAJOR; the fact it turns on is stated above
+# rather than buried, so that call can be made without re-deriving it. (That
+# note named 8.0.0 when written — 8.0.0 has since been published for an
+# unrelated removal, so read it as "the next major", not as a pointer.)
 #
 # `/health` is unchanged in the contract: still 200, and its only edit is the
 # docstring that says so on purpose.
@@ -1562,4 +1587,4 @@ asked to accept, and it belongs to a person.
 # and absent must read as "no": a client treating a missing value as
 # unknown-therefore-fine renders the dead control again, which is the whole
 # failure being closed.
-API_CONTRACT_VERSION = "7.2.0"
+API_CONTRACT_VERSION = "8.0.0"

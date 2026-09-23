@@ -301,7 +301,6 @@ class TestTheRoutesActuallyStampIt:
         # problem statement — the model enforces it, and this test is about the
         # adapter rather than that rule.
         case.inquiry.problem_statement_confirmed = True
-        case.inquiry.decided_to_investigate = True
         case.state = CaseState.INVESTIGATING
         case.evidence = [_evidence(collected_at_turn=3)]
 

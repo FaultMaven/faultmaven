@@ -1626,7 +1626,6 @@ class TestSearchStateReachesTheWhereClause:
             inquiry = InquiryData(
                 proposed_problem_statement="seeded problem statement",
                 problem_statement_confirmed=True,
-                decided_to_investigate=True,
             )
         now = datetime.now(timezone.utc)
         return Case(

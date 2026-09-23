@@ -427,7 +427,6 @@ def _seed_case(
         extra["inquiry"] = InquiryData(
             proposed_problem_statement="seeded problem statement",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         )
     return Case(
         case_id=f"case_{index:012d}",

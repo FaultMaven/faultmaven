@@ -116,7 +116,6 @@ def _make_investigating_case(**overrides) -> Case:
         "inquiry": InquiryData(
             problem_statement_confirmed=True,
             problem_statement_confirmed_at=datetime.now(UTC),
-            decided_to_investigate=True,
             proposed_problem_statement=description,
         ),
         "problem_verification": ProblemVerification(
@@ -629,7 +628,6 @@ class TestInvestigationLifecycle:
         updated1 = result1["case_updated"]
         assert updated1.state == CaseState.INQUIRY
         assert updated1.inquiry.problem_statement_confirmed is False
-        assert updated1.inquiry.decided_to_investigate is False
 
         # Turn 2: User confirms → Gate 1 closes → case transitions immediately
         # to INVESTIGATING with symptom_verified=False.
@@ -645,7 +643,6 @@ class TestInvestigationLifecycle:
         updated2 = result2["case_updated"]
         assert updated2.state == CaseState.INVESTIGATING
         assert updated2.inquiry.problem_statement_confirmed is True
-        assert updated2.inquiry.decided_to_investigate is True
         assert updated2.progress.symptom_verified is False
 
         # Turn 3: Agent verifies symptom from real evidence.

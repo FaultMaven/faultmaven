@@ -45,7 +45,6 @@ def _resolved_case() -> Case:
         inquiry=InquiryData(
             proposed_problem_statement="checkout-api is OOM-killed",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
     )
     case.root_cause_conclusion = RootCauseConclusion(

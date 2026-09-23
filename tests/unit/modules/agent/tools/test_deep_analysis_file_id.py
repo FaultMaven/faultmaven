@@ -35,7 +35,6 @@ def _case_with_orphan_file() -> Case:
         state=CaseState.INVESTIGATING,
         inquiry=InquiryData(
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
             proposed_problem_statement="Test",
         ),
         evidence=[],

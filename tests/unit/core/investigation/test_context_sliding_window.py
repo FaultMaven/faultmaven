@@ -148,7 +148,6 @@ def _make_case_with_evidence(evidence_list: list) -> Case:
         state=CaseState.INVESTIGATING,
         inquiry=InquiryData(
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
             proposed_problem_statement="Test description",
         ),
         evidence=evidence_list,

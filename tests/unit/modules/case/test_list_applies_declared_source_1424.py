@@ -117,7 +117,6 @@ def _case(
         extra["inquiry"] = InquiryData(
             proposed_problem_statement="seeded problem statement",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         )
     activity = _BASE - timedelta(hours=activity_rank)
     return Case(

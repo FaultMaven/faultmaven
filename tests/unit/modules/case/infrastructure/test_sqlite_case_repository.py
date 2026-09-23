@@ -223,7 +223,6 @@ class TestSaveAndGet:
         inquiry = InquiryData()
         inquiry.proposed_problem_statement = "Latency spike in API"
         inquiry.problem_statement_confirmed = True
-        inquiry.decided_to_investigate = True
         case = Case(
             case_id=f"case_{uuid4().hex[:12]}",
             user_id="user_alpha",
@@ -675,7 +674,6 @@ class TestListAndSearch:
         inq = InquiryData()
         inq.proposed_problem_statement = "X"
         inq.problem_statement_confirmed = True
-        inq.decided_to_investigate = True
         investigating = Case(
             case_id=f"case_{uuid4().hex[:12]}",
             user_id="user_alpha",
@@ -1566,7 +1564,6 @@ def _make_investigating_case_with_action() -> Case:
     inquiry = InquiryData()
     inquiry.proposed_problem_statement = "Latency spike in API"
     inquiry.problem_statement_confirmed = True
-    inquiry.decided_to_investigate = True
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="user_alpha",

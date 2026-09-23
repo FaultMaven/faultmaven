@@ -173,7 +173,6 @@ async def sample_case(case_repository: SQLiteCaseRepository) -> Case:
         inquiry=InquiryData(
             proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
     )
     return await case_repository.save(case)
@@ -313,7 +312,6 @@ async def test_cascade_delete_case_to_sessions(
         inquiry=InquiryData(
             proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
     )
     await case_repository.save(case)
@@ -438,7 +436,6 @@ async def test_list_sessions_by_user_pagination(
             inquiry=InquiryData(
                 proposed_problem_statement="Test problem statement",
                 problem_statement_confirmed=True,
-                decided_to_investigate=True,
             ),
         )
         await case_repository.save(case)

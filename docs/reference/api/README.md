@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 7.2.0
+**Version:** 8.0.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -5736,7 +5736,6 @@ Nested inquiry data for INQUIRY phase response.
 
 **Properties:**
 
-- `decided_to_investigate` (boolean, optional) — Whether agent has enough info to start investigation
 - `inquiry_turns` (integer, optional) — Number of conversation turns during inquiry phase
 - `problem_confirmation` (object, optional) — Problem type and severity guess
 - `problem_statement_confirmed` (boolean, optional) — Whether user confirmed the problem statement

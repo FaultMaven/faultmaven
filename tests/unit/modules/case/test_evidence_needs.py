@@ -536,7 +536,6 @@ class TestRepositoryRoundTrip:
         inquiry = InquiryData()
         inquiry.proposed_problem_statement = "API outage with database errors"
         inquiry.problem_statement_confirmed = True
-        inquiry.decided_to_investigate = True
         case = Case(
             case_id=f"case_{uuid4().hex[:12]}",
             user_id="user_alpha",

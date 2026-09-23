@@ -180,7 +180,6 @@ def sample_case_with_evidence() -> Case:
         inquiry=InquiryData(
             proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
     )
 
@@ -235,7 +234,6 @@ def sample_case_with_hypotheses() -> Case:
         inquiry=InquiryData(
             proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
     )
 
@@ -285,9 +283,8 @@ async def test_full_case_lifecycle(db_repository: SQLiteCaseRepository):
 
     # Step 3: Update case
     case.title = "Updated Lifecycle Test"
-    # INVESTIGATING requires confirmed problem statement and decision - SET BEFORE STATUS CHANGE
+    # INVESTIGATING requires a confirmed problem statement - SET BEFORE STATUS CHANGE
     case.inquiry.problem_statement_confirmed = True
-    case.inquiry.decided_to_investigate = True
     case.inquiry.proposed_problem_statement = "Test problem statement"
     case.state = CaseState.INVESTIGATING
     case.current_turn = 5
@@ -422,7 +419,6 @@ async def test_hypothesis_validation_flow(db_repository: SQLiteCaseRepository):
         inquiry=InquiryData(
             proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
     )
 
@@ -606,7 +602,6 @@ async def test_complex_case_persistence(db_repository: SQLiteCaseRepository):
         inquiry=InquiryData(
             proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
             inquiry_turns=3,
         ),
     )
@@ -663,7 +658,6 @@ async def test_action_history_round_trip(db_repository: SQLiteCaseRepository):
         inquiry=InquiryData(
             proposed_problem_statement="Pinning the audit trail",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
     )
 
@@ -732,7 +726,6 @@ async def test_solution_full_audit_round_trip(
         inquiry=InquiryData(
             proposed_problem_statement="testing solution persistence",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
     )
 
@@ -843,7 +836,6 @@ async def test_evidence_full_audit_round_trip(
         inquiry=InquiryData(
             proposed_problem_statement="testing evidence persistence",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
     )
 

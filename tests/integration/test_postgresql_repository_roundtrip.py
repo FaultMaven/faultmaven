@@ -162,7 +162,6 @@ def _make_case(enterprise_id: str, user_id: str) -> Case:
         inquiry=InquiryData(
             proposed_problem_statement="DB connections time out under load",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
     )
 

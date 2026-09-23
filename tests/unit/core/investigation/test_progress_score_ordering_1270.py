@@ -445,8 +445,6 @@ def _case_awaiting_confirmation(to_state: str, *, needs_info: bool):
     case.inquiry.proposed_problem_statement = "etcd connectivity"
     case.inquiry.problem_statement_confirmed = True
     case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
-    case.inquiry.decided_to_investigate = True
-    case.inquiry.decision_made_at = datetime.now(UTC)
     case.state = CaseState.INVESTIGATING
     case.progress = InvestigationProgress()
     case.current_turn = 7

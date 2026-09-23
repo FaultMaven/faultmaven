@@ -86,7 +86,6 @@ def base_case():
         ),
         inquiry=InquiryData(
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
             thread_id="thread_123",
             proposed_problem_statement="Test symptom",
         ),
@@ -1420,7 +1419,6 @@ class TestReadinessAssessments:
             ),
             "inquiry": InquiryData(
                 problem_statement_confirmed=True,
-                decided_to_investigate=True,
                 proposed_problem_statement="Database queries timing out",
             ),
         }
@@ -1928,7 +1926,6 @@ class TestRunbookSuggestion:
             ),
             inquiry=InquiryData(
                 problem_statement_confirmed=True,
-                decided_to_investigate=True,
                 proposed_problem_statement="Timeout",
             ),
         )
@@ -1993,7 +1990,6 @@ class TestRunbookSuggestion:
             ),
             inquiry=InquiryData(
                 problem_statement_confirmed=True,
-                decided_to_investigate=True,
                 proposed_problem_statement="Timeout",
             ),
         )
@@ -2058,7 +2054,6 @@ class TestRunbookSuggestion:
             ),
             inquiry=InquiryData(
                 problem_statement_confirmed=True,
-                decided_to_investigate=True,
                 proposed_problem_statement="Unknown",
             ),
         )
@@ -2103,7 +2098,6 @@ class TestRunbookSuggestion:
             ),
             inquiry=InquiryData(
                 problem_statement_confirmed=True,
-                decided_to_investigate=True,
                 proposed_problem_statement="Timeout",
             ),
         )
@@ -2165,7 +2159,6 @@ class TestContradictingIntentCancelsPendingTransition:
                 thread_id="thread_123",
                 proposed_problem_statement="API timeout errors",
                 problem_statement_confirmed=True,
-                decided_to_investigate=True,
             ),
         )
 
@@ -2240,7 +2233,6 @@ class TestContradictingIntentCancelsPendingTransition:
             ),
             inquiry=InquiryData(
                 problem_statement_confirmed=True,
-                decided_to_investigate=True,
                 proposed_problem_statement="Test symptom",
             ),
         )
@@ -2395,7 +2387,6 @@ class TestTerminalTransitionPendingActionCleanup:
             ),
             inquiry=InquiryData(
                 problem_statement_confirmed=True,
-                decided_to_investigate=True,
                 proposed_problem_statement="Test symptom",
             ),
         )
@@ -2510,7 +2501,6 @@ class TestNeedsInfoFollowupProposesClose:
             ),
             inquiry=InquiryData(
                 problem_statement_confirmed=True,
-                decided_to_investigate=True,
                 proposed_problem_statement="Issue ongoing",
             ),
         )

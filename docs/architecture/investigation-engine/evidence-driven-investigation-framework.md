@@ -1115,7 +1115,7 @@ stateDiagram-v2
         KBMatch --> KBConfirmed: User confirms<br/>solution works
     }
 
-    INQUIRY --> INVESTIGATING: problem_statement_confirmed<br/>+ decided_to_investigate
+    INQUIRY --> INVESTIGATING: problem_statement_confirmed
     INQUIRY --> INVESTIGATING: KB resolution confirmed<br/>rapid completion — no direct<br/>edge to RESOLVED, INV-04
     INQUIRY --> CLOSED: User closes<br/>without investigation
 

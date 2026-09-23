@@ -44,8 +44,6 @@ def wired(recording_case_repository, recording_milestone_engine, sample_case):
     case = sample_case
     case.inquiry.problem_statement_confirmed = True
     case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
-    case.inquiry.decided_to_investigate = True
-    case.inquiry.decision_made_at = datetime.now(timezone.utc)
     case.state = CaseState.INVESTIGATING
     service = InvestigationService(
         milestone_engine=recording_milestone_engine,
@@ -139,8 +137,6 @@ class TestTheTerminalShortCircuit:
         case = sample_case
         case.inquiry.problem_statement_confirmed = True
         case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
-        case.inquiry.decided_to_investigate = True
-        case.inquiry.decision_made_at = datetime.now(timezone.utc)
         case.state = CaseState.INVESTIGATING
         # A recorded history, so ``effective_current_turn`` reads the tail rather
         # than falling back to ``current_turn`` — without it the projection is a

@@ -1014,19 +1014,6 @@ class InquiryData(BaseModel):
         description="When user confirmed the problem statement"
     )
 
-    # ============================================================
-    # Investigation Decision
-    # ============================================================
-    decided_to_investigate: bool = Field(
-        default=False,
-        description="Whether user committed to formal investigation"
-    )
-
-    decision_made_at: Optional[datetime] = Field(
-        default=None,
-        description="When user decided to investigate (if decided)"
-    )
-
     inquiry_turns: int = Field(
         default=0,
         description="Number of turns spent in inquiry phase"

@@ -50,7 +50,6 @@ def _case() -> Case:
         description="d",
         inquiry=InquiryData(
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
             proposed_problem_statement="p",
         ),
     )

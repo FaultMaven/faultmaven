@@ -37,7 +37,6 @@ def _case(conditions: list[str]) -> Case:
         inquiry=InquiryData(
             proposed_problem_statement="checkout-api crash-loops",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
         problem_verification=ProblemVerification(
             symptom_statement="checkout-api crash-loops after v2.14.0",
