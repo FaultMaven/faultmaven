@@ -976,12 +976,15 @@ if response.status != 200:
     raise LLMException(
         f"Provider API error {response.status}: {error_text}",
         status_code=response.status,  # Determines retryability (4xx=non-retryable, 5xx/429=retryable)
+        provider_error_code=extract_provider_error_code(error_text),
     )
 ```
 
 The `status_code` drives retry behavior in the router: 4xx errors fail fast (non-retryable), 5xx and 429 errors are retried with backoff. Default retryability is `False` (fail-fast) — opt in to retries with `retryable=True` for specific transient errors.
 
-**Include the full provider error body in the message.** `LLMException.__init__` auto-detects **billing/quota exhaustion** (out of credits, billing disabled, hard quota cap — e.g. `insufficient_quota`, HTTP 402) from the message and classifies it as `error_code=QUOTA_EXHAUSTED` (always non-retryable, mapped to HTTP 402 at the API). Because this single chokepoint inspects the message you pass, new providers get correct billing handling for free — you do **not** need to special-case it, as long as you fold the upstream `error_text` into the message above. If a provider exposes an unambiguous structured billing code, you may pass `error_code=QUOTA_EXHAUSTED` explicitly.
+**Pass `provider_error_code`, and include the full error body in the message.** Both, because `LLMException.__init__` reads both. `extract_provider_error_code` handles every published body shape in one place, and the code it returns decides the typed `category` (#509) *and* **billing/quota exhaustion** (#548) — an `insufficient_quota` from an OpenAI-compatible surface, or an Anthropic `billing_error`, is classified as `error_code=QUOTA_EXHAUSTED` (always non-retryable, mapped to HTTP 402 at the API) without anyone reading English. Where a provider publishes no code — and most do not — the same chokepoint falls back to matching the body wording, which is why the upstream `error_text` belongs in the message too. A new provider therefore gets correct billing handling for free; you do **not** need to special-case it, and you should not copy a billing table into your adapter. Pass `error_code=QUOTA_EXHAUSTED` explicitly only for a billing signal that is neither the code nor the wording — something this chokepoint structurally cannot see.
+
+There is one shape with no code to pass: a raise where **no response arrived** (an `asyncio.TimeoutError`, which the adapters type as a synthesized `status_code=504`). There is no body there, so `provider_error_code` is correctly absent — and `tests/unit/infrastructure/llm/test_billing_structured_codes.py` scans every registered provider on exactly that distinction, so a body-reading raise that forgets the code fails the build.
 
 ## Examples of Compatible APIs
 
