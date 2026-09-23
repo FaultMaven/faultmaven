@@ -1938,39 +1938,15 @@ class TestCurrentTurnFloor:
         # At least one degraded to a summary stub (budget can't hold 3 full).
         assert "Full content omitted to fit budget" in result
 
-    def test_current_turn_evidence_full_render_bounded_by_reserve(self):
-        """INV-EC-1b: many current-turn EVIDENCE rows do not all render in full —
-        the full-render exemption is bounded by the reserve, so they can't blow
-        the evidence budget. Beyond the reserve they degrade to Tier-B summaries
-        (still present, not dropped)."""
-        evidence = [
-            _make_evidence(
-                extract="E" * 4000,
-                summary=f"current-turn evidence {i}",
-                collected_at_turn=9,
-                source_file_id=f"file_e0e0e0e0000{i}",
-            )
-            for i in range(5)
-        ]
-        case = _make_case_with_evidence(evidence)
-        case.current_turn = 9
-
-        with patch(
-            "faultmaven.core.investigation.prompts.context_builder."
-            "EVIDENCE_CONTEXT_MAX_TOTAL_CHARS",
-            8000,
-        ):
-            result = _build_evidence_context(case)
-
-        # Not every current-turn evidence renders its full structural index —
-        # bounded by the ~4000-char reserve (else the block would be ~20K+).
-        assert result.count("<file_extract") < 5, (
-            "current-turn evidence must be bounded by the reserve, not all "
-            "rendered full"
-        )
-        # But all 5 are still present (degraded to summary, not dropped).
-        for ev in evidence:
-            assert f'id="{ev.evidence_id}"' in result
+    # INV-EC-1b for EVIDENCE rows had a test here. Its subject — the
+    # "current-turn evidence is exempt from the downgrade while the reserve has
+    # room" carve-out — was deleted as unreachable in #1603 (a file-backed row is
+    # always historical at prompt-build time), so the bound it asserted is no
+    # longer a thing that can be bounded. INV-EC-1b for the items that DO reach
+    # the floor is covered by
+    # ``test_multiple_current_turn_orphans_all_present_under_tight_budget``
+    # above, and the generic Tier-A -> Tier-B downgrade by
+    # ``TestTruncation.test_total_budget_causes_tier_a_downgrade``.
 
 
 # ============================================================
@@ -1981,7 +1957,14 @@ class TestCurrentTurnFloor:
 def test_da_index_stub_elides_historical_extract_keeps_current_turn():
     """In a directed-analysis turn WITH tools available, historical evidence
     renders stub + search_map only (no file_extract body), while the current-turn
-    upload keeps its extract and every file stays addressable."""
+    upload keeps its extract and every file stays addressable.
+
+    The current-turn item is an ``UploadedFile`` with no Evidence row, because
+    that is the only shape the pipeline produces: rows are minted after the model
+    answers, so every Evidence row is historical at prompt-build time. It keeps
+    its extract through the orphan floor, which does not elide — not through a
+    carve-out in the evidence loop, which was deleted as unreachable (#1603).
+    """
     PROVIDER, MODEL = "openai", "gpt-4"
     HIST_ID = "file_aaaa11112222"
     CUR_ID = "file_bbbb33334444"
@@ -1991,14 +1974,20 @@ def test_da_index_stub_elides_historical_extract_keeps_current_turn():
         source_file_id=HIST_ID,
         collected_at_turn=1,
     )
-    cur = _make_evidence(
-        summary="fresh log",
-        extract="CURRENTTURN_EXTRACT_BODY " * 40,
-        source_file_id=CUR_ID,
-        collected_at_turn=5,
-    )
-    case = _make_case_with_evidence([hist, cur])
+    case = _make_case_with_evidence([hist])
     case.current_turn = 5
+    case.uploaded_files.append(
+        UploadedFile(
+            file_id=CUR_ID,
+            filename="fresh.log",
+            size_bytes=128,
+            content_type="text/plain",
+            uploaded_at_turn=5,
+            uploaded_at=datetime.now(UTC),
+            uploaded_by="user_123",
+            structural_index="CURRENTTURN_EXTRACT_BODY " * 40,
+        )
+    )
 
     # DA turn + tools available: historical extract elided (marked + addressable);
     # current-turn extract kept.
@@ -2012,7 +2001,9 @@ def test_da_index_stub_elides_historical_extract_keeps_current_turn():
     assert "HISTORICAL_EXTRACT_BODY" not in on, "historical extract body must be elided"
     assert 'elided="directed_analysis"' in on, "elision must be marked (INV-4)"
     assert HIST_ID in on, "historical file must stay addressable"
-    assert "CURRENTTURN_EXTRACT_BODY" in on, "current-turn extract must be kept"
+    assert (
+        "CURRENTTURN_EXTRACT_BODY" in on
+    ), "current-turn upload must keep its extract (orphan floor, INV-EC-1)"
 
     # Tools NOT available (tool-less / tool-incapable turn): the extract must NOT
     # be elided — the agent has no search_file to recover it, so eliding would

@@ -99,8 +99,11 @@ directed-analysis turn *with tools available*, historical evidence renders as it
 addressable stub + `search_map` only (`_render_orphan_file_block(summary_only=…)`
 and the Tier-A elision), dropping the `file_extract` body with a marked
 `elided="directed_analysis"` note (INV-4). The current-turn upload always keeps its
-full extract (freshness / INV-EC-1), and TRIAGE turns are unchanged (triage answers
-*from* the structural index).
+full extract (freshness / INV-EC-1) — it has no `Evidence` row yet, so it renders
+through the current-turn orphan floor, which does not elide; there is no carve-out
+in the evidence tiers, and the one that used to sit there was unreachable and was
+deleted in #1603. TRIAGE turns are unchanged (triage answers *from* the structural
+index).
 
 **Gated on tool-availability, not a flag.** The elision is only sound when
 `search_file` will actually run — otherwise a tool-less / tool-incapable turn is
