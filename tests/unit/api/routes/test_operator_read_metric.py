@@ -32,12 +32,12 @@ from faultmaven.api.operator_audit import get_operator_audit_repository
 from faultmaven.api.operator_grants import get_operator_grant_repository
 from faultmaven.api.routes import admin_cases
 from faultmaven.api.routes.admin_cases import get_case_service, router
+from faultmaven.models.api_models import CaseMessagesResponse
+from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.auth.infrastructure.metrics import (
     OPERATOR_READ_DEPLOYMENTS,
     OPERATOR_READ_SURFACES,
 )
-from faultmaven.models.api_models import CaseMessagesResponse
-from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.case.domain.models import Case, CaseState
 
 CASE_ID = "case_a1b2c3d4e5f6"
