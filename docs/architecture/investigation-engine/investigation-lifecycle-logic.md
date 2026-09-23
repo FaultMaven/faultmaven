@@ -320,7 +320,7 @@ Step 1 has four openers, and the fourth is the engine's own. Three of them are
 | Opener | Fires when |
 |---|---|
 | The model's `proposed_transition` | COMPLETION's co-emit rule: the fix is verified and the model emits the transition beside its backing `causal_absence_evidence` row |
-| The user | Natural language ("mark this resolved", "the fix worked"). NOT the status menu — RESOLVED is not user-selectable, and a `status_transition` request for it is refused at the service boundary and again in the engine |
+| The user, *through the model* | Natural language ("mark this resolved", "the fix worked") reaches the state machine only by the model emitting `proposed_transition` — so this is not a fourth mechanism, it is opener 1 with a different trigger. There is no NL detector: `IntentResolver` matches typed text against suggestions already on screen, and with nothing standing it has nothing to match. NOT the status menu either — RESOLVED is not user-selectable, and a `status_transition` request for it is refused at the service boundary and again in the engine |
 | `_maybe_propose_deferred_close` | `solution_feasible == DEFERRED` — and on a confirmed case its SUGGEST_RESOLVE pivot offers RESOLVED rather than CLOSED |
 | `_maybe_propose_confirmed_resolution` | **Backstop.** The case is resolution-READY and none of the above opened the handshake |
 

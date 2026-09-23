@@ -222,11 +222,18 @@ class CaseAction(BaseModel):
 
 #: Every edge the state machine PERMITS. Distinct from what a user may pick
 #: from the UI — see ``USER_SELECTABLE_ACTIONS`` in ``case_action_manager``,
-#: which is a strict subset. INQUIRY → INVESTIGATING is the edge where the two
-#: differ: it is legal, and the Gate 1 handshake performs it, but it is not a
-#: user action. It is earned by the case having a confirmed problem statement
-#: (the DB CHECK ``cases_description_required_for_investigation`` makes that
-#: structural), so a menu cannot honour it on demand.
+#: which is a strict subset. TWO edges are where the two graphs differ, and
+#: both differ for the same reason: a menu cannot honour an edge whose
+#: precondition is a fact about the case.
+#:
+#: INQUIRY → INVESTIGATING is legal and the Gate 1 handshake performs it, but
+#: it is earned by a confirmed problem statement (the DB CHECK
+#: ``cases_description_required_for_investigation`` makes that structural).
+#:
+#: INVESTIGATING → RESOLVED is legal and the disposition handshake performs it,
+#: but it is earned by a qualifying ``causal_absence_evidence`` row — the cause
+#: confirmed eliminated — which the engine reads for itself and offers on
+#: (INV-43).
 #:
 #: v3: INQUIRY → RESOLVED removed. KB-resolution flows through INVESTIGATING via
 #: the milestone collapse — state authored in one turn, disposition still

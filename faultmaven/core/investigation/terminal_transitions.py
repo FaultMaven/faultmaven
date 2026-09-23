@@ -614,13 +614,12 @@ def derive_disposition_eligibility(case: "Case") -> dict[str, str]:
     labels — keep it in sync with ``assess_resolution_readiness`` and
     ``assess_closure_readiness`` outputs.
 
-    Each eligibility value carries a single, disposition-independent
-    semantic (see module-level constant docs above) so the frontend
-    can render copy / icon / tooltip per value without having to
-    branch on which disposition column it's looking at. ``needs_info``
-    means "add data"; ``suggests_alternative`` means "consider the
-    other action". The two are deliberately distinct because they
-    drive different UX patterns.
+    ‼ The two keys answer for DIFFERENT audiences — see the constants block
+    above, which is authoritative. ``closed`` gates a user CONTROL.
+    ``resolved`` gates nothing in the UI: RESOLVED left the status menu, so it
+    is the engine's own readiness verdict and what it decides is whether the
+    agent OFFERS the resolution handshake. A client that reads the two the same
+    way renders a control that cannot do what it says.
 
     Semantics by current state:
 
@@ -628,14 +627,15 @@ def derive_disposition_eligibility(case: "Case") -> dict[str, str]:
       (resolution requires investigation work). Returns
       ``{"resolved": "not_eligible", "closed": "ready"}``.
 
-    - INVESTIGATING: both edges are valid. Resolved eligibility derives
-      from ``assess_resolution_readiness`` (READY → ready,
-      NEEDS_INFO → needs_info, SUGGEST_CLOSE → not_eligible).
-      Closed eligibility is ``ready`` by default; if
-      ``assess_closure_readiness`` returns SUGGEST_RESOLVE (case has
-      root cause + solution), closed → ``suggests_alternative`` so
-      the frontend can warn the user that resolving would preserve
-      attribution.
+    - INVESTIGATING: only CLOSED is user-selectable. Resolved eligibility
+      derives from ``assess_resolution_readiness`` (READY → ready,
+      NEEDS_INFO → needs_info, SUGGEST_CLOSE → not_eligible) and drives the
+      engine's own handshake rather than a control. Closed eligibility is
+      ``ready`` by default; if ``assess_closure_readiness`` returns
+      SUGGEST_RESOLVE, closed → ``suggests_alternative``, which means DO NOT
+      RENDER: that verdict holds exactly when a qualifying absence row is on
+      the case, which is exactly when INV-37 pivots every close back to a
+      resolve proposal.
 
     - Terminal (RESOLVED / CLOSED): no further actions. Returns all
       ``not_eligible``.
