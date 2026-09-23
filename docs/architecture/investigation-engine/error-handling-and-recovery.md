@@ -90,6 +90,34 @@ This document defines error handling and recovery strategies for the FaultMaven 
 
 **Strategy**: Fail fast, **never retry**, surface an operator-actionable message. This is a *permanent* condition distinct from transient rate-limiting — waiting cannot add credits, so retrying only burns time and trips the circuit breaker. The error is classified with a stable `error_code` of `QUOTA_EXHAUSTED` that propagates through every layer (provider → circuit breaker → error handler → engine → API → UI), so the user is told to add credits rather than "try again". At the API boundary it maps to **HTTP 402 Payment Required** (`x-error-code: QUOTA_EXHAUSTED`, no `Retry-After`).
 
+**How it is detected — three tiers, most authoritative first** (`is_billing_quota_error`, #548):
+
+| Tier | Signal | Who it covers |
+|---|---|---|
+| 1 | The provider's machine-readable error code, where it means billing and nothing else (`_BILLING_PROVIDER_ERROR_CODES`) | OpenAI `insufficient_quota` (and OpenRouter, which subclasses it); Anthropic `billing_error` |
+| 2 | HTTP **402 Payment Required** | OpenRouter and HuggingFace, whose credit exhaustion *is* the status |
+| 3 | English markers in the body (`_BILLING_ERROR_MARKERS`) — the **fallback** | Everyone else, Gemini's billing-disabled 403 included |
+
+Tier 1 is the one added by #548, and it costs no new per-provider plumbing:
+every adapter already reads its own body shape once through
+`extract_provider_error_code` and hands the result to
+`LLMException(provider_error_code=...)`, where it decided the `category` and
+was ignored for billing. Reading it here is what stops billing classification
+depending on nine providers' English, which a rewording or a localization can
+change without notice — the `case_b639fac38fe0` regression.
+
+Tier 3 stays, and is still load-bearing: **seven of the nine providers publish
+no structured billing code**. Cohere sends a bare `{"message": …}`, HuggingFace
+a bare string, Groq/Fireworks an OpenAI-compatible envelope with no
+billing-specific code of their own, and Local has no billing at all. Gemini —
+the shipped default — publishes only `RESOURCE_EXHAUSTED`, which it reuses for
+a transient per-minute limit, and `PERMISSION_DENIED`, which it reuses for a
+mis-scoped key; the unambiguous fact lives in `error.details[].reason ==
+"BILLING_DISABLED"`, deeper than the shared extractor reaches. Admitting either
+would make every Gemini rate limit permanent — the inverse of the incident — so
+Gemini rides the marker tier, where "billing has not been enabled" classifies
+it today.
+
 ---
 
 ## 2. LLM Error Handling
@@ -102,12 +130,16 @@ LLM errors carry retryability information via `LLMException`:
 from faultmaven.exceptions import LLMException
 
 class LLMException(FaultMavenException):
-    def __init__(self, message, status_code=None, retryable=None, error_code=None):
+    def __init__(self, message, status_code=None, retryable=None, error_code=None,
+                 provider_error_code=None):
         self.status_code = status_code
-        # Auto-classify permanent billing/quota exhaustion from the provider
-        # body (single chokepoint — every provider folds the upstream body into
-        # the message). See is_billing_quota_error().
-        if error_code is None and is_billing_quota_error(message, status_code):
+        # Auto-classify permanent billing/quota exhaustion at a single
+        # chokepoint: off the provider's machine-readable code where it
+        # publishes one, off the body wording where it does not (every provider
+        # folds the upstream body into the message). See is_billing_quota_error().
+        if error_code is None and is_billing_quota_error(
+            message, status_code, provider_error_code
+        ):
             error_code = QUOTA_EXHAUSTED
         self.error_code = error_code
         # Retryability: billing (permanent) > explicit > status_code > default.

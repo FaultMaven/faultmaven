@@ -471,6 +471,15 @@ def declared_llm_category(error: BaseException) -> Optional[LLMErrorCategory]:
 # from transient 429 rate-limiting, which IS retryable once the window resets.
 # Matched case-insensitively against the full LLMException message (every
 # provider includes the upstream response body in the message it raises).
+#
+# This is the FALLBACK tier, not the primary one (#548): a structured billing
+# code, where the provider publishes one, is read first from
+# ``_BILLING_PROVIDER_ERROR_CODES`` below. The markers stay because most
+# providers publish nothing structured — Cohere sends a bare message,
+# HuggingFace a bare string, and Gemini's only machine signal for a
+# billing-disabled 403 is the same ``PERMISSION_DENIED`` a mis-scoped key
+# gets. Narrowing this list to "what the code tier misses" would shrink
+# detection for seven of the nine providers.
 _BILLING_ERROR_MARKERS: tuple = (
     "insufficient_quota",
     "exceeded your current quota",
@@ -484,19 +493,92 @@ _BILLING_ERROR_MARKERS: tuple = (
     "out of credits",
     "insufficient credits",
     "insufficient_funds",
+    # Anthropic's COARSE billing body, whose ``error.type`` is the
+    # undifferentiated ``invalid_request_error`` rather than the union member
+    # below: "Your credit balance is too low to access the Anthropic API."
+    # None of the markers above match it. Narrow on purpose — the whole clause,
+    # not a bare "credit balance", which a non-error sentence could carry.
+    "credit balance is too low",
 )
 
 
-def is_billing_quota_error(message: str, status_code: Optional[int] = None) -> bool:
+# Machine-readable provider error codes that mean PERMANENT billing/quota
+# exhaustion AND NOTHING ELSE (#548). This is the authoritative tier for
+# billing — the counterpart, on the ``error_code`` axis, of
+# ``_PROVIDER_ERROR_CODE_CATEGORIES`` above.
+#
+# It costs no new per-provider plumbing because the per-provider part is
+# already done: every adapter reads its own body shape once through
+# ``providers.base.extract_provider_error_code`` and hands the result to
+# ``LLMException(provider_error_code=...)``. Until this tier existed that code
+# decided the *category* and was ignored for billing, so billing classification
+# depended entirely on a provider's ENGLISH — the marker list above — for every
+# status but 402. A provider rewording its message, or localizing it, silently
+# regressed the case_b639fac38fe0 failure.
+#
+# Matched by EXACT VALUE against the extracted code, never as a substring of a
+# message, so an identifier or a sentence that merely contains one of these
+# words cannot fire it.
+#
+# Admission bar: the code must mean billing exhaustion and nothing else.
+# Deliberately absent, each for a reason:
+#   * ``resource_exhausted`` — Gemini returns it for BOTH a transient
+#     per-minute rate limit and a hard quota cap. Mapping it would make every
+#     Gemini rate limit permanent, the exact inverse of the incident.
+#   * ``permission_denied`` — Gemini's billing-disabled 403 carries it, but so
+#     does a key that merely lacks access to the API. The unambiguous fact is
+#     nested in ``error.details[].reason == "BILLING_DISABLED"``, deeper than
+#     the shared extractor reaches, so Gemini stays on the marker tier where
+#     "billing has not been enabled" already classifies it.
+#   * ``rate_limit_exceeded``, ``invalid_request_error``, ``api_error`` — the
+#     coarse families. Each covers billing AND not-billing.
+_BILLING_PROVIDER_ERROR_CODES: frozenset = frozenset(
+    {
+        # OpenAI: both ``error.code`` and ``error.type`` on the quota 429.
+        # Inherited unchanged by OpenRouter (which subclasses OpenAIProvider)
+        # and by any OpenAI-compatible surface that copies the envelope.
+        "insufficient_quota",
+        # Anthropic: ``error.type``, a member of the error discriminated union
+        # in the installed SDK — ``anthropic.types.BetaBillingError`` declares
+        # ``type: Literal["billing_error"]``, distinct from
+        # ``rate_limit_error``. Its prose names a credit balance, which matched
+        # no marker before, so this failure was invisible to BOTH tiers.
+        "billing_error",
+    }
+)
+
+
+def is_billing_quota_error(
+    message: str,
+    status_code: Optional[int] = None,
+    provider_error_code: Optional[str] = None,
+) -> bool:
     """Detect a permanent billing/quota-exhaustion error from a provider.
 
     Returns True for account-level billing failures (out of credits, billing
     disabled, hard quota cap) that an operator must resolve — NOT for transient
-    rate-limiting. HTTP 402 Payment Required is always treated as billing. For
-    other statuses (notably 429, which providers reuse for both transient rate
-    limits AND quota exhaustion), classification keys on explicit billing markers
-    in the body so a plain rate-limit stays retryable.
+    rate-limiting.
+
+    Three tiers, most authoritative first (#548):
+
+    1. The provider's own machine-readable error code, where it publishes one
+       narrow enough to mean billing and nothing else
+       (``_BILLING_PROVIDER_ERROR_CODES``). A code is part of a provider's API
+       contract in a way a sentence is not: it survives rewording and
+       localization, which the marker tier does not.
+    2. HTTP 402 Payment Required, whose only meaning is this one.
+    3. English markers in the body (``_BILLING_ERROR_MARKERS``) — the
+       FALLBACK, and still load-bearing: of the nine providers only two publish
+       a structured billing code, and Gemini — the shipped default — is one of
+       the seven that do not.
+
+    The tiers only ever ADD. Nothing here can veto a marker match, because a
+    provider whose code tier says nothing is exactly the provider the markers
+    exist for.
     """
+    code = (provider_error_code or "").strip().lower()
+    if code in _BILLING_PROVIDER_ERROR_CODES:
+        return True
     if status_code == 402:
         return True
     text = (message or "").lower()
@@ -526,14 +608,18 @@ class LLMException(FaultMavenException):
     Attributes:
         status_code: HTTP status code from the provider API (if applicable).
         error_code: Stable classification of the failure when one applies (e.g.
-            ``QUOTA_EXHAUSTED`` for billing/quota exhaustion). Auto-detected from
-            the message/status when not passed explicitly. ``None`` for ordinary
+            ``QUOTA_EXHAUSTED`` for billing/quota exhaustion). Auto-detected
+            from ``provider_error_code`` first, then the status, then the
+            message, when not passed explicitly. ``None`` for ordinary
             transient/config errors.
         provider_error_code: The machine-readable code the provider put in its
             error body (OpenAI ``context_length_exceeded``, Anthropic
             ``overloaded_error``, Gemini ``RESOURCE_EXHAUSTED``). Providers
             extract it with
             ``infrastructure.llm.providers.base.extract_provider_error_code``.
+            Read on BOTH classification axes: ``classify_llm_error`` turns it
+            into a ``category``, and ``is_billing_quota_error`` reads it for
+            billing exhaustion (#548).
         category: ``LLMErrorCategory`` — WHAT KIND of failure this is (#509).
             Derived from ``status_code`` + ``provider_error_code`` + the
             provider's wording unless the raiser passes one. Always set; never
@@ -569,9 +655,13 @@ class LLMException(FaultMavenException):
         self.provider_error_code = provider_error_code
 
         # Auto-classify permanent billing/quota exhaustion from the provider
-        # body. Every provider folds the upstream error text into the message,
-        # so this single chokepoint classifies all of them.
-        if error_code is None and is_billing_quota_error(message, status_code):
+        # body. Every provider folds the upstream error text into the message
+        # and hands over the machine-readable code it extracted from that same
+        # body, so this single chokepoint classifies all of them — off the code
+        # where one exists, off the wording where it does not (#548).
+        if error_code is None and is_billing_quota_error(
+            message, status_code, provider_error_code
+        ):
             error_code = QUOTA_EXHAUSTED
         # A rejected credential is the other account-scoped permanent failure.
         # Classified from the status code alone: 401/403 mean the key is invalid,
