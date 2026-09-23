@@ -3169,6 +3169,32 @@ class InvestigationService:
                 {"field": "to_state", "value": to_state},
             )
 
+        # RESOLVED is not a user-selectable case action either, for the same
+        # reason one tier down the lifecycle: it is earned by a qualifying
+        # ``causal_absence_evidence`` row — the cause confirmed eliminated —
+        # and the engine offers the handshake when it sees the case reach that
+        # bar (INV-43), or when the user says so in conversation and the model
+        # routes it. Refused at the SAME boundary and for the same two reasons
+        # the INVESTIGATING refusal above states: a 422 rather than a 500 +
+        # ``Retry-After``, and no state touched before the refusal.
+        #
+        # What this closes, beyond the doctrine: the handler behind this
+        # request ran the readiness check AFTER the pick and then argued with
+        # it — proposing, pivoting to close, or asking for what was missing —
+        # and one of its arms confirmed a standing ``needs_info`` proposal
+        # without re-reading readiness at all, executing RESOLVED on a case
+        # carrying no qualifying row. Deciding whether to OFFER removes the
+        # argument and the arm together.
+        if to_state == CaseState.RESOLVED.value:
+            raise ValidationException(
+                "RESOLVED is not a user-selectable case action. It is reached "
+                "by confirming the resolution the agent proposes once the root "
+                "cause is confirmed eliminated, not by requesting the state. "
+                "Tell the agent the issue is resolved and it will check, then "
+                "either propose the transition or ask for what is missing.",
+                {"field": "to_state", "value": to_state},
+            )
+
         # Delegate to milestone engine with structured intent
         result = await self.engine.process_turn(
             case=case,

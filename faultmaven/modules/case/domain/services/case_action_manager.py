@@ -6,20 +6,31 @@ Terminology (see Investigation Terminology Guide):
 - Case Action: Any phase transition or disposition change
 
 Design Principle:
-- Case actions are user requests to agent (not special logic)
-- Case actions trigger agent messages
 - Dispositions (RESOLVED, CLOSED) are terminal — no further actions allowed
+- The menu carries only the UNCONDITIONAL decision; everything conditional is
+  earned from case content and offered by the engine through a handshake
 
-User-selectable case actions (all dispositions):
-    INQUIRY ─────────────────────────────────┬──────► CLOSED (disposition)
-                                             │
-    INVESTIGATING ─────┬──────► RESOLVED ────┘
-                       │
-                       └──────► CLOSED
+User-selectable case actions:
+    INQUIRY ───────────────► CLOSED
+    INVESTIGATING ─────────► CLOSED
 
-INQUIRY → INVESTIGATING is a legal edge but NOT a user action: it is earned by
-a confirmed problem statement and performed by the Gate 1 handshake. The full
-legality graph is ``LEGAL_TRANSITIONS`` in ``modules/case/domain/models.py``.
+Two legal edges are deliberately absent, for one reason: a menu cannot honour
+an edge whose precondition is a fact about the case.
+
+- INQUIRY → INVESTIGATING is earned by a confirmed problem statement and
+  performed by the Gate 1 handshake (#1608).
+- INVESTIGATING → RESOLVED is earned by a confirmed root-cause elimination —
+  a qualifying ``causal_absence_evidence`` row — and offered by the engine
+  when it sees the case reach it (INV-43), or when the user says so in
+  conversation. The readiness check that used to run AFTER the user picked
+  "Mark as resolved" now decides whether the offer is made at all.
+
+CLOSED stays selectable from both phases because closing is the one decision
+that needs no precondition: it is always honourable, and the user is the only
+one who can make it.
+
+The full legality graph is ``LEGAL_TRANSITIONS`` in
+``modules/case/domain/models.py``.
 """
 
 from datetime import datetime, timezone
@@ -34,21 +45,36 @@ from faultmaven.utils.serialization import to_json_compatible
 #: permits — the two are different questions and this module answers only the
 #: second one.
 #:
-#: Every entry here is a DISPOSITION: a user decision carrying information the
-#: engine cannot derive. Closing is the user's call and is always honourable;
-#: "mark resolved" may be true of a fix applied outside the product entirely,
-#: and where the case cannot support it ``assess_resolution_readiness`` pivots
-#: to close with a readiness message rather than refusing.
+#: The one entry per phase is CLOSED, and that is the whole rule: a menu may
+#: offer only what needs no precondition. Closing is always honourable — the
+#: user is the only one who can decide to stop, and no case content can make
+#: that decision wrong.
 #:
-#: INQUIRY → INVESTIGATING is deliberately ABSENT, though it is legal. It is a
-#: phase transition, not a disposition: it is earned by the case carrying a
-#: confirmed problem statement, which the DB CHECK
-#: ``cases_description_required_for_investigation`` makes structural. Offering
-#: it in a menu promised something the engine could not honour on demand — and
-#: the handler never transitioned anyway, it injected a synthetic user message
-#: and fell through to the LLM. The user asks for an investigation the way the
-#: design always had them ask: by saying so (see §1.2's natural flow), or by
-#: the agent proposing one. Gate 1 then performs the edge.
+#: TWO legal edges are deliberately ABSENT, for the same reason.
+#:
+#: INQUIRY → INVESTIGATING (#1608) is earned by a confirmed problem statement,
+#: which the DB CHECK ``cases_description_required_for_investigation`` makes
+#: structural. Offering it promised something the engine could not honour on
+#: demand — and the handler never transitioned anyway, it injected a synthetic
+#: user message and fell through to the LLM. Gate 1 performs the edge.
+#:
+#: INVESTIGATING → RESOLVED is earned by a qualifying ``causal_absence_evidence``
+#: row — the cause confirmed eliminated, ``assess_resolution_readiness`` READY.
+#: It was listed here until the engine learned to see that bar for itself
+#: (INV-43), and the listing was never the gate people took it for: this dict
+#: is consulted with no case content whatsoever, so ``valid_next_states``
+#: advertised ``resolved`` on EVERY investigating case, including ones the
+#: readiness gate would have refused. What made the menu look gated was one
+#: client reconciling it against ``disposition_eligibility`` — a convention, not
+#: a rule, and one the legacy fallback did not follow. The check now decides
+#: whether the offer is made at all rather than arguing with a pick already
+#: made, which also retires the branch that could confirm a ``needs_info``
+#: proposal without re-reading readiness.
+#:
+#: A user who believes the case is resolved says so; the engine checks, then
+#: either proposes the handshake or asks for what is missing. Exactly the shape
+#: Gate 1 already had.
+#:
 #: Frozen for the same reason as ``LEGAL_TRANSITIONS``: a module-level dict of
 #: lists is writable by any importer, and this one drives a user-facing menu.
 USER_SELECTABLE_ACTIONS: Mapping[CaseState, tuple[CaseState, ...]] = MappingProxyType(
@@ -57,7 +83,6 @@ USER_SELECTABLE_ACTIONS: Mapping[CaseState, tuple[CaseState, ...]] = MappingProx
             CaseState.CLOSED,  # Disposition: "Close without investigating"
         ),
         CaseState.INVESTIGATING: (
-            CaseState.RESOLVED,  # Disposition: "Mark as resolved"
             CaseState.CLOSED,  # Disposition: "Close as unresolved"
         ),
         # Dispositions — terminal, no further actions allowed
@@ -67,51 +92,21 @@ USER_SELECTABLE_ACTIONS: Mapping[CaseState, tuple[CaseState, ...]] = MappingProx
 )
 
 
-# Map: (old_state, new_state) → agent message
-# These messages are sent to agent as if user typed them
-CASE_ACTION_MESSAGES = {
-    # Disposition: INQUIRY → CLOSED
-    (
-        CaseState.INQUIRY,
-        CaseState.CLOSED,
-    ): "Close this case. I don't need further investigation.",
-    # Disposition: INVESTIGATING → RESOLVED
-    (
-        CaseState.INVESTIGATING,
-        CaseState.RESOLVED,
-    ): "The issue is resolved. Generate final documentation with root cause and solution.",
-    # Disposition: INVESTIGATING → CLOSED
-    (
-        CaseState.INVESTIGATING,
-        CaseState.CLOSED,
-    ): "Close this case as unresolved. Summarize what we found so far.",
-}
-
-# Backward compatibility alias
-
-
 class CaseActionManager:
     """
     Manages case actions (phase transitions and dispositions).
 
-    Design: Case actions trigger agent messages (no special logic).
+    Design: a case action is a user request the engine answers with a
+    proposal, never a command it executes. The synthetic
+    ``CASE_ACTION_MESSAGES`` a pick used to be turned into went with the
+    resolve branch that was its only reader — a disposition the user picks
+    says what they want, and the engine composes the reply itself.
     """
 
     @staticmethod
     def is_terminal_state(state: CaseState) -> bool:
         """Check if state is a disposition (terminal, cannot be changed)."""
         return state in [CaseState.RESOLVED, CaseState.CLOSED]
-
-    @staticmethod
-    def get_agent_message(
-        old_status: CaseState, new_status: CaseState
-    ) -> Optional[str]:
-        """
-        Get agent message for a case action.
-
-        This message is sent to agent as if user typed it.
-        """
-        return CASE_ACTION_MESSAGES.get((old_status, new_status))
 
     @staticmethod
     def build_action_record(

@@ -289,17 +289,20 @@ class TestWithdrawalRecordsTheEngineOffer:
 
     @pytest.mark.asyncio
     async def test_contradicting_status_pick_records_the_refusal(self):
-        """Picking a different disposition while a close offer stands is a
-        refusal of that offer.
+        """Picking a different disposition while an offer stands is a refusal
+        of that offer.
 
-        Was "pick Investigating", which is no longer a user action at all
-        (#1608) and is now refused before any state is touched — deliberately,
-        because clicking a button that no longer exists is not a considered
-        refusal of the close. "Mark as resolved" is the contradiction that
-        still exists, and it carries the same meaning.
+        The shape has moved twice, because the menu keeps shedding entries.
+        Originally "pick Investigating" (gone with #1608); then a standing
+        CLOSE contradicted by "Mark as resolved" (gone with the resolve entry).
+        What survives is the mirror image: a standing RESOLVE — which only the
+        engine or the model can open now — contradicted by the one pick the
+        menu still offers.
         """
         engine = _engine()
-        case = self._engine_proposed_case()
+        case = self._engine_proposed_case(signature="suggest_resolve|1|chain")
+        case.pending_transition["to_state"] = "resolved"
+        case.pending_transition.pop("closure_reason", None)
 
         # A disposition pick is handled deterministically — it does not reach
         # the LLM seam, so there is no sentinel to catch here.
@@ -307,18 +310,17 @@ class TestWithdrawalRecordsTheEngineOffer:
             case=case,
             user_message="",
             intent_type="status_transition",
-            intent_data={"to_state": "resolved"},
+            intent_data={"to_state": "closed"},
         )
 
         # The subject: the refusal is RECORDED, so the engine cannot re-fire
-        # the same deferred close from state the user just contradicted.
+        # the same offer from state the user just contradicted.
         #
-        # Deliberately not asserting what now occupies ``pending_transition``.
-        # On a thin case INV-37's SUGGEST_CLOSE pivot turns the resolve request
-        # back into a close offer of its own, so the slot is filled either way;
-        # the signature is what stops the re-nag.
+        # Deliberately not asserting what now occupies ``pending_transition``:
+        # the close pick is itself a proposal, so the slot is filled either
+        # way; the signature is what stops the re-nag.
         assert case.progress.deferred_disposition_declined_signatures == [
-            "SUGGEST_CLOSE|1|chain"
+            "suggest_resolve|1|chain"
         ]
 
     @pytest.mark.asyncio
