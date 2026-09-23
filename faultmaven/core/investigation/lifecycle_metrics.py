@@ -526,6 +526,28 @@ close_pivoted_to_resolve_total = Counter(
     "preservation / INV-37). One increment per confirm-time pivot.",
 )
 
+# INV-43 resolution-offer telemetry. The RESOLVED handshake had exactly three
+# openers — the LLM's ``proposed_transition``, the user's own request, and the
+# DEFERRED-feasibility proposer — so a case carrying a QUALIFYING
+# ``causal_absence_evidence`` row (``assess_resolution_readiness`` = READY)
+# could sit in INVESTIGATING indefinitely whenever the model recorded the
+# confirmation and omitted the transition the prompt tells it to co-emit. The
+# engine now opens the handshake itself; this counter is what makes that
+# opening visible, the way ``gate1`` is visible on the affordance counter.
+#
+# Healthy-system expectation: a LOW but non-zero rate. Every increment is a
+# turn where prompt compliance alone would have stranded a resolution-ready
+# case, so a RISING trend is a model-compliance signal (the co-emit rule in
+# COMPLETION weakening), not a fault in this proposer. A sustained ZERO
+# alongside non-zero resolutions means the model is co-emitting as instructed —
+# the backstop is idle, which is the intended steady state.
+engine_proposed_resolution_total = Counter(
+    "faultmaven_engine_proposed_resolution_total",
+    "The engine opened the RESOLVED handshake on a resolution-READY case that "
+    "no other opener had proposed (INV-43). One increment per proposal; the "
+    "user still confirms, so this never counts a committed transition.",
+)
+
 # DF-6 provider-floor telemetry (§5.2, INV-39). ``work_gate_passed`` is the
 # documented "observability primitive for the per-provider gate-crossing
 # metric": whether a configured provider gets real diagnostic work across the

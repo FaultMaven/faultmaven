@@ -312,6 +312,43 @@ user must explicitly confirm before the case action executes.
 4. Next turn: user confirms → system ensures milestone ordering (`solution_proposed` → `solution_accepted` → `solution_verified`) and transitions
 5. If user declines → `pending_transition` cleared, investigation continues
 
+**WHO OPENS THE HANDSHAKE (INV-43)**:
+
+Step 1 has four openers, and the fourth is the engine's own. Three of them are
+*someone asking*:
+
+| Opener | Fires when |
+|---|---|
+| The model's `proposed_transition` | COMPLETION's co-emit rule: the fix is verified and the model emits the transition beside its backing `causal_absence_evidence` row |
+| The user | The status menu (`disposition_eligibility.resolved == "ready"`) or natural language ("mark this resolved") |
+| `_maybe_propose_deferred_close` | `solution_feasible == DEFERRED` — and on a confirmed case its SUGGEST_RESOLVE pivot offers RESOLVED rather than CLOSED |
+| `_maybe_propose_confirmed_resolution` | **Backstop.** The case is resolution-READY and none of the above opened the handshake |
+
+The backstop exists because prompt compliance is not a correctness mechanism —
+the same reasoning that made Gate 1's presentation engine-owned in #1607. A
+model that records the confirmation row and omits the transition leaves the case
+READY, eligible, and un-offered; stalled, it then reaches the mid-investigation
+correctives and is asked to restate a problem it has already confirmed resolved.
+
+It is a backstop and not a fourth proposer by three rules:
+
+- **Last.** It runs at step 4c of `_process_turn_impl`, after
+  `_check_automatic_transitions`, and bails on any `pending_transition` an
+  earlier opener left standing.
+- **Same bar.** Its trigger is `assess_resolution_readiness` READY — a
+  qualifying `causal_absence_evidence` row — not a looser reading of "looks
+  finished". A stabilized case (symptom relieved, cause persists) and the
+  engine's own M6 failed-fix rows do not trip it.
+- **Silent inside a handshake.** A turn that *began* with a standing
+  disposition offer is the user's to answer, even where a branch withdrew that
+  offer mid-turn. Opening a different target into that channel is how a "yes"
+  meant for the offer on screen lands on the one substituted underneath it.
+
+A decline postpones it rather than counting against it: the refusal is recorded
+against the `deferred_disposition_signature` that justified the offer, in the
+same space the deferred proposer uses, so declining either silences both until a
+premise moves (fm#1122).
+
 **MULTIPLE SOLUTIONS HANDLING**:
 
 If multiple solutions exist, the agent proposes resolution when AT LEAST ONE
