@@ -8,6 +8,12 @@ This module provides exception handlers for:
 - ValidationException → 422 Unprocessable Entity
 - ConflictError → 409 Conflict
 - ServiceError → 500 Internal Server Error
+- ServiceException / LLMException → 402 when billing is declared by type on
+  the cause chain; the precise LLM-failure status
+  (``llm_service_error_http_exception``) when an ``LLMException`` is on the
+  chain; otherwise a static 500 ``SERVICE_ERROR`` — so a route that forgets
+  the mapping does not answer a bare 500, and a non-LLM failure is not
+  relabelled as the AI provider's (#552)
 - OAuthProtocolError → the RFC 6749 §5.2 body, at the status it carries
 - HTTPException → `{"detail": "<text>"}`, with the text coerced so a detail
   the encoder cannot render answers its own status instead of crashing the
@@ -54,6 +60,7 @@ from faultmaven.exceptions import (
     LLMException,
     NotFoundError,
     ServiceError,
+    ServiceException,
     ValidationException,
     is_billing_error,
     walk_cause_chain,
@@ -74,14 +81,49 @@ QUOTA_EXHAUSTED_DETAIL = (
 
 
 def is_quota_exhausted_service_error(exc: BaseException) -> bool:
-    """True if ``exc`` carries the ``QUOTA_EXHAUSTED`` error_code in its details.
+    """True if ``QUOTA_EXHAUSTED`` is declared anywhere on ``exc``'s cause chain.
 
     The signal a ServiceException carries when an LLM-calling service hits
     billing/quota exhaustion. Shared by every route's ``except ServiceException``
     block so billing is detected identically (→ 402) instead of each handler
     re-implementing the lookup.
+
+    Reads the whole ``__cause__`` chain, as a ``details["error_code"]`` or as
+    an ``error_code`` attribute, rather than the wrapper's own ``details``
+    alone (#552). The typed code lives on the ``LLMException`` the provider
+    raised; a service that wraps it with ``raise ServiceException(...) from e``
+    and does not copy the code into ``details`` used to lose the billing signal
+    at this predicate and answer 500. Reading the chain is what makes the copy
+    unnecessary — the wrap preserves it by linking, and
+    ``test_service_exception_global_handler`` pins that every in-``except``
+    ``ServiceException`` wrap links.
+
+    Deliberately narrower than ``exceptions.is_billing_error``: no English
+    marker fallback, so a non-LLM message that happens to contain "billing
+    details" is not read as a billing failure here.
     """
-    return (getattr(exc, "details", None) or {}).get("error_code") == QUOTA_EXHAUSTED
+    for cursor in walk_cause_chain(exc):
+        if _details_error_code(cursor) == QUOTA_EXHAUSTED:
+            return True
+        if getattr(cursor, "error_code", None) == QUOTA_EXHAUSTED:
+            return True
+    return False
+
+
+def _details_error_code(exc: BaseException) -> Optional[str]:
+    """``exc.details["error_code"]``, read only when ``details`` is a dict.
+
+    The chain walks here read attributes off exceptions this codebase did not
+    define, and ``details`` is not ours to assume: grpc's ``RpcError.details``
+    is a METHOD — truthy, with no ``.get`` — so ``(details or {}).get(...)``
+    raised ``AttributeError`` inside the global handler, the one component
+    whose job is not to crash. Read typed, or not at all.
+    """
+    details = getattr(exc, "details", None)
+    if not isinstance(details, dict):
+        return None
+    code = details.get("error_code")
+    return code if isinstance(code, str) else None
 
 
 def quota_exhausted_http_exception(
@@ -169,12 +211,14 @@ def _first_engine_error_code(exc: BaseException) -> Optional[str]:
     The turn service threads it onto the wrapper's ``details["error_code"]``;
     prefer that, then fall back to any ``error_code`` on the ``__cause__`` chain.
     """
-    threaded = (getattr(exc, "details", None) or {}).get("error_code")
+    threaded = _details_error_code(exc)
     if threaded:
         return threaded
     for c in walk_cause_chain(exc):
+        # A string only: a foreign exception's ``error_code`` may be a method
+        # or an int, and neither is an engine code.
         code = getattr(c, "error_code", None)
-        if code:
+        if isinstance(code, str) and code:
             return code
     return None
 
@@ -201,6 +245,11 @@ _RETRYABLE_ENGINE_CODES = frozenset(
 # Semantic engine codes describing a permanent provider/config rejection — the
 # model is misnamed or the credentials are bad; retrying cannot help.
 _TERMINAL_ENGINE_CODES = frozenset({"MODEL_NOT_FOUND", "AUTH_FAILED", LLM_CONFIG_ERROR})
+
+
+#: The body of the unclassifiable ``SERVICE_ERROR`` 500. Static on purpose —
+#: see arm 5 of ``llm_service_error_http_exception``.
+SERVICE_ERROR_DETAIL = "Unable to process this request. Please try again."
 
 
 def _llm_http(
@@ -383,11 +432,16 @@ def llm_service_error_http_exception(
             correlation_id,
         )
 
-    # 5. Genuinely unclassifiable — bounded message, never internals.
+    # 5. Genuinely unclassifiable — a static sentence, never the exception
+    #    text. This used to append ``str(exc)[:200]``; a ``ServiceException``
+    #    is a wrapper whose message carries whatever it wrapped (SQLAlchemy
+    #    statements, ``host:port``), and once this mapping became the global
+    #    ``ServiceException`` handler (#552) that fallback answers for every
+    #    route, not only ``/turns``. The text is logged by the caller.
     return _llm_http(
         500,
         "SERVICE_ERROR",
-        f"Unable to process your message: {str(exc)[:200]}",
+        SERVICE_ERROR_DETAIL,
         "10",
         correlation_id,
     )
@@ -779,6 +833,83 @@ async def oauth_protocol_error_handler(
     )
 
 
+def _is_llm_failure(exc: BaseException) -> bool:
+    """Typed evidence that ``exc`` is an LLM-call failure: an ``LLMException``
+    on the ``__cause__`` chain (``exc`` itself included).
+
+    Deliberately NOT: a ``retryable`` flag (``ExternalCallTimeout`` declares
+    one for any external call), a ``ValidationError`` / ``JSONDecodeError``
+    (a corrupt stored record raises those too), an engine ``error_code``
+    (``UNKNOWN_ERROR`` is generic), or wording. Those are LLM signals only
+    where the caller already knows an LLM was called — which is why
+    ``llm_service_error_http_exception`` reads them and ``/turns`` calls it
+    inline, and why the global handler does not.
+    """
+    return any(isinstance(c, LLMException) for c in walk_cause_chain(exc))
+
+
+def global_service_exception_http_exception(exc: BaseException) -> HTTPException:
+    """The global handler's mapping — narrower than the ``/turns`` one (#552).
+
+    1. Billing declared by type anywhere on the chain → 402. The NARROW
+       predicate: no English-marker fallback, so a message that merely says
+       "billing details" is not told to buy credits.
+    2. An ``LLMException`` on the chain → the full LLM mapping. Here an LLM
+       is known to be involved, so every signal it reads is sound.
+    3. Anything else → a static 500 ``SERVICE_ERROR`` with no
+       ``Retry-After``: a data fault is not transient, and it is not the AI
+       provider's.
+    """
+    if is_quota_exhausted_service_error(exc):
+        return quota_exhausted_http_exception()
+    if _is_llm_failure(exc):
+        return llm_service_error_http_exception(exc)
+    return _llm_http(500, "SERVICE_ERROR", SERVICE_ERROR_DETAIL, None, None)
+
+
+async def service_exception_handler(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
+    """Answer an uncaught ``ServiceException`` / ``LLMException`` (#552).
+
+    An LLM failure reaches a route wrapped as ``ServiceException`` (or, less
+    often, as the raw ``LLMException``). Before this handler existed neither
+    class had one, so any route that did not catch it and call
+    ``llm_service_error_http_exception`` answered a bare 500 — a billing
+    exhaustion the operator has to act on read as a FaultMaven bug.
+
+    It does NOT apply the ``/turns`` mapping to everything. That mapping was
+    written for a route where every failure is an LLM call, and it reads
+    generic signals (``retryable``, a parse error on the chain, billing
+    wording) as provider conditions. On any other route those come from
+    non-LLM work — a corrupt record, a non-LLM timeout — and would be answered
+    as a retryable AI-provider failure. ``global_service_exception_http_exception``
+    applies the LLM mapping only on typed evidence of an LLM failure; the rest
+    get a static 500.
+
+    Rendered through ``http_exception_handler`` so, for an LLM failure, body
+    and headers match an inline ``raise llm_service_error_http_exception(e)``
+    except ``x-correlation-id``, which only a route holding one can add.
+
+    What this does NOT reach, measured when it was added: a route arm that
+    catches ``ServiceException`` itself (inventoried by
+    ``test_service_exception_global_handler``), and a broad ``except
+    Exception`` arm ahead of any typed arm (#1632).
+    """
+    logger.error(
+        "Unhandled %s: %s %s - %s",
+        type(exc).__name__,
+        request.method,
+        request.url.path,
+        str(exc),
+        exc_info=exc,
+    )
+    return await http_exception_handler(
+        request, global_service_exception_http_exception(exc)
+    )
+
+
 def get_exception_handlers() -> dict[Type[Exception], Callable]:
     """Get all exception handlers as a dictionary.
 
@@ -792,6 +923,8 @@ def get_exception_handlers() -> dict[Type[Exception], Callable]:
         ConflictError: conflict_exception_handler,
         TeamOperationRefused: team_operation_refused_handler,
         ServiceError: service_error_handler,
+        ServiceException: service_exception_handler,
+        LLMException: service_exception_handler,
         OAuthProtocolError: oauth_protocol_error_handler,
     }
 

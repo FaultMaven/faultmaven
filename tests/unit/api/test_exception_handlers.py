@@ -32,8 +32,10 @@ from faultmaven.api.exception_handlers import (
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
+    LLMException,
     NotFoundError,
     ServiceError,
+    ServiceException,
     ValidationException,
 )
 from faultmaven.models.exceptions import OAuthProtocolError
@@ -396,6 +398,8 @@ class TestGetExceptionHandlers:
             ConflictError,
             TeamOperationRefused,
             ServiceError,
+            ServiceException,
+            LLMException,
             OAuthProtocolError,
         }
 
@@ -988,6 +992,9 @@ class TestLLMServiceErrorHttpException:
         assert exc.headers["x-error-code"] == "SERVICE_ERROR"
         assert exc.headers["Retry-After"] == "10"
         assert len(exc.detail) < 260  # bounded, never dumps internals wholesale
+        # Static, not a prefix of the exception text (#552): as the global
+        # ServiceException handler this fallback answers for every route.
+        assert "some internal failure" not in exc.detail
 
     def test_correlation_id_threaded_and_optional(self):
         with_id = self._classify(self._llm(status_code=429), correlation_id="cid-x")

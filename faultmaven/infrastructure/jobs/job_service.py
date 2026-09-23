@@ -83,7 +83,7 @@ class JobService(IJobService):
             logger.info(f"Created job {job_id} of type {job_type}")
         except Exception as e:
             logger.error(f"Failed to create job {job_id}: {e}")
-            raise ServiceException(f"Job creation failed: {e}")
+            raise ServiceException(f"Job creation failed: {e}") from e
 
         return job_id
 
@@ -108,7 +108,7 @@ class JobService(IJobService):
 
         except Exception as e:
             logger.error(f"Failed to retrieve job {job_id}: {e}")
-            raise ServiceException(f"Job retrieval failed: {e}")
+            raise ServiceException(f"Job retrieval failed: {e}") from e
 
     async def update_job_status(
         self,
@@ -152,7 +152,7 @@ class JobService(IJobService):
 
         except Exception as e:
             logger.error(f"Failed to update job {job_id}: {e}")
-            raise ServiceException(f"Job update failed: {e}")
+            raise ServiceException(f"Job update failed: {e}") from e
 
     async def start_job(self, job_id: str) -> bool:
         """Mark job as running."""

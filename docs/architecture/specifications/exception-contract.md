@@ -50,7 +50,7 @@ backs it lives in
 | `ConflictError` | 409 Conflict | Resource state conflict (duplicate username, double-close, attempting an operation incompatible with current state). |
 | `NotFoundError` | 404 Not Found | Resource lookup miss (case/session/user does not exist). |
 | `AuthorizationError` | 403 Forbidden | Caller is authenticated but lacks permission for the operation. |
-| `ServiceException` | 500 Internal Server Error | Genuine server failure that the client cannot resolve (database error, wrapped infrastructure failure). |
+| `ServiceException` | 500 Internal Server Error, unless it wraps an LLM failure (see [LLM Provider Failures](#llm-provider-failures-turn-endpoints)) | Genuine server failure that the client cannot resolve (database error, wrapped infrastructure failure). |
 
 All five inherit from `FaultMavenException` (base class). The
 `ServiceError` subclass groups `NotFoundError` / `ConflictError` /
@@ -160,6 +160,48 @@ provider condition presented to the user as a FaultMaven bug.
 | engine `MODEL_NOT_FOUND` / `AUTH_FAILED` / `LLM_CONFIG_ERROR` | 502 | `LLM_PROVIDER_ERROR` | — |
 | direct schema-parse failure (`ValidationError` / `JSONDecodeError`) | 503 | `LLM_INVALID_RESPONSE` | 30 |
 | anything else | 500 | `SERVICE_ERROR` | 10 |
+
+**A narrower version of the mapping is the global handler** (#552).
+`get_exception_handlers()` registers `service_exception_handler` for both
+`ServiceException` and `LLMException`. The table above is for a route where
+every failure is an LLM call; it reads generic signals — a declared
+`retryable`, a `ValidationError`/`JSONDecodeError` on the chain, billing
+*wording* — as provider conditions. On any other route those come from non-LLM
+work (a corrupt record, an object-store timeout), so the global handler
+applies it only on typed evidence:
+
+| Uncaught failure | HTTP | `x-error-code` | Retry-After |
+|------------------|------|----------------|-------------|
+| `QUOTA_EXHAUSTED` declared by type anywhere on the cause chain (no wording fallback) | 402 | `QUOTA_EXHAUSTED` | — |
+| an `LLMException` on the cause chain | the table above | | |
+| anything else | 500 | `SERVICE_ERROR` | — |
+
+For an LLM failure the global answer equals the inline one, less
+`x-correlation-id`. `/turns` keeps calling the helper inline and keeps the
+wide reading. No 500 body carries the exception text: a `ServiceException`'s
+message carries whatever it wrapped.
+
+What the typed predicate still misroutes: an LLM failure re-wrapped into a
+type outside the chain (no `from`, or a `MilestoneEngineError` from the retry
+loop, which deliberately does not chain — it reaches only `/turns`, which maps
+inline) answers 500; a non-LLM failure that links an `LLMException` somewhere
+down its chain is read as an LLM failure.
+
+Two things a global handler cannot reach, and what covers them:
+
+- **A route arm that catches the class itself.** It must call the helper,
+  re-raise, or be listed with the reason no LLM failure reaches it —
+  `tests/unit/api/test_service_exception_global_handler.py` inventories every
+  such arm on the route surface and fails on a new one.
+- **A broad `except Exception` arm ahead of any typed arm** — the most common
+  shape on the route surface. It swallows the failure before any handler sees
+  it; a route that reaches an LLM needs a typed arm (or a bare re-raise of
+  `FaultMavenException`) in front of it.
+
+The typed signals are read off the `__cause__` chain rather than copied at
+wrap time, so a wrap is lossless only if it links: every
+`raise ServiceException(...)` inside an `except` carries `from e`, and the
+same test file fails on one that does not.
 
 The raw provider status (direct path) is more specific than a threaded
 engine code and takes precedence when both are present. A 4xx other than
