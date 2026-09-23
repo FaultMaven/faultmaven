@@ -2363,7 +2363,7 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     # Defense in depth, and stricter than the `is_terminal` check it replaces:
     # the proposal target is now STATE-DEPENDENT. "closed" was a legal edge
     # from any state, so hardcoding it made this guard free; "resolved" is NOT
-    # a legal edge from INQUIRY (ALLOWED_ACTIONS — resolution requires
+    # a legal edge from INQUIRY (LEGAL_TRANSITIONS — resolution requires
     # investigation work). A proposal that cannot execute leaves
     # `pending_transition` standing, so every later confirm turn would fail the
     # same way. Only the INVESTIGATING pipeline calls this today; the guard
@@ -5377,6 +5377,30 @@ class MilestoneEngine:
         user_id: str | None = None,
     ) -> dict[str, Any]:
         """Inner implementation of process_turn, called under per-case lock."""
+        # Refused FIRST, before any state is touched. INVESTIGATING is not a
+        # user-selectable case action (#1608) — it is earned by a confirmed
+        # problem statement, which Gate 1 performs.
+        #
+        # Placement is load-bearing, not tidiness. Section 0b below cancels a
+        # contradicting pending transition and records the fm#1122 decline
+        # signature before reaching the per-target branches, so refusing down
+        # there unwound past those mutations with no save: the standing close
+        # offer survived with no decline recorded, and the engine re-fired it
+        # on the next turn — the re-nag fm#1122 exists to prevent.
+        #
+        # ``InvestigationService._handle_status_transition`` rejects this at
+        # the boundary with a 422, so this is the backstop for direct engine
+        # callers rather than the path a client takes.
+        if (
+            intent_type == "status_transition"
+            and (intent_data or {}).get("to_state") == CaseState.INVESTIGATING.value
+        ):
+            raise ValueError(
+                "INVESTIGATING is not a user-selectable case action. It is "
+                "reached by confirming the problem statement (Gate 1), not by "
+                "requesting the state."
+            )
+
         # Add intent information to logger for tracing
         # Note: current_turn has already been incremented by investigation_service before this point
         intent_info = f" [intent={intent_type}]" if intent_type else ""
@@ -6063,35 +6087,13 @@ class MilestoneEngine:
                         "metadata": turn_metadata,
                     }
 
-                elif to_status_str == "investigating":
-                    if case.state != CaseState.INQUIRY:
-                        raise ValueError(
-                            f"Cannot transition to INVESTIGATING from {case.state.value}"
-                        )
-
-                    # Inject a pre-composed message and let the normal INQUIRY
-                    # LLM flow handle the problem statement + transition.
-                    # The frontend expects the case to transition in this turn,
-                    # so we fall through to the LLM pipeline which can set
-                    # user_confirmed_investigation=True and trigger the transition
-                    # via _check_automatic_transitions.
-                    from faultmaven.modules.case.domain.services.case_action_manager import (
-                        CaseActionManager,
-                    )
-
-                    if not user_message or not user_message.strip():
-                        user_message = (
-                            CaseActionManager.get_agent_message(
-                                CaseState.INQUIRY, CaseState.INVESTIGATING
-                            )
-                            or "I want to start a formal investigation to find the root cause."
-                        )
-
-                    logger.info(
-                        f"INQUIRY->INVESTIGATING dropdown: routing through normal INQUIRY flow "
-                        f"for case {case.case_id}"
-                    )
-                    # Fall through to normal LLM processing (no transition executed here)
+                # ``investigating`` never reaches here — the guard at the top
+                # of this method refuses it before any state is touched. The
+                # branch that used to live here accepted the request and fell
+                # through to the LLM on a synthetic user message ("I want to
+                # start a formal investigation to find the root cause"), which
+                # read as established problem-solving intent and pulled a
+                # problem statement out of cases that had none (#1608).
 
                 else:
                     raise ValueError(f"Unknown to_state: {to_status_str}")
@@ -12595,14 +12597,19 @@ class MilestoneEngine:
                     assess_resolution_readiness,
                     propose_transition,
                 )
-                from faultmaven.modules.case.domain.services.case_action_manager import (
-                    ALLOWED_ACTIONS,
+                from faultmaven.modules.case.domain.models import (
+                    LEGAL_TRANSITIONS,
                 )
 
-                # Structural validation against the action graph: the LLM
-                # cannot emit a ``proposed_transition`` whose ``to_state``
-                # is not a valid edge from the current ``case.state`` per
-                # ``ALLOWED_ACTIONS``. The prompt instructs the LLM on
+                # Structural validation against the LEGALITY graph — which
+                # edges exist, not which ones a user may pick. The LLM is not
+                # a user: it proposes transitions the state machine permits,
+                # so ``USER_SELECTABLE_ACTIONS`` would be the wrong bar here.
+                # (In practice INQUIRY → INVESTIGATING never arrives as a
+                # ``proposed_transition`` — Gate 1 performs it — so the two
+                # graphs would accept the same emissions today. The right one
+                # is named anyway, so a future edge cannot silently inherit
+                # the wrong rule.) The prompt instructs the LLM on
                 # which edges exist; this is the safety net for prompt
                 # non-compliance (e.g., an LLM emitting ``to_state="resolved"``
                 # from INQUIRY, which is not a valid edge — INQUIRY can
@@ -12610,7 +12617,7 @@ class MilestoneEngine:
                 # here prevents downstream pivot logic from accepting an
                 # invalid emission and quietly converting it into a
                 # different transition the user never intended.
-                valid_targets = {s.value for s in ALLOWED_ACTIONS.get(case.state, [])}
+                valid_targets = {s.value for s in LEGAL_TRANSITIONS.get(case.state, [])}
                 if proposed.to_state not in valid_targets:
                     logger.warning(
                         f"Rejected proposed_transition for case {case.case_id}: "

@@ -3144,6 +3144,31 @@ class InvestigationService:
                 {"field": "to_state"},
             )
 
+        # INVESTIGATING is not a user-selectable case action (#1608): it is
+        # earned by a confirmed problem statement, which Gate 1 performs.
+        #
+        # Rejected HERE, at the boundary, for two reasons. It is a client-input
+        # error, so it deserves a 422 rather than the 500 + ``Retry-After`` a
+        # bare engine-side raise produces — and older Copilot builds will keep
+        # sending it for as long as the extension takes to auto-update, so the
+        # wrong shape would be told to retry a permanently invalid request and
+        # would land in the error-rate SLO.
+        #
+        # Boundary placement also matters for correctness, not just status
+        # codes. ``process_turn`` cancels a contradicting pending transition
+        # and records the fm#1122 decline signature BEFORE it reaches the
+        # per-target branches; raising from there unwinds without a save, so
+        # the standing close offer survives with no decline recorded and the
+        # engine re-fires it next turn — the exact re-nag fm#1122 exists to
+        # prevent. Refusing before the engine runs touches no state at all.
+        if to_state == CaseState.INVESTIGATING.value:
+            raise ValidationException(
+                "INVESTIGATING is not a user-selectable case action. It is "
+                "reached by confirming the problem statement, not by "
+                "requesting the state.",
+                {"field": "to_state", "value": to_state},
+            )
+
         # Delegate to milestone engine with structured intent
         result = await self.engine.process_turn(
             case=case,

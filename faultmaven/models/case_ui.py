@@ -12,7 +12,11 @@ from typing import Annotated, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
-from faultmaven.models.api_models import ProgressTransparencyInfo
+from faultmaven.models.api_models import (
+    DISPOSITION_ELIGIBILITY_DELTA,
+    VALID_NEXT_STATES_DESCRIPTION,
+    ProgressTransparencyInfo,
+)
 from faultmaven.modules.case.domain.models import (
     CaseState,
     ConfidenceLevel,
@@ -483,7 +487,7 @@ class CaseUIResponse_Inquiry(BaseModel):
 
     valid_next_states: List[str] = Field(
         default_factory=list,
-        description="Allowed state transitions from current state for user-initiated changes",
+        description=VALID_NEXT_STATES_DESCRIPTION,
     )
 
     disposition_eligibility: Optional[Dict[str, str]] = Field(
@@ -506,10 +510,7 @@ class CaseUIResponse_Inquiry(BaseModel):
             "Currently only the Close side surfaces this (when the case "
             "has root cause + solution → resolving preserves attribution).\n"
             "- ``not_eligible`` — disposition is not available; hide the "
-            "affordance entirely.\n\n"
-            "Different from ``valid_next_states`` — that field is the "
-            "structural action graph (which edges exist), this field is "
-            "the content-readiness layer on top."
+            "affordance entirely.\n\n" + DISPOSITION_ELIGIBILITY_DELTA
         ),
     )
 
@@ -570,7 +571,7 @@ class CaseUIResponse_Investigating(BaseModel):
 
     valid_next_states: List[str] = Field(
         default_factory=list,
-        description="Allowed state transitions from current state for user-initiated changes",
+        description=VALID_NEXT_STATES_DESCRIPTION,
     )
 
     disposition_eligibility: Optional[Dict[str, str]] = Field(
@@ -593,10 +594,7 @@ class CaseUIResponse_Investigating(BaseModel):
             "Currently only the Close side surfaces this (when the case "
             "has root cause + solution → resolving preserves attribution).\n"
             "- ``not_eligible`` — disposition is not available; hide the "
-            "affordance entirely.\n\n"
-            "Different from ``valid_next_states`` — that field is the "
-            "structural action graph (which edges exist), this field is "
-            "the content-readiness layer on top."
+            "affordance entirely.\n\n" + DISPOSITION_ELIGIBILITY_DELTA
         ),
     )
 
@@ -703,7 +701,7 @@ class CaseUIResponse_Resolved(BaseModel):
 
     valid_next_states: List[str] = Field(
         default_factory=list,
-        description="Allowed state transitions from current state for user-initiated changes",
+        description=VALID_NEXT_STATES_DESCRIPTION,
     )
 
     disposition_eligibility: Optional[Dict[str, str]] = Field(
@@ -726,10 +724,7 @@ class CaseUIResponse_Resolved(BaseModel):
             "Currently only the Close side surfaces this (when the case "
             "has root cause + solution → resolving preserves attribution).\n"
             "- ``not_eligible`` — disposition is not available; hide the "
-            "affordance entirely.\n\n"
-            "Different from ``valid_next_states`` — that field is the "
-            "structural action graph (which edges exist), this field is "
-            "the content-readiness layer on top."
+            "affordance entirely.\n\n" + DISPOSITION_ELIGIBILITY_DELTA
         ),
     )
 

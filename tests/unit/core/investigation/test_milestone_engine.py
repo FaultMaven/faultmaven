@@ -4,7 +4,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine import (
+    MilestoneEngine,
+    MilestoneEngineError,
+)
 from faultmaven.core.investigation.schemas import MilestoneUpdates
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
@@ -880,15 +883,26 @@ class TestMilestoneEngine:
         assert all(s["action_type"] == "DECIDE" for s in suggestions)
 
     @pytest.mark.asyncio
-    async def test_explicit_status_transition_inquiry_to_investigating(
-        self, mock_llm, mock_repo
+    @pytest.mark.parametrize("has_statement", [True, False], ids=["with", "without"])
+    async def test_requesting_investigating_is_refused(
+        self, mock_llm, mock_repo, has_statement
     ):
-        """Test explicit status_transition intent: INQUIRY → INVESTIGATING via dropdown.
+        """INVESTIGATING cannot be REQUESTED — it is earned (#1608).
 
-        Post-redesign: INQUIRY → INVESTIGATING requires Gate 1 only.
-        Gate 2 (path commit) fires later in INVESTIGATING after
-        ``symptom_verified``. The dropdown injects a pre-composed
-        message; the LLM emits confirmation; engine transitions.
+        The edge is legal and Gate 1 performs it, but it requires a problem
+        statement the user has confirmed, which the DB CHECK
+        ``cases_description_required_for_investigation`` makes structural. A
+        request cannot make that true, so the engine refuses rather than
+        pretending.
+
+        This branch used to accept the request and fall through to the LLM on
+        an injected synthetic message ("I want to start a formal investigation
+        to find the root cause"). That read to the model as established
+        problem-solving intent — which is how a case with nothing wrong got a
+        problem statement while its reply correctly said none could be stated.
+
+        Refused either way: a standing statement does not make the request
+        valid, because confirming it is the user's move, not the menu's.
         """
         engine = MilestoneEngine(
             mock_llm,
@@ -896,112 +910,34 @@ class TestMilestoneEngine:
             investigation_tools=MagicMock(),
         )
 
-        # Create case in INQUIRY state with a proposed problem statement
         inquiry_case = Case(
-            case_id="case_0987654321ab",  # 17 chars
+            case_id="case_0987654321ab",
             title="Test Inquiry to Investigating",
             state=CaseState.INQUIRY,
             user_id="user_123",
             enterprise_id="org_123",
             description="Test description",
         )
-        inquiry_case.inquiry.proposed_problem_statement = "Test symptom"
+        if has_statement:
+            inquiry_case.inquiry.proposed_problem_statement = "Test symptom"
 
-        # Turn 1 mock: LLM confirms problem AND emits urgency signals (which
-        # the engine needs to compute the path recommendation).
-        mock_response_content = json.dumps(
-            {
-                "agent_response": "Confirmed. Recommend root-cause analysis.",
-                "state_updates": {
-                    "user_confirmed_investigation": True,
-                    "preliminary_urgency": {
-                        "level": "MEDIUM",
-                        "is_ongoing": False,
-                        "is_incident_report": False,
-                        "impact_assessment": "Historical symptom",
-                    },
+        with pytest.raises(ValueError, match="not a user-selectable"):
+            await engine.process_turn(
+                case=inquiry_case,
+                user_message="",
+                intent_type="status_transition",
+                intent_data={
+                    "from_state": "inquiry",
+                    "to_state": "investigating",
+                    "user_confirmed": True,
                 },
-            }
-        )
-        mock_llm.generate.return_value = mock_response_content
+            )
 
-        # User clicks "Start Investigation" in dropdown
-        result = await engine.process_turn(
-            case=inquiry_case,
-            user_message="I want to start a formal investigation to find the root cause.",
-            intent_type="status_transition",
-            intent_data={
-                "from_state": "inquiry",
-                "to_state": "investigating",
-                "user_confirmed": True,
-            },
-        )
-
-        updated_case = result["case_updated"]
-
-        # Gate 1 closes → case transitions to INVESTIGATING immediately.
-        # Post-redesign there is no path fork; the case simply enters the
-        # unified opportunistic flow.
-        assert updated_case.state == CaseState.INVESTIGATING
-        assert updated_case.inquiry.problem_statement_confirmed is True
-        assert updated_case.inquiry.decided_to_investigate is True
-
-        # Should have called LLM (not bypassed)
-        assert mock_llm.generate.called
-
-        # Action history records the INQUIRY → INVESTIGATING transition.
-        assert len(updated_case.action_history) > 0
-        last_transition = updated_case.action_history[-1]
-        assert last_transition.from_state == CaseState.INQUIRY
-        assert last_transition.to_state == CaseState.INVESTIGATING
-
-    @pytest.mark.asyncio
-    async def test_investigating_dropdown_without_problem_statement_calls_llm(
-        self, mock_llm, mock_repo
-    ):
-        """Dropdown INQUIRY→INVESTIGATING with no problem statement routes through LLM.
-
-        Design: Dropdown = message. Without a problem statement, the LLM should
-        ask the user to describe the problem rather than silently transitioning.
-        """
-        engine = MilestoneEngine(
-            mock_llm,
-            mock_repo,
-            investigation_tools=MagicMock(),
-        )
-
-        inquiry_case = Case(
-            case_id="case_0987654321cd",
-            title="API issue",
-            state=CaseState.INQUIRY,
-            user_id="user_123",
-            enterprise_id="org_123",
-            description="",
-        )
-        # No proposed_problem_statement set — agent hasn't formulated one yet
-
-        # LLM asks user to describe the problem (does NOT confirm investigation)
-        mock_response_content = json.dumps(
-            {
-                "agent_response": "I'd like to help investigate. Could you describe the problem you're seeing?",
-                "state_updates": {},
-            }
-        )
-        mock_llm.generate.return_value = mock_response_content
-
-        result = await engine.process_turn(
-            case=inquiry_case,
-            user_message="",  # Empty message — dropdown click only
-            intent_type="status_transition",
-            intent_data={"from_state": "inquiry", "to_state": "investigating"},
-        )
-
-        updated_case = result["case_updated"]
-
-        # Case should stay in INQUIRY (no problem statement to confirm)
-        assert updated_case.state == CaseState.INQUIRY
-        # LLM was called (not bypassed)
-        assert mock_llm.generate.called
+        # Refused at the boundary — no LLM call, no synthetic message, no state
+        # change. The old path spent a turn and could mint a statement.
+        assert not mock_llm.generate.called
+        assert inquiry_case.state == CaseState.INQUIRY
+        assert inquiry_case.inquiry.problem_statement_confirmed is False
 
     @pytest.mark.asyncio
     async def test_resolved_dropdown_proposes_transition(
@@ -2204,7 +2140,14 @@ class TestContradictingIntentCancelsPendingTransition:
     async def test_contradicting_intent_cancels_pending_close(
         self, mock_llm, mock_repo
     ):
-        """User has pending CLOSE, then clicks 'Investigating' → pending cancelled."""
+        """A contradicting status_transition cancels a pending one.
+
+        Was: pending CLOSE, user clicks "Investigating". That contradiction no
+        longer exists — from INQUIRY the only selectable action is CLOSED
+        (#1608), so there is nothing to contradict it with. The same rule is
+        exercised on the shape that still has one: an INVESTIGATING case with a
+        pending CLOSE, where the user picks "Mark as resolved" instead.
+        """
         engine = MilestoneEngine(
             mock_llm,
             mock_repo,
@@ -2214,15 +2157,15 @@ class TestContradictingIntentCancelsPendingTransition:
         case = Case(
             case_id="case_1234567890ab",
             title="Test Case",
-            state=CaseState.INQUIRY,
+            state=CaseState.INVESTIGATING,
             user_id="user_123",
             enterprise_id="org_123",
-            description="Test",
+            description="API timeout errors",
             inquiry=InquiryData(
                 thread_id="thread_123",
                 proposed_problem_statement="API timeout errors",
                 problem_statement_confirmed=True,
-                decided_to_investigate=False,
+                decided_to_investigate=True,
             ),
         )
 
@@ -2250,15 +2193,25 @@ class TestContradictingIntentCancelsPendingTransition:
         # User submits a contradicting status_transition intent
         result = await engine.process_turn(
             case,
-            "I want to investigate this",
+            "Actually it's fixed — mark it resolved",
             intent_type="status_transition",
-            intent_data={"to_state": "investigating"},
+            intent_data={"to_state": "resolved"},
         )
 
         updated_case = result["case_updated"]
 
-        # Pending transition should be cancelled
-        assert updated_case.pending_transition is None
+        # The contradicted proposal must not still be standing. It is
+        # superseded rather than nulled — the resolve request is itself a
+        # proposal, and on a case with nothing investigated INV-37's
+        # SUGGEST_CLOSE pivot turns it back into a close offer with its own
+        # wording. So the slot is occupied either way; what matters is that it
+        # is not the OFFER THE USER CONTRADICTED, because a later confirmation
+        # must not be able to land on that. Identity is the ``proposed_at``
+        # stamp, which the superseding proposal rewrites.
+        pending = updated_case.pending_transition
+        assert (
+            pending is None or pending.get("proposed_at") != "2026-04-23T00:00:00+00:00"
+        ), f"the contradicted proposal is still standing: {pending}"
 
         # Case should NOT have transitioned to CLOSED
         assert updated_case.state != CaseState.CLOSED

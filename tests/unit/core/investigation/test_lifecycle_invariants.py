@@ -27,6 +27,7 @@ from faultmaven.core.investigation.terminal_transitions import (
     propose_transition,
 )
 from faultmaven.modules.case.domain.models import (
+    LEGAL_TRANSITIONS,
     Case,
     CaseAction,
     CaseState,
@@ -36,7 +37,9 @@ from faultmaven.modules.case.domain.models import (
     ProblemVerification,
     is_valid_action,
 )
-from faultmaven.modules.case.domain.services.case_action_manager import ALLOWED_ACTIONS
+from faultmaven.modules.case.domain.services.case_action_manager import (
+    USER_SELECTABLE_ACTIONS,
+)
 
 
 def _make_investigating_case() -> Case:
@@ -324,32 +327,60 @@ class TestINV04_NoDirectInquiryToResolved:
         assert case.resolved_at is None
 
     def test_inv04_ui_affordance_omits_resolved_from_inquiry(self):
-        """The UI's ``ALLOWED_ACTIONS`` dict — used by ``get_allowed_transitions``
-        to populate the state-dropdown — does not offer RESOLVED as a
-        target when the case is in INQUIRY.
+        """The status menu does not offer RESOLVED from INQUIRY.
 
-        This is the affordance-surface check (not enforcement). A user
-        looking at the dropdown sees only [INVESTIGATING, CLOSED]; the
-        forbidden edge is invisible.
+        Affordance surface, not enforcement: a user in INQUIRY sees only
+        [CLOSED]; the forbidden edge is invisible. INVESTIGATING is absent too,
+        but for a different reason — it is legal and simply not a user action
+        (#1608), which the subset test below pins.
         """
-        inquiry_targets = ALLOWED_ACTIONS[CaseState.INQUIRY]
+        inquiry_targets = USER_SELECTABLE_ACTIONS[CaseState.INQUIRY]
         assert CaseState.RESOLVED not in inquiry_targets
-        # The two legitimate targets are present:
-        assert CaseState.INVESTIGATING in inquiry_targets
         assert CaseState.CLOSED in inquiry_targets
 
-    def test_inv04_valid_action_graphs_agree_across_definitions(self):
-        """The valid-action graph appears in two places: ``ALLOWED_ACTIONS``
-        (case_action_manager.py) and ``valid_actions`` inside
-        ``is_valid_action()`` (models.py). They MUST agree.
+    def test_inv04_selectable_actions_are_a_subset_of_legal_transitions(self):
+        """Selectability is a strict subset of legality — not the same graph.
 
-        Duplication is a maintenance risk: a future edit to one copy
-        without the other would let the forbidden edge slip through one
-        enforcement surface while the other still rejects it. This test
-        pins agreement so any divergence breaks CI immediately.
+        These used to be pinned EQUAL, which encoded the assumption that
+        anything the state machine permits is something a user may pick. That
+        is false for INQUIRY → INVESTIGATING: the edge is legal and Gate 1
+        performs it, but it is earned by a confirmed problem statement, so a
+        menu cannot honour it on demand.
 
-        Drift to address separately: consolidate to a single source of
-        truth. Until then, this test is the consistency guard.
+        What must still hold is the containment — a menu may never offer an
+        edge the machine would reject — plus agreement between the legality
+        graph and the validator that reads it.
+        """
+        states = [
+            CaseState.INQUIRY,
+            CaseState.INVESTIGATING,
+            CaseState.RESOLVED,
+            CaseState.CLOSED,
+        ]
+
+        for from_state in states:
+            selectable = set(USER_SELECTABLE_ACTIONS.get(from_state, []))
+            legal = set(LEGAL_TRANSITIONS.get(from_state, []))
+            assert selectable <= legal, (
+                f"{from_state.value}: the menu offers "
+                f"{[s.value for s in selectable - legal]}, which the state "
+                f"machine does not permit."
+            )
+
+        # The one edge where they are intended to differ. Pinned explicitly so
+        # re-adding it to the menu is a deliberate act, not a silent one.
+        assert (
+            CaseState.INVESTIGATING in LEGAL_TRANSITIONS[CaseState.INQUIRY]
+        ), "Gate 1 performs this edge — it must stay legal"
+        assert (
+            CaseState.INVESTIGATING not in USER_SELECTABLE_ACTIONS[CaseState.INQUIRY]
+        ), "INVESTIGATING is earned, not requested — it is not a user action"
+
+    def test_inv04_legal_graph_agrees_with_its_validator(self):
+        """``LEGAL_TRANSITIONS`` and ``is_valid_action`` cannot disagree.
+
+        They are now one source of truth — the validator reads the constant —
+        so this guards the consolidation rather than a duplication.
         """
         for from_state in [
             CaseState.INQUIRY,
@@ -363,13 +394,12 @@ class TestINV04_NoDirectInquiryToResolved:
                 CaseState.RESOLVED,
                 CaseState.CLOSED,
             ]:
-                dict_allows = to_state in ALLOWED_ACTIONS.get(from_state, [])
+                dict_allows = to_state in LEGAL_TRANSITIONS.get(from_state, [])
                 func_allows = is_valid_action(from_state, to_state)
                 assert dict_allows == func_allows, (
                     f"Disagreement on {from_state.value} → {to_state.value}: "
-                    f"ALLOWED_ACTIONS says {dict_allows}, "
-                    f"is_valid_action says {func_allows}. "
-                    f"These must agree — see INV-04 drift note."
+                    f"LEGAL_TRANSITIONS says {dict_allows}, "
+                    f"is_valid_action says {func_allows}."
                 )
 
 
@@ -887,52 +917,39 @@ class TestINV14_DropdownUsesStandardHandshake:
         assert updated.resolved_at is None
         assert updated.closed_at is None
 
-    def test_inv14_dropdown_investigating_branch_does_not_directly_execute_resolved(
-        self,
-    ):
-        """Static check: the engine's ``elif to_status_str == "investigating"``
-        branch does NOT contain calls to ``_execute_resolved_transition``,
-        ``_execute_closed_transition``, ``confirm_pending_transition``,
-        or direct state mutations. The branch falls through to the LLM
-        pipeline so the standard handshake handles confirmation.
+    def test_inv14_investigating_request_is_refused_before_any_mutation(self):
+        """The INVESTIGATING refusal must come BEFORE section 0b's mutations.
 
-        Complement to the functional tests above: pins the structural
-        property of the INVESTIGATING branch even without exercising
-        the full LLM pipeline.
+        Placement is the invariant, not merely the refusal. Section 0b cancels
+        a contradicting pending transition and records the fm#1122 decline
+        signature before reaching the per-target branches. A refusal raised
+        from down there unwinds past those mutations with no save, so a
+        standing close offer survives with no decline recorded and the engine
+        re-fires it next turn — the re-nag fm#1122 exists to prevent.
+
+        Static rather than behavioural because the damage is in what is NOT
+        persisted: an in-memory assertion after the raise sees the mutations
+        and passes, which is exactly how the original shape looked correct.
         """
         source = inspect.getsource(MilestoneEngine._process_turn_impl)
 
-        # Find the investigating-target branch within the status_transition
-        # intent handler.
-        investigating_idx = source.find('elif to_status_str == "investigating":')
-        assert investigating_idx >= 0, (
-            "Could not locate the 'investigating' branch of the "
-            "status_transition intent handler. The static check below "
-            "assumes this structure."
+        guard_idx = source.find("not a user-selectable case action")
+        assert guard_idx >= 0, (
+            "the INVESTIGATING refusal is gone from _process_turn_impl; "
+            "INQUIRY → INVESTIGATING must not be requestable (#1608)"
         )
 
-        # Walk to the next sibling branch / end-of-block. The
-        # 'investigating' branch ends when the next major block begins.
-        # Take a generous 1500-char window.
-        branch_region = source[investigating_idx : investigating_idx + 1500]
-
-        # The invariant: this branch must not directly execute a transition.
-        # It should fall through to the LLM pipeline so the standard
-        # ProposedTransition handshake handles disposition.
-        forbidden_calls = [
-            "_execute_resolved_transition",
-            "_execute_closed_transition",
-            "confirm_pending_transition(case, case.user_id)",
-            "case.state = CaseState.INVESTIGATING\n",
-        ]
-        for forbidden in forbidden_calls:
-            assert forbidden not in branch_region, (
-                f"INV-14 violation: the INQUIRY → INVESTIGATING dropdown "
-                f"branch contains '{forbidden}'. The dropdown must not "
-                f"directly execute the transition; it must fall through "
-                f"to the LLM pipeline so user_confirmed_investigation=True "
-                f"drives the transition through the standard handshake. "
-                f"See §1.5 *Core Principle*."
+        for mutator in (
+            "_record_deferred_disposition_decline(",
+            "cancel_pending_transition(",
+        ):
+            mutator_idx = source.find(mutator)
+            assert mutator_idx >= 0, f"{mutator} no longer present — update this test"
+            assert guard_idx < mutator_idx, (
+                f"INV-14 violation: the INVESTIGATING refusal is raised AFTER "
+                f"{mutator} runs. That unwinds past a mutation the turn never "
+                f"saves, dropping the fm#1122 decline signature and letting "
+                f"the engine re-nag with the offer the user contradicted."
             )
 
 

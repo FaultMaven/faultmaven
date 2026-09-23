@@ -5281,7 +5281,7 @@ Detailed case information for single case view.
 - `turns_without_progress` (integer, required)
 - `updated_at` (string, required)
 - `user_id` (string, required)
-- `valid_next_states` (array, optional) — Allowed state transitions from current state for user-initiated changes
+- `valid_next_states` (array, optional) — Case actions the USER may select from the status menu — selectability, not legality. A strict subset of the transitions the state machine permits: INQUIRY → INVESTIGATING is legal and performed by the Gate 1 handshake, but it is earned by a confirmed problem statement rather than requested, so it never appears here. Every entry is a disposition.
 
 ---
 
@@ -5435,7 +5435,7 @@ Minimal case information for list views.
 - `turns_without_progress` (integer, required)
 - `updated_at` (string, required)
 - `user_id` (string, required)
-- `valid_next_states` (array, optional) — Allowed state transitions from current state for user-initiated changes
+- `valid_next_states` (array, optional) — Case actions the USER may select from the status menu — selectability, not legality. A strict subset of the transitions the state machine permits: INQUIRY → INVESTIGATING is legal and performed by the Gate 1 handshake, but it is earned by a confirmed problem statement rather than requested, so it never appears here. Every entry is a disposition.
 
 ---
 
@@ -5457,14 +5457,14 @@ User hasn't committed to full investigation yet.
 - ``suggests_alternative`` — disposition is allowed but the system recommends the OTHER disposition for this case. UX: warn and offer the alternative; if the user confirms anyway, proceed. Distinct from ``needs_info`` — no data is missing; the user is asked to RE-DIRECT, not to add. Currently only the Close side surfaces this (when the case has root cause + solution → resolving preserves attribution).
 - ``not_eligible`` — disposition is not available; hide the affordance entirely.
 
-Different from ``valid_next_states`` — that field is the structural action graph (which edges exist), this field is the content-readiness layer on top.
+Different from ``valid_next_states`` — that field is which actions the user may SELECT, this field is the content-readiness layer on top of them.
 - `inquiry` (object, required) — Nested inquiry phase data
 - `investigation_turn` (object, optional) — How many of this case's turns so far were investigation work (#1329/#1387) — the same quantity `TurnResponse.investigation_turn` reports, carried on the case read so a header or a resolution summary can show it without having just submitted a turn. Excludes out-of-band turns (small talk, trivia, questions about FaultMaven itself), which are answered outside the investigation: an aside advances `current_turn` and leaves this alone. Null when the server predates the field.
 - `state` (string, optional) — Always 'inquiry' for this response type
 - `title` (string, required) — Case title
 - `updated_at` (string, required) — Last update timestamp
 - `uploaded_files_count` (integer, required) — Total files uploaded
-- `valid_next_states` (array, optional) — Allowed state transitions from current state for user-initiated changes
+- `valid_next_states` (array, optional) — Case actions the USER may select from the status menu — selectability, not legality. A strict subset of the transitions the state machine permits: INQUIRY → INVESTIGATING is legal and performed by the Gate 1 handshake, but it is earned by a confirmed problem statement rather than requested, so it never appears here. Every entry is a disposition.
 
 ---
 
@@ -5488,7 +5488,7 @@ User has committed to investigation and agent is working through milestones.
 - ``suggests_alternative`` — disposition is allowed but the system recommends the OTHER disposition for this case. UX: warn and offer the alternative; if the user confirms anyway, proceed. Distinct from ``needs_info`` — no data is missing; the user is asked to RE-DIRECT, not to add. Currently only the Close side surfaces this (when the case has root cause + solution → resolving preserves attribution).
 - ``not_eligible`` — disposition is not available; hide the affordance entirely.
 
-Different from ``valid_next_states`` — that field is the structural action graph (which edges exist), this field is the content-readiness layer on top.
+Different from ``valid_next_states`` — that field is which actions the user may SELECT, this field is the content-readiness layer on top of them.
 - `investigation_turn` (object, optional) — How many of this case's turns so far were investigation work (#1329/#1387) — the same quantity `TurnResponse.investigation_turn` reports, carried on the case read so a header or a resolution summary can show it without having just submitted a turn. Excludes out-of-band turns (small talk, trivia, questions about FaultMaven itself), which are answered outside the investigation: an aside advances `current_turn` and leaves this alone. Null when the server predates the field.
 - `latest_evidence` (array, optional) — Most recent evidence collected (last 5)
 - `next_actions` (array, optional) — Suggested next steps for investigation
@@ -5500,7 +5500,7 @@ Different from ``valid_next_states`` — that field is the structural action gra
 - `title` (string, required) — Case title
 - `updated_at` (string, required) — Last update timestamp
 - `uploaded_files_count` (integer, optional) — Number of uploaded files
-- `valid_next_states` (array, optional) — Allowed state transitions from current state for user-initiated changes
+- `valid_next_states` (array, optional) — Case actions the USER may select from the status menu — selectability, not legality. A strict subset of the transitions the state machine permits: INQUIRY → INVESTIGATING is legal and performed by the Gate 1 handshake, but it is earned by a confirmed problem statement rather than requested, so it never appears here. Every entry is a disposition.
 - `working_conclusion` (object, optional) — Agent's current understanding of the problem
 
 ---
@@ -5523,7 +5523,7 @@ Investigation complete, case closed with solution.
 - ``suggests_alternative`` — disposition is allowed but the system recommends the OTHER disposition for this case. UX: warn and offer the alternative; if the user confirms anyway, proceed. Distinct from ``needs_info`` — no data is missing; the user is asked to RE-DIRECT, not to add. Currently only the Close side surfaces this (when the case has root cause + solution → resolving preserves attribution).
 - ``not_eligible`` — disposition is not available; hide the affordance entirely.
 
-Different from ``valid_next_states`` — that field is the structural action graph (which edges exist), this field is the content-readiness layer on top.
+Different from ``valid_next_states`` — that field is which actions the user may SELECT, this field is the content-readiness layer on top of them.
 - `investigation_turn` (object, optional) — How many of this case's turns so far were investigation work (#1329/#1387) — the same quantity `TurnResponse.investigation_turn` reports, carried on the case read so a header or a resolution summary can show it without having just submitted a turn. Excludes out-of-band turns (small talk, trivia, questions about FaultMaven itself), which are answered outside the investigation: an aside advances `current_turn` and leaves this alone. Null when the server predates the field.
 - `problem_statement` (object, optional) — Confirmed problem statement carried over from INQUIRY (sourced from case.description).
 - `reports_available` (array, optional) — Available reports (incident report, post-mortem, runbook)
@@ -5535,7 +5535,7 @@ Different from ``valid_next_states`` — that field is the structural action gra
 - `title` (string, required) — Case title
 - `updated_at` (string, required) — Last update timestamp
 - `uploaded_files_count` (integer, optional) — Number of uploaded files
-- `valid_next_states` (array, optional) — Allowed state transitions from current state for user-initiated changes
+- `valid_next_states` (array, optional) — Case actions the USER may select from the status menu — selectability, not legality. A strict subset of the transitions the state machine permits: INQUIRY → INVESTIGATING is legal and performed by the Gate 1 handshake, but it is earned by a confirmed problem statement rather than requested, so it never appears here. Every entry is a disposition.
 - `verification_status` (object, required) — How solution effectiveness was verified
 
 ---
