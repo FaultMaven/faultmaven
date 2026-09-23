@@ -481,6 +481,50 @@ class TestLogsExtractorProfileCountsLines:
             "10.0.0.8: 5 line occurrences (all event types)" in search_map
         ), search_map
 
+    def test_the_header_does_not_call_a_line_count_an_attempt_count(self):
+        """One sshd attempt is three lines, so the total is an upper bound.
+
+        For one password try against an invalid user, OpenSSH writes three
+        lines carrying the source IP: ``Invalid user``, the ``pam_unix``
+        authentication failure, and ``Failed password for invalid user``.
+        Three attempts logged that way are nine auth LINES, which is what
+        fm#1596's ruling has the table count — so ``auth total=9`` is right
+        as a line count and wrong as an attempt count.
+
+        The header must therefore say which it is. An earlier revision of
+        this change told the model the total "is the attempt count", on
+        exactly the shape where it is off by 3x — a more confident claim
+        than the hedge it replaced.
+        """
+        lines = []
+        for i, user in enumerate(("admin", "oracle", "test")):
+            lines += [
+                f"Jul 27 14:4{i}:57 combo sshd[10{i}]: Invalid user {user} "
+                "from 5.36.59.76",
+                f"Jul 27 14:4{i}:58 combo sshd[10{i}]: pam_unix(sshd:auth): "
+                "authentication failure; logname= uid=0 euid=0 tty=ssh ruser= "
+                "rhost=5.36.59.76",
+                f"Jul 27 14:4{i}:59 combo sshd[10{i}]: Failed password for "
+                f"invalid user {user} from 5.36.59.76 port 22 ssh2",
+            ]
+        search_map = self._search_map("\n".join(lines) + "\n")
+
+        # The count itself is the ruled one: lines, not attempts, not a sum.
+        assert (
+            "5.36.59.76: failed_password=3, pam_auth_failure=3, invalid_user=6 "
+            "\u2192 auth total=9" in search_map
+        ), search_map
+
+        # Anchored on the header's own start: the Distinct IPs header above
+        # it also names "IP auth breakdown", in a cross-reference.
+        header = next(
+            line
+            for line in search_map.splitlines()
+            if line.lstrip().startswith("IP auth breakdown")
+        )
+        assert "attempt count" not in header.lower(), header
+        assert "upper bound" in header.lower(), header
+
 
 @pytest.mark.unit
 class TestTheMentionRule:

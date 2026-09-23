@@ -1253,6 +1253,13 @@ class LogsAndErrorsExtractor:
         # adding them double-counts the dominant line of every OpenSSH
         # brute-force file. Membership keys on the same tally as the total,
         # so the set listed and the number reported cannot disagree.
+        # ‼ A line count is still not an ATTEMPT count: for one password try
+        # against an invalid user sshd writes three lines carrying the IP
+        # (Invalid user, pam_unix authentication failure, Failed password),
+        # so three attempts render as ``auth total=9``. The header therefore
+        # calls it an upper bound. Counting attempts would mean counting
+        # outcome lines instead — a different semantic from the one fm#1596
+        # was ruled to, and not decided here.
         auth_ips = [
             ip
             for ip, _ in ip_all_counts.most_common(top_n)
@@ -1261,12 +1268,14 @@ class LogsAndErrorsExtractor:
         if auth_ips:
             parts.append(
                 "  IP auth breakdown"
-                " [use these event-specific counts for auth-attempt totals,"
+                " [use these event-specific counts for auth questions,"
                 " not the line-occurrence counts above."
-                " auth total = LINES carrying an auth event, which is the"
-                " attempt count; do NOT add the per-event numbers — one line"
-                ' can match several (e.g. "Failed password for invalid user"'
-                " is one attempt counted under both)]:"
+                " auth total = LINES carrying an auth event for that IP."
+                " It is an UPPER BOUND on attempts, not a count of them:"
+                " sshd can log one attempt on several lines (Invalid user,"
+                " PAM authentication failure, Failed password)."
+                " Do not add the per-event numbers either — one line can"
+                ' match several (e.g. "Failed password for invalid user")]:'
             )
             for ip in auth_ips[:5]:
                 ev_parts = [

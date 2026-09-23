@@ -118,7 +118,11 @@ document-scoped fails rather than passing quietly.
   `Failed password for invalid user` line, because the categories are not
   mutually exclusive. The per-category numbers beside it are per line as
   well, and are still what says *which* categories a line matched; what
-  changed is that they are no longer added together.
+  changed is that they are no longer added together. A line count is still
+  **not an attempt count**: sshd logs one password attempt against an invalid
+  user on three lines that carry the IP (`Invalid user`, the `pam_unix`
+  authentication failure, `Failed password`), so the total is an upper bound
+  on attempts, and the rendered header says that rather than calling it one.
 
 #### Rows written before fm#1587
 

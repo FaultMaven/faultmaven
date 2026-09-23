@@ -539,6 +539,50 @@ class TestConfigSeparatorCannotCrossALineEnding:
             re.compile(r"\b(?:host)\b[ \t]*[:=][ \t]*([A-Za-z][\w.\-]{1,253})")
         )
 
+    @pytest.mark.parametrize(
+        "value_class,admits",
+        [
+            # Excluding one spelling of a line ending leaves the other: both
+            # of these capture across a bare CR (or LF) into the next key.
+            pytest.param(r"[^\n]+", True, id="negated-LF-only"),
+            pytest.param(r"[^\r]+", True, id="negated-CR-only"),
+            pytest.param(r"[^,]+", True, id="negated-neither"),
+            pytest.param(r"[^\S]+", True, id="negated-non-space"),
+            # Excluding both is the only safe negated class.
+            pytest.param(r"[^\r\n]+", False, id="negated-CR-and-LF"),
+            pytest.param(r"[^\s]+", False, id="negated-whitespace"),
+            pytest.param(r"[^\s,]+", False, id="negated-whitespace-and-comma"),
+        ],
+    )
+    def test_the_scan_judges_a_negated_class_per_line_ending(
+        self, value_class: str, admits: bool
+    ) -> None:
+        """A negated class is safe only when it excludes CR AND LF.
+
+        ``[^\\n]+`` excludes the newline and therefore reads as safe to a
+        check that asks "does it mention a line ending", yet it captures
+        ``'\\rport: 1'`` from ``'host:\\rport: 1'`` — the fm#1600 leak on a
+        bare-CR file, passed by the guard written to catch it. Each verdict
+        is checked against what the pattern actually captures, so the scan
+        cannot be right on paper and wrong on bytes.
+        """
+        pattern = re.compile(r"\bhost\b[ \t]*[:=]" + value_class)
+        assert _admits_a_line_ending(pattern) is admits, value_class
+
+        # The scan's claim is "this pattern can match a line ending", so that
+        # is what is checked on bytes — whether the match SPANS a CR or LF,
+        # not whether it happens to reach the next key (``[^\\S]+`` eats the
+        # CR and stops, which is still a match the scan must report).
+        crosses = any(
+            any(ch in m.group(0) for ch in "\r\n")
+            for m in (pattern.search(f"host:{ending}port: 1") for ending in "\r\n")
+            if m
+        )
+        assert crosses is admits, (
+            f"{value_class}: the scan says admits={admits}, but a match "
+            f"spanning a line ending {'did' if crosses else 'did not'} happen"
+        )
+
 
 def _config_patterns() -> dict[str, re.Pattern[str]]:
     """Every module-level compiled pattern in ``entities/config.py``."""
@@ -589,11 +633,19 @@ def _admits_a_line_ending(pattern: re.Pattern[str]) -> bool:
             while end < len(source) and source[end] != "]":
                 end += 2 if source[end] == "\\" else 1
             body = source[i + 1 : end]
+            # A line ending is spelled three ways and CR alone is one of them,
+            # so the question is per character: does this class match CR,
+            # and does it match LF? ``\\s`` covers both; ``\\n``/``\\r`` (or
+            # the raw characters, from a non-raw pattern string) cover one.
+            spells_lf = any(t in body for t in ("\\s", "\\n", "\n"))
+            spells_cr = any(t in body for t in ("\\s", "\\r", "\r"))
             if body.startswith("^"):
-                # A negated class matches CR/LF unless it excludes them.
-                if not any(token in body for token in ("\\s", "\\n", "\\r")):
+                # A negated class admits every character it does not name, so
+                # it is safe only if it names BOTH: ``[^\\n]+`` still eats a
+                # bare CR and binds a key to the next line of a CR-only file.
+                if not (spells_lf and spells_cr):
                     return True
-            elif any(token in body for token in ("\\s", "\\W", "\\D", "\\n", "\\r")):
+            elif spells_lf or spells_cr or "\\W" in body or "\\D" in body:
                 return True
             i = end + 1
             continue
