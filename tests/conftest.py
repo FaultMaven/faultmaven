@@ -130,12 +130,6 @@ if "torch" not in sys.modules:
         __version__ = "2.0.0"
 
         def __getattr__(self, name):
-            # A dunder is a question about the module, not a torch attribute.
-            # Answering `__file__` with a Mock breaks inspect.getmodule() --
-            # and with it inspect.stack() -- for every module in the process,
-            # which is how coverage's Collector crashes an xdist worker (#1594).
-            if name.startswith("__") and name.endswith("__"):
-                raise AttributeError(name)
             # Return mock for any torch attribute
             if name in (
                 "nn",
