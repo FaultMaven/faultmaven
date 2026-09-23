@@ -385,13 +385,20 @@ class TestLogsExtractorProfileCountsLines:
         assert (EntityType.PORT, "9999") in registry
 
     def test_auth_breakdown_does_not_double_a_repeated_ip(self):
-        """fm#1587 item 1, the half entity-level de-duplication reaches.
+        """fm#1587 item 1, plus its residual fm#1596. The total moved 2 -> 1.
 
         ``Failed password for invalid user`` is ONE line matching TWO event
-        categories, and ``auth total`` sums across categories — so the
-        total below is 2 for a single event. That residual is fm#1596 and
-        is deliberately not fixed here; what IS fixed is that naming the IP
-        twice on the line no longer doubles it again to 4.
+        categories. fm#1587 stopped the ENTITY repeating on the line from
+        doubling it again (4 -> 2); this assertion pinned the 2 that was
+        left, and fm#1596 is why the number is now 1: ``auth total`` counts
+        the LINES carrying an auth event instead of summing the categories,
+        so one line recording one attempt reports one attempt. The
+        per-category numbers are unchanged and still say which categories
+        fired.
+
+        Both shapes are kept: they are the two independent ways this one
+        line used to be counted twice, and a regression in either is a
+        different bug.
         """
         one_ip = (
             "Jul 27 14:41:59 combo sshd[1]: Failed password for invalid user "
@@ -401,9 +408,142 @@ class TestLogsExtractorProfileCountsLines:
             "Jul 27 14:41:59 combo sshd[1]: Failed password for invalid user "
             "test from 10.0.0.5 port 1 ssh2 (src 10.0.0.5)\n"
         )
-        expected = "10.0.0.5: failed_password=1, invalid_user=1 \u2192 auth total=2"
+        expected = "10.0.0.5: failed_password=1, invalid_user=1 \u2192 auth total=1"
         assert expected in self._search_map(one_ip)
         assert expected in self._search_map(twice_on_the_line)
+
+    def test_auth_total_is_neither_the_sum_nor_the_largest_category(self):
+        """The shape that separates counting lines from its two near-misses.
+
+        Six lines from one IP: three match BOTH ``failed_password`` and
+        ``invalid_user``, two match ``failed_password`` only, one matches
+        ``invalid_user`` only. So ``failed_password=5``, ``invalid_user=4``,
+        and the number of auth LINES is 6.
+
+        Summing gives 9 (fm#1596, the defect), taking the largest category
+        gives 5, counting lines gives 6. The single-line fixture above
+        cannot tell those three apart, because there all three answer 1.
+        """
+        both = (
+            "Jul 27 14:4{i}:59 combo sshd[1]: Failed password for invalid "
+            "user test from 10.0.0.9 port 1 ssh2"
+        )
+        failed_only = (
+            "Jul 27 14:5{i}:59 combo sshd[1]: Failed password for root "
+            "from 10.0.0.9 port 1 ssh2"
+        )
+        invalid_only = (
+            "Jul 27 14:59:59 combo sshd[1]: Invalid user oracle "
+            "from 10.0.0.9 port 1 ssh2"
+        )
+        content = (
+            "\n".join(
+                [both.format(i=i) for i in range(3)]
+                + [failed_only.format(i=i) for i in range(2)]
+                + [invalid_only]
+            )
+            + "\n"
+        )
+        search_map = self._search_map(content)
+        assert (
+            "10.0.0.9: failed_password=5, invalid_user=4 \u2192 auth total=6"
+            in search_map
+        ), search_map
+
+    def test_auth_total_counts_only_auth_lines(self):
+        """A non-auth event on the same IP is not an auth attempt.
+
+        The categories the table renders are the auth ones; the tally behind
+        the total has to agree, or a ``Connection closed`` line — which
+        carries the IP and matches an event — is reported as an attempt that
+        never happened. Five lines for one IP, three of them auth: the total
+        is 3, and the two connection_closed lines are visible only in the
+        line-occurrence count above the table.
+        """
+        auth = (
+            "Jul 27 14:4{i}:59 combo sshd[1]: Failed password for invalid "
+            "user test from 10.0.0.8 port 1 ssh2"
+        )
+        closed = "Jul 27 14:5{i}:59 combo sshd[1]: Connection closed by 10.0.0.8"
+        content = (
+            "\n".join(
+                [auth.format(i=i) for i in range(3)]
+                + [closed.format(i=i) for i in range(2)]
+            )
+            + "\n"
+        )
+        search_map = self._search_map(content)
+        assert (
+            "10.0.0.8: failed_password=3, invalid_user=3 \u2192 auth total=3"
+            in search_map
+        ), search_map
+        assert (
+            "10.0.0.8: 5 line occurrences (all event types)" in search_map
+        ), search_map
+
+    def test_the_header_does_not_call_a_line_count_an_attempt_count(self):
+        """One sshd attempt is three lines, so the total is an upper bound.
+
+        For one password try against an invalid user, OpenSSH writes three
+        lines carrying the source IP: ``Invalid user``, the ``pam_unix``
+        authentication failure, and ``Failed password for invalid user``.
+        Three attempts logged that way are nine auth LINES, which is what
+        fm#1596's ruling has the table count — so ``auth total=9`` is right
+        as a line count and wrong as an attempt count.
+
+        The header must therefore say which it is. An earlier revision of
+        this change told the model the total "is the attempt count", on
+        exactly the shape where it is off by 3x — a more confident claim
+        than the hedge it replaced.
+        """
+        lines = []
+        for i, user in enumerate(("admin", "oracle", "test")):
+            lines += [
+                f"Jul 27 14:4{i}:57 combo sshd[10{i}]: Invalid user {user} "
+                "from 5.36.59.76",
+                f"Jul 27 14:4{i}:58 combo sshd[10{i}]: pam_unix(sshd:auth): "
+                "authentication failure; logname= uid=0 euid=0 tty=ssh ruser= "
+                "rhost=5.36.59.76",
+                f"Jul 27 14:4{i}:59 combo sshd[10{i}]: Failed password for "
+                f"invalid user {user} from 5.36.59.76 port 22 ssh2",
+            ]
+        search_map = self._search_map("\n".join(lines) + "\n")
+
+        # The count itself is the ruled one: lines, not attempts, not a sum.
+        assert (
+            "5.36.59.76: failed_password=3, pam_auth_failure=3, invalid_user=6 "
+            "\u2192 auth total=9" in search_map
+        ), search_map
+
+        # Anchored on the header's own start: the Distinct IPs header above
+        # it also names "IP auth breakdown", in a cross-reference.
+        header = next(
+            line
+            for line in search_map.splitlines()
+            if line.lstrip().startswith("IP auth breakdown")
+        )
+        assert "attempt count" not in header.lower(), header
+        assert "upper bound" in header.lower(), header
+
+    def test_the_prompt_routing_agrees_with_the_header(self):
+        """The model reads ``auth total`` through two channels; both hedge it.
+
+        The table's own header is one. The evidence-grounding block routes
+        "auth counts per IP" questions to that table — the other. When the
+        header learned that the total is an upper bound, the routing line
+        still offered the table as the auth count with no caveat. This pins
+        the routing line to the same claim rather than to its wording.
+        """
+        from faultmaven.core.investigation.prompts.templates import (
+            _EVIDENCE_GROUNDING_BLOCK,
+        )
+
+        routing = " ".join(_EVIDENCE_GROUNDING_BLOCK.split())
+        start = routing.index("For auth counts per IP")
+        clause = routing[start : routing.index('For "list all X"', start)]
+        assert "IP auth breakdown" in clause, clause
+        assert "upper bound" in clause.lower(), clause
+        assert "attempt count" not in clause.lower(), clause
 
 
 @pytest.mark.unit

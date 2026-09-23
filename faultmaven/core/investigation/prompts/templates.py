@@ -708,9 +708,10 @@ By question type:
   counts); do not say "systemic" or "widespread" unless rate AND per-host
   distribution support it.
 - Retrieval / specific value ("which IP", "show me lines where Y") → check
-  `<search_map>` per-event-type tables FIRST. For auth counts per IP, the
-  "IP auth breakdown" table gives per-event-type totals; the "Distinct IPs"
-  line-occurrence counts are NOT auth totals. For "list all X", read the
+  `<search_map>` per-event-type tables FIRST. For auth counts per IP, use the
+  "IP auth breakdown" table, not the "Distinct IPs" line-occurrence counts;
+  its `auth total` counts auth LINES, an upper bound on attempts (one attempt
+  can span several lines). For "list all X", read the
   entity profile directly. Call `search_file` only when the search_map can't
   answer.
 - Count / "how many X" → call `search_file` for the authoritative count AND

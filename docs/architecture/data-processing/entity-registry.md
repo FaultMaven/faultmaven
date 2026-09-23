@@ -112,9 +112,17 @@ document-scoped fails rather than passing quietly.
   mod_jk worker-state tallies are *occurrence* counts rendered as prose in the
   structural index; they render "occurrences", not "lines", and none of them
   reaches this table. A line carrying two HRESULTs recorded two events.
-- The `IP auth breakdown` block's `auth total` sums per-event-category counts,
-  so one line matching two categories is added twice. That is a separate
-  defect, tracked as fm#1596.
+- The `IP auth breakdown` block's `auth total` **is** a line count — the
+  number of lines carrying at least one auth event for that IP (fm#1596). It
+  used to sum the per-event-category counts, which double-counts every
+  `Failed password for invalid user` line, because the categories are not
+  mutually exclusive. The per-category numbers beside it are per line as
+  well, and are still what says *which* categories a line matched; what
+  changed is that they are no longer added together. A line count is still
+  **not an attempt count**: sshd logs one password attempt against an invalid
+  user on three lines that carry the IP (`Invalid user`, the `pam_unix`
+  authentication failure, `Failed password`), so the total is an upper bound
+  on attempts, and the rendered header says that rather than calling it one.
 
 #### Rows written before fm#1587
 
