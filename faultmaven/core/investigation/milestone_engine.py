@@ -5415,7 +5415,7 @@ class MilestoneEngine:
             logger.info(
                 f"Turn {case.current_turn} starting: state={case.state.value}, "
                 f"confirmed={case.inquiry.problem_statement_confirmed}, "
-                f"decided_to_investigate={case.inquiry.decided_to_investigate}"
+                f"confirmed_at={case.inquiry.problem_statement_confirmed_at}"
             )
         else:
             logger.info(
@@ -6166,8 +6166,6 @@ class MilestoneEngine:
                     # opportunistically once INVESTIGATING begins.
                     case.inquiry.problem_statement_confirmed = True
                     case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
-                    case.inquiry.decided_to_investigate = True
-                    case.inquiry.decision_made_at = datetime.now(UTC)
 
                     logger.info(
                         f"Case {case.case_id}: Gate 1 confirmed via confirmation intent "
@@ -10257,8 +10255,6 @@ class MilestoneEngine:
         ):
             case.inquiry.problem_statement_confirmed = True
             case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
-            case.inquiry.decided_to_investigate = True
-            case.inquiry.decision_made_at = datetime.now(UTC)
             logger.info(
                 f"User confirmed problem statement — transitioning to INVESTIGATING. "
                 f"statement='{case.inquiry.proposed_problem_statement[:80]}...'"

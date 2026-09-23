@@ -76,7 +76,6 @@ def _make_case(
         progress=InvestigationProgress(mitigation=mitigation),
         inquiry=InquiryData(
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
             thread_id="thread_123",
             proposed_problem_statement="Test symptom",
         ),

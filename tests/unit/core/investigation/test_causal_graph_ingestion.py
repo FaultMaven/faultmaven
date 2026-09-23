@@ -41,7 +41,6 @@ def _case(*, with_problem=True) -> Case:
         inquiry=InquiryData(
             proposed_problem_statement="Deploy fails",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
     )
     if with_problem:

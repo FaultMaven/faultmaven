@@ -126,7 +126,6 @@ def _mitigation_case() -> Case:
         ),
         inquiry=InquiryData(
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
             thread_id="thread_123",
             proposed_problem_statement="Test symptom",
         ),

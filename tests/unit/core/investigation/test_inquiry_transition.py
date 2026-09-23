@@ -137,7 +137,6 @@ class TestInquiryTransitionLogic:
         updated_case = result["case_updated"]
         assert updated_case.state == CaseState.INQUIRY
         assert updated_case.inquiry.problem_statement_confirmed is False
-        assert updated_case.inquiry.decided_to_investigate is False
         assert (
             updated_case.inquiry.proposed_problem_statement
             == "Production API unavailable - all requests failing with 500 errors"
@@ -170,7 +169,6 @@ class TestInquiryTransitionLogic:
         updated_case = result["case_updated"]
         assert updated_case.state == CaseState.INQUIRY
         assert updated_case.inquiry.problem_statement_confirmed is False
-        assert updated_case.inquiry.decided_to_investigate is False
         assert result["metadata"].get("status_transitioned", False) is False
 
     @pytest.mark.asyncio
@@ -201,7 +199,6 @@ class TestInquiryTransitionLogic:
         updated_case = result["case_updated"]
         assert updated_case.state == CaseState.INQUIRY
         assert updated_case.inquiry.problem_statement_confirmed is False
-        assert updated_case.inquiry.decided_to_investigate is False
 
     @pytest.mark.asyncio
     async def test_postmortem_no_auto_transition(
@@ -248,7 +245,6 @@ class TestInquiryTransitionLogic:
         )
         # Should NOT auto-confirm because is_ongoing=False
         assert updated_case.inquiry.problem_statement_confirmed is False
-        assert updated_case.inquiry.decided_to_investigate is False
 
     @pytest.mark.asyncio
     async def test_medium_urgency_no_auto_transition(
@@ -293,7 +289,6 @@ class TestInquiryTransitionLogic:
             == "Checkout performance degradation observed intermittently"
         )
         assert updated_case.inquiry.problem_statement_confirmed is False
-        assert updated_case.inquiry.decided_to_investigate is False
 
     @pytest.mark.asyncio
     async def test_multiturn_urgency_escalation_stays_inquiry(
@@ -362,7 +357,6 @@ class TestInquiryTransitionLogic:
         case_after_turn2 = result2["case_updated"]
         assert case_after_turn2.state == CaseState.INQUIRY
         assert case_after_turn2.inquiry.problem_statement_confirmed is False
-        assert case_after_turn2.inquiry.decided_to_investigate is False
 
     @pytest.mark.asyncio
     async def test_original_bug_scenario_no_premature_transition(
@@ -409,7 +403,6 @@ class TestInquiryTransitionLogic:
         )
         # Should NOT auto-confirm because is_ongoing=False and level=LOW
         assert updated_case.inquiry.problem_statement_confirmed is False
-        assert updated_case.inquiry.decided_to_investigate is False
         assert result["metadata"].get("status_transitioned", False) is False
 
     @pytest.mark.asyncio
@@ -460,7 +453,6 @@ class TestInquiryTransitionLogic:
         # nothing was ever proposed, and the scenario goes unexercised.
         assert updated_case.inquiry.proposed_problem_statement is not None
         assert updated_case.inquiry.problem_statement_confirmed is False
-        assert updated_case.inquiry.decided_to_investigate is False
 
     @pytest.mark.asyncio
     async def test_llm_proposed_statement_is_used(
@@ -507,7 +499,6 @@ class TestInquiryTransitionLogic:
             == "API latency spike to 8 seconds affecting dashboards"
         )
         assert updated_case.inquiry.problem_statement_confirmed is False
-        assert updated_case.inquiry.decided_to_investigate is False
 
     @pytest.mark.asyncio
     async def test_user_confirmation_triggers_transition(
@@ -584,7 +575,6 @@ class TestInquiryTransitionLogic:
         case_after_turn2 = result2["case_updated"]
         assert case_after_turn2.state == CaseState.INVESTIGATING
         assert case_after_turn2.inquiry.problem_statement_confirmed is True
-        assert case_after_turn2.inquiry.decided_to_investigate is True
         assert result2["metadata"]["status_transitioned"] is True
 
     @pytest.mark.asyncio
@@ -658,7 +648,6 @@ class TestInquiryTransitionLogic:
         case_after_turn2 = result2["case_updated"]
         assert case_after_turn2.state == CaseState.INQUIRY
         assert case_after_turn2.inquiry.problem_statement_confirmed is False
-        assert case_after_turn2.inquiry.decided_to_investigate is False
         assert (
             case_after_turn2.inquiry.proposed_problem_statement
             == "API returning 504 timeout errors affecting users"
@@ -730,7 +719,6 @@ class TestInquiryTransitionLogic:
             "regression the same-turn guard prevents."
         )
         assert case_after_turn1.inquiry.problem_statement_confirmed is False
-        assert case_after_turn1.inquiry.decided_to_investigate is False
         # The statement IS persisted — the agent presents it on the
         # next turn and the user confirms then.
         assert (
@@ -802,7 +790,6 @@ class TestInquiryTransitionLogic:
         # no path fork to commit.
         assert case_after_turn2.state == CaseState.INVESTIGATING
         assert case_after_turn2.inquiry.problem_statement_confirmed is True
-        assert case_after_turn2.inquiry.decided_to_investigate is True
 
 
 class TestContextBuilderConfirmationInjection:

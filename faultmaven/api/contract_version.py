@@ -1562,4 +1562,4 @@ asked to accept, and it belongs to a person.
 # and absent must read as "no": a client treating a missing value as
 # unknown-therefore-fine renders the dead control again, which is the whole
 # failure being closed.
-API_CONTRACT_VERSION = "7.2.0"
+API_CONTRACT_VERSION = "8.0.0"

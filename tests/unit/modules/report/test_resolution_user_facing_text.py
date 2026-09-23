@@ -50,7 +50,6 @@ def _resolved_case_with(conclusion: RootCauseConclusion) -> Case:
         inquiry=InquiryData(
             proposed_problem_statement="checkout-api crash-looping",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
         problem_verification=ProblemVerification(
             symptom_statement="checkout-api crash-looping",

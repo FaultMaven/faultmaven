@@ -70,7 +70,6 @@ def _resolved_case(
         inquiry=InquiryData(
             proposed_problem_statement="p99 spikes on checkout",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
     )
     # likelihood must satisfy the RCC's confidence_consistency validator

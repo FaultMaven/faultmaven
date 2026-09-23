@@ -88,7 +88,6 @@ class TestEvidenceBearingRerouteToEngine:
             inquiry=InquiryData(
                 proposed_problem_statement="pods crashing",
                 problem_statement_confirmed=True,
-                decided_to_investigate=True,
             ),
             problem_verification=ProblemVerification(
                 symptom_statement="pods crashing", severity=CaseSeverity.HIGH
@@ -1540,7 +1539,6 @@ class TestMintedIntentTerminalConsentAdoption:
         case = create_sample_case(user_id=user_id)
         case.inquiry.proposed_problem_statement = "Test problem"
         case.inquiry.problem_statement_confirmed = True
-        case.inquiry.decided_to_investigate = True
         case.state = CaseState.INVESTIGATING
         case.pending_transition = {
             "to_state": "resolved",

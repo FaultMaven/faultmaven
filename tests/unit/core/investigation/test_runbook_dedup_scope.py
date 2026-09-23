@@ -111,7 +111,6 @@ def _case() -> Case:
         ),
         inquiry=InquiryData(
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
             proposed_problem_statement="Timeout",
         ),
     )

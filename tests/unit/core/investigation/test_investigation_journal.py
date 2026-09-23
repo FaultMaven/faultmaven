@@ -42,7 +42,6 @@ def _make_investigating_case(**overrides) -> Case:
         "state": CaseState.INVESTIGATING,
         "inquiry": InquiryData(
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
             proposed_problem_statement="Test description",
         ),
     }

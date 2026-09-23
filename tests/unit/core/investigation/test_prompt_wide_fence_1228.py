@@ -178,7 +178,6 @@ def _case(
         ),
         inquiry=InquiryData(
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
             proposed_problem_statement="Checkout crash-looping",
         ),
         evidence=[_evidence()],
@@ -208,7 +207,6 @@ def _terminal_case(title: str = "Checkout crash-looping") -> Case:
         state=CaseState.RESOLVED,
         inquiry=InquiryData(
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
             proposed_problem_statement="Checkout crash-looping",
         ),
         current_turn=9,

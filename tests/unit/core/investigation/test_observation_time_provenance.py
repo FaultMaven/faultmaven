@@ -52,7 +52,6 @@ def _case(uploaded=None) -> Case:
         inquiry=InquiryData(
             proposed_problem_statement="etcd quorum lost",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
         problem_verification=ProblemVerification(
             symptom_statement="etcd quorum lost", severity=CaseSeverity.HIGH
@@ -252,7 +251,6 @@ def test_every_mode_that_states_the_rule_also_states_the_definition(processing_m
         state=CaseState.INVESTIGATING,
         inquiry=InquiryData(
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
             proposed_problem_statement="Nightly OOM kills",
         ),
         current_turn=6,

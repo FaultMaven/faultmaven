@@ -39,7 +39,6 @@ def _case() -> Case:
         inquiry=InquiryData(
             proposed_problem_statement="Deploy fails",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
         problem_verification=ProblemVerification(
             symptom_statement="Deploy to on-prem job fails",

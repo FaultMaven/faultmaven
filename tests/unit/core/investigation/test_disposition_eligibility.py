@@ -78,7 +78,6 @@ def _make_investigating_case() -> Case:
         description="Test problem",
         inquiry=InquiryData(
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
             proposed_problem_statement="Test problem",
         ),
         problem_verification=ProblemVerification(
@@ -383,7 +382,6 @@ class TestLifecycleIntegration:
         from faultmaven.modules.case.contracts import InvestigationProgress
 
         case.inquiry.problem_statement_confirmed = True
-        case.inquiry.decided_to_investigate = True
         case.inquiry.proposed_problem_statement = "Problem"
         case.description = "Problem"
         case.state = CaseState.INVESTIGATING

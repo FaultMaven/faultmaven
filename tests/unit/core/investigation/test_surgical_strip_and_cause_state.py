@@ -196,7 +196,6 @@ class TestDeferredImplementationClose:
         # Inquiry readiness must be satisfied BEFORE the state assignment —
         # validate_assignment runs the INVESTIGATING gate on every __setattr__.
         case.inquiry.problem_statement_confirmed = True
-        case.inquiry.decided_to_investigate = True
         # NB: the state is chosen here but every other field is set BELOW, so
         # an early return would leave solution_feasible unset and the proposer
         # would bail at its FIRST guard — the test would pass while proving

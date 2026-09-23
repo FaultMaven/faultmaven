@@ -112,8 +112,6 @@ def investigating(sample_case, sample_user_id):
     c.inquiry.proposed_problem_statement = "Nightly OOM kills"
     c.inquiry.problem_statement_confirmed = True
     c.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
-    c.inquiry.decided_to_investigate = True
-    c.inquiry.decision_made_at = datetime.now(timezone.utc)
     c.state = CaseState.INVESTIGATING
     c.current_turn = 1
     c.turn_history = [

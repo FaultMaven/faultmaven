@@ -275,7 +275,6 @@ def _transform_inquiry(case: Case) -> CaseUIResponse_Inquiry:
     inquiry_data = InquiryResponseData(
         proposed_problem_statement=case.inquiry.proposed_problem_statement,
         problem_statement_confirmed=case.inquiry.problem_statement_confirmed,
-        decided_to_investigate=case.inquiry.decided_to_investigate,
         inquiry_turns=case.inquiry.inquiry_turns,
         problem_confirmation=(
             {

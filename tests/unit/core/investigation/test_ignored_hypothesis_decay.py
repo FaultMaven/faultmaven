@@ -66,7 +66,6 @@ def _case(current_turn: int) -> Case:
         inquiry=InquiryData(
             proposed_problem_statement="db slow",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
         problem_verification=ProblemVerification(
             symptom_statement="db slow", severity=CaseSeverity.HIGH

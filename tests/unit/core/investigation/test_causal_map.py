@@ -95,7 +95,6 @@ def _graded_case(
         inquiry=InquiryData(
             proposed_problem_statement="p99 spikes on checkout",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
     )
     case.root_cause_conclusion = RootCauseConclusion(

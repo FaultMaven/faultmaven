@@ -72,7 +72,6 @@ def _make_case(
     inquiry = InquiryData()
     inquiry.proposed_problem_statement = "Checkout latency spike"
     inquiry.problem_statement_confirmed = True
-    inquiry.decided_to_investigate = True
 
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",

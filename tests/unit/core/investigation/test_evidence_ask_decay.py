@@ -76,7 +76,6 @@ def _case(turn: int = 10) -> Case:
     inquiry = InquiryData()
     inquiry.proposed_problem_statement = "Assume-role calls fail"
     inquiry.problem_statement_confirmed = True
-    inquiry.decided_to_investigate = True
     case = Case(
         case_id=generate_case_id(),
         user_id="u",

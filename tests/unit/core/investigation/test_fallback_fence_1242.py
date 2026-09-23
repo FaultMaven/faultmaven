@@ -244,7 +244,6 @@ def _case(
         ),
         inquiry=InquiryData(
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
             proposed_problem_statement=proposed,
         ),
         evidence=[_evidence()] if with_upload else [],

@@ -85,7 +85,6 @@ def _make_case(cause_state: CauseState, *, with_symptom: bool = False) -> Case:
         inquiry=InquiryData(
             proposed_problem_statement="pods crashing",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
     )
     case.progress.cause_state = cause_state

@@ -131,8 +131,6 @@ def case(sample_case, sample_user_id):
     sample_case.inquiry.proposed_problem_statement = "etcd connectivity"
     sample_case.inquiry.problem_statement_confirmed = True
     sample_case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
-    sample_case.inquiry.decided_to_investigate = True
-    sample_case.inquiry.decision_made_at = datetime.now(timezone.utc)
     sample_case.state = CaseState.INVESTIGATING
     # Non-zero on purpose: it is what makes "the counter was not written" a
     # real assertion rather than one that holds at its default.

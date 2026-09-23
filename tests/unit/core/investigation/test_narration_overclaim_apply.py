@@ -64,7 +64,6 @@ def _make_investigating_case() -> Case:
         inquiry=InquiryData(
             proposed_problem_statement="INV-40 apply-path test",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
     )
     case.state = CaseState.INVESTIGATING

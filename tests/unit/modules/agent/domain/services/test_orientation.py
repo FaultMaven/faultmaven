@@ -106,7 +106,6 @@ def _investigating(needs=(), messages=()):
         inquiry=InquiryData(
             proposed_problem_statement="Nightly OOM kills",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
         current_turn=6,
     )

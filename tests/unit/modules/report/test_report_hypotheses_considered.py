@@ -42,7 +42,6 @@ def _case_with(*hypotheses: Hypothesis) -> Case:
         inquiry=InquiryData(
             proposed_problem_statement="checkout-api is OOM-killed",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
     )
     terminal_at = datetime(2026, 8, 18, 12, 0, 0, tzinfo=UTC)

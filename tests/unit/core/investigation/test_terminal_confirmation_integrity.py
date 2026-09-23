@@ -66,8 +66,6 @@ def _make_investigating_case() -> Case:
     case.inquiry.proposed_problem_statement = "Test problem"
     case.inquiry.problem_statement_confirmed = True
     case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
-    case.inquiry.decided_to_investigate = True
-    case.inquiry.decision_made_at = datetime.now(timezone.utc)
     case.state = CaseState.INVESTIGATING
     case.progress = InvestigationProgress()
     return case
@@ -216,8 +214,8 @@ class TestMintedIntentGateOneConsentGuard:
     transition". True, and it is not the whole question. With no pending
     transition the minted ``confirmation`` reaches the engine's section 0c,
     which on an INQUIRY case carrying a proposed problem statement sets
-    ``problem_statement_confirmed`` + ``decided_to_investigate`` — Gate 1 —
-    and ``_check_automatic_transitions`` then fires INQUIRY → INVESTIGATING.
+    ``problem_statement_confirmed`` — Gate 1 — and
+    ``_check_automatic_transitions`` then fires INQUIRY → INVESTIGATING.
 
     The suggestions that reach this are the engine's own
     ``_investigation_confirmation_suggestions`` pair, so the classifier is
@@ -234,8 +232,6 @@ class TestMintedIntentGateOneConsentGuard:
         case.state = CaseState.INQUIRY
         case.inquiry.problem_statement_confirmed = False
         case.inquiry.problem_statement_confirmed_at = None
-        case.inquiry.decided_to_investigate = False
-        case.inquiry.decision_made_at = None
         case.pending_transition = None
         return case
 

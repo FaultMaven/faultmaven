@@ -85,7 +85,6 @@ def _make_case(*, established: bool = True) -> Case:
         inquiry=InquiryData(
             proposed_problem_statement="pods crashing",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
     )
     case.current_turn = 5

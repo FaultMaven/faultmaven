@@ -52,7 +52,6 @@ def _case(state: CaseState, *, pending_transition: dict | None = None) -> Case:
         inquiry=InquiryData(
             proposed_problem_statement="intermittent latency",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
         problem_verification=ProblemVerification(
             symptom_statement="intermittent latency", severity=CaseSeverity.HIGH

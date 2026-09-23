@@ -60,8 +60,6 @@ def _case_with_hypotheses(
             proposed_problem_statement="VM fails to start",
             problem_statement_confirmed=True,
             problem_statement_confirmed_at=now,
-            decided_to_investigate=True,
-            decision_made_at=now,
             inquiry_turns=1,
         ),
     )

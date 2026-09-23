@@ -126,8 +126,6 @@ def _inquiry_case_awaiting_gate_one() -> Case:
     case.inquiry.proposed_problem_statement = PROPOSED
     case.inquiry.problem_statement_confirmed = False
     case.inquiry.problem_statement_confirmed_at = None
-    case.inquiry.decided_to_investigate = False
-    case.inquiry.decision_made_at = None
     case.pending_transition = None
     return case
 
@@ -170,8 +168,6 @@ def _assert_gate_one_uncommitted(case: Case) -> None:
         "statement the user asked to refine"
     )
     assert case.inquiry.problem_statement_confirmed_at is None
-    assert case.inquiry.decided_to_investigate is False
-    assert case.inquiry.decision_made_at is None
     assert case.state == CaseState.INQUIRY, (
         "#1464: Gate 1 alone drives _check_automatic_transitions, so a "
         "committed decline also transitions INQUIRY -> INVESTIGATING"
@@ -196,7 +192,6 @@ class TestGateOneCommitsOnConsentOnly:
         case = _inquiry_case_awaiting_gate_one()
         await _decide_click(case, confirmation_value=True, payload_text=CONFIRM_PAYLOAD)
         assert case.inquiry.problem_statement_confirmed is True
-        assert case.inquiry.decided_to_investigate is True
         assert case.state == CaseState.INVESTIGATING
 
     async def test_a_confirmation_intent_with_no_value_commits_nothing(self):

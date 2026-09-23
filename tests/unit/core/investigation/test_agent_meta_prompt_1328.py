@@ -90,7 +90,6 @@ def _case(state: CaseState) -> Case:
         current_stage=InvestigationStage.DIAGNOSIS if investigating else None,
         inquiry=InquiryData(
             problem_statement_confirmed=investigating,
-            decided_to_investigate=investigating,
             proposed_problem_statement="Nightly OOM kills",
         ),
         current_turn=6,

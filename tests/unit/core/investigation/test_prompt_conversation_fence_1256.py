@@ -139,7 +139,6 @@ def _case(messages=None, current_turn=2) -> Case:
         current_stage=InvestigationStage.DIAGNOSIS,
         inquiry=InquiryData(
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
             proposed_problem_statement="Checkout crash-looping",
         ),
         current_turn=current_turn,

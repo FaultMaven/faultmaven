@@ -96,7 +96,6 @@ def _make_resolved_case(case_id: str = "case_aabb11223344") -> Case:
         ),
         inquiry=InquiryData(
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
             proposed_problem_statement="Timeout",
         ),
     )
@@ -1009,7 +1008,6 @@ class TestDedupSkipObservability:
             ),
             inquiry=InquiryData(
                 problem_statement_confirmed=True,
-                decided_to_investigate=True,
                 proposed_problem_statement="Timeout",
             ),
         )

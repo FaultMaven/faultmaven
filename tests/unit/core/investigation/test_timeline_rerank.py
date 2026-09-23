@@ -107,7 +107,6 @@ def _case(evidence_list: list[Evidence]) -> Case:
         state=CaseState.INVESTIGATING,
         inquiry=InquiryData(
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
             proposed_problem_statement="Test",
         ),
         evidence=evidence_list,

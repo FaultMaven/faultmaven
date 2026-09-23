@@ -52,7 +52,6 @@ def _case(symptom_verified: bool) -> Case:
         inquiry=InquiryData(
             proposed_problem_statement="orders failing",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
         problem_verification=ProblemVerification(
             symptom_statement="orders failing", severity=CaseSeverity.HIGH

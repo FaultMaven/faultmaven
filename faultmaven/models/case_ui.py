@@ -342,11 +342,6 @@ class InquiryResponseData(BaseModel):
         default=False, description="Whether user confirmed the problem statement"
     )
 
-    decided_to_investigate: bool = Field(
-        default=False,
-        description="Whether agent has enough info to start investigation",
-    )
-
     inquiry_turns: int = Field(
         default=0,
         ge=0,

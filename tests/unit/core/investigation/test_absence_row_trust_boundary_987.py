@@ -76,7 +76,6 @@ def _case() -> Case:
         inquiry=InquiryData(
             proposed_problem_statement="IRSA exchange fails",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
         problem_verification=ProblemVerification(
             symptom_statement="IRSA AssumeRoleWithWebIdentity fails in prod-west-2",

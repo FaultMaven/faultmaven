@@ -149,8 +149,6 @@ def case(sample_case, sample_user_id):
     sample_case.inquiry.proposed_problem_statement = "Nightly OOM kills"
     sample_case.inquiry.problem_statement_confirmed = True
     sample_case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
-    sample_case.inquiry.decided_to_investigate = True
-    sample_case.inquiry.decision_made_at = datetime.now(timezone.utc)
     sample_case.state = CaseState.INVESTIGATING
     # Turn 1 already consumed AND recorded, so the persisted clock (the
     # recording repository writes ``effective_current_turn``) reads 1 and the
@@ -280,7 +278,6 @@ class TestOutOfBandTurn:
         case.state = CaseState.INQUIRY
         case.title = "Case-260918-3"
         case.inquiry.problem_statement_confirmed = False
-        case.inquiry.decided_to_investigate = False
         case.messages = []
         case.turn_history = []
         case.current_turn = 0
@@ -429,8 +426,6 @@ class TestControls:
         case.pending_transition = None
         case.inquiry.problem_statement_confirmed = False
         case.inquiry.problem_statement_confirmed_at = None
-        case.inquiry.decided_to_investigate = False
-        case.inquiry.decision_made_at = None
         service.intent_resolver.resolve = AsyncMock(
             return_value={"type": "confirmation", "confirmation_value": True}
         )

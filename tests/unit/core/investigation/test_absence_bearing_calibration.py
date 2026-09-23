@@ -134,7 +134,6 @@ def _incident_case():
         inquiry=InquiryData(
             proposed_problem_statement="payments pods crashlooping",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
         problem_verification=ProblemVerification(
             symptom_statement="payments pods crashlooping",

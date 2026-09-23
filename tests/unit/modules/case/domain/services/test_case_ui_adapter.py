@@ -83,7 +83,6 @@ def _make_investigating_case(**overrides) -> Case:
     )
     case.inquiry.proposed_problem_statement = "DNS resolution failing on prod"
     case.inquiry.problem_statement_confirmed = True
-    case.inquiry.decided_to_investigate = True
     case.state = CaseState.INVESTIGATING
 
     # Apply remaining overrides

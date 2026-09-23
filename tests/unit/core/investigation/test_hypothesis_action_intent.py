@@ -47,7 +47,6 @@ def _make_case() -> Case:
     inquiry = InquiryData(
         proposed_problem_statement="Deploy to on-prem job fails",
         problem_statement_confirmed=True,
-        decided_to_investigate=True,
     )
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",

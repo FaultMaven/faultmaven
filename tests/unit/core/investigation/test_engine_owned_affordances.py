@@ -86,7 +86,6 @@ def _investigating_case(*, symptom_verified: bool = False) -> Case:
     inquiry = InquiryData(
         proposed_problem_statement="Production API is returning 500s",
         problem_statement_confirmed=True,
-        decided_to_investigate=True,
         preliminary_urgency=PreliminaryUrgency(
             level=UrgencyLevel.CRITICAL,
             is_ongoing=True,
@@ -232,7 +231,6 @@ def _insufficient_evidence_case() -> Case:
         inquiry=InquiryData(
             proposed_problem_statement="intermittent latency",
             problem_statement_confirmed=True,
-            decided_to_investigate=True,
         ),
         problem_verification=ProblemVerification(
             symptom_statement="intermittent latency", severity=CaseSeverity.HIGH
