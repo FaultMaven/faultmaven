@@ -1149,6 +1149,23 @@ def _solution_display_titles(solutions: list) -> list[str]:
     ]
 
 
+def closure_verdict(case: "Case") -> str:
+    """``assess_closure_readiness(case).verdict`` without building the message.
+
+    The full assessment formats a user-facing markdown block — the root-cause
+    line, the joined solution titles — which a caller wanting only the verdict
+    discards. Two of them do: the deferred-disposition proposer's re-nag
+    signature and the resolution backstop's, both on the per-turn generation
+    path, where #1195 has already had to de-duplicate this family of reads once.
+
+    A thin delegate rather than a reimplementation of the branch conditions. A
+    second copy of "which disposition does this case warrant" is exactly the
+    drift ``assess_closure_readiness`` centralises; the saving here is the
+    string building, not the predicates.
+    """
+    return assess_closure_readiness(case).verdict
+
+
 def assess_closure_readiness(case: "Case") -> ClosureReadiness:
     """Summarize what was accomplished during investigation, or pivot to RESOLVED
     if the case actually qualifies for resolution.

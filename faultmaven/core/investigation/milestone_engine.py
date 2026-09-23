@@ -2402,6 +2402,16 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     # turn, so an offer the user only asked about returns on the next one.
     if metadata.get(_ENGINE_DISPOSITION_WITHDRAWN_KEY):
         return
+    # The turn began inside a disposition handshake. Same reasoning as the
+    # resolution backstop's copy of this guard, and the hazard is if anything
+    # sharper here: this proposer can substitute a DIFFERENT target (its
+    # SUGGEST_RESOLVE pivot offers RESOLVED) into a channel the user was
+    # mid-answer on. ``_note_engine_disposition_withdrawn`` above does not
+    # cover it — that one fires only when the withdrawn offer carried an
+    # engine signature, so an LLM-opened close the user merely asked about
+    # leaves it unset.
+    if metadata.get(_DISPOSITION_GATE_ANSWERED_KEY):
+        return
 
     closure = assess_closure_readiness(case)
     # A decline POSTPONES the offer until the case changes underneath it.
@@ -2537,11 +2547,15 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
 
     from faultmaven.core.investigation.terminal_transitions import (
         ResolutionReadiness,
-        assess_closure_readiness,
         assess_resolution_readiness,
+        cause_identification_leg,
+        closure_verdict,
         deferred_disposition_signature,
         propose_transition,
     )
+
+    if not getattr(case, "progress", None):
+        return
 
     readiness = assess_resolution_readiness(case)
     if readiness.verdict != ResolutionReadiness.READY:
@@ -2549,12 +2563,13 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
 
     # Same signature space as the deferred proposer, deliberately: both offer
     # RESOLVED off the same justifying state, so one refusal must silence both.
-    # ``assess_closure_readiness`` returns SUGGEST_RESOLVE on every case that
-    # clears the READY bar (both gate on ``_has_causal_absence``), so this is
-    # the same string that proposer would compute — computed rather than
-    # hardcoded so the two cannot drift if either gate is re-scoped.
-    closure = assess_closure_readiness(case)
-    signature = deferred_disposition_signature(case, closure.verdict)
+    # The verdict is SUGGEST_RESOLVE on every case that clears the READY bar
+    # (both gate on ``_has_causal_absence``), so this is the same string that
+    # proposer would compute — computed rather than hardcoded so the two cannot
+    # drift if either gate is re-scoped, and taken through ``closure_verdict``
+    # so the user-facing message this call would otherwise build and throw away
+    # is not built at all.
+    signature = deferred_disposition_signature(case, closure_verdict(case))
     if signature in case.progress.deferred_disposition_declined_signatures:
         return
 
@@ -2569,13 +2584,31 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
     # is what its two siblings do, and it is too weak HERE, where the sentence
     # directly above it may be a false completion claim this prose has to
     # contradict rather than merely sit beside.
-    gate_message = (
-        "The root cause is confirmed eliminated — it was removed and the "
-        "problem went with it — which is the bar for **resolved**. The case is "
-        "still open until you confirm: marking it resolved records the "
-        "attribution and writes up the resolution summary. Shall I mark this "
-        "case resolved?"
-    )
+    # READY is a confirmed ELIMINATION, which is not the same as a confirmed
+    # CAUSE: ``assess_resolution_readiness`` deliberately does not require a
+    # root-cause record, so an out-of-band fix reported verbally resolves on
+    # the absence row alone (INV-41 names this the ``none`` leg). Saying "the
+    # root cause is confirmed eliminated ... records the attribution" on such
+    # a case names something the case does not hold — and because composing
+    # this prose suppresses the INV-40 over-claim notice, nothing downstream
+    # would correct it. This is the one opener with no model involvement, so
+    # the claim would be entirely engine-authored.
+    if cause_identification_leg(case) is not None:
+        confirmed = (
+            "The root cause is confirmed eliminated — it was removed and the "
+            "problem went with it — which is the bar for **resolved**. The "
+            "case is still open until you confirm: marking it resolved records "
+            "the attribution and writes up the resolution summary."
+        )
+    else:
+        confirmed = (
+            "You've confirmed the problem is gone after the fix, which is the "
+            "bar for **resolved**. The case is still open until you confirm: "
+            "marking it resolved writes up what happened. No root cause is on "
+            "record, so the write-up will say so — if you can name what caused "
+            "it, tell me and I'll record that first."
+        )
+    gate_message = f"{confirmed} Shall I mark this case resolved?"
     propose_transition(case=case, to_state="resolved", summary=gate_message)
     case.pending_transition["justifying_signature"] = signature
     # NOT the #722 guard here (see the docstring — ordering covers that): this
@@ -3393,7 +3426,21 @@ def engine_owned_affordances(
         return None
     if not is_progress_stalled(case):
         return None
-
+    # ‼ KNOWN GAP, deliberately not closed here. A case carrying a qualifying
+    # ``causal_absence_evidence`` row has had its cause confirmed ELIMINATED,
+    # and every reading below asks for something that would help GROUND one —
+    # discriminating data, a distinct restatement, expected-vs-observed. None
+    # is coherent on such a case. Observed: a user who declined the resolve
+    # offer once and then went quiet was served "Describe the expected vs.
+    # observed behavior" about a problem they had already confirmed gone.
+    #
+    # Vetoing the readings on ``_has_causal_absence`` is the obvious fix and is
+    # WRONG as a drive-by: the #1136 fixtures build work-gate-passing cases out
+    # of absence rows, so the veto also silences ``treatment_blocked`` on every
+    # case they represent. Whether a resolution confirmation should override
+    # the verification-status join is a question about that cell's design, not
+    # about this consolidator, and it wants its own change rather than seven
+    # shipped tests rewritten to accommodate a guard added here.
     status = assess_verification_status(case)
     # ONE hold read per call, hoisted so neither branch below re-derives it: two
     # reads of the same fact in one turn is both a second tokenization sweep and
@@ -3473,7 +3520,9 @@ def _note_engine_disposition_withdrawn(case: "Case", metadata: dict) -> None:
         metadata[_ENGINE_DISPOSITION_WITHDRAWN_KEY] = True
 
 
-def _record_deferred_disposition_decline(case: "Case") -> None:
+def _record_deferred_disposition_decline(
+    case: "Case", *, superseded_by: "str | None" = None
+) -> None:
     """Persist that the user refused an ENGINE-proposed offer, against the
     state that justified it.
 
@@ -3526,6 +3575,24 @@ def _record_deferred_disposition_decline(case: "Case") -> None:
     pending = getattr(case, "pending_transition", None) or {}
     if not getattr(case, "progress", None):
         return
+    # A refusal the engine is about to OVERRIDE is not a refusal. When the
+    # contradicting pick is CLOSE on a case the closure gate reads as
+    # SUGGEST_RESOLVE, INV-37 pivots it straight back to a resolve proposal on
+    # this same turn — so recording "the user refused resolve" would log
+    # "not re-proposing until the justifying state changes" and then re-propose
+    # in the next breath, while permanently poisoning the signature the
+    # backstop keys on. Nothing was settled, so nothing is recorded.
+    if (
+        superseded_by == CaseState.CLOSED.value
+        and pending.get("to_state") == CaseState.RESOLVED.value
+    ):
+        from faultmaven.core.investigation.terminal_transitions import (
+            ClosureReadiness,
+            closure_verdict,
+        )
+
+        if closure_verdict(case) == ClosureReadiness.SUGGEST_RESOLVE:
+            return
     # Present only when an ENGINE proposer wrote it.
     signature = pending.get("justifying_signature")
     if not signature and pending.get("to_state") == CaseState.RESOLVED.value:
@@ -5719,7 +5786,7 @@ class MilestoneEngine:
                     # the provenance (fm#1122) — otherwise the engine's
                     # deferred disposition re-fires next turn from state the
                     # user just contradicted.
-                    _record_deferred_disposition_decline(case)
+                    _record_deferred_disposition_decline(case, superseded_by=new_target)
                     _note_engine_disposition_withdrawn(case, metadata)
                     cancel_pending_transition(case)
                     logger.info(
@@ -6397,12 +6464,21 @@ class MilestoneEngine:
 
                 # Fall through to normal LLM processing for acknowledgment
 
-            # NL transition detection happens upstream in
-            # InvestigationService._detect_transition_intent — typed
-            # transition requests reach this point as
-            # intent_type == "status_transition" (handled above), never as
-            # "conversation". Conversation that does not request a
-            # transition flows directly into the LLM block below.
+            # ‼ There is NO natural-language transition detector. This said
+            # one lived in ``InvestigationService._detect_transition_intent``;
+            # no such function exists anywhere in the tree. A typed "mark this
+            # resolved" reaches here as ``conversation`` and its only route to
+            # the state machine is the MODEL emitting ``proposed_transition``
+            # (the COMPLETION prompt's "user expresses transition intent"
+            # branch). ``IntentResolver`` cannot substitute — it matches typed
+            # text against suggestions ALREADY on screen, so with nothing
+            # standing it has nothing to match.
+            #
+            # Worth knowing before promising a deterministic typed path: the
+            # engine-owned openers are Gate 1 and the INV-43 resolution
+            # backstop, both driven by case state rather than by what the user
+            # typed. A structured ``status_transition`` intent is handled above
+            # and is now CLOSED-only.
 
             # 1. Gather Context & Build Prompt
             # KB retrieval during turns is handled by the kb_qa tool in the
