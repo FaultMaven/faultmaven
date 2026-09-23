@@ -1933,22 +1933,16 @@ def _render_evidence_block(
     )
     current_turn = getattr(case, "current_turn", 0) or 0
     tier_a_set = set(id(ev) for ev in scored[:EVIDENCE_CONTEXT_RECENT_COUNT])
-    # Current-turn floor (INV-EC-1): evidence created THIS turn is the highest-
-    # signal context for the turn's task. Force it into Tier A regardless of the
-    # recent_count cap or relevance score so it always gets a full render.
-    if current_turn > 0:
-        for ev in data_evidence:
-            if ev.collected_at_turn == current_turn:
-                tier_a_set.add(id(ev))
-
-    # Order Tier A current-turn-first so the budget downgrade below only ever
-    # hits older evidence, never the file the user just provided.
-    def _current_turn_first(ev) -> int:
-        return 0 if (current_turn > 0 and ev.collected_at_turn == current_turn) else 1
-
-    tier_a = sorted(
-        (ev for ev in data_evidence if id(ev) in tier_a_set), key=_current_turn_first
-    )
+    # INV-EC-1's current-turn floor is the ORPHAN-FILE pass below, which keys on
+    # the FILE (``uf.uploaded_at_turn == current_turn``) and is the arm that
+    # delivers the guarantee. A second, row-shaped copy of it used to sit here
+    # (force any ``ev.collected_at_turn == current_turn`` row into Tier A, then
+    # sort those rows first) and could never fire: an Evidence row is minted
+    # after the model answers, so at prompt-build time every row is historical —
+    # see :func:`_evidence_data_turn` for why the data turn, not the row turn, is
+    # what "this turn" means here. Deleted as obsolete in #1603; Tier A keeps the
+    # ``case.evidence`` order it has always rendered in.
+    tier_a = [ev for ev in data_evidence if id(ev) in tier_a_set]
     tier_b = [ev for ev in data_evidence if id(ev) not in tier_a_set]
 
     # Model-aware budget; falls back to the module-level char cap when the
@@ -1979,7 +1973,10 @@ def _render_evidence_block(
     #      points at a tool it cannot call (NO INCORRECT CONCLUSION). "directed_
     #      analysis" is the classifier's ambiguous default and does NOT by itself
     #      imply tool calling works, so tool-availability must be checked here.
-    # The current-turn upload always keeps its full extract (freshness / INV-EC-1).
+    # The file the user uploaded THIS turn keeps its full extract, because it has
+    # no Evidence row yet and renders through the orphan floor below, which does
+    # not elide (freshness / INV-EC-1). Nothing is carved out of the evidence
+    # tiers for it — there is nothing there to carve out (#1603).
     da_index_only = processing_mode == "directed_analysis" and tools_available
 
     result = _open_evidence_collected(fence)
@@ -2073,10 +2070,11 @@ def _render_evidence_block(
 
         truncated = False
 
-        is_current_turn_ev = current_turn > 0 and ev.collected_at_turn == current_turn
-        # In DA index-only mode, HISTORICAL evidence drops its file_extract body
-        # (stub + search_map only). The current-turn upload keeps its extract.
-        suppress_extract = da_index_only and not is_current_turn_ev
+        # In DA index-only mode, evidence drops its file_extract body (stub +
+        # search_map only). Every row reaching this loop IS historical — a
+        # current-turn upload has no Evidence row yet and renders through the
+        # orphan floor above — so there is no current-turn row to exempt (#1603).
+        suppress_extract = da_index_only
 
         # Per-item cap applies to file_extract (the orientation content)
         if (
@@ -2087,25 +2085,18 @@ def _render_evidence_block(
             file_extract = file_extract[:EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM]
             truncated = True
 
-        # Total budget cap. Current-turn evidence is prioritized but BOUNDED:
-        # it skips the downgrade only while the current-turn reserve still has
-        # room (so a fresh item always wins a full render), not unconditionally —
-        # otherwise N current-turn evidence rows could each render in full with
-        # no cap and blow the whole evidence budget. Once the reserve is spent,
-        # current-turn evidence degrades to a Tier-B summary like everything else.
-        # A suppressed extract contributes no extract bytes to the estimate.
+        # Total budget cap. A suppressed extract contributes no extract bytes to
+        # the estimate. No item here is exempt: the current-turn reserve is spent
+        # by the orphan floor above, which is the only place a current-turn item
+        # renders, so the carve-out this loop used to carry ("skip the downgrade
+        # while the reserve has room") guarded a row that cannot exist (#1603).
         entry_estimate = (
             (0 if suppress_extract else len(file_extract))
             + len(ev.summary or "")
             + len(ev.extract or "")
             + _TIER_A_MARKUP_OVERHEAD_CHARS
         )
-        within_reserve = total_chars < current_turn_floor_chars
-        exempt_from_downgrade = is_current_turn_ev and within_reserve
-        if (
-            not exempt_from_downgrade
-            and total_chars + entry_estimate > effective_total_chars
-        ):
+        if total_chars + entry_estimate > effective_total_chars:
             # Downgrade remaining Tier A to Tier B (summary only)
             tier_b.append(ev)
             continue

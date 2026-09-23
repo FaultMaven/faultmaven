@@ -47,9 +47,8 @@ remaining budget with the historical evidence tiers, which degrade gracefully
 
 ### 2.1 Current-turn floor (reserved, highest priority, bounded)
 
-Current-turn items — each orphan `UploadedFile` with `uploaded_at_turn ==
-current_turn`, and each file-backed `Evidence` row with `collected_at_turn ==
-current_turn` — are prioritized into a **reserved slice** of the budget
+Current-turn items are the orphan `UploadedFile` rows with `uploaded_at_turn ==
+current_turn`. They are prioritized into a **reserved slice** of the budget
 (`current_turn_reserve_fraction`, default `0.5`, of the evidence budget,
 floored at one `max_chars_per_item`):
 
@@ -59,11 +58,6 @@ floored at one `max_chars_per_item`):
   exceeds the reserve — and otherwise as a **summary stub** (the `<uploaded_file>`
   tag with `file_id`/`searchable` and a "use search_file" note, no body). They
   are marked handled so the historical tiers neither re-render nor drop them.
-- **Current-turn file-backed evidence** is forced into Tier A and rendered before
-  historical Tier-A items, and is **exempt from the budget downgrade only while
-  the reserve has room**. Once the reserve is spent it degrades to a Tier-B
-  summary like any other item — so N current-turn evidence rows cannot render in
-  full without bound and blow the budget.
 
 The guarantee is therefore: a current-turn item is **always present** (full
 within the reserve, summary beyond), never evicted by historical evidence, and
@@ -71,7 +65,19 @@ the current-turn spend is **bounded** by the reserve (except the single
 guaranteed-full first orphan). This honors the prompt's `_FILE_SELECTION_DEFAULT`
 rule without letting current-turn input overflow the evidence budget.
 
-Scope note: the floor covers current-turn **file-backed** items. Current-turn
+Why the floor keys on the **file** and not on the `Evidence` row: the turn
+number advances before the prompt is built, and a file-backed `Evidence` row is
+minted *after* the model answers (`_apply_investigation_updates`). So at every
+prompt-build `ev.collected_at_turn < case.current_turn`, and the file the user
+just uploaded has no row yet — it is always an orphan here, which is exactly the
+arm above. A second, row-shaped copy of this floor used to sit in the Tier-A
+selection (force `collected_at_turn == current_turn` rows into Tier A, render
+them first, exempt them from the budget downgrade) and could never fire; it was
+deleted as obsolete in #1603, verified by a byte-for-byte render comparison
+across all four shapes. `_evidence_data_turn` states the same invariant for the
+`fresh_this_turn` attribute (#512).
+
+Scope note: the floor covers current-turn **file** items. Current-turn
 **chat-extracted** evidence (`source_file_id IS NULL`, e.g. a snippet the user
 pasted into chat this turn) is rendered in Tier C under the shared budget, not
 the reserved floor.
