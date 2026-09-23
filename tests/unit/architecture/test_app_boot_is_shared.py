@@ -56,8 +56,10 @@ CENSUS_COMMAND = 'grep -rn "with TestClient(" tests/ --include=*.py'
 #: Sites that command finds, including the one inside a string literal.
 #: It was **56** before fm#1569 (25 of them entering the real app's lifespan,
 #: in six files, for 29 lifespans per run once the helpers called more than
-#: once are counted).
-EXPECTED_TOTAL_SITES = 39
+#: once are counted). The grep missed one more context entered as
+#: ``client_cm = TestClient(...)`` then ``with client_cm``; that one is now
+#: written as ``with TestClient(...)``, so the grep counts it.
+EXPECTED_TOTAL_SITES = 40
 
 #: Of those, the ones that enter the real application's lifespan. Was 25.
 EXPECTED_REAL_APP_SITES = 8
@@ -119,6 +121,16 @@ EXPECTED: dict[str, dict[str, tuple[str, int]]] = {
     # -- drives an app the test built itself --------------------------------
     "tests/integration/api/test_no_unauthenticated_operations.py": {
         "test_a_gate_declared_after_a_service_parameter_is_not_a_gate": ("scratch", 1),
+        # NOT faultmaven.main.app: a fresh application rebuilt by
+        # ``_served_under`` under a pinned environment, which is the subject of
+        # the test. It pays a full lifespan, but on its own app object, so it
+        # cannot overlap the shared boot. It was written as
+        # ``client_cm = TestClient(...)`` then ``with client_cm``, which the
+        # grep census could not see; it now reads ``with TestClient(...)``.
+        "test_the_debug_routes_refuse_anonymous_and_non_operator_callers": (
+            "scratch",
+            1,
+        ),
     },
     "tests/unit/api/middleware/test_composed_route_policy.py": {
         "test_an_undeclared_composed_mint_is_collapsed_to_a_409": ("scratch", 1),
@@ -333,12 +345,47 @@ def _qualname_map(tree: ast.Module) -> dict[ast.AST, ast.AST]:
     return parents
 
 
-def scan_source(source: str) -> list[tuple[str, str, int]]:
-    """``(qualname, "real"|"scratch", lineno)`` for every ``with TestClient(...)``."""
-    tree = _parse(source)
+def _app_argument(call: ast.Call) -> ast.AST | None:
+    """The application a ``TestClient(...)`` call was given.
+
+    Positional or ``app=`` — both reach the same parameter, and reading only
+    the first slot would classify ``TestClient(app=app)`` as a scratch app.
+    """
+    if call.args:
+        return call.args[0]
+    for keyword in call.keywords:
+        if keyword.arg == "app":
+            return keyword.value
+    return None
+
+
+#: The ways a ``TestClient`` gets its lifespan entered, as a scan sees them.
+#: ``with`` is the form the text census counts; the other two run the same
+#: lifespan without the literal ``with TestClient(`` anywhere on the line.
+FORM_WITH = "with"
+FORM_ENTER_CONTEXT = "enter_context"
+FORM_BOUND_THEN_WITH = "bound-then-with"
+
+
+def boot_sites(tree: ast.Module) -> list[tuple[ast.AST | None, str, str, int, str]]:
+    """Every place a ``TestClient`` context is entered in this module.
+
+    ``(enclosing_function, qualname, "real"|"scratch", lineno, form)``. This is
+    the ONE resolver the census, the real-app count and the
+    ``unshared_app_boot`` check all read, so none of them can recognise a
+    shape the others miss.
+    """
     aliases = real_app_aliases(tree)
     clients = client_class_aliases(tree)
     parents = _qualname_map(tree)
+
+    def enclosing(node: ast.AST):
+        cur = parents.get(node)
+        while cur is not None:
+            if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return cur
+            cur = parents.get(cur)
+        return None
 
     def qualname(node: ast.AST) -> str:
         parts: list[str] = []
@@ -349,21 +396,78 @@ def scan_source(source: str) -> list[tuple[str, str, int]]:
             cur = parents.get(cur)
         return ".".join(reversed(parts)) or "<module>"
 
-    found: list[tuple[str, str, int]] = []
+    def is_client_call(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Call)
+            and (_dotted(node.func) or "").split(".")[-1] in clients
+        )
+
+    def kind_of(call: ast.Call) -> str:
+        arg = _app_argument(call)
+        target = _dotted(arg) if arg is not None else None
+        return "real" if target in aliases else "scratch"
+
+    # Names bound to a TestClient(...) call, per enclosing function, so that
+    # ``client = TestClient(app)`` followed by ``with client:`` is seen.
+    bound: dict[tuple[int, str], ast.Call] = {}
     for node in ast.walk(tree):
-        if not isinstance(node, (ast.With, ast.AsyncWith)):
-            continue
-        for item in node.items:
-            call = item.context_expr
-            if not isinstance(call, ast.Call):
-                continue
-            if (_dotted(call.func) or "").split(".")[-1] not in clients:
-                continue
-            arg = call.args[0] if call.args else None
-            target = _dotted(arg) if arg is not None else None
-            kind = "real" if target in aliases else "scratch"
-            found.append((qualname(node), kind, node.lineno))
-    return found
+        if isinstance(node, ast.Assign) and is_client_call(node.value):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    bound[(id(enclosing(node)), target.id)] = node.value
+
+    sites = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                expr = item.context_expr
+                if is_client_call(expr):
+                    sites.append(
+                        (
+                            enclosing(node),
+                            qualname(node),
+                            kind_of(expr),
+                            node.lineno,
+                            FORM_WITH,
+                        )
+                    )
+                elif isinstance(expr, ast.Name):
+                    call = bound.get((id(enclosing(node)), expr.id))
+                    if call is not None:
+                        sites.append(
+                            (
+                                enclosing(node),
+                                qualname(node),
+                                kind_of(call),
+                                node.lineno,
+                                FORM_BOUND_THEN_WITH,
+                            )
+                        )
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "enter_context"
+            and node.args
+            and is_client_call(node.args[0])
+        ):
+            sites.append(
+                (
+                    enclosing(node),
+                    qualname(node),
+                    kind_of(node.args[0]),
+                    node.lineno,
+                    FORM_ENTER_CONTEXT,
+                )
+            )
+    return sites
+
+
+def scan_source(source: str) -> list[tuple[str, str, int]]:
+    """``(qualname, "real"|"scratch", lineno)`` for every entered ``TestClient``."""
+    return [
+        (qualname, kind, lineno)
+        for _func, qualname, kind, lineno, _form in boot_sites(_parse(source))
+    ]
 
 
 @functools.lru_cache(maxsize=1)
@@ -415,6 +519,24 @@ def text_census() -> dict[str, int]:
 # The guard
 # ---------------------------------------------------------------------------
 
+#: What a failing assertion tells its reader to do. Every count-bearing message
+#: carries it, because a message that only says "the number moved" invites the
+#: one fix that defeats the guard: bumping the number while two lifespans
+#: overlap on one app object.
+_WHAT_TO_DO = textwrap.dedent("""
+    Before changing any pinned number here:
+      * a test that needs *a* started application takes the
+        `booted_app_client` fixture (tests/conftest.py) and opens no
+        TestClient context of its own;
+      * a test whose SUBJECT is the lifespan keeps its own TestClient
+        context AND takes the `unshared_app_boot` fixture, which stands the
+        module's shared boot down first — then it is listed in EXPECTED as
+        "real" with the reason;
+      * an application built inside the test is listed as "scratch".
+    Updating a count without one of these leaves two lifespans on one app
+    object, which is the failure this guard exists to prevent (fm#1569).
+    """)
+
 
 def test_every_test_client_context_is_accounted_for():
     """A new ``with TestClient(...)`` anywhere in ``tests/`` fails here."""
@@ -435,25 +557,13 @@ def test_every_test_client_context_is_accounted_for():
             if live.get(path, {}).get(qualname) != value:
                 gone.append(f"  {path}::{qualname} listed as {value!r}, not found")
 
-    assert not unlisted and not gone, textwrap.dedent("""
-        The `with TestClient(...)` census moved.
-
-        A site that needs *a* started application should take the
-        `booted_app_client` fixture (tests/conftest.py), which boots
-        faultmaven.main.app once per module instead of once per test. A site
-        whose subject IS the lifespan keeps its own `with TestClient(app)`,
-        takes `unshared_app_boot`, and is listed in EXPECTED as "real" with the
-        reason. A scratch application built inside the test is listed as
-        "scratch".
-
-        Appeared or changed:
-        {unlisted}
-
-        Listed but not found (rename or removal — update EXPECTED):
-        {gone}
-        """).format(
-        unlisted="\n".join(unlisted) or "  (none)",
-        gone="\n".join(gone) or "  (none)",
+    assert not unlisted and not gone, (
+        "The TestClient census moved.\n"
+        + _WHAT_TO_DO
+        + "\nAppeared or changed:\n"
+        + ("\n".join(unlisted) or "  (none)")
+        + "\n\nListed but not found (rename or removal — update EXPECTED):\n"
+        + ("\n".join(gone) or "  (none)")
     )
 
 
@@ -468,13 +578,18 @@ def test_the_two_censuses_agree_on_the_total():
     from_ast = sum(count for f in census().values() for _kind, count in f.values())
     in_strings = sum(EXPECTED_SITES_IN_STRING_LITERALS.values())
 
-    assert (
-        from_text == EXPECTED_TOTAL_SITES
-    ), f"{CENSUS_COMMAND} now finds {from_text} sites, not {EXPECTED_TOTAL_SITES}"
+    assert from_text == EXPECTED_TOTAL_SITES, (
+        f"{CENSUS_COMMAND} now finds {from_text} sites, not "
+        f"{EXPECTED_TOTAL_SITES}.\n" + _WHAT_TO_DO
+    )
     assert from_ast + in_strings == from_text, (
         f"the AST scan sees {from_ast} sites and {in_strings} are declared to live "
         f"inside string literals, which does not add up to the {from_text} the "
-        "text census finds — a site is being parsed as something else"
+        "text census finds. Either a site is being parsed as something else, or "
+        "a TestClient context is entered in a form the grep cannot see (an "
+        "aliased class, `with client:` after `client = TestClient(...)`, "
+        "`enter_context(TestClient(...))`). Write it as `with TestClient(...)`.\n"
+        + _WHAT_TO_DO
     )
 
 
@@ -492,6 +607,8 @@ def test_the_real_app_is_booted_by_only_a_handful_of_sites():
     assert len(real) == EXPECTED_REAL_APP_SITES, (
         "the number of sites entering faultmaven.main.app's lifespan changed:\n  "
         + "\n  ".join(sorted(real))
+        + "\n"
+        + _WHAT_TO_DO
     )
 
 
@@ -508,34 +625,22 @@ def test_an_unshared_boot_is_declared():
         source = path.read_text(encoding="utf-8")
         if "TestClient" not in source or "booted_app_client" not in source:
             continue
-        tree = _parse(source)
-        aliases = real_app_aliases(tree)
         rel = path.relative_to(TESTS_ROOT.parent).as_posix()
-        for func in ast.walk(tree):
-            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        for func, qualname, kind, lineno, form in boot_sites(_parse(source)):
+            if kind != "real":
                 continue
-            params = {a.arg for a in func.args.args} | {
-                a.arg for a in func.args.kwonlyargs
-            }
-            for node in ast.walk(func):
-                if not isinstance(node, (ast.With, ast.AsyncWith)):
-                    continue
-                for item in node.items:
-                    call = item.context_expr
-                    if not isinstance(call, ast.Call):
-                        continue
-                    if (_dotted(call.func) or "").split(".")[-1] != "TestClient":
-                        continue
-                    arg = call.args[0] if call.args else None
-                    if (_dotted(arg) if arg is not None else None) not in aliases:
-                        continue
-                    if "unshared_app_boot" not in params:
-                        offenders.append(f"  {rel}:{node.lineno} in {func.name}()")
+            params = set()
+            if func is not None:
+                params = {a.arg for a in func.args.args} | {
+                    a.arg for a in func.args.kwonlyargs
+                }
+            if "unshared_app_boot" not in params:
+                offenders.append(f"  {rel}:{lineno} in {qualname} ({form})")
 
     assert not offenders, (
         "these tests boot faultmaven.main.app themselves in a module that also "
         "shares one, without taking the `unshared_app_boot` fixture that stands "
-        "the shared boot down:\n" + "\n".join(offenders)
+        "the shared boot down:\n" + "\n".join(offenders) + "\n" + _WHAT_TO_DO
     )
 
 
@@ -583,6 +688,25 @@ _ALIAS_SHAPES = {
         "from faultmaven.main import app\n"
         "with TC(app) as c:\n"
         "    pass\n"
+    ),
+    "app passed by keyword": (
+        "from faultmaven.main import app\n"
+        "with TestClient(app=app) as c:\n"
+        "    pass\n"
+    ),
+    "bound to a name, then entered": (
+        "from faultmaven.main import app\n"
+        "def test_x():\n"
+        "    client = TestClient(app, raise_server_exceptions=False)\n"
+        "    with client as c:\n"
+        "        pass\n"
+    ),
+    "entered through an ExitStack": (
+        "import contextlib\n"
+        "from faultmaven.main import app\n"
+        "def test_x():\n"
+        "    with contextlib.ExitStack() as stack:\n"
+        "        stack.enter_context(TestClient(app))\n"
     ),
     "yielded by a fixture": (
         "from faultmaven.main import app\n"
