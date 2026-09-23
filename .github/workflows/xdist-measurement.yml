@@ -8,12 +8,18 @@ name: xdist Measurement
 # the failure set stable, because the failing set was recorded shifting between
 # runs under whole-suite xdist. This workflow answers that question without
 # changing either required job: it re-runs each job's exact selection, flags
-# and environment in three arms that differ only in the distribution --
+# and environment in arms that differ only in the distribution --
 #
 #   serial   the required job's own invocation, re-run here so the baseline
 #            shares this workflow's runner draw and its log shape
 #   xdist-a  + `-n auto --dist loadfile`
 #   xdist-b  the same again, so one run is never read as evidence of stability
+#   xdist-logical-a/-b  `-n logical --dist loadfile`, twice
+#
+# Why a `logical` pair: `-n auto` counts PHYSICAL cores when psutil is
+# importable, and the 4-vCPU ubuntu-latest runner reports 2 of them -- the
+# first run here created 2 workers, not 4. `logical` uses every vCPU, so the
+# pair measures whether the other two are worth anything.
 #
 # `loadfile` rather than the default `load`: a module stays on one worker, so
 # module-scoped state (notably #1626's `booted_app_client`, one app lifespan
@@ -50,7 +56,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arm: [serial, xdist-a, xdist-b]
+        arm: [serial, xdist-a, xdist-b, xdist-logical-a, xdist-logical-b]
 
     steps:
       - name: Checkout Repository
@@ -71,10 +77,12 @@ jobs:
 
       - name: Record the runner
         # `-n auto` resolves to the CPU count, so the measurement is only
-        # readable next to it. The script parses these two lines.
+        # readable next to it. The script parses the two XDIST_MEASURE lines;
+        # lscpu says how many of the vCPUs are physical cores.
         run: |
           echo "XDIST_MEASURE nproc=$(nproc)"
           echo "XDIST_MEASURE commit=$(git rev-parse HEAD)"
+          lscpu | grep -E '^(CPU\(s\)|Thread\(s\) per core|Core\(s\) per socket|Socket\(s\)):' || true
 
       - name: Run Tests (Standalone, ${{ matrix.arm }})
         env:
@@ -91,10 +99,11 @@ jobs:
           CASE_STORAGE_TYPE: "inmemory"
           VECTOR_STORAGE_TYPE: "inmemory"
         run: |
-          dist=()
-          if [ "${ARM}" != "serial" ]; then
-            dist=(-n auto --dist loadfile)
-          fi
+          case "${ARM}" in
+            serial) dist=() ;;
+            xdist-logical-*) dist=(-n logical --dist loadfile) ;;
+            *) dist=(-n auto --dist loadfile) ;;
+          esac
           echo "XDIST_MEASURE arm=${ARM}"
           # A red run is data here, not a failure of the measurement: the
           # step always passes, and the log's summary line carries the result.
@@ -114,7 +123,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arm: [serial, xdist-a, xdist-b]
+        arm: [serial, xdist-a, xdist-b, xdist-logical-a, xdist-logical-b]
 
     services:
       redis:
@@ -156,6 +165,7 @@ jobs:
         run: |
           echo "XDIST_MEASURE nproc=$(nproc)"
           echo "XDIST_MEASURE commit=$(git rev-parse HEAD)"
+          lscpu | grep -E '^(CPU\(s\)|Thread\(s\) per core|Core\(s\) per socket|Socket\(s\)):' || true
 
       - name: Run Tests (Cloud, ${{ matrix.arm }})
         env:
@@ -173,10 +183,11 @@ jobs:
           CASE_STORAGE_TYPE: "inmemory"
           VECTOR_STORAGE_TYPE: "inmemory"
         run: |
-          dist=()
-          if [ "${ARM}" != "serial" ]; then
-            dist=(-n auto --dist loadfile)
-          fi
+          case "${ARM}" in
+            serial) dist=() ;;
+            xdist-logical-*) dist=(-n logical --dist loadfile) ;;
+            *) dist=(-n auto --dist loadfile) ;;
+          esac
           echo "XDIST_MEASURE arm=${ARM}"
           pytest tests/ "${dist[@]}" \
             --cov=faultmaven \

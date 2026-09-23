@@ -264,3 +264,31 @@ def test_fetch_asks_by_commit_for_every_attempt_and_skips_the_rest(
     assert json.loads((tmp_path / "manifest.json").read_text())[1]["arm"] == "xdist-a"
     loaded = xm.load_manifest(tmp_path / "manifest.json")
     assert loaded[1]["result"]["seconds"] == 512.34
+
+
+# The first measurement run's actual shape (run on 9ddd169fd): every worker
+# crashed in pytest-cov's session start, and pytest exited 3 with no footer.
+INTERNALERROR_LOG = _gh_log(
+    "XDIST_MEASURE nproc=4",
+    "XDIST_MEASURE arm=xdist-a",
+    "created: 2/2 workers",
+    "INTERNALERROR> E     TypeError: expected str, bytes or os.PathLike object, not Mock",
+    "INTERNALERROR> E   assert False",
+    "XDIST_MEASURE pytest_exit=3",
+)
+
+
+def test_an_internal_error_is_named_not_read_as_a_slow_or_clean_run(xm):
+    r = xm.parse_log(INTERNALERROR_LOG)
+    assert r.complete is False
+    assert r.internal_error is True
+    assert r.exit_code == 3
+    assert r.workers == 2
+    entry = {
+        "id": 7,
+        "suite": "standalone",
+        "arm": "xdist-a",
+        "label": "x #7",
+        "result": xm.asdict(r),
+    }
+    assert "INTERNALERROR, no tests ran" in xm.render([entry])

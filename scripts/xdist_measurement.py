@@ -64,7 +64,7 @@ _CHECKOUT_RE = re.compile(r"^HEAD is now at (?P<sha>[0-9a-f]{7,40}) ")
 # baseline CI already runs; the measurement workflow names its arms.
 _REQUIRED_RE = re.compile(r"^Test (?P<suite>Standalone|Cloud)$")
 _MEASURE_RE = re.compile(
-    r"^xdist Measurement (?P<suite>Standalone|Cloud) \((?P<arm>serial|xdist-[a-z0-9]+)\)$"
+    r"^xdist Measurement (?P<suite>Standalone|Cloud) \((?P<arm>serial|xdist-[a-z0-9-]+)\)$"
 )
 
 
@@ -80,6 +80,10 @@ class RunResult:
     nproc: int | None = None
     commit: str | None = None
     arm: str | None = None
+    # pytest crashed rather than reported: under xdist an INTERNALERROR in a
+    # worker's session start ends the run before a single test executes.
+    internal_error: bool = False
+    exit_code: int | None = None
 
 
 def strip_line(raw: str) -> str:
@@ -125,6 +129,12 @@ def parse_log(text: str) -> RunResult:
                 result.commit = value
             elif key == "arm":
                 result.arm = value
+            elif key == "pytest_exit" and value.isdigit():
+                result.exit_code = int(value)
+            continue
+
+        if line.startswith("INTERNALERROR>"):
+            result.internal_error = True
             continue
 
         checkout = _CHECKOUT_RE.match(line)
@@ -224,9 +234,9 @@ def diff_suite(suite: str, runs: list[dict]) -> SuiteDiff:
     )
 
 
-def _fmt_secs(secs: float | None) -> str:
+def _fmt_secs(secs: float | None, internal_error: bool = False) -> str:
     if secs is None:
-        return "incomplete"
+        return "INTERNALERROR, no tests ran" if internal_error else "incomplete"
     whole = int(round(secs))
     return f"{whole // 60}m{whole % 60:02d}s ({secs:.1f}s)"
 
@@ -250,7 +260,7 @@ def render(entries: list[dict]) -> str:
         r = e["result"]
         out.append(
             f"| {e['suite']} | {e['arm']} | {e['id']} | {(r['commit'] or e.get('head_sha') or '?')[:9]} "
-            f"| {r['nproc'] or '-'} | {r['workers'] or 1} | {_fmt_secs(r['seconds'])} "
+            f"| {r['nproc'] or '-'} | {r['workers'] or 1} | {_fmt_secs(r['seconds'], r.get('internal_error', False))} "
             f"| {r['counts'].get('passed', '-') if r['complete'] else '-'} "
             f"| {_failed(r) if r['complete'] else '-'} |"
         )
