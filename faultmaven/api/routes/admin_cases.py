@@ -50,6 +50,7 @@ from faultmaven.api.operator_grants import (
     validate_identifier,
 )
 from faultmaven.config.settings import get_settings
+from faultmaven.infrastructure.shims.metrics import Counter
 from faultmaven.models.api_models import (
     AdminCaseContentResponse,
     AdminCaseListResponse,
@@ -77,6 +78,32 @@ from faultmaven.providers.tenancy.factory import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: Which operator read was served. Pinned here because a call site that spells a
+#: surface not in this tuple mints a new label silently, and the question below is
+#: then asked of a population that quietly changed shape.
+OPERATOR_READ_SURFACES = ("list", "case_detail", "transcript")
+
+#: ``DeploymentMode`` values (``faultmaven/config/settings.py``), which is what
+#: ``resolved_deployment_mode()`` returns.
+OPERATOR_READ_DEPLOYMENTS = ("standalone", "cloud")
+
+operator_case_reads_total = Counter(
+    "faultmaven_operator_case_reads_total",
+    "Operator case reads served (ADR-012 D9), labeled by ``surface`` "
+    "(list | case_detail | transcript) and ``deployment`` (standalone | cloud). "
+    "It exists to answer ONE question: is the STANDALONE arm of these endpoints "
+    "still being reached? faultmaven-dashboard#178 stopped that client calling "
+    "them in standalone, which leaves the arm serving nobody — but "
+    "docs/development/api-contract-changes.md is explicit that a grep over "
+    "client source is not evidence (\"'Nobody should still be using it' is not "
+    'evidence"), because deployed clients are what matter and self-hosted '
+    "installs pin their image tag. The cloud rows are the denominator: they are "
+    "what distinguishes 'the standalone arm is unused' from 'this counter is not "
+    "wired'. Removing the arm is fm#1613, and waits on standalone reading zero "
+    "across a full deploy cycle.",
+    ["surface", "deployment"],
+)
 
 
 async def get_case_service(request: Request) -> ICaseService:
@@ -167,6 +194,13 @@ async def list_all_cases(
         },
     )
 
+    # After the audit write and the tenancy refusal above, so the counter's
+    # population is exactly the trail's: authorized reads about to be served,
+    # never one the multi-tenant gate turned away.
+    operator_case_reads_total.labels(
+        surface="list", deployment=resolved_deployment_mode()
+    ).inc()
+
     filters = CaseListFilter(state=state, source=source, limit=limit, offset=offset)
     summaries, total = await case_service.list_all_cases(filters)
 
@@ -233,7 +267,7 @@ async def open_case_content(
         operator=current_user,
         audit_repo=audit_repo,
         grant_repo=grant_repo,
-        details={"surface": "case_detail"},
+        surface="case_detail",
     )
 
     # ``user_id=None`` drops the owner ∪ shared check in the service: this is the
@@ -279,7 +313,8 @@ async def open_case_transcript(
         operator=current_user,
         audit_repo=audit_repo,
         grant_repo=grant_repo,
-        details={"surface": "transcript", "limit": limit, "offset": offset},
+        surface="transcript",
+        details={"limit": limit, "offset": offset},
     )
 
     # Existence is re-established through the same operator read the detail
@@ -306,7 +341,8 @@ async def _authorize_and_record_content_read(
     operator: AuthenticatedUser,
     audit_repo: IOperatorAuditRepository,
     grant_repo: IOperatorGrantRepository,
-    details: dict,
+    surface: str,
+    details: Optional[dict] = None,
 ) -> OperatorContentAccess:
     """Gate, record, and re-scope — in that order — for one content read.
 
@@ -320,6 +356,11 @@ async def _authorize_and_record_content_read(
        the record cannot be written.
     4. **Rebind** the RLS scope to the granted organization, so the read that
        follows is bound to that tenant rather than escaping the policy.
+
+    ``surface`` is a parameter rather than a key the callers put in ``details``
+    because it is now read TWICE — into the audit row and into
+    ``operator_case_reads_total`` — and two call sites spelling it separately is
+    how the trail and the metric would come to disagree about the same read.
     """
     validate_identifier(case_id, "case_id")
 
@@ -341,8 +382,14 @@ async def _authorize_and_record_content_read(
         reason=grant.reason if grant else None,
         grant_id=grant.grant_id if grant else None,
         expires_at=grant.expires_at if grant else None,
-        details={**details, "access": access.access},
+        details={**(details or {}), "surface": surface, "access": access.access},
     )
+
+    # Same placement as the list route: after the record, so the counter counts
+    # authorized reads about to be served and nothing the gate refused.
+    operator_case_reads_total.labels(
+        surface=surface, deployment=resolved_deployment_mode()
+    ).inc()
 
     bind_grant_enterprise_scope(access)
     return access
