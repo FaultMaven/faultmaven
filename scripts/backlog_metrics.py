@@ -35,11 +35,15 @@ Usage::
 ``--latency`` runs ``git blame`` over every fix PR's diff and is slow (about
 half a minute per hundred fix PRs); the rest completes in seconds. The
 flow, survival and open-set numbers come from GitHub metadata and never from
-reading issue text. Two sections do read bodies, each through one stated
+reading issue text. Three sections do read bodies, each through one stated
 grammar: the follow-up count reads the lane marker ("found while working on
-#N"), and the rule-4 tier reads the blocked pile's ``**Blocked on:**``
-statement and the repository files an issue cites outside a code block. Each
-body is parsed once per run, into a :class:`BodyFacts` every consumer shares.
+#N"), the rule-4 tier reads the blocked pile's ``**Blocked on:**`` statement
+(an issue, a ruling or a condition) and the repository files an issue cites
+outside a code block, and the question list reads the ready pile for
+decision, gating and trigger language — a list to read, never a label move
+(#1639). Each body is parsed once per run, into a :class:`BodyFacts` every
+consumer shares; the open issues' comments are read for one thing only, a
+ruling heading. An issue labelled ``tracking`` is in no pile.
 An open issue younger than the residue threshold is reported as *pending*,
 not as residue, so the newest week's row is comparable to the same row on a
 later run. A saved dump is replayed with ``--as-of <the time it was taken>``; ages
@@ -61,7 +65,7 @@ import sys
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 #: The checkout this script lives in. Every git call is anchored here so the
@@ -120,6 +124,11 @@ class Issue:
     closed: dt.datetime | None
     labels: tuple[str, ...]
     body: str
+    #: The comment bodies, oldest first, or ``None`` when they were not read
+    #: (a dump taken without them). Only the ruling-heading check reads them,
+    #: and ``None`` is told apart from "no comments" so the report can say
+    #: that check ran on the body alone.
+    comments: tuple[str, ...] | None = None
 
     @property
     def is_open(self) -> bool:
@@ -157,6 +166,7 @@ def load_issues(raw: Iterable[dict]) -> list[Issue]:
     issues = []
     for item in raw:
         closed_at = item.get("closedAt")
+        comments = item.get("comments")
         issues.append(
             Issue(
                 number=int(item["number"]),
@@ -164,6 +174,14 @@ def load_issues(raw: Iterable[dict]) -> list[Issue]:
                 closed=parse_utc_timestamp(closed_at) if closed_at else None,
                 labels=tuple(label["name"] for label in item.get("labels", ())),
                 body=item.get("body") or "",
+                comments=(
+                    None
+                    if comments is None
+                    else tuple(
+                        (c.get("body") or "") if isinstance(c, dict) else str(c)
+                        for c in comments
+                    )
+                ),
             )
         )
     return sorted(issues, key=lambda issue: issue.number)
@@ -192,7 +210,39 @@ def fetch_issues(repo: str) -> list[Issue]:
     )
     if result.returncode != 0:
         sys.exit(f"gh issue list failed: {result.stderr.strip() or 'no diagnostic'}")
-    return load_issues(json.loads(result.stdout))
+    raw = json.loads(result.stdout)
+    # Comments for the OPEN issues only, in a second call: the ruling-heading
+    # check is the one reader of them, and it reads the ready pile. Fetching
+    # them for every closed issue as well would multiply the payload for
+    # nothing. A failure here leaves them unread (``None``), which the report
+    # names, rather than failing the run.
+    comments = _gh(
+        "issue",
+        "list",
+        "--repo",
+        repo,
+        "--state",
+        "open",
+        "--limit",
+        "1000",
+        "--json",
+        "number,comments",
+    )
+    if comments.returncode == 0:
+        by_number = {
+            item["number"]: item.get("comments") or []
+            for item in json.loads(comments.stdout)
+        }
+        for item in raw:
+            if item["number"] in by_number:
+                item["comments"] = by_number[item["number"]]
+    else:
+        print(
+            "note: open issues' comments could not be read; a ruling recorded "
+            "only in a comment is not seen this run",
+            file=sys.stderr,
+        )
+    return load_issues(raw)
 
 
 def _week(when: dt.datetime) -> tuple[int, int]:
@@ -226,7 +276,7 @@ def snapshot_at(issues: Sequence[Issue], now: dt.datetime) -> list[Issue]:
         if issue.created > now:
             continue
         if issue.closed is not None and issue.closed > now:
-            issue = Issue(issue.number, issue.created, None, issue.labels, issue.body)
+            issue = replace(issue, closed=None)
         snapshot.append(issue)
     return snapshot
 
@@ -486,6 +536,15 @@ READY_LABEL = "pile:ready"
 BLOCKED_LABEL = "pile:blocked"
 YOURS_LABEL = "pile:yours"
 
+#: An issue carrying this label is in NO pile, whatever ``pile:`` labels it
+#: also carries: the ``Queue`` board, a campaign tracker, a document refined
+#: each round. None of them is work a lane can be dispatched against, so in
+#: ready one would be counted in the rule-4 tier and named as the reserved
+#: slot's buy; and a tracker carrying no pile label must not read as an
+#: unsorted arrival either, or step 2 sorts it straight back into ready
+#: (#1639, leak C — #819 carried ``tracking`` and ``pile:ready`` both).
+TRACKING_LABEL = "tracking"
+
 #: Picking rule 1: "it unblocks two or more other items".
 RULE_1_DEPENDENTS = 2
 
@@ -711,6 +770,9 @@ def pile_of(issue: Issue) -> str | None:
     count, so the two cannot name the same item as the slot's buy and as
     undispatchable (#1581).
 
+    An issue labelled ``tracking`` is in no pile at all (:data:`TRACKING_LABEL`)
+    and answers ``None`` whatever else it carries.
+
     Which pile it lands in is the rule's own second clause, read in that
     order — blocked when blocked is among them, **yours otherwise**.
     Defaulting to blocked instead put an item carrying no blocked label
@@ -719,6 +781,10 @@ def pile_of(issue: Issue) -> str | None:
     two repairs for one item, one of them for a statement it was never
     asked to write.
     """
+    if TRACKING_LABEL in issue.labels:
+        # In no pile, and not an unsorted arrival: a tracker (#1639). Any
+        # pile label it also carries is reported by the tier as a leftover.
+        return None
     piles = {label for label in issue.labels if label.startswith(_PILE_PREFIX)}
     if not piles:
         return None
@@ -754,6 +820,14 @@ class BlockingGraph:
     #: ``(blocked item, the issue it waits on)`` where that issue has closed —
     #: the condition has been met and nothing has moved the item.
     condition_met: list[tuple[int, int]]
+    #: ``(blocked item, the condition)`` for a deferral on something to be
+    #: OBSERVED rather than on an owner or an issue (#1639, leak B). Not
+    #: owner latency: *Needs your call* lists these as answered-and-waiting,
+    #: and step 2 checks each condition as it sorts.
+    on_condition: list[tuple[int, str]]
+    #: The subset of ``on_condition`` whose statement says it cannot be
+    #: observed today. Nothing checks those, so they are surfaced by name.
+    unobservable: list[int]
 
 
 #: A payload that says nothing. An agent that writes the required label and
@@ -787,6 +861,59 @@ _UNSTATED_PAYLOADS = frozenset(
 _UNREADABLE_CLIP = 120
 
 
+#: The third form a statement can take (#1639, leak B): a deferral on a
+#: CONDITION — ``**Blocked on:** condition — <what would be observed>``. It
+#: must OPEN the statement, as an issue reference must, so "an owner ruling
+#: on the condition for …" stays a ruling. An article and one qualifier are
+#: admitted before the word ("a measured precondition, not a ruling — …" is
+#: how the live statements were first written), and nothing else.
+_CONDITION_LEAD = re.compile(
+    r"^(?:an?[ \t]+)?(?:[\w-]+[ \t]+)?(?:pre)?condition\b", re.IGNORECASE
+)
+
+#: What may sit between the word and the condition itself: the separator,
+#: and the "not a ruling" the first live statements carried.
+_CONDITION_SEPARATOR = re.compile(
+    r"^[\s,]*(?:not[ \t]+a[ \t]+ruling)?[\s,]*[—–:\-]*[\s]*", re.IGNORECASE
+)
+
+#: A condition stated as not observable today. The procedure asks for this
+#: spelling rather than silence, because a deferral nothing can check has
+#: no exit but the owner, and saying so is what puts it in front of them.
+_UNOBSERVABLE = re.compile(r"^unobservable\b", re.IGNORECASE)
+
+
+def _statement_payload(text: str) -> str | None:
+    """The last ``**Blocked on:**`` statement's payload, or ``None``.
+
+    To the end of its paragraph, so a reference on the line BELOW the label
+    still belongs to it, with markdown links reduced to their text.
+    """
+    matches = list(_BLOCKED_ON_LABEL.finditer(text))
+    if not matches:
+        return None
+    payload = text[matches[-1].end() :].split("\n\n")[0]
+    return _MD_LINK.sub(r"\1", payload).strip()
+
+
+def _condition_of(payload: str) -> str | None:
+    """The condition a payload defers on, ``""`` if it names none, or
+    ``None`` when the payload is not in the condition form at all."""
+    lead = _CONDITION_LEAD.match(payload)
+    if lead is None:
+        return None
+    rest = payload[lead.end() :]
+    rest = rest[_CONDITION_SEPARATOR.match(rest).end() :]
+    rest = " ".join(rest.split())
+    return "" if _unstated(rest) else rest
+
+
+def blocked_on_condition(body: str) -> str | None:
+    """The condition a ``**Blocked on:**`` statement defers on, if it is one."""
+    payload = _statement_payload(without_code_blocks(body))
+    return None if payload is None else _condition_of(payload)
+
+
 def blocked_on(body: str, repo: str) -> tuple[bool, list[int], str]:
     """``(stated, the issues it names, the part that could not be read)``.
 
@@ -801,6 +928,11 @@ def blocked_on(body: str, repo: str) -> tuple[bool, list[int], str]:
     ``stated`` is "a statement was made", not "the label is present": a
     label with nothing but a placeholder after it answers ``False`` and
     lands in ``unstated``, which is the bucket that gets repaired.
+
+    A statement in the CONDITION form (:func:`blocked_on_condition`) is
+    stated, names no issue and has nothing unreadable: a reference inside a
+    condition is part of what would be observed, not an edge. One that
+    writes the word and no condition states nothing.
     """
     return _blocked_on_text(without_code_blocks(body), repo)
 
@@ -820,15 +952,13 @@ def _unstated(payload: str) -> bool:
 
 def _blocked_on_text(text: str, repo: str) -> tuple[bool, list[int], str]:
     """:func:`blocked_on` over a body whose code blocks are already blanked."""
-    matches = list(_BLOCKED_ON_LABEL.finditer(text))
-    if not matches:
+    payload = _statement_payload(text)
+    if payload is None or _unstated(payload):
         return False, [], ""
-    # To the end of the paragraph, so a reference on the line BELOW the label
-    # still belongs to it, then to the first sentence boundary.
-    payload = text[matches[-1].end() :].split("\n\n")[0]
-    payload = _MD_LINK.sub(r"\1", payload).strip()
-    if _unstated(payload):
-        return False, [], ""
+    condition = _condition_of(payload)
+    if condition is not None:
+        return bool(condition), [], ""
+    # Then to the first sentence boundary.
     cut = _SENTENCE_END.search(payload)
     head = payload[: cut.start()] if cut else payload
     leading = _LEADING_REFERENCES.match(head)
@@ -877,6 +1007,15 @@ class BodyFacts:
     named: tuple[int, ...]
     #: The reference-shaped part of it this could not resolve, verbatim.
     unreadable: str
+    #: The condition a statement in the condition form defers on, else
+    #: ``None`` (an empty condition is ``stated=False``, not a condition).
+    condition: str | None = None
+    #: The decision, gating and trigger phrases the body carries, in order
+    #: of first appearance — what :func:`ready_questions` lists.
+    question: tuple[str, ...] = ()
+    #: Whether a ruling is recorded where the body can show it: a
+    #: ``**Ruled …**`` line or a ruling heading.
+    ruled: bool = False
 
 
 def read_bodies(issues: Sequence[Issue], repo: str) -> dict[int, BodyFacts]:
@@ -885,14 +1024,136 @@ def read_bodies(issues: Sequence[Issue], repo: str) -> dict[int, BodyFacts]:
     for issue in issues:
         text = without_code_blocks(issue.body)
         stated, named, unreadable = _blocked_on_text(text, repo)
+        payload = _statement_payload(text) if stated else None
         facts[issue.number] = BodyFacts(
             parent=_parent_in_text(text, issue.number, repo),
             cited=frozenset(_CITED_PATH.findall(text)),
             stated=stated,
             named=tuple(named),
             unreadable=unreadable,
+            condition=_condition_of(payload) if payload is not None else None,
+            question=_question_phrases(text),
+            ruled=_ruling_recorded(text),
         )
     return facts
+
+
+# --------------------------------------------------------------------------
+# Ready items that read like a question (#1639, leak A)
+# --------------------------------------------------------------------------
+
+#: Decision, gating and trigger language: what an item that needs a ruling,
+#: waits on another issue or defers on a condition says about itself. A
+#: HEURISTIC, and the output is a list for step 2 to READ — never a label
+#: move. Measured on the live ready pile when this was written: round 15's
+#: cruder first cut flagged 14 of 81 and 5 were real, and this one lists 13
+#: of 79 after that round had already moved the real ones out. Bare
+#: "decide" / "deferred" are left out on purpose: they are prose about the
+#: code ("the router decides", "the write is deferred") far more often than
+#: about the issue, and doubled the list.
+_QUESTION_LANGUAGE = re.compile(
+    r"""(?:
+      \bdecide\s+(?:which|whether|between|how)\b
+    | \bdecision\s+(?:needed|required|pending)\b
+    | \bneeds?\s+(?:a\s+|an\s+owner\s+|the\s+owner'?s?\s+)?(?:ruling|decision)\b
+    | \bowner(?:'s)?\s+(?:ruling|call|decision)\b
+    | \bdesign\s+call\b
+    | \bopen\s+question\b
+    | \bjudge?ment\s+call\b
+    | \bwhich\s+of\s+(?:the|these)\s+(?:two|three|four|options)\b
+    | \bgated\s+on\b
+    | (?<!not\s)\bblocked\s+(?:on|by)\b
+    | \bdepends\s+on\s+\#\d+
+    | \bwait(?:s|ing)\s+(?:on|for)\s+\#\d+
+    | \buntil\s+\#\d+\s+(?:lands|merges|closes|is\s+(?:fixed|merged|closed))\b
+    | \bonce\s+\#\d+\s+(?:lands|merges|closes|is)\b
+    | \btrigger\s+to\s+revisit\b
+    | \brevisit\s+(?:when|if|once)\b
+    | \bdeferred\s+(?:until|pending|on)\b
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+#: How many distinct phrases the report prints per item: enough to show
+#: why it was listed, not a transcript.
+_QUESTION_PHRASES_SHOWN = 3
+
+#: A ruling recorded in a BODY line: ``**Ruled 2026-09-24.** …``, the line
+#: step 3 writes when it moves an item. ``Ruled`` only — a bold ``**Ruling
+#: needed**`` opener is a question, and reading it as an answer would take
+#: a live question off the list.
+_RULING_LINE = re.compile(
+    r"^[ \t]*(?:>[ \t]*)*\*\*Ruled\b", re.IGNORECASE | re.MULTILINE
+)
+
+#: A ruling recorded as a HEADING, in a body or a comment. The spellings are
+#: the ones this repository's issues actually carry, counted across ~400 of
+#: them: ``## Ruling`` (15), ``## Ruling recorded`` (3), ``## Ruled`` (3),
+#: ``## Owner ruling, <date>`` (3), ``## Ruling on item 15``, ``## Owner
+#: rulings``, ``## Owner ruling``, ``## Decision record``. Matching one
+#: spelling was the round-15 detector's defect: #1451 and #1502 were ruled
+#: under ``## Ruling recorded`` and were moved to blocked as open questions.
+#: A false negative here asks the owner a question they have answered, which
+#: is the expensive direction, so any heading line counts, not only a first.
+_RULING_HEADING = re.compile(
+    r"^[ \t]*#{1,6}[ \t]*(?:Ruling|Ruled|Owner[ \t]+rulings?|Decision[ \t]+record)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _question_phrases(text: str) -> tuple[str, ...]:
+    """The distinct question-language phrases in ``text``, first seen first."""
+    seen: dict[str, None] = {}
+    for match in _QUESTION_LANGUAGE.finditer(text):
+        seen.setdefault(" ".join(match.group(0).lower().split()), None)
+    return tuple(seen)
+
+
+def _ruling_recorded(text: str) -> bool:
+    """Whether ``text`` (code blocks already blanked) records a ruling."""
+    return bool(_RULING_LINE.search(text) or _RULING_HEADING.search(text))
+
+
+def ruling_recorded(issue: Issue, facts: BodyFacts | None = None) -> bool:
+    """A ruling in the body, or a comment carrying a ruling heading."""
+    in_body = (
+        facts.ruled
+        if facts is not None
+        else _ruling_recorded(without_code_blocks(issue.body))
+    )
+    return in_body or any(
+        _RULING_HEADING.search(without_code_blocks(comment))
+        for comment in issue.comments or ()
+    )
+
+
+def ready_questions(
+    issues: Sequence[Issue], repo: str, facts: dict[int, BodyFacts] | None = None
+) -> dict:
+    """Ready items whose body reads like a question and records no ruling.
+
+    Leak A (#1639): step 2 sorts only arrivals, so an item that entered
+    ready carrying a question — or was left there by a sort that missed it —
+    is never read again, and its only exits are the rule-4 slot and being
+    ranked into a round. This is the list that gives it a reader. It is
+    NEVER a label move: the language is a symptom, and most hits are prose
+    about the code rather than about the issue.
+
+    ``comments_read`` is False when any listed item's comments were not
+    fetched, in which case a ruling recorded only in a comment is not seen
+    and the list over-counts — the safe direction for a list to read.
+    """
+    facts = facts if facts is not None else read_bodies(issues, repo)
+    ready = [i for i in issues if i.is_open and pile_of(i) == READY_LABEL]
+    listed = []
+    unread = False
+    for issue in sorted(ready, key=lambda i: i.number):
+        body = facts[issue.number]
+        if not body.question or ruling_recorded(issue, body):
+            continue
+        unread = unread or issue.comments is None
+        listed.append((issue.number, list(body.question)))
+    return {"ready": len(ready), "listed": listed, "comments_read": not unread}
 
 
 def blocking_graph(
@@ -920,6 +1181,8 @@ def blocking_graph(
     unresolved: list[tuple[int, str]] = []
     unstated: list[int] = []
     condition_met: list[tuple[int, int]] = []
+    on_condition: list[tuple[int, str]] = []
+    unobservable: list[int] = []
     # OPEN, as :class:`BlockingGraph` says: a closed blocked item is not
     # waiting on anything. Counting one would exclude its blocker from the
     # tier under rule 1, so the reserved slot would never reach an item
@@ -932,6 +1195,14 @@ def blocking_graph(
         body = facts[issue.number]
         if not body.stated:
             unstated.append(issue.number)
+            continue
+        if body.condition is not None:
+            # A deferral on something to be observed: neither an edge nor a
+            # question. Counted as a ruling it was listed under *Needs your
+            # call* as a question nobody had (#673, #1639 leak B).
+            on_condition.append((issue.number, body.condition))
+            if _UNOBSERVABLE.match(body.condition):
+                unobservable.append(issue.number)
             continue
         here, leftover, seen = [], [], set()
         for number in body.named:
@@ -972,6 +1243,8 @@ def blocking_graph(
         unresolved=unresolved,
         unstated=unstated,
         condition_met=condition_met,
+        on_condition=on_condition,
+        unobservable=unobservable,
     )
 
 
@@ -1111,7 +1384,20 @@ def rule4_tier(
         "multi_labelled": sorted(
             issue.number
             for issue in open_issues
-            if len({la for la in issue.labels if la.startswith(_PILE_PREFIX)}) > 1
+            if TRACKING_LABEL not in issue.labels
+            and len({la for la in issue.labels if la.startswith(_PILE_PREFIX)}) > 1
+        ),
+        # In no pile (#1639, leak C). Listed so a tracker is visible rather
+        # than merely exempt — the label is also a way to take real work out
+        # of every pile, and a list read each round is what would show it.
+        "tracking": sorted(
+            issue.number for issue in open_issues if TRACKING_LABEL in issue.labels
+        ),
+        "tracking_in_pile": sorted(
+            issue.number
+            for issue in open_issues
+            if TRACKING_LABEL in issue.labels
+            and any(la.startswith(_PILE_PREFIX) for la in issue.labels)
         ),
         "seams": seams,
         # String keys, so the in-process value and a --json round trip agree:
@@ -1478,6 +1764,7 @@ def compute(
         "open": residue_snapshot(issues, now),
         "follow_ups": follow_ups(issues, repo, pr_links, facts),
         "rule4": rule4_tier(issues, now, repo, facts),
+        "questions": ready_questions(issues, repo, facts),
         "latency": fix_latency(issues, repo) if latency else None,
     }
 
@@ -1564,10 +1851,32 @@ def _rule4_text(tier: dict) -> str:
     out.append(
         f"Blocking graph: {edges} edge(s) from the blocked pile — "
         f"{len(graph['on_ruling'])} item(s) waiting on a ruling, "
+        f"{len(graph['on_condition'])} waiting on a condition, "
         f"{len(graph['unstated'])} stating nothing in the body "
         "(`**Blocked on:**` is what is read; a statement left in a comment is "
         "not).\n"
     )
+    if graph["on_condition"]:
+        unobservable = set(graph["unobservable"])
+        out.append(
+            "**Waiting on a condition** — answered and waiting, so *Needs your "
+            "call* lists each with its condition, never as a question; step 2 "
+            "checks the condition as it sorts and moves the item to ready the "
+            "round it holds: "
+            + ", ".join(
+                f"#{n}{' (UNOBSERVABLE today)' if n in unobservable else ''} "
+                f"({_inline_code(_clip(text))})"
+                for n, text in graph["on_condition"]
+            )
+            + ".\n"
+        )
+    if graph["unobservable"]:
+        out.append(
+            "**Nothing can check** "
+            + ", ".join(f"#{n}" for n in graph["unobservable"])
+            + ": the condition is stated as unobservable, so its only exit is "
+            "the owner — build the measurement, re-rule, or close.\n"
+        )
     if graph["unresolved"]:
         out.append(
             "**Stated but unreadable** — reference-shaped and not resolved to "
@@ -1595,6 +1904,18 @@ def _rule4_text(tier: dict) -> str:
             + ", ".join(f"#{n}" for n in tier["multi_labelled"])
             + ".\n"
         )
+    if tier["tracking_in_pile"]:
+        out.append(
+            "**Tracking, but carrying a `pile:` label** — a tracker is in no "
+            "pile and is read as such; remove the leftover label: "
+            + ", ".join(f"#{n}" for n in tier["tracking_in_pile"])
+            + ".\n"
+        )
+    if tier["tracking"]:
+        out.append(
+            "Tracking, in no pile (never ranked, never dispatched, never "
+            "sorted): " + ", ".join(f"#{n}" for n in tier["tracking"]) + ".\n"
+        )
     if tier["seams"]:
         ranked = sorted(tier["seams"].items(), key=lambda kv: (-len(kv[1]), kv[0]))
         out.append(
@@ -1604,6 +1925,42 @@ def _rule4_text(tier: dict) -> str:
             + ", ".join(f"`{path}` ({len(nums)})" for path, nums in ranked[:6])
             + (f", and {len(ranked) - 6} more" if len(ranked) > 6 else "")
             + ".\n"
+        )
+    return "\n".join(out)
+
+
+def _questions_text(questions: dict) -> str:
+    """The ready items step 2 reads for a question the pile does not show."""
+    out = [
+        "## Ready items that read like a question (step 2 READS each; "
+        "never a label move on this list alone)\n"
+    ]
+    if not questions["listed"]:
+        out.append(
+            f"None of {questions['ready']} ready items carries decision, "
+            "gating or trigger language without a recorded ruling.\n"
+        )
+        return "\n".join(out)
+    out.append(
+        f"**{len(questions['listed'])} of {questions['ready']} ready items** "
+        "carry decision, gating or trigger language and no recorded ruling "
+        "(a `**Ruled` body line, or a heading `Ruling`, `Ruled`, "
+        "`Owner ruling(s)` or `Decision record` in the body or a comment). A "
+        "heuristic: most hits are prose about the code. Each one read either "
+        "stays in ready or is placed by *What escalates* — blocked on a "
+        "ruling, an issue or a condition, split, or `tracking`: "
+        + ", ".join(
+            f"#{n} ("
+            + ", ".join(_inline_code(p) for p in phrases[:_QUESTION_PHRASES_SHOWN])
+            + ")"
+            for n, phrases in questions["listed"]
+        )
+        + ".\n"
+    )
+    if not questions["comments_read"]:
+        out.append(
+            "Comments were not read for some of these, so a ruling recorded "
+            "only in a comment is not seen: an over-count.\n"
         )
     return "\n".join(out)
 
@@ -1675,6 +2032,7 @@ def report(results: dict, weeks: int) -> str:
     )
 
     out.append(_rule4_text(results["rule4"]))
+    out.append(_questions_text(results["questions"]))
 
     fu = results["follow_ups"]
     out.append("## Follow-ups (regex floor)\n")

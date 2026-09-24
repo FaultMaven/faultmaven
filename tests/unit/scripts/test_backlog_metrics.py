@@ -1051,7 +1051,10 @@ def test_the_report_names_the_slots_candidates(metrics):
 
     assert "## Rule-4 tier" in text
     assert "#1 (30d), #2 (26d)" in text
-    assert "1 item(s) waiting on a ruling, 0 stating nothing" in text
+    assert (
+        "1 item(s) waiting on a ruling, 0 waiting on a condition, 0 stating nothing"
+        in text
+    )
 
 
 def test_the_blocking_graph_survives_a_json_round_trip(metrics, tmp_path):
@@ -1519,3 +1522,282 @@ def test_every_body_is_parsed_once_per_run(metrics, monkeypatch):
     metrics.compute(issues, LATER, REPO, resolve_parents=False)
 
     assert len(seen) == len(issues)
+
+
+# --------------------------------------------------------------------------
+# #1639: the three states round 15's state-machine pass found with no exit
+# --------------------------------------------------------------------------
+
+#: #673's `**Blocked on:**` line exactly as it stood when #1639 was filed. It
+#: is what the condition bucket was built for: read as a ruling, it listed a
+#: question under *Needs your call* that nobody had.
+_LINE_673 = (
+    "**Blocked on:** a measured precondition, not a ruling — models must ground "
+    "causal chains reliably enough that `cause_state` reaches IDENTIFIED via the "
+    'chain without the RCC backstop (a low rate of "resolved via RCC but chain '
+    'never validated the root"). Deferred by design; re-read that rate each '
+    "round and move to ready when it holds. Not blocked on another issue."
+)
+
+#: #723's, likewise.
+_LINE_723 = (
+    "**Blocked on:** a condition, not a ruling — traces show a spurious close or "
+    "resolve attributable to a weak confirmation token (the issue's own 'trigger "
+    "to revisit'). Until then it is note-only. Found in `pile:ready` by round "
+    "15's state-machine pass. Not blocked on another issue."
+)
+
+
+@pytest.mark.parametrize(
+    "line, starts",
+    [
+        (_LINE_673, "models must ground causal chains"),
+        (_LINE_723, "traces show a spurious close"),
+        # The form the procedure now asks for.
+        ("**Blocked on:** condition — `gh run list` shows a red nightly", "`gh run"),
+        ("**Blocked on:** Condition: the p95 exceeds 2s", "the p95 exceeds 2s"),
+        (
+            "**Blocked on:** condition — unobservable today: nothing counts it",
+            "unobservable today",
+        ),
+        # A reference inside a condition is part of what would be observed.
+        ("**Blocked on:** condition — a second report like #1294", "a second"),
+    ],
+)
+def test_a_deferral_on_a_condition_is_its_own_bucket(metrics, line, starts):
+    """Leak B: neither a ruling nor an edge, and not unreadable either."""
+    assert metrics.blocked_on_condition(line).startswith(starts)
+    assert metrics.blocked_on(line, REPO) == (True, [], "")
+    graph = metrics.blocking_graph(metrics.load_issues([_blocked(673, 1, line)]), REPO)
+
+    assert graph.on_ruling == []
+    assert graph.unresolved == []
+    assert graph.waiting_on == {}
+    assert [n for n, _ in graph.on_condition] == [673]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "**Blocked on:** an owner ruling on which axis owns it.",
+        # The word further in does not make it a condition: the form is
+        # read from the FRONT, as an issue reference is.
+        "**Blocked on:** an owner ruling on the condition for a second tenant.",
+        "**Blocked on:** the owner's call on conditional approval.",
+    ],
+)
+def test_a_ruling_line_is_still_a_ruling(metrics, line):
+    graph = metrics.blocking_graph(metrics.load_issues([_blocked(1, 1, line)]), REPO)
+
+    assert metrics.blocked_on_condition(line) is None
+    assert (graph.on_ruling, graph.on_condition) == ([1], [])
+
+
+def test_an_issue_reference_line_is_still_an_edge(metrics):
+    issues = metrics.load_issues(
+        [
+            _ready(1294, 1),
+            _blocked(1513, 2, "**Blocked on:** #1294 — the ladder lengths move."),
+        ]
+    )
+    graph = metrics.blocking_graph(issues, REPO)
+
+    assert graph.waiting_on == {1294: [1513]}
+    assert (graph.on_ruling, graph.on_condition) == ([], [])
+
+
+@pytest.mark.parametrize(
+    "line", ["**Blocked on:** condition", "**Blocked on:** condition — TBD"]
+)
+def test_a_condition_naming_nothing_states_nothing(metrics, line):
+    """The word without a condition is the unstated bucket: its repair is to
+    write what would be observed, which is exactly what is missing."""
+    graph = metrics.blocking_graph(metrics.load_issues([_blocked(1, 1, line)]), REPO)
+
+    assert (graph.unstated, graph.on_condition, graph.on_ruling) == ([1], [], [])
+
+
+def test_the_report_lists_conditions_apart_from_rulings(metrics):
+    issues = metrics.load_issues(
+        [
+            _ready(1, 1),
+            _blocked(673, 1, _LINE_673),
+            _blocked(700, 2, "**Blocked on:** condition — unobservable today: x"),
+            _blocked(835, 3, "**Blocked on:** an owner ruling on the port."),
+        ]
+    )
+    tier = metrics.rule4_tier(issues, LATER, REPO)
+    text = metrics._rule4_text(tier)
+
+    assert tier["blocking"]["on_ruling"] == [835]
+    assert tier["blocking"]["unobservable"] == [700]
+    assert "1 item(s) waiting on a ruling, 2 waiting on a condition" in text
+    condition_line = text.split("**Waiting on a condition**")[1].split("\n")[0]
+    assert "#673 (" in condition_line and "#700 (UNOBSERVABLE today)" in condition_line
+    assert "#835" not in condition_line
+    assert "**Nothing can check** #700" in text
+
+
+def test_a_tracker_is_in_no_pile(metrics):
+    """Leak C: #819 carried `tracking` and `pile:ready` both, so the board's
+    own kind of issue was dispatchable and counted in the rule-4 tier."""
+    issues = metrics.load_issues(
+        [
+            _issue(819, 1, labels=("tracking", "P2", "pile:ready")),
+            _issue(1456, 1, labels=("tracking",)),
+            _issue(1499, 2, labels=("tracking", "pile:ready", "pile:blocked")),
+            _ready(900, 5),
+        ]
+    )
+    tier = metrics.rule4_tier(issues, LATER, REPO)
+    text = metrics._rule4_text(tier)
+
+    by_number = {i.number: i for i in issues}
+    assert [metrics.pile_of(by_number[n]) for n in (819, 1456, 1499)] == [None] * 3
+    assert tier["ready"] == 1 and tier["tier"] == [900]
+    # Not a half-finished move: a tracker's pile labels are leftovers, and
+    # the report asks for exactly one repair — remove them.
+    assert tier["multi_labelled"] == []
+    assert tier["blocking"]["unstated"] == []
+    assert tier["tracking"] == [819, 1456, 1499]
+    assert tier["tracking_in_pile"] == [819, 1499]
+    assert "remove the leftover label: #819, #1499" in text
+    assert "#819" not in text.split("Oldest in the tier")[1].split("\n")[0]
+
+
+# The ruling headings this repository's issues actually carry, counted across
+# ~400 of them. Matching one spelling moved #1451 and #1502 — both ruled under
+# `## Ruling recorded` — to blocked as open questions in round 15.
+_RULING_HEADINGS = [
+    "## Ruling\n\nOption 1.",
+    "## Ruling recorded — 2026-09-19\n\n(2).",
+    "## Ruled — build now against the published shape",
+    "## Owner ruling, 2026-09-21\n\nKeep it.",
+    "## Ruling on item 15\n\nDefer.",
+    "## Owner rulings\n\n1: yes. 2: no.",
+    "## Owner ruling\n\nNo.",
+    "## Decision record\n\nWe keep it.",
+    "# Ruling\n\nSingle hash.",
+    "Context first.\n\n## Ruling\n\nThe heading need not open the comment.",
+]
+
+_QUESTION_BODY = "Decide which layer owns the policy: (1) the router, (2) the engine."
+
+
+def _ready_with(number, body, comments=None, labels=("pile:ready",)):
+    item = _issue(number, 1, labels=labels, body=body)
+    if comments is not None:
+        item["comments"] = [{"body": c} for c in comments]
+    return item
+
+
+def test_a_ready_item_that_is_a_question_is_listed_for_step_2(metrics):
+    """Leak A: step 2 sorted arrivals only, so a question already in ready
+    was never read again. Listed, never moved."""
+    issues = metrics.load_issues(
+        [
+            _ready_with(835, _QUESTION_BODY, comments=[]),
+            # False positives the pattern must not take: prose ABOUT the code
+            # deciding, deferring or being blocked.
+            _ready_with(
+                836,
+                "The router decides the provider, and the write is deferred.\n\n"
+                "Not blocked on another issue.",
+                comments=[],
+            ),
+            # A question inside a code block is an illustration.
+            _ready_with(837, "Quoted:\n\n```\nneeds a ruling\n```\n", comments=[]),
+        ]
+    )
+    questions = metrics.ready_questions(issues, REPO)
+    text = metrics._questions_text(questions)
+
+    assert questions["listed"] == [(835, ["decide which"])]
+    assert questions["comments_read"] is True
+    assert "**1 of 3 ready items**" in text
+    assert "#835 (`decide which`)" in text
+    # Nothing in this list touches a label: the input is unchanged.
+    assert [metrics.pile_of(i) for i in issues] == [metrics.READY_LABEL] * 3
+
+
+@pytest.mark.parametrize("comment", _RULING_HEADINGS)
+def test_a_ruling_in_any_heading_the_repo_uses_takes_it_off_the_list(metrics, comment):
+    issues = metrics.load_issues([_ready_with(1451, _QUESTION_BODY, [comment])])
+
+    assert metrics.ready_questions(issues, REPO)["listed"] == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        _QUESTION_BODY + "\n\n**Ruled 2026-09-24.** The spec is the ruling comment.",
+        _QUESTION_BODY + "\n\n## Ruling\n\nOption 1.",
+    ],
+)
+def test_a_ruling_recorded_in_the_body_takes_it_off_the_list(metrics, body):
+    issues = metrics.load_issues([_ready_with(583, body, comments=[])])
+
+    assert metrics.ready_questions(issues, REPO)["listed"] == []
+
+
+@pytest.mark.parametrize(
+    "comment",
+    [
+        # Mentioning a ruling is not recording one: these are the false
+        # negatives in the OTHER direction, which would hide a live question.
+        "This needs a ruling before anyone builds it.",
+        "Waiting on the ## Ruling heading from the owner.",
+        "```\n## Ruling\n```",
+        "**Ruling needed**: which layer?",
+    ],
+)
+def test_a_comment_that_only_mentions_a_ruling_does_not_count(metrics, comment):
+    issues = metrics.load_issues([_ready_with(1502, _QUESTION_BODY, [comment])])
+
+    assert [n for n, _ in metrics.ready_questions(issues, REPO)["listed"]] == [1502]
+
+
+def test_a_bold_ruling_question_in_the_body_is_not_a_ruling(metrics):
+    body = _QUESTION_BODY + "\n\n**Ruling needed:** which layer owns it?"
+    issues = metrics.load_issues([_ready_with(1502, body, comments=[])])
+
+    assert [n for n, _ in metrics.ready_questions(issues, REPO)["listed"]] == [1502]
+
+
+def test_the_question_list_reads_the_ready_pile_only(metrics):
+    issues = metrics.load_issues(
+        [
+            _ready_with(1, _QUESTION_BODY, [], labels=("pile:blocked",)),
+            _ready_with(2, _QUESTION_BODY, [], labels=("tracking", "pile:ready")),
+            _ready_with(3, _QUESTION_BODY, [], labels=("pile:ready", "pile:yours")),
+            _issue(4, 1, 3, labels=("pile:ready",), body=_QUESTION_BODY),
+        ]
+    )
+
+    assert metrics.ready_questions(issues, REPO) == {
+        "ready": 0,
+        "listed": [],
+        "comments_read": True,
+    }
+
+
+def test_unread_comments_are_named_as_an_over_count(metrics):
+    """A dump taken without comments cannot see a ruling recorded in one;
+    the list still errs toward reading, and says so."""
+    issues = metrics.load_issues([_ready(1, 1, body=_QUESTION_BODY)])
+    questions = metrics.ready_questions(issues, REPO)
+
+    assert questions["listed"] == [(1, ["decide which"])]
+    assert questions["comments_read"] is False
+    assert "an over-count" in metrics._questions_text(questions)
+    assert "None of" in metrics._questions_text(
+        metrics.ready_questions(metrics.load_issues([_ready(2, 1)]), REPO)
+    )
+
+
+def test_compute_carries_the_question_list(metrics):
+    issues = metrics.load_issues([_ready_with(1, _QUESTION_BODY, [])])
+    results = metrics.compute(issues, LATER, REPO, resolve_parents=False)
+
+    assert results["questions"]["listed"] == [(1, ["decide which"])]
+    assert "read like a question" in metrics.report(results, 4)
