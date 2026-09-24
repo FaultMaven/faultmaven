@@ -613,8 +613,7 @@ def test_the_real_app_binds_every_route():
     """
     import os
 
-    from starlette.routing import Mount
-
+    from faultmaven.api.route_enumeration import iter_mount_paths
     from faultmaven.config.settings import reset_settings
     from tests.integration._app_rebuild import rebuild_app
 
@@ -639,11 +638,13 @@ def test_the_real_app_binds_every_route():
         "dependency, so no route binds a tenant"
     )
 
-    mounted = [
-        route.path
-        for route in app.routes
-        if isinstance(route, Mount) and route.path not in ("/static",)
-    ]
+    # Through the flattener, not ``app.routes``. On FastAPI >= 0.139 a Mount
+    # added to a router that is then included is SERVED, the global binder
+    # never runs for it, and it is absent from ``app.routes`` — so a flat scan
+    # cannot see the one escape this half exists to find. On the pinned 0.136.0
+    # the eager copy drops that Mount and it is never served, which is why the
+    # flat scan used to be enough. fm#1308.
+    mounted = [path for path in iter_mount_paths(app) if path not in ("/static",)]
     assert not mounted, (
         f"sub-app(s) mounted at {mounted}: routes under a Mount are served by "
         "that app's own router and never reach the global tenant binder. If the "

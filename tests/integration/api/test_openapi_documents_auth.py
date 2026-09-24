@@ -20,7 +20,7 @@ unclassified one fails rather than being silently treated as harmless. A new
 mandatory dependency that repeats the #880 mistake would otherwise make both
 sides agree at "no auth" and pass.
 
-Reading ``app.routes`` is also what makes this file the right home for the two
+Reading the route table is also what makes this file the right home for the two
 route-table gates at the bottom, which have nothing to do with authentication.
 Every *other* route-level guard in this repository is downstream of
 ``app.openapi()`` — the surface inventories, the API-reference drift job, the
@@ -44,10 +44,12 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 import pytest
-from fastapi.routing import APIRoute
+from starlette.routing import compile_path
 
 from faultmaven.api.route_enumeration import (
+    ServedEndpoint,
     iter_documented_routes,
+    iter_served_endpoints,
     iter_served_routes,
 )
 
@@ -462,16 +464,24 @@ def published_app():
 
 
 def _served_operations(app):
-    """Every operation the router will match, as ``(method, route)`` pairs.
+    """Every operation the router will match, as ``(method, served)`` pairs.
 
-    A list, in registration order, and never a set: a second registration of a
-    ``(method, path)`` that already exists is the whole subject here, and it is
-    only visible as a repeat.
+    A list, in the order the router tries them, and never a set: a second
+    registration of a ``(method, path)`` that already exists is the whole
+    subject here, and it is only visible as a repeat.
 
-    ``include_in_schema`` is deliberately NOT applied — this is ``app.routes``,
-    not ``_schema_routes``. That flag is a property of the *document*: a route
-    carrying ``include_in_schema=False`` is matched, dispatched and served like
-    any other, it is simply undescribed. Filtering the served side by it means
+    Through the flattener, not a flat ``app.routes`` walk. FastAPI 0.139 stopped
+    copying an included router's routes into ``app.routes``, so on 0.141.1 the
+    flat walk inspected 20 of 144 operations and went on reporting "no
+    duplicates" while blind to 86% of the surface. ``iter_served_endpoints``
+    hands back the EFFECTIVE path and the handler, and nothing whose own
+    ``path``/``path_regex`` would be the unprefixed handler-level one past the
+    pin (fm#1308).
+
+    ``include_in_schema`` is deliberately NOT applied — this is every served
+    operation, not ``_schema_routes``. That flag is a property of the
+    *document*: a route carrying ``include_in_schema=False`` is matched,
+    dispatched and served like any other, it is simply undescribed. Filtering the served side by it means
     asking the document which routes exist, which is precisely the assumption
     that makes every gate downstream of ``app.openapi()`` blind — and it hides
     the canonical #1440 shape rather than catching it. Register a hidden
@@ -485,10 +495,9 @@ def _served_operations(app):
     for, and it is the generator that applies it.
     """
     return [
-        (method, route)
-        for route in app.routes
-        if isinstance(route, APIRoute)
-        for method in sorted(route.methods)
+        (method, served)
+        for served in iter_served_endpoints(app)
+        for method in sorted(served.methods)
     ]
 
 
@@ -502,7 +511,7 @@ def _served_operations(app):
 _PATH_PARAMETER_GROUP = re.compile(r"\(\?P<[^>]+>")
 
 
-def _matched_request_paths(route: APIRoute) -> str:
+def _matched_request_paths(served: ServedEndpoint) -> str:
     """The set of request paths a route matches, as a comparable key.
 
     Equality here means total overlap. Partial overlap — a typed convertor
@@ -510,13 +519,23 @@ def _matched_request_paths(route: APIRoute) -> str:
     the first shadows the second for integers only — is not detected, and
     deciding it in general is not a thing a regex comparison can do. This app
     registers no convertors at all, so the exact case is the whole case here.
+
+    Compiled from the effective path with ``compile_path``, which is exactly
+    how ``APIRoute`` builds its own ``path_regex`` — so on the pin this is the
+    same pattern the route carries, and past it, the one it is really matched
+    by rather than the unprefixed handler-level one.
     """
-    return _PATH_PARAMETER_GROUP.sub("(?:", route.path_regex.pattern)
+    return _PATH_PARAMETER_GROUP.sub("(?:", compile_path(served.path)[0].pattern)
 
 
-def _definition_site(route: APIRoute) -> str:
+def _path_format(served: ServedEndpoint) -> str:
+    """The spelling ``get_openapi()`` keys a path item on (``route.path_format``)."""
+    return compile_path(served.path)[1]
+
+
+def _definition_site(served: ServedEndpoint) -> str:
     """Where a route's handler is written, as ``path/to/file.py:line``."""
-    endpoint = inspect.unwrap(route.endpoint)
+    endpoint = inspect.unwrap(served.endpoint)
     try:
         source_file = inspect.getsourcefile(endpoint)
         line = inspect.getsourcelines(endpoint)[1]
@@ -566,8 +585,12 @@ def test_no_operation_is_registered_twice(published_app):
       ``^/api/v1/cases/(?P<id>[^/]+)$``; the named group is why keying on it
       does not help.
     """
+    # Read ONCE: the report below tells registrations apart by identity, and
+    # each call hands back fresh tuples.
+    operations = _served_operations(published_app)
+
     by_operation = defaultdict(list)
-    for method, route in _served_operations(published_app):
+    for method, route in operations:
         by_operation[(method, _matched_request_paths(route))].append(route)
 
     duplicates = {
@@ -582,27 +605,27 @@ def test_no_operation_is_registered_twice(published_app):
     # ``(method, path_format)`` wins — and a route that is out of schema, or
     # whose spelling nothing else shares, is in a different cell entirely.
     documented_by = {}
-    for method, route in _served_operations(published_app):
+    for method, route in operations:
         if route.include_in_schema:
-            documented_by[(method, route.path_format)] = route
+            documented_by[(method, _path_format(route))] = route
 
     report = []
     for (method, _), routes in sorted(
         duplicates.items(),
-        key=lambda item: (item[0][0], item[1][0].path_format),
+        key=lambda item: (item[0][0], _path_format(item[1][0])),
     ):
-        report.append(f"  {method} {routes[0].path_format}")
+        report.append(f"  {method} {_path_format(routes[0])}")
         for position, route in enumerate(routes):
             served = "SERVED" if position == 0 else "not served"
             documented = (
                 "DOCUMENTED"
-                if documented_by.get((method, route.path_format)) is route
+                if documented_by.get((method, _path_format(route))) is route
                 else "not documented"
             )
             name = getattr(route.endpoint, "__name__", "<unnamed endpoint>")
             report.append(
                 f"      [{served}, {documented}]  {name}  "
-                f"{route.path_format}  ({_definition_site(route)})"
+                f"{_path_format(route)}  ({_definition_site(route)})"
             )
 
     assert not duplicates, (
@@ -665,28 +688,18 @@ def test_served_and_documented_operation_counts_agree(published_app):
     """
     spec = published_app.openapi()
 
-    # Counted through the FLATTENER, not through ``_served_operations``.
+    # Counted through the FLATTENER, not a flat ``app.routes`` walk.
     #
-    # The two differ deliberately and the difference is a version gate, not a
-    # taste. FastAPI 0.139 stopped copying an included router's routes into
-    # ``app.routes``; on 0.141.1 the flat walk counts 15 served against 147
-    # documented, so this test reports the document describing a superset of
-    # what is served — the reverse of the drift it exists to find, and a
-    # failure that indicts the app rather than the walk.
+    # The difference is a version gate, not a taste. FastAPI 0.139 stopped
+    # copying an included router's routes into ``app.routes``; on 0.141.1 the
+    # flat walk counts 15 served against 147 documented, so this test reports
+    # the document describing a superset of what is served — the reverse of
+    # the drift it exists to find, and a failure that indicts the app rather
+    # than the walk.
     #
     # ``ServedRoute.path`` is the EFFECTIVE, still-templated path, which is
     # what ``path_format`` was being read for; the prefix ``include_router``
     # contributed is already merged into it.
-    #
-    # ‼ ``_served_operations`` below is still a flat walk, and that is correct
-    # on the pinned ``fastapi==0.136.0`` and on nothing after it.
-    # ``test_no_operation_is_registered_twice`` needs ``path_regex`` and
-    # ``endpoint`` off the real ``APIRoute``, which the flattener deliberately
-    # does not hand out, so it cannot simply move here. On a FastAPI past the
-    # pin that test does not fail — it goes VACUOUS. Measured on the composed
-    # app: it inspects 144 operations on 0.136.0 and **20** on 0.141.1, so it
-    # keeps reporting no duplicates while blind to 86% of the surface.
-    # Whoever moves the pin owes it a key derived from the effective path.
     served = Counter(
         (method, route.path)
         for route in iter_served_routes(published_app)

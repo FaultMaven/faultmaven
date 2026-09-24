@@ -1,10 +1,12 @@
 """Every API route the app really serves, on every FastAPI this project runs on.
 
-THE ONE PLACE the version gate lives. There were three copies before this
-module — ``main.debug_routes``, the ``/admin/config/status`` mount reading, and
-the guard in ``tests/integration/api/test_no_unauthenticated_operations.py`` —
-and they had already drifted: two skipped empty paths, one demanded a
-``dependant`` and one did not. A rule with three implementations is three rules.
+THE ONE PLACE the version gate lives for this app's own route table (the one
+other reader is named at the end, with its reason). There were three copies
+before this module — ``main.debug_routes``, the ``/admin/config/status`` mount
+reading, and the guard in
+``tests/integration/api/test_no_unauthenticated_operations.py`` — and they had
+already drifted: two skipped empty paths, one demanded a ``dependant`` and one
+did not. A rule with three implementations is three rules.
 
 **Why a flat ``app.routes`` scan is not enough, and why it is also not wrong.**
 FastAPI 0.139 stopped copying an included router's routes into ``app.routes``
@@ -34,6 +36,15 @@ that the pin moving is a version bump rather than a silent loss of reach.
 ``original_router`` is deliberately NOT walked: it reaches the routes but yields
 their UNPREFIXED paths and their handler-only dependants, which is wrong on both
 counts.
+
+One other module imports the flattener, on purpose:
+``api/middleware/route_policy._post_route_paths``. It answers a different
+question — every POST path a request can reach, INCLUDING those inside a
+``Mount`` or ``Host`` sub-application, because the repeat-suppressing
+middlewares see those requests too — and it reports whether its enumeration is
+complete. The functions here stop at this app's own ``APIRoute`` table by
+design, so routing that walk through them would drop composed sub-app routes
+and bring back fm#1305's refusal of a path the app really serves.
 """
 
 from __future__ import annotations
@@ -41,6 +52,7 @@ from __future__ import annotations
 from typing import NamedTuple
 
 from fastapi.routing import APIRoute
+from starlette.routing import Mount
 
 try:  # pragma: no cover - exercised on FastAPI >= 0.139
     from fastapi.routing import iter_route_contexts
@@ -125,6 +137,14 @@ def iter_documented_routes(app) -> list[ServedRoute]:
     served like any other and simply not described — so this is the set to
     compare against the document, and ``iter_served_routes`` stays the set to
     compare against what the router will match.
+
+    The flag is read off the CONTEXT on >= 0.139, for the same reason as the
+    tree. ``include_router(r, include_in_schema=False)`` hides every route of
+    ``r``, and before 0.139 the eager copy folded that into each copied route's
+    own flag. On 0.141.1 the route keeps its handler-level ``True`` and only
+    the context carries the ``False`` — so reading ``route.include_in_schema``
+    there counts a whole hidden router as documented. Measured: the document
+    has no paths, and that reading reported ``['/pre/hidden-by-include']``.
     """
     if iter_route_contexts is None:  # FastAPI < 0.139: the eager-copy shape
         return [
@@ -136,7 +156,7 @@ def iter_documented_routes(app) -> list[ServedRoute]:
     documented = []
     for context in iter_route_contexts(app.routes):
         route = getattr(context, "route", None)
-        if not isinstance(route, APIRoute) or not route.include_in_schema:
+        if not isinstance(route, APIRoute) or not context.include_in_schema:
             continue
         dependant = getattr(context, "dependant", None)
         if dependant is None:
@@ -154,6 +174,101 @@ def iter_documented_routes(app) -> list[ServedRoute]:
             )
         )
     return documented
+
+
+class ServedEndpoint(NamedTuple):
+    """One served operation, named by the handler that answers it.
+
+    For a caller that has to say WHICH handler a path reaches — a duplicate
+    registration is only reportable by its definition site — without being
+    handed the route object, whose ``path``, ``path_regex`` and ``dependant``
+    are the handler's own on >= 0.139 rather than the served ones. ``path`` is
+    the effective, still-templated path; derive a matcher from it with
+    ``starlette.routing.compile_path``, which is what ``APIRoute`` itself does.
+
+    A separate tuple rather than new members on ``ServedRoute``, whose arity is
+    part of its contract (see ``iter_documented_routes``).
+    """
+
+    path: str
+    methods: frozenset
+    endpoint: object
+    include_in_schema: bool
+
+
+def iter_served_endpoints(app) -> list[ServedEndpoint]:
+    """Every served operation with its handler, in the order the router tries them.
+
+    Order is load-bearing for the duplicate-registration guard: Starlette
+    serves the FIRST route that matches, and the flattener expands each
+    ``_IncludedRouter`` in place, so this order is the match order on both
+    arms. ``include_in_schema`` is the effective flag — see
+    ``iter_documented_routes`` for why that is the context's on >= 0.139.
+    """
+    if iter_route_contexts is None:  # FastAPI < 0.139: the eager-copy shape
+        return [
+            ServedEndpoint(
+                route.path,
+                frozenset(route.methods or ()),
+                route.endpoint,
+                bool(route.include_in_schema),
+            )
+            for route in app.routes
+            if isinstance(route, APIRoute)
+        ]
+
+    served = []
+    for context in iter_route_contexts(app.routes):
+        route = getattr(context, "route", None)
+        if not isinstance(route, APIRoute):
+            continue
+        served.append(
+            ServedEndpoint(
+                context.path,
+                frozenset(getattr(context, "methods", None) or ()),
+                route.endpoint,
+                bool(context.include_in_schema),
+            )
+        )
+    return served
+
+
+def iter_mount_paths(app) -> list[str]:
+    """The path of every ``Mount`` this app dispatches to, wherever it was added.
+
+    A mounted sub-application is served by its own router, so nothing this app
+    declares — the global tenant binder included — runs for a request beneath
+    it. That makes "is anything mounted" a security question, and the answer
+    has the same version gate as the routes:
+
+        mount added with         0.136.0 (PINNED)         0.141.1
+        app.mount("/top")        served, in app.routes    served, in app.routes
+        router.mount("/sub"),    NOT served: the eager    SERVED at /pre/sub, and
+          included at "/pre"     copy drops a Mount       absent from app.routes
+
+    So the flat scan is complete on the pin — a Mount inside an included router
+    is not reachable there — and blind past it, to exactly the shape that
+    becomes reachable. Measured on the second row under 0.141.1:
+    ``GET /pre/sub/x`` answers 200 and an app-level dependency never runs.
+
+    On >= 0.139 the context of a Mount reached through ``include_router``
+    carries an empty ``path``; the served, prefixed one is on the copy FastAPI
+    dispatches to, ``starlette_route``. When neither yields a path the entry is
+    reported as ``""`` rather than dropped: an unnameable mount is still a
+    mount, and a caller that exempts known paths must see it fail closed.
+    """
+    if iter_route_contexts is None:  # FastAPI < 0.139: the eager-copy shape
+        return [route.path for route in app.routes if isinstance(route, Mount)]
+
+    paths = []
+    for context in iter_route_contexts(app.routes):
+        if not isinstance(getattr(context, "route", None), Mount):
+            continue
+        dispatched = getattr(context, "starlette_route", None)
+        paths.append(
+            getattr(dispatched, "path", None) or getattr(context, "path", None) or ""
+        )
+    return paths
 
 
 def serves_path_prefix(app, prefix: str) -> bool:
