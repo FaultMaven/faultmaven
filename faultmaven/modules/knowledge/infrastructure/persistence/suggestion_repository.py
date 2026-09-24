@@ -493,16 +493,19 @@ class DatabaseSuggestionRepository(SuggestionRepository):
 
 
 class InMemorySuggestionRepository(SuggestionRepository):
-    """Process-local store — a TEST DOUBLE, and the no-database fallback.
+    """Process-local store — a TEST DOUBLE.
 
     This is what ``SuggestionService._suggestions_store`` used to be, moved
     behind the repository seam and demoted (#1227). It is built in exactly two
     places: by a test, and by ``create_suggestion_service`` when
     ``persistent_database_configured()`` says there is no database to write to
-    — the same predicate every other factory keys off (fm#1128). It reports
-    ``is_durable == False``, so a deployment that lands here says so on
-    ``GET /admin/config/status`` instead of claiming a durability it does not
-    have.
+    — the same predicate every other factory keys off (fm#1128). That second
+    arm is a test seam too, not a deployment fallback: a process refuses to
+    boot without a persistent database (``config/persistent_database.py``,
+    fm#1647), so no running deployment holds this store. It still reports
+    ``is_durable == False``, so ``GET /admin/config/status`` would say so
+    rather than claim a durability it does not have if that gate were ever
+    bypassed.
 
     Copies on the way in AND on the way out, and enforces the same version
     check, because the database repository does: a double that diverged on

@@ -418,11 +418,14 @@ def create_case_repository(settings: FaultMavenSettings) -> Any | None:
     Provider Selection (Deployment-Agnostic):
     - Local Deployment (Self-Host): SessionlessCaseRepository → SQLite
     - Cloud Deployment (Enterprise): SessionlessCaseRepository → PostgreSQL
-    - Test/Ephemeral: InMemoryCaseRepository (no persistence)
+    - Tests: InMemoryCaseRepository (no persistence)
 
     Configuration:
-    - DATABASE_URL set → SessionlessCaseRepository (persistent database)
-    - DATABASE_URL=:memory: or unset → InMemoryCaseRepository (ephemeral)
+    - persistent DATABASE_URL → SessionlessCaseRepository
+    - empty / ``:memory:`` / in-memory SQLite → InMemoryCaseRepository. That arm
+      is a TEST SEAM, not a deployment shape: a process refuses to boot on such
+      a URL (``config/persistent_database.py``, fm#1647). An UNSET
+      ``DATABASE_URL`` is the shipped SQLite default, which is persistent.
 
     Returns None if initialization fails.
     """
@@ -434,7 +437,8 @@ def create_case_repository(settings: FaultMavenSettings) -> Any | None:
         # Persistence decided by the shared predicate (fm#1128) — this was the
         # third inline copy of the DATABASE_URL rule.
         if not persistent_database_configured(database_url):
-            # Ephemeral storage (testing, no database available)
+            # Ephemeral storage — a test seam; a booting process is refused
+            # before it gets here (fm#1647).
             from faultmaven.modules.case.infrastructure.case_repository import (
                 InMemoryCaseRepository,
             )
@@ -482,7 +486,8 @@ def create_user_store(redis_client: Any, settings: FaultMavenSettings) -> Any:
 
     Provider selection:
     1. Database (SQLite/PostgreSQL) - if database is available (persistent)
-    2. Redis (real or FakeRedis) - fallback when no database configured
+    2. Redis (real or FakeRedis) - when no persistent database is configured,
+       which only a test reaches: boot refuses that configuration (fm#1647)
 
     Args:
         redis_client: Async Redis-compatible client (always provided)

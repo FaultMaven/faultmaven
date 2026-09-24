@@ -724,10 +724,13 @@ def _suggestion_store_is_durable(app) -> bool:
     a database-backed one is fine. What an operator needs to know is which
     store this process holds.
 
-    ``False`` covers both bad answers — a non-durable store is composed (which
-    is CORRECT, not a fault, on a deployment with no database configured), or no
+    ``False`` covers both bad answers — a non-durable store is composed, or no
     suggestion service is composed at all and the routes answer 503. They have
     the same consequence for scaling out, and the ``config_hint`` names both.
+    The first should be unreachable in a running deployment: the composition
+    root picks the in-memory store only when no persistent database is
+    configured, and boot refuses that configuration (fm#1647) — the arm is a
+    test seam. Reported anyway, because this answers from the running object.
     """
     service = getattr(getattr(app, "state", None), "suggestion_service", None)
     repository = getattr(service, "_repository", None) if service else None
@@ -739,8 +742,9 @@ def _suggestion_store_is_durable(app) -> bool:
     # deployment — and it would go stale the moment a third implementation
     # appears or the database one is composed over an ephemeral URL. The
     # composition root is what keeps the claim honest: it picks the in-memory
-    # repository (``is_durable == False``) whenever
-    # ``persistent_database_configured`` says there is no database to write to.
+    # repository (``is_durable == False``) only when
+    # ``persistent_database_configured`` says there is no database to write to
+    # — a test seam, since boot refuses that configuration (fm#1647).
     return bool(getattr(repository, "is_durable", False))
 
 
