@@ -4,8 +4,8 @@
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688)](https://fastapi.tiangolo.com/)
 
-**AI Troubleshooting Copilot for Modern Engineering.**
-Built to solve, not to chat — fair-source, self-hostable, and optimized for cloud scale.
+**AI Troubleshooting Copilot — run it yourself, or let us run it for you.**
+Same engine either way: fair source (FSL-1.1-ALv2), self-hostable, and on FaultMaven Cloud with nothing to operate.
 
 FaultMaven is an AI-powered troubleshooting copilot. It correlates the logs, metrics, and configs you share with runbooks, documentation, and past fixes to deliver contextual AI-driven incident investigation — answers grounded in your actual system, not generic guesses.
 
@@ -20,14 +20,14 @@ Traditional observability tools tell you **what** broke. Generic LLMs guess **wh
 
 ---
 
-## Try it
+## Get started
 
-This repository is the engine. Self-hosting it is free and always will be — the [Quick Start](#quick-start) below is one command. If you would rather not run it, there are two other ways in.
+This repository is the engine. There are two ways to run it, and it is the same engine either way — so whichever you choose, you are never locked in.
 
 | | |
 |---|---|
-| **Run it yourself** | [Quick Start](#quick-start) — free, fair-source (FSL-1.1-ALv2), no usage limits, runs air-gapped |
-| **Let us run it** | **[app.faultmaven.ai](https://app.faultmaven.ai/)** — Cloud beta is open. Sign up with your email; no waiting list, nothing to install, free while it is in beta |
+| **Let us run it** | **[app.faultmaven.ai](https://app.faultmaven.ai/signup)** — FaultMaven Cloud: nothing to install or operate, plus team knowledge sharing. In beta: free, with a daily limit on investigation turns |
+| **Run it yourself** | [Quick Start](#quick-start) — one command, free forever, fair source (FSL-1.1-ALv2). Your cases, evidence and knowledge base stay on your hardware |
 | **Just look** | [A complete investigation transcript](https://www.faultmaven.ai/investigation), unedited — or join the [Community Slack](https://join.slack.com/t/faultmaven-community/shared_invite/zt-493fv3w3o-mPBBI2v3mMYQKS4649mY1A) and @mention FaultMaven. Neither needs an account |
 
 <details>
@@ -37,7 +37,7 @@ This repository is the engine. Self-hosting it is free and always will be — th
 - **It is beta software.** Expect rough edges and occasional downtime. Provided as is, without warranty — see the [Terms](https://www.faultmaven.ai/terms).
 - **Mind what you paste.** FaultMaven stores the cases and files you give it, because reusing them is how it improves. Do not paste production secrets or customer data you would not want stored. The Community Slack is a shared, public workspace and runs under a FaultMaven-managed account rather than one of your own.
 - **Accounts do not merge.** Sign up with a personal address now and move to a company one later, and that is a new account — there is no migration, and your beta cases do not follow you.
-- **Free during beta.** Pricing will be announced before general availability.
+- **Free during beta, with a daily limit.** Each account gets a daily limit on investigation turns. Pricing will be announced before general availability.
 
 Self-hosting is subject to none of this except the first point, which is a property of language models rather than of the deployment.
 
@@ -68,8 +68,8 @@ One command. Budget 10–20 minutes on a first run — most of it pulling a 2.3 
 
 - **Docker** and **Docker Compose**
 - **LLM Provider** (one of):
-  - Cloud: OpenAI, Anthropic, Fireworks AI, Google Gemini, Groq, Cohere, HuggingFace, OpenRouter
-  - Local: Ollama (no API key required)
+  - Hosted: OpenAI, Anthropic, Google Gemini (recommended — they enforce the structured output the investigation engine depends on), or Fireworks AI, Groq, Cohere, HuggingFace, OpenRouter
+  - Local: an OpenAI-compatible endpoint (vLLM, Ollama) — see [Local models](#local-models); not yet verified end to end
 
 ### Step 1: Start the Stack
 
@@ -80,9 +80,9 @@ cd faultmaven
 
 # Configure your LLM provider — the ONLY thing you must set
 cp .env.example .env
-# Edit .env: set ONE provider's API key (e.g. OPENAI_API_KEY / ANTHROPIC_API_KEY,
-# or CHAT_PROVIDER=local for Ollama). Everything else uses documented defaults,
-# and the auth secret is auto-generated on first run.
+# Edit .env: set ONE provider's API key (e.g. GEMINI_API_KEY / OPENAI_API_KEY /
+# ANTHROPIC_API_KEY). Everything else uses documented defaults, and the auth
+# secret is auto-generated on first run.
 
 # Start API + Dashboard (pulls pre-built images from GitHub Container Registry)
 # This AUTOMATICALLY creates the database and a default admin user.
@@ -92,8 +92,8 @@ cp .env.example .env
 
 **What happens:**
 1. Docker pulls the images from GHCR (one-time, ~5.4 GB for the API — it bundles
-   the embedding model and a starter Knowledge Base, so the stack runs fully
-   offline with no model download at runtime) and starts the services.
+   the embedding model and a starter Knowledge Base, so indexing and retrieval
+   need no model download at runtime) and starts the services.
 2. On first start (~1 minute) the API initializes the database, runs
    migrations, loads the bundled embedding model, and seeds 91 curated
    troubleshooting runbooks into the Knowledge Base. Restarts are faster — the
@@ -101,7 +101,19 @@ cp .env.example .env
 3. A default admin user is created: `admin` / `admin@local.faultmaven`
 
 > **First run is slower** because of the one-time image pull. After that,
-> startup is ~1 minute and needs no internet access for the model or KB.
+> startup is ~1 minute and needs no internet access for the embedding model or KB.
+> Investigation turns still call the LLM provider you configured.
+
+#### Local models
+
+`CHAT_PROVIDER=local` with `LOCAL_LLM_URL` points FaultMaven at a self-hosted
+OpenAI-compatible endpoint (vLLM, or Ollama's `/v1`). The provider is wired in
+and its tool-calling check reads the endpoint rather than the model name, but
+**we have not yet verified a full investigation end to end on an open-weights
+model**, and local endpoints are best-effort for the structured output the
+engine depends on. Until a tested configuration is published here, use a hosted
+provider with strict structured output (Gemini, OpenAI, Anthropic) for
+`CHAT_PROVIDER`. If you try a local model, we want to hear how it went.
 
 ### Step 2: Log In
 
@@ -286,7 +298,7 @@ It supports a wide variety of backends, including:
 
 - **Frontier Models:** Connect to major cloud providers (OpenAI, Anthropic, Google) for complex reasoning and multimodal analysis.
 - **Inference Providers:** Use high-speed inference engines (Groq, Fireworks AI) for low-latency responsiveness.
-- **Local & Self-Hosted:** Run entirely on your own hardware using local runners (Ollama, vLLM) for maximum data privacy and zero API costs.
+- **Local & Self-Hosted:** Point FaultMaven at a local OpenAI-compatible runner (vLLM, Ollama). Wired in, but not yet verified end to end on an open-weights model — see [Local models](#local-models).
 - **Model Routing:** Built-in fallback logic ensures high availability by automatically switching providers if the primary API becomes unavailable.
 
 ---
@@ -297,25 +309,26 @@ FaultMaven runs on a single, deployment-agnostic **Core**. The same engine power
 
 ### 1. Standalone (Self-Hosted)
 
-**Best for:** Individuals, contributors, and air-gapped environments.
+**Best for:** Engineers who want FaultMaven on their own hardware, contributors, and anyone who wants to audit exactly what runs.
 
 Standalone is a monolithic, single-instance deployment you run on your own hardware — directly as a server process or inside a Docker container. It ships with fixed, simple defaults (SQLite, in-process FakeRedis, embedded ChromaDB) so getting started is "pick an LLM provider, paste a key, go."
 
 - **Self-Hosted:** You own and operate the stack — the container, the database (SQLite), and the configuration via a single `.env` file.
 - **Build Your Own Knowledge:** Ingest your own runbooks and build a **Personal Knowledge Base** tailored exactly to your specific needs.
-- **Offline Capable:** Can run entirely offline (with local LLMs like Ollama), making it ideal for high-restriction environments.
+- **Your Data Stays Put:** Cases, evidence and the knowledge base live on your disk, and retrieval runs with no network (the embedding model ships in the image). Prompts go to the LLM provider you configure — see [Local models](#local-models) for where self-hosted inference stands.
+- **Single User:** Standalone has no team sharing; the team knowledge scope needs Cloud's multi-tenancy.
 
 Follow the [Quick Start](#quick-start) guide above to get up and running.
 
 ### 2. Cloud (FaultMaven-Hosted SaaS)
 
-**Best for:** Engineering teams and enterprises requiring collaboration and institutional scale.
+**Best for:** Individuals and teams who would rather use FaultMaven than operate it.
 
-Cloud is a cloud-native deployment architecture — orchestrated, elastic, and scalable — operated for you as a managed SaaS. It provides immediate value out of the box with managed infrastructure and data.
+Cloud is FaultMaven run for you: the same engine as Standalone, with nothing to install or operate, plus team knowledge sharing. In beta it is free, with a daily limit on investigation turns; pricing will be announced before general availability. Because the engine is fair source, you are never locked in — you can run the same engine yourself at any time.
 
 > **"Cloud" describes the architecture, not the location.** The same cloud-native deployment can run in public cloud (AWS/GCP/Azure) or on-prem as a private cloud.
 
-- **Managed Kubernetes Infrastructure:** We run the Core on a high-availability Kubernetes control plane, handling auto-scaling, encryption, and zero-downtime updates for you.
+- **Managed Infrastructure:** We run the Core on Kubernetes with PostgreSQL, Redis and object storage, and handle upgrades. Cloud is deployed on its own schedule, so it can run an older build than the current self-hosted image.
 - **Team Knowledge Sharing:** Multi-tenancy adds the **team** knowledge scope — share personal runbooks across your org. (Both deployments ship with the same global runbook pack.)
 - **Collaborative 3-Tier Knowledge:** The cloud platform activates the full 3-scope model:
   1. **Global:** System-wide runbooks shipped to every deployment.
@@ -337,7 +350,7 @@ Cloud is a cloud-native deployment architecture — orchestrated, elastic, and s
 | **Session Persistence** | **Ephemeral** (FakeRedis, resets on restart) | **Persistent** (Redis, saved across sessions) |
 | **Access** | `http://localhost:3333` (localhost only) | `https://app.faultmaven.ai` |
 
-**Cloud beta is open** — sign up at [app.faultmaven.ai](https://app.faultmaven.ai/) with your email. Free while it is in beta; pricing will be announced before general availability.
+**Cloud beta is open** — sign up at [app.faultmaven.ai](https://app.faultmaven.ai/signup) with your email. Free while it is in beta, with a daily limit on investigation turns; pricing will be announced before general availability.
 
 ---
 
