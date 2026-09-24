@@ -74,7 +74,10 @@ UNKNOWN_CLIENT_IP = "unknown"
 # shares a single bucket. It is worth saying so, but it is triggered by request
 # content, so it must not be able to flood the log.
 _UNCONFIGURED_PROXY_WARNING_INTERVAL_SECONDS = 300.0
-_last_unconfigured_proxy_warning = 0.0
+# ``None`` = never warned. Not ``0.0``: ``time.monotonic()`` counts from host
+# boot on Linux, so on a node up for less than the interval ``now - 0.0`` is
+# inside the throttle window and the FIRST warning was swallowed (#1636).
+_last_unconfigured_proxy_warning: Optional[float] = None
 
 
 def parse_trusted_proxies(values: Optional[Iterable[str] | str]) -> TrustedProxies:
@@ -194,7 +197,8 @@ def _warn_unconfigured_proxy(peer: str) -> None:
 
     now = time.monotonic()
     if (
-        now - _last_unconfigured_proxy_warning
+        _last_unconfigured_proxy_warning is not None
+        and now - _last_unconfigured_proxy_warning
         < _UNCONFIGURED_PROXY_WARNING_INTERVAL_SECONDS
     ):
         return
