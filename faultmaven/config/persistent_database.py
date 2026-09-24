@@ -1,20 +1,21 @@
 """Persistent-database boot gate (fm#1647).
 
-FaultMaven does not run without a persistent database. An empty
-``DATABASE_URL``, ``:memory:`` or an in-memory SQLite spelling is not a
-supported deployment shape: a standalone boot with one used to get through the
+FaultMaven needs a persistent database. An empty ``DATABASE_URL``,
+``:memory:`` or an in-memory SQLite spelling is not a supported deployment
+shape: a standalone boot with one used to get through the
 startup migration and then die three layers down, in the single-tenant
 enterprise seed, as ``RuntimeError: Critical bootstrap failure`` wrapping a
 SQLAlchemy URL parse error.
 
 The rule is :func:`~faultmaven.config.settings.persistent_database_configured`,
 the ONE predicate the store factories already key off (fm#1128). Those
-factories still pick an in-memory store when it says False, and that arm is a
-TEST SEAM — unit tests compose services without a database. What this module
-refuses is BOOTING a process on that arm, so the refusal lives here, at boot,
-rather than in settings validation, which tests construct freely.
+factories still pick an in-memory store when it says False — unit tests
+compose services without a database. What this module refuses is BOOTING a
+process on that arm, so the refusal lives here, at boot, rather than in
+settings validation, which tests construct freely.
 
-Called from both boot paths, before either writes anything:
+Called from two boot paths, before either writes anything. The ``fm-*`` operator
+CLIs initialise the container too and do NOT call it yet (#1659):
 
 - the web lifespan (``faultmaven/main.py``), straight after the deployment
   coherence gate and before ``resolve_pseudonym_key`` (which creates the data

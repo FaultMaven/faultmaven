@@ -176,9 +176,14 @@ def test_a_file_database_boots_and_writes_where_the_refusal_did_not():
     "database_url", ["", "sqlite+aiosqlite:///:memory:"], ids=["empty", "memory"]
 )
 def test_gate_is_not_behind_the_test_environment_skip(
-    database_url, tmp_path, monkeypatch
+    database_url, tmp_path, monkeypatch, unshared_app_boot
 ):
-    """In-process, where ``_is_test_environment`` is TRUE, the boot still refuses."""
+    """In-process, where ``_is_test_environment`` is TRUE, the boot still refuses.
+
+    Boots ``faultmaven.main.app`` itself because the lifespan is the subject, so
+    it takes ``unshared_app_boot`` and is listed as a "real" site in the census
+    (``tests/unit/architecture/test_app_boot_is_shared.py``).
+    """
     from fastapi.testclient import TestClient
 
     from faultmaven.config.settings import get_settings, reset_settings

@@ -58,11 +58,12 @@ CENSUS_COMMAND = 'grep -rn "with TestClient(" tests/ --include=*.py'
 #: in six files, for 29 lifespans per run once the helpers called more than
 #: once are counted). The grep missed one more context entered as
 #: ``client_cm = TestClient(...)`` then ``with client_cm``; that one is now
-#: written as ``with TestClient(...)``, so the grep counts it.
-EXPECTED_TOTAL_SITES = 40
+#: written as ``with TestClient(...)``, so the grep counts it. fm#1647 added two
+#: (one real, one in a child-process string literal), both boot-refusal tests.
+EXPECTED_TOTAL_SITES = 42
 
 #: Of those, the ones that enter the real application's lifespan. Was 25.
-EXPECTED_REAL_APP_SITES = 8
+EXPECTED_REAL_APP_SITES = 9
 
 #: The single sanctioned shared boot: ``_RealAppBoot.client`` in
 #: ``tests/conftest.py`` calls ``TestClient.__enter__`` by hand rather than
@@ -81,6 +82,12 @@ EXPECTED: dict[str, dict[str, tuple[str, int]]] = {
         # The boot must REFUSE: a patched resolver raises, and the assertion is
         # that the failure reaches the caller rather than being logged.
         "TestTheStartupGate.test_an_unresolvable_key_stops_the_boot": ("real", 1),
+    },
+    "tests/integration/test_boot_refuses_nonpersistent_database.py": {
+        # The boot must REFUSE (fm#1647): an empty or in-memory DATABASE_URL,
+        # under the test-environment predicate, is asserted to stop the
+        # lifespan before it writes anything. Takes ``unshared_app_boot``.
+        "test_gate_is_not_behind_the_test_environment_skip": ("real", 1),
     },
     "tests/integration/api/test_rate_limit_wire_refusal.py": {
         # Each case needs its own source address (a ``TestClient`` constructor
@@ -227,6 +234,11 @@ EXPECTED_SITES_IN_STRING_LITERALS = {
     # environment, which is the whole subject of that test and is unreachable
     # from any in-process fixture.
     "tests/integration/test_fresh_install_boots.py": 1,
+    # fm#1647's child-process probe, same shape: a deployment-like boot (the
+    # test-environment predicate false) asserted to REFUSE an empty or
+    # in-memory DATABASE_URL before anything is written, plus its positive
+    # control on a file URL.
+    "tests/integration/test_boot_refuses_nonpersistent_database.py": 1,
 }
 
 

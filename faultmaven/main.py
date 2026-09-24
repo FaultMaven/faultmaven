@@ -785,9 +785,9 @@ async def lifespan(app: FastAPI):
             # Nothing is logged about it now, and nothing should be. The store
             # is the database-backed one (#1227): ``create_suggestion_service``
             # picks it off ``persistent_database_configured``, and the
-            # persistent-database gate above has already refused to boot
-            # without one — the in-memory store that factory falls back to is
-            # a test seam, not a deployment shape (fm#1647). The standing
+            # persistent-database gate above has already refused to boot the
+            # API without one (fm#1647), so the API never holds the in-memory
+            # store that factory falls back to. The standing
             # answer is on GET /admin/config/status as
             # 'suggestion_store_worker_safe', which reads the composed
             # repository rather than predicting it here — a startup log line

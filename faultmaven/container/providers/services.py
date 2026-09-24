@@ -417,13 +417,9 @@ def create_suggestion_service(
     suggestion's ``case_id`` foreign key would have no case row to point at, so
     extract would 500 where the old dict store worked.
 
-    The in-memory arm is a TEST SEAM, not a deployment shape: tests compose
-    this factory with settings that name no database. A process never boots
-    there — the persistent-database gate (``config/persistent_database.py``,
-    fm#1647) refuses an empty or in-memory ``DATABASE_URL`` at startup, in the
-    API and in the jobs runner alike. The repository still reports
-    ``is_durable == False``, so ``GET /admin/config/status`` would say so if
-    that gate were ever bypassed.
+    The API lifespan and the jobs runner refuse a non-persistent
+    ``DATABASE_URL`` at boot (fm#1647); the ``fm-*`` operator CLIs do not yet
+    (#1659). Outside those, the in-memory arm is a test seam.
     """
     from faultmaven.config.settings import persistent_database_configured
     from faultmaven.modules.knowledge.domain.services.suggestion_service import (
@@ -804,9 +800,9 @@ def create_user_service(
         )
         from faultmaven.modules.auth.domain.services.user_service import UserService
 
-        # Use the persistent database when one is configured, else InMemory —
-        # a test seam: a process refuses to boot without a persistent
-        # database (fm#1647), so only tests reach it. Keyed off the ONE shared predicate
+        # Use the persistent database when one is configured, else InMemory.
+        # The API and jobs runner refuse the latter at boot (fm#1647); the
+        # fm-* CLIs do not yet (#1659). Keyed off the ONE shared predicate
         # (fm#1128) — the user store selects with the same call, so the store
         # login writes to and the store this service reads for /auth/me cannot
         # disagree about whether a database is in play. NOT a shared session
@@ -818,7 +814,7 @@ def create_user_service(
             logger.debug("UserService using SessionlessUserRepository")
         else:
             user_repo = InMemoryUserRepository()
-            logger.debug("UserService using InMemoryUserRepository (test seam)")
+            logger.debug("UserService using InMemoryUserRepository (no database)")
 
         from faultmaven.infrastructure.persistence.sessionless_audit_repository import (
             SessionlessAuditRepository,
