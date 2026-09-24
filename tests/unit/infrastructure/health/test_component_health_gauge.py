@@ -646,6 +646,26 @@ async def test_no_component_failure_shape_reaches_the_health_fallback_body(
     monitor = ComponentHealthMonitor()
     monkeypatch.setattr(cm_module, "component_monitor", monitor)
 
+    # `health_check` also downgrades a healthy body to `degraded` when the
+    # investigation model cannot call tools, and that verdict comes from the
+    # AMBIENT LLM config, not from anything this test arranges. It depended on
+    # the environment: the zero-config `local` preset (tool-capable) applies
+    # only when REDIS_HOST is unset, so under the Cloud job's REDIS_HOST the
+    # default provider had no key and the body read `degraded` unless an
+    # earlier file had left capable LLM state in the process -- which the
+    # serial order happened to do and an xdist worker did not (#1636). Pinned
+    # capable, so the status below is the component monitor's verdict and
+    # nothing else.
+    from faultmaven.config import investigation_capability as capability_module
+
+    monkeypatch.setattr(
+        capability_module,
+        "resolve_investigation_capability",
+        lambda *_args, **_kwargs: capability_module.InvestigationCapability(
+            tool_capable=True, provider="pinned", model="pinned", source="test"
+        ),
+    )
+
     def _reached_the_fallback(body: Dict[str, Any]) -> bool:
         return body.get("error") == "Enhanced health monitoring unavailable"
 
