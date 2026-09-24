@@ -350,9 +350,29 @@ def run_alembic_migrations() -> bool:
         - Safe to run multiple times (Alembic tracks applied migrations)
         - Creates the database file if it doesn't exist (SQLite)
         - Searches for alembic.ini in multiple locations for deployment flexibility
+        - Skipped, returning False, when no PERSISTENT database is configured
+          (see below)
     """
     import subprocess
     import sys
+
+    from faultmaven.config.settings import get_settings, persistent_database_configured
+
+    # An empty DATABASE_URL, ``:memory:`` or an in-memory SQLite spelling selects
+    # the ephemeral stores: there is no database for a migration to target.
+    # Deciding it here, from the same predicate the store factories use, keeps
+    # two wrong outcomes out: ``make_url("")`` raising and killing the boot, and
+    # (before #1636) the subprocess falling back to ``data/faultmaven.db`` and
+    # migrating a file nothing reads.
+    database_url = get_settings().database.database_url
+    if not persistent_database_configured(database_url):
+        logger.info(
+            "Skipping startup Alembic migrations: DATABASE_URL (%r) configures "
+            "no persistent database, so the in-memory stores are in use and "
+            "there is no schema to migrate.",
+            database_url,
+        )
+        return False
 
     try:
         # Find alembic.ini - check multiple locations for deployment flexibility

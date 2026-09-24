@@ -118,3 +118,24 @@ def test_a_real_migration_under_a_cleared_environment_builds_the_app_database(
         )
     }
     assert "enterprises" in names
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["", "   ", ":memory:", "sqlite+aiosqlite:///:memory:", "sqlite://"],
+    ids=["empty", "blank", "memory-sentinel", "sqlite-memory", "sqlite-no-path"],
+)
+def test_no_persistent_database_means_no_startup_migration(url):
+    """An empty or in-memory DATABASE_URL selects the ephemeral stores
+    (``persistent_database_configured`` is False), so there is nothing to
+    migrate. It must neither raise -- ``make_url("")`` does -- nor start a
+    subprocess that falls back to ``data/faultmaven.db`` and migrates a file
+    nothing reads, which is what it did before #1636.
+    """
+    with (
+        patch("faultmaven.config.settings.get_settings", return_value=_settings(url)),
+        patch("subprocess.run") as run,
+    ):
+        assert data_init.run_alembic_migrations() is False
+
+    run.assert_not_called()
