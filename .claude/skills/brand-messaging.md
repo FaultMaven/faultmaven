@@ -35,9 +35,39 @@ Use the traits wherever a surface explains *how* FaultMaven behaves (README open
 > FaultMaven is a troubleshooting copilot that's goal-driven, methodical, evidence-based, and self-learning — it reasons a problem to its solution the way a seasoned engineer would, and gets sharper every time it does.
 
 ### Approved taglines
-- *Built to solve, not to chat.*
 - *Methodical. Evidence-based. Better every time.*
 - *Troubleshoots like an engineer. Learns like a team.*
+
+*Built to solve, not to chat* is **retired**: it defines FaultMaven by what it is not. Headlines and taglines say what FaultMaven is and where it runs — no puns, no definition by contrast, and never another product's name or brand.
+
+### Deployment positioning
+
+> **FaultMaven runs two ways, on the same engine: run it yourself, or let us run it for you.**
+
+Both deployments are first-class, and neither is described as a step toward the other.
+
+- **FaultMaven Cloud** is FaultMaven run for you — nothing to install or operate, team knowledge sharing, managed upgrades and model routing.
+- **Standalone** is FaultMaven on your own hardware — fair source, free, single-user.
+
+**The canonical Cloud explanation** — every surface that describes Cloud must agree with it in substance (each phrases it in its own voice):
+
+> FaultMaven Cloud is FaultMaven run for you: the same engine as the self-hosted version, with nothing to install or operate, plus team knowledge sharing. It is in beta — free to use, with a daily limit on investigation turns — and pricing will be announced before general availability. Because the engine is fair source and self-hostable, you are never locked in: you can run the same engine yourself, free, at any time.
+
+Rules for describing the deployments:
+
+- **Never describe Cloud as a trial, demo or stepping stone.** ❌ "try it in your browser, then run it yourself", "the fastest way to try it first", "self-hosting is where it is meant to live". ✅ "Run it yourself, or let us run it for you — same engine." · "Start on FaultMaven Cloud" · "Self-host it".
+- **On a page, both are prominent and named as the same engine.** Cloud carries the primary call to action; self-hosting sits beside it, equally visible — never below the fold or only in the footer.
+- **Beta status and the usage limit are disclosed as a status** — on pricing, the FAQ and sign-in — not as a headline or card title.
+- **No trial-funnel language** — no countdowns, "start your free trial", upgrade prompts, or anything implying a paywall on a set date.
+- **Do not invent a different purpose for Cloud** (never internal, benchmarking or research infrastructure), and do not claim there is no commercial intent.
+- **No uptime, SLA or high-availability claims.** Beta disclaimers stay.
+- **Do not sell Cloud as the better home for sensitive data.** Where data handling is mentioned, be precise, and link a privacy policy that actually covers the surface being described.
+- **"Same engine", never "same version".** Cloud is deployed on its own schedule and can run an older build than the current self-hosted image.
+- **Team sharing is Cloud-only while Standalone is single-user.** Say so wherever "teams" come up.
+- **"Never locked in" refers to the engine.** Do not promise data portability beyond the export path that exists (today: a case exports to Markdown; knowledge base documents are re-uploaded).
+- **Describe Cloud on its own terms.** A Cloud surface (sign-in, sign-up) says what Cloud is; comparing plan terms belongs on the pricing page.
+
+**Local-model and air-gapped claims are gated.** "Runs on local open-weights models" and "runs air-gapped" (which implies a local model — an air-gapped host cannot reach a hosted provider) may be published only once a full investigation has been verified end to end on a named open-weights model, with the tested configuration linked. While no such run exists, surfaces say that the local provider exists and is not yet verified, and recommend a hosted provider with strict structured output. What *is* true without a local model: FaultMaven's store — cases, evidence and knowledge base — stays on the operator's hardware, and retrieval needs no network (the embedding model is baked into the image); prompts go to whichever model provider the operator configures.
 
 ---
 
