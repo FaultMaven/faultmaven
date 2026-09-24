@@ -29,8 +29,8 @@ without anyone deciding.
 import inspect
 
 import pytest
-from fastapi.routing import APIRoute
 
+from faultmaven.api.route_enumeration import ServedRoute, iter_served_routes
 from tests.unit.api.test_operator_user_admin_tenant_confinement import (
     CONFINED_OPERATIONS,
 )
@@ -98,18 +98,31 @@ def _dependency_names(dependant, seen=None):
     return seen
 
 
-def _operator_user_operations(app) -> dict[tuple[str, str], APIRoute]:
-    """Every operation the LIVE app exposes on the operator user surface."""
-    found: dict[tuple[str, str], APIRoute] = {}
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
+def _operator_user_operations(app) -> dict[tuple[str, str], ServedRoute]:
+    """Every operation the LIVE app exposes on the operator user surface.
+
+    Flattened through ``iter_served_routes``. These routers reach the app by
+    ``include_router``, and FastAPI 0.139 stopped copying an included router's
+    routes into ``app.routes`` — so the flat walk this replaced discovered
+    NOTHING and ``test_the_surface_under_test_is_not_empty`` fired, which is
+    that test doing its job: the sweep had stopped being able to see its own
+    subject.
+
+    ``ServedRoute.dependant`` is also the RESOLVED tree, which matters more
+    here than the reach does. ``_dependency_names(route.dependant)`` is how
+    every assertion below decides a route is scoped or operator-gated, and a
+    handler-only dependant omits whatever ``include_router(...,
+    dependencies=[...])`` contributed — so a correctly gated router would read
+    as ungated.
+    """
+    found: dict[tuple[str, str], ServedRoute] = {}
+    for served in iter_served_routes(app):
+        if not served.path.startswith(OPERATOR_USER_PREFIXES):
             continue
-        if not route.path.startswith(OPERATOR_USER_PREFIXES):
-            continue
-        for method in route.methods:
+        for method in served.methods:
             if method in {"HEAD", "OPTIONS"}:
                 continue
-            found[(method, route.path)] = route
+            found[(method, served.path)] = served
     return found
 
 

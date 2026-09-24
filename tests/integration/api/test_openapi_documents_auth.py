@@ -46,6 +46,11 @@ from pathlib import Path
 import pytest
 from fastapi.routing import APIRoute
 
+from faultmaven.api.route_enumeration import (
+    iter_documented_routes,
+    iter_served_routes,
+)
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 # The environment the published reference is generated under, imported rather
@@ -217,19 +222,28 @@ def _schema_routes(app):
 
     Routes with ``include_in_schema=False`` are deliberately absent from the
     document, so there is nothing to agree or disagree with.
+
+    Flattened, NOT a walk of ``app.routes``: FastAPI 0.139 stopped copying an
+    included router's routes into it, so on 0.141.1 the flat walk saw 15 of
+    144 operations and ``test_served_and_documented_operation_counts_agree``
+    reported the app serving a strict SUBSET of its own document — the
+    opposite of the drift this file exists to catch, and an oracle that can no
+    longer see its subject.
+
+    ``ServedRoute.dependant`` is the resolved tree, which is what
+    ``_requires_auth`` needs: a handler-only dependant omits whatever
+    ``include_router(..., dependencies=[...])`` contributed, so an entire
+    authenticated router would read as unauthenticated — the #880 mistake this
+    gate is named for, reintroduced by the enumeration rather than by the code.
     """
-    return [
-        route
-        for route in app.routes
-        if isinstance(route, APIRoute) and route.include_in_schema
-    ]
+    return iter_documented_routes(app)
 
 
-def _requires_auth(route: APIRoute) -> bool:
+def _requires_auth(route) -> bool:
     return bool(MANDATORY_AUTH_DEPENDENCIES & _dependency_names(route.dependant))
 
 
-def _documented_as_secured(spec, route: APIRoute, method: str) -> bool:
+def _documented_as_secured(spec, route, method: str) -> bool:
     operation = spec.get("paths", {}).get(route.path, {}).get(method.lower(), {})
     # An empty or absent `security` means "no credentials required".
     return bool(operation.get("security"))
@@ -250,7 +264,7 @@ def test_the_surface_under_test_includes_the_oauth_router(app):
     never covered it, and saying so is better than an assertion that would have
     to fake a credential to hold.
     """
-    mounted = {route.path for route in app.routes if isinstance(route, APIRoute)}
+    mounted = {served.path for served in iter_served_routes(app)}
 
     assert {
         path for path in mounted if "/auth/oauth/" in path
@@ -651,9 +665,32 @@ def test_served_and_documented_operation_counts_agree(published_app):
     """
     spec = published_app.openapi()
 
+    # Counted through the FLATTENER, not through ``_served_operations``.
+    #
+    # The two differ deliberately and the difference is a version gate, not a
+    # taste. FastAPI 0.139 stopped copying an included router's routes into
+    # ``app.routes``; on 0.141.1 the flat walk counts 15 served against 147
+    # documented, so this test reports the document describing a superset of
+    # what is served — the reverse of the drift it exists to find, and a
+    # failure that indicts the app rather than the walk.
+    #
+    # ``ServedRoute.path`` is the EFFECTIVE, still-templated path, which is
+    # what ``path_format`` was being read for; the prefix ``include_router``
+    # contributed is already merged into it.
+    #
+    # ‼ ``_served_operations`` below is still a flat walk, and that is correct
+    # on the pinned ``fastapi==0.136.0`` and on nothing after it.
+    # ``test_no_operation_is_registered_twice`` needs ``path_regex`` and
+    # ``endpoint`` off the real ``APIRoute``, which the flattener deliberately
+    # does not hand out, so it cannot simply move here. On a FastAPI past the
+    # pin that test does not fail — it goes VACUOUS. Measured on the composed
+    # app: it inspects 144 operations on 0.136.0 and **20** on 0.141.1, so it
+    # keeps reporting no duplicates while blind to 86% of the surface.
+    # Whoever moves the pin owes it a key derived from the effective path.
     served = Counter(
-        (method, route.path_format)
-        for method, route in _served_operations(published_app)
+        (method, route.path)
+        for route in iter_served_routes(published_app)
+        for method in sorted(route.methods)
     )
     documented = Counter(
         (method.upper(), path)

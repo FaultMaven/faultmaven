@@ -56,8 +56,8 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
-from fastapi.routing import APIRoute
 
+from faultmaven.api.route_enumeration import ServedRoute, iter_served_routes
 from faultmaven.modules.case.api.routes import router as case_router
 from faultmaven.modules.case.domain.models import Case
 
@@ -78,14 +78,25 @@ SESSION_ID = "sess-belongs-to-somebody-else"
 CASE_ID = "case-123"
 
 
-def _case_routes() -> list[APIRoute]:
+def _case_routes() -> list[ServedRoute]:
     # ``prefix="/api/v1"``, exactly as ``main.py`` mounts it — the router
     # carries its own ``/cases``. Mounting it at ``/api/v1/cases`` instead
     # doubles the segment and every path assertion below quietly stops
     # describing a served route.
     app = FastAPI()
     app.include_router(case_router, prefix="/api/v1")
-    routes = [r for r in app.routes if isinstance(r, APIRoute)]
+    # Flattened, NOT a walk of ``app.routes``. FastAPI 0.139 stopped copying an
+    # included router's routes into ``app.routes`` and records one
+    # ``_IncludedRouter`` placeholder instead, so the flat walk saw ZERO of
+    # these routes and the floor below fired with "only 0 case routes mounted"
+    # — the guard reporting the suite broken rather than the code.
+    #
+    # It also fixes what the floor could not catch. ``ServedRoute.dependant``
+    # is the RESOLVED tree, so a gate contributed by
+    # ``include_router(..., dependencies=[...])`` is visible here; reading
+    # ``route.dependant`` sees only what the handler declares, and a whole
+    # router's auth would have read as absent.
+    routes = iter_served_routes(app)
     # A floor, so a router that failed to mount cannot satisfy either test
     # below by having nothing to inspect.
     assert len(routes) > 30, f"only {len(routes)} case routes mounted"
@@ -105,7 +116,7 @@ def _declares_a_session_id(annotation: object) -> bool:
     )
 
 
-def _session_id_locations(route: APIRoute) -> set[str]:
+def _session_id_locations(route: ServedRoute) -> set[str]:
     """Every place this route lets a request hand it a session id.
 
     Path, query and body are three surfaces of one question — "did the caller
@@ -125,11 +136,11 @@ def _session_id_locations(route: APIRoute) -> set[str]:
     return found
 
 
-def _session_addressed_routes() -> list[APIRoute]:
+def _session_addressed_routes() -> list[ServedRoute]:
     return [route for route in _case_routes() if _session_id_locations(route)]
 
 
-def _dependency_names(route: APIRoute) -> set[str]:
+def _dependency_names(route: ServedRoute) -> set[str]:
     """Every dependency in the route's tree, as dotted names.
 
     Walks the tree rather than reading the top level: ``require_authentication``

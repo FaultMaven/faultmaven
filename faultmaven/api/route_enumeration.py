@@ -109,6 +109,53 @@ def iter_served_routes(app) -> list[ServedRoute]:
     return served
 
 
+def iter_documented_routes(app) -> list[ServedRoute]:
+    """The served operations the OpenAPI document makes a claim about.
+
+    A SEPARATE function rather than a fourth field on ``ServedRoute``, and the
+    reason is not style. ``ServedRoute`` is unpacked positionally at seven call
+    sites across three security suites — ``for path, methods, dependant in
+    ...`` — so appending a member is a BREAKING change to this module's
+    contract: it was, measured, 12 tests failing with "too many values to
+    unpack" for one caller's convenience. Filtering here keeps both the
+    version gate and the ``include_in_schema`` reading inside the one module
+    that is allowed to touch the route object, and leaves the tuple alone.
+
+    ``include_in_schema=False`` marks a route that is matched, dispatched and
+    served like any other and simply not described — so this is the set to
+    compare against the document, and ``iter_served_routes`` stays the set to
+    compare against what the router will match.
+    """
+    if iter_route_contexts is None:  # FastAPI < 0.139: the eager-copy shape
+        return [
+            ServedRoute(route.path, frozenset(route.methods or ()), route.dependant)
+            for route in app.routes
+            if isinstance(route, APIRoute) and route.include_in_schema
+        ]
+
+    documented = []
+    for context in iter_route_contexts(app.routes):
+        route = getattr(context, "route", None)
+        if not isinstance(route, APIRoute) or not route.include_in_schema:
+            continue
+        dependant = getattr(context, "dependant", None)
+        if dependant is None:
+            raise RuntimeError(
+                f"{getattr(context, 'path', '?')}: this FastAPI's route context "
+                "carries no resolved dependant, so the dependency tree that "
+                "actually runs cannot be read. Do NOT fall back to "
+                "route.dependant — on >= 0.139 that is the handler's tree only."
+            )
+        documented.append(
+            ServedRoute(
+                context.path,
+                frozenset(getattr(context, "methods", None) or ()),
+                dependant,
+            )
+        )
+    return documented
+
+
 def serves_path_prefix(app, prefix: str) -> bool:
     """Does ``app`` serve any API route under ``prefix``?
 

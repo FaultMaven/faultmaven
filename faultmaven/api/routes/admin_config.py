@@ -803,10 +803,27 @@ def _oauth_flow_is_mounted(app) -> bool:
     inference further from the fact, and the settings object here need not be
     the one the mount consulted. Asked of the running app for the same reason
     ``_rate_limiting_installed`` asks ``user_middleware``.
+
+    Enumerated through ``iter_served_routes``, NOT by walking ``app.routes``.
+    The OAuth router arrives via ``include_router``, and FastAPI 0.139 stopped
+    copying an included router's routes into ``app.routes`` — it records one
+    ``_IncludedRouter`` placeholder instead. A flat walk therefore cannot see
+    this route on any FastAPI at or above that, and the feature reports
+    DISABLED on a deployment where the consent skip works.
+
+    It was flat, which is correct on the pinned ``fastapi==0.136.0`` and on
+    nothing after it, so the suite could not tell. Measured on 0.141.1: the
+    composed app exposes 25 paths to a flat walk and 144 operations through
+    the flattener, and ``/auth/oauth/authorize`` is in the second set only.
+    ``serves_path_prefix`` one screen up already reads the app this way; this
+    predicate being the file's last flat walk is what made it the one that
+    breaks. See ``api/route_enumeration`` — THE one place that gate lives.
     """
+    from faultmaven.api.route_enumeration import iter_served_routes
+
     return any(
-        str(getattr(route, "path", "")).endswith("/auth/oauth/authorize")
-        for route in getattr(app, "routes", [])
+        served.path.endswith("/auth/oauth/authorize")
+        for served in iter_served_routes(app)
     )
 
 
