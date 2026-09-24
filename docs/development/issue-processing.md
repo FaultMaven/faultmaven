@@ -349,7 +349,13 @@ which nothing else was watching.
   `condition — unobservable today:` and what would have to exist — and the
   metrics name it under *Nothing can check*. That is not a failure to hide:
   a deferral nothing can check has exactly one exit, the owner, and saying
-  so is what puts it in front of them.
+  so is what puts it in front of them. Two limits keep the form from
+  swallowing the other two: the word must open the line with nothing
+  before it, and a condition that names an issue is reported as
+  unreadable, because waiting on an issue is the `#N` form — read as a
+  condition it has no edge, and nothing moves it when that issue closes.
+  The first cut of this rule admitted a word before `condition` and read
+  "the condition in #1116 must hold first" exactly that way.
 - **A blocked item whose named issue has closed moves to ready as you
   sort.** Its condition is met and nothing else will notice — the label is
   the pile, and closing #N writes no label on anything waiting for it. The

@@ -1528,31 +1528,48 @@ def test_every_body_is_parsed_once_per_run(metrics, monkeypatch):
 # #1639: the three states round 15's state-machine pass found with no exit
 # --------------------------------------------------------------------------
 
-#: #673's `**Blocked on:**` line exactly as it stood when #1639 was filed. It
-#: is what the condition bucket was built for: read as a ruling, it listed a
-#: question under *Needs your call* that nobody had.
+#: #673's and #723's `**Blocked on:**` lines as they stand live, rewritten
+#: into the condition form by #1639. What they were before — "a measured
+#: precondition, not a ruling — …" — is read as a RULING (see below), which is
+#: why step 3 rewrites a deferral's line rather than leaving it.
 _LINE_673 = (
-    "**Blocked on:** a measured precondition, not a ruling — models must ground "
-    "causal chains reliably enough that `cause_state` reaches IDENTIFIED via the "
-    'chain without the RCC backstop (a low rate of "resolved via RCC but chain '
-    'never validated the root"). Deferred by design; re-read that rate each '
-    "round and move to ready when it holds. Not blocked on another issue."
+    "**Blocked on:** condition — the INV-41 backstop-reliance rate reads "
+    "sustained near zero at the INV-39 provider floor, in the cloud "
+    "deployment's Prometheus: `sum by (provider) (increase(faultmaven_res"
+    'olution_cause_leg_total{leg=~"rcc|working_conclusion"}[7d])) / sum '
+    "by (provider) "
+    "(increase(faultmaven_resolution_cause_leg_total[7d]))`. No numeric "
+    "threshold has been ruled; the first round that reads the rate low "
+    "brings it to the owner with the figure. Deferred by design (models "
+    "must ground causal chains without the RCC backstop). Not blocked on "
+    "another issue."
 )
 
-#: #723's, likewise.
 _LINE_723 = (
-    "**Blocked on:** a condition, not a ruling — traces show a spurious close or "
-    "resolve attributable to a weak confirmation token (the issue's own 'trigger "
-    "to revisit'). Until then it is note-only. Found in `pile:ready` by round "
-    "15's state-machine pass. Not blocked on another issue."
+    "**Blocked on:** condition — unobservable today: a terminal "
+    "transition confirmed by a bare weak token (`ok`, `sure`, `lgtm` …) "
+    "that proved spurious, or a dropdown-initiated INQUIRY→INVESTIGATING "
+    "that did not transition (the issue's two triggers to revisit). "
+    "Nothing records which token confirmed a transition or whether a "
+    "dropdown click transitioned, so today only a user report would show "
+    "it; observing it needs a counter on `_user_confirms_transition` by "
+    "token and on the dropdown path by outcome. Until then it is "
+    "note-only. Found in `pile:ready` by round 15's state-machine pass. "
+    "Not blocked on another issue."
+)
+
+#: #673's line as it stood when #1639 was filed.
+_LINE_673_BEFORE = (
+    "**Blocked on:** a measured precondition, not a ruling — models must ground "
+    "causal chains reliably enough that `cause_state` reaches IDENTIFIED."
 )
 
 
 @pytest.mark.parametrize(
     "line, starts",
     [
-        (_LINE_673, "models must ground causal chains"),
-        (_LINE_723, "traces show a spurious close"),
+        (_LINE_673, "the INV-41 backstop-reliance rate"),
+        (_LINE_723, "unobservable today: a terminal transition"),
         # The form the procedure now asks for.
         ("**Blocked on:** condition — `gh run list` shows a red nightly", "`gh run"),
         ("**Blocked on:** Condition: the p95 exceeds 2s", "the p95 exceeds 2s"),
@@ -1560,8 +1577,7 @@ _LINE_723 = (
             "**Blocked on:** condition — unobservable today: nothing counts it",
             "unobservable today",
         ),
-        # A reference inside a condition is part of what would be observed.
-        ("**Blocked on:** condition — a second report like #1294", "a second"),
+        ("**Blocked on:** condition — traces show a spurious close", "traces"),
     ],
 )
 def test_a_deferral_on_a_condition_is_its_own_bucket(metrics, line, starts):
@@ -1801,3 +1817,86 @@ def test_compute_carries_the_question_list(metrics):
 
     assert results["questions"]["listed"] == [(1, ["decide which"])]
     assert "read like a question" in metrics.report(results, 4)
+
+
+@pytest.mark.parametrize(
+    "line, reference",
+    [
+        # Each is really waiting on an issue. In the condition bucket it had
+        # no edge, so when the issue closed nothing moved it.
+        ("**Blocked on:** the condition in #1116 must hold first", "#1116"),
+        ("**Blocked on:** no condition — #1116", "#1116"),
+        ("**Blocked on:** Precondition: #12 lands", "#12"),
+        ("**Blocked on:** condition — #1116 lands", "#1116"),
+        ("**Blocked on:** condition — traces show it. See #1294.", "#1294"),
+    ],
+)
+def test_a_condition_naming_an_issue_is_unreadable_not_a_condition(
+    metrics, line, reference
+):
+    """Waiting on an issue is the `#N` form; anything else is reworded."""
+    issues = metrics.load_issues(
+        [_ready(12, 1), _ready(1116, 1), _ready(1294, 1), _blocked(700, 2, line)]
+    )
+    graph = metrics.blocking_graph(issues, REPO)
+
+    assert metrics.blocked_on_condition(line) is None
+    assert graph.on_condition == []
+    assert graph.on_ruling == []
+    assert len(graph.unresolved) == 1 and reference in graph.unresolved[0][1]
+
+
+def test_the_line_673_carried_before_its_rewrite_is_a_ruling(metrics):
+    """Nothing but the bare word opens the form: the pre-#1639 spelling is
+    counted where it always was, which is what the rewrite repairs."""
+    graph = metrics.blocking_graph(
+        metrics.load_issues([_blocked(673, 1, _LINE_673_BEFORE)]), REPO
+    )
+
+    assert metrics.blocked_on_condition(_LINE_673_BEFORE) is None
+    assert (graph.on_ruling, graph.on_condition) == ([673], [])
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "## Ruling needed",
+        "## Ruling requested",
+        "## Ruling required: which layer?",
+        "## Decision needed",
+        "## Ruling — pending",
+        "## Owner ruling?",
+    ],
+)
+def test_a_heading_that_asks_for_a_ruling_is_not_one(metrics, heading):
+    """Leak A again: a request read as an answer takes a live question off
+    the list. `## Decision needed` is a spelling already on the tracker."""
+    body_case = metrics.load_issues(
+        [_ready_with(1, _QUESTION_BODY + "\n\n" + heading, comments=[])]
+    )
+    comment_case = metrics.load_issues([_ready_with(2, _QUESTION_BODY, [heading])])
+
+    assert [n for n, _ in metrics.ready_questions(body_case, REPO)["listed"]] == [1]
+    assert [n for n, _ in metrics.ready_questions(comment_case, REPO)["listed"]] == [2]
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "## Ruling",
+        "## Ruling recorded — 2026-09-19",
+        "## Ruled",
+        "## Owner ruling, 2026-09-21",
+        "## Decision record",
+    ],
+)
+def test_a_heading_that_records_a_ruling_still_counts(metrics, heading):
+    issues = metrics.load_issues([_ready_with(1, _QUESTION_BODY, [heading])])
+
+    assert metrics.ready_questions(issues, REPO)["listed"] == []
+
+
+def test_precondition_is_the_same_word(metrics):
+    line = "**Blocked on:** Precondition — the nightly run is green for a week"
+
+    assert metrics.blocked_on_condition(line) == "the nightly run is green for a week"

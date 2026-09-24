@@ -863,13 +863,17 @@ _UNREADABLE_CLIP = 120
 
 #: The third form a statement can take (#1639, leak B): a deferral on a
 #: CONDITION — ``**Blocked on:** condition — <what would be observed>``. It
-#: must OPEN the statement, as an issue reference must, so "an owner ruling
-#: on the condition for …" stays a ruling. An article and one qualifier are
-#: admitted before the word ("a measured precondition, not a ruling — …" is
-#: how the live statements were first written), and nothing else.
-_CONDITION_LEAD = re.compile(
-    r"^(?:an?[ \t]+)?(?:[\w-]+[ \t]+)?(?:pre)?condition\b", re.IGNORECASE
-)
+#: must OPEN the statement — nothing before it, not an article, not a
+#: qualifier — so "an owner ruling on the condition for …" stays a ruling.
+#: The first cut admitted one word before it, and that read issue
+#: dependencies as conditions: "the condition in #1116 must hold first",
+#: "no condition — #1116", "Precondition: #12 lands". In the condition
+#: bucket such an item has no edge, so when #1116 closes nothing moves it —
+#: a state with no exit, made by the fix for one.
+#: ``precondition`` is the same word for this purpose and is admitted, so
+#: "Precondition: #12 lands" is caught as a condition naming an issue (and
+#: reported) rather than cut at its colon and filed as a ruling.
+_CONDITION_LEAD = re.compile(r"^(?:pre)?condition\b", re.IGNORECASE)
 
 #: What may sit between the word and the condition itself: the separator,
 #: and the "not a ruling" the first live statements carried.
@@ -896,15 +900,29 @@ def _statement_payload(text: str) -> str | None:
     return _MD_LINK.sub(r"\1", payload).strip()
 
 
-def _condition_of(payload: str) -> str | None:
-    """The condition a payload defers on, ``""`` if it names none, or
-    ``None`` when the payload is not in the condition form at all."""
+def _condition_form(payload: str) -> str | None:
+    """What follows ``condition`` and its separator, whitespace collapsed,
+    or ``None`` when the payload does not open with the word."""
     lead = _CONDITION_LEAD.match(payload)
     if lead is None:
         return None
     rest = payload[lead.end() :]
     rest = rest[_CONDITION_SEPARATOR.match(rest).end() :]
-    rest = " ".join(rest.split())
+    return " ".join(rest.split())
+
+
+def _condition_of(payload: str) -> str | None:
+    """The condition a payload defers on, ``""`` if it names none, or
+    ``None`` when it is not a readable condition.
+
+    A condition naming an issue (``#N`` anywhere in it) is NOT one: waiting
+    on an issue is the ``#N`` form, which gives the issue an edge and moves
+    the item when it closes. :func:`_blocked_on_text` reports it as
+    unreadable instead, for rewording.
+    """
+    rest = _condition_form(payload)
+    if rest is None or _ANY_REFERENCE.search(rest):
+        return None
     return "" if _unstated(rest) else rest
 
 
@@ -930,9 +948,9 @@ def blocked_on(body: str, repo: str) -> tuple[bool, list[int], str]:
     lands in ``unstated``, which is the bucket that gets repaired.
 
     A statement in the CONDITION form (:func:`blocked_on_condition`) is
-    stated, names no issue and has nothing unreadable: a reference inside a
-    condition is part of what would be observed, not an edge. One that
-    writes the word and no condition states nothing.
+    stated, names no issue and has nothing unreadable. One that writes the
+    word and no condition states nothing, and one whose condition names an
+    issue is reported as unreadable: waiting on an issue is the ``#N`` form.
     """
     return _blocked_on_text(without_code_blocks(body), repo)
 
@@ -955,8 +973,12 @@ def _blocked_on_text(text: str, repo: str) -> tuple[bool, list[int], str]:
     payload = _statement_payload(text)
     if payload is None or _unstated(payload):
         return False, [], ""
-    condition = _condition_of(payload)
-    if condition is not None:
+    form = _condition_form(payload)
+    if form is not None:
+        if _ANY_REFERENCE.search(form):
+            # A condition naming an issue: neither a condition nor an edge.
+            return True, [], _clip(form)
+        condition = _condition_of(payload)
         return bool(condition), [], ""
     # Then to the first sentence boundary.
     cut = _SENTENCE_END.search(payload)
@@ -1095,8 +1117,16 @@ _RULING_LINE = re.compile(
 #: under ``## Ruling recorded`` and were moved to blocked as open questions.
 #: A false negative here asks the owner a question they have answered, which
 #: is the expensive direction, so any heading line counts, not only a first.
+#:
+#: A heading that ASKS for a ruling is not one: ``## Ruling needed`` or
+#: ``## Ruling requested`` counted as made would take a live question off the
+#: list — leak A again. Same rule as the bold line: the word followed by a
+#: request, or a heading that ends in a question mark, is a question.
 _RULING_HEADING = re.compile(
-    r"^[ \t]*#{1,6}[ \t]*(?:Ruling|Ruled|Owner[ \t]+rulings?|Decision[ \t]+record)\b",
+    r"^[ \t]*#{1,6}[ \t]*(?:Ruling|Ruled|Owner[ \t]+rulings?|Decision[ \t]+record)\b"
+    r"(?![ \t:—–-]*(?:needed|requested|required|pending|wanted|asked|sought"
+    r"|to[ \t]+come)\b)"
+    r"(?![^\n]*\?[ \t]*$)",
     re.IGNORECASE | re.MULTILINE,
 )
 

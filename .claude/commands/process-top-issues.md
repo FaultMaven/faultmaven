@@ -84,8 +84,13 @@ that held at 12 for six rounds and then lost ten of twelve in one reading:
   it cannot run is one nothing ever checks. If nothing can observe it today,
   write `condition — unobservable today:` and what would have to exist; the
   metrics name those under *Nothing can check*, because their only exit is
-  the owner. `condition` must open the statement, as a reference must: `an
-  owner ruling on the condition for …` stays a ruling.
+  the owner. `condition` (or `precondition`) must open the statement with
+  **nothing before it** — not an article, not a qualifier — so `an owner
+  ruling on the condition for …` stays a ruling. And a condition must not
+  name an issue: `condition — #1116 lands` is waiting on an issue, which is
+  the `#N` form, and the metrics report it as *stated but unreadable* for
+  you to reword. Read as a condition it would have no edge, and nothing
+  would move it when #1116 closed.
 
   The body rather than a comment, because this is a current value that
   *Picking*'s promotion rule and `scripts/backlog_metrics.py` both read
