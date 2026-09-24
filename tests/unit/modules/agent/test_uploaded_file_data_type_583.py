@@ -33,9 +33,6 @@ from faultmaven.core.preprocessing.models import (
     to_unified_data_type,
     unified_data_type_of,
 )
-from faultmaven.infrastructure.observability.evidence_metrics import (
-    EVIDENCE_RECLASSIFICATION_TOTAL,
-)
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.modules.agent.domain.services.investigation_service import (
@@ -202,11 +199,22 @@ class TestIntakeWritesTheDataType:
 
 class TestReclassificationMetricLabel:
     """``from_type`` is read off the file row; ``to_type`` is 6-valued. Both
-    stored vocabularies must land on the same series."""
+    stored vocabularies must land on the same series.
+
+    Asserted on the labels the code PASSES, with the metric patched, not on
+    the counter's value: under ``PROMETHEUS_ENABLED=false`` (the Standalone
+    CI job) the metric is a no-op with no ``_value`` to read.
+    """
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("stored", ["structured_config", "configuration"])
-    async def test_from_type_is_folded(self, stored):
+    async def test_from_type_is_folded(self, stored, monkeypatch):
+        from faultmaven.modules.agent.domain.services import investigation_service
+
+        metric = MagicMock()
+        monkeypatch.setattr(
+            investigation_service, "EVIDENCE_RECLASSIFICATION_TOTAL", metric
+        )
         repo = RecordingCaseRepository()
         case = create_sample_case(user_id="user_owner")
         row = _row(stored).model_copy(update={"storage_ref": "k/x.log"})
@@ -227,11 +235,6 @@ class TestReclassificationMetricLabel:
             preprocessing_service=preprocessing,
             file_storage_service=storage,
         )
-        series = EVIDENCE_RECLASSIFICATION_TOTAL.labels(
-            from_type="configuration", to_type="logs", trigger="clarification"
-        )
-        before = series._value.get()
-
         await service.process_turn(
             case_id=case.case_id,
             user_id="user_owner",
@@ -245,7 +248,10 @@ class TestReclassificationMetricLabel:
             ),
         )
 
-        assert series._value.get() == before + 1
+        metric.labels.assert_called_once_with(
+            from_type="configuration", to_type="logs", trigger="clarification"
+        )
+        metric.labels.return_value.inc.assert_called_once_with()
         saved = await repo.get(case.case_id)
         assert saved.uploaded_files[0].data_type == "logs_and_errors"
 

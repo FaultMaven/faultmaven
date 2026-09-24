@@ -317,6 +317,13 @@ def _published_source_type(uploaded_file: "UploadedFile") -> str:
     API field is documented as the 6-valued vocabulary, so it is folded here
     rather than changing the published contract. An unrecognised value is
     passed through rather than erased — it is what the row says.
+
+    No coercion of a non-string: the field is ``Optional[str]``, its writers
+    store ``DataType.value`` off a required field, and the repositories load a
+    string column, so none reaches here in production. The only way one
+    does is a test double whose preprocessing result lacks a real
+    ``detailed_data_type`` — and failing ``AttachmentResult`` validation
+    loudly is the right outcome for that, not a ``str()`` of a Mock.
     """
     stored = uploaded_file.data_type
     folded = unified_data_type_of(stored)
