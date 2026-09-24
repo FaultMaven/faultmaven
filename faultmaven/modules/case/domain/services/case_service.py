@@ -44,7 +44,10 @@ from faultmaven.models.api_models import (
 from faultmaven.models.interfaces import ISessionStore
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.auth.contracts import is_team_member
-from faultmaven.modules.case.contracts import is_server_written_user_row
+from faultmaven.modules.case.contracts import (
+    is_server_written_assistant_row,
+    is_server_written_user_row,
+)
 from faultmaven.modules.case.domain.models import Case, CaseState
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.utils.datetime import parse_utc_timestamp
@@ -685,6 +688,14 @@ class CaseService(ICaseService):
                             continue
                         context_lines.append(f"{i}. [{timestamp}] User: {content}")
                     elif role == "assistant":
+                        # The assistant mirror of the rule above (#1451): a
+                        # placeholder the server wrote in place of an answer
+                        # ("[Response withheld by safety filter]") is not what
+                        # the case is about and must not become title signal.
+                        # Skipped rather than marked — this context is title
+                        # input, not a transcript the model continues from.
+                        if is_server_written_assistant_row(msg_dict):
+                            continue
                         # Truncate long assistant responses
                         truncated = (
                             content[:200] + "..." if len(content) > 200 else content

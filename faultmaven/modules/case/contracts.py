@@ -47,10 +47,23 @@ if TYPE_CHECKING:
 #: other modules.
 MESSAGE_METADATA_USER_EMPTY = "user_message_empty"
 
-#: Set on an assistant row that arrived with no content (#1433). Same reason
-#: as its sibling above: the row is real and must be saveable, and a reader
-#: needs to tell a server-written placeholder from an answer.
-MESSAGE_METADATA_AGENT_EMPTY = "agent_response_empty"
+#: Set on an ASSISTANT row whose content the SERVER wrote in place of an answer
+#: the model did not usefully give (#1433, #1442, #1451). Two writers set it:
+#: ``MilestoneEngine``, which synthesizes a placeholder keyed on the provider's
+#: normalised stop reason (withheld by a safety filter, truncated, empty,
+#: no signal), and ``InvestigationService``'s persistence backstop for a raw
+#: empty answer that bypassed the engine.
+#:
+#: Shape-neutral on purpose: it was ``agent_response_empty`` until the engine's
+#: placeholders began marking truncated and filtered turns too, which are not
+#: empty. It carries no stop reason — the reason picks the placeholder TEXT,
+#: and nothing reads it off the row.
+#:
+#: Anything that presents an assistant row as something the ASSISTANT SAID must
+#: not quote a row carrying this: replayed to the model as its own prior words,
+#: the placeholder reads as an answer it gave. See
+#: :func:`is_server_written_assistant_row`.
+MESSAGE_METADATA_AGENT_SYNTHESIZED = "agent_response_synthesized"
 
 
 def is_server_written_user_row(msg: dict) -> bool:
@@ -69,6 +82,24 @@ def is_server_written_user_row(msg: dict) -> bool:
     if msg.get("role") != "user":
         return False
     return bool((msg.get("metadata") or {}).get(MESSAGE_METADATA_USER_EMPTY))
+
+
+def is_server_written_assistant_row(msg: dict) -> bool:
+    """An ASSISTANT row whose content the server wrote (#1451).
+
+    The mirror of :func:`is_server_written_user_row`, and role-checked for the
+    same reason in the other direction: the rule describes one kind of row, and
+    a role-blind predicate would let a stray key on a USER row replace what the
+    user actually typed with a line saying the assistant did not answer.
+
+    A row this returns True for is not skipped by the prompt renderers — they
+    render a neutral marker line in its place, because a turn the model failed
+    to answer is information the next turn needs. What they must never do is
+    quote it as ``ASSISTANT: <text>``.
+    """
+    if msg.get("role") != "assistant":
+        return False
+    return bool((msg.get("metadata") or {}).get(MESSAGE_METADATA_AGENT_SYNTHESIZED))
 
 
 # ============================================================
@@ -571,8 +602,9 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
 # ============================================================
 
 __all__ = [
-    "MESSAGE_METADATA_AGENT_EMPTY",
+    "MESSAGE_METADATA_AGENT_SYNTHESIZED",
     "MESSAGE_METADATA_USER_EMPTY",
+    "is_server_written_assistant_row",
     "is_server_written_user_row",
     # Repository and Service Contracts
     "ICaseRepository",
