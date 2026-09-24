@@ -258,8 +258,11 @@ def _bounded(text: str, limit: int) -> str:
 def _last_assistant_message(case: Any) -> str:
     """The assistant's last investigation message for the classifier's context.
 
-    Delegates to ``orientation.last_investigation_message`` so asides AND
-    orientation replies are skipped by one predicate (PR #1343 review).
+    Delegates to ``orientation.last_investigation_message`` so asides,
+    orientation replies (PR #1343 review) and server-written placeholders
+    (#1660) are skipped by one predicate. This is the only case row the triage
+    prompt reads: the user text in it is the live message being classified,
+    never a stored row, so a server-written USER row (#1434) has no way in.
     """
     from faultmaven.modules.agent.domain.services.orientation import (
         last_investigation_message,

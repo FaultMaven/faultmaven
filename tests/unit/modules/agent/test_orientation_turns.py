@@ -29,8 +29,10 @@ from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
 )
 from faultmaven.modules.agent.domain.services.orientation import (
+    EMPTY_AGENT_RESPONSE_TEXT,
     EMPTY_TURN_TEXT,
 )
+from faultmaven.modules.case.contracts import MESSAGE_METADATA_AGENT_SYNTHESIZED
 from faultmaven.modules.case.domain.models import CaseState, TurnOutcome, TurnProgress
 
 pytestmark = pytest.mark.unit
@@ -177,6 +179,44 @@ class TestStateAware:
         assert saved.messages[-1]["metadata"]["out_of_band"] == "orientation"
         assert resp.investigation_turn == 1
         assert resp.turn_number == 2
+
+    @pytest.mark.parametrize(
+        "placeholder",
+        ["[Response withheld by safety filter]", EMPTY_AGENT_RESPONSE_TEXT],
+    )
+    async def test_hi_after_an_unanswered_turn_recaps_the_last_real_answer(
+        self, service, recording_case_repository, investigating, placeholder
+    ):
+        """#1660: "Where we left off" quotes the newest answer the MODEL wrote.
+        A turn it failed to answer leaves a placeholder the server wrote, and
+        the greeting used to read it back to the user as where things stood."""
+        investigating.messages += [
+            {"turn_number": 2, "role": "user", "content": "and now?", "metadata": {}},
+            {
+                "turn_number": 2,
+                "role": "assistant",
+                "content": placeholder,
+                "metadata": {MESSAGE_METADATA_AGENT_SYNTHESIZED: True},
+            },
+        ]
+        investigating.current_turn = 2
+        investigating.turn_history.append(
+            TurnProgress(
+                turn_number=2,
+                timestamp=datetime.now(timezone.utc),
+                progress_made=False,
+                outcome=TurnOutcome.CONVERSATION,
+                agent_response_summary=placeholder,
+                agent_response_synthesized=True,
+            )
+        )
+
+        resp, _ = await _turn(
+            service, recording_case_repository, investigating, query="hi"
+        )
+
+        assert placeholder not in resp.agent_response
+        assert "Where we left off: Postgres was the OOM victim." in resp.agent_response
 
     async def test_a_pending_terminal_proposal_goes_to_the_engine(
         self, service, recording_case_repository, investigating, engine

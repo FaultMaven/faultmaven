@@ -23,7 +23,11 @@ from enum import Enum
 from typing import Any, Optional
 
 from faultmaven.core.investigation.evidence_need_surfacing import is_ask_exhausted
-from faultmaven.modules.case.contracts import CaseState, is_default_case_title
+from faultmaven.modules.case.contracts import (
+    CaseState,
+    is_default_case_title,
+    is_server_written_assistant_row,
+)
 
 #: Marker on both message rows of a turn answered outside the investigation.
 #: Shares the ``out_of_band`` key with #1329's asides so every reader that
@@ -207,9 +211,23 @@ def _pending_need(case: Any) -> Optional[str]:
 
 
 def last_investigation_message(case: Any, limit: int = _ASK_CHARS) -> Optional[str]:
-    """The assistant's last INVESTIGATION message: asides (#1329) and earlier
-    orientation replies are skipped, so two greetings in a row do not quote the
-    first recap back as "where we left off".
+    """The newest investigation answer the MODEL wrote, or ``None``.
+
+    Three kinds of assistant row are passed over:
+
+    * asides (#1329) and earlier orientation replies, so two greetings in a row
+      do not quote the first recap back as "where we left off";
+    * a placeholder the server wrote because the model gave no usable answer
+      (#1660) — "[Response withheld by safety filter]", "(this turn produced
+      no answer)". Quoting one would put server text in front of the triage
+      classifier as the assistant's words, which #1451 forbids, and tell the
+      user "Where we left off: [Response withheld by safety filter]".
+
+    Skipped rather than marked, because neither reader is a transcript the
+    model continues from: the triage prompt uses this to disambiguate a short
+    reply, which the last thing the model actually asked settles, and the
+    greeting quotes it back to the user. That is the auto-titler's reading of
+    #1451, not the history renderers'.
 
     Shared with ``out_of_band`` for the same reason; one predicate, one place.
     """
@@ -218,6 +236,8 @@ def last_investigation_message(case: Any, limit: int = _ASK_CHARS) -> Optional[s
             continue
         meta = msg.get("metadata") or {}
         if meta.get("out_of_band") or meta.get("orientation"):
+            continue
+        if is_server_written_assistant_row(msg):
             continue
         return _first_sentence(str(msg["content"]), limit)
     return None
