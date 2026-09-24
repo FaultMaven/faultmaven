@@ -22,6 +22,7 @@ What is pinned here:
 from __future__ import annotations
 
 import ast
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -250,254 +251,579 @@ class TestReclassificationMetricLabel:
 
 
 # =============================================================================
-# State N — every read of ``data_type`` in the package, classified
+# State N — every read of ``data_type`` in the package, classified PER SITE
 # =============================================================================
 
 #: The READ boundary. A reader that needs the 6-valued type calls it.
 _BOUNDARY = "unified_data_type_of"
 
-#: Constructors that parse a string as ONE vocabulary. A reader of the column
-#: that calls one of these on it is the defect #583's review found in
-#: ``vectorize_file_tool`` (``UnifiedDataType(stored)`` → TEXT on a miss).
+#: Constructors that parse a string as ONE vocabulary. Handing the column to
+#: one is the defect #583's review found in ``vectorize_file_tool``
+#: (``UnifiedDataType(stored)`` → TEXT on a miss).
 _ONE_VOCABULARY_PARSERS = frozenset(
     {"UnifiedDataType", "EvidenceSourceType", "DataType", "DetailedDataType"}
 )
 
-_SVC = "modules/agent/domain/services/investigation_service.py"
-_INGEST = "modules/case/domain/services/case_data_ingestion_service.py"
+#: A string literal naming the column in SQL: the repositories' ``SELECT`` /
+#: ``INSERT … ON CONFLICT`` / ``json_build_object`` texts. Docstrings excluded.
+_SQL = re.compile(r"\b(select|insert|update)\b|json_build_object", re.IGNORECASE)
 
-#: ``(module, scope, kind) -> category``. Categories:
-#:
-#: - ``boundary`` — reads ``UploadedFile.data_type`` and needs the 6-valued
-#:   type; must call ``unified_data_type_of`` in the same function.
-#: - ``agnostic`` — reads ``UploadedFile.data_type`` and uses it as an opaque
-#:   string (a label shown to the model, an equality against its own earlier
-#:   snapshot, a key nobody reads); must NOT parse it as one vocabulary.
-#: - ``passthrough`` — a repository moving the string between row and model.
-#: - ``other`` — a ``data_type`` that is not ``UploadedFile.data_type`` at all
-#:   (a classifier result, an intent, a request body). Named with its reason.
-_EXPECTED: dict[tuple[str, str, str], str] = {
-    # --- UploadedFile.data_type, needs the 6-valued type -------------------
-    (
-        "modules/agent/tools/vectorize_file_tool.py",
-        "VectorizeFileTool.execute_with_context",
-        "attr",
-    ): "boundary",
-    (
-        "modules/agent/tools/deep_analysis_tool.py",
-        "DeepAnalysisTool.execute_with_context",
-        "getattr",
-    ): "boundary",
-    # AttachmentResult.source_type, published as the 6-valued vocabulary.
-    (_SVC, "_published_source_type", "attr"): "boundary",
-    # ``previous_type`` → EVIDENCE_RECLASSIFICATION_TOTAL.from_type. The same
-    # function also reads ``preprocessing_result.data_type`` (6-valued, the
-    # ``to_type``) and parses ``intent.data_type`` via ``DataType(...)``.
-    (_SVC, "InvestigationService._handle_file_reclassification", "attr"): "boundary",
-    # --- UploadedFile.data_type, opaque string -----------------------------
-    # The ``<uploaded_file data_type=…>`` attribute in the prompt.
-    (
-        "core/investigation/prompts/context_builder.py",
-        "_render_orphan_file_block",
-        "attr",
-    ): "agnostic",
-    # The referent check: equality against the value's own snapshot
-    # (``OFFERED_DATA_TYPE_KEY``), so which vocabulary does not matter.
-    (
-        "core/investigation/suggestion_liveness.py",
-        "file_data_types",
-        "attr",
-    ): "agnostic",
-    # "(classified as …)" in the implicit query.
-    (
-        "core/investigation/turn_pipeline.py",
-        "generate_implicit_query",
-        "attr",
-    ): "agnostic",
-    # A row in the ``list_evidence_by_time`` tool result.
-    (
-        "modules/agent/tools/list_evidence_by_time_tool.py",
-        "_format_unpromoted_files",
-        "attr",
-    ): "agnostic",
-    # The engine attachment dict's ``data_type`` key. No engine code reads it
-    # (``turn_uploads`` reads ``file_id`` / ``is_novel``).
-    (_SVC, "_engine_attachment_metadata", "attr"): "agnostic",
-    # --- repositories ------------------------------------------------------
-    (
-        "modules/case/infrastructure/sqlite_case_repository.py",
-        "SQLiteCaseRepository._load_uploaded_files",
-        "get",
-    ): "passthrough",
-    (
-        "modules/case/infrastructure/sqlite_case_repository.py",
-        "SQLiteCaseRepository._upsert_uploaded_files",
-        "attr",
-    ): "passthrough",
-    (
-        "modules/case/infrastructure/postgresql_hybrid_case_repository.py",
-        "PostgreSQLHybridCaseRepository._upsert_uploaded_files",
-        "attr",
-    ): "passthrough",
-    # --- not UploadedFile.data_type ----------------------------------------
-    # Intent / request / tool-parameter ``data_type`` — a ``DataType`` the
-    # caller names, parsed as one on purpose.
-    (_SVC, "InvestigationService.process_turn", "attr"): "other",
-    ("models/api_models.py", "QueryIntent.validate_intent_fields", "attr"): "other",
-    ("modules/case/api/routes.py", "reclassify_evidence", "get"): "other",
-    (
-        "modules/agent/tools/reclassify_evidence_tool.py",
-        "ReclassifyEvidenceTool.execute_with_context",
-        "get",
-    ): "other",
-    # ``preprocessing_result.data_type`` (a ``UnifiedDataType``).
-    (_SVC, "InvestigationService.reclassify_evidence", "attr"): "other",
-    (
-        "modules/preprocessing/preprocessing_service.py",
-        "PreprocessingService.classify_and_extract",
-        "attr",
-    ): "other",
-    # Classifier results / LLM routing kwargs / pattern-learner feedback.
-    (
-        "modules/preprocessing/classifier.py",
-        "_opik_track_classifier.wrapper",
-        "attr",
-    ): "other",
-    ("infrastructure/llm/router.py", "LLMRouter.generate", "get"): "other",
-    (
-        "core/processing/pattern_learner.py",
-        "PatternLearner._analyze_feedback",
-        "get",
-    ): "other",
-    # The legacy data-ingestion service's own in-memory classification
-    # results; it never touches ``uploaded_files``.
-    (_INGEST, "CaseDataIngestionService._calculate_confidence_score", "attr"): "other",
-    (
-        _INGEST,
-        "CaseDataIngestionService._combine_processing_insights",
-        "getattr",
-    ): "other",
-    (_INGEST, "CaseDataIngestionService._detect_anomalies", "attr"): "other",
-    (_INGEST, "CaseDataIngestionService._execute_data_ingestion", "attr"): "other",
-    (_INGEST, "CaseDataIngestionService._record_enhanced_operation", "attr"): "other",
-    (_INGEST, "CaseDataIngestionService.get_processing_insights", "attr"): "other",
-    (_INGEST, "CaseDataIngestionService.ingest_data_enhanced", "attr"): "other",
-    (_INGEST, "CaseDataIngestionService.ingest_data_enhanced", "get"): "other",
-    (_INGEST, "CaseDataIngestionService.learn_from_feedback", "attr"): "other",
-}
+#: Every token a matcher below keys on. ``UploadedFile`` is its own token:
+#: ``UploadedFile(**f)`` names no ``data_type`` at all.
+_TOKENS = ("data_type", "UploadedFile")
+
+
+class _Site:
+    """One read of ``data_type``: where, of what, and the node itself."""
+
+    def __init__(self, rel, scope, kind, receiver, node, func):
+        self.key = (rel, scope, kind, receiver)
+        self.node = node
+        self.func = func
+
+
+def _receiver(node) -> str:
+    return ast.unparse(node)
 
 
 def _is_data_type_key(node) -> bool:
     return isinstance(node, ast.Constant) and node.value == "data_type"
 
 
-def _scan() -> tuple[dict[tuple[str, str, str], set[str]], set[str]]:
-    """``(module, scope, kind) -> names called in that scope``, plus the files
-    parsed. The called names are what the category checks read."""
-    found: dict[tuple[str, str, str], set[str]] = {}
-    calls: dict[tuple[str, str], set[str]] = {}
-    modules = _package_modules(("data_type",))
+def _scan() -> tuple[list[_Site], set[str]]:
+    """Every read SITE of ``data_type`` in the package, plus the files parsed.
+
+    A site is keyed on ``(module, scope, shape, receiver)`` — the receiver is
+    the source text of the object read from (``res.uploaded_file``,
+    ``intent``, ``row[15]``) — and sites with the same key are COUNTED, so a
+    second read of the same thing in the same function changes the census.
+    The first version keyed on ``(function, shape)`` alone, so one entry
+    filed as ``other`` for ``intent.data_type`` hid a read of the column
+    added beside it; reverting this PR's own chip fix stayed green.
+    """
+    sites: list[_Site] = []
+    modules = _package_modules(_TOKENS)
     for rel, tree in modules:
+        for parent in ast.walk(tree):
+            for child in ast.iter_child_nodes(parent):
+                child._fm_parent = parent  # type: ignore[attr-defined]
 
         class _Walk(_ScopedVisitor):
-            def _record(self, kind: str) -> None:
-                found.setdefault((self.rel, self.scope, kind), set())
+            def __init__(self, rel):
+                super().__init__(rel)
+                self.funcs = []
+
+            def _named(self, node):
+                is_func = not isinstance(node, ast.ClassDef)
+                if is_func:
+                    self.funcs.append(node)
+                super()._named(node)
+                if is_func:
+                    self.funcs.pop()
+
+            visit_FunctionDef = _named
+            visit_AsyncFunctionDef = _named
+            visit_ClassDef = _named
+
+            def _add(self, kind, receiver, node):
+                func = self.funcs[-1] if self.funcs else None
+                sites.append(_Site(self.rel, self.scope, kind, receiver, node, func))
 
             def visit_Attribute(self, node):
                 if node.attr == "data_type" and isinstance(node.ctx, ast.Load):
-                    self._record("attr")
+                    self._add("attr", _receiver(node.value), node)
                 self.generic_visit(node)
 
             def visit_Subscript(self, node):
                 if _is_data_type_key(node.slice) and isinstance(node.ctx, ast.Load):
-                    self._record("subscript")
+                    self._add("subscript", _receiver(node.value), node)
+                self.generic_visit(node)
+
+            def visit_Dict(self, node):
+                # ``{"data_type": row[13]}`` — a positional row read, the
+                # repositories' hydration shape.
+                for k, v in zip(node.keys, node.values):
+                    if (
+                        _is_data_type_key(k)
+                        and isinstance(v, ast.Subscript)
+                        and isinstance(v.slice, ast.Constant)
+                        and isinstance(v.slice.value, int)
+                    ):
+                        self._add("row_index", _receiver(v), v)
+                self.generic_visit(node)
+
+            def visit_Constant(self, node):
+                if (
+                    isinstance(node.value, str)
+                    and "data_type" in node.value
+                    and _SQL.search(node.value)
+                    and not isinstance(getattr(node, "_fm_parent", None), ast.Expr)
+                ):
+                    self._add("sql", "<sql>", node)
                 self.generic_visit(node)
 
             def visit_Call(self, node):
                 fn = node.func
                 name = getattr(fn, "id", None) or getattr(fn, "attr", None)
-                calls.setdefault((self.rel, self.scope), set()).add(name)
                 if name == "getattr" and len(node.args) >= 2:
                     if _is_data_type_key(node.args[1]):
-                        self._record("getattr")
+                        self._add("getattr", _receiver(node.args[0]), node)
                 elif name == "get" and node.args and _is_data_type_key(node.args[0]):
-                    self._record("get")
+                    self._add("get", _receiver(fn.value), node)
+                elif name != "setattr" and any(_is_data_type_key(a) for a in node.args):
+                    # A helper taking the attribute NAME — the
+                    # ``_get_data_attribute(x, "data_type")`` shape.
+                    self._add("name_arg", f"{name}({_receiver(node.args[0])})", node)
+                elif name == "UploadedFile":
+                    for kw in node.keywords:
+                        if kw.arg is None:
+                            self._add("construct_spread", _receiver(kw.value), node)
+                        elif kw.arg == "data_type":
+                            self._add("construct_kw", _receiver(kw.value), kw.value)
                 self.generic_visit(node)
 
         _Walk(rel).visit(tree)
+    return sites, {rel for rel, _ in modules}
 
-    for key in found:
-        found[key] = calls.get((key[0], key[1]), set())
-    return found, {rel for rel, _ in modules}
+
+def _uses(site: _Site) -> list[ast.AST]:
+    """The expressions the read's VALUE reaches in its function: the read
+    itself, plus every later use of a local name it is assigned to (one hop,
+    ``name = <expr containing the read>``). Enough for the house idiom
+    (``data_type_str = … file_meta.data_type …`` then a parse of the name)."""
+    reached: list[ast.AST] = [site.node]
+    node = site.node
+    while hasattr(node, "_fm_parent") and not isinstance(node, ast.stmt):
+        node = node._fm_parent
+    if (
+        isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and site.func is not None
+    ):
+        name = node.targets[0].id
+        reached += [
+            n
+            for n in ast.walk(site.func)
+            if isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Load)
+        ]
+    return reached
+
+
+def _consumer(expr: ast.AST) -> str | None:
+    """What *expr* is handed to, when that is a parse: the callee's name if
+    it is a direct argument of a call, ``"get"`` for a ``.get(expr)`` lookup,
+    ``"[]"`` for a ``MAP[expr]`` subscript. Walks through ``x or default``
+    and ``a if c else b`` so wrapping the read does not hide the parse."""
+    node = expr
+    parent = getattr(node, "_fm_parent", None)
+    while isinstance(parent, (ast.BoolOp, ast.IfExp)):
+        node, parent = parent, getattr(parent, "_fm_parent", None)
+    if isinstance(parent, ast.Call) and node in parent.args:
+        fn = parent.func
+        return getattr(fn, "id", None) or getattr(fn, "attr", None)
+    if isinstance(parent, ast.Subscript) and parent.slice is node:
+        return "[]"
+    if isinstance(parent, ast.Compare) and any(
+        _is_str_literal(side) for side in [parent.left, *parent.comparators]
+    ):
+        return "==literal"
+    return None
+
+
+def _is_str_literal(node) -> bool:
+    """A string constant, or a tuple/list/set made only of them — what a
+    comparison against ONE vocabulary looks like (``== "logs"``, ``in (…)``)."""
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, str)
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return bool(node.elts) and all(_is_str_literal(e) for e in node.elts)
+    return False
+
+
+#: What a site handed to one of these has done: parsed the column as ONE
+#: vocabulary. ``get`` and ``[]`` are the lookup form ``deep_analysis_tool``
+#: used (``_TYPE_MAP.get(stored)``).
+_PARSES = _ONE_VOCABULARY_PARSERS | {"get", "[]", "==literal"}
+
+_SVC = "modules/agent/domain/services/investigation_service.py"
+_INGEST = "modules/case/domain/services/case_data_ingestion_service.py"
+_SQLITE = "modules/case/infrastructure/sqlite_case_repository.py"
+_PG = "modules/case/infrastructure/postgresql_hybrid_case_repository.py"
+
+#: ``(module, scope, shape, receiver) -> (category, count)``. Categories:
+#:
+#: - ``boundary`` — a read of ``UploadedFile.data_type`` whose value reaches
+#:   ``unified_data_type_of``;
+#: - ``opaque`` — a read of the column used as an uninterpreted string (a
+#:   label, an equality against its own earlier snapshot, a key nobody
+#:   reads); its value must reach no parse;
+#: - ``passthrough`` — a repository moving the string between row and model;
+#:   same rule as ``opaque``;
+#: - ``other`` — not ``UploadedFile.data_type`` at all. Named with a reason,
+#:   and unchecked by construction — which is why the RECEIVER is in the key:
+#:   a read of ``res.uploaded_file`` beside an ``other`` read of ``intent``
+#:   is a different site, not the same entry.
+_CB = "core/investigation/prompts/context_builder.py"
+_EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
+    # --- UploadedFile.data_type, needs the 6-valued type (4 functions) -----
+    # Both reads sit in ``data_type_str = (… if … else …)``, which is parsed.
+    (
+        "modules/agent/tools/vectorize_file_tool.py",
+        "VectorizeFileTool.execute_with_context",
+        "attr",
+        "file_meta",
+    ): ("boundary", 2),
+    (
+        "modules/agent/tools/deep_analysis_tool.py",
+        "DeepAnalysisTool.execute_with_context",
+        "getattr",
+        "file_meta",
+    ): ("boundary", 1),
+    # AttachmentResult.source_type, published as the 6-valued vocabulary.
+    (_SVC, "_published_source_type", "attr", "uploaded_file"): ("boundary", 1),
+    # ``previous_type`` → EVIDENCE_RECLASSIFICATION_TOTAL.from_type.
+    (_SVC, "InvestigationService._handle_file_reclassification", "attr", "file_meta"): (
+        "boundary",
+        1,
+    ),
+    # --- UploadedFile.data_type, opaque string (5 functions) ---------------
+    # The ``<uploaded_file data_type=…>`` attribute in the prompt.
+    (_CB, "_render_orphan_file_block", "attr", "uf"): ("opaque", 1),
+    # The referent check: equality against the value's own snapshot
+    # (``OFFERED_DATA_TYPE_KEY``), so which vocabulary does not matter.
+    ("core/investigation/suggestion_liveness.py", "file_data_types", "attr", "uf"): (
+        "opaque",
+        1,
+    ),
+    # "(classified as …)" in the implicit query.
+    ("core/investigation/turn_pipeline.py", "generate_implicit_query", "attr", "uf"): (
+        "opaque",
+        1,
+    ),
+    # A row in the ``list_evidence_by_time`` tool result.
+    (
+        "modules/agent/tools/list_evidence_by_time_tool.py",
+        "_format_unpromoted_files",
+        "attr",
+        "uf",
+    ): ("opaque", 1),
+    # The engine attachment dict's ``data_type`` key. No engine code reads it
+    # (``turn_uploads`` reads ``file_id`` / ``is_novel``).
+    (_SVC, "_engine_attachment_metadata", "attr", "uf"): ("opaque", 1),
+    # --- repositories: the string between row and model (9 functions) ------
+    (_SQLITE, "SQLiteCaseRepository._load_uploaded_files", "sql", "<sql>"): (
+        "passthrough",
+        1,
+    ),
+    (_SQLITE, "SQLiteCaseRepository._load_uploaded_files", "get", "row_dict"): (
+        "passthrough",
+        1,
+    ),
+    (_SQLITE, "SQLiteCaseRepository._load_uploaded_files_bulk", "sql", "<sql>"): (
+        "passthrough",
+        1,
+    ),
+    (
+        _SQLITE,
+        "SQLiteCaseRepository._load_uploaded_files_bulk",
+        "row_index",
+        "row[13]",
+    ): ("passthrough", 1),
+    (
+        _SQLITE,
+        "SQLiteCaseRepository.find_uploaded_file_by_content_hash",
+        "sql",
+        "<sql>",
+    ): ("passthrough", 1),
+    (
+        _SQLITE,
+        "SQLiteCaseRepository.find_uploaded_file_by_content_hash",
+        "construct_kw",
+        "row[15]",
+    ): ("passthrough", 1),
+    (_SQLITE, "SQLiteCaseRepository._upsert_uploaded_files", "sql", "<sql>"): (
+        "passthrough",
+        1,
+    ),
+    (_SQLITE, "SQLiteCaseRepository._upsert_uploaded_files", "attr", "file"): (
+        "passthrough",
+        1,
+    ),
+    (_SQLITE, "SQLiteCaseRepository._row_to_case", "construct_spread", "f"): (
+        "passthrough",
+        1,
+    ),
+    # ``get``'s query builds each row with ``json_build_object(…'data_type',
+    # f.data_type…)``; ``_row_to_case`` spreads it into ``UploadedFile(**f)``.
+    (_PG, "PostgreSQLHybridCaseRepository.get", "sql", "<sql>"): ("passthrough", 1),
+    (
+        _PG,
+        "PostgreSQLHybridCaseRepository.find_uploaded_file_by_content_hash",
+        "sql",
+        "<sql>",
+    ): ("passthrough", 1),
+    (
+        _PG,
+        "PostgreSQLHybridCaseRepository.find_uploaded_file_by_content_hash",
+        "construct_kw",
+        "row[15]",
+    ): ("passthrough", 1),
+    (_PG, "PostgreSQLHybridCaseRepository._upsert_uploaded_files", "sql", "<sql>"): (
+        "passthrough",
+        2,
+    ),
+    (_PG, "PostgreSQLHybridCaseRepository._upsert_uploaded_files", "attr", "file"): (
+        "passthrough",
+        1,
+    ),
+    (_PG, "PostgreSQLHybridCaseRepository._row_to_case", "construct_spread", "f"): (
+        "passthrough",
+        1,
+    ),
+    # --- not UploadedFile.data_type ----------------------------------------
+    # Intent / request / tool-parameter ``data_type`` — a ``DataType`` the
+    # caller names, parsed as one on purpose.
+    (_SVC, "InvestigationService.process_turn", "attr", "intent"): ("other", 1),
+    ("models/api_models.py", "QueryIntent.validate_intent_fields", "attr", "self"): (
+        "other",
+        1,
+    ),
+    ("modules/case/api/routes.py", "reclassify_evidence", "get", "body"): ("other", 1),
+    (
+        "modules/agent/tools/reclassify_evidence_tool.py",
+        "ReclassifyEvidenceTool.execute_with_context",
+        "get",
+        "params",
+    ): ("other", 1),
+    # ``preprocessing_result.data_type`` / a classifier result.
+    (
+        _SVC,
+        "InvestigationService._handle_file_reclassification",
+        "attr",
+        "preprocessing_result",
+    ): ("other", 1),
+    (
+        _SVC,
+        "InvestigationService.reclassify_evidence",
+        "attr",
+        "preprocessing_result",
+    ): ("other", 1),
+    (
+        "modules/preprocessing/preprocessing_service.py",
+        "PreprocessingService.classify_and_extract",
+        "attr",
+        "classification",
+    ): ("other", 1),
+    (
+        "modules/preprocessing/classifier.py",
+        "_opik_track_classifier.wrapper",
+        "attr",
+        "result",
+    ): ("other", 1),
+    # LLM routing kwargs; pattern-learner feedback dicts.
+    ("infrastructure/llm/router.py", "LLMRouter.generate", "get", "kwargs"): (
+        "other",
+        1,
+    ),
+    (
+        "core/processing/pattern_learner.py",
+        "PatternLearner._analyze_feedback",
+        "get",
+        "actual_result",
+    ): ("other", 1),
+    (
+        "core/processing/pattern_learner.py",
+        "PatternLearner._analyze_feedback",
+        "get",
+        "predicted_result",
+    ): ("other", 1),
+    # The prompt attribute's NAME (``_attr("data_type", …)``), not a read —
+    # the orphan-file block's value is the ``uf`` site above; the evidence
+    # block's is ``ev.source_type``.
+    (_CB, "_render_orphan_file_block", "name_arg", "_attr('data_type')"): ("other", 1),
+    (_CB, "_render_evidence_block", "name_arg", "_attr('data_type')"): ("other", 1),
+    # Prompt prose that happens to contain "update"/"select" and the word.
+    ("core/investigation/prompts/templates.py", "<module>", "sql", "<sql>"): (
+        "other",
+        2,
+    ),
+    # The legacy data-ingestion service's own in-memory classification
+    # results; it never touches ``uploaded_files``.
+    (_INGEST, "CaseDataIngestionService._calculate_confidence_score", "attr", "data"): (
+        "other",
+        1,
+    ),
+    (
+        _INGEST,
+        "CaseDataIngestionService._combine_processing_insights",
+        "getattr",
+        "classification_result",
+    ): ("other", 1),
+    (_INGEST, "CaseDataIngestionService._detect_anomalies", "attr", "data"): (
+        "other",
+        2,
+    ),
+    (
+        _INGEST,
+        "CaseDataIngestionService._execute_data_ingestion",
+        "attr",
+        "classification_result",
+    ): ("other", 2),
+    (
+        _INGEST,
+        "CaseDataIngestionService._record_enhanced_operation",
+        "attr",
+        "result",
+    ): ("other", 1),
+    (
+        _INGEST,
+        "CaseDataIngestionService.get_processing_insights",
+        "attr",
+        "entry['result']",
+    ): ("other", 1),
+    (_INGEST, "CaseDataIngestionService.get_processing_insights", "attr", "result"): (
+        "other",
+        1,
+    ),
+    (
+        _INGEST,
+        "CaseDataIngestionService.ingest_data_enhanced",
+        "attr",
+        "classification_result",
+    ): ("other", 3),
+    (
+        _INGEST,
+        "CaseDataIngestionService.ingest_data_enhanced",
+        "get",
+        "regular_result",
+    ): ("other", 1),
+    (
+        _INGEST,
+        "CaseDataIngestionService.learn_from_feedback",
+        "attr",
+        "original_processing['result']",
+    ): ("other", 1),
+    (
+        _INGEST,
+        "CaseDataIngestionService._execute_data_analysis",
+        "name_arg",
+        "_get_data_attribute(data)",
+    ): ("other", 2),
+    (
+        _INGEST,
+        "CaseDataIngestionService._execute_data_deletion",
+        "name_arg",
+        "_get_data_attribute(data)",
+    ): ("other", 1),
+    (
+        _INGEST,
+        "CaseDataIngestionService._generate_recommendations",
+        "name_arg",
+        "_get_data_attribute(data)",
+    ): ("other", 1),
+}
+
+#: Functions that read ``UploadedFile.data_type``: 4 boundary + 5 opaque +
+#: 9 repository pass-through. Stated here so a change to it is a decision.
+_N_COLUMN_READERS = 18
 
 
 def test_every_reader_of_uploaded_file_data_type_is_classified():
-    """State N: every read of ``data_type`` in the package, and what it is.
+    """State N: every read SITE of ``data_type`` in the package, and what it is.
 
-    **N = 12 functions read ``UploadedFile.data_type``**: 4 need the 6-valued
-    type and go through the boundary, 5 use it as an opaque string, 3 are
-    repository pass-throughs. 17 more reads name a ``data_type`` that is not
-    the column (intents, classifier results, a request body) and are listed
-    with their reason. The scan found the two readers that parsed ONE
-    vocabulary — ``vectorize_file_tool`` (found by review) and
-    ``deep_analysis_tool``'s file-id branch (found by this scan) — and the
-    two that published the column's raw value into a 6-valued surface.
+    **N = 18 functions read ``UploadedFile.data_type``**: 4 need the 6-valued
+    type and go through the boundary, 5 use it as an opaque string, 9 are
+    repository pass-throughs (SQL text, positional row reads, keyword and
+    ``**`` construction of ``UploadedFile``). Every other ``data_type`` read
+    in the package is listed as ``other`` with its reason. Two readers parsed
+    ONE vocabulary before #583's fix — ``vectorize_file_tool`` (found by
+    review) and ``deep_analysis_tool``'s file-id branch (found by this scan).
 
-    Matching is keyed on the attribute and the read's SHAPE, never on the
-    receiver's name: ``x.data_type`` (load), ``getattr(x, "data_type", …)``,
-    ``x.get("data_type", …)``, ``x["data_type"]``. The whole package is read.
+    **Shapes matched** — keyed on the read's shape and the object read from,
+    never on a variable's spelling:
 
-    Then each category is CHECKED, not just listed, so a reader cannot pass by
-    being filed under a convenient label:
+    - ``x.data_type`` (load), ``getattr(x, "data_type", …)``,
+      ``x.get("data_type", …)``, ``x["data_type"]``;
+    - ``helper(x, "data_type", …)`` — any call taking the attribute NAME
+      (``_get_data_attribute``), except ``setattr``;
+    - ``{"data_type": row[13]}`` — a positional row read into a dict;
+    - ``UploadedFile(…, data_type=…)`` and ``UploadedFile(**x)``;
+    - a non-docstring string literal naming ``data_type`` in SQL
+      (``SELECT`` / ``INSERT`` / ``UPDATE`` / ``json_build_object``).
 
-    - ``boundary`` — the same function calls ``unified_data_type_of``;
-    - ``agnostic`` / ``passthrough`` — the same function constructs none of
-      ``UnifiedDataType`` / ``EvidenceSourceType`` / ``DataType``, i.e. it
-      does not parse the column as one vocabulary.
+    **Checked per SITE, not per function.** Each site's value is followed to
+    what consumes it — the read itself, and every use of a local name it is
+    assigned to (one hop) — through ``x or default`` and ``a if c else b``:
 
-    WHAT IT STILL MISSES, stated rather than implied:
+    - ``boundary``: the value reaches ``unified_data_type_of``;
+    - ``opaque`` / ``passthrough``: it reaches none of ``UnifiedDataType``,
+      ``EvidenceSourceType``, ``DataType``, a ``.get(…)`` / ``MAP[…]`` lookup,
+      or a comparison against string literals — i.e. nothing that reads it as
+      one vocabulary;
+    - ``other``: unchecked by construction. That is why the object read from
+      is in the key: a read of ``res.uploaded_file`` added beside an
+      ``other`` read of ``intent`` is a new site, and fails the census.
 
-    - SQL. The repositories also hydrate by column index (``row[15]``) and
-      the PostgreSQL loader builds the row in ``json_build_object``; those
-      move the string unchanged and are pass-throughs, but nothing here sees
-      them. A ``WHERE data_type = 'logs'`` would be a reader this misses.
-    - Whole-row serialisation (``model_dump()`` then iterating, ``**`` spread,
-      ``vars()``) — none exists for ``UploadedFile`` today.
-    - A one-vocabulary parse by LOOKUP rather than construction — a dict keyed
-      on the 6-valued strings, which is exactly what ``deep_analysis_tool``
-      did (``_TYPE_MAP.get(stored)``). The category check cannot tell that
-      from any other ``.get``; filing a new reader as ``agnostic`` is the
-      author's claim, and this list is where a reviewer reads it.
-    - ``other`` is unchecked by construction: those reads are not the column.
+    **WHAT IT STILL MISSES**, stated rather than implied:
+
+    - a constant KEY: ``entry.get(OFFERED_DATA_TYPE_KEY)`` (suggestion_liveness)
+      names no ``"data_type"`` literal — it reads a suggestion entry, not the
+      column, but a column read spelled through a constant would escape too;
+    - a helper whose attribute name arrives in a variable or keyword;
+    - dataflow beyond one assignment hop, or through a function call (a
+      parse inside a helper the value is passed to);
+    - whole-row serialisation. It exists, and moves the value verbatim:
+      ``Case.model_validate(case.model_dump())`` in the SQLite save,
+      ``CheckpointService.create_checkpoint``'s ``case.model_dump()`` snapshot
+      (a snapshot taken before #583 carries the 6-valued string, one taken
+      after carries the ``DataType``; nothing restores a ``Case`` from a
+      snapshot today, and if something did, the value would re-enter the
+      column in a vocabulary every reader already accepts), and any
+      ``model_dump`` / ``vars`` / ``**`` spread other than into
+      ``UploadedFile`` itself;
+    - SQL that names the column without one of the markers above, and a
+      positional row read not built into a dict or ``UploadedFile(…)``.
     """
-    found, parsed = _scan()
+    sites, parsed = _scan()
 
     assert {
         "modules/agent/tools/vectorize_file_tool.py",
         "modules/agent/tools/deep_analysis_tool.py",
         _SVC,
-        "modules/case/infrastructure/sqlite_case_repository.py",
-        "modules/case/infrastructure/postgresql_hybrid_case_repository.py",
+        _SQLITE,
+        _PG,
     } <= parsed, f"the token filter excluded a module holding a known reader: {parsed}"
 
-    assert set(found) == set(_EXPECTED), (
-        "a read of data_type was added or removed — classify it in _EXPECTED. "
-        f"new: {sorted(set(found) - set(_EXPECTED))}; "
-        f"gone: {sorted(set(_EXPECTED) - set(found))}"
+    census: dict[tuple[str, str, str, str], int] = {}
+    for site in sites:
+        census[site.key] = census.get(site.key, 0) + 1
+    expected = {key: count for key, (_, count) in _EXPECTED.items()}
+    assert census == expected, (
+        "a read of data_type was added, removed or duplicated — classify it "
+        "in _EXPECTED. "
+        f"new/changed: {sorted((k, v) for k, v in census.items() if expected.get(k) != v)}; "
+        f"gone: {sorted(set(expected) - set(census))}"
     )
 
-    column_readers = [k for k, c in _EXPECTED.items() if c != "other"]
-    assert len({(m, s) for m, s, _ in column_readers}) == 12
+    column_readers = {
+        (m, s) for (m, s, _, _), (c, _) in _EXPECTED.items() if c != "other"
+    }
+    assert len(column_readers) == _N_COLUMN_READERS
 
-    for key, category in _EXPECTED.items():
-        called = found[key]
+    for site in sites:
+        category, _ = _EXPECTED[site.key]
+        if category == "other":
+            continue
+        consumers = {_consumer(use) for use in _uses(site)} - {None}
         if category == "boundary":
-            assert (
-                _BOUNDARY in called
-            ), f"{key} needs the 6-valued type but does not call {_BOUNDARY}"
-        elif category in ("agnostic", "passthrough"):
-            parses = called & _ONE_VOCABULARY_PARSERS
-            assert not parses, (
-                f"{key} is filed as {category} but parses with {sorted(parses)} — "
-                f"a reader that needs the 6-valued type goes through {_BOUNDARY}"
+            assert _BOUNDARY in consumers, (
+                f"{site.key} (line {site.node.lineno}) needs the 6-valued type "
+                f"but its value never reaches {_BOUNDARY}: {sorted(consumers)}"
             )
+        parses = consumers & _PARSES
+        assert not parses, (
+            f"{site.key} (line {site.node.lineno}) is filed as {category} but "
+            f"its value is read as one vocabulary by {sorted(parses)} — "
+            f"go through {_BOUNDARY}"
+        )

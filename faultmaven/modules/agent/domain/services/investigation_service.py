@@ -318,8 +318,9 @@ def _published_source_type(uploaded_file: "UploadedFile") -> str:
     rather than changing the published contract. An unrecognised value is
     passed through rather than erased — it is what the row says.
     """
-    folded = unified_data_type_of(uploaded_file.data_type)
-    return folded.value if folded else (uploaded_file.data_type or "")
+    stored = uploaded_file.data_type
+    folded = unified_data_type_of(stored)
+    return folded.value if folded else (stored or "")
 
 
 def _classification_block(preprocessing_result) -> Optional[Dict[str, Any]]:
