@@ -42,6 +42,32 @@ try:
 except ImportError:
     pass  # dotenv not installed, which is fine for tests
 
+
+# One database per xdist worker (#1636). The default DSN is cwd-relative
+# (``sqlite+aiosqlite:///./data/faultmaven.db``), so every worker that boots
+# ``faultmaven.main.app`` -- migrations, the Standalone enterprise seed, the
+# bootstrap admin -- would do it against ONE file, concurrently. Measured on
+# #1630's runs: ``FOREIGN KEY constraint failed`` out of the bootstrap on
+# whichever worker lost. Set here, at conftest import, because that is before
+# anything in the worker can build the settings singleton, and the lifespan's
+# ``alembic upgrade`` subprocess inherits it from ``os.environ``.
+#
+# Only the database: after a boot under the required jobs' environment it is
+# the only thing the app writes under ``./data`` (the vector stores are
+# in-memory there and the other trees stay empty), and moving the other knobs
+# would change what tests that read their defaults observe. An explicitly set
+# DATABASE_URL (the ``-m postgres`` lane) is the caller's choice and is left
+# alone. Serial runs are untouched.
+_XDIST_WORKER = os.environ.get("PYTEST_XDIST_WORKER")
+if _XDIST_WORKER and not os.environ.get("DATABASE_URL"):
+    import atexit
+    import shutil
+    import tempfile
+
+    _WORKER_DATA_DIR = tempfile.mkdtemp(prefix=f"faultmaven-{_XDIST_WORKER}-")
+    atexit.register(shutil.rmtree, _WORKER_DATA_DIR, ignore_errors=True)
+    os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_WORKER_DATA_DIR}/faultmaven.db"
+
 import importlib.machinery
 from types import ModuleType, SimpleNamespace
 
