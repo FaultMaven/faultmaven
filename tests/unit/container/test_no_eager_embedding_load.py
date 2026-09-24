@@ -64,6 +64,21 @@ def loader(monkeypatch):
     return fake_class
 
 
+@pytest.fixture
+def isolated_model_cache(monkeypatch):
+    """The process-wide ``ModelCache`` singleton with EMPTY, test-owned stores.
+
+    ``ModelCache()`` returns the singleton, so a test that fills it -- or wipes
+    it with ``clear_cache()`` -- does so for every later test on the process.
+    One of these tests used to leave its ``object()`` stand-in model resident,
+    and a later file's search then called ``.encode`` on it (#1636: it failed
+    only when an xdist worker happened to run that file afterwards).
+    """
+    monkeypatch.setattr(model_cache, "_models", {})
+    monkeypatch.setattr(model_cache, "_load_info", {})
+    return model_cache
+
+
 def _standalone_settings(tmp_path) -> FaultMavenSettings:
     """REAL settings — a stand-in's ``is_cloud`` is truthy in both modes, which
     would send the ingester down the wrong ChromaDB branch."""
@@ -469,7 +484,9 @@ def test_the_conftest_stand_in_still_reads_as_obtainable(monkeypatch):
     assert model_cache_module._sentence_transformers_obtainable() is True
 
 
-def test_an_unavailable_stack_never_reaches_the_torch_import(monkeypatch):
+def test_an_unavailable_stack_never_reaches_the_torch_import(
+    monkeypatch, isolated_model_cache
+):
     """A False flag must stop short of ``configure_inference_threads()``.
 
     That function imports torch — the ~690 MiB #868 exists to keep out of the
@@ -484,14 +501,15 @@ def test_an_unavailable_stack_never_reaches_the_torch_import(monkeypatch):
     )
     monkeypatch.setattr(model_cache_module, "SENTENCE_TRANSFORMERS_AVAILABLE", False)
 
-    cache = model_cache_module.ModelCache()
-    cache.clear_cache()
+    cache = isolated_model_cache
 
     assert cache.get_bge_m3_model(triggered_by="lazy") is None
     assert called == [], "torch import was reached despite an unavailable stack"
 
 
-def test_a_wrong_true_flag_still_never_reaches_the_torch_import(monkeypatch):
+def test_a_wrong_true_flag_still_never_reaches_the_torch_import(
+    monkeypatch, isolated_model_cache
+):
     """And ordering makes the whole CLASS of wrong-True flags harmless.
 
     The flag can be True and the package still unimportable — a shadow already
@@ -513,14 +531,15 @@ def test_a_wrong_true_flag_still_never_reaches_the_torch_import(monkeypatch):
         model_cache_module, "_sentence_transformer_class", _unimportable
     )
 
-    cache = model_cache_module.ModelCache()
-    cache.clear_cache()
+    cache = isolated_model_cache
 
     assert cache.get_bge_m3_model(triggered_by="lazy") is None
     assert called == [], "torch import was reached before the package proved importable"
 
 
-def test_thread_env_is_pinned_before_the_torch_pulling_import(monkeypatch):
+def test_thread_env_is_pinned_before_the_torch_pulling_import(
+    monkeypatch, isolated_model_cache
+):
     """The OMP/MKL/OpenBLAS knobs must be set BEFORE sentence_transformers.
 
     Those variables are read by the native libraries when they initialise their
@@ -549,8 +568,7 @@ def test_thread_env_is_pinned_before_the_torch_pulling_import(monkeypatch):
     )
     monkeypatch.setattr(model_cache_module, "SENTENCE_TRANSFORMERS_AVAILABLE", True)
 
-    cache = model_cache_module.ModelCache()
-    cache.clear_cache()
+    cache = isolated_model_cache
     assert cache.get_bge_m3_model(triggered_by="lazy") is not None
 
     assert seen["omp_at_import"] is not None, (

@@ -42,6 +42,53 @@ try:
 except ImportError:
     pass  # dotenv not installed, which is fine for tests
 
+
+# One database per xdist worker (#1636). The default DSN is cwd-relative
+# (``sqlite+aiosqlite:///./data/faultmaven.db``), so every worker that boots
+# ``faultmaven.main.app`` -- migrations, the Standalone enterprise seed, the
+# bootstrap admin -- would do it against ONE file, concurrently. Measured on
+# #1630's runs: ``FOREIGN KEY constraint failed`` out of the bootstrap on
+# whichever worker lost. Set here, at conftest import, because that is before
+# anything in the worker can build the settings singleton, and the lifespan's
+# ``alembic upgrade`` subprocess inherits it from ``os.environ``.
+#
+# Only the database: after a boot under the required jobs' environment it is
+# the only thing the app writes under ``./data`` (the vector stores are
+# in-memory there and the other trees stay empty), and moving the other knobs
+# would change what tests that read their defaults observe. An explicitly set
+# DATABASE_URL (the ``-m postgres`` lane) is the caller's choice and is left
+# alone. Serial runs are untouched.
+#
+# The variable alone does not survive a test that empties or pins the
+# environment (``patch.dict(os.environ, ..., clear=True)``, ``_served_under``,
+# ``delenv("DATABASE_URL")`` + ``reset_settings()``): the next settings object
+# built there falls back to the shipped cwd-relative default, i.e. the SHARED
+# file. So ``pytest_configure`` below also makes the per-worker file the
+# settings field's DEFAULT for this worker process -- what a settings object
+# resolves to when nothing in the environment says otherwise. The variable is
+# kept for child processes, which inherit the environment but not the patch.
+#
+# The URL is also recorded under its own name, because this file is imported
+# TWICE in a worker (as ``conftest`` and as ``tests.conftest``, which some test
+# modules import from) and the second import sees DATABASE_URL already set. A
+# module global would be None in whichever copy pytest registered.
+WORKER_DATABASE_URL_ENV = "FAULTMAVEN_TEST_WORKER_DATABASE_URL"
+_XDIST_WORKER = os.environ.get("PYTEST_XDIST_WORKER")
+if (
+    _XDIST_WORKER
+    and not os.environ.get("DATABASE_URL")
+    and not os.environ.get(WORKER_DATABASE_URL_ENV)
+):
+    import atexit
+    import shutil
+    import tempfile
+
+    _WORKER_DATA_DIR = tempfile.mkdtemp(prefix=f"faultmaven-{_XDIST_WORKER}-")
+    atexit.register(shutil.rmtree, _WORKER_DATA_DIR, ignore_errors=True)
+    _url = f"sqlite+aiosqlite:///{_WORKER_DATA_DIR}/faultmaven.db"
+    os.environ["DATABASE_URL"] = _url
+    os.environ[WORKER_DATABASE_URL_ENV] = _url
+
 import importlib.machinery
 from types import ModuleType, SimpleNamespace
 
@@ -73,6 +120,30 @@ from types import ModuleType, SimpleNamespace
 HARNESS_STAND_INS: dict[str, object] = {}
 
 
+def _is_dunder(name: str) -> bool:
+    return len(name) > 4 and name.startswith("__") and name.endswith("__")
+
+
+def _no_dunder(name: str) -> None:
+    """Refuse a dunder on a stand-in whose ``__getattr__`` answers everything.
+
+    A dunder is a question ABOUT the module (``__file__``, ``__wrapped__``,
+    ``__loader__``), not an attribute of the library it stands in for, and the
+    stdlib reads those off every entry in ``sys.modules``. Answering
+    ``__file__`` with a ``Mock`` breaks ``inspect.getmodule()`` -- and with it
+    ``inspect.stack()`` -- for the whole process. Coverage calls
+    ``inspect.stack()`` when an xdist worker starts it after this conftest has
+    loaded, so every ``--cov`` xdist run INTERNALERRORed (#1636). Serial runs
+    never saw it because coverage starts before the conftest loads.
+    """
+    if _is_dunder(name):
+        raise AttributeError(name)
+
+
+# A dunder no module defines. A stand-in that answers it answers every dunder.
+_UNDEFINED_DUNDER_PROBE = "__faultmaven_harness_probe__"
+
+
 def _install_stand_in(name: str, module):
     """Install ``module`` as the harness stand-in for ``name``.
 
@@ -94,6 +165,33 @@ def _install_stand_in(name: str, module):
         )
     if name in sys.modules:
         return sys.modules[name]
+
+    # The stdlib walks every entry in ``sys.modules`` reading dunders off it
+    # (``inspect.getmodule`` reads ``__file__``), so a stand-in that fabricates
+    # them breaks introspection process-wide rather than just for its own
+    # importers (#1636). Checked by behaviour, not by source shape, so a class
+    # ``__getattr__``, an instance-dict ``__getattr__`` and an explicit
+    # assignment are all caught alike.
+    file_attr = getattr(module, "__file__", None)
+    if file_attr is not None and not isinstance(file_attr, str):
+        raise RuntimeError(
+            f"refusing to install a stand-in for {name!r} whose __file__ is "
+            f"{type(file_attr).__name__}: inspect.getmodule() reads __file__ off "
+            "every module in sys.modules, so a non-string breaks inspect.stack() "
+            "for the whole process (#1636). Raise AttributeError for dunders."
+        )
+    try:
+        fabricated = getattr(module, _UNDEFINED_DUNDER_PROBE)
+    except AttributeError:
+        pass
+    else:
+        raise RuntimeError(
+            f"refusing to install a stand-in for {name!r} that answers the "
+            f"undefined dunder {_UNDEFINED_DUNDER_PROBE!r} with "
+            f"{type(fabricated).__name__}: it will answer __file__, __wrapped__ "
+            "and the rest the same way (#1636). Call _no_dunder(name) first in "
+            "its __getattr__."
+        )
 
     # A real ModuleSpec, so find_spec(name) returns rather than raising
     # ValueError. loader=None matches what a stand-in truthfully is: located,
@@ -130,6 +228,7 @@ if "torch" not in sys.modules:
         __version__ = "2.0.0"
 
         def __getattr__(self, name):
+            _no_dunder(name)
             # Return mock for any torch attribute
             if name in (
                 "nn",
@@ -143,7 +242,13 @@ if "torch" not in sys.modules:
             ):
                 # Return a module-like mock for submodules
                 mock_submodule = ModuleType(f"torch.{name}")
-                mock_submodule.__getattr__ = lambda self, n: Mock()
+
+                # A module's own ``__getattr__`` is called with the name only.
+                def _submodule_getattr(n):
+                    _no_dunder(n)
+                    return Mock()
+
+                mock_submodule.__getattr__ = _submodule_getattr
                 return mock_submodule
             return Mock()
 
@@ -264,6 +369,7 @@ except ImportError:
             return 8  # Default to pointer size on 64-bit systems
 
         def __getattr__(self, name):
+            _no_dunder(name)
             # Return appropriate values for known functions
             if name == "sizeof":
                 return self.sizeof
@@ -284,6 +390,7 @@ except ImportError:
         """Minimal ctypes module mock for numpy compatibility."""
 
         def __getattr__(self, name):
+            _no_dunder(name)
             # Return Mock objects for ctypes types (c_int, c_byte, etc.)
             if name.startswith("c_"):
                 return type(f"c_{name[2:]}", (), {"_type_": name})
@@ -849,6 +956,31 @@ from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.models import DataType, SessionContext
 from faultmaven.models.common import AgentStateEnum as AgentState
 
+
+def _default_to_the_worker_database() -> None:
+    """Make the per-worker database the settings DEFAULT on an xdist worker.
+
+    See the comment on ``WORKER_DATABASE_URL_ENV`` above. Module level rather
+    than a ``pytest_configure`` hook: a run whose arguments sit under
+    ``tests/integration`` reaches this file through that conftest's
+    ``import conftest``, and a hook on a copy pytest never registered does not
+    fire. Idempotent, so the second copy re-applying it is harmless.
+    """
+    worker_url = os.environ.get(WORKER_DATABASE_URL_ENV)
+    if not worker_url:
+        return
+    from faultmaven.config.settings import DatabaseSettings, reset_settings
+
+    field = DatabaseSettings.model_fields["database_url"]
+    if field.default == worker_url:
+        return
+    field.default = worker_url
+    DatabaseSettings.model_rebuild(force=True)
+    reset_settings()
+
+
+_default_to_the_worker_database()
+
 # SessionManager has been replaced by SessionService
 # from faultmaven.session_management import SessionManager
 
@@ -884,6 +1016,35 @@ def reset_container():
 
     # Reset again after test
     container.reset()
+
+
+@pytest.fixture
+def private_base_container():
+    """A ``BaseDIContainer`` of the test's own; the process singleton restored after.
+
+    ``BaseDIContainer.__new__`` stores the singleton on whichever class it was
+    called through, and ``DIContainer`` inherits that attribute until it sets
+    its own. So ``BaseDIContainer()`` called before anything in the process
+    has called ``DIContainer()`` makes the BASE instance the one every later
+    ``DIContainer()`` -- and the ``container`` proxy -- hands out: a sync,
+    MagicMock-composed container where the real one is expected. The next
+    ``await container.initialize()`` then fails with ``object NoneType can't
+    be used in 'await' expression``, or on the ``allow_degraded`` keyword the
+    base does not take (#1636). A serial run never showed it because an app
+    boot earlier in the run had already made a ``DIContainer``; an xdist worker
+    need not have.
+
+    Production never constructs ``BaseDIContainer`` directly, so the fix is
+    that a test which does gets a private one and puts back what was there.
+    """
+    from faultmaven.container.base import BaseDIContainer
+
+    saved = BaseDIContainer.__dict__.get("_instance")
+    BaseDIContainer._instance = None
+    try:
+        yield BaseDIContainer()
+    finally:
+        BaseDIContainer._instance = saved
 
 
 @pytest.fixture

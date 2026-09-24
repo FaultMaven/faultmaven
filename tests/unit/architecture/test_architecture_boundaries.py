@@ -161,11 +161,9 @@ class TestArchitectureBoundaries:
 class TestDependencyInjection:
     """Test dependency injection patterns and container usage"""
 
-    def test_container_interface_compliance(self):
+    def test_container_interface_compliance(self, private_base_container):
         """Test that DI container properly provides interfaces"""
-        from faultmaven.container import BaseDIContainer
-
-        container = BaseDIContainer()
+        container = private_base_container
         container.initialize()
 
         # Test that getter methods return objects with required interfaces
@@ -183,11 +181,9 @@ class TestDependencyInjection:
         tools = container.get_tools()
         assert isinstance(tools, list)
 
-    def test_service_dependency_injection(self):
+    def test_service_dependency_injection(self, private_base_container):
         """Test that services receive proper dependencies"""
-        from faultmaven.container import BaseDIContainer
-
-        container = BaseDIContainer()
+        container = private_base_container
         agent_service = container.get_agent_service()
 
         # Verify agent service has injected dependencies
@@ -196,11 +192,9 @@ class TestDependencyInjection:
         assert hasattr(agent_service, "_tracer")
         assert hasattr(agent_service, "_sanitizer")
 
-    def test_container_health_reporting(self):
+    def test_container_health_reporting(self, private_base_container):
         """Test container health check provides meaningful status"""
-        from faultmaven.container import BaseDIContainer
-
-        container = BaseDIContainer()
+        container = private_base_container
         health = container.get_health()
 
         # Health check should return proper structure
@@ -213,11 +207,9 @@ class TestDependencyInjection:
 class TestInterfaceCompliance:
     """Test interface implementation and compliance"""
 
-    def test_llm_provider_interface(self):
+    def test_llm_provider_interface(self, private_base_container):
         """Test LLM provider implements required interface"""
-        from faultmaven.container import BaseDIContainer
-
-        container = BaseDIContainer()
+        container = private_base_container
         llm_provider = container.get_llm_provider()
 
         # Should have generate method (real or mock)
@@ -225,11 +217,9 @@ class TestInterfaceCompliance:
             llm_provider, "generate_response"
         )
 
-    def test_sanitizer_interface(self):
+    def test_sanitizer_interface(self, private_base_container):
         """Test sanitizer implements required interface"""
-        from faultmaven.container import BaseDIContainer
-
-        container = BaseDIContainer()
+        container = private_base_container
         sanitizer = container.get_sanitizer()
 
         # Should have sanitize method
@@ -243,11 +233,9 @@ class TestInterfaceCompliance:
             # In mock environment, may raise NotImplementedError or similar
             assert "not implemented" in str(e).lower() or "mock" in str(type(e)).lower()
 
-    def test_tracer_interface(self):
+    def test_tracer_interface(self, private_base_container):
         """Test tracer implements required interface"""
-        from faultmaven.container import BaseDIContainer
-
-        container = BaseDIContainer()
+        container = private_base_container
         tracer = container.get_tracer()
 
         # Should have trace method

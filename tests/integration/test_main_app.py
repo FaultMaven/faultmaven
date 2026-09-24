@@ -11,58 +11,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-
-def _ensure_database():
-    """Ensure the SQLite database and tables exist for app bootstrap.
-
-    The app lifespan queries the organizations table on startup. In CI,
-    no data/ directory or database file exists, so we create one from
-    the ORM models if it's missing.
-
-    We also stamp the Alembic version so that bootstrap's
-    ``alembic upgrade head`` is a no-op (otherwise it tries to re-create
-    tables that already exist).
-    """
-    db_file = Path("./data/faultmaven.db")
-    if db_file.exists():
-        return
-
-    db_file.parent.mkdir(parents=True, exist_ok=True)
-
-    from sqlalchemy import create_engine, text
-
-    from faultmaven.infrastructure.persistence.models import Base
-
-    engine = create_engine(f"sqlite:///{db_file}")
-    Base.metadata.create_all(engine)
-
-    # Stamp alembic_version with the latest head so migrations are a no-op.
-    # Using create_all creates tables from current models (which include all
-    # columns from all migrations), so we must stamp the latest revision.
-    from alembic.config import Config
-    from alembic.script import ScriptDirectory
-
-    alembic_cfg = Config("alembic.ini")
-    script_dir = ScriptDirectory.from_config(alembic_cfg)
-    head_rev = script_dir.get_current_head()
-
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                "CREATE TABLE IF NOT EXISTS alembic_version "
-                "(version_num VARCHAR(32) NOT NULL)"
-            )
-        )
-        conn.execute(
-            text("INSERT INTO alembic_version (version_num) VALUES (:rev)"),
-            {"rev": head_rev},
-        )
-
-    engine.dispose()
-
-
-_ensure_database()
-
 from faultmaven.main import app
 
 

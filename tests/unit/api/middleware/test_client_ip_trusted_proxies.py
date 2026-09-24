@@ -394,7 +394,7 @@ class TestUnconfiguredProxyWarning:
     def _reset():
         import faultmaven.api.middleware.client_ip as mod
 
-        mod._last_unconfigured_proxy_warning = 0.0
+        mod._last_unconfigured_proxy_warning = None
 
     def test_forwarding_headers_from_an_unlisted_peer_warn(self, caplog):
         self._reset()
@@ -433,6 +433,27 @@ class TestUnconfiguredProxyWarning:
             r for r in caplog.records if "PROTECTION_TRUSTED_PROXIES" in r.getMessage()
         ]
         assert len(emitted) == 1
+
+    def test_the_first_warning_fires_on_a_freshly_booted_host(
+        self, caplog, monkeypatch
+    ):
+        """``time.monotonic()`` counts from host boot, so it can be smaller than
+        the throttle interval. "Never warned" used to be spelled ``0.0``, which
+        on such a host reads as "warned moments ago" and swallowed the first
+        warning -- on a CI runner a few minutes old, and on a node that has just
+        joined a cluster (#1636).
+        """
+        import faultmaven.api.middleware.client_ip as mod
+
+        self._reset()
+        monkeypatch.setattr(mod.time, "monotonic", lambda: 1.0)
+        with caplog.at_level(logging.WARNING):
+            resolve_client_ip(
+                _request(CALLER_PEER, {"X-Forwarded-For": "1.2.3.4"}),
+                parse_trusted_proxies(None),
+            )
+
+        assert "PROTECTION_TRUSTED_PROXIES" in caplog.text
 
     def test_a_configured_deployment_never_warns(self, caplog):
         self._reset()

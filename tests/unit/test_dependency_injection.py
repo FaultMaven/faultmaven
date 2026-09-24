@@ -42,7 +42,7 @@ def test_singleton_pattern():
 
 
 @pytest.mark.xfail(reason="Test order dependency - passes in isolation", strict=False)
-def test_container_import_and_basic_behavior():
+def test_container_import_and_basic_behavior(private_base_container):
     """Test that container can be imported and has basic behavior"""
 
     try:
