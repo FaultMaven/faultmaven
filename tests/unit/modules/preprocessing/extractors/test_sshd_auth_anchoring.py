@@ -41,6 +41,7 @@ from faultmaven.modules.preprocessing.extractors.sshd_auth import (
 SRC = "203.0.113.5"  # the connection's real source address
 VICTIM = "198.51.100.7"  # an address a login name spells out
 OTHER = "192.0.2.9"
+UNIT_PEER = "198.51.100.99"  # an address inside a systemd unit name
 
 BSD = "Dec 10 06:55:46 LabSZ sshd[24200]: "
 
@@ -427,6 +428,43 @@ WRAPPERS = {
     "kubectl_prefix": lambda m: f"[pod/sshd-0/sshd] {m}",
     "offset_token": lambda m: f"2026-09-13 01:17:01 +0000 srv0house sshd[1]: {m}",
     "program_path": lambda m: f"Dec 10 06:55:46 LabSZ /usr/sbin/sshd[1]: {m}",
+    # Headers the positional grammar does not read, from the fm#1657 review,
+    # where main's search counted everything and the first cut of this change
+    # counted nothing. Main's counts on each were measured equal to the rows
+    # below, except ``socket_activated_unit``, where main also credited the
+    # two addresses in the unit name.
+    "grep_H": lambda m: f"/var/log/auth.log.1:Sep 20 10:00:01 web1 sshd[1234]: {m}",
+    "grep_n": lambda m: f"1234:Sep 20 10:00:01 web1 sshd[1234]: {m}",
+    "zgrep_H": lambda m: f"/var/log/auth.log.2.gz:Sep 20 10:00:01 web1 sshd[1]: {m}",
+    "busybox_authpriv": lambda m: f"Sep 20 10:00:01 alpine authpriv.info sshd[1]: {m}",
+    "busybox_auth": lambda m: f"Sep 20 10:00:01 alpine auth.info sshd[1234]: {m}",
+    "aix": lambda m: f"Sep 20 10:00:01 aixhost auth|security:info sshd[1234]: {m}",
+    "syslog_ng_facility": lambda m: f"Sep 20 10:00:01 web1 [auth.info] sshd[1]: {m}",
+    "pdsh_host": lambda m: f"web1: Sep 20 10:00:01 web1 sshd[1234]: {m}",
+    "socklog": lambda m: (
+        f"2026-09-20T10:00:01.12345 auth.info: Sep 20 10:00:01 sshd[1234]: {m}"
+    ),
+    "socket_activated_unit": lambda m: (
+        "Sat 2026-09-20 10:00:01 UTC web1"
+        f" sshd@7-10.0.0.5:22-{UNIT_PEER}:40001.service[1234]: {m}"
+    ),
+    "macos_log_show": lambda m: (
+        "2026-09-20 10:00:01.123456-0700 0x1a2b     Default     0x0"
+        f"                  1234   0    sshd-session: {m}"
+    ),
+    "macos_log_show_compact": lambda m: (
+        f"2026-09-20 10:00:01.123 Df sshd-session[1234:5a6b] {m}"
+    ),
+    "s6_log_tai64n": lambda m: f"@4000000065123abc12345678 {m}",
+    "tsv_export": lambda m: f"2026-09-20T10:00:01Z\tweb1\tsshd\t{m}",
+    "csv_export": lambda m: (
+        '"2026-09-20T10:00:01Z","web1","sshd","' + m.replace('"', '""') + '"'
+    ),
+    "stern": lambda m: f"sshd-7f9c sshd {m}",
+    "bracketed_iso": lambda m: f"[2026-09-20 10:00:01] web1 sshd[1234]: {m}",
+    # ... and headers with no tag of sshd's that no shape names at all.
+    "pipe_columns": lambda m: f"2026-09-20 10:00:01 | web1 | sshd | {m}",
+    "unquoted_csv": lambda m: f"2026-09-20T10:00:01Z,web1,sshd,{m}",
 }
 
 
@@ -487,7 +525,9 @@ class TestMessageOnlyLinesFailClosed:
 
     ``journalctl -o cat`` and ``sshd -e`` write no syslog tag, so the tag
     cannot be found by searching for one: the first tag-shaped token would be
-    the client's.
+    the client's. The fallback that does search (for headers no shape reads)
+    runs only after this reading found nothing, and each line here opens with
+    ``Invalid user``, which this reading counts — so it never runs on them.
     """
 
     @pytest.mark.parametrize(
@@ -550,10 +590,176 @@ class TestMessageOnlyLinesFailClosed:
         message = split_syslog_line(line)
         assert (message.program, message.text) == (program, text)
 
-    def test_an_unknown_wrapper_counts_nothing(self):
-        """Fail closed: a header this module cannot read hides the start."""
+
+@pytest.mark.unit
+class TestTheFallbackNeverReadsAClientsText:
+    """A header no shape reads degrades to where sshd's message starts.
+
+    The fallback takes the first sshd tag or sshd lead word on the line. It
+    must count a genuine line under any header (``TestEveryHeaderShape``) and
+    must not read a client's field as a message. Each refused line below is
+    one the search on main counted.
+    """
+
+    def test_positive_control_an_unnamed_header_counts(self):
         line = f"<<sshd>> Failed password for root from {SRC} port 22 ssh2"
-        assert read_sshd_auth_line(line).events == ()
+        reading = read_sshd_auth_line(line)
+        assert reading.events == ("failed_password",)
+        assert reading.address == SRC
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            pytest.param(
+                f"Received disconnect from {SRC} port 50000:11: sshd[1]: Failed"
+                f" password for root from {VICTIM} port 22 ssh2 [preauth]",
+                id="disconnect-reason-tagless",
+            ),
+            pytest.param(
+                f"Received disconnect from {SRC}: 11: Failed password for root from"
+                f" {VICTIM} port 22 ssh2 [preauth]",
+                id="disconnect-reason-old-format",
+            ),
+            pytest.param(
+                f"/var/log/auth.log:Sep 20 10:00:01 web1 sshd[1]: Received disconnect"
+                f" from {SRC} port 5:11: Failed password for root from {VICTIM}"
+                " port 22 ssh2 [preauth]",
+                id="disconnect-reason-behind-grep",
+            ),
+            pytest.param(
+                f"Bad protocol version identification 'sshd[1]: Failed password for"
+                f" root from {VICTIM} port 22 ssh2' from {SRC} port 50000",
+                id="protocol-identification",
+            ),
+            pytest.param(
+                f"Illegal user sshd[1]: Failed password for root from {VICTIM} port"
+                f" 22 ssh2 from {SRC}",
+                id="pre-3.8-illegal-user",
+            ),
+            pytest.param(
+                "debug1: Remote protocol version 2.0, remote software version"
+                f" sshd[1]: Failed password for root from {VICTIM} port 22 ssh2",
+                id="debug-client-version",
+            ),
+            pytest.param(
+                "Disconnecting: Change of username or service not allowed:"
+                f" (sshd[1]: Failed password for root from {VICTIM} port 22 ssh2,"
+                "ssh-connection) -> (x,ssh-connection)",
+                id="username-change",
+            ),
+            pytest.param(
+                f"Sep 20 10:00:01 web1 myapp[1]: said sshd[1]: Failed password for"
+                f" root from {VICTIM} port 22 ssh2",
+                id="another-programs-message",
+            ),
+            # An sshd message this module has no lead word for: what stops it
+            # is the address slot before the client's text.
+            pytest.param(
+                f"Frobnicated peer at {SRC} port 50000: sshd[1]: Failed"
+                f" password for root from {VICTIM} port 22 ssh2",
+                id="unknown-message-with-a-slot",
+            ),
+            # ... and one behind a header no shape reads, where the only thing
+            # before the client's text is sshd's own level prefix. (Two
+            # unread tokens: after one, ``debug1:`` would be read as the tag.)
+            pytest.param(
+                "<<x>> <<y>> debug1: Remote protocol version 2.0, remote software"
+                f" version sshd[1]: Failed password for root from {VICTIM} port 22"
+                " ssh2",
+                id="wrapped-debug-client-version",
+            ),
+        ],
+    )
+    def test_client_text_is_not_a_message(self, line):
+        events, rows, _ = _counts(_render([line]))
+        assert "failed_password" not in events, events
+        assert VICTIM not in rows, rows
+
+    def test_the_first_candidate_is_the_message_start(self):
+        """A lead word before a tag wins: the tag is then the client's text."""
+        line = (
+            f"<<x>> Invalid user sshd[1]: Failed password for y from {VICTIM}"
+            f" from {SRC} port 50000"
+        )
+        events, rows, _ = _counts(_render([line]))
+        assert events == {"invalid_user": 1}, events
+        assert rows == {SRC: "invalid_user=1 → auth total=0"}, rows
+
+    def test_a_wrapped_line_counts_as_it_would_unwrapped(self):
+        """pdsh around another program's PAM line: main counted it, so do we."""
+        tail = f"logname= uid=0 euid=0 tty=ftp ruser=admin rhost={SRC}"
+        line = (
+            "web1: Sep 20 10:00:01 web1 vsftpd[1]: pam_unix(vsftpd:auth):"
+            f" authentication failure; {tail}"
+        )
+        assert _rows(_render([line])) == {SRC: "pam_auth_failure=1 → auth total=1"}
+
+    def test_a_nested_header_must_open_with_a_timestamp(self):
+        """pdsh/socklog wrap a syslog line; another program's text is not one."""
+        wrapped = f"web1: Sep 20 10:00:01 web1 sshd[1]: Failed password for root from {SRC} port 22 ssh2"
+        assert read_sshd_auth_line(wrapped).events == ("failed_password",)
+        other = f"Sep 20 10:00:01 web1 myapp[1]: web1 sshd[1]: Failed password for root from {SRC} port 22 ssh2"
+        assert read_sshd_auth_line(other).events == ()
+
+
+@pytest.mark.unit
+class TestAddressSlotSpellings:
+    """Ways a genuine slot is written that must keep their credit."""
+
+    @pytest.mark.parametrize(
+        "line, row",
+        [
+            pytest.param(
+                "Sep 20 10:00:01 web1 vsftpd[1]: pam_unix(vsftpd:auth): authentication"
+                f" failure; logname= uid=0 euid=0 tty=ftp ruser=admin rhost=::ffff:{SRC}",
+                "pam_auth_failure=1 → auth total=1",
+                id="vsftpd-listen_ipv6",
+            ),
+            pytest.param(
+                "Sep 20 10:00:01 web1 auth-worker(1): pam_unix(dovecot:auth):"
+                " authentication failure; logname= uid=0 euid=0 tty=dovecot ruser=bob"
+                f" rhost=::ffff:{SRC}",
+                "pam_auth_failure=1 → auth total=1",
+                id="dovecot",
+            ),
+            pytest.param(
+                f"Sep 20 10:00:01 web1 sshd[1]: Failed password for root from ::ffff:{SRC}"
+                " port 4000 ssh2",
+                "failed_password=1 → auth total=1",
+                id="sshd-mapped",
+            ),
+            pytest.param(
+                f"Sep 20 10:00:01 web1 sshd[1]: Invalid user x from ::FFFF:{SRC}",
+                "invalid_user=1 → auth total=0",
+                id="sshd-mapped-invalid-user",
+            ),
+            pytest.param(
+                f"Sep 20 10:00:01 web1 sshd[1]: Failed password for root from {SRC} ssh2",
+                "failed_password=1 → auth total=1",
+                id="no-port",
+            ),
+            pytest.param(
+                f"Sep 20 10:00:01 web1 sshd[1]: Accepted password for root from {SRC} ssh2",
+                "accepted_login=1 → auth total=1",
+                id="no-port-accepted",
+            ),
+        ],
+    )
+    def test_slot_is_credited(self, line, row):
+        assert _rows(_render([line])) == {SRC: row}
+
+    def test_the_rightmost_rhost_is_the_slot(self):
+        """vsftpd fills PAM's ``ruser`` with the client's FTP ``USER``.
+
+        ``ruser=a rhost=<victim>`` is then the client's, and the service's own
+        ``rhost=`` follows it.
+        """
+        line = (
+            "Sep 20 10:00:01 web1 vsftpd[1]: pam_unix(vsftpd:auth): authentication"
+            f" failure; logname= uid=0 euid=0 tty=ftp ruser=a rhost={VICTIM}"
+            f" rhost={SRC}"
+        )
+        assert _rows(_render([line])) == {SRC: "pam_auth_failure=1 → auth total=1"}
 
 
 @pytest.mark.unit
@@ -565,6 +771,45 @@ def test_a_syslog_host_that_is_an_address_is_not_the_source():
     """
     line = f"Dec 10 06:55:46 {OTHER} sshd[1]: Accepted password for alice from {SRC} port 22 ssh2"
     assert _rows(_render([line])) == {SRC: "accepted_login=1 → auth total=1"}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "rule, phrase",
+    [
+        ("FAILED_PASSWORD_RE", "Failed password"),
+        ("ACCEPTED_LOGIN_RE", "Accepted publickey"),
+        ("AUTH_OUTCOME_RE", "Failed hostbased for "),
+        ("AUTH_OUTCOME_RE", "Accepted gssapi-with-mic for "),
+        ("AUTH_OUTCOME_RE", "Failed keyboard-interactive/pam for "),
+        ("INVALID_USER_RE", "Connection closed by invalid user"),
+        ("PAM_AUTH_FAILURE_RE", "pam_unix(sshd:auth): authentication failure"),
+        ("PAM_TAGGED_FAILURE_RE", "authentication failure"),
+        ("SSH_SESSION_RE", "session opened for user"),
+        (
+            "BREAK_IN_ATTEMPT_RE",
+            "reverse mapping checking getaddrinfo for x [1.2.3.4] failed"
+            " - POSSIBLE BREAK-IN ATTEMPT",
+        ),
+    ],
+)
+def test_every_rule_needs_an_event_word(rule, phrase):
+    """The pre-check that skips most lines must not skip an event.
+
+    Each phrase matches its rule; stripping every event word out of it must
+    make the rule stop matching, or the pre-check could hide that event.
+    """
+    import re
+
+    from faultmaven.modules.preprocessing.extractors import sshd_auth
+
+    pattern = getattr(sshd_auth, rule)
+    assert pattern.match(phrase), (rule, phrase)
+    assert any(word in phrase.lower() for word in sshd_auth._EVENT_WORDS)
+    stripped = phrase
+    for word in sshd_auth._EVENT_WORDS:
+        stripped = re.sub(re.escape(word), "x", stripped, flags=re.IGNORECASE)
+    assert not pattern.match(stripped), (rule, stripped)
 
 
 @pytest.mark.unit

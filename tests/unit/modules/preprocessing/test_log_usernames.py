@@ -993,6 +993,18 @@ _NOT_THE_RULE = {
         "faultmaven/modules/preprocessing/extractors/sshd_auth.py",
         r"Invalid user\s",
     ): "selects the getpwnamallow address-slot shape, extracts no name",
+    (
+        "faultmaven/modules/preprocessing/extractors/sshd_auth.py",
+        r"(?<![^\s,;|])(?:Failed|Accepted|Partial|Postponed|Invalid user"
+        r"|input_userauth_request:|maximum authentication|Too many authentication"
+        r"|Connection (?:closed|reset|from)|Disconnected from|Disconnecting"
+        r"|Received disconnect|Timeout, client|Unable to negotiate|pam_unix\("
+        r"|reverse mapping|Address\s|(?:error|fatal|debug\d?):)",
+    ): "words that can open an sshd message (the header fallback), extracts no name",
+    (
+        "faultmaven/modules/preprocessing/extractors/sshd_auth.py",
+        r"""['"()]|\bport\s+\d|:\s*\d+:\s|\b(?:user|for|from|by)\s""",
+    ): "text that refuses the header fallback, extracts no name",
 }
 
 
