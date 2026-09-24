@@ -9,6 +9,7 @@ import re
 from collections import Counter
 
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
+from faultmaven.modules.preprocessing.extractors.sshd_auth import read_sshd_auth_line
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
     PID_MAX,
@@ -651,6 +652,19 @@ class LogsAndErrorsExtractor:
     _PID_MAX = PID_MAX
     _HTTP_PATH_RE = re.compile(r"\b(?:GET|POST|PUT|DELETE|PATCH)\s+(/[^\s\?]*)\b")
 
+    # Semantic event types. Two readings of the sshd ones (failed_password,
+    # accepted_login, invalid_user, break_in_attempt, pam_auth_failure,
+    # ssh_session_opened, and the attempt-outcome test), chosen per line
+    # (fm#1657):
+    #   * ``sshd_auth.read_sshd_auth_line`` — the words sshd OPENED its message
+    #     with, credited to the address in sshd's own slot — for a line whose
+    #     header it positively reads. A search anywhere also matched inside the
+    #     client's login name: ``Invalid user Failed password for x from
+    #     7.7.7.7`` counted a password failure against 7.7.7.7.
+    #   * the patterns below, searched anywhere and credited to every IPv4 on
+    #     the line — the reading from before fm#1657, unchanged — for every
+    #     other line, so a header format it does not read never counts less
+    #     than it did (``_searched_sshd_events``).
     # SSH event type patterns for semantic counting
     _FAILED_PASSWORD_RE = re.compile(r"Failed password", re.IGNORECASE)
     _ACCEPTED_PASSWORD_RE = re.compile(
@@ -673,6 +687,22 @@ class LogsAndErrorsExtractor:
     _PAM_AUTH_FAILURE_RE = re.compile(
         r"(?:pam_unix\([^)]*\)|\(pam_unix\)\[\d+\]):\s*authentication failure",
         re.IGNORECASE,
+    )
+    # ``connection_closed`` is searched on every line, under both readings:
+    # sshd writes the phrase mid-message (``fatal: Write failed: Connection
+    # reset by peer``) and so does every other network daemon, so it has no
+    # fixed position to anchor to. It is not an auth category and feeds no
+    # auth total.
+    # The order events are counted in on one line, which is the insertion
+    # order ``event_counts.most_common()`` breaks ties by.
+    _LINE_EVENT_ORDER: tuple = (
+        "failed_password",
+        "accepted_login",
+        "invalid_user",
+        "connection_closed",
+        "break_in_attempt",
+        "pam_auth_failure",
+        "ssh_session_opened",
     )
     # Numeric state codes (e.g. "error state 6") are internal to the log source;
     # the log itself does not document their meanings. Detection triggers a note
@@ -718,7 +748,8 @@ class LogsAndErrorsExtractor:
     # lines, and without these every such attempt read as zero (fm#1627
     # review). This pattern is an OUTCOME test only — it adds no event
     # category — and a line it shares with ``failed_password`` is still one
-    # outcome line, because the tally is per line.
+    # outcome line, because the tally is per line. (``sshd_auth.AUTH_OUTCOME_RE``
+    # is the same test anchored to the message start.)
     # Deliberately NOT outcomes:
     #   ``Failed none`` — the client's initial ``none`` method request, sent
     #     to learn which methods the server allows. It carries no credential
@@ -877,6 +908,34 @@ class LogsAndErrorsExtractor:
         "connection_closed": "Connection closed",
         "break_in_attempt": "POSSIBLE BREAK-IN ATTEMPT",
     }
+
+    def _searched_sshd_events(self, line: str) -> tuple[list[str], bool]:
+        """The sshd events of a line ``sshd_auth`` does not positively read.
+
+        The per-line reading from before fm#1657, moved here unchanged: every
+        pattern searched anywhere in the line, the outcome by category or by
+        ``_SSHD_AUTH_OUTCOME_RE``. ``connection_closed`` is the caller's.
+        """
+        matched_events = []
+        if self._FAILED_PASSWORD_RE.search(line):
+            matched_events.append("failed_password")
+        if self._ACCEPTED_PASSWORD_RE.search(line):
+            matched_events.append("accepted_login")
+        if self._INVALID_USER_RE.search(line):
+            matched_events.append("invalid_user")
+        if self._BREAK_IN_ATTEMPT_RE.search(line):
+            matched_events.append("break_in_attempt")
+        if self._PAM_AUTH_FAILURE_RE.search(line):
+            matched_events.append("pam_auth_failure")
+        if self._SSH_SESSION_RE.search(line):
+            matched_events.append("ssh_session_opened")
+        line_is_category_outcome = not self._AUTH_OUTCOME_EVENTS.isdisjoint(
+            matched_events
+        )
+        line_is_outcome = line_is_category_outcome or bool(
+            self._SSHD_AUTH_OUTCOME_RE.search(line)
+        )
+        return matched_events, line_is_outcome
 
     @staticmethod
     def _auth_attempt_count(outcome_lines: int, ip_events: Counter) -> int:
@@ -1074,28 +1133,29 @@ class LogsAndErrorsExtractor:
 
             # Semantic event classification — also track first/last timestamp
             # per event type so the entity profile can report temporal span.
-            matched_events = []
-            if self._FAILED_PASSWORD_RE.search(line):
-                event_counts["failed_password"] += 1
-                matched_events.append("failed_password")
-            if self._ACCEPTED_PASSWORD_RE.search(line):
-                event_counts["accepted_login"] += 1
-                matched_events.append("accepted_login")
-            if self._INVALID_USER_RE.search(line):
-                event_counts["invalid_user"] += 1
-                matched_events.append("invalid_user")
+            # A line ``sshd_auth`` positively reads takes its reading: the
+            # words sshd opened its message with, credited to the address in
+            # sshd's own slot and to nothing else — a login name, key id or
+            # disconnect reason can spell any address. No slot, or an
+            # ambiguous one, credits no IP; the event still counts. Every
+            # other line is read as before fm#1657: searched, and credited to
+            # every IPv4 on it.
+            sshd = read_sshd_auth_line(line)
+            if sshd.read:
+                line_events = set(sshd.events)
+                line_is_outcome = sshd.outcome
+            else:
+                searched, line_is_outcome = self._searched_sshd_events(line)
+                line_events = set(searched)
             if self._CONNECTION_CLOSED_RE.search(line):
-                event_counts["connection_closed"] += 1
-                matched_events.append("connection_closed")
-            if self._BREAK_IN_ATTEMPT_RE.search(line):
-                event_counts["break_in_attempt"] += 1
-                matched_events.append("break_in_attempt")
-            if self._PAM_AUTH_FAILURE_RE.search(line):
-                event_counts["pam_auth_failure"] += 1
-                matched_events.append("pam_auth_failure")
-            if self._SSH_SESSION_RE.search(line):
-                event_counts["ssh_session_opened"] += 1
-                matched_events.append("ssh_session_opened")
+                line_events.add("connection_closed")
+            matched_events = [ev for ev in self._LINE_EVENT_ORDER if ev in line_events]
+            for ev in matched_events:
+                event_counts[ev] += 1
+            if sshd.read and (sshd.events or sshd.outcome):
+                event_ips = [ip for ip in line_ips if ip == sshd.address]
+            else:
+                event_ips = line_ips
             # An attempt OUTCOME, for the breakdown's ``auth total``
             # (fm#1627). Decided per line, so a ``Failed password`` line that
             # both the category and the method pattern match is one outcome.
@@ -1106,11 +1166,8 @@ class LogsAndErrorsExtractor:
             line_is_category_outcome = not self._AUTH_OUTCOME_EVENTS.isdisjoint(
                 matched_events
             )
-            line_is_outcome = line_is_category_outcome or bool(
-                self._SSHD_AUTH_OUTCOME_RE.search(line)
-            )
             line_is_other_outcome = line_is_outcome and not line_is_category_outcome
-            for ip in line_ips if line_is_outcome else ():
+            for ip in event_ips if line_is_outcome else ():
                 ip_auth_outcome_counts[ip] += 1
                 if line_is_other_outcome:
                     ip_other_outcome_counts[ip] += 1
@@ -1124,7 +1181,7 @@ class LogsAndErrorsExtractor:
                             event_last_ts[ev] = ts
                     # Track per-IP burst spans on attack-event lines — enables
                     # describing per-IP bursty behavior in the entity profile.
-                    for ip in line_ips:
+                    for ip in event_ips:
                         if ip not in ip_attack_first_ts or ts < ip_attack_first_ts[ip]:
                             ip_attack_first_ts[ip] = ts
                         if ip not in ip_attack_last_ts or ts > ip_attack_last_ts[ip]:
@@ -1132,18 +1189,18 @@ class LogsAndErrorsExtractor:
                 # Per-IP per-event-type counts — correlate IPs with events on the
                 # same line so the agent can answer "how many auth attempts did X make"
                 # directly from the extract rather than chaining search_file calls.
-                # ``line_ips`` is per-line distinct (fm#1587), so an IP written
+                # ``event_ips`` is per-line distinct (fm#1587), so an IP written
                 # twice on one line no longer counts its event twice.
                 # ``ip_auth_line_counts`` applies the same rule one level up,
                 # to the EVENT (fm#1596): a line matching two auth categories
                 # — "Failed password for invalid user X from IP" matches both
-                # _FAILED_PASSWORD_RE and _INVALID_USER_RE — is one auth
+                # failed_password and invalid_user — is one auth
                 # LINE, so it increments that tally once while still
                 # incrementing each category it matched. The tally decides
                 # which IPs get a breakdown row; the ``auth total`` is the
                 # outcome tally above (fm#1627).
                 line_is_auth = not self._AUTH_EVENTS.isdisjoint(matched_events)
-                for ip in line_ips:
+                for ip in event_ips:
                     if ip not in ip_event_counts:
                         ip_event_counts[ip] = Counter()
                     for ev in matched_events:
