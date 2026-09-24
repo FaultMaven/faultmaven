@@ -728,7 +728,7 @@ def test_tool_loop_messages_bounded_elides_oldest_keeps_recent():
         )
     budget = 400
     out = MilestoneEngine._bound_tool_loop_messages(
-        fake, msgs, budget, "openai", tools=None
+        fake, msgs, budget, "openai", tools=None, window_tokens=None
     )
 
     total = sum(
@@ -752,7 +752,7 @@ def test_tool_loop_messages_bounded_elides_oldest_keeps_recent():
     under = msgs[:4]
     assert (
         MilestoneEngine._bound_tool_loop_messages(
-            fake, under, 10**6, "openai", tools=None
+            fake, under, 10**6, "openai", tools=None, window_tokens=None
         )
         is under
     )
@@ -913,10 +913,11 @@ def test_resolve_tool_loop_budget_is_bounded():
     b = MilestoneEngine._resolve_tool_loop_budget(
         SimpleNamespace(da_model=MODEL), PROVIDER
     )
-    # prompt_target (32K default) + observation allowance (16K default), clamped
-    # down to the model ceiling. Always a positive int, never above target+obs.
-    assert isinstance(b, int) and b >= 2000
-    assert b <= 32000 + 16000
+    # Soft cap: prompt_target (32K default, clamped to the window) + observation
+    # allowance (16K default), on messages alone. Hard cap: the window budget,
+    # which is known for this registry model (#614).
+    assert isinstance(b.soft, int) and 2000 <= b.soft <= 32000 + 16000
+    assert isinstance(b.hard, int) and b.hard >= 2000
 
 
 def test_tool_loop_bound_counts_reasoning_artifacts(monkeypatch):
@@ -986,7 +987,7 @@ def test_tool_loop_bound_counts_reasoning_artifacts(monkeypatch):
     # policy is unchanged, only the estimate that drives it.
     budget = 4000
     out = MilestoneEngine._bound_tool_loop_messages(
-        fake, msgs, budget, "openai", tools=None
+        fake, msgs, budget, "openai", tools=None, window_tokens=None
     )
 
     # The reasoning is visible to the estimator, so the history is over budget
@@ -1014,7 +1015,7 @@ def test_tool_loop_bound_counts_reasoning_artifacts(monkeypatch):
     ]
     assert (
         MilestoneEngine._bound_tool_loop_messages(
-            fake, gemini_msgs, 1000, "openai", tools=None
+            fake, gemini_msgs, 1000, "openai", tools=None, window_tokens=None
         )
         is not gemini_msgs
     )

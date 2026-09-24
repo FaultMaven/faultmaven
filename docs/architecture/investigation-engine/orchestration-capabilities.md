@@ -212,9 +212,9 @@ See [Data Preprocessing](../data-processing/data-preprocessing-design-specificat
 
 **Mechanism** (message elision in `milestone_engine.py`):
 
-1. Resolve a per-call token budget — the prompt target plus `prompt_budget.tool_observation_max_tokens`, clamped by the model's context window via `resolve_model_budget()` — so the ceiling tracks the model actually in use.
-2. Before the first call, fit the head (system + base task) beside the largest `tools=` payload: when it does not fit, re-assemble the base for the receiving model at the room left, and refuse the loop (non-tool path) if even that cannot fit (#614).
-3. On every call, estimate tokens per assembled message plus the `tools=` definitions sent on that call (the schema tool alone on the final iteration). If the total fits the budget, pass the messages through untouched.
+1. Resolve two per-call caps (#614): a soft cap on the messages — the prompt target plus `prompt_budget.tool_observation_max_tokens` — and, when `resolve_model_budget()` knows the model's context window, that window as a hard cap on the messages plus the `tools=` payload, so the ceiling tracks the model actually in use.
+2. Before the first call, fit the head (system + base task) to the soft cap and, under a known window, beside the largest `tools=` payload: when it does not fit, re-assemble the base for the receiving model at the room left, and refuse the loop (non-tool path) if even that cannot fit.
+3. On every call, estimate tokens per assembled message, and for the `tools=` definitions sent on that call (the schema tool alone on the final iteration) when a window is known. If both caps hold, pass the messages through untouched.
 4. Otherwise keep the head and re-add tool-call groups newest-first while they fit, dropping whole groups rather than thinning them.
 5. Insert one marker in place of what was dropped: *"[Earlier tool calls and their results were elided to stay within the context budget. Re-run a search if you need those specifics.]"*
 
