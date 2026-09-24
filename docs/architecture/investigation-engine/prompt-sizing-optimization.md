@@ -132,7 +132,7 @@ tool-less build keeps the full extract (safety verified). A playbook-S9 eval sho
   ```
   soft = PROMPT_TARGET_TOKENS + PROMPT_TOOL_OBSERVATION_MAX_TOKENS    messages alone
        = 32,000 + 16,000 = 48,000            (shipped defaults)
-  hard = the receiving model's window budget (window − response reserve), when known
+  hard = context window − max(that call's max_tokens, response reserve), when known
                                              messages + that call's tools= payload
   ```
 
@@ -140,26 +140,37 @@ tool-less build keeps the full extract (safety verified). A playbook-S9 eval sho
     rule, unchanged. The `tools=` payload is not counted against it, so where no
     window is known (every call through the router) or the window is far above
     it (Gemini's 1M), the loop elides exactly what it did before #614.
-  - **The hard cap is the window.** When the resolver knows it — a dedicated DA
-    model in the registry or `MODEL_CONTEXT_WINDOWS` — `messages` plus the
-    `tools=` payload of that call must fit it, so the schema payload cannot push
-    a small-window request over. The payload differs by iteration: all tools on
-    the tool iterations, the schema tool alone on the last. A request that would
-    still exceed the window is refused before it is sent, never sent. Measured on
+  - **The hard cap is the window, completion included.** When the resolver
+    knows the window — a dedicated DA model in the registry or
+    `MODEL_CONTEXT_WINDOWS` — `messages` plus the `tools=` payload of that call
+    must fit what the window leaves beside the completion the call asks for: its
+    own `max_tokens`, or the registry's response reserve if that is larger. The
+    loop asks for 8,000 against a default reserve of 6,000, and a truncation
+    retry doubles it to 16,000, so the reserve alone let a 32,768-token window
+    be sent 26,408 prompt tokens plus an 8,000-token completion (vLLM rejects
+    that). The retry's prompt is bounded again for its raised cap, and refused
+    if even the head cannot fit beside it. The payload differs by iteration: all
+    tools on the tool iterations, the schema tool alone on the last. No request
+    goes out whose *estimated* prompt plus requested completion exceeds a known
+    window; one that would is refused before it is sent. Measured on
     this tree (cl100k), the schema tool is 982 (`TerminalResponse`), 2,201
     (`InquiryResponse`), 7,641 / 9,846 / 10,784 / 11,328
     (`InvestigationResponse_Mitigation` / `_Treatment` / `_General` /
     `_Diagnosis`, strict form), and the six investigation tools the DA registry
     can hold 1,131 (`web_search` among them is 121) — not the ~2,400 an earlier
     measurement quoted.
-  - **The head is fitted before the first call** (`_fit_tool_loop_base`). The
-    base task arrives assembled for the chat path — and since the router exposes
-    no provider or model name, that means `PROMPT_TARGET_TOKENS` with no window
-    clamp, counted at `len // 4`. Beside the DA system instruction and the
-    elision marker it must fit the soft cap and, when the window is known, the
-    window less the largest `tools=` payload. A dedicated DA model with a smaller
-    window, or with a tokenizer that counts the same text larger, can break
-    either. When it does not fit, the base is **re-assembled for the receiving
+  - **The head is fitted to the window before the first call**
+    (`_fit_tool_loop_base`). The base task arrives assembled for the chat path —
+    and since the router exposes no provider or model name, that means
+    `PROMPT_TARGET_TOKENS` with no window clamp, counted at `len // 4`. Only a
+    known window can reject it, so only a known window is checked: the head must
+    fit it beside the first attempt's completion, the largest `tools=` payload,
+    the DA system instruction and the elision marker. A dedicated DA model with a
+    smaller window can break that. With the window unknown, or when the head
+    fits, the base is sent as assembled, exactly as before #614 — the soft cap
+    governs observation elision, not the base, and shrinking the base to it
+    would send less case context to buy observation room nobody was short of.
+    When it does not fit, the base is **re-assembled for the receiving
     model** through the same allocator (`get_prompt_for_case(target_tokens=…)`):
     sections drop by the allocator's own priority order, below its floor it takes
     the minimal `FALLBACK_*` prompt, and the rebuilt text is redacted like the
@@ -167,8 +178,9 @@ tool-less build keeps the full extract (safety verified). A playbook-S9 eval sho
     sent and the turn takes the non-tool path through the router the original
     base was sized for. The investigation template alone is ~19,000 cl100k
     tokens, so a re-assembly with less than ~21,000 tokens of room lands on the
-    fallback prompt. On a default deployment the head always fits and nothing is
-    re-assembled.
+    fallback prompt. Whether the loop should run on that minimal prompt at all,
+    rather than hand the turn to the chat model with the full base, is an open
+    question. On a default deployment nothing is re-assembled.
   - **Every call is bounded** (`_bound_tool_loop_messages`): the oldest tool
     exchanges are elided until both caps hold.
   - **Estimated tokens.** Both count with `estimate_tokens` for the loop's

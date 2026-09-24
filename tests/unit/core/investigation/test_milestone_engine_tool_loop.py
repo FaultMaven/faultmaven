@@ -1220,22 +1220,28 @@ class TestToolLoopSpendBound:
         assert MilestoneEngine.MAX_TOOL_ITERATIONS == 4
 
     @pytest.mark.parametrize(
-        "prompt_budget, expected",
+        "window, reserve, hard_at_8k, hard_at_16k",
         [
-            # The soft cap is target + observations whatever the window; the
-            # window, when known, is the separate hard cap (#614).
-            (None, (32_000 + 17_000, None)),  # unknown window: no hard cap
-            (1_000_000, (32_000 + 17_000, 1_000_000)),
-            (40_000, (32_000 + 17_000, 40_000)),  # window under the soft cap
+            # The soft cap is target + observations whatever the window. The
+            # hard cap is the window less the call's OWN completion cap, or the
+            # registry's reserve when that is larger (#614).
+            (None, None, None, None),  # unknown window: no hard cap
+            (1_000_000, 16_000, 984_000, 984_000),  # reserve above the cap
+            (40_000, 6_000, 32_000, 24_000),  # the cap above the reserve
         ],
     )
-    async def test_soft_cap_is_target_plus_observations_window_is_the_hard_cap(
-        self, prompt_budget, expected
+    async def test_soft_cap_is_target_plus_observations_hard_cap_is_the_window(
+        self, window, reserve, hard_at_8k, hard_at_16k
     ):
         from types import SimpleNamespace
 
         engine = _make_engine()
-        resolved = SimpleNamespace(prompt_target=32_000, prompt_budget=prompt_budget)
+        resolved = SimpleNamespace(
+            prompt_target=32_000,
+            prompt_budget=None if window is None else window - reserve,
+            context_window=window,
+            response_reserve=reserve,
+        )
         fake_settings = SimpleNamespace(
             prompt_budget=SimpleNamespace(tool_observation_max_tokens=17_000)
         )
@@ -1249,7 +1255,10 @@ class TestToolLoopSpendBound:
                 return_value=fake_settings,
             ),
         ):
-            assert engine._resolve_tool_loop_budget("openai") == expected
+            caps = engine._resolve_tool_loop_budget("openai")
+        assert caps.soft == 32_000 + 17_000
+        assert caps.window == window
+        assert (caps.hard(8_000), caps.hard(16_000)) == (hard_at_8k, hard_at_16k)
 
     async def _run_loop(self, monkeypatch, per_call_buckets: list) -> list:
         """Drive the real loop with a model that always wants another search.
@@ -1417,7 +1426,13 @@ def _recording_provider(result_after: int, provider_name=None):
     calls: list = []
 
     async def _generate(**kwargs):
-        calls.append({"messages": list(kwargs["messages"]), "tools": kwargs["tools"]})
+        calls.append(
+            {
+                "messages": list(kwargs["messages"]),
+                "tools": kwargs["tools"],
+                "max_tokens": kwargs["max_tokens"],
+            }
+        )
         names = [t["function"]["name"] for t in kwargs["tools"]]
         if len(calls) > result_after or names == ["SampleResponse"]:
             return _make_schema_response(
@@ -1442,13 +1457,15 @@ def _registry_returning(result_chars: int):
     return registry
 
 
-def _caps(soft: int, hard: Optional[int]):
-    """A per-call budget pair, imported lazily so this module still imports
-    against a tree without it (the regression pin below is revert-verified
-    against one)."""
+def _caps(soft: int, prompt_limit: Optional[int]):
+    """A budget whose hard cap, for a call asking the loop's default 8,000
+    completion tokens, is ``prompt_limit``. Imported lazily so this module
+    still imports against a tree without it (the regression pin below is
+    revert-verified against one)."""
     from faultmaven.core.investigation.milestone_engine import _ToolLoopBudget
 
-    return _ToolLoopBudget(soft=soft, hard=hard)
+    window = None if prompt_limit is None else prompt_limit + 8_000
+    return _ToolLoopBudget(soft=soft, window=window, response_reserve=0)
 
 
 def _groups_history(n: int, result_chars: int = 2_000) -> list:
@@ -1561,7 +1578,13 @@ def _diagnosis_turn_provider(provider_name: str):
     calls: list = []
 
     async def _generate(**kwargs):
-        calls.append({"messages": list(kwargs["messages"]), "tools": kwargs["tools"]})
+        calls.append(
+            {
+                "messages": list(kwargs["messages"]),
+                "tools": kwargs["tools"],
+                "max_tokens": kwargs["max_tokens"],
+            }
+        )
         names = [t["function"]["name"] for t in kwargs["tools"]]
         if names == ["InvestigationResponse_Diagnosis"]:
             return _make_schema_response(
@@ -1922,10 +1945,11 @@ class TestToolLoopBaseFitsTheReceivingModel:
     re-assembled for it — and a head that cannot fit is never sent."""
 
     async def test_a_smaller_da_window_gets_a_head_that_fits(self, monkeypatch):
-        engine, provider, calls = _da_engine(14_000, 2_000, monkeypatch)
+        engine, provider, calls = _da_engine(20_000, 2_000, monkeypatch)
         caps = engine._resolve_tool_loop_budget(_DA_PROVIDER)
-        assert caps.hard == 12_000 < caps.soft  # the window binds, not the soft cap
-        budget = caps.hard
+        # The window less the first attempt's 8,000-token completion.
+        assert caps.hard(8_000) == 12_000 < caps.soft
+        budget = caps.hard(8_000)
         base = _chat_sized_base(20_000)
         seen: list = []
 
@@ -1959,7 +1983,7 @@ class TestToolLoopBaseFitsTheReceivingModel:
 
     async def test_a_head_that_fits_is_sent_as_assembled(self, monkeypatch):
         """Positive control for the one above: no overflow, no re-assembly."""
-        engine, provider, calls = _da_engine(14_000, 2_000, monkeypatch)
+        engine, provider, calls = _da_engine(20_000, 2_000, monkeypatch)
         builder = MagicMock()
 
         await engine._tool_augmented_generate(
@@ -1977,7 +2001,7 @@ class TestToolLoopBaseFitsTheReceivingModel:
     async def test_a_head_that_cannot_fit_is_never_sent(self, monkeypatch, rebuild):
         from faultmaven.exceptions import ToolCallingUnsupportedError
 
-        engine, provider, calls = _da_engine(14_000, 2_000, monkeypatch)
+        engine, provider, calls = _da_engine(20_000, 2_000, monkeypatch)
 
         def too_big(**_kw):
             return _chat_sized_base(20_000)
@@ -2003,7 +2027,7 @@ class TestToolLoopBaseFitsTheReceivingModel:
         marker when observations are elided on a later call — the fit reserves
         it, or the bound would refuse mid-loop."""
         engine, provider, calls = _da_engine(
-            14_000,
+            20_000,
             2_000,
             monkeypatch,
             result_after=2,
@@ -2022,7 +2046,7 @@ class TestToolLoopBaseFitsTheReceivingModel:
             base_prompt_builder=exact,
         )
 
-        budget = engine._resolve_tool_loop_budget("local").hard
+        budget = engine._resolve_tool_loop_budget("local").hard(8_000)
         assert len(calls) == 3
         # Positive control: the room was filled, so observations were elided
         # and the marker had to fit in what the fit reserved for it.
@@ -2039,7 +2063,7 @@ class TestToolLoopBaseFitsTheReceivingModel:
     ):
         """The seam the call sites hand the builder to:
         _generate_structured_output → _inner → _tool_augmented_generate."""
-        engine, provider, calls = _da_engine(14_000, 2_000, monkeypatch)
+        engine, provider, calls = _da_engine(20_000, 2_000, monkeypatch)
         seen: list = []
 
         def builder(*, target_tokens, provider_name, model_name):
@@ -2060,45 +2084,47 @@ class TestToolLoopBaseFitsTheReceivingModel:
             c["messages"][1]["content"].startswith("RESIZED") for c in calls
         )
 
-    @pytest.mark.parametrize(
-        "provider_name, da_model, window",
-        [
-            # A tokenizer-backed provider always resolves SOME window (an
-            # unlisted model falls through to its provider family), so the
-            # unknown-window case needs a provider with no family fallback.
-            ("openai", "gpt-4o", "large"),
-            ("local", "custom-da-model", "unknown"),
-        ],
-        ids=["large-window-cl100k", "unknown-window-len4"],
-    )
-    async def test_the_soft_cap_fits_the_head_without_counting_tools(
-        self, monkeypatch, provider_name, da_model, window
-    ):
-        """Where the window does not bind — a large known window, or none known
-        — the head is fitted to the SOFT cap on messages alone, the tools not
-        counted. On the cl100k receiver it binds on the TOKENIZER: a base
-        within the chat target at ``len // 4`` is over the soft cap there."""
-        engine, provider, calls = _da_engine(
-            14_000,
-            2_000,
-            monkeypatch,
-            provider_name=provider_name,
-            da_model=da_model,
-        )
-        caps = engine._resolve_tool_loop_budget(provider_name)
-        if window == "unknown":
-            assert caps.hard is None
-            base = "B" * (4 * (caps.soft + 5_000))
-        else:
-            assert caps.hard is not None and caps.hard > caps.soft + 20_000
-            base = _chat_sized_base(caps.soft + 5_000)
-        seen: list = []
+    @staticmethod
+    def _spy_on_the_bound(engine) -> list:
+        real_bound = engine._bound_tool_loop_messages
+        decisions: list = []
 
-        def builder(*, target_tokens, provider_name, model_name):
-            seen.append(target_tokens)
-            if window == "unknown":  # len // 4: exactly target_tokens
-                return "RESIZED" + "R" * (4 * target_tokens - 7)
-            return _sized_text("RESIZED", target_tokens)
+        def spy(messages, *args, **kwargs):
+            out = real_bound(messages, *args, **kwargs)
+            decisions.append((list(messages), list(out)))
+            return out
+
+        engine._bound_tool_loop_messages = spy
+        return decisions
+
+    async def test_an_unknown_window_sends_the_base_as_main_did(self, monkeypatch):
+        """The router path with ``PROMPT_TOOL_OBSERVATION_MAX_TOKENS=1000`` (an
+        allowed setting): the head is over the soft cap, but with the window
+        unknown nothing can overflow, so the base goes out whole and the
+        observations elide exactly as main elided them. A fit against the soft
+        cap rebuilt this base smaller for nothing."""
+        from faultmaven.config.settings import get_settings
+
+        settings = get_settings()
+        monkeypatch.setattr(settings.model_context, "prompt_target_tokens", 32_000)
+        monkeypatch.setattr(
+            settings.prompt_budget, "tool_observation_max_tokens", 1_000
+        )
+        provider, calls = _recording_provider(result_after=2, provider_name="LLMRouter")
+        engine = _make_engine(
+            mock_provider=provider, mock_registry=_registry_returning(2_000)
+        )
+        decisions = self._spy_on_the_bound(engine)
+        caps = engine._resolve_tool_loop_budget("LLMRouter")
+        assert caps.window is None and caps.soft == 33_000
+        system_tokens = _est(
+            MilestoneEngine._build_da_system_instruction(
+                ["search_file"], "SampleResponse"
+            ),
+            "LLMRouter",
+        )
+        base = "B" * (4 * (caps.soft - system_tokens + 500))
+        builder = MagicMock()
 
         await engine._tool_augmented_generate(
             prompt=base,
@@ -2108,28 +2134,212 @@ class TestToolLoopBaseFitsTheReceivingModel:
             base_prompt_builder=builder,
         )
 
-        system = calls[0]["messages"][0]
-        marker = _est(_MARKER_TEXT, provider_name, da_model)
-        # Re-assembled at the soft cap less the system instruction and marker
-        # — no tools subtracted.
-        assert seen == [
-            caps.soft - _msg_tokens(system, provider_name, da_model) - marker
-        ]
+        builder.assert_not_called()
+        assert all(c["messages"][1]["content"] == base for c in calls)
+        for history, sent in decisions:
+            main = _main_bound(history, caps.soft, "LLMRouter", None)
+            assert _shape(sent, history) == _shape(main, history)
+        # Positive control: the head alone is over the soft cap.
+        head = calls[0]["messages"][:2]
+        assert sum(_msg_tokens(m, "LLMRouter") for m in head) > caps.soft
+
+    async def test_a_large_known_window_sends_a_dense_base_as_main_did(
+        self, monkeypatch
+    ):
+        """A cl100k DA (``openai/gpt-4o``, a 128K window) with a log-dense
+        base: over the soft cap in cl100k, far inside the window. Main sent it
+        whole and elided observations; so does this."""
+        engine, provider, calls = _da_engine(
+            20_000,
+            2_000,
+            monkeypatch,
+            result_after=2,
+            provider_name="openai",
+            da_model="gpt-4o",
+        )
+        decisions = self._spy_on_the_bound(engine)
+        caps = engine._resolve_tool_loop_budget("openai")
+        assert caps.window == 128_000
+        base = _chat_sized_base(caps.soft + 5_000)
+        builder = MagicMock()
+
+        await engine._tool_augmented_generate(
+            prompt=base,
+            schema_model=SampleResponse,
+            investigation_tools=engine._build_da_tool_schemas(),
+            tool_context=MagicMock(),
+            base_prompt_builder=builder,
+        )
+
+        builder.assert_not_called()
+        assert all(c["messages"][1]["content"] == base for c in calls)
+        main_budget = min(caps.soft, caps.window - caps.response_reserve)
+        for history, sent in decisions:
+            main = _main_bound(history, main_budget, "openai", "gpt-4o")
+            assert _shape(sent, history) == _shape(main, history)
+        # Positive control: the base alone is over the soft cap in cl100k.
+        assert _est(base, "openai", "gpt-4o") > caps.soft
+
+    async def test_a_32k_local_window_leaves_room_for_each_calls_completion(
+        self, monkeypatch
+    ):
+        """The window holds the prompt AND the completion. The registry
+        reserves 6,000 for output, but the loop asks for 8,000: a head fitted
+        to the reserve sent 26,408 + 8,000 = 34,408 into a 32,768 window, which
+        vLLM rejects. Every call's prompt plus its own ``max_tokens`` fits."""
+        window = 32_768
+        engine, provider, calls = _da_engine(
+            window,
+            6_000,
+            monkeypatch,
+            result_after=3,
+            provider_name="local",
+            result_chars=6_000,
+        )
+        caps = engine._resolve_tool_loop_budget("local")
+        assert (caps.window, caps.response_reserve) == (window, 6_000)
+        seen: list = []
+
+        def exact(*, target_tokens, provider_name, model_name):
+            seen.append(target_tokens)
+            return "R" * (4 * target_tokens)  # len // 4: exactly the target
+
+        await engine._tool_augmented_generate(
+            prompt="B" * (4 * 32_000),  # the chat path's full-size base
+            schema_model=SampleResponse,
+            investigation_tools=engine._build_da_tool_schemas(),
+            tool_context=MagicMock(),
+            base_prompt_builder=exact,
+        )
+
+        assert len(calls) == 4
         for c in calls:
-            assert c["messages"][1]["content"].startswith("RESIZED")
-            assert (
-                sum(_msg_tokens(m, provider_name, da_model) for m in c["messages"])
-                <= caps.soft
+            assert _sent_tokens(c, "local") + c["max_tokens"] <= window
+        # Positive control: the head was rebuilt to fill what the window leaves
+        # beside the 8,000-token completion — not the 6,000 reserve.
+        assert len(seen) == 1
+        assert window - 8_000 - _sent_tokens(calls[0], "local") < 100
+
+    @staticmethod
+    def _truncating_provider(provider_name: str, result_after: int):
+        """Searches ``result_after`` times, then answers the schema — with the
+        FIRST schema answer reported cut (stop reason MAX_TOKENS), so the
+        truncation ladder retries it at a doubled cap."""
+        from faultmaven.infrastructure.llm.providers.base import StopReason
+
+        calls: list = []
+
+        async def _generate(**kwargs):
+            calls.append(
+                {
+                    "messages": list(kwargs["messages"]),
+                    "tools": kwargs["tools"],
+                    "max_tokens": kwargs["max_tokens"],
+                }
             )
-        # Positive control: the first call's messages plus its tools are over
-        # the soft cap — so a fit that counted the tools would have cut deeper.
-        assert _sent_tokens(calls[0], provider_name, da_model) > caps.soft
+            names = [t["function"]["name"] for t in kwargs["tools"]]
+            if len(calls) > result_after or names == ["SampleResponse"]:
+                resp = _make_schema_response(
+                    {"agent_response": "done", "next_action": "continue"}
+                )
+                if not any(c.get("cut") for c in calls):
+                    calls[-1]["cut"] = True
+                    resp.stop_reason = StopReason.MAX_TOKENS
+                return resp
+            return _make_tool_call_response(
+                "search_file", {"query": "q"}, call_id=f"c{len(calls)}"
+            )
+
+        provider = AsyncMock()
+        provider.provider_name = provider_name
+        provider.supports_tool_calling = MagicMock(return_value=True)
+        provider.generate = AsyncMock(side_effect=_generate)
+        return provider, calls
+
+    def _truncation_engine(self, monkeypatch, window: int, result_after: int):
+        from faultmaven.utils import model_context
+
+        monkeypatch.setattr(
+            model_context,
+            "_get_overrides",
+            lambda: {_DA_MODEL: model_context.ModelWindow(window, 2_000)},
+        )
+        provider, calls = self._truncating_provider("local", result_after)
+        repo = MagicMock()
+        repo.save = AsyncMock()
+        engine = MilestoneEngine(
+            llm_provider=AsyncMock(),
+            repository=repo,
+            investigation_tools=_registry_returning(7_600),
+            da_provider=provider,
+            da_model=_DA_MODEL,
+        )
+        return engine, calls
+
+    async def test_a_truncation_retry_is_bounded_for_its_raised_cap(self, monkeypatch):
+        """The retry asks for 16,000, not 8,000: its prompt is bounded again
+        for THAT cap, eliding observations the first attempt could keep."""
+        window = 24_000
+        engine, calls = self._truncation_engine(monkeypatch, window, result_after=4)
+
+        await engine._tool_augmented_generate(
+            prompt="BASE small",
+            schema_model=SampleResponse,
+            investigation_tools=engine._build_da_tool_schemas(),
+            tool_context=MagicMock(),
+        )
+
+        first, retry = calls[-2], calls[-1]
+        assert first.get("cut") and (first["max_tokens"], retry["max_tokens"]) == (
+            8_000,
+            16_000,
+        )
+        for c in calls:
+            assert _sent_tokens(c, "local") + c["max_tokens"] <= window
+        # Positive control: re-sending the first attempt's prompt at the raised
+        # cap would have overflowed — the re-bound is what kept the retry in.
+        assert _sent_tokens(first, "local") + 16_000 > window
+        assert len(retry["messages"]) < len(first["messages"])
+
+    async def test_a_retry_whose_head_cannot_fit_is_refused(self, monkeypatch):
+        """On a window the head fills beside 8,000, the head cannot fit beside
+        16,000: the retry is refused, never sent, and the turn falls back."""
+        from faultmaven.exceptions import ToolCallingUnsupportedError
+
+        window = 24_000
+        engine, calls = self._truncation_engine(monkeypatch, window, result_after=0)
+        # A base filling the room the window leaves beside an 8,000 completion.
+        caps = engine._resolve_tool_loop_budget("local")
+        tools = engine._build_da_tool_schemas()
+        fixed = (
+            _est(
+                MilestoneEngine._build_da_system_instruction(
+                    ["search_file"], "SampleResponse"
+                ),
+                "local",
+            )
+            + _est(_MARKER_TEXT, "local")
+            + 200  # tools payload and slack
+        )
+        base = "B" * (4 * (caps.hard(8_000) - fixed))
+
+        with pytest.raises(ToolCallingUnsupportedError):
+            await engine._tool_augmented_generate(
+                prompt=base,
+                schema_model=SampleResponse,
+                investigation_tools=tools,
+                tool_context=MagicMock(),
+            )
+        # Positive control: the first attempt was sent, cut, and the retry at
+        # 16,000 was never sent.
+        assert [c["max_tokens"] for c in calls] == [8_000]
+        assert calls[0].get("cut")
 
     async def test_the_dropped_base_leaves_the_token_cache(self, monkeypatch):
         """The cache is keyed by ``id()``: once the chat-sized base is replaced,
         its count must go with it, or a later message dict allocated at its
         address reads a ~20,000-token count."""
-        engine, _provider, _calls = _da_engine(14_000, 2_000, monkeypatch)
+        engine, _provider, _calls = _da_engine(20_000, 2_000, monkeypatch)
         caps = engine._resolve_tool_loop_budget(_DA_PROVIDER)
         head = [
             {"role": "system", "content": "SYS"},
@@ -2141,6 +2351,7 @@ class TestToolLoopBaseFitsTheReceivingModel:
             engine._build_da_tool_schemas(),
             caps,
             _DA_PROVIDER,
+            8_000,
             base_prompt_builder=lambda **kw: _sized_text("RESIZED", 2_000),
             token_cache=cache,
         )
@@ -2154,7 +2365,7 @@ class TestToolLoopBaseFitsTheReceivingModel:
     ):
         """The rebuilt text is raw case content going to a provider reached
         without the router's sanitizer, so it passes the case redaction."""
-        engine, provider, calls = _da_engine(14_000, 2_000, monkeypatch)
+        engine, provider, calls = _da_engine(20_000, 2_000, monkeypatch)
         redaction_ctx = MagicMock()
         redaction_ctx.asanitize = AsyncMock(
             side_effect=lambda text: text.replace("alice@example.com", "[EMAIL_1]")
@@ -2195,8 +2406,8 @@ class TestToolLoopBaseFitsTheReceivingModel:
         chat_base = get_prompt_for_case(case, "why slow?")
         # A 26K per-call budget: under the chat-sized head, over the ~22K the
         # investigation template needs before it falls to the fallback.
-        engine, provider, calls = _da_engine(30_000, 4_000, monkeypatch)
-        budget = engine._resolve_tool_loop_budget(_DA_PROVIDER).hard
+        engine, provider, calls = _da_engine(34_000, 4_000, monkeypatch)
+        budget = engine._resolve_tool_loop_budget(_DA_PROVIDER).hard(8_000)
 
         def builder(**kw):
             return get_prompt_for_case(case, "why slow?", **kw)
@@ -2221,20 +2432,64 @@ class TestToolLoopBaseFitsTheReceivingModel:
             assert _sent_tokens(c, _DA_PROVIDER, _DA_MODEL) <= budget
 
 
-def _terminal_case():
-    from faultmaven.modules.case.domain.models import Case, CaseState
+def _hex_log(lines: int, seed: int) -> str:
+    """Log lines dense in hex ids: cl100k counts them MORE than ``len // 4``
+    (prose is the other way round), so a prompt sized under the wrong
+    estimator overshoots a cl100k target instead of undershooting it."""
+    import random
 
-    case = Case(
-        case_id="case_614aaaaaaaaa",
-        title="t",
-        user_id="u",
-        enterprise_id="o",
-        description="disk full on db-7",
+    rnd = random.Random(seed)
+    return "".join(
+        f"2026-09-24T10:{i % 60:02d}:01Z id={rnd.getrandbits(128):032x} "
+        f"trace={rnd.getrandbits(64):016x} err=0x{rnd.getrandbits(32):08x}\n"
+        for i in range(lines)
     )
-    # Past the RESOLVED validator (resolved_at etc.), as the INV-12 tests do:
-    # only the state the Q&A prompt renders from matters here.
-    object.__setattr__(case, "state", CaseState.RESOLVED)
+
+
+def _dense_case():
+    """Four historical log files, twelve turns of history and a journal, all
+    hex-dense: enough to fill the investigation template's sections."""
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).parent))
+    import test_context_sliding_window as t
+
+    from faultmaven.modules.case.domain.models import JournalEntry
+
+    evidence = [
+        t._make_evidence(
+            summary=f"ev {i}",
+            extract=_hex_log(60, seed=i),
+            source_file_id=f"file_{i:012x}",
+            collected_at_turn=i + 1,
+        )
+        for i in range(4)
+    ]
+    case = t._make_case_with_evidence(evidence)
+    case.messages = []
+    for i in range(1, 13):
+        case.messages.append(
+            {"turn_number": i, "role": "user", "content": _hex_log(12, seed=100 + i)}
+        )
+        case.messages.append(
+            {
+                "turn_number": i,
+                "role": "assistant",
+                "content": _hex_log(12, seed=200 + i),
+            }
+        )
+    case.current_turn = 13
+    case.investigation_journal = [
+        JournalEntry(
+            turn=i, entry_type="finding", content=_hex_log(1, seed=300 + i)[:190]
+        )
+        for i in range(1, 15)
+    ]
     return case
+
+
+_DA_ELIDED = 'elided="directed_analysis"'
 
 
 @pytest.mark.unit
@@ -2242,30 +2497,40 @@ def _terminal_case():
 class TestBothCallSitesWireTheBaseBuilder:
     """The re-assembly is only as good as its wiring: both call sites that
     put the base on the tool loop hand it a builder that assembles THIS turn's
-    prompt, for the model the loop names, within the target it names."""
+    prompt, for the model the loop names, within the target it names — and,
+    on the investigation turn, with the same tool availability the turn was
+    built with. Checked on hex-dense content, where sizing under the receiver's
+    tokenizer and under the chat path's ``len // 4`` give different answers:
+    on prose cl100k counts lower, and a builder that dropped the receiver's
+    name still fit."""
 
     @staticmethod
-    def _assert_builder_sizes_for_the_receiver(builder, marker: str):
+    def _assert_builder_sizes_for_the_receiver(builder) -> str:
         from faultmaven.utils.token_estimation import estimate_tokens
 
+        receiver = ("anthropic", "claude-sonnet-4-6")
         wide = builder(
             target_tokens=10**6,
-            provider_name="anthropic",
-            model_name="claude-sonnet-4-6",
+            provider_name=receiver[0],
+            model_name=receiver[1],
         )
-        # Well under, not 1 under: each render stamps the current time, whose
-        # digits move the count by a token or two between renders.
-        tight_target = estimate_tokens(wide, "anthropic", "claude-sonnet-4-6") - 500
-        tight = builder(
-            target_tokens=tight_target,
-            provider_name="anthropic",
-            model_name="claude-sonnet-4-6",
+        cl100k = estimate_tokens(wide, *receiver)
+        len4 = estimate_tokens(wide, "local")
+        # Positive control: on this content cl100k counts well above len // 4,
+        # so a target between them separates the two sizings ...
+        assert len4 + 400 < cl100k
+        target = (cl100k + len4) // 2
+        # ... a build sized for the chat names (len // 4) is over it ...
+        unsized = builder(target_tokens=target, provider_name=None, model_name=None)
+        assert estimate_tokens(unsized, *receiver) > target
+        # ... and one sized for the receiver keeps to it.
+        sized = builder(
+            target_tokens=target,
+            provider_name=receiver[0],
+            model_name=receiver[1],
         )
-        assert marker in wide
-        # Positive control: the uncapped prompt breaks the tight target ...
-        assert estimate_tokens(wide, "anthropic", "claude-sonnet-4-6") > tight_target
-        # ... and the builder's result keeps to it.
-        assert estimate_tokens(tight, "anthropic", "claude-sonnet-4-6") <= tight_target
+        assert estimate_tokens(sized, *receiver) <= target
+        return sized
 
     async def test_the_investigation_turn_passes_a_builder_for_its_prompt(self):
         import sys
@@ -2275,20 +2540,30 @@ class TestBothCallSitesWireTheBaseBuilder:
         import test_toolless_turn_single_shot_routing as routing
 
         engine = routing._tool_engine()
-        case = routing._investigating_case()
-        case.evidence.append(routing._evidence())
-        await engine.process_turn(case=case, user_message="df -h shows 100%")
+        await engine.process_turn(
+            case=_dense_case(),
+            user_message="search the logs for err=0x",
+            intent_data={"query_mode": "directed_analysis"},
+        )
 
         kwargs = engine._generate_structured_output.call_args.kwargs
+        turn_prompt = engine._generate_structured_output.call_args.args[0]
         assert kwargs.get("investigation_tools") is not None
-        self._assert_builder_sizes_for_the_receiver(
-            kwargs["base_prompt_builder"], "df -h shows 100%"
+        sized = self._assert_builder_sizes_for_the_receiver(
+            kwargs["base_prompt_builder"]
         )
+        assert "search the logs for err=0x" in sized
+        # The rebuild keeps the turn's tool availability: historical evidence
+        # stays an index + stub, as in the prompt the turn built (positive
+        # control: that prompt has it).
+        assert _DA_ELIDED in turn_prompt
+        assert _DA_ELIDED in sized
 
     async def test_the_terminal_qa_turn_passes_a_builder_for_its_prompt(self):
         from types import SimpleNamespace
 
         from faultmaven.core.investigation.schemas import TerminalResponse
+        from faultmaven.modules.case.domain.models import CaseState
 
         # The router's shape: no provider_name, no config — the chat names the
         # terminal prompt is assembled for resolve to (None, None).
@@ -2300,16 +2575,19 @@ class TestBothCallSitesWireTheBaseBuilder:
         )
         engine._remaining_regens_for = AsyncMock(return_value=0)
         engine._case_has_runbook_draft = AsyncMock(return_value=False)
+        case = _dense_case()
+        # Past the RESOLVED validator (resolved_at etc.), as the INV-12 tests
+        # do: only the state the Q&A prompt renders from matters here.
+        object.__setattr__(case, "state", CaseState.RESOLVED)
 
-        await engine._process_terminal_qa(
-            _terminal_case(), "what fixed the disk?", metadata={}
-        )
+        await engine._process_terminal_qa(case, "what fixed it?", metadata={})
 
         kwargs = engine._generate_structured_output.call_args.kwargs
         assert kwargs.get("investigation_tools") is not None
-        self._assert_builder_sizes_for_the_receiver(
-            kwargs["base_prompt_builder"], "what fixed the disk?"
+        sized = self._assert_builder_sizes_for_the_receiver(
+            kwargs["base_prompt_builder"]
         )
+        assert "what fixed it?" in sized
 
 
 # =========================================================================

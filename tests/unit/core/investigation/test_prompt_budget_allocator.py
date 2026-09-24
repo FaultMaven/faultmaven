@@ -914,10 +914,12 @@ def test_resolve_tool_loop_budget_is_bounded():
         SimpleNamespace(da_model=MODEL), PROVIDER
     )
     # Soft cap: prompt_target (32K default, clamped to the window) + observation
-    # allowance (16K default), on messages alone. Hard cap: the window budget,
-    # which is known for this registry model (#614).
+    # allowance (16K default), on messages alone. Hard cap: the window, known
+    # for this registry model, less the call's completion (#614).
     assert isinstance(b.soft, int) and 2000 <= b.soft <= 32000 + 16000
-    assert isinstance(b.hard, int) and b.hard >= 2000
+    assert isinstance(b.window, int) and b.hard(8_000) == b.window - max(
+        8_000, b.response_reserve
+    )
 
 
 def test_tool_loop_bound_counts_reasoning_artifacts(monkeypatch):

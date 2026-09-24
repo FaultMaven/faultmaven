@@ -605,7 +605,7 @@ Before submitting a new tool:
 
 ## Tool Results and the Context Budget
 
-Tool results are subject to a **context budget** in `MilestoneEngine._tool_augmented_generate()`. Each call has two caps (#614): the assembled messages must fit `prompt_budget.tool_observation_max_tokens` on top of the prompt target, and — when the context window of the model in use is known — the messages **plus** the `tools=` definitions offered on that call, your tool's schema among them, must fit that window.
+Tool results are subject to a **context budget** in `MilestoneEngine._tool_augmented_generate()`. Each call has two caps (#614): the assembled messages must fit `prompt_budget.tool_observation_max_tokens` on top of the prompt target, and — when the context window of the model in use is known — the messages **plus** the `tools=` definitions offered on that call, your tool's schema among them, must fit what that window leaves beside the completion the call asks for.
 
 When either is exceeded, the engine keeps the head (system + base task) and re-adds tool-call groups newest-first while they fit. Whatever does not fit is dropped **whole**, replaced by a single marker:
 

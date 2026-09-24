@@ -128,7 +128,7 @@ A caller may lower it further with `get_prompt_for_case(target_tokens=N)`, which
 caps both the fill target and the hard ceiling the backstop (§7) enforces, so the
 result fits `N` or is the minimal fallback. The tool loop uses it to re-assemble
 the base for the model that receives the loop when the chat-sized base does not
-fit that loop's caps — the soft cap on messages, and the model's window beside
+fit that model's known window beside the completion, the system instruction and
 the `tools=` payload (#614; see
 [`prompt-sizing-optimization.md`](./prompt-sizing-optimization.md) §4.3).
 

@@ -1272,8 +1272,9 @@ dicts. The durable "already vectorized" signal is the `evidence.vectorized` colu
 Tool results can flood the LLM context window with log noise. The engine resolves two
 per-call caps (#614) — a soft cap of the prompt target plus
 `prompt_budget.tool_observation_max_tokens` on the assembled messages, and, when the
-model's context window is known, that window on the messages plus the `tools=`
-definitions sent on that call — and estimates tokens per assembled message. If both
+model's context window is known, what that window leaves beside the call's completion
+on the messages plus the `tools=` definitions sent on that call — and estimates tokens
+per assembled message. If both
 hold, the messages pass through untouched. Otherwise the head (system + base task) is
 kept and tool-call groups are re-added newest-first while they fit; whatever does not
 fit is dropped **whole**, replaced by a single marker:

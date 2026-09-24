@@ -2701,9 +2701,10 @@ class PromptBudgetSettings(BaseSettings):
             "Bounded scratchpad allowance for accumulated tool-loop observations "
             "(tool calls + results). Each tool-loop LLM call is hard-bounded to "
             "prompt_target + this on its messages (the tools payload not "
-            "counted), and messages plus the tools payload to the model's window "
-            "when it is known — so no continuation call grows unbounded past the "
-            "jar or the window. When the accumulated tool exchanges would exceed "
+            "counted), and messages plus the tools payload plus the requested "
+            "completion to the model's window when it is known — so no "
+            "continuation call grows unbounded past the jar or the window. When "
+            "the accumulated tool exchanges would exceed "
             "either, the OLDEST are elided (with a marker; the agent can "
             "re-search), keeping the base task + newest observations."
         ),
