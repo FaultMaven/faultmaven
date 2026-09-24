@@ -301,6 +301,41 @@ def ensure_data_directories() -> None:
             logger.info(f"Created data directory: {path}")
 
 
+def migration_database_url() -> str:
+    """The database the startup migration must target: the one the app opens.
+
+    The app opens ``get_settings().database.database_url`` -- resolved once and
+    cached -- with a relative SQLite path resolved against THIS process's cwd.
+    ``alembic/env.py`` runs in a subprocess and reads ``DATABASE_URL`` from the
+    subprocess's environment, falling back to ``<project_root>/data/faultmaven.db``,
+    and runs with ``cwd=project_root``. Those are two sources: whenever the
+    environment no longer carries what the settings were built from (a cleared
+    or pinned environment, a settings object built before a variable changed),
+    or the process runs outside the project root, the migration built one file
+    and the app opened another with no tables in it -- ``no such table:
+    enterprises`` out of the bootstrap (#1636).
+
+    So the migration is handed the app's own URL, with a relative SQLite path
+    made absolute here, where it means what the app means by it.
+    """
+    from sqlalchemy.engine import make_url
+
+    from faultmaven.config.settings import get_settings
+
+    raw = get_settings().database.database_url
+    url = make_url(raw)
+    if (
+        url.get_backend_name() == "sqlite"
+        and url.database
+        and url.database != ":memory:"
+        and not url.database.startswith("file:")
+        and not os.path.isabs(url.database)
+    ):
+        url = url.set(database=os.path.abspath(url.database))
+        return url.render_as_string(hide_password=False)
+    return raw
+
+
 def run_alembic_migrations() -> bool:
     """Run Alembic migrations using subprocess.
 
@@ -350,9 +385,14 @@ def run_alembic_migrations() -> bool:
         logger.info(f"Working directory: {project_root}")
         logger.info(f"Python executable: {sys.executable}")
 
+        # The migration targets the database the app will open, never one the
+        # subprocess re-derives from its own environment (#1636).
+        env = {**os.environ, "DATABASE_URL": migration_database_url()}
+
         result = subprocess.run(
             [sys.executable, "-m", "alembic", "upgrade", "head"],
             cwd=str(project_root),
+            env=env,
             capture_output=True,
             text=True,
             timeout=60,  # 60 second timeout

@@ -58,15 +58,36 @@ except ImportError:
 # would change what tests that read their defaults observe. An explicitly set
 # DATABASE_URL (the ``-m postgres`` lane) is the caller's choice and is left
 # alone. Serial runs are untouched.
+#
+# The variable alone does not survive a test that empties or pins the
+# environment (``patch.dict(os.environ, ..., clear=True)``, ``_served_under``,
+# ``delenv("DATABASE_URL")`` + ``reset_settings()``): the next settings object
+# built there falls back to the shipped cwd-relative default, i.e. the SHARED
+# file. So ``pytest_configure`` below also makes the per-worker file the
+# settings field's DEFAULT for this worker process -- what a settings object
+# resolves to when nothing in the environment says otherwise. The variable is
+# kept for child processes, which inherit the environment but not the patch.
+#
+# The URL is also recorded under its own name, because this file is imported
+# TWICE in a worker (as ``conftest`` and as ``tests.conftest``, which some test
+# modules import from) and the second import sees DATABASE_URL already set. A
+# module global would be None in whichever copy pytest registered.
+WORKER_DATABASE_URL_ENV = "FAULTMAVEN_TEST_WORKER_DATABASE_URL"
 _XDIST_WORKER = os.environ.get("PYTEST_XDIST_WORKER")
-if _XDIST_WORKER and not os.environ.get("DATABASE_URL"):
+if (
+    _XDIST_WORKER
+    and not os.environ.get("DATABASE_URL")
+    and not os.environ.get(WORKER_DATABASE_URL_ENV)
+):
     import atexit
     import shutil
     import tempfile
 
     _WORKER_DATA_DIR = tempfile.mkdtemp(prefix=f"faultmaven-{_XDIST_WORKER}-")
     atexit.register(shutil.rmtree, _WORKER_DATA_DIR, ignore_errors=True)
-    os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_WORKER_DATA_DIR}/faultmaven.db"
+    _url = f"sqlite+aiosqlite:///{_WORKER_DATA_DIR}/faultmaven.db"
+    os.environ["DATABASE_URL"] = _url
+    os.environ[WORKER_DATABASE_URL_ENV] = _url
 
 import importlib.machinery
 from types import ModuleType, SimpleNamespace
@@ -934,6 +955,31 @@ except Exception:
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.models import DataType, SessionContext
 from faultmaven.models.common import AgentStateEnum as AgentState
+
+
+def _default_to_the_worker_database() -> None:
+    """Make the per-worker database the settings DEFAULT on an xdist worker.
+
+    See the comment on ``WORKER_DATABASE_URL_ENV`` above. Module level rather
+    than a ``pytest_configure`` hook: a run whose arguments sit under
+    ``tests/integration`` reaches this file through that conftest's
+    ``import conftest``, and a hook on a copy pytest never registered does not
+    fire. Idempotent, so the second copy re-applying it is harmless.
+    """
+    worker_url = os.environ.get(WORKER_DATABASE_URL_ENV)
+    if not worker_url:
+        return
+    from faultmaven.config.settings import DatabaseSettings, reset_settings
+
+    field = DatabaseSettings.model_fields["database_url"]
+    if field.default == worker_url:
+        return
+    field.default = worker_url
+    DatabaseSettings.model_rebuild(force=True)
+    reset_settings()
+
+
+_default_to_the_worker_database()
 
 # SessionManager has been replaced by SessionService
 # from faultmaven.session_management import SessionManager
