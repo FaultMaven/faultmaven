@@ -123,22 +123,83 @@ tool-less build keeps the full extract (safety verified). A playbook-S9 eval sho
 
 ### 4.3 Per-turn budget + cross-provider base caching (goal 3)
 
-- **Per-turn ceiling + alert (implemented).** The tool loop already had a
-  hard-coded 150K per-turn abort; it is now the configurable
-  `PROMPT_TURN_TOKEN_CEILING` (150K default — a safety abort that forces the loop
-  to wrap up schema-only on the next iteration, not the normal budget). Added a
-  *soft* budget `PROMPT_TURN_TOKEN_BUDGET` (default 100K, ~1.5× measured normal):
-  when a turn crosses it an end-of-turn WARNING (`turn_token_budget_exceeded`)
-  logs the call breakdown. Observational only — no behavior change — so
-  high-spend turns are surfaced without truncating a legitimately deep turn.
+- **The message bound is structural; the ceiling is a metered net (#611).**
+  The loop makes `MAX_TOOL_ITERATIONS + 1` calls (iterations
+  `0..MAX_TOOL_ITERATIONS-1` may call tools, the last is schema-only), and since
+  #612 `_bound_tool_loop_messages` trims each call's `messages` to
+  `_resolve_tool_loop_budget`:
+
+  ```
+  per_call = min(PROMPT_TARGET_TOKENS + PROMPT_TOOL_OBSERVATION_MAX_TOKENS, model window budget)
+           = 32,000 + 16,000 = 48,000            (shipped defaults)
+  ```
+
+  That bound is structural, but it covers less than it looks:
+
+  - **`messages` only.** The `tools=` payload is not counted. Measured with
+    cl100k on this tree, the schema tool alone is 950 (`TerminalResponse`),
+    2,111 (`InquiryResponse`), 7,438 / 9,557 / 10,455 / 10,987
+    (`InvestigationResponse_Mitigation` / `_Treatment` / `_General` /
+    `_Diagnosis`; 2–3% more in strict form), and the investigation tools add up
+    to ~2,400. Output tokens are not counted either.
+  - **Estimated tokens.** The trim counts with `estimate_tokens` for the
+    provider name. Gemini, and the router (whose name, `LLMRouter`, is not a
+    provider), have no local tokenizer and fall back to `len // 4`, which read
+    1.51× and 1.65× under cl100k on two log files from the dev evidence store.
+  - The system + task head is sized upstream and never trimmed here; the runtime
+    context-length recovery
+    ([`prompt-token-budget-allocation.md`](./prompt-token-budget-allocation.md)
+    §7.1) is the net for a request that still overflows.
+
+  `PROMPT_TURN_TOKEN_CEILING` (150,000 default, formerly a hard-coded abort) is
+  a separate, **metered** net. After each non-final call it compares the turn's
+  `spend_weighted_tokens` — real provider tokens of every metered call in the
+  turn: messages, tools payload, output, truncation retries, fallback attempts,
+  and LLM calls made by tools (`deep_analysis`, `kb_qa` synthesis) or earlier in
+  the turn — and once over, every remaining iteration is schema-only. It can
+  change the loop only when crossed within the first `MAX_TOOL_ITERATIONS - 1`
+  calls (after that, the next iteration is final anyway), i.e. when those three
+  calls average more than 50,000 each with defaults.
+
+  **The message bound does not rule that out.** An uncached turn with a
+  full-size base and the Diagnosis schema meters about
+  `3 × (32,000 + 11,000 + 2,400) ≈ 136,000` for the base and tools alone; the
+  observation allowance (up to 16,000 per call once tools have run), the
+  outputs, or a `len // 4` undercount of the base carries it past 150,000, and
+  the ceiling removes the last tool round. What keeps it out of normal turns is
+  prefix caching: where the provider serves the repeated system + tools + base
+  prefix from its prompt cache on calls after the first, that prefix counts at
+  0.25. Whether the ceiling *should* be able to bite on an uncached normal turn
+  is an open design question, not settled here. `TestToolLoopSpendBound` pins
+  the per-call formula against `_resolve_tool_loop_budget` and the ceiling's
+  crossing semantics on the metered measure.
+
+  **Raising `PROMPT_TARGET_TOKENS` or `PROMPT_TOOL_OBSERVATION_MAX_TOKENS` moves
+  metered spend toward the ceiling — raise the ceiling with them.** A dedicated
+  DA model with a smaller window (#614) can only lower `per_call`.
   - **Both guards compare a *cost-weighted* spend, not raw tokens.** The measure
     is `spend_weighted_tokens = input + output + cache_write + 0.25 × cache_read`:
     cache reads are real bytes in the window but billed at a fraction (~0.1× on
     Anthropic, ~0.25–0.5× on OpenAI), so they are down-weighted. Weighting on raw
     bytes would trip a cheap, heavily-cached tool loop; weighting on cost keeps
-    the abort motivated by spend. `cache_write` (~1.25×) is counted in full. The
-    per-call size ceiling (32K jar, §4.1) still bounds each individual call on
-    raw bytes.
+    the abort motivated by spend. `cache_write` (~1.25×) is counted in full.
+- **Soft budget (implemented).** `PROMPT_TURN_TOKEN_BUDGET` (default 100K):
+  when a turn crosses it an end-of-turn WARNING (`turn_token_budget_exceeded`)
+  logs the call breakdown. Observational only — no behavior change — so
+  high-spend turns are surfaced without truncating a legitimately deep turn.
+- **When to revisit the net — and what is observable today.** Revisit if turns
+  run close to the ceiling, or if a change raises metered per-call spend (a
+  larger default target or observation allowance, a larger response schema, or
+  a new tool that makes its own LLM calls). Per-turn spend is observable **only
+  as log lines**, not as a metric: the INFO `turn_token_spend` line (every turn,
+  with `spend_weighted_tokens`), the WARNING `turn_token_budget_exceeded` line,
+  and the ceiling's own WARNING ("Turn spend (…) exceeded ceiling"). The
+  Prometheus counters (`llm_call_tokens` and the cost counters) are per call and
+  carry no turn or case label, so "turns approaching the ceiling" cannot be
+  alerted on from metrics — it is answered by reading the `turn_token_spend`
+  lines (e.g. with `token_spend_watch.py`, see the cost-observability doc
+  below). Making it alertable would take a per-turn histogram of
+  `spend_weighted_tokens`, observed where `turn_token_spend` is logged.
 - **Tool-loop re-send is the dominant cost, and prefix caching is now the lever
   in play.** On playbook S9 the tool loop re-sends the *growing* message history
   (base + accumulated tool calls/results) on every iteration, so per-turn cost

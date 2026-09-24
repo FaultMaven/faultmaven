@@ -2665,10 +2665,17 @@ class PromptBudgetSettings(BaseSettings):
         le=2_000_000,
         validation_alias="PROMPT_TURN_TOKEN_CEILING",
         description=(
-            "Hard per-turn spend ceiling: once a turn's cumulative token spend "
-            "(across all tool-loop calls) crosses this, the tool loop is forced "
-            "to wrap up on the next iteration (schema-only) instead of running "
-            "more expensive tool calls. A safety abort, not the normal budget."
+            "Per-turn spend net: once a turn's cost-weighted spend (metered "
+            "provider tokens of every LLM call in the turn, including the tools "
+            "payload and output; cache reads at 0.25) crosses this, the rest of "
+            "the tool loop is schema-only. The structural bound is on messages "
+            "only: MAX_TOOL_ITERATIONS + 1 calls, each trimmed to "
+            "PROMPT_TARGET_TOKENS + PROMPT_TOOL_OBSERVATION_MAX_TOKENS estimated "
+            "tokens. Because this meters more than that, it can remove the last "
+            "tool round on an uncached turn with a full-size prompt (the first "
+            "MAX_TOOL_ITERATIONS - 1 calls averaging over a third of this "
+            "each); prefix-cache hits keep it out of normal turns. Raise it "
+            "with either of those two settings."
         ),
     )
     turn_token_budget: int = Field(
@@ -2680,8 +2687,8 @@ class PromptBudgetSettings(BaseSettings):
             "Soft per-turn spend budget for observability. When > 0 and a turn's "
             "total token spend exceeds it, a WARNING (turn_token_budget_exceeded) "
             "is logged with the call breakdown — surfacing high-spend turns "
-            "(measured normal is ~66K/turn) without changing behavior. Set 0 to "
-            "disable the alert."
+            "without changing behavior. A log line, not a metric: there is no "
+            "per-turn spend metric to alert on. Set 0 to disable the alert."
         ),
     )
     tool_observation_max_tokens: int = Field(

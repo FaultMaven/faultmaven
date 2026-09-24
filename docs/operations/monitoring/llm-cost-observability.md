@@ -44,7 +44,9 @@ llm_tokens_total`, and the gap is the fallback overhead.
   `estimated_cost_usd`, `unpriced_calls`. This is the per-turn amplification
   signal — a turn making 40 calls stands out immediately. `spend_weighted_tokens`
   is the cost-weighted measure (cache reads down-weighted 0.25×) that the
-  soft-budget alert and hard per-turn ceiling compare against — prefer it over
+  soft-budget alert and the per-turn ceiling (a net; see
+  [`prompt-sizing-optimization.md`](../../architecture/investigation-engine/prompt-sizing-optimization.md)
+  §4.3) compare against — prefer it over
   raw `total_tokens` when judging how close a turn ran to the budget.
 
 **Watch it without any infra.** `token_spend_watch.py` (in `faultmaven-doc-internal`
