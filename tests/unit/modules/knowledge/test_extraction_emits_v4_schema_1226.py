@@ -125,7 +125,9 @@ def _case_repository(
         return SimpleNamespace(title=title, description="Pool exhausted at peak.")
 
     async def get_messages(case_id):
-        return [SimpleNamespace(role="user", content="checkout is 500ing")]
+        # Dicts, as every ``get_messages`` returns: an attribute object here is
+        # how the extraction prompt came to render whole rows unnoticed (#1660).
+        return [{"role": "user", "content": "checkout is 500ing", "metadata": {}}]
 
     async def get_evidence(case_id):
         return []

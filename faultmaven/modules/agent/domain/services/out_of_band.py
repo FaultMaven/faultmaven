@@ -144,9 +144,11 @@ _CONTINUATION_WORDS = frozenset(
 #: the turn's budget; a hung classifier must not eat the engine's ladder.
 TRIAGE_TIMEOUT_SECONDS = 8.0
 
-#: How much of the assistant's previous message the classifier is shown. The
-#: point is to disambiguate a short reply ("yes", "done", "the second one"),
-#: which the opening of the previous message settles.
+#: How much of the assistant's last answer the classifier is shown. It is
+#: context for a message that reached the classifier on a case with history —
+#: four words or more, and no continuation vocabulary, because anything shorter
+#: or continuing is stopped by ``reads_as_continuation`` first — so the
+#: classifier can see whether it answers what the assistant last asked.
 _PREVIOUS_AGENT_CHARS = 600
 _USER_MESSAGE_CHARS = 1500
 
@@ -258,8 +260,11 @@ def _bounded(text: str, limit: int) -> str:
 def _last_assistant_message(case: Any) -> str:
     """The assistant's last investigation message for the classifier's context.
 
-    Delegates to ``orientation.last_investigation_message`` so asides AND
-    orientation replies are skipped by one predicate (PR #1343 review).
+    Delegates to ``orientation.last_investigation_message`` so asides,
+    orientation replies (PR #1343 review) and server-written placeholders
+    (#1660) are skipped by one predicate. This is the only case row the triage
+    prompt reads: the user text in it is the live message being classified,
+    never a stored row, so a server-written USER row (#1434) has no way in.
     """
     from faultmaven.modules.agent.domain.services.orientation import (
         last_investigation_message,
@@ -351,7 +356,9 @@ class OutOfBandTriage:
         subject = case_subject(case)
         previous = _last_assistant_message(case)
         previous_block = (
-            f"The assistant's previous message began:\n<<<\n{previous}\n>>>\n\n"
+            # "Last answer", not "previous message": a turn the model failed to
+            # answer is passed over (#1660), so this may be an older turn's.
+            f"The assistant's last answer began:\n<<<\n{previous}\n>>>\n\n"
             if previous
             else ""
         )
