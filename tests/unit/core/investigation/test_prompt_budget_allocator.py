@@ -353,6 +353,263 @@ def test_allocator_conversation_cap_does_not_starve_journal():
 
 
 # ---------------------------------------------------------------------------
+# INV-4 at the boundary the code has: a section allotted <= 2 tokens (#610)
+# ---------------------------------------------------------------------------
+_VARIABLE_KEYS = (
+    "evidence",
+    "conversation_history",
+    "investigation_journal",
+    "working_conclusion",
+    "kb_results",
+    "hypotheses",
+    "candidate_solutions",
+    "evidence_needs",
+    "entity_highlights",
+)
+
+
+def _allocate(budget, **variable):
+    from faultmaven.core.investigation.prompts.context_builder import (
+        _allocate_sections,
+    )
+
+    reserve = dict(
+        identity="IDENTITY block",
+        core_context="CORE context",
+        milestones_str="MILESTONES",
+        inquiry_state_str="",
+        pending_action_str="",
+        user_message_block="the user asks something",
+        feedback_str="",
+    )
+    sections = dict(
+        evidence_str="",
+        graduated_history="",
+        compact_history="",
+        journal_str="",
+        conclusion_str="",
+        kb_str="",
+        hypothesis_str="",
+        evidence_needs_str="",
+        entity_highlights_str="",
+        candidate_solutions_str="",
+    )
+    sections.update(variable)
+    case = t._make_case_with_evidence([])
+    return (
+        _allocate_sections(
+            budget=budget,
+            case=case,
+            provider_name=PROVIDER,
+            model_name=MODEL,
+            **reserve,
+            **sections,
+        ),
+        reserve,
+    )
+
+
+@pytest.mark.parametrize("room", [0, 1, 2])
+def test_a_non_empty_section_allotted_two_tokens_or_fewer_is_marked(room):
+    """INV-4 (#610). ``_truncate_to`` returns "" below 3 tokens, so a section
+    allotted 0, 1 or 2 used to vanish unmarked — and absent engine state such
+    as ``hypotheses`` reads to the model as "none exist". It now carries the
+    same bare ``[...]`` ``_truncate_to`` emits, charged to the margin."""
+    from faultmaven.core.investigation.prompts.context_builder import (
+        _SECTION_DROPPED_MARKER,
+    )
+
+    probe = TokenBudget(10**9, provider_name=PROVIDER, model_name=MODEL)
+    _, reserve = _allocate(probe)
+    reserve_tokens = probe.used_tokens
+
+    budget = TokenBudget(
+        reserve_tokens + room, provider_name=PROVIDER, model_name=MODEL
+    )
+    ctx, _ = _allocate(
+        budget,
+        evidence_str="EVIDENCE " * 50,
+        graduated_history="HISTORY " * 80,
+        compact_history="LATEST TURN " * 20,
+        journal_str="JOURNAL " * 50,
+        conclusion_str="CONCLUSION " * 50,
+        kb_str="KB " * 50,
+        hypothesis_str="HYPOTHESIS " * 50,
+        candidate_solutions_str="SOLUTION " * 50,
+        entity_highlights_str="ENTITY " * 50,
+        # evidence_needs left empty: nothing existed, so nothing is marked.
+    )
+    marked = [k for k in _VARIABLE_KEYS if k != "evidence_needs"]
+    for key in marked:
+        assert ctx[key] == _SECTION_DROPPED_MARKER, (key, ctx[key])
+    assert ctx["evidence_needs"] == ""
+    # Charged honestly: every marker is counted, even past the budget.
+    assert budget.used_tokens == reserve_tokens + len(marked) * _count(
+        _SECTION_DROPPED_MARKER
+    )
+
+
+def test_a_section_that_fits_a_tiny_allotment_renders_as_itself():
+    """The marker replaces content that did NOT fit, never content that did: a
+    one-token section granted its one token renders verbatim, and only the
+    section behind it — which does not fit — is marked."""
+    from faultmaven.core.investigation.prompts.context_builder import (
+        _SECTION_DROPPED_MARKER,
+    )
+
+    probe = TokenBudget(10**9, provider_name=PROVIDER, model_name=MODEL)
+    _allocate(probe)
+    tiny = "ok"
+    assert _count(tiny) == 1
+    budget = TokenBudget(
+        probe.used_tokens + 2, provider_name=PROVIDER, model_name=MODEL
+    )
+    ctx, _ = _allocate(budget, conclusion_str=tiny, kb_str="KB " * 50)
+    assert ctx["working_conclusion"] == tiny
+    assert ctx["kb_results"] == _SECTION_DROPPED_MARKER
+
+
+def test_the_allocator_marks_at_the_boundary_truncation_leaves_empty():
+    """The two boundaries are one constant, so they cannot drift apart: the
+    largest allotment ``_truncate_to`` still answers "" for is exactly where
+    the allocator takes over."""
+    from faultmaven.core.investigation.prompts.context_builder import (
+        _SECTION_DROPPED_MARKER,
+        _SILENT_DROP_MAX_TOKENS,
+    )
+
+    tb = TokenBudget(10**9, provider_name=PROVIDER, model_name=MODEL)
+    text = "some content here " * 10
+    assert tb._truncate_to(text, _SILENT_DROP_MAX_TOKENS) == ""
+    assert tb._truncate_to(text, _SILENT_DROP_MAX_TOKENS + 1) == (
+        _SECTION_DROPPED_MARKER
+    )
+
+
+def _pressure_case():
+    """A realistic case whose variable sections all compete: four large logs,
+    a twelve-turn history, a journal and KB runbooks."""
+    evs = [
+        t._make_evidence(
+            summary=f"ev {i}",
+            extract=f"LOGLINE {i} " * 600,
+            source_file_id=f"file_{i:012x}",
+            collected_at_turn=i + 1,
+        )
+        for i in range(4)
+    ]
+    case = t._make_case_with_evidence(evs)
+    case.messages = []
+    for i in range(1, 13):
+        case.messages.append(
+            {"turn_number": i, "role": "user", "content": f"u{i} " + "detail " * 60}
+        )
+        case.messages.append(
+            {"turn_number": i, "role": "assistant", "content": f"a{i} " + "why " * 60}
+        )
+    case.current_turn = 13
+    case.investigation_journal = [
+        JournalEntry(turn=i, entry_type="finding", content=f"finding {i} " + "x " * 40)
+        for i in range(1, 15)
+    ]
+    case.kb_context = [
+        {"title": f"Runbook {k}", "summary": "s" * 300, "solution": "y" * 400}
+        for k in range(3)
+    ]
+    return case
+
+
+def test_no_section_vanishes_unmarked_on_the_assembled_prompt(monkeypatch):
+    """INV-4 driven through the path that runs it (#610): sweep the prompt
+    target across the band just above the starvation fallback — where the
+    lower-priority sections are squeezed to nothing — and require every
+    non-empty variable section of every MAIN-template prompt to render as
+    content or as the marker, never as "".
+
+    The same sweep pins the answer to #610's starvation-trigger edge, which is
+    a documented non-goal rather than a subtraction (see
+    prompt-token-budget-allocation.md §7): the trigger does not reserve room
+    for the sections below the conversation, but it does guarantee evidence and
+    continuity content on every main-template prompt at the shipped settings.
+    """
+    from faultmaven.config.settings import get_settings
+    from faultmaven.core.investigation.prompts import context_builder as cb
+    from faultmaven.core.investigation.prompts import templates as tp
+
+    settings = get_settings()
+    real_allocate = cb._allocate_sections
+    real_fallback = tp.get_fallback_prompt_for_case
+    seen: dict = {}
+
+    def spy_allocate(**kw):
+        ctx = real_allocate(**kw)
+        seen["inputs"] = {
+            "evidence": kw["evidence_str"],
+            "conversation_history": kw["graduated_history"] or kw["compact_history"],
+            "investigation_journal": kw["journal_str"],
+            "working_conclusion": kw["conclusion_str"],
+            "kb_results": kw["kb_str"],
+            "hypotheses": kw["hypothesis_str"],
+            "candidate_solutions": kw["candidate_solutions_str"],
+            "evidence_needs": kw["evidence_needs_str"],
+            "entity_highlights": kw["entity_highlights_str"],
+        }
+        seen["ctx"] = ctx
+        return ctx
+
+    def spy_fallback(*a, **k):
+        seen["fallback"] = True
+        return real_fallback(*a, **k)
+
+    monkeypatch.setattr(cb, "_allocate_sections", spy_allocate)
+    monkeypatch.setattr(tp, "get_fallback_prompt_for_case", spy_fallback)
+
+    def assemble(target: int) -> bool:
+        """True when the main template was emitted at ``target``."""
+        monkeypatch.setattr(settings.model_context, "prompt_target_tokens", target)
+        seen.clear()
+        get_prompt_for_case(
+            _pressure_case(),
+            "why is it slow?",
+            provider_name=PROVIDER,
+            model_name=MODEL,
+        )
+        return not seen.get("fallback")
+
+    # Find the starvation boundary rather than hardcode it: it moves with the
+    # template's size, and a fixed window would go quietly vacuous.
+    lo, hi = 2_000, 200_000
+    assert not assemble(lo) and assemble(hi)
+    while hi - lo > 10:
+        mid = (lo + hi) // 2
+        lo, hi = (lo, mid) if assemble(mid) else (mid, hi)
+
+    main_runs = 0
+    squeezed_to_marker = 0
+    for target in range(hi, hi + 600, 10):
+        if not assemble(target):
+            continue
+        main_runs += 1
+        ctx, inputs = seen["ctx"], seen["inputs"]
+        for key, text in inputs.items():
+            if text:
+                assert ctx[key], f"{key} vanished unmarked at target={target}"
+        squeezed_to_marker += sum(
+            1 for key, text in inputs.items() if text and ctx[key] == "[...]"
+        )
+        # The starvation edge's documented bound: evidence and continuity keep
+        # real content whenever the main template is used.
+        for key in ("evidence", "conversation_history"):
+            assert ctx[key] not in ("", "[...]"), f"{key} starved at {target}"
+
+    assert main_runs >= 40
+    # Positive control: the sweep did reach the regime where sections are
+    # squeezed to nothing. Without it, a band in which nothing is ever
+    # squeezed would pass the loop above for free.
+    assert squeezed_to_marker > 0
+
+
+# ---------------------------------------------------------------------------
 # The allocator is the only assembly path — get_prompt_for_case always uses it.
 # ---------------------------------------------------------------------------
 def test_get_prompt_for_case_assembles_via_allocator():

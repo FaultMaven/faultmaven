@@ -736,6 +736,20 @@ def get_token_budget_for_provider(
     return default_budget
 
 
+#: Allotments at or below this many tokens cannot carry any of a section's
+#: content. ``TokenBudget._truncate_to`` returns "" for them, and the allocator
+#: renders a non-empty section allotted this little as
+#: :data:`_SECTION_DROPPED_MARKER` instead — one constant for both, so the
+#: boundary INV-4 is enforced at cannot drift from the one truncation has (#610).
+_SILENT_DROP_MAX_TOKENS = 2
+
+#: The one marker for "content existed here and none of it fit". Emitted by
+#: ``_truncate_to`` when only the marker fits, by ``_shrink_fenced_tail`` when
+#: the conversation's delimiters leave no room for body, and by the allocator
+#: for a non-empty section at or below :data:`_SILENT_DROP_MAX_TOKENS` (#610).
+_SECTION_DROPPED_MARKER = "[...]"
+
+
 class TokenBudget:
     """Running token budget shared across prompt sections (GAP-2/GAP-4).
 
@@ -784,9 +798,12 @@ class TokenBudget:
         (used for conversation history, whose most-recent turns are at the end).
         Never returns "" for non-empty input above a 2-token floor — it always
         leaves at least a bare ``[...]`` marker, so a section is never *silently*
-        dropped (INV-4). Does not mutate ``used_tokens``.
+        dropped (INV-4). At or below the floor it returns "", because a limit
+        that small cannot hold even the marker; the allocator, which is the
+        caller that can reach that floor, emits the marker there itself and
+        charges it to the margin (#610). Does not mutate ``used_tokens``.
         """
-        if not text or token_limit <= 2:
+        if not text or token_limit <= _SILENT_DROP_MAX_TOKENS:
             return ""
         marker = (
             "\n[...truncated...]"
@@ -796,7 +813,7 @@ class TokenBudget:
         marker_tokens = self.count(marker)
         # Only room for (about) the marker → emit a minimal non-silent trace.
         if token_limit <= marker_tokens + 1:
-            return "[...]"
+            return _SECTION_DROPPED_MARKER
 
         # keep="tail" drops the OLDEST (leading) content, so the marker goes at
         # the FRONT; keep="head" drops trailing content, marker at the end.
@@ -811,7 +828,7 @@ class TokenBudget:
         while truncated and self.count(_compose(truncated)) > token_limit:
             char_budget = int(char_budget * 0.85)
             truncated = _slice(char_budget)
-        return _compose(truncated) if truncated else "[...]"
+        return _compose(truncated) if truncated else _SECTION_DROPPED_MARKER
 
     def use(self, text: str, cap: Optional[int] = None) -> str:
         """Admit *text* against the shared budget, optionally capped.
@@ -1351,6 +1368,28 @@ def _fresh_this_turn_attr(item_turn: Optional[int], current_turn: int) -> str:
     if item_turn == current_turn:
         return ' fresh_this_turn="true"'
     return ""
+
+
+def _evidence_recency_key(ev) -> tuple[int, float]:
+    """How recent an Evidence row is, as a sort key — newer sorts higher.
+
+    The evidence renderer states its orderings with this rather than inheriting
+    them from ``case.evidence`` list order, because that order is not one
+    thing: both repositories load it ``ORDER BY created_at DESC`` (newest
+    first), and the engine appends rows minted during a turn to the END
+    (oldest-first). A slice or a stable sort over the list therefore means
+    "newest" or "oldest" depending on where the case came from (#1609).
+
+    ``collected_at_turn`` leads because it is the investigation's own clock;
+    ``collected_at`` (the row's ``created_at``, which is what the repositories
+    order by) separates rows written on the same turn.
+    """
+    collected_at = getattr(ev, "collected_at", None)
+    try:
+        stamp = collected_at.timestamp() if collected_at is not None else 0.0
+    except (AttributeError, OverflowError, OSError, ValueError):
+        stamp = 0.0
+    return (getattr(ev, "collected_at_turn", 0) or 0, stamp)
 
 
 def _evidence_data_turn(ev, ev_file_meta) -> Optional[int]:
@@ -1924,15 +1963,40 @@ def _render_evidence_block(
         # base ranking is still valid.
         time_window = None
 
-    # Select Tier A by relevance score (not FIFO). Logs/metrics with hypothesis
-    # linkage beat READMEs/CITATIONs regardless of upload order.
+    # ONE relevance ordering drives every decision over file-backed evidence:
+    # which rows are Tier A, which of those keep their full render when the
+    # budget squeezes, and which Tier B summaries survive when even summaries do
+    # not all fit. Logs/metrics with hypothesis linkage beat READMEs/CITATIONs
+    # regardless of upload order.
+    #
+    # It used to decide only the first of the three (#1609). Tier A was then
+    # rebuilt from ``data_evidence`` order, which is ``case.evidence`` order —
+    # and both repositories load that ``ORDER BY created_at DESC`` — so the
+    # budget downgrade below, which walks its list in order, evicted the OLDEST
+    # row rather than the least relevant, and a highly-scored log lost its full
+    # render to a lower-scoring row that merely arrived later. Nothing noticed
+    # because every fixture had score and recency agreeing.
+    #
+    # Rows render in this order too (most relevant first). There is no
+    # chronological reading order to preserve: no ``<evidence>`` element carries
+    # a turn, the orphan floor renders ahead of all of them, Tier B follows
+    # Tier A whatever their ages, and "this arrived now" is carried by
+    # ``fresh_this_turn``, not by position.
+    #
+    # Ties break on recency, and deliberately: ``_evidence_recency_key`` is part
+    # of the sort key rather than inherited from the input order through sort
+    # stability, so the tiebreak holds whatever order ``case.evidence`` arrives
+    # in (loaded newest-first, appended to oldest-last within a turn).
+    relevance = {
+        id(ev): _score_evidence_for_tier_a(ev, case, time_window=time_window)
+        for ev in data_evidence
+    }
     scored = sorted(
         data_evidence,
-        key=lambda ev: _score_evidence_for_tier_a(ev, case, time_window=time_window),
+        key=lambda ev: (relevance[id(ev)], _evidence_recency_key(ev)),
         reverse=True,
     )
     current_turn = getattr(case, "current_turn", 0) or 0
-    tier_a_set = set(id(ev) for ev in scored[:EVIDENCE_CONTEXT_RECENT_COUNT])
     # INV-EC-1's current-turn floor is the ORPHAN-FILE pass below, which keys on
     # the FILE (``uf.uploaded_at_turn == current_turn``) and is the arm that
     # delivers the guarantee. A second, row-shaped copy of it used to sit here
@@ -1940,10 +2004,12 @@ def _render_evidence_block(
     # sort those rows first) and could never fire: an Evidence row is minted
     # after the model answers, so at prompt-build time every row is historical —
     # see :func:`_evidence_data_turn` for why the data turn, not the row turn, is
-    # what "this turn" means here. Deleted as obsolete in #1603; Tier A keeps the
-    # ``case.evidence`` order it has always rendered in.
-    tier_a = [ev for ev in data_evidence if id(ev) in tier_a_set]
-    tier_b = [ev for ev in data_evidence if id(ev) not in tier_a_set]
+    # what "this turn" means here. Deleted as obsolete in #1603.
+    tier_a = scored[:EVIDENCE_CONTEXT_RECENT_COUNT]
+    # Filled by the Tier A loop; Tier B is then everything else, in ``scored``
+    # order, so a row downgraded out of Tier A outranks every row that was never
+    # in it when summaries compete for the budget.
+    rendered_full: set[int] = set()
 
     # Model-aware budget; falls back to the module-level char cap when the
     # provider is unknown (read live so test monkeypatching still drives it).
@@ -2097,9 +2163,12 @@ def _render_evidence_block(
             + _TIER_A_MARKUP_OVERHEAD_CHARS
         )
         if total_chars + entry_estimate > effective_total_chars:
-            # Downgrade remaining Tier A to Tier B (summary only)
-            tier_b.append(ev)
+            # Downgrade to Tier B (summary only). ``tier_a`` is in relevance
+            # order, so the row that gives way is the least relevant one that
+            # does not fit — not the oldest (#1609). Skip, not break: a smaller,
+            # less relevant row behind it may still fit.
             continue
+        rendered_full.add(id(ev))
 
         data_type_attr = _attr(
             "data_type", ev.source_type.value if ev.source_type else None
@@ -2196,7 +2265,9 @@ def _render_evidence_block(
         result += "  " + fence.close("evidence") + "\n"
         total_chars += entry_estimate
 
-    # Tier B: Older data evidence (summary only)
+    # Tier B: every file-backed row without a full render (summary only), in
+    # relevance order — the rows downgraded out of Tier A first.
+    tier_b = [ev for ev in scored if id(ev) not in rendered_full]
     for ev in tier_b:
         ev_file_meta = case.find_uploaded_file(ev.source_file_id)
         label = _evidence_label(ev, case, ev_file_meta)
@@ -2239,8 +2310,14 @@ def _render_evidence_block(
     # <evidence_omitted> marker reflects the omission (these have no
     # source_file_id, so the marker signals it, since search_file can't reach
     # them).
+    #
+    # "Most recent" is stated by key, not read off list order: ``case.evidence``
+    # arrives newest-first from both repositories, so the ``[-5:]`` slice this
+    # used to take over it kept the five OLDEST chat rows in production — the
+    # same inherited-order misreading as #1609's Tier A. Rendered oldest to
+    # newest, as before.
     n_omitted += max(0, len(text_evidence) - 5)
-    for ev in text_evidence[-5:]:  # Cap at 5 most recent items
+    for ev in sorted(text_evidence, key=_evidence_recency_key)[-5:]:
         label = _evidence_label(ev, case)
         label_attr = _attr("label", label)
         # One rule, three tiers. There is no file to defer to here —
@@ -3140,15 +3217,15 @@ def _shrink_fenced_tail(fenced: str, alloc: int, budget: "TokenBudget") -> str:
         return budget._truncate_to(fenced, alloc, keep="tail")
     opening, body, closing = parts
     room = alloc - budget.count(opening) - budget.count(closing)
-    if room <= 2:
+    if room <= _SILENT_DROP_MAX_TOKENS:
         # No room for even a token of body. Emit the same non-silent marker
         # ``_truncate_to`` would, rather than a pair of empty delimiters or
         # nothing at all: it carries no caller bytes and no fenced delimiter,
         # so there is nothing to forge with and nothing to absorb.
-        return "[...]"
+        return _SECTION_DROPPED_MARKER
     kept = budget._truncate_to(body, room, keep="tail")
     if not kept:
-        return "[...]"
+        return _SECTION_DROPPED_MARKER
     return f"{opening}\n{terminate_dangling(kept)}\n{closing}"
 
 
@@ -3328,7 +3405,35 @@ def _allocate_sections(
         alloc = floor_grant + take_extra
         remaining -= take_extra
 
-        if key == "conversation_history":
+        # Tokens this section needs to render ANY of its content whole: the
+        # compact fidelity for the conversation, the text itself otherwise.
+        # Zero exactly when the section is empty, which renders as nothing. A
+        # section that is itself only 1-2 tokens long fits a 1-2 token
+        # allotment and renders as itself, not as the marker.
+        smallest_whole = (
+            (compact_tokens or graduated_tokens)
+            if key == "conversation_history"
+            else size
+        )
+        if alloc <= _SILENT_DROP_MAX_TOKENS and alloc < smallest_whole:
+            # INV-4 at the boundary the code actually has (#610): below 3 tokens
+            # ``_truncate_to`` returns "" rather than its marker, so a section
+            # allotted 0, 1 or 2 tokens used to vanish unmarked — and the
+            # sections that reach 0 under a small target include
+            # ``hypotheses``, ``candidate_solutions`` and ``working_conclusion``,
+            # engine state the model is asked to UPDATE, which absent and
+            # unmarked read as "none exist". Emit the same bare marker
+            # ``_truncate_to`` emits when it has room for nothing else.
+            #
+            # Charged to the margin, not to ``remaining``: a section reaches
+            # this branch only when ``remaining`` is already (nearly) 0, so
+            # every section after it is here too and there is nothing left to
+            # take the marker's tokens from. The cost is 1-2 tokens per
+            # section (measured) — under 20 across all nine — against
+            # ``overhead_margin_tokens`` (256); ``used_tokens`` below counts
+            # them, so the running total stays honest.
+            rendered = _SECTION_DROPPED_MARKER
+        elif key == "conversation_history":
             # Continuity: pick the largest fidelity that fits; if even compact
             # must be cut, keep the TAIL (latest turns are at the end).
             if alloc <= 0:

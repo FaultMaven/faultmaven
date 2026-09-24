@@ -361,6 +361,35 @@ The fallback is reachable by **two** triggers, not just hard-limit overflow:
    last exchange, per the fallback's slots) instead of a near-empty one that's
    technically "under limit."
 
+**What the starvation trigger does and does not reserve (#610).** It compares
+`variable_room` (target − template − reserve − margin) against
+`PROMPT_MIN_VIABLE_TOKENS` *without* subtracting the floors pass A will grant.
+That is a documented non-goal, not an oversight:
+
+- **What it guarantees.** Whenever the main template is used, the allocator's
+  section budget is at least `min_viable`. Pass A grants evidence first, and the
+  evidence floor is at most `EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM / 4` tokens, so
+  the conversation receives at least `min_viable − max_chars_per_item/4` tokens
+  of continuity — **500 at the shipped defaults** (1500 − 4000/4). Evidence and
+  continuity therefore always carry content on a main-template prompt; the
+  guard is `test_no_section_vanishes_unmarked_on_the_assembled_prompt`, which
+  sweeps the band just above the fallback. A deployment that raises
+  `EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM` to `4 × PROMPT_MIN_VIABLE_TOKENS` or
+  more gives up that bound: continuity can then be reduced to the marker
+  without the fallback firing. Raise `PROMPT_MIN_VIABLE_TOKENS` with it.
+- **What it does not.** It reserves nothing for the sections below the
+  conversation (journal, working conclusion, KB, hypotheses, candidate
+  solutions, evidence needs, entity highlights). Those degrade in strict
+  priority order and, when squeezed to nothing, carry INV-4's marker. Measured
+  on a 4-log, 12-turn case, those markers appear in the few hundred tokens of
+  target just above the fallback threshold.
+- **Why not subtract the floors.** Firing the fallback whenever the floors
+  would not leave `min_viable` over would move that band to the fallback, which
+  keeps no evidence tiers, no KB and no conversation beyond the last exchange —
+  trading prompts that still carry evidence and truncated continuity for
+  sections that are already marked, and inverting the allocator's declared
+  priority (INV-1 evidence outranks continuity, continuity outranks the rest).
+
 **The fallback is a fixed minimal template, not a re-allocation.** When it fires,
 the engine switches to the `FALLBACK_*` template with only its fixed slots
 (reserve + current-turn stub + last exchange + problem/milestone/hypothesis
@@ -501,7 +530,17 @@ These are properties of the allocator's structure, asserted by tests (§14):
   budget within the §6 `margin` tolerance** (not exact equality, since the
   Anthropic-proxy estimate is inexact).
 - **INV-4 (no silent loss):** any compaction/elision/drop leaves a marker; a
-  section is never quietly removed.
+  non-empty section is never quietly removed. *As built*, the boundary is two
+  tokens (`_SILENT_DROP_MAX_TOKENS`): `_truncate_to` cannot fit even its marker
+  at or below it and returns `""`, so the allocator renders a non-empty section
+  allotted 0, 1 or 2 tokens as the same bare `[...]` itself (#610). That
+  marker is **charged to the margin**, not taken from another section — a
+  section reaches that allotment only when pass B has nothing left, so every
+  section after it is in the same state — at 1–2 tokens each (under 20 across
+  all nine) against `PROMPT_OVERHEAD_MARGIN_TOKENS` (256). An *empty* section (no
+  content existed) still renders as nothing. What INV-4 does **not** promise is
+  room: sections below the conversation carry no floor, and at a small target
+  they may be reduced to the marker without the starvation fallback firing (§7).
 - **INV-5 (never negative):** `section_budget` floors at 0; an oversized reserve
   degrades via §6 caps and the §7 starvation backstop, never a negative budget.
 
