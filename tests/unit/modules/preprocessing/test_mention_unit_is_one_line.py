@@ -412,17 +412,18 @@ class TestLogsExtractorProfileCountsLines:
         assert expected in self._search_map(one_ip)
         assert expected in self._search_map(twice_on_the_line)
 
-    def test_auth_total_is_neither_the_sum_nor_the_largest_category(self):
-        """The shape that separates counting lines from its two near-misses.
+    def test_auth_total_is_neither_the_sum_nor_the_line_count(self):
+        """The shape that separates the three rules the table has shipped.
 
         Six lines from one IP: three match BOTH ``failed_password`` and
         ``invalid_user``, two match ``failed_password`` only, one matches
         ``invalid_user`` only. So ``failed_password=5``, ``invalid_user=4``,
-        and the number of auth LINES is 6.
+        six auth LINES, and five OUTCOME lines.
 
-        Summing gives 9 (fm#1596, the defect), taking the largest category
-        gives 5, counting lines gives 6. The single-line fixture above
-        cannot tell those three apart, because there all three answer 1.
+        Summing gives 9 (fm#1596's defect), counting auth lines gives 6
+        (fm#1596's fix), counting attempts by outcome line gives 5
+        (fm#1627's ruling). The lone ``Invalid user`` line offered no
+        credential, so it is context, not an attempt.
         """
         both = (
             "Jul 27 14:4{i}:59 combo sshd[1]: Failed password for invalid "
@@ -446,7 +447,7 @@ class TestLogsExtractorProfileCountsLines:
         )
         search_map = self._search_map(content)
         assert (
-            "10.0.0.9: failed_password=5, invalid_user=4 \u2192 auth total=6"
+            "10.0.0.9: failed_password=5, invalid_user=4 \u2192 auth total=5"
             in search_map
         ), search_map
 
@@ -481,20 +482,18 @@ class TestLogsExtractorProfileCountsLines:
             "10.0.0.8: 5 line occurrences (all event types)" in search_map
         ), search_map
 
-    def test_the_header_does_not_call_a_line_count_an_attempt_count(self):
-        """One sshd attempt is three lines, so the total is an upper bound.
+    def test_three_line_sshd_attempts_count_as_attempts(self):
+        """One sshd attempt is three lines; ``auth total`` is the attempt.
 
         For one password try against an invalid user, OpenSSH writes three
         lines carrying the source IP: ``Invalid user``, the ``pam_unix``
         authentication failure, and ``Failed password for invalid user``.
-        Three attempts logged that way are nine auth LINES, which is what
-        fm#1596's ruling has the table count — so ``auth total=9`` is right
-        as a line count and wrong as an attempt count.
-
-        The header must therefore say which it is. An earlier revision of
-        this change told the model the total "is the attempt count", on
-        exactly the shape where it is off by 3x — a more confident claim
-        than the hedge it replaced.
+        Three attempts logged that way rendered ``auth total=12`` before
+        fm#1596 (summed categories) and ``auth total=9`` after it (auth
+        lines). fm#1627 ruled the total an attempt count, taken from the one
+        line sshd writes exactly once per attempt — the outcome — so it is
+        3, and the header says it is attempts rather than hedging a line
+        count as an upper bound.
         """
         lines = []
         for i, user in enumerate(("admin", "oracle", "test")):
@@ -509,10 +508,11 @@ class TestLogsExtractorProfileCountsLines:
             ]
         search_map = self._search_map("\n".join(lines) + "\n")
 
-        # The count itself is the ruled one: lines, not attempts, not a sum.
+        # The count itself is the ruled one: attempts, by outcome line. The
+        # per-category counts stay beside it — they are what to search on.
         assert (
             "5.36.59.76: failed_password=3, pam_auth_failure=3, invalid_user=6 "
-            "\u2192 auth total=9" in search_map
+            "\u2192 auth total=3" in search_map
         ), search_map
 
         # Anchored on the header's own start: the Distinct IPs header above
@@ -522,17 +522,22 @@ class TestLogsExtractorProfileCountsLines:
             for line in search_map.splitlines()
             if line.lstrip().startswith("IP auth breakdown")
         )
-        assert "attempt count" not in header.lower(), header
-        assert "upper bound" in header.lower(), header
+        # The total is exact now, so the fm#1596 hedge would be untrue in
+        # the other direction; the header names the unit and the fallback.
+        assert "upper bound" not in header.lower(), header
+        assert "lines carrying an auth event" not in header.lower(), header
+        assert "attempts" in header.lower(), header
+        assert "outcome" in header.lower(), header
+        assert "pam" in header.lower(), header
 
     def test_the_prompt_routing_agrees_with_the_header(self):
-        """The model reads ``auth total`` through two channels; both hedge it.
+        """The model reads ``auth total`` through two channels; both agree.
 
         The table's own header is one. The evidence-grounding block routes
-        "auth counts per IP" questions to that table — the other. When the
-        header learned that the total is an upper bound, the routing line
-        still offered the table as the auth count with no caveat. This pins
-        the routing line to the same claim rather than to its wording.
+        "auth counts per IP" questions to that table — the other. fm#1596
+        taught both that the total was an upper bound on attempts; fm#1627
+        made it the attempt count, so the routing line must stop calling it
+        a line count or an upper bound, or it contradicts the header.
         """
         from faultmaven.core.investigation.prompts.templates import (
             _EVIDENCE_GROUNDING_BLOCK,
@@ -542,8 +547,9 @@ class TestLogsExtractorProfileCountsLines:
         start = routing.index("For auth counts per IP")
         clause = routing[start : routing.index('For "list all X"', start)]
         assert "IP auth breakdown" in clause, clause
-        assert "upper bound" in clause.lower(), clause
-        assert "attempt count" not in clause.lower(), clause
+        assert "upper bound" not in clause.lower(), clause
+        assert "auth lines" not in clause.lower(), clause
+        assert "attempts" in clause.lower(), clause
 
 
 @pytest.mark.unit

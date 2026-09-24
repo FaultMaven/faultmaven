@@ -701,6 +701,14 @@ class LogsAndErrorsExtractor:
         "accepted_login",
     )
     _AUTH_EVENTS: frozenset = frozenset(_AUTH_EVENT_ORDER)
+    # The auth events that END an attempt (fm#1627). sshd writes exactly one
+    # of these per password or key try, however many other lines the try
+    # produced, so the breakdown's ``auth total`` counts lines carrying one
+    # of them. ``invalid_user`` and ``pam_auth_failure`` accompany an attempt
+    # rather than conclude it — except in logs with no outcome line at all
+    # (loghub Linux, Format B), where the PAM failure line IS the attempt;
+    # ``_auth_attempt_count`` applies that fallback per IP.
+    _AUTH_OUTCOME_EVENTS: frozenset = frozenset({"failed_password", "accepted_login"})
     # Event types that mark a source IP as an "attacker" for the purpose of
     # disambiguating Accepted password lines (ISS-026). An IP that ONLY
     # appears in accepted_login (and never in any of these) is treated as a
@@ -847,6 +855,21 @@ class LogsAndErrorsExtractor:
         "break_in_attempt": "POSSIBLE BREAK-IN ATTEMPT",
     }
 
+    @staticmethod
+    def _auth_attempt_count(outcome_lines: int, ip_events: Counter) -> int:
+        """One IP's ``auth total``: attempts, by outcome line (fm#1627).
+
+        ``outcome_lines`` is the number of that IP's lines carrying a
+        ``failed_password`` or ``accepted_login`` event. When it is zero the
+        ``pam_auth_failure`` count is the attempt count instead — Format B
+        logs (``sshd(pam_unix)[PID]: authentication failure; ... rhost=IP``)
+        have no outcome line, and without the fallback every IP in them
+        would read 0.
+        """
+        if outcome_lines:
+            return outcome_lines
+        return ip_events.get("pam_auth_failure", 0)
+
     def _build_entity_profile(
         self,
         content: str,
@@ -884,12 +907,18 @@ class LogsAndErrorsExtractor:
         ip_attack_last_ts: dict = {}
         # Per-IP per-event-type counts for the auth breakdown table
         ip_event_counts: dict[str, Counter] = {}
-        # Per-IP count of the LINES carrying at least one auth event — what
-        # the breakdown table reports as ``auth total`` (fm#1596). Kept as a
-        # separate tally rather than derived from ``ip_event_counts``,
-        # because the per-category counts cannot say whether two categories
-        # fired on one line or on two.
+        # Per-IP count of the LINES carrying at least one auth event. Decides
+        # which IPs get a row in the breakdown table (fm#1596), and nothing
+        # else: since fm#1627 the ``auth total`` is an attempt count, and a
+        # pre-auth probe (``Invalid user X`` then a disconnect) has auth
+        # lines and zero attempts — its row must still render.
         ip_auth_line_counts: Counter = Counter()
+        # Per-IP count of the LINES carrying an attempt OUTCOME
+        # (``_AUTH_OUTCOME_EVENTS``) — the ``auth total`` when non-zero
+        # (fm#1627). Kept as its own tally rather than summing the two
+        # categories, for the same reason as the line tally above: the
+        # per-category counts cannot say whether both fired on one line.
+        ip_auth_outcome_counts: Counter = Counter()
         # Tracks whether the log contains "error state N" lines (mod_jk / similar)
         has_numeric_state_codes = False
         # Syslog service name counts for multi-service logs
@@ -1066,6 +1095,9 @@ class LogsAndErrorsExtractor:
                 # attempt, so it increments the total once while still
                 # incrementing each category it matched.
                 line_is_auth = not self._AUTH_EVENTS.isdisjoint(matched_events)
+                line_is_outcome = not self._AUTH_OUTCOME_EVENTS.isdisjoint(
+                    matched_events
+                )
                 for ip in line_ips:
                     if ip not in ip_event_counts:
                         ip_event_counts[ip] = Counter()
@@ -1073,6 +1105,8 @@ class LogsAndErrorsExtractor:
                         ip_event_counts[ip][ev] += 1
                     if line_is_auth:
                         ip_auth_line_counts[ip] += 1
+                    if line_is_outcome:
+                        ip_auth_outcome_counts[ip] += 1
 
         # BGL block is only meaningful when at least one non-dash flag is
         # present (a file with only dash-flag lines is not informative;
@@ -1244,22 +1278,21 @@ class LogsAndErrorsExtractor:
                 )
 
         # Auth breakdown table: per-IP counts for each auth event type, beside
-        # the number of AUTH LINES that IP appears on. Use this to answer
-        # "how many auth attempts did X make" directly — do not use the total
+        # the number of auth ATTEMPTS from that IP. Use this to answer "how
+        # many auth attempts did X make" directly — do not use the total
         # line-occurrence count above for that.
-        # ``auth total`` is the auth-line count, NOT the sum of the categories
-        # (fm#1596). The categories are not mutually exclusive — a single
-        # "Failed password for invalid user" line matches two of them — so
-        # adding them double-counts the dominant line of every OpenSSH
-        # brute-force file. Membership keys on the same tally as the total,
-        # so the set listed and the number reported cannot disagree.
-        # ‼ A line count is still not an ATTEMPT count: for one password try
-        # against an invalid user sshd writes three lines carrying the IP
-        # (Invalid user, pam_unix authentication failure, Failed password),
-        # so three attempts render as ``auth total=9``. The header therefore
-        # calls it an upper bound. Counting attempts would mean counting
-        # outcome lines instead — a different semantic from the one fm#1596
-        # was ruled to, and not decided here.
+        # ``auth total`` counts attempts by their OUTCOME line (fm#1627):
+        # sshd writes one password try against an invalid user as three
+        # lines carrying the IP (Invalid user, pam_unix authentication
+        # failure, Failed password), and exactly one of them — the
+        # ``Failed password`` / ``Accepted`` line — is written once per try.
+        # Counting auth LINES (fm#1596) rendered three attempts as 9, and
+        # summing the categories before that as 12. Where an IP has no
+        # outcome line at all the PAM failure count stands in — Format B
+        # logs (loghub Linux) write nothing else per attempt.
+        # Row MEMBERSHIP stays on any auth line, not on the total: an IP
+        # with only ``Invalid user`` lines offered no credential, so its
+        # total is honestly 0, but the row still shows what it did.
         auth_ips = [
             ip
             for ip, _ in ip_all_counts.most_common(top_n)
@@ -1270,12 +1303,15 @@ class LogsAndErrorsExtractor:
                 "  IP auth breakdown"
                 " [use these event-specific counts for auth questions,"
                 " not the line-occurrence counts above."
-                " auth total = LINES carrying an auth event for that IP."
-                " It is an UPPER BOUND on attempts, not a count of them:"
-                " sshd can log one attempt on several lines (Invalid user,"
-                " PAM authentication failure, Failed password)."
-                " Do not add the per-event numbers either — one line can"
-                ' match several (e.g. "Failed password for invalid user")]:'
+                " auth total = auth ATTEMPTS from that IP, counted by outcome"
+                " line (Failed password / Accepted), one per attempt;"
+                " where the IP has none, its PAM authentication-failure lines."
+                " Invalid user and PAM lines accompany an attempt and are not"
+                " added to it, so an IP can show auth total=0 (probed, never"
+                " offered a credential)."
+                " Do not add the per-event numbers — sshd logs one attempt on"
+                " several lines, and one line can match several events"
+                ' (e.g. "Failed password for invalid user")]:'
             )
             for ip in auth_ips[:5]:
                 ev_parts = [
@@ -1283,10 +1319,10 @@ class LogsAndErrorsExtractor:
                     for ev in self._AUTH_EVENT_ORDER
                     if ip_event_counts[ip].get(ev, 0)
                 ]
-                parts.append(
-                    f"    {ip}: {', '.join(ev_parts)}"
-                    f" → auth total={ip_auth_line_counts[ip]}"
+                attempts = self._auth_attempt_count(
+                    ip_auth_outcome_counts.get(ip, 0), ip_event_counts[ip]
                 )
+                parts.append(f"    {ip}: {', '.join(ev_parts)} → auth total={attempts}")
 
         if user_all_counts:
             total_distinct = len(user_all_counts)
