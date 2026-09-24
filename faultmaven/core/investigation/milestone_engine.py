@@ -7387,6 +7387,34 @@ class MilestoneEngine:
     # =========================================================================
 
     # Constants for tool-augmented generation
+    #
+    # MAX_TOOL_ITERATIONS is the PRIMARY bound on a turn's tool-loop spend, and
+    # the bound is structural rather than a tuned number (#611). The loop makes
+    # MAX_TOOL_ITERATIONS + 1 generations: iterations 0..MAX_TOOL_ITERATIONS-1
+    # may call tools, the last is schema-only. Each generation's request is
+    # hard-bounded by _resolve_tool_loop_budget to
+    #
+    #     per_call = min(PROMPT_TARGET_TOKENS + PROMPT_TOOL_OBSERVATION_MAX_TOKENS,
+    #                    the model's window budget)
+    #              = 32,000 + 16,000 = 48,000 with shipped defaults,
+    #
+    # so tool-loop prompt tokens are at most (MAX_TOOL_ITERATIONS + 1) * per_call
+    # (240,000 raw with defaults), before truncation retries.
+    #
+    # PROMPT_TURN_TOKEN_CEILING (150,000) is kept as a NET, not the bound. It can
+    # change what the loop does only if it is crossed after the first
+    # MAX_TOOL_ITERATIONS - 1 generations — later, the iteration it would force
+    # schema-only is already the final one. Those generations' prompts total at
+    # most (MAX_TOOL_ITERATIONS - 1) * per_call = 144,000 <= 150,000, so the
+    # tool-loop prompts alone cannot trip it early. What it still catches is the
+    # spend that product does not count, all metered into the same turn tracker:
+    # output tokens, truncation retries, fallback attempts, and LLM calls made
+    # by tools (deep_analysis, kb_qa synthesis) or earlier in process_turn.
+    #
+    # Raising PROMPT_TARGET_TOKENS or PROMPT_TOOL_OBSERVATION_MAX_TOKENS so that
+    # (MAX_TOOL_ITERATIONS - 1) * per_call exceeds the ceiling turns the net into
+    # a limiter that cuts normal turns short — raise the ceiling with them.
+    # Pinned by TestToolLoopSpendBound in test_milestone_engine_tool_loop.py.
     MAX_TOOL_ITERATIONS = 4
     TOOL_RESULT_MAX_CHARS = 8000
     MAX_DEEP_ANALYSIS = 1
@@ -7828,6 +7856,7 @@ class MilestoneEngine:
                 # tracker (record_provider_call above for a dedicated DA provider,
                 # or the registry chokepoint for the router), so its running total
                 # reflects this call — force the loop to wrap up if it is over.
+                # A net, not the primary bound: see MAX_TOOL_ITERATIONS (#611).
                 _turn_tracker = active_token_tracker.get()
                 if _turn_tracker is not None:
                     try:

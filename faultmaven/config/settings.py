@@ -2665,10 +2665,17 @@ class PromptBudgetSettings(BaseSettings):
         le=2_000_000,
         validation_alias="PROMPT_TURN_TOKEN_CEILING",
         description=(
-            "Hard per-turn spend ceiling: once a turn's cumulative token spend "
-            "(across all tool-loop calls) crosses this, the tool loop is forced "
-            "to wrap up on the next iteration (schema-only) instead of running "
-            "more expensive tool calls. A safety abort, not the normal budget."
+            "Per-turn spend net: once a turn's cumulative cost-weighted token "
+            "spend (every metered LLM call in the turn) crosses this, the tool "
+            "loop is forced to wrap up on the next iteration (schema-only). Not "
+            "the primary bound, which is structural: MAX_TOOL_ITERATIONS + 1 "
+            "tool-loop calls, each capped at PROMPT_TARGET_TOKENS + "
+            "PROMPT_TOOL_OBSERVATION_MAX_TOKENS. With defaults the calls that "
+            "precede the final one total at most 3 x 48,000 = 144,000, under "
+            "this ceiling, so it fires only on spend outside that product "
+            "(output, retries, fallbacks, LLM calls made by tools). Raise it "
+            "with either of those two settings, or it starts cutting normal "
+            "turns short."
         ),
     )
     turn_token_budget: int = Field(
@@ -2680,8 +2687,8 @@ class PromptBudgetSettings(BaseSettings):
             "Soft per-turn spend budget for observability. When > 0 and a turn's "
             "total token spend exceeds it, a WARNING (turn_token_budget_exceeded) "
             "is logged with the call breakdown — surfacing high-spend turns "
-            "(measured normal is ~66K/turn) without changing behavior. Set 0 to "
-            "disable the alert."
+            "without changing behavior. A log line, not a metric: there is no "
+            "per-turn spend metric to alert on. Set 0 to disable the alert."
         ),
     )
     tool_observation_max_tokens: int = Field(

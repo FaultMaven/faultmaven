@@ -123,22 +123,66 @@ tool-less build keeps the full extract (safety verified). A playbook-S9 eval sho
 
 ### 4.3 Per-turn budget + cross-provider base caching (goal 3)
 
-- **Per-turn ceiling + alert (implemented).** The tool loop already had a
-  hard-coded 150K per-turn abort; it is now the configurable
-  `PROMPT_TURN_TOKEN_CEILING` (150K default — a safety abort that forces the loop
-  to wrap up schema-only on the next iteration, not the normal budget). Added a
-  *soft* budget `PROMPT_TURN_TOKEN_BUDGET` (default 100K, ~1.5× measured normal):
+- **The per-turn bound is structural; the ceiling is a net (#611).** A turn's
+  tool-loop spend is bounded by construction, not by a tuned number. The loop
+  makes `MAX_TOOL_ITERATIONS + 1` generations (iterations `0..MAX_TOOL_ITERATIONS-1`
+  may call tools, the last is schema-only), and since #612 each is hard-bounded by
+  `_resolve_tool_loop_budget` to
+
+  ```
+  per_call = min(PROMPT_TARGET_TOKENS + PROMPT_TOOL_OBSERVATION_MAX_TOKENS, model window budget)
+           = 32,000 + 16,000 = 48,000            (shipped defaults)
+  tool-loop prompt tokens <= (MAX_TOOL_ITERATIONS + 1) x per_call = 5 x 48,000 = 240,000
+  ```
+
+  before truncation retries. The system+task head is sized upstream and the
+  `tools=` payload is not counted, so per-call is a bound on what the loop
+  *trims to*; the runtime context-length recovery
+  ([`prompt-token-budget-allocation.md`](./prompt-token-budget-allocation.md) §7.1)
+  is the net for the remainder.
+
+  `PROMPT_TURN_TOKEN_CEILING` (150,000 default, formerly a hard-coded abort) is
+  kept as a **net**: once a turn's cost-weighted spend crosses it, the loop wraps
+  up schema-only on the next iteration. It can change what the loop does only if
+  crossed within the first `MAX_TOOL_ITERATIONS - 1` generations — after that,
+  the iteration it would force schema-only is already the final one — and those
+  generations' prompts total at most `(MAX_TOOL_ITERATIONS - 1) x per_call =
+  144,000 <= 150,000`. So the tool-loop prompts alone never trip it early. What it
+  still catches is the spend that product does not count, all metered into the
+  same turn tracker: output tokens, truncation retries, fallback attempts, and
+  LLM calls made by tools (`deep_analysis`, `kb_qa` synthesis) or earlier in the
+  turn. The 150,000 is not a measured quantity; read it against the product.
+  **Raising `PROMPT_TARGET_TOKENS` or `PROMPT_TOOL_OBSERVATION_MAX_TOKENS` so the
+  product exceeds the ceiling turns the net into a limiter that cuts normal turns
+  short — raise the ceiling with them.** `TestToolLoopSpendBound` pins both the
+  arithmetic on the shipped defaults and the loop's crossing semantics. A
+  dedicated DA model with a smaller window (#614) can only lower `per_call`, so
+  it does not reopen this.
+- **Soft budget (implemented).** `PROMPT_TURN_TOKEN_BUDGET` (default 100K):
   when a turn crosses it an end-of-turn WARNING (`turn_token_budget_exceeded`)
   logs the call breakdown. Observational only — no behavior change — so
   high-spend turns are surfaced without truncating a legitimately deep turn.
+- **When to revisit the net — and what is observable today.** Revisit if turns
+  run close to the ceiling, or if a change raises `per_call` (a larger default
+  target or observation allowance, or a new tool that makes its own LLM calls).
+  Per-turn spend is observable **only as log lines**, not as a metric: the INFO
+  `turn_token_spend` line (every turn, with `spend_weighted_tokens`), the WARNING
+  `turn_token_budget_exceeded` line, and the ceiling's own WARNING ("Turn spend
+  (…) exceeded ceiling"). The Prometheus counters (`llm_call_tokens` and the
+  cost counters) are per call and carry no turn or case label, so "turns
+  approaching the ceiling" cannot be alerted on from metrics — it is answered by
+  reading the `turn_token_spend` lines (e.g. with `token_spend_watch.py`, see the
+  cost-observability doc below). Making it alertable would take a per-turn
+  histogram of `spend_weighted_tokens`, observed where `turn_token_spend` is
+  logged.
   - **Both guards compare a *cost-weighted* spend, not raw tokens.** The measure
     is `spend_weighted_tokens = input + output + cache_write + 0.25 × cache_read`:
     cache reads are real bytes in the window but billed at a fraction (~0.1× on
     Anthropic, ~0.25–0.5× on OpenAI), so they are down-weighted. Weighting on raw
     bytes would trip a cheap, heavily-cached tool loop; weighting on cost keeps
     the abort motivated by spend. `cache_write` (~1.25×) is counted in full. The
-    per-call size ceiling (32K jar, §4.1) still bounds each individual call on
-    raw bytes.
+    per-call bound (the 32K jar, §4.1, plus the 16K tool-observation allowance
+    inside the tool loop) still bounds each individual call on raw bytes.
 - **Tool-loop re-send is the dominant cost, and prefix caching is now the lever
   in play.** On playbook S9 the tool loop re-sends the *growing* message history
   (base + accumulated tool calls/results) on every iteration, so per-turn cost

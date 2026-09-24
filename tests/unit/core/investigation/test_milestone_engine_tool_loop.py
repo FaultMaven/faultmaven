@@ -1179,6 +1179,131 @@ class TestToolLoopConstants:
 
 
 # =========================================================================
+# Per-turn spend bound (#611)
+# =========================================================================
+
+
+def _shipped_default(settings_cls, field: str) -> int:
+    """The declared default, not the resolved value — the environment (a dev
+    ``.env``) must not decide what the SHIPPED arithmetic is."""
+    return settings_cls.model_fields[field].default
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestToolLoopSpendBound:
+    """#611: the primary per-turn bound is structural —
+    ``(MAX_TOOL_ITERATIONS + 1)`` tool-loop calls, each capped at
+    ``prompt_target + tool_observation_max_tokens`` — and
+    ``PROMPT_TURN_TOKEN_CEILING`` is a net above it. These pin the documented
+    arithmetic (milestone_engine's MAX_TOOL_ITERATIONS comment, the settings
+    description, prompt-sizing-optimization.md §4.3) and the loop semantics it
+    rests on: the ceiling can change the loop only when crossed within the first
+    ``MAX_TOOL_ITERATIONS - 1`` calls."""
+
+    async def test_shipped_ceiling_sits_above_every_non_final_call(self):
+        from faultmaven.config.settings import (
+            ModelContextSettings,
+            PromptBudgetSettings,
+        )
+
+        target = _shipped_default(ModelContextSettings, "prompt_target_tokens")
+        obs = _shipped_default(PromptBudgetSettings, "tool_observation_max_tokens")
+        ceiling = _shipped_default(PromptBudgetSettings, "turn_token_ceiling")
+        per_call = target + obs
+        n = MilestoneEngine.MAX_TOOL_ITERATIONS
+
+        # The numbers the docs quote.
+        assert (target, obs, per_call, ceiling) == (32_000, 16_000, 48_000, 150_000)
+        assert (n + 1) * per_call == 240_000
+        # The claim: the calls that could precede an early wrap-up cannot reach
+        # the ceiling on prompt tokens alone, so it stays a net, not a limiter.
+        assert (n - 1) * per_call == 144_000
+        assert (n - 1) * per_call <= ceiling
+
+    async def _run_loop(self, tokens_per_call: int) -> list:
+        """Drive the real loop with a model that always wants another search,
+        metering ``tokens_per_call`` input tokens per call into the turn tracker
+        (standing in for the registry chokepoint). Returns the per-call tool
+        name lists."""
+        from faultmaven.infrastructure.llm.metering import (
+            TurnTokenTracker,
+            active_token_tracker,
+        )
+
+        tracker = TurnTokenTracker()
+        offered: list = []
+
+        async def _generate(**kwargs):
+            names = [t["function"]["name"] for t in kwargs["tools"]]
+            offered.append(names)
+            if names == ["SampleResponse"]:
+                resp = _make_schema_response(
+                    {"agent_response": "done", "next_action": "continue"}
+                )
+            else:
+                resp = _make_tool_call_response(
+                    "search_file", {"query": "q"}, call_id=f"c{len(offered)}"
+                )
+            resp.input_tokens = tokens_per_call
+            tracker.add(resp)
+            return resp
+
+        mock_provider = AsyncMock()
+        mock_provider.generate = AsyncMock(side_effect=_generate)
+        mock_registry = _make_mock_registry()
+        mock_registry.execute_tool.return_value = ToolResult(success=True, data="r")
+        engine = _make_engine(mock_provider=mock_provider, mock_registry=mock_registry)
+
+        token = active_token_tracker.set(tracker)
+        try:
+            await engine._tool_augmented_generate(
+                prompt="Investigate",
+                schema_model=SampleResponse,
+                investigation_tools=[
+                    {"type": "function", "function": {"name": "search_file"}}
+                ],
+                tool_context=MagicMock(),
+            )
+        finally:
+            active_token_tracker.reset(token)
+        return offered
+
+    def _live_ceiling(self) -> int:
+        # The loop reads the resolved setting, so the behavioural cases are
+        # sized against the same value it will compare to.
+        from faultmaven.config.settings import get_settings
+
+        return get_settings().prompt_budget.turn_token_ceiling
+
+    async def test_ceiling_crossed_after_the_last_tool_round_changes_nothing(self):
+        n = MilestoneEngine.MAX_TOOL_ITERATIONS
+        # The largest per-call spend whose first n-1 calls stay within the
+        # ceiling. The n-th call crosses it — and the ceiling does fire there —
+        # but the iteration it would force schema-only is already final.
+        per_call = self._live_ceiling() // (n - 1)
+
+        offered = await self._run_loop(per_call)
+
+        assert len(offered) == n + 1
+        assert all("search_file" in names for names in offered[:n])
+        assert offered[n] == ["SampleResponse"]
+
+    async def test_ceiling_crossed_before_the_last_tool_round_wraps_up(self):
+        """Positive control: one token more per call and the first n-1 calls
+        cross the ceiling, so the ceiling takes the last tool round away. This
+        is what makes the case above a measurement rather than a no-op."""
+        n = MilestoneEngine.MAX_TOOL_ITERATIONS
+        per_call = self._live_ceiling() // (n - 1) + 1
+
+        offered = await self._run_loop(per_call)
+
+        assert len(offered) == n
+        assert all("search_file" in names for names in offered[: n - 1])
+        assert offered[n - 1] == ["SampleResponse"]
+
+
+# =========================================================================
 # DA provider routing tests
 # =========================================================================
 
