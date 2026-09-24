@@ -173,6 +173,87 @@ class TestAuthTotalCountsAttempts:
 
 
 @pytest.mark.unit
+class TestEveryMethodsOutcomeIsAnAttempt:
+    """sshd writes one outcome line per attempt for EVERY auth method.
+
+    ``Failed <method> for`` / ``Accepted <method> for`` (OpenSSH auth.c
+    ``auth_log``), not only ``Failed password``. The fm#1627 review found an
+    IP whose keyboard-interactive failures read as zero attempts.
+    """
+
+    def test_keyboard_interactive_failures_then_accepted_publickey(self):
+        """Five failed keyboard-interactive tries then a key login: 6 attempts.
+
+        Each failure is a PAM line plus a ``Failed keyboard-interactive/pam``
+        line. Before the widening this rendered ``auth total=1`` — only the
+        ``Accepted publickey`` line was recognised as an outcome.
+        """
+        ip = "203.0.113.7"
+        lines: list[str] = []
+        for i in range(5):
+            lines += [
+                f"Jul 28 09:0{i}:10 combo sshd[70{i}]: pam_unix(sshd:auth): "
+                "authentication failure; logname= uid=0 euid=0 tty=ssh "
+                f"ruser= rhost={ip}  user=ops",
+                f"Jul 28 09:0{i}:11 combo sshd[70{i}]: Failed "
+                f"keyboard-interactive/pam for ops from {ip} port 5100{i} ssh2",
+            ]
+        lines.append(
+            f"Jul 28 09:06:00 combo sshd[710]: Accepted publickey for ops "
+            f"from {ip} port 51010 ssh2: RSA SHA256:abc"
+        )
+        rows = _rows(_text(lines))
+        assert rows[ip] == (
+            "pam_auth_failure=5, accepted_login=1, other_method_outcome=5"
+            " → auth total=6"
+        ), rows
+
+    def test_more_pam_lines_than_outcome_lines(self):
+        """Outcome lines are the total even when PAM lines outnumber them.
+
+        Neither the larger of the two nor their sum: 5 PAM lines beside 2
+        ``Failed password`` lines are 2 attempts.
+        """
+        ip = "198.51.100.4"
+        lines = _format_b(ip, 5) + [
+            f"Jul 28 10:0{i}:00 combo sshd[80{i}]: Failed password for root "
+            f"from {ip} port 4200{i} ssh2"
+            for i in range(2)
+        ]
+        rows = _rows(_text(lines))
+        assert rows[ip] == (
+            "failed_password=2, pam_auth_failure=5 → auth total=2"
+        ), rows
+
+    def test_failed_publickey_only_ip_gets_a_row_and_its_attempts(self):
+        """An outcome no category names still earns a row, and says why."""
+        ip = "192.0.2.50"
+        lines = [
+            f"Jul 28 11:0{i}:00 combo sshd[90{i}]: Failed publickey for git "
+            f"from {ip} port 3300{i} ssh2: ED25519 SHA256:xyz"
+            for i in range(3)
+        ]
+        rows = _rows(_text(lines))
+        assert rows[ip] == "other_method_outcome=3 → auth total=3", rows
+
+    def test_failed_none_is_not_an_attempt(self):
+        """``Failed none`` is the client's method query: no credential offered.
+
+        The line shape is verbatim from loghub OpenSSH_2k, which carries four
+        of them. The one ``Failed password`` line beside it is the attempt.
+        """
+        ip = "5.188.10.180"
+        lines = [
+            f"Dec 10 08:24:40 LabSZ sshd[24363]: Failed none for invalid user 0 "
+            f"from {ip} port 49811 ssh2",
+            f"Dec 10 08:24:42 LabSZ sshd[24363]: Failed password for invalid "
+            f"user 0 from {ip} port 49811 ssh2",
+        ]
+        rows = _rows(_text(lines))
+        assert rows[ip] == ("failed_password=1, invalid_user=2 → auth total=1"), rows
+
+
+@pytest.mark.unit
 class TestAuthAttemptCount:
     """The per-IP rule on its own, for the branches a log cannot isolate."""
 

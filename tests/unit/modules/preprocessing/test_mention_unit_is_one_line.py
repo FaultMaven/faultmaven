@@ -451,15 +451,15 @@ class TestLogsExtractorProfileCountsLines:
             in search_map
         ), search_map
 
-    def test_auth_total_counts_only_auth_lines(self):
+    def test_a_non_auth_event_line_is_not_an_attempt(self):
         """A non-auth event on the same IP is not an auth attempt.
 
-        The categories the table renders are the auth ones; the tally behind
-        the total has to agree, or a ``Connection closed`` line — which
-        carries the IP and matches an event — is reported as an attempt that
-        never happened. Five lines for one IP, three of them auth: the total
-        is 3, and the two connection_closed lines are visible only in the
-        line-occurrence count above the table.
+        A ``Connection closed`` line carries the IP and matches an event, but
+        it is neither an attempt outcome nor an auth category, so it must
+        neither raise the total nor appear beside it. Five lines for one IP,
+        three of them ``Failed password`` outcomes: the total is 3, and the
+        two connection_closed lines are visible only in the line-occurrence
+        count above the table.
         """
         auth = (
             "Jul 27 14:4{i}:59 combo sshd[1]: Failed password for invalid "
