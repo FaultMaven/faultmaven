@@ -2449,9 +2449,9 @@ class InvestigationService:
             # names an unusable answer by it (withheld, truncated, empty, no
             # signal). This layer receives only a string, so anything it wrote
             # would be blind — it therefore writes nothing contextual, and
-            # exists only so a raw "" that bypassed the engine (a TOOL_CALLS
-            # stop, for which the engine deliberately writes no placeholder, or
-            # a route that never reached it) cannot abort the aggregate save:
+            # exists only so a raw "" whose text never came through the
+            # engine's synthesis (the out-of-band answer, for one, is generated
+            # by this service) cannot abort the aggregate save:
             # blank content is refused by the repository, and the refusal
             # takes the user's turn, the evidence and the hypotheses with it,
             # for a turn already charged.

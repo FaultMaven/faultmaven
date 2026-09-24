@@ -3674,9 +3674,12 @@ def synthesized_agent_response(stop_reason: StopReason) -> str | None:
     - ``UNKNOWN`` is *no signal*, not *finished normally* (HuggingFace as we
       call it reports none), so it does not share ``STOP``'s text.
     - ``TOOL_CALLS`` gets **no** placeholder: a response that stopped to hand
-      control to a tool is not a failure shape. ``None`` leaves the answer as
-      the model gave it; if that is blank, ``InvestigationService``'s
-      persistence backstop is what keeps the row saveable.
+      control to a tool is not a failure shape — it has no answer *yet*.
+      Note what that arm does NOT cover: a response whose tool call IS the
+      answer. A structured answer delivered through the schema tool reports
+      ``TOOL_CALLS`` as its normal completion on most providers, and the two
+      synthesis sites translate it first — see
+      :func:`schema_answer_stop_reason`.
     """
     if stop_reason is StopReason.CONTENT_FILTER:
         return RESPONSE_WITHHELD_TEXT
@@ -3689,6 +3692,31 @@ def synthesized_agent_response(stop_reason: StopReason) -> str | None:
     if stop_reason is StopReason.TOOL_CALLS:
         return None
     raise ValueError(f"no synthesis arm for stop reason {stop_reason!r}")
+
+
+def schema_answer_stop_reason(response: Any) -> StopReason:
+    """The stop reason of a response whose body IS the structured answer.
+
+    Both engine synthesis sites — the single-shot structured path and the tool
+    loop's schema-tool call — read a response that has already delivered the
+    answer, whatever it contains. When that answer came through the schema
+    TOOL, the provider reports it the way it reports any tool call: OpenAI,
+    Anthropic, Groq, Fireworks, OpenRouter and the local OpenAI-compatible
+    transport say ``tool_calls`` / ``tool_use``, Cohere ``tool_call``, all of
+    which normalise to ``TOOL_CALLS``; only Gemini says ``STOP``. So at these
+    sites ``TOOL_CALLS`` means "finished answering", which is ``STOP``.
+
+    Passing it through raw would read every schema-tool answer as a tool
+    HANDOFF — the one arm that writes no placeholder — and leave a blank answer
+    on seven of nine providers to the service's blind backstop, which is the
+    layer #1442 took synthesis away from. ``synthesized_agent_response`` keeps
+    its ``TOOL_CALLS`` arm for a genuine handoff; this translation belongs to
+    the call site, because only the call site knows the tool call was the
+    answer. Every other reason passes through unchanged — a cut or filtered
+    schema call is still a cut or a filter.
+    """
+    reason = normalize_stop_reason(getattr(response, "stop_reason", None))
+    return StopReason.STOP if reason is StopReason.TOOL_CALLS else reason
 
 
 def is_agent_response_synthesized(response_obj: Any) -> bool:
@@ -8085,7 +8113,8 @@ class MilestoneEngine:
                         iteration,
                     )
                     return self._synthesize_agent_response(
-                        self._parse_schema_tool_call(tc, schema_model), response
+                        self._parse_schema_tool_call(tc, schema_model),
+                        schema_answer_stop_reason(response),
                     )
 
             # Build assistant message with tool calls
@@ -9116,7 +9145,7 @@ class MilestoneEngine:
             schema=schema_model.__name__, outcome=outcome
         ).inc()
 
-    def _synthesize_agent_response(self, parsed: Any, response: Any) -> Any:
+    def _synthesize_agent_response(self, parsed: Any, stop_reason: StopReason) -> Any:
         """Name an unusable ``agent_response`` by the response's stop reason.
 
         The engine owns response synthesis because it is the only layer that
@@ -9130,16 +9159,19 @@ class MilestoneEngine:
         Moving synthesis up keeps the validator purely structural and passes
         nothing new down to it.
 
+        Takes the stop reason rather than the response so the CALLER decides
+        what it means: both callers pass :func:`schema_answer_stop_reason`,
+        because at both a tool call is the answer rather than a handoff.
+
         Fires only when the answer is blank (missing answers were blanked by
         the validator). The result is a copy carrying
         ``_agent_response_synthesized``; *parsed* is returned unchanged when
         the answer is usable or the stop reason names no failure
-        (``TOOL_CALLS``).
+        (``TOOL_CALLS``, which neither current caller passes).
         """
         answer = getattr(parsed, "agent_response", None)
         if not isinstance(answer, str) or answer.strip():
             return parsed
-        stop_reason = normalize_stop_reason(getattr(response, "stop_reason", None))
         text = synthesized_agent_response(stop_reason)
         if text is None:
             return parsed
@@ -10214,7 +10246,9 @@ class MilestoneEngine:
                 # and re-raises only when nothing survives, which the
                 # truncation check below still sees.
                 parsed = self._validate_with_degradation(content_obj, schema_model)
-                return self._synthesize_agent_response(parsed, response)
+                return self._synthesize_agent_response(
+                    parsed, schema_answer_stop_reason(response)
+                )
             except Exception as validation_error:
                 # A body that ran out is the recoverable case: raise the cap and
                 # retry. Decided POSITIONALLY against the content we just tried
