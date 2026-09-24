@@ -107,7 +107,23 @@ def _make_case_with_evidence(evidence_list: list) -> Case:
     synthesized UploadedFile, with ``structural_index`` populated from
     the test fixture's ``extract`` parameter (which production routes
     to the file row, not the evidence row).
+
+    The synthesized file's ``uploaded_at_turn`` is the EARLIEST
+    ``collected_at_turn`` among the rows citing it: the data arrived on the
+    turn its first row was written, which is the only coherent default — a
+    file cannot arrive after a row cites it. It used to be hardcoded to 1,
+    which since #512 (``fresh_this_turn`` keyed on the DATA's turn) made every
+    fixture with ``collected_at_turn > 1`` a silent re-cite of a turn-1 file,
+    whatever the test was named for (#1605). A test that WANTS a re-cite says
+    so with :func:`_set_file_turn`.
     """
+    first_turn_by_file: dict[str, int] = {}
+    for ev in evidence_list:
+        fid = getattr(ev, "source_file_id", None)
+        if fid:
+            turn = ev.collected_at_turn
+            first_turn_by_file[fid] = min(first_turn_by_file.get(fid, turn), turn)
+
     # Group test-supplied structural-index payloads by source_file_id so we
     # can write them to the corresponding UploadedFile rows below.
     structural_by_file: dict[str, str] = {}
@@ -133,7 +149,7 @@ def _make_case_with_evidence(evidence_list: list) -> Case:
                     ),
                     size_bytes=128,
                     content_type="text/plain",
-                    uploaded_at_turn=1,
+                    uploaded_at_turn=first_turn_by_file[fid],
                     uploaded_at=datetime.now(UTC),
                     uploaded_by="user_123",
                     structural_index=structural_by_file.get(fid),
@@ -451,6 +467,218 @@ class TestTruncation:
         assert (
             len(result) < EVIDENCE_CONTEXT_MAX_TOTAL_CHARS + 5000
         )  # Allow overhead for XML tags
+
+
+# ============================================================
+# Relevance order (#1609)
+# ============================================================
+
+
+def _full(result: str, marker: str) -> bool:
+    """Did the row whose extract repeats ``marker`` get its FULL render?"""
+    return marker * 20 in result
+
+
+def _as_loaded(rows: list, order: str) -> list:
+    """``rows`` oldest-first, re-ordered the way a case can hold them.
+
+    ``newest_first`` is what BOTH repositories load (``ORDER BY created_at
+    DESC``); ``oldest_first`` is what the engine produces by appending rows
+    within a turn. Every ordering guard below runs over both, because a policy
+    that holds for only one of them is being decided by list order, not by the
+    renderer.
+    """
+    return list(reversed(rows)) if order == "newest_first" else list(rows)
+
+
+_LOAD_ORDERS = pytest.mark.parametrize("order", ["newest_first", "oldest_first"])
+
+
+class TestRelevanceOrder:
+    """One relevance ordering decides membership, the full-render squeeze, and
+    the summary squeeze; recency only breaks ties (#1609).
+
+    Every fixture here SEPARATES score from recency. One where the two agree
+    cannot tell "evict the least relevant" from "evict the oldest", which is
+    why the recency-ordered downgrade went unnoticed.
+    """
+
+    @staticmethod
+    def _three_rows():
+        # Scores at current_turn=3 (type bonus + collected_at_turn/current):
+        #   old_log  LOGS  turn 1  -> 2 + 1/3 = 2.33   highest, and the OLDEST
+        #   new_text TEXT  turn 3  -> 0 + 3/3 = 1.00   the NEWEST
+        #   mid_text TEXT  turn 2  -> 0 + 2/3 = 0.67   lowest
+        old_log = _make_evidence(
+            summary="old log summary",
+            extract="<OLD>" * 600,
+            source_type=EvidenceSourceType.LOGS,
+            collected_at_turn=1,
+            source_file_id="file_000000001609",
+        )
+        mid_text = _make_evidence(
+            summary="mid text summary",
+            extract="<MID>" * 600,
+            source_type=EvidenceSourceType.TEXT,
+            collected_at_turn=2,
+            source_file_id="file_000000002609",
+        )
+        new_text = _make_evidence(
+            summary="new text summary",
+            extract="<NEW>" * 600,
+            source_type=EvidenceSourceType.TEXT,
+            collected_at_turn=3,
+            source_file_id="file_000000003609",
+        )
+        return old_log, mid_text, new_text
+
+    @_LOAD_ORDERS
+    def test_budget_downgrade_evicts_the_least_relevant_not_the_oldest(self, order):
+        from faultmaven.core.investigation.prompts.context_builder import (
+            _score_evidence_for_tier_a,
+        )
+
+        old_log, mid_text, new_text = self._three_rows()
+        case = _make_case_with_evidence(
+            _as_loaded([old_log, mid_text, new_text], order)
+        )
+        case.current_turn = 3
+
+        # The fixture's premise, asserted rather than assumed: the top scorer is
+        # the oldest row, the newest is not the top scorer, and the lowest
+        # scorer is neither end of the age order.
+        score = {
+            name: _score_evidence_for_tier_a(ev, case)
+            for name, ev in (("old", old_log), ("mid", mid_text), ("new", new_text))
+        }
+        assert score["old"] > score["new"] > score["mid"]
+
+        # Room for two full renders and the third row's summary, not three
+        # full renders — so exactly one downgrade is forced.
+        result = _build_evidence_context(case, char_budget_override=7500)
+        assert sum(_full(result, m) for m in ("<OLD>", "<MID>", "<NEW>")) == 2
+
+        assert _full(result, "<OLD>"), "the most relevant row lost its full render"
+        assert _full(result, "<NEW>")
+        assert not _full(result, "<MID>"), "the least relevant row should give way"
+        # Downgraded, not dropped: its summary is still there (Tier B).
+        assert "mid text summary" in result
+        assert "<evidence_omitted" not in result
+
+    @_LOAD_ORDERS
+    def test_rows_render_most_relevant_first(self, order):
+        """The render order is the relevance order too — one list, not a
+        relevance-ordered downgrade over a recency-ordered render."""
+        old_log, mid_text, new_text = self._three_rows()
+        case = _make_case_with_evidence(
+            _as_loaded([old_log, mid_text, new_text], order)
+        )
+        case.current_turn = 3
+        result = _build_evidence_context(case)  # ample budget: all three full
+        assert all(_full(result, m) for m in ("<OLD>", "<MID>", "<NEW>"))
+        assert result.index("<OLD>") < result.index("<NEW>") < result.index("<MID>")
+
+    @_LOAD_ORDERS
+    def test_a_tie_goes_to_the_newer_row_whatever_the_input_order(self, order):
+        """Equal scores (same type, same turn) break on recency, by key — not
+        by whichever row the list happened to hold first."""
+        earlier = _make_evidence(
+            summary="earlier",
+            extract="<EARLY>" * 430,
+            collected_at=datetime(2026, 9, 1, 10, 0, tzinfo=UTC),
+            collected_at_turn=2,
+            source_file_id="file_00000000e609",
+        )
+        later = _make_evidence(
+            summary="later",
+            extract="<LATER>" * 430,
+            collected_at=datetime(2026, 9, 1, 10, 5, tzinfo=UTC),
+            collected_at_turn=2,
+            source_file_id="file_00000000f609",
+        )
+        case = _make_case_with_evidence(_as_loaded([earlier, later], order))
+        case.current_turn = 2
+        result = _build_evidence_context(case, char_budget_override=5000)
+
+        assert _full(result, "<LATER>") and not _full(result, "<EARLY>")
+        assert "earlier" in result  # downgraded to its summary, not dropped
+
+    @_LOAD_ORDERS
+    def test_a_row_downgraded_out_of_tier_a_outranks_rows_never_in_it(self, order):
+        """The summary squeeze follows the same ordering. A Tier A row that
+        lost its full render still scores above every row that never made
+        Tier A, so its summary is the one that survives when summaries do not
+        all fit — it used to be appended AFTER them, and dropped first."""
+
+        def row(name, source_type, turn, n):
+            return _make_evidence(
+                summary=f"{name} " + "s" * 400,
+                extract=f"<{name}>" * 750,
+                source_type=source_type,
+                collected_at_turn=turn,
+                source_file_id=f"file_{n:012x}",
+            )
+
+        LOGS, TEXT = EvidenceSourceType.LOGS, EvidenceSourceType.TEXT
+        # Scores at current_turn=5: H3 2.6 > H2 2.4 > HI 2.2 >> L2 1.0 > L1 0.8.
+        rows = [
+            row("HI", LOGS, 1, 1),
+            row("H2", LOGS, 2, 2),
+            row("H3", LOGS, 3, 3),
+            row("L1", TEXT, 4, 4),
+            row("L2", TEXT, 5, 5),
+        ]
+        case = _make_case_with_evidence(_as_loaded(rows, order))
+        case.current_turn = 5
+        result = _build_evidence_context(case, char_budget_override=8500)
+
+        # Premise: two full renders, HI downgraded, and room for ONE summary.
+        assert _full(result, "<H3>") and _full(result, "<H2>")
+        assert not _full(result, "<HI>")
+        assert 'count="2"' in result, "expected exactly two summaries omitted"
+
+        assert "HI s" in result, "the downgraded Tier A row's summary was dropped"
+        assert "L1 s" not in result and "L2 s" not in result
+
+    @staticmethod
+    def _chat_rows():
+        return [
+            _make_evidence(
+                summary=f"chat row from turn {turn} " + "c" * 150,
+                source_file_id=None,
+                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                collected_at_turn=turn,
+            )
+            for turn in range(1, 9)
+        ]
+
+    @_LOAD_ORDERS
+    def test_chat_evidence_cap_keeps_the_newest_five(self, order):
+        """Tier C's "5 most recent" is stated by key. Over ``case.evidence`` as
+        the repositories load it (newest first) the old ``[-5:]`` slice kept
+        the five OLDEST chat rows; run over both orders, a slice from either
+        end fails one of them."""
+        case = _make_case_with_evidence(_as_loaded(self._chat_rows(), order))
+        case.current_turn = 9
+        result = _build_evidence_context(case)
+
+        present = [t for t in range(1, 9) if f"chat row from turn {t} " in result]
+        assert present == [4, 5, 6, 7, 8]
+        assert 'count="3"' in result
+
+    @_LOAD_ORDERS
+    def test_chat_evidence_under_budget_pressure_keeps_the_newest(self, order):
+        """The five are rendered newest first, because the fill is
+        skip-not-break against the shared budget: whatever is walked first
+        gets the room. Walked oldest first, pressure dropped the newest."""
+        case = _make_case_with_evidence(_as_loaded(self._chat_rows(), order))
+        case.current_turn = 9
+        result = _build_evidence_context(case, char_budget_override=700)
+
+        present = [t for t in range(1, 9) if f"chat row from turn {t} " in result]
+        # Premise: the budget really does squeeze the five.
+        assert 0 < len(present) < 5
+        assert present == list(range(9 - len(present), 9))
 
 
 # ============================================================
@@ -1364,13 +1592,13 @@ class TestPageCaptureRerankingIntegration:
 
 
 def _set_file_turn(case, file_id: str, turn: int) -> None:
-    """Point a synthesized fixture file at the turn its data actually arrived.
+    """Declare a RE-CITE: the file's data arrived on ``turn``, before its row.
 
-    ``_make_case_with_evidence`` hardcodes ``uploaded_at_turn=1`` on every file
-    it synthesizes, which makes every fixture with ``collected_at_turn > 1`` a
-    silent re-cite. Harmless while ``fresh_this_turn`` was keyed on the evidence
-    ROW's turn; since #512 it is keyed on the DATA's, so a test about freshness
-    has to say when the file arrived.
+    ``_make_case_with_evidence`` stamps each synthesized file with the turn of
+    the first row citing it, so a fixture is coherent by default. Since #512
+    ``fresh_this_turn`` is keyed on the DATA's turn, which makes "a row written
+    now over a file that arrived earlier" a distinct case — and a test that
+    wants it writes it down here rather than getting it by accident (#1605).
     """
     uf = next(f for f in case.uploaded_files if f.file_id == file_id)
     uf.uploaded_at_turn = turn
@@ -1392,13 +1620,11 @@ class TestFreshThisTurnAttribute:
             collected_at_turn=7,
             source_file_id="file_0b0b0b0b0b02",
         )
+        # Each row's data arrived on the turn the row was written — the
+        # fixture's default since #1605 — so "just-uploaded evidence" is
+        # genuinely just-uploaded instead of a re-cite.
         case = _make_case_with_evidence([ev_old, ev_new])
         case.current_turn = 7
-        # The fixture the old assertion needed all along: each row's data
-        # arrived on the turn the row was written, so "just-uploaded evidence"
-        # is genuinely just-uploaded instead of a six-turn re-cite.
-        _set_file_turn(case, "file_0a0a0a0a0a01", 3)
-        _set_file_turn(case, "file_0b0b0b0b0b02", 7)
         result = _build_evidence_context(case)
 
         # Each evidence row appears once; only the current-turn one
@@ -1446,8 +1672,9 @@ class TestFreshThisTurnAttribute:
         )
         case = _make_case_with_evidence([arrived, recite])
         case.current_turn = 9
+        # ``arrived``'s file lands on turn 9 by the fixture's default; only
+        # the re-cite needs saying.
         _set_file_turn(case, "file_0a0a0a0a0a01", 3)
-        _set_file_turn(case, "file_0b0b0b0b0b02", 9)
         # Tight budget: the reserve is spent by the first item, so the second
         # degrades out of Tier A into the summary-only Tier B render.
         result = _build_evidence_context(case, char_budget_override=6000)
@@ -1501,13 +1728,12 @@ class TestFreshThisTurnAttribute:
         assert "file_id=" not in line  # not renderable as file-backed
         assert 'fresh_this_turn="true"' in line
 
-    def test_one_file_renders_the_same_freshness_as_either_element(self):
-        """The defect stated as an invariant: a file's freshness is a property
-        of the file, not of which element it happens to appear as this turn.
-        Before #512 the same unchanged turn-3 file carried no marker as
-        ``<uploaded_file>`` and ``fresh_this_turn="true"`` as ``<evidence>``."""
+    @staticmethod
+    def _cited_and_orphan_lines(file_arrived_on: int) -> tuple[str, str]:
+        """One file, turn 9, rendered once as a cited ``<evidence>`` row and
+        once as a not-yet-promoted ``<uploaded_file>`` — the file's data having
+        arrived on ``file_arrived_on``."""
         file_id = "file_0a0a0a0a0a01"
-
         cited = _make_evidence(
             summary="cited on turn 9",
             collected_at_turn=9,
@@ -1515,12 +1741,12 @@ class TestFreshThisTurnAttribute:
         )
         case_cited = _make_case_with_evidence([cited])
         case_cited.current_turn = 9
-        _set_file_turn(case_cited, file_id, 3)
+        _set_file_turn(case_cited, file_id, file_arrived_on)
 
         # Same file, same turn, not yet promoted to an Evidence row.
         case_orphan = _make_case_with_evidence([cited])
         case_orphan.current_turn = 9
-        _set_file_turn(case_orphan, file_id, 3)
+        _set_file_turn(case_orphan, file_id, file_arrived_on)
         case_orphan.evidence = []
 
         cited_line = next(
@@ -1534,10 +1760,31 @@ class TestFreshThisTurnAttribute:
             if file_id in line
         )
         assert "<evidence" in cited_line and "<uploaded_file" in orphan_line
-        assert ('fresh_this_turn="true"' in cited_line) == (
-            'fresh_this_turn="true"' in orphan_line
-        )
-        assert 'fresh_this_turn="true"' not in cited_line
+        return cited_line, orphan_line
+
+    @pytest.mark.parametrize(
+        "file_arrived_on, fresh",
+        [
+            pytest.param(3, False, id="re-cite: neither render is fresh"),
+            # The positive control (#1605). Without it the equality below is
+            # satisfied by ``False == False`` — a renderer that emits the
+            # marker NOWHERE passes the re-cite pair — so it could not tell
+            # "the two renders agree" from "neither render says anything".
+            pytest.param(9, True, id="arrived this turn: both renders are fresh"),
+        ],
+    )
+    def test_one_file_renders_the_same_freshness_as_either_element(
+        self, file_arrived_on, fresh
+    ):
+        """The defect stated as an invariant: a file's freshness is a property
+        of the file, not of which element it happens to appear as this turn.
+        Before #512 the same unchanged turn-3 file carried no marker as
+        ``<uploaded_file>`` and ``fresh_this_turn="true"`` as ``<evidence>``."""
+        cited_line, orphan_line = self._cited_and_orphan_lines(file_arrived_on)
+        marker = 'fresh_this_turn="true"'
+        assert (marker in cited_line) == (marker in orphan_line)
+        assert (marker in cited_line) is fresh
+        assert (marker in orphan_line) is fresh
 
     def test_no_evidence_carries_fresh_when_current_turn_is_zero(self):
         # current_turn=0 (default) and collected_at_turn=1 — nothing is fresh

@@ -3853,6 +3853,13 @@ def _assemble_allocated(
     # (e.g. a near-cap pasted user_message) can leave near-zero for variable
     # sections even when target − template alone looks fine; the minimal
     # FALLBACK_* (smaller skeleton) is then the better use of the budget.
+    #
+    # The floors pass A will grant (evidence, then continuity) are deliberately
+    # NOT subtracted here (#610): room for sections below the conversation is a
+    # documented non-goal — they degrade by priority and carry INV-4's marker —
+    # while evidence and continuity content is guaranteed on every main-template
+    # prompt as long as min_viable exceeds the evidence floor. See
+    # prompt-token-budget-allocation.md §7.
     variable_room = target - template_overhead - reserve_tokens - margin
     if variable_room < min_viable:
         fb = get_fallback_prompt_for_case(case, user_message)

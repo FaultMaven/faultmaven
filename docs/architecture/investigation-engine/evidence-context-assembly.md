@@ -98,7 +98,21 @@ see [Lifecycle Logic §2](./investigation-lifecycle-logic.md)):
 - **Tier A** — top `recent_count` file-backed evidence by score → full structural
   index.
 - **Tier B** — remaining file-backed evidence → summary only.
-- **Tier C** — chat-extracted evidence (`source_file_id IS NULL`) → summary only.
+- **Tier C** — chat-extracted evidence (`source_file_id IS NULL`) → summary only,
+  the five most recent (by `collected_at_turn`, then `collected_at`), rendered
+  newest first so budget pressure drops the older of them.
+
+**One ordering, stated by key.** The score ranking decides all three questions
+over file-backed evidence — which rows are Tier A, which of them keep their full
+render when the budget squeezes (§2.3), and which Tier B summaries survive when
+summaries do not all fit — and it is also the render order, most relevant first.
+Ties break on recency (`collected_at_turn`, then `collected_at`) as part of the
+sort key. Nothing here reads recency off `case.evidence` list order, because that
+order is not one thing: both repositories load it `ORDER BY created_at DESC`,
+while rows minted during a turn are appended to the end (#1609). Before #1609
+the ranking decided membership only; Tier A was then walked in list order, so
+the budget downgrade evicted the oldest row rather than the least relevant, and
+Tier C's `[-5:]` kept the five oldest chat rows.
 - **Tier D** — historical orphan uploads (older than the current turn, no Evidence
   row) → full structural index, newest-first.
 
@@ -107,7 +121,10 @@ see [Lifecycle Logic §2](./investigation-lifecycle-logic.md)):
 When the budget is exhausted mid-fill, the builder **skips** (does not `break`)
 the over-budget item and continues — so a single large item never drops every
 lower-ranked item behind it. A Tier-A item that doesn't fit downgrades to a
-Tier-B summary; a historical orphan that doesn't fit is skipped. Historical
+Tier-B summary — Tier A is walked in score order, so the item that gives way is
+the least relevant one that does not fit, and as a Tier-B summary it still
+ranks above every item that never made Tier A. A historical orphan that doesn't
+fit is skipped. Historical
 orphans are filled **greedily, newest-first** — newer orphans are *attempted*
 before older ones, but this is a greedy fit, not a strict newest-wins policy: a
 large newer orphan may be skipped while a smaller older one fits. Current-turn
