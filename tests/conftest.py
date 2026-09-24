@@ -73,6 +73,30 @@ from types import ModuleType, SimpleNamespace
 HARNESS_STAND_INS: dict[str, object] = {}
 
 
+def _is_dunder(name: str) -> bool:
+    return len(name) > 4 and name.startswith("__") and name.endswith("__")
+
+
+def _no_dunder(name: str) -> None:
+    """Refuse a dunder on a stand-in whose ``__getattr__`` answers everything.
+
+    A dunder is a question ABOUT the module (``__file__``, ``__wrapped__``,
+    ``__loader__``), not an attribute of the library it stands in for, and the
+    stdlib reads those off every entry in ``sys.modules``. Answering
+    ``__file__`` with a ``Mock`` breaks ``inspect.getmodule()`` -- and with it
+    ``inspect.stack()`` -- for the whole process. Coverage calls
+    ``inspect.stack()`` when an xdist worker starts it after this conftest has
+    loaded, so every ``--cov`` xdist run INTERNALERRORed (#1636). Serial runs
+    never saw it because coverage starts before the conftest loads.
+    """
+    if _is_dunder(name):
+        raise AttributeError(name)
+
+
+# A dunder no module defines. A stand-in that answers it answers every dunder.
+_UNDEFINED_DUNDER_PROBE = "__faultmaven_harness_probe__"
+
+
 def _install_stand_in(name: str, module):
     """Install ``module`` as the harness stand-in for ``name``.
 
@@ -94,6 +118,33 @@ def _install_stand_in(name: str, module):
         )
     if name in sys.modules:
         return sys.modules[name]
+
+    # The stdlib walks every entry in ``sys.modules`` reading dunders off it
+    # (``inspect.getmodule`` reads ``__file__``), so a stand-in that fabricates
+    # them breaks introspection process-wide rather than just for its own
+    # importers (#1636). Checked by behaviour, not by source shape, so a class
+    # ``__getattr__``, an instance-dict ``__getattr__`` and an explicit
+    # assignment are all caught alike.
+    file_attr = getattr(module, "__file__", None)
+    if file_attr is not None and not isinstance(file_attr, str):
+        raise RuntimeError(
+            f"refusing to install a stand-in for {name!r} whose __file__ is "
+            f"{type(file_attr).__name__}: inspect.getmodule() reads __file__ off "
+            "every module in sys.modules, so a non-string breaks inspect.stack() "
+            "for the whole process (#1636). Raise AttributeError for dunders."
+        )
+    try:
+        fabricated = getattr(module, _UNDEFINED_DUNDER_PROBE)
+    except AttributeError:
+        pass
+    else:
+        raise RuntimeError(
+            f"refusing to install a stand-in for {name!r} that answers the "
+            f"undefined dunder {_UNDEFINED_DUNDER_PROBE!r} with "
+            f"{type(fabricated).__name__}: it will answer __file__, __wrapped__ "
+            "and the rest the same way (#1636). Call _no_dunder(name) first in "
+            "its __getattr__."
+        )
 
     # A real ModuleSpec, so find_spec(name) returns rather than raising
     # ValueError. loader=None matches what a stand-in truthfully is: located,
@@ -130,6 +181,7 @@ if "torch" not in sys.modules:
         __version__ = "2.0.0"
 
         def __getattr__(self, name):
+            _no_dunder(name)
             # Return mock for any torch attribute
             if name in (
                 "nn",
@@ -143,7 +195,13 @@ if "torch" not in sys.modules:
             ):
                 # Return a module-like mock for submodules
                 mock_submodule = ModuleType(f"torch.{name}")
-                mock_submodule.__getattr__ = lambda self, n: Mock()
+
+                # A module's own ``__getattr__`` is called with the name only.
+                def _submodule_getattr(n):
+                    _no_dunder(n)
+                    return Mock()
+
+                mock_submodule.__getattr__ = _submodule_getattr
                 return mock_submodule
             return Mock()
 
@@ -264,6 +322,7 @@ except ImportError:
             return 8  # Default to pointer size on 64-bit systems
 
         def __getattr__(self, name):
+            _no_dunder(name)
             # Return appropriate values for known functions
             if name == "sizeof":
                 return self.sizeof
@@ -284,6 +343,7 @@ except ImportError:
         """Minimal ctypes module mock for numpy compatibility."""
 
         def __getattr__(self, name):
+            _no_dunder(name)
             # Return Mock objects for ctypes types (c_int, c_byte, etc.)
             if name.startswith("c_"):
                 return type(f"c_{name[2:]}", (), {"_type_": name})

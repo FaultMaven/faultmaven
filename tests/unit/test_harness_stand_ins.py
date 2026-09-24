@@ -33,13 +33,16 @@ empty registry, and a probe that never runs all pass while proving nothing.
 import ast
 import importlib.machinery
 import importlib.util
+import inspect
 import pathlib
 import sys
 import types
+from unittest.mock import Mock
 
 import pytest
 
 from tests.conftest import (
+    _UNDEFINED_DUNDER_PROBE,
     HARNESS_STAND_INS,
     OBSERVABILITY_RESET_FIELDS,
     _install_stand_in,
@@ -421,6 +424,88 @@ def test_the_probe_stand_in_did_not_outlive_its_test():
     """
     assert _PROBE_NAME not in sys.modules, "probe stand-in leaked into sys.modules"
     assert _PROBE_NAME not in HARNESS_STAND_INS, "probe stand-in leaked into registry"
+
+
+class _AnswersEverything(types.ModuleType):
+    """The #1636 shape: a class ``__getattr__`` with no dunder carve-out."""
+
+    def __getattr__(self, name):
+        return Mock()
+
+
+def _instance_getattr_fabricator(name):
+    module = types.ModuleType(name)
+    # A module's ``__getattr__`` may also live in its own ``__dict__`` (PEP 562),
+    # and is then called with the name only -- the conftest's torch submodules
+    # used exactly this shape.
+    module.__getattr__ = lambda attr: Mock()
+    return module
+
+
+def _explicit_mock_file(name):
+    module = types.ModuleType(name)
+    module.__file__ = Mock()
+    return module
+
+
+_DUNDER_FABRICATORS = {
+    "class __getattr__": lambda name: _AnswersEverything(name),
+    "instance-dict __getattr__": _instance_getattr_fabricator,
+    "explicit __file__ = Mock()": _explicit_mock_file,
+}
+
+
+def test_a_module_answering_file_with_a_mock_breaks_inspect_stack():
+    """POSITIVE CONTROL for the dunder arm: the mechanism is real.
+
+    ``inspect.getmodule`` reads ``__file__`` off every entry in ``sys.modules``,
+    so one fabricating module breaks ``inspect.stack()`` everywhere -- which is
+    what coverage calls when an xdist worker starts it after the conftest has
+    loaded (#1636). If this ever stopped raising, the refusal below would be
+    guarding nothing.
+    """
+    name = "l2_probe_mock_file"
+    sys.modules[name] = _AnswersEverything(name)
+    try:
+        with pytest.raises(TypeError):
+            inspect.stack()
+    finally:
+        del sys.modules[name]
+
+
+@pytest.mark.parametrize("shape", sorted(_DUNDER_FABRICATORS))
+def test_installing_a_stand_in_that_fabricates_dunders_is_refused(shape):
+    """Every shape a stand-in can fabricate a dunder in is refused at install.
+
+    The check is behavioural (it asks the module), so it does not depend on how
+    the ``__getattr__`` was written.
+    """
+    name = "l2_probe_dunder_fabricator"
+    assert name not in sys.modules
+    try:
+        with pytest.raises(RuntimeError, match="#1636"):
+            _install_stand_in(name, _DUNDER_FABRICATORS[shape](name))
+        assert name not in sys.modules, "the refused stand-in was installed anyway"
+        assert name not in HARNESS_STAND_INS
+    finally:
+        sys.modules.pop(name, None)
+        HARNESS_STAND_INS.pop(name, None)
+
+
+def test_every_harness_stand_in_refuses_dunders_and_inspect_stack_works():
+    """The runtime result: no installed stand-in answers a dunder it lacks, and
+    the consumer that crashed (``inspect.stack()``) runs with them all loaded.
+
+    Covers stand-ins that bypassed the install-time refusal (e.g. a later
+    ``setattr`` on an installed module), which the refusal cannot see.
+    """
+    assert HARNESS_STAND_INS, "no stand-ins recorded -- this check saw nothing"
+    for name, module in sorted(HARNESS_STAND_INS.items()):
+        with pytest.raises(AttributeError):
+            getattr(module, _UNDEFINED_DUNDER_PROBE)
+        file_attr = getattr(module, "__file__", None)
+        assert file_attr is None or isinstance(file_attr, str), (name, file_attr)
+    inspect.stack()
 
 
 # --------------------------------------------------------------------------- #
