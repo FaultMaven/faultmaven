@@ -38,7 +38,7 @@ from faultmaven.infrastructure.protection.tenant_turn_cap import (
 from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
 )
-from faultmaven.modules.agent.domain.services.orientation import EMPTY_TURN_TEXT
+from faultmaven.modules.case.contracts import EMPTY_TURN_TEXT
 from faultmaven.modules.case.domain.models import Case, CaseState, InquiryData
 from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
     SQLiteCaseRepository,

@@ -34,10 +34,8 @@ from faultmaven.core.investigation.milestone_engine import (
 )
 from faultmaven.core.investigation.prompts import context_builder as cb
 from faultmaven.core.investigation.prompts.fence import mint_token
-from faultmaven.modules.agent.domain.services.orientation import (
-    EMPTY_AGENT_RESPONSE_TEXT,
-)
 from faultmaven.modules.case.contracts import (
+    EMPTY_AGENT_RESPONSE_TEXT,
     MESSAGE_METADATA_AGENT_SYNTHESIZED,
     MESSAGE_METADATA_USER_EMPTY,
     is_server_written_assistant_row,

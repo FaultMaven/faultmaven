@@ -82,8 +82,6 @@ from faultmaven.models.api_models import (
     TurnResponse,
 )
 from faultmaven.modules.agent.domain.services.orientation import (
-    EMPTY_AGENT_RESPONSE_TEXT,
-    EMPTY_TURN_TEXT,
     OUT_OF_BAND_MARKER,
     OrientationKind,
     back_to_investigation_follow_up,
@@ -104,12 +102,13 @@ from faultmaven.modules.agent.domain.services.query_classifier import (
 )
 from faultmaven.modules.case.contracts import (
     MESSAGE_METADATA_AGENT_SYNTHESIZED,
-    MESSAGE_METADATA_USER_EMPTY,
     Case,
     CaseState,
+    MessageRowKind,
     TurnOutcome,
     TurnProgress,
     VerificationStatus,
+    append_message_row,
 )
 from faultmaven.modules.case.contracts import ICaseRepository as CaseRepository
 from faultmaven.modules.case.domain.models import (
@@ -123,7 +122,6 @@ from faultmaven.modules.case.domain.services.case_action_manager import (
     earned_edge_refusal,
 )
 from faultmaven.modules.case.exceptions import StaleCaseException
-from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
 
@@ -1853,8 +1851,6 @@ class InvestigationService:
             #
             #    So: an LLM failure commits nothing; a post-LLM failure can commit
             #    a half turn. Do not reason about this path as all-or-nothing.
-            from uuid import uuid4
-
             intent = payload.intent
             intent_type = intent.type if intent else IntentType.CONVERSATION
             # GREETING is server-minted: the service derives it from the text
@@ -1873,47 +1869,6 @@ class InvestigationService:
                 intent_type = IntentType.CONVERSATION
             orientation_kind: Optional[OrientationKind] = None
 
-            user_message_obj = {
-                "message_id": f"msg_{uuid4().hex[:12]}",
-                "turn_number": next_turn,
-                "role": "user",
-                # Emptiness is decided by ``strip()``, not by truthiness, and
-                # the difference is the whole bug (#1420). ``"   "`` is a TRUE
-                # Python value but a blank row: SQL ``TRIM`` reduces it to
-                # length 0 and ``case_messages_content_not_empty`` rejects it,
-                # aborting the whole aggregate save. ``detect_orientation``
-                # already calls every whitespace spelling ``EMPTY``, so this is
-                # the same turn, not an edge case.
-                #
-                # ``"\t"`` is the mirror hazard: one-argument SQL ``TRIM``
-                # strips only SPACES, so a tab PASSES the constraint and
-                # persists as a blank-looking bubble and a blank ``User:`` line
-                # in the LLM history. Both spellings become the marker here.
-                #
-                # ``query`` is non-blank for every turn carrying data: a paste
-                # becomes an attachment, and any attachment has already
-                # replaced ``query`` via ``generate_implicit_query`` above.
-                "content": query if (query or "").strip() else EMPTY_TURN_TEXT,
-                "created_at": to_json_compatible(datetime.now(timezone.utc)),
-                "author_id": user_id,
-                "token_count": None,
-                "metadata": {
-                    "has_attachments": payload.has_attachments,
-                    "attachment_count": len(payload.attachments),
-                    "intent_type": intent_type.value,
-                    # The row carries ``EMPTY_TURN_TEXT`` rather than anything
-                    # the user wrote. Recorded so a consumer can tell the
-                    # marker from real content — the orientation path also
-                    # tags ``out_of_band``, but the pending-transition path
-                    # does not, and both can reach the marker.
-                    MESSAGE_METADATA_USER_EMPTY: not (query or "").strip(),
-                    "intent_metadata": (
-                        intent.model_dump(exclude_unset=True, exclude={"type"})
-                        if intent
-                        else {}
-                    ),
-                },
-            }
             # Appended unconditionally. NOTHING upstream de-duplicates this
             # route, and an earlier version of this comment claimed otherwise
             # (#1419) — read that claim before trusting it:
@@ -1934,7 +1889,32 @@ class InvestigationService:
             # ``CaseService.add_message_to_case``, had no callers so never ran,
             # was "fixed" by #855 to compare ``author_id`` and still never ran,
             # and both were retired in #1412.
-            case.messages.append(user_message_obj)
+            #
+            # A blank ``query`` — every whitespace spelling, which
+            # ``detect_orientation`` already calls ``EMPTY`` — is recorded as
+            # ``EMPTY_TURN_TEXT`` and flagged, never written blank: the row is
+            # part of the aggregate save, and a blank one aborts it (#1420).
+            # That decision is the row kind's, not this call site's (#1452).
+            # ``query`` is non-blank for every turn carrying data: a paste
+            # becomes an attachment, and any attachment has already replaced
+            # ``query`` via ``generate_implicit_query`` above.
+            user_message_obj = append_message_row(
+                case,
+                MessageRowKind.USER_TURN,
+                query,
+                turn_number=next_turn,
+                author_id=user_id,
+                metadata={
+                    "has_attachments": payload.has_attachments,
+                    "attachment_count": len(payload.attachments),
+                    "intent_type": intent_type.value,
+                    "intent_metadata": (
+                        intent.model_dump(exclude_unset=True, exclude={"type"})
+                        if intent
+                        else {}
+                    ),
+                },
+            )
             case.message_count += 1
             case.current_turn = next_turn
             # #1142: this assignment is what "a turn was consumed" MEANS, and it
@@ -2442,8 +2422,10 @@ class InvestigationService:
             #    See the STEP-2 comment for the full ordering.
             # An empty ``agent_response`` is a FAILED turn, not a quiet one.
             # Blank content aborts the aggregate save and takes the user's turn
-            # with it, for a turn already charged — so it is recorded,
-            # honestly, rather than dropped or left blank (#1433).
+            # with it, for a turn already charged — so the row kind records
+            # it, honestly, as ``EMPTY_AGENT_RESPONSE_TEXT`` flagged
+            # ``MESSAGE_METADATA_AGENT_SYNTHESIZED`` rather than dropping it or
+            # leaving it blank (#1433, #1452).
             # A PERSISTENCE BACKSTOP, not a policy (#1442). ``MilestoneEngine``
             # owns response synthesis: it holds the provider's stop reason and
             # names an unusable answer by it (withheld, truncated, empty, no
@@ -2451,44 +2433,29 @@ class InvestigationService:
             # would be blind — it therefore writes nothing contextual, and
             # exists only so a raw "" whose text never came through the
             # engine's synthesis (the out-of-band answer, for one, is generated
-            # by this service) cannot abort the aggregate save:
-            # blank content is refused by the repository, and the refusal
-            # takes the user's turn, the evidence and the hypotheses with it,
-            # for a turn already charged.
-            agent_response_empty = not str(agent_response_text or "").strip()
-            if agent_response_empty:
-                logger.warning(
-                    "Empty agent_response on case %s turn %s; recording the "
-                    "turn as answerless rather than aborting the save",
-                    case_id,
-                    updated_case.current_turn,
-                )
-                # Reassigned, not branched at the row: ``TurnResponse`` below
-                # reads this same name, and writing the marker only into the
-                # stored row would leave the live client rendering an empty
-                # bubble while a reload showed text that was never delivered.
-                # (Slack rejects an empty message outright.)
-                agent_response_text = EMPTY_AGENT_RESPONSE_TEXT
-                # In place: ``turn_meta`` is the ONE binding of this turn's
-                # metadata, aliased with ``result["metadata"]`` (#1270). A
-                # fresh dict severs that and the readers stop seeing each
-                # other — which is why there is no ``or {}`` fallback here. It
-                # is bound by ``result.setdefault("metadata", {})`` far above
-                # and has already been ``.pop()``-ed from by then, so a None
-                # would have raised long before this line.
-                turn_meta[MESSAGE_METADATA_AGENT_SYNTHESIZED] = True
-
-            agent_message = {
-                "message_id": f"msg_{uuid4().hex[:12]}",
-                "turn_number": updated_case.current_turn,
-                "role": "assistant",
-                "content": agent_response_text,
-                "created_at": to_json_compatible(datetime.now(timezone.utc)),
-                "author_id": None,
-                "token_count": None,
-                "metadata": turn_meta,
-            }
-            updated_case.messages.append(agent_message)
+            # by this service) cannot abort the aggregate save.
+            #
+            # ``turn_meta`` is passed, not copied: it is the ONE binding of
+            # this turn's metadata, aliased with ``result["metadata"]``
+            # (#1270), and the flag is written into it in place. A fresh dict
+            # would sever that and the readers would stop seeing each other —
+            # which is why there is no ``or {}`` fallback here. It is bound by
+            # ``result.setdefault("metadata", {})`` far above and has already
+            # been ``.pop()``-ed from by then, so a None would have raised long
+            # before this line.
+            agent_message = append_message_row(
+                updated_case,
+                MessageRowKind.AGENT_ANSWER,
+                agent_response_text,
+                turn_number=updated_case.current_turn,
+                metadata=turn_meta,
+            )
+            # Read back from the row, not branched beside it: ``TurnResponse``
+            # below reads this same name, and a marker that reached only the
+            # stored row would leave the live client rendering an empty bubble
+            # while a reload showed text that was never delivered. (Slack
+            # rejects an empty message outright.) This kind never drops a row.
+            agent_response_text = agent_message["content"]
             updated_case.message_count += 1
             await self.repository.save(updated_case)
 

@@ -194,6 +194,7 @@ from faultmaven.modules.case.contracts import (
     JournalEntry,
     KnowledgeMatch,
     KnowledgeResolution,
+    MessageRowKind,
     MitigationRecord,
     NeedObtainability,
     NeedPriority,
@@ -211,6 +212,7 @@ from faultmaven.modules.case.contracts import (
     TurnOutcome,
     TurnProgress,
     UrgencyLevel,
+    append_message_row,
 )
 from faultmaven.modules.case.domain.services.case_action_manager import (
     earned_edge_refusal,
@@ -5474,21 +5476,16 @@ class MilestoneEngine:
                         extra={"case_id": request.case_id},
                     )
                     return
-                case.messages.append(
-                    {
-                        "message_id": f"msg_{uuid4().hex[:12]}",
-                        "case_id": case.case_id,
-                        # No human wrote this; the role already says "system".
-                        # A sentinel string here would reach clients as a
-                        # non-resolvable principal id now that author_id
-                        # persists (ADR-013 D4: system turns have no author).
-                        "author_id": None,
-                        "role": "system",
-                        "content": notification_content,
-                        "created_at": datetime.now(UTC).isoformat(),
-                        "turn_number": case.current_turn,
-                        "metadata": {"source": "runbook_conversion_complete"},
-                    }
+                # No human wrote this, so it carries no author: the role says
+                # "system", and a sentinel string would reach clients as a
+                # non-resolvable principal id now that author_id persists
+                # (ADR-013 D4: system turns have no author).
+                append_message_row(
+                    case,
+                    MessageRowKind.SYSTEM_NOTICE,
+                    notification_content,
+                    turn_number=case.current_turn,
+                    metadata={"source": "runbook_conversion_complete"},
                 )
                 case.message_count = len(case.messages)
                 await self.repository.save(case)

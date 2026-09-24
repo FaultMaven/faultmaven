@@ -17,7 +17,6 @@ Core Responsibilities:
 
 import asyncio
 import logging
-import uuid
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
@@ -45,6 +44,8 @@ from faultmaven.models.interfaces import ISessionStore
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.auth.contracts import is_team_member
 from faultmaven.modules.case.contracts import (
+    MessageRowKind,
+    append_message_row,
     is_server_written_assistant_row,
     is_server_written_user_row,
 )
@@ -253,27 +254,20 @@ class CaseService(ICaseService):
                 source=source if source in ("copilot", "slack", "api") else "copilot",
             )
 
-            # Add initial message if provided (restored from old implementation).
-            #
-            # ``strip()``, not truthiness: ``"   "`` is a TRUE Python value but
-            # a blank row, and the content below is stripped — so the check and
-            # the value it guards would disagree. Blank content is refused by
-            # the repository, and because this is an AGGREGATE save the refusal
-            # 500s case creation outright. Same shape as #1420 on the turn
-            # path; this is a third writer with it.
-            if initial_message and initial_message.strip():
-                message_dict = {
-                    "message_id": f"msg_{uuid.uuid4().hex[:12]}",
-                    "case_id": case.case_id,
-                    "author_id": owner_id.strip(),
-                    "role": "user",
-                    "content": initial_message.strip(),
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "turn_number": 1,
-                    "metadata": {},
-                }
-                case.messages.append(message_dict)
-                case.message_count = len(case.messages)
+            # The initial message, if there is one, is turn 1. A blank one —
+            # ``None``, ``""`` or any whitespace spelling — writes NO row: the
+            # row kind decides that (#1452), because blank content is refused
+            # by the repository and, this being an AGGREGATE save, the refusal
+            # would 500 case creation outright (#1443).
+            append_message_row(
+                case,
+                MessageRowKind.INITIAL_MESSAGE,
+                initial_message,
+                turn_number=1,
+                author_id=owner_id.strip(),
+                metadata={},
+            )
+            case.message_count = len(case.messages)
 
             # Session association via session store if available
             if session_id and self.session_store:
