@@ -151,6 +151,8 @@ def _turn_service(session, answer: str, extra_metadata: dict | None = None):
 
     async def _turn(*, case, user_message, **_kw):
         case.updated_at = datetime.now(timezone.utc)
+        # The transcript as the engine is handed it, in list order.
+        returned["order_at_engine"] = [(m["role"], m["content"]) for m in case.messages]
         metadata = {
             "milestones_completed": [],
             "progress_made": False,
@@ -181,10 +183,14 @@ class _SaveSpy:
 
     def __init__(self, repository):
         self.saved: list = []
+        #: ``(role, content)`` of every row, in LIST order, at the moment each
+        #: save was called — before the repository touches anything.
+        self.orders: list = []
         inner = repository.save
 
         async def _save(case):
             self.saved.append(case)
+            self.orders.append([(m["role"], m["content"]) for m in case.messages])
             return await inner(case)
 
         repository.save = _save
@@ -468,3 +474,101 @@ class TestSystemNoticeRow:
 
         assert [m["role"] for m in reloaded.messages] == ["system"]
         assert reloaded.messages[0]["content"].startswith("Runbook generation failed")
+
+
+# ---------------------------------------------------------------------------
+# Order, in memory, before any save
+# ---------------------------------------------------------------------------
+
+
+def _history() -> list[dict]:
+    """Two earlier turns, oldest first, as a reload returns them."""
+    base = datetime.now(timezone.utc).timestamp() - 600
+    rows = []
+    for i, (turn, role, content) in enumerate(
+        [
+            (1, "user", "the api is slow"),
+            (1, "assistant", "which endpoint?"),
+            (2, "user", "/checkout"),
+            (2, "assistant", "share the logs"),
+        ]
+    ):
+        rows.append(
+            {
+                "message_id": f"msg_hist{i:08d}",
+                "turn_number": turn,
+                "role": role,
+                "content": content,
+                "created_at": datetime.fromtimestamp(
+                    base + i, timezone.utc
+                ).isoformat(),
+                "author_id": USER_ID if role == "user" else None,
+                "token_count": None,
+                "metadata": {},
+            }
+        )
+    return rows
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestNewRowsGoLast:
+    """A new row goes at the END of ``case.messages``, which is what the turn
+    reads before anything is saved: the greeting walks
+    ``reversed(case.messages)`` for the last question asked, and the prompt's
+    RECENT window is ``messages[-20:]``. A reload re-sorts by ``created_at``,
+    so every assertion above that reads a reloaded case is blind to a row that
+    went in at the wrong end. These read the list as the writer left it."""
+
+    async def test_the_turn_appends_behind_the_history(self, session):
+        service, returned = _turn_service(session, "an answer")
+        spy = _SaveSpy(service.repository)
+        history = _history()
+        case = _case(messages=history, current_turn=2, message_count=4)
+        await service.repository.save(case)
+        before = [(m["role"], m["content"]) for m in history]
+
+        await service.process_turn(
+            case_id=case.case_id, user_id=USER_ID, payload=TurnPayload(query="why now?")
+        )
+
+        # The user row is last when the engine runs...
+        assert returned["order_at_engine"] == [*before, ("user", "why now?")]
+        # ...and the answer follows it when the turn is saved.
+        assert spy.orders[-1] == [
+            *before,
+            ("user", "why now?"),
+            ("assistant", "an answer"),
+        ]
+
+    async def test_the_notice_appends_behind_the_history(self, session):
+        repository = SQLiteCaseRepository(session)
+        history = _history()
+        case = _case(messages=history, current_turn=2, message_count=4)
+        await repository.save(case)
+        spy = _SaveSpy(repository)
+
+        from faultmaven.modules.knowledge.domain.models.conversion import (
+            CaseConversionRequest,
+        )
+
+        conversion = MagicMock()
+        conversion.convert_from_case = AsyncMock(side_effect=RuntimeError("boom"))
+        llm = MagicMock()
+        llm.generate = AsyncMock(return_value=MagicMock())
+        engine = MilestoneEngine(llm, repository, investigation_tools=MagicMock())
+        await engine._run_runbook_conversion(
+            conversion,
+            CaseConversionRequest(
+                case_id=case.case_id,
+                title=case.title,
+                description=case.description,
+                scope="global",
+            ),
+            USER_ID,
+            ENTERPRISE,
+        )
+
+        order = spy.orders[-1]
+        assert order[:-1] == [(m["role"], m["content"]) for m in history]
+        assert order[-1][0] == "system"

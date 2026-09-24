@@ -250,6 +250,30 @@ class TestTheRowItself:
 
         assert case.messages[-1]["metadata"]["orientation"] == "empty"
 
+    @pytest.mark.parametrize("kind", list(MessageRowKind), ids=lambda k: k.value)
+    def test_the_row_goes_LAST_behind_every_existing_row(self, kind):
+        """In memory, before any save, order is what the turn reads: the
+        greeting walks ``reversed(case.messages)`` for the last question asked,
+        and the prompt's RECENT window is ``messages[-20:]``. A reload re-sorts
+        by ``created_at``, so nothing downstream of a save can see a row that
+        went in at the wrong end — only this can. Several rows, because with
+        one ``[-1]`` cannot tell an append from an insert at the front."""
+        case = _case()
+        earlier = [
+            append_message_row(case, MessageRowKind.USER_TURN, f"q{i}", turn_number=i)
+            for i in range(1, 4)
+        ]
+        before = list(case.messages)
+
+        row = append_message_row(case, kind, "the newest", turn_number=4)
+
+        assert case.messages[-1] is row
+        assert case.messages[:-1] == before
+        assert [m["content"] for m in case.messages] == [
+            *(m["content"] for m in earlier),
+            "the newest",
+        ]
+
     def test_no_turn_number_is_refused_before_anything_is_appended(self):
         case = _case()
 

@@ -29,13 +29,31 @@ The scan covers the whole ``faultmaven`` package — the only tree that ships.
 contain no writer (measured when this was written; a script is not a
 production path either way).
 
-**What it does not see**, measured rather than assumed: a helper that is
-HANDED ``case.messages`` as an argument and appends a row it did not build as
-a literal. Following the list into a callee needs interprocedural analysis,
-and flagging every call that receives ``x.messages`` would flag every reader
-(``len``, ``sorted``, the prompt builders). No live site passes the list to a
-mutating helper, and a row built as a literal is still caught by
-``row_literal`` wherever the append happens.
+**What it does not see.** Each of these has ZERO live sites, measured, and a
+row built as a literal is still caught by ``row_literal`` wherever it ends up.
+They are listed so nobody mistakes this scan for more than it is:
+
+* a helper HANDED ``case.messages`` as an argument that appends a row it did
+  not build as a literal — following the list into a callee needs
+  interprocedural analysis, and flagging every call that receives
+  ``x.messages`` would flag every reader (``len``, ``sorted``, the prompt
+  builders);
+* aliases other than a plain ``name = <messages>`` (or ``<messages> or []``):
+  a bound method (``add = case.messages.append``), an attribute
+  (``self.rows = case.messages``), a walrus, tuple unpacking, a ``for``/``with``
+  target, and ``rows or case.messages`` (the list as the SECOND operand);
+* reflective writes: ``operator.iadd``, ``object.__setattr__``,
+  ``case.__dict__.update``, ``vars(case)[...]``;
+* a message list the scan cannot see because it arrives through a variable:
+  ``Case(**fields)``, ``Case.model_validate(data)``,
+  ``case.model_copy(update=changes)``, ``type(case)(...)``;
+* SQL it cannot read as one string: an ``INSERT INTO`` assembled by
+  concatenation, and SQLAlchemy's ``insert(CaseMessageModel)`` or
+  ``session.add(CaseMessageModel(...))``.
+
+``case.atomic_update(messages=...)`` — a public ``Case`` method that sets
+fields directly, and the one plausible future shape among these — IS covered,
+by the ``construction`` arm.
 
 **Every arm proves it looked.** Each has a site it MUST find — the
 constructor's own append and its own row literal, the one copy the service
@@ -80,8 +98,6 @@ _MUTATORS = {"append", "extend", "insert", "__iadd__", "__setitem__"}
 _CASE_CONSTRUCTORS = {"Case"}
 
 _SQL_INSERT = re.compile(r"INSERT\s+INTO\s+case_messages\b", re.IGNORECASE)
-
-_REPOSITORY_LAYER = "faultmaven/modules/case/infrastructure/"
 
 # ---------------------------------------------------------------------------
 # What each arm is allowed to find, and why. Keyed by (file, enclosing
@@ -156,7 +172,15 @@ _ALLOWED = {
         ),
     },
     "construction": {},
-    "add_message": {},
+    "add_message": {
+        (
+            "faultmaven/modules/case/infrastructure/sessionless_case_repository.py",
+            "SessionlessCaseRepository.add_message",
+        ): (
+            "the sessionless repository forwards to the session-bound one; the "
+            "row is its caller's, and add_message has no production caller"
+        ),
+    },
     "sql_insert": {
         (
             "faultmaven/modules/case/infrastructure/sqlite_case_repository.py",
@@ -184,9 +208,10 @@ _ALLOWED_COUNT = {
     ("row_literal", ("faultmaven/models/api_messages.py", "MessageListResponse")): 2,
 }
 
-#: Sites each arm must find, or it is not looking. The allowed sites double as
-#: these for ``mutation``/``row_literal``/``sql_insert``; the other two have
-#: one live, permitted site apiece.
+#: Sites each arm must find, or it is not looking. Every allowed site is also
+#: checked by ``test_every_allowance_excuses_exactly_what_it_names``; these are
+#: the ones each arm is certain to have, and ``construction`` has one live site
+#: that is permitted by its SHAPE rather than allowed by name.
 _MUST_FIND = {
     "mutation": {_CONSTRUCTOR},
     "row_literal": {_CONSTRUCTOR},
@@ -256,16 +281,31 @@ def _is_messages(node: ast.expr, aliases: set[str]) -> bool:
     return False
 
 
-def _is_copy_of_messages(node: ast.expr) -> bool:
-    """A value that carries the rows a case already has and adds none."""
+def _same(a: ast.expr, b: ast.expr) -> bool:
+    return ast.dump(a) == ast.dump(b)
+
+
+def _is_copy_of_messages(node: ast.expr, owner: ast.expr | None) -> bool:
+    """A value that adds no row: an empty list, or a copy of ``owner.messages``.
+
+    ``owner`` is the case being copied or updated — the receiver of
+    ``model_copy`` / ``atomic_update``. Any OTHER object's ``.messages`` is
+    rows from somewhere else (a request body, an import payload), which is
+    exactly a writer going around the constructor, so it is not permitted. A
+    case BUILT from scratch (``Case(...)``, ``model_validate``,
+    ``model_construct``) has no owner, so only the empty list is permitted
+    there.
+    """
     if isinstance(node, ast.List) and not node.elts:
         return True
+    if owner is None:
+        return False
     if isinstance(node, ast.Attribute) and node.attr == "messages":
-        return True
+        return _same(node.value, owner)
     if isinstance(node, ast.Call):
         name = _called_name(node.func)
         if name in {"list", "copy", "deepcopy"} and len(node.args) == 1:
-            return _is_copy_of_messages(node.args[0])
+            return _is_copy_of_messages(node.args[0], owner)
         if (
             name == "copy"
             and isinstance(node.func, ast.Attribute)
@@ -273,7 +313,7 @@ def _is_copy_of_messages(node: ast.expr) -> bool:
             and isinstance(node.func.value, ast.Attribute)
             and node.func.value.attr == "messages"
         ):
-            return True
+            return _same(node.func.value.value, owner)
     return False
 
 
@@ -389,8 +429,8 @@ class _Scanner(ast.NodeVisitor):
             self._hit("mutation", node, 'setattr(..., "messages", ...)')
 
         # construction: a case, or a copy of one, built around a message list
-        for value, how in self._message_lists_built(node, name):
-            permitted = _is_copy_of_messages(value)
+        for value, how, owner in self._message_lists_built(node, name):
+            permitted = _is_copy_of_messages(value, owner)
             self._hit(
                 "construction",
                 node,
@@ -398,14 +438,11 @@ class _Scanner(ast.NodeVisitor):
                 permitted=permitted,
             )
 
-        # add_message: a row written past the case, straight to the table
+        # add_message: a row written past the case, straight to the table.
+        # Allowed by site and count, like every other arm — not by directory,
+        # which would excuse a new repository file that called it.
         if name == "add_message" and isinstance(func, ast.Attribute):
-            self._hit(
-                "add_message",
-                node,
-                "add_message(...)",
-                permitted=self.path.startswith(_REPOSITORY_LAYER),
-            )
+            self._hit("add_message", node, "add_message(...)")
 
         # row_literal: ``dict(role=..., turn_number=...)``
         if name == "dict":
@@ -417,7 +454,9 @@ class _Scanner(ast.NodeVisitor):
 
     @staticmethod
     def _message_lists_built(node: ast.Call, name: str | None):
-        """Every message list handed to something that builds a case."""
+        """Every message list handed to something that builds or updates a
+        case, as ``(value, how, owner)`` — ``owner`` being the case whose own
+        rows a permitted copy must come from, or ``None`` for a new case."""
         func = node.func
         receiver = _called_name(func.value) if isinstance(func, ast.Attribute) else None
         if name in _CASE_CONSTRUCTORS or (
@@ -425,28 +464,37 @@ class _Scanner(ast.NodeVisitor):
         ):
             for kw in node.keywords:
                 if kw.arg == "messages":
-                    yield kw.value, f"{name}(messages=...)"
+                    yield kw.value, f"{name}(messages=...)", None
         if name == "model_validate" and receiver in _CASE_CONSTRUCTORS:
             for arg in node.args[:1]:
                 if isinstance(arg, ast.Dict):
                     for k, v in zip(arg.keys, arg.values):
                         if isinstance(k, ast.Constant) and k.value == "messages":
-                            yield v, "model_validate({'messages': ...})"
-        if name == "model_copy":
+                            yield v, "model_validate({'messages': ...})", None
+        if name == "model_copy" and isinstance(func, ast.Attribute):
             for kw in node.keywords:
                 if kw.arg != "update":
                     continue
                 if isinstance(kw.value, ast.Dict):
                     for k, v in zip(kw.value.keys, kw.value.values):
                         if isinstance(k, ast.Constant) and k.value == "messages":
-                            yield v, "model_copy(update={'messages': ...})"
+                            yield v, "model_copy(update={'messages': ...})", func.value
                 elif (
                     isinstance(kw.value, ast.Call)
                     and _called_name(kw.value.func) == "dict"
                 ):
                     for inner in kw.value.keywords:
                         if inner.arg == "messages":
-                            yield inner.value, "model_copy(update=dict(messages=...))"
+                            yield (
+                                inner.value,
+                                "model_copy(update=dict(messages=...))",
+                                func.value,
+                            )
+        # ``Case.atomic_update`` sets fields directly, bypassing validation.
+        if name == "atomic_update" and isinstance(func, ast.Attribute):
+            for kw in node.keywords:
+                if kw.arg == "messages":
+                    yield kw.value, "atomic_update(messages=...)", func.value
 
     # -- arm: row_literal -------------------------------------------------
 
@@ -461,6 +509,31 @@ class _Scanner(ast.NodeVisitor):
     def visit_Constant(self, node: ast.Constant) -> None:
         if isinstance(node.value, str) and _SQL_INSERT.search(node.value):
             self._hit("sql_insert", node, "INSERT INTO case_messages")
+
+
+def _scan_source(source: str, path: str) -> list[Hit]:
+    scanner = _Scanner(path)
+    scanner.visit(ast.parse(source, filename=path))
+    return scanner.hits
+
+
+def _offenders(hits: list[Hit]) -> list[str]:
+    """Hits no rule excuses: not permitted by shape, not at an allowed site —
+    or at an allowed site beyond the count it is allowed."""
+    offenders = []
+    seen: dict = {}
+    for h in hits:
+        if h.permitted:
+            continue
+        if h.site in _ALLOWED[h.arm]:
+            key = (h.arm, h.site)
+            seen[key] = seen.get(key, 0) + 1
+            if seen[key] <= _ALLOWED_COUNT.get(key, 1):
+                continue
+        offenders.append(
+            f"{h.path}:{h.lineno} [{h.arm}] {h.qualname or '<module>'}: {h.what}"
+        )
+    return offenders
 
 
 def _scan() -> tuple[list[Hit], int]:
@@ -530,11 +603,7 @@ def test_every_allowance_excuses_exactly_what_it_names(scan, arm):
 
 def test_no_message_row_goes_around_the_constructor(scan):
     hits, _ = scan
-    offenders = [
-        f"{h.path}:{h.lineno} [{h.arm}] {h.qualname or '<module>'}: {h.what}"
-        for h in hits
-        if not h.permitted and h.site not in _ALLOWED[h.arm]
-    ]
+    offenders = _offenders(hits)
     assert offenders == [], (
         "a case_messages row must be built and appended by "
         "faultmaven.modules.case.contracts.append_message_row, which decides "
@@ -544,3 +613,132 @@ def test_no_message_row_goes_around_the_constructor(scan):
         + "\nIf the row fits no existing MessageRowKind, add a kind with its "
         "own blank-content answer; do not build the row here."
     )
+
+
+# ---------------------------------------------------------------------------
+# The guard's own reach. Each shape is compiled into a snippet and scanned the
+# way the package is, so a change to an arm that stops seeing a shape fails
+# here instead of reporting the package clean.
+# ---------------------------------------------------------------------------
+
+#: A path no allowance names, so anything found there is an offender.
+_ELSEWHERE = "faultmaven/modules/agent/domain/services/some_service.py"
+
+
+def _snippet(body: str) -> str:
+    lines = "".join(f"    {line}\n" for line in body.strip("\n").splitlines())
+    return f"def writer(case, body, repo, row, build):\n{lines}"
+
+
+_CAUGHT = [
+    ("case.messages.append(build())", "mutation"),
+    ("case.messages.extend([build()])", "mutation"),
+    ("case.messages.insert(0, build())", "mutation"),
+    ("case.messages += [build()]", "mutation"),
+    ("case.messages = case.messages + [build()]", "mutation"),
+    ("case.messages = [*case.messages, build()]", "mutation"),
+    ("case.messages[len(case.messages):] = [build()]", "mutation"),
+    ("msgs = case.messages\nmsgs.append(build())", "mutation"),
+    ("msgs = getattr(case, 'messages', None) or []\nmsgs.append(build())", "mutation"),
+    ("getattr(case, 'messages').append(build())", "mutation"),
+    ("setattr(case, 'messages', case.messages + [build()])", "mutation"),
+    ("list.append(case.messages, build())", "mutation"),
+    ("case.__dict__['messages'].append(build())", "mutation"),
+    (
+        "return case.model_copy(update={'messages': case.messages + [row]})",
+        "construction",
+    ),
+    (
+        "return case.model_copy(update=dict(messages=[*case.messages, row]))",
+        "construction",
+    ),
+    ("return Case(title='t', messages=[row])", "construction"),
+    ("return Case.model_validate({'title': 't', 'messages': [row]})", "construction"),
+    ("return Case.model_construct(messages=[row])", "construction"),
+    ("case.atomic_update(messages=[*case.messages, row])", "construction"),
+    ("return repo.add_message(case.case_id, row)", "add_message"),
+    (
+        "return build({'role': 'system', 'turn_number': 1, 'content': ''})",
+        "row_literal",
+    ),
+    ("return build(dict(role='system', turn_number=1, content=''))", "row_literal"),
+    (
+        "return build({'role': 'user', 'created_at': 'now', 'content': ''})",
+        "row_literal",
+    ),
+    (
+        "return repo.run('INSERT INTO case_messages (message_id) VALUES (1)')",
+        "sql_insert",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "body,arm", _CAUGHT, ids=[b.split("\n")[-1] for b, _ in _CAUGHT]
+)
+def test_each_shape_a_writer_could_take_is_caught(body, arm):
+    offenders = _offenders(_scan_source(_snippet(body), _ELSEWHERE))
+    assert any(
+        f"[{arm}]" in o for o in offenders
+    ), f"arm {arm!r} did not catch {body!r}: {offenders}"
+
+
+#: Rows from something other than the case being copied — a request body, an
+#: import payload. Each once read as a "copy" because the arm checked only that
+#: the value was SOME object's ``.messages``.
+_ANOTHER_OBJECTS_ROWS = [
+    "return Case(messages=body.messages)",
+    "return Case(messages=list(body.messages))",
+    "return case.model_copy(update={'messages': body.messages})",
+    "return Case.model_validate({'messages': copy.deepcopy(body.messages)})",
+    "case.atomic_update(messages=list(body.messages))",
+    "return case.model_copy(update={'messages': body.messages.copy()})",
+]
+
+
+@pytest.mark.parametrize("body", _ANOTHER_OBJECTS_ROWS)
+def test_a_copy_of_another_objects_rows_is_not_a_copy(body):
+    offenders = _offenders(_scan_source(_snippet(body), _ELSEWHERE))
+    assert any("[construction]" in o for o in offenders), offenders
+
+
+#: What IS permitted: nothing added. The first is the live reclassification
+#: copy, verbatim.
+_NOTHING_ADDED = [
+    "return case.model_copy(update={'messages': list(case.messages)})",
+    "return case.model_copy(update={'messages': case.messages.copy()})",
+    "return self.case.model_copy(update=dict(messages=deepcopy(self.case.messages)))",
+    "case.atomic_update(messages=list(case.messages))",
+    "return Case(title='t', messages=[])",
+]
+
+
+@pytest.mark.parametrize("body", _NOTHING_ADDED)
+def test_a_copy_of_the_same_cases_rows_is_permitted(body):
+    hits = _scan_source(_snippet(body), _ELSEWHERE)
+    assert [h.arm for h in hits] == ["construction"], hits
+    assert _offenders(hits) == []
+
+
+def test_add_message_is_allowed_by_site_and_count_not_by_directory():
+    """The arm used to excuse all of ``modules/case/infrastructure/``, so a
+    new repository file there could call it unseen."""
+    call = "return await repo.add_message(case_id, row)"
+    new_file = _scan_source(
+        f"class NewRepository:\n    async def add_message(self, case_id, row, repo):\n"
+        f"        {call}\n",
+        "faultmaven/modules/case/infrastructure/new_repository.py",
+    )
+    assert any("[add_message]" in o for o in _offenders(new_file))
+
+    allowed_path, allowed_fn = next(iter(_ALLOWED["add_message"]))
+    cls, fn = allowed_fn.split(".")
+    once = (
+        f"class {cls}:\n    async def {fn}(self, case_id, row, repo):\n        {call}\n"
+    )
+    assert _offenders(_scan_source(once, allowed_path)) == []
+
+    twice = once + f"        {call}\n"
+    assert any(
+        "[add_message]" in o for o in _offenders(_scan_source(twice, allowed_path))
+    ), "a second call at the allowed site must exceed its count"
