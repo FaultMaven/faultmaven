@@ -237,8 +237,39 @@ def _schema_routes(app):
     ``include_router(..., dependencies=[...])`` contributed, so an entire
     authenticated router would read as unauthenticated — the #880 mistake this
     gate is named for, reintroduced by the enumeration rather than by the code.
+
+    **A reach floor**, because every test that reads this quantifies over it,
+    so seeing fewer routes only makes them pass more easily. The document is
+    generated from the same routes, and ``get_openapi()`` merges two
+    registrations of one ``(method, path)`` into a single operation, so it can
+    never hold MORE operations than the documented routes do. A flat
+    ``app.routes`` walk on 0.141.1 saw 15 against the document's 147 and every
+    test here stayed green over the gap.
     """
-    return iter_documented_routes(app)
+    documented = iter_documented_routes(app)
+    seen = sum(len(route.methods) for route in documented)
+    published = _document_operation_count(app.openapi())
+    assert seen >= published, (
+        f"the route walk saw {seen} documented operations but the document "
+        f"describes {published}: the walk has lost reach, so every assertion "
+        "over it is checking a fraction of the surface"
+    )
+    return documented
+
+
+def _document_operation_count(spec) -> int:
+    """How many operations an OpenAPI document describes."""
+    return sum(
+        1
+        for path_item in spec.get("paths", {}).values()
+        for method, operation in path_item.items()
+        if method.lower() in HTTP_METHODS and isinstance(operation, dict)
+    )
+
+
+def _served_paths(app) -> set[str]:
+    """Every effective path the app serves an API operation on."""
+    return {served.path for served in iter_served_routes(app)}
 
 
 def _requires_auth(route) -> bool:
@@ -266,7 +297,7 @@ def test_the_surface_under_test_includes_the_oauth_router(app):
     never covered it, and saying so is better than an assertion that would have
     to fake a credential to hold.
     """
-    mounted = {served.path for served in iter_served_routes(app)}
+    mounted = _served_paths(app)
 
     assert {
         path for path in mounted if "/auth/oauth/" in path
@@ -511,6 +542,15 @@ def _served_operations(app):
 _PATH_PARAMETER_GROUP = re.compile(r"\(\?P<[^>]+>")
 
 
+def _served_operation_counts(app) -> Counter:
+    """How many times each ``(method, effective path)`` is served."""
+    return Counter(
+        (method, route.path)
+        for route in iter_served_routes(app)
+        for method in sorted(route.methods)
+    )
+
+
 def _matched_request_paths(served: ServedEndpoint) -> str:
     """The set of request paths a route matches, as a comparable key.
 
@@ -700,11 +740,7 @@ def test_served_and_documented_operation_counts_agree(published_app):
     # ``ServedRoute.path`` is the EFFECTIVE, still-templated path, which is
     # what ``path_format`` was being read for; the prefix ``include_router``
     # contributed is already merged into it.
-    served = Counter(
-        (method, route.path)
-        for route in iter_served_routes(published_app)
-        for method in sorted(route.methods)
-    )
+    served = _served_operation_counts(published_app)
     documented = Counter(
         (method.upper(), path)
         for path, path_item in spec.get("paths", {}).items()

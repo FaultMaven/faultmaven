@@ -600,20 +600,74 @@ async def test_many_interleaved_tenants_do_not_bleed(auth_service):
 # Attack 6 — find a route the binder never sees
 # =============================================================================
 
+#: Served entries the global binder does not run for, each safe for a stated
+#: reason. Keyed ``(kind, path, name)``; a ``None`` name matches any name.
+#:
+#: The four ``Route`` entries are the pages ``FastAPI.setup()`` adds for itself,
+#: named by the handler FastAPI gives them, so a look-alike added by hand under
+#: another name is still reported. None of them reads tenant data: they render
+#: the published contract and the two documentation UIs around it.
+BINDER_EXEMPT: dict[tuple[str, str, str | None], str] = {
+    ("Route", "/openapi.json", "openapi"): (
+        "FastAPI's generated OpenAPI document — the published contract, the "
+        "same for every caller and every tenant"
+    ),
+    ("Route", "/docs", "swagger_ui_html"): (
+        "FastAPI's Swagger UI page: static HTML that fetches /openapi.json"
+    ),
+    ("Route", "/docs/oauth2-redirect", "swagger_ui_redirect"): (
+        "FastAPI's Swagger UI OAuth2 redirect helper: static HTML"
+    ),
+    ("Route", "/redoc", "redoc_html"): (
+        "FastAPI's ReDoc page: static HTML that fetches /openapi.json"
+    ),
+    ("Mount", "/static", None): (
+        "a static-asset mount serves files, not tenant data. None is mounted "
+        "today; the exemption predates this table"
+    ),
+}
+
+
+def _routes_the_binder_does_not_cover(app) -> list:
+    """Everything served that the global binder never runs for, less the exempt.
+
+    A global dependency runs only where FastAPI resolves a dependant — an
+    ``APIRoute`` or ``APIWebSocketRoute``. Everything else it serves is outside
+    the binder: a ``Mount`` or ``Host`` hands the request to another app, and a
+    plain Starlette ``Route`` or ``WebSocketRoute`` calls its endpoint directly.
+    Measured, with a global dependency that records each call, on 0.136.0 and
+    0.141.1 alike: it never ran for any of those four.
+
+    Through ``route_enumeration``, not ``app.routes``. On FastAPI >= 0.139 a
+    Mount, Host or Route added to a router that is then included is absent from
+    ``app.routes``; the first two are also newly SERVED there (the pinned
+    0.136.0 drops them in the eager copy). A flat scan cannot see the escapes
+    this exists to find. fm#1308.
+    """
+    from faultmaven.api.route_enumeration import iter_unresolved_routes
+
+    return [
+        route
+        for route in iter_unresolved_routes(app)
+        if (route.kind, route.path, route.name) not in BINDER_EXEMPT
+        and (route.kind, route.path, None) not in BINDER_EXEMPT
+    ]
+
 
 def test_the_real_app_binds_every_route():
-    """The binder is registered globally, and nothing is mounted around it.
+    """The binder is registered globally, and nothing is served around it.
 
-    Both halves are needed. A global dependency covers every route on the
-    router — so no per-route audit is required — but a ``Mount``ed sub-app has
-    its own router and its own dependencies, and routes underneath it would be
-    served without ever binding a tenant. That is the one way a route escapes,
-    and it escapes silently: the sub-app works, and every request inside it
-    reads whatever the contextvar happened to hold.
+    Both halves are needed. A global dependency covers every ``APIRoute`` and
+    ``APIWebSocketRoute`` on the router — so no per-route audit is required —
+    but it covers nothing else. A ``Mount``ed or ``Host``-routed sub-app has its
+    own router and its own dependencies, and a plain Starlette ``Route`` or
+    ``WebSocketRoute`` calls its endpoint with no dependency resolution at all.
+    Each is served without ever binding a tenant, and escapes silently: it
+    works, and every request inside it reads whatever the contextvar happened
+    to hold.
     """
     import os
 
-    from faultmaven.api.route_enumeration import iter_mount_paths
     from faultmaven.config.settings import reset_settings
     from tests.integration._app_rebuild import rebuild_app
 
@@ -638,16 +692,11 @@ def test_the_real_app_binds_every_route():
         "dependency, so no route binds a tenant"
     )
 
-    # Through the flattener, not ``app.routes``. On FastAPI >= 0.139 a Mount
-    # added to a router that is then included is SERVED, the global binder
-    # never runs for it, and it is absent from ``app.routes`` — so a flat scan
-    # cannot see the one escape this half exists to find. On the pinned 0.136.0
-    # the eager copy drops that Mount and it is never served, which is why the
-    # flat scan used to be enough. fm#1308.
-    mounted = [path for path in iter_mount_paths(app) if path not in ("/static",)]
-    assert not mounted, (
-        f"sub-app(s) mounted at {mounted}: routes under a Mount are served by "
-        "that app's own router and never reach the global tenant binder. If the "
-        "mount is genuinely static assets, add it to the exemption above with "
-        "the reason."
+    escaped = _routes_the_binder_does_not_cover(app)
+    assert not escaped, (
+        f"served outside the global tenant binder: {escaped}. A Mount or Host "
+        "is served by another app's router, and a plain Starlette Route or "
+        "WebSocketRoute resolves no dependencies, so none of them ever binds a "
+        "tenant. Serve it as an APIRoute, or — if it genuinely reads no tenant "
+        "data — add it to BINDER_EXEMPT with the reason."
     )

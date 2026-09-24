@@ -12,10 +12,12 @@ pattern covers ``iter_served_routes`` in
 ``tests/integration/api/test_no_unauthenticated_operations.py``.
 
 fm#1308: three readers still took the pre-0.139 shape for granted — the
-tenant-binder probe's Mount scan and the duplicate-registration guard walked
+tenant-binder probe's escape scan and the duplicate-registration guard walked
 ``app.routes`` flatly, and ``iter_documented_routes`` read the route's own
 ``include_in_schema`` where only the context carries an included router's
-``False``. These pin the module half of each.
+``False``. These pin the module half of each; the call-site half — that each
+site reads through this module at all — is
+``tests/integration/api/test_route_walk_sites_reach_included_routers.py``.
 """
 
 from types import SimpleNamespace
@@ -26,7 +28,7 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
-from starlette.routing import Mount, Route
+from starlette.routing import Host, Mount, Route
 
 from faultmaven.api import route_enumeration
 
@@ -78,51 +80,78 @@ def _sub_app():
     return Starlette(routes=[Route("/x", lambda request: PlainTextResponse("sub"))])
 
 
-def _serves(app, path: str) -> bool:
-    return TestClient(app).get(path).status_code == 200
+async def _plain(request):
+    return PlainTextResponse("plain")
+
+
+async def _socket(websocket):  # pragma: no cover - never dispatched
+    await websocket.close()
 
 
 # =============================================================================
-# iter_mount_paths
+# iter_unresolved_routes
 # =============================================================================
 
 
-def test_a_mount_inside_an_included_router_is_reported_by_the_flattened_arm(
+def _unresolved(app) -> set:
+    return {
+        (r.kind, r.path, r.host) for r in route_enumeration.iter_unresolved_routes(app)
+    }
+
+
+_FASTAPI_DOCS = {
+    ("Route", "/openapi.json", None),
+    ("Route", "/docs", None),
+    ("Route", "/docs/oauth2-redirect", None),
+    ("Route", "/redoc", None),
+}
+
+
+def test_a_sub_app_inside_an_included_router_is_reported_by_the_flattened_arm(
     monkeypatch,
 ):
     """The >= 0.139 arm, executed on the pinned 0.136 by injection.
 
     The table below is the real 0.141.1 shape: the top-level Mount sits in
     ``app.routes`` and the included router is one opaque placeholder. A flat
-    scan of it answers ``['/top']`` and never sees ``/pre/sub`` — which on that
-    version is served, beneath an app whose global dependencies never run for
-    it. That is the escape ``test_the_real_app_binds_every_route`` exists to
-    find.
+    scan of it answers ``/top`` and never sees what the router carries — which
+    on that version is served, beneath an app whose global dependencies never
+    run for it. That is the escape ``test_the_real_app_binds_every_route``
+    exists to find.
     """
     top = Mount("/top", app=_sub_app())
-    as_written = Mount("/sub", app=_sub_app())
-    as_served = Mount("/pre/sub", app=_sub_app())
     monkeypatch.setattr(
         route_enumeration,
         "iter_route_contexts",
         lambda routes: [
             _Context(APIRoute("/leaf", _handler), "/pre/leaf", {"GET"}, object()),
-            # A Mount reached through include_router: the context's own path is
-            # empty and the prefixed one is on the copy FastAPI dispatches to.
-            _Context(as_written, "", starlette_route=as_served),
+            # Reached through include_router: the context's own path is empty
+            # and the prefixed one is on the copy FastAPI dispatches to.
+            _Context(
+                Mount("/sub", app=_sub_app()),
+                "",
+                starlette_route=Mount("/pre/sub", app=_sub_app()),
+            ),
+            _Context(Route("/r", _plain), "", starlette_route=Route("/pre/r", _plain)),
+            _Context(Host("nested.example.com", app=_sub_app()), ""),
             _Context(top, "/top"),
         ],
     )
     app = SimpleNamespace(routes=[top, _IncludedRouterPlaceholder()])
 
-    assert route_enumeration.iter_mount_paths(app) == ["/pre/sub", "/top"], (
-        "the flattened arm did not run, or it read the context's empty path "
+    assert _unresolved(app) == {
+        ("Mount", "/pre/sub", None),
+        ("Route", "/pre/r", None),
+        ("Host", "", "nested.example.com"),
+        ("Mount", "/top", None),
+    }, (
+        "the flattened arm did not run, or it read a context's empty path "
         "instead of the served one — a flat scan of this table sees only /top"
     )
 
 
-def test_a_mount_whose_path_cannot_be_recovered_is_still_reported(monkeypatch):
-    """Fail closed: an unnameable mount is still a mount.
+def test_an_entry_whose_path_cannot_be_recovered_is_still_reported(monkeypatch):
+    """Fail closed: an unnameable sub-app is still served.
 
     If a future FastAPI stops exposing the dispatched copy, the entry must not
     vanish — the tenant-binder probe exempts known paths, and a dropped entry
@@ -134,39 +163,74 @@ def test_a_mount_whose_path_cannot_be_recovered_is_still_reported(monkeypatch):
         lambda routes: [_Context(Mount("/sub", app=_sub_app()), "")],
     )
 
-    assert route_enumeration.iter_mount_paths(SimpleNamespace(routes=[])) == [""]
+    assert _unresolved(SimpleNamespace(routes=[])) == {("Mount", "", None)}
 
 
-def test_the_pre_0_139_mount_arm_is_the_flat_scan(monkeypatch):
-    """And it is complete there, because the eager copy drops a nested Mount."""
+def test_the_pre_0_139_arm_is_the_flat_scan(monkeypatch):
+    """Complete there: the eager copy drops a nested Mount or Host.
+
+    Built without ``include_router`` so that this also holds when the flat arm
+    is forced on a FastAPI that records placeholders.
+    """
     monkeypatch.setattr(route_enumeration, "iter_route_contexts", None)
+    app = FastAPI()
+    app.add_api_route("/leaf", _handler)
+    app.add_api_websocket_route("/ws", _socket)
+    app.mount("/top", app=_sub_app())
+    app.host("top.example.com", app=_sub_app())
+    app.add_route("/plain", _plain)
+
+    assert _unresolved(app) == _FASTAPI_DOCS | {
+        ("Mount", "/top", None),
+        ("Host", "", "top.example.com"),
+        ("Route", "/plain", None),
+    }
+
+
+def test_every_unresolved_entry_the_router_serves_is_enumerated():
+    """Measured against the router, not against a belief about the version.
+
+    Each shape is added once to the app and once to a router included at
+    ``/pre``. Which of those the router really serves differs by version —
+    on 0.136.0 the nested Mount and Host are 404, dropped by the eager copy;
+    on 0.141.1 they are 200 — and the enumeration must equal what is served
+    either way, so this test needs no version gate to be right on both.
+    """
     router = APIRouter()
+    router.mount("/sub", app=_sub_app())
+    router.host("nested.example.com", app=_sub_app())
+    router.add_route("/nested-route", _plain)
     router.add_api_route("/leaf", _handler)
     app = FastAPI()
     app.include_router(router, prefix="/pre")
     app.mount("/top", app=_sub_app())
+    app.host("top.example.com", app=_sub_app())
+    app.add_route("/top-route", _plain)
+    client = TestClient(app)
 
-    assert route_enumeration.iter_mount_paths(app) == ["/top"]
+    probes = {
+        ("Mount", "/top", None): client.get("/top/x"),
+        ("Mount", "/pre/sub", None): client.get("/pre/sub/x"),
+        ("Host", "", "top.example.com"): client.get(
+            "/x", headers={"host": "top.example.com"}
+        ),
+        ("Host", "", "nested.example.com"): client.get(
+            "/pre/x", headers={"host": "nested.example.com"}
+        ),
+        ("Route", "/top-route", None): client.get("/top-route"),
+        ("Route", "/pre/nested-route", None): client.get("/pre/nested-route"),
+    }
+    served = {
+        entry for entry, response in probes.items() if response.status_code == 200
+    }
 
-
-def test_every_mount_the_router_serves_is_enumerated():
-    """Measured against the router, not against a belief about the version.
-
-    On 0.136.0 ``GET /pre/sub/x`` is 404 — the eager copy dropped the Mount —
-    so only ``/top`` is owed. On 0.141.1 it is 200, so both are, and a flat
-    scan reports one of the two. Either way the enumeration must equal what is
-    really served, so this test needs no version gate to be right on both.
-    """
-    router = APIRouter()
-    router.mount("/sub", app=_sub_app())
-    app = FastAPI()
-    app.include_router(router, prefix="/pre")
-    app.mount("/top", app=_sub_app())
-
-    served = {prefix for prefix in ("/top", "/pre/sub") if _serves(app, prefix + "/x")}
-
-    assert "/top" in served, "positive control: the top-level mount must serve"
-    assert set(route_enumeration.iter_mount_paths(app)) == served
+    assert {
+        ("Mount", "/top", None),
+        ("Host", "", "top.example.com"),
+        ("Route", "/top-route", None),
+        ("Route", "/pre/nested-route", None),
+    } <= served, "positive control: every top-level shape, and an included Route, serve"
+    assert _unresolved(app) - _FASTAPI_DOCS == served
 
 
 # =============================================================================

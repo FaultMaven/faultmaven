@@ -1478,7 +1478,6 @@ def _mount_oauth_router(app: FastAPI) -> FastAPI:
     a hand-rolled stand-in: if the router's path ever moves, this goes red
     instead of quietly measuring a path nobody serves.
     """
-    from faultmaven.api.route_enumeration import iter_served_routes
     from faultmaven.modules.auth.api.oauth import router as oauth_router
 
     app.include_router(oauth_router, prefix="/api/v1")
@@ -1487,11 +1486,18 @@ def _mount_oauth_router(app: FastAPI) -> FastAPI:
     # included router's routes into ``app.routes``. A flat walk here asserts the
     # premise is FALSE on any FastAPI at or above that, so the fixture errors
     # and takes its whole class with it while the code under test is fine.
-    assert any(
+    assert _serves_the_authorize_leg(app)
+    return app
+
+
+def _serves_the_authorize_leg(app: FastAPI) -> bool:
+    """Does ``app`` serve the OAuth authorize leg? Read through the flattener."""
+    from faultmaven.api.route_enumeration import iter_served_routes
+
+    return any(
         served.path.endswith("/auth/oauth/authorize")
         for served in iter_served_routes(app)
     )
-    return app
 
 
 @pytest.fixture
