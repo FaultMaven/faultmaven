@@ -727,7 +727,9 @@ def test_tool_loop_messages_bounded_elides_oldest_keeps_recent():
             }
         )
     budget = 400
-    out = MilestoneEngine._bound_tool_loop_messages(fake, msgs, budget, "openai")
+    out = MilestoneEngine._bound_tool_loop_messages(
+        fake, msgs, budget, "openai", tools=None
+    )
 
     total = sum(
         _count(str(m.get("content") or "") + str(m.get("tool_calls") or ""))
@@ -749,7 +751,10 @@ def test_tool_loop_messages_bounded_elides_oldest_keeps_recent():
     # No-op (returns the SAME list object) when already under budget.
     under = msgs[:4]
     assert (
-        MilestoneEngine._bound_tool_loop_messages(fake, under, 10**6, "openai") is under
+        MilestoneEngine._bound_tool_loop_messages(
+            fake, under, 10**6, "openai", tools=None
+        )
+        is under
     )
 
 
@@ -803,6 +808,101 @@ def test_tools_effectively_available_gates_on_capability():
     g = MilestoneEngine._da_provider_supports_tools
     assert g(eng(object(), incapable)) is False
     assert g(eng(object(), capable)) is True
+
+
+@pytest.mark.parametrize(
+    "provider, model",
+    [("anthropic", "claude-sonnet-4-6"), ("LLMRouter", None)],
+)
+def test_target_tokens_is_a_hard_cap_on_the_assembled_prompt(provider, model):
+    """#614: the tool loop re-assembles the base at the room left beside its
+    system instruction and tools payload, so ``target_tokens`` must hold as a
+    HARD cap in the named provider's estimator — through the main template
+    (sections squeezed) and below its floor (the minimal fallback).
+
+    The two estimators are the ones the tool-loop bound uses: cl100k for a
+    tokenizer-backed DA provider, ``len // 4`` for the router."""
+    import re
+
+    from faultmaven.utils.token_estimation import estimate_tokens
+
+    def _unfenced(prompt: str) -> str:
+        # The fence token and the render time differ per render; nothing else.
+        prompt = re.sub(r'fence="[0-9a-f]+"', 'fence=""', prompt)
+        return re.sub(r"\d{4}-\d\d-\d\dT[\d:.]+\+00:00", "<now>", prompt)
+
+    case = _pressure_case()
+    uncapped = get_prompt_for_case(
+        case, "why slow?", provider_name=provider, model_name=model
+    )
+    uncapped_tokens = estimate_tokens(uncapped, provider, model)
+    fallback = _unfenced(get_fallback_prompt_for_case(case, "why slow?"))
+
+    regimes = set()
+    for target in (
+        uncapped_tokens - 1,  # just under: sections squeezed, main template
+        uncapped_tokens - 4_000,
+        5_000,  # far below the ~19K template: minimal fallback
+    ):
+        # Positive control: every target is one the uncapped prompt breaks.
+        assert uncapped_tokens > target
+        capped = get_prompt_for_case(
+            case,
+            "why slow?",
+            provider_name=provider,
+            model_name=model,
+            target_tokens=target,
+        )
+        assert estimate_tokens(capped, provider, model) <= target, target
+        regimes.add("fallback" if _unfenced(capped) == fallback else "main")
+    # Both regimes were actually reached, so neither is a free pass.
+    assert regimes == {"main", "fallback"}
+
+    # A cap above the resolved budget changes nothing.
+    assert _unfenced(
+        get_prompt_for_case(
+            case,
+            "why slow?",
+            provider_name=provider,
+            model_name=model,
+            target_tokens=10**6,
+        )
+    ) == _unfenced(uncapped)
+
+
+def test_target_tokens_is_enforced_by_the_backstop_not_only_the_fill(
+    monkeypatch, caplog
+):
+    """The cap lowers the CEILING too, not just the fill target. Sizing the
+    sections to the target leaves the 256-token margin to absorb compaction
+    overshoot; at ``PROMPT_OVERHEAD_MARGIN_TOKENS=0`` (a valid setting) the
+    fill alone overshoots some targets, and only the overflow backstop —
+    enforcing the cap as a ceiling — brings them back under it."""
+    import logging
+
+    from faultmaven.config.settings import get_settings
+    from faultmaven.utils.token_estimation import estimate_tokens
+
+    monkeypatch.setattr(get_settings().prompt_budget, "overhead_margin_tokens", 0)
+    case = _pressure_case()
+    provider = "LLMRouter"  # len // 4: deterministic and fast
+    full = estimate_tokens(
+        get_prompt_for_case(case, "why slow?", provider_name=provider), provider
+    )
+
+    caplog.set_level(logging.WARNING)
+    for target in range(full - 3_700, full - 1_300, 97):
+        capped = get_prompt_for_case(
+            case, "why slow?", provider_name=provider, target_tokens=target
+        )
+        assert estimate_tokens(capped, provider) <= target, target
+    # Positive control: the sweep reached targets the fill alone overshoots —
+    # the backstop had to act. Without this the loop could pass on a band where
+    # the ceiling never matters.
+    assert any(
+        r.getMessage() in ("prompt_overflow_trimmed", "prompt_overflow_fallback")
+        for r in caplog.records
+    )
 
 
 def test_resolve_tool_loop_budget_is_bounded():
@@ -885,7 +985,9 @@ def test_tool_loop_bound_counts_reasoning_artifacts(monkeypatch):
     # Sized so ONE reasoning-carrying group fits and four do not: the elision
     # policy is unchanged, only the estimate that drives it.
     budget = 4000
-    out = MilestoneEngine._bound_tool_loop_messages(fake, msgs, budget, "openai")
+    out = MilestoneEngine._bound_tool_loop_messages(
+        fake, msgs, budget, "openai", tools=None
+    )
 
     # The reasoning is visible to the estimator, so the history is over budget
     # and gets bounded rather than passed through untouched.
@@ -911,6 +1013,8 @@ def test_tool_loop_bound_counts_reasoning_artifacts(monkeypatch):
         },
     ]
     assert (
-        MilestoneEngine._bound_tool_loop_messages(fake, gemini_msgs, 1000, "openai")
+        MilestoneEngine._bound_tool_loop_messages(
+            fake, gemini_msgs, 1000, "openai", tools=None
+        )
         is not gemini_msgs
     )

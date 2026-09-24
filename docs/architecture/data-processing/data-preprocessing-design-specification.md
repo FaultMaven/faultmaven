@@ -1270,11 +1270,12 @@ dicts. The durable "already vectorized" signal is the `evidence.vectorized` colu
 #### R5: Context Budget
 
 Tool results can flood the LLM context window with log noise. The engine resolves a
-per-turn token budget from `prompt_budget.tool_observation_max_tokens`, floored by the
-real context window of the model in use, and estimates tokens per assembled message. If
-the total fits, the messages pass through untouched. Otherwise the head (system + base
-task) is kept and tool-call groups are re-added newest-first while they fit; whatever
-does not fit is dropped **whole**, replaced by a single marker:
+per-call token budget — the prompt target plus `prompt_budget.tool_observation_max_tokens`,
+clamped by the context window of the model in use — and estimates tokens per assembled
+message and for the `tools=` definitions sent on that call (#614). If the total fits,
+the messages pass through untouched. Otherwise the head (system + base task) is kept and
+tool-call groups are re-added newest-first while they fit; whatever does not fit is
+dropped **whole**, replaced by a single marker:
 
 > `[Earlier tool calls and their results were elided to stay within the context budget. Re-run a search if you need those specifics.]`
 

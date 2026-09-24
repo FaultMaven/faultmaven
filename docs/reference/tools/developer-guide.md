@@ -605,9 +605,9 @@ Before submitting a new tool:
 
 ## Tool Results and the Context Budget
 
-Tool results are subject to a **context budget** in `MilestoneEngine._tool_augmented_generate()`. The budget is a token count, resolved from `prompt_budget.tool_observation_max_tokens` and floored by the real context window of the model in use.
+Tool results are subject to a **context budget** in `MilestoneEngine._tool_augmented_generate()`. The budget is a per-call token count — `prompt_budget.tool_observation_max_tokens` on top of the prompt target, clamped by the context window of the model in use — and it counts everything the call sends: the messages **and** the `tools=` definitions offered on that call, your tool's schema among them (#614).
 
-When the assembled messages exceed it, the engine keeps the head (system + base task) and re-adds tool-call groups newest-first while they fit. Whatever does not fit is dropped **whole**, replaced by a single marker:
+When the assembled messages plus those definitions exceed it, the engine keeps the head (system + base task) and re-adds tool-call groups newest-first while they fit. Whatever does not fit is dropped **whole**, replaced by a single marker:
 
 > `[Earlier tool calls and their results were elided to stay within the context budget. Re-run a search if you need those specifics.]`
 
@@ -617,6 +617,7 @@ When the assembled messages exceed it, the engine keeps the head (system + base 
 2. **Recency wins, not position within your output.** The oldest tool calls are dropped first. On a long tool loop, an early result may vanish from a later iteration's context — so if a finding matters for the turn's conclusion, restate it in the result of the call that acts on it rather than assuming the earlier one is still visible.
 3. **Length costs the whole group.** A verbose result makes its group a bigger candidate for elision. Prefer dense output over padded output, but do not truncate to hit a line count — there is no line-based preservation rule to exploit.
 4. **Nothing keeps a copy.** An elided result is gone from that call's context and is not archived anywhere the agent or a debugger can reach it — `agent_tool_calls` has had no writer since the orchestration service was removed. Treat the result you return as the only record of it.
+5. **Your schema costs every call.** Tool definitions are sent on every tool iteration and count against the same budget as the results, so a long description or parameter schema leaves less room for everyone's observations. Keep them as short as the model needs to call the tool correctly.
 
 > **Changed in #982.** The previous mechanism counted characters against a fixed 30K `TOOL_RESULT_BUDGET` and compressed individual results by keeping the first few lines plus any lines matching a high-signal keyword list (`error`, `exception`, `timeout`, `traceback`, …). It lived in `AgentOrchestrationService` and went with it, along with the `AgentToolCall` audit row that used to hold the uncompressed original. If you have tools written to that contract — front-loading findings into the first three lines, or seeding keywords to survive filtering — neither technique does anything now. Points 2 and 4 above are the rules that replaced them.
 
