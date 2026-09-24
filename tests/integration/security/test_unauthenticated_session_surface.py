@@ -492,6 +492,25 @@ def test_the_refusal_precedes_service_resolution():
     )
 
 
+def _ungated_operations(app) -> list[str]:
+    """Every served operation whose resolved tree lacks ``require_authentication``.
+
+    Through the flattener: the router arrives by ``include_router``, which on
+    FastAPI >= 0.139 leaves ``app.routes`` holding a placeholder instead of the
+    routes, and a route's own ``dependant`` there omits what the include added.
+    """
+    return sorted(
+        f"{method} {route.path}"
+        for route in iter_served_routes(app)
+        for method in route.methods
+        if method not in {"HEAD", "OPTIONS"}
+        and not any(
+            getattr(dependency.call, "__name__", "") == "require_authentication"
+            for dependency in route.dependant.dependencies
+        )
+    )
+
+
 def test_the_heartbeat_is_the_only_ungated_route_on_this_router():
     """And the exception is named, not left as whatever the file happens to do.
 
@@ -503,16 +522,7 @@ def test_the_heartbeat_is_the_only_ungated_route_on_this_router():
     app = FastAPI()
     app.include_router(session_router, prefix="/api/v1")
 
-    ungated = sorted(
-        f"{method} {route.path}"
-        for route in iter_served_routes(app)
-        for method in route.methods
-        if method not in {"HEAD", "OPTIONS"}
-        and not any(
-            getattr(dependency.call, "__name__", "") == "require_authentication"
-            for dependency in route.dependant.dependencies
-        )
-    )
+    ungated = _ungated_operations(app)
 
     assert ungated == [
         "POST /api/v1/sessions",
