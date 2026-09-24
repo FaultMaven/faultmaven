@@ -970,14 +970,29 @@ _NOT_THE_RULE = {
         "faultmaven/modules/preprocessing/extractors/command_output_extractor.py",
         r"PID\s+USER\s+%CPU\s+%MEM\s+VSZ\s+RSS",
     ): "matches the ps(1) header row, extracts no name",
+    # The sshd event rules moved to ``sshd_auth`` and are matched at the
+    # message start there (fm#1657). The address-slot regexes beside them
+    # read past the client's login name to the address and deliberately
+    # spell no ``user``, so they are not here.
     (
-        "faultmaven/modules/preprocessing/extractors/logs_extractor.py",
-        r"invalid user",
-    ): "presence test for the event counter, extracts no name",
+        "faultmaven/modules/preprocessing/extractors/sshd_auth.py",
+        r"(?:[\w-]+:\s+)?"
+        r"(?:(?:Failed|Accepted|Partial|Postponed)\s+\S+\s+for\s+"
+        r"|(?:maximum authentication attempts exceeded|Too many authentication failures)"
+        r"\s+for\s+"
+        r"|(?:Connection (?:closed|reset) by|Connection from|Disconnected from"
+        r"|Disconnecting|Received disconnect from|Timeout, client not responding from"
+        r"|Unable to negotiate with)\s+"
+        r")?invalid user\b",
+    ): "presence test for the invalid_user counter, extracts no name",
     (
-        "faultmaven/modules/preprocessing/extractors/logs_extractor.py",
-        r"sshd[^:]*:\s*session opened for user",
+        "faultmaven/modules/preprocessing/extractors/sshd_auth.py",
+        r"session opened for user\b",
     ): "event matcher for the session counter, extracts no name",
+    (
+        "faultmaven/modules/preprocessing/extractors/sshd_auth.py",
+        r"Invalid user\s",
+    ): "selects the getpwnamallow address-slot shape, extracts no name",
 }
 
 

@@ -132,6 +132,11 @@ document-scoped fails rather than passing quietly.
   auth line or such an outcome, so an IP with only `Invalid user` lines
   renders `invalid_user=N → auth total=0` rather than vanishing — `0` means
   no authentication outcome and no PAM failure was logged for it.
+- Which IP a row belongs to is sshd's own **address slot** for that message,
+  not every IPv4 on the line, and each category is read from the words sshd
+  opened its message with (fm#1657, `extractors/sshd_auth.py`). sshd copies
+  the client's login name verbatim, so reading the whole line let a login
+  name add a category or plant one against an address it spelled out.
 
 #### Rows written before fm#1587
 

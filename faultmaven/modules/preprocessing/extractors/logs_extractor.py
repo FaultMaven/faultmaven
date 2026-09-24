@@ -9,6 +9,7 @@ import re
 from collections import Counter
 
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
+from faultmaven.modules.preprocessing.extractors.sshd_auth import read_sshd_auth_line
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
     PID_MAX,
@@ -651,39 +652,49 @@ class LogsAndErrorsExtractor:
     _PID_MAX = PID_MAX
     _HTTP_PATH_RE = re.compile(r"\b(?:GET|POST|PUT|DELETE|PATCH)\s+(/[^\s\?]*)\b")
 
-    # SSH event type patterns for semantic counting
-    _FAILED_PASSWORD_RE = re.compile(r"Failed password", re.IGNORECASE)
-    _ACCEPTED_PASSWORD_RE = re.compile(
-        r"Accepted (?:password|publickey)", re.IGNORECASE
-    )
-    _INVALID_USER_RE = re.compile(r"invalid user", re.IGNORECASE)
+    # Semantic event types. The sshd ones — failed_password, accepted_login,
+    # invalid_user, break_in_attempt, pam_auth_failure, ssh_session_opened and
+    # the attempt-outcome test — are read by ``sshd_auth.read_sshd_auth_line``
+    # from the words sshd OPENED its message with, and credited to the address
+    # in sshd's own slot (fm#1657). A search anywhere in the line also matched
+    # inside the client's login name, so ``Invalid user Failed password for x
+    # from 7.7.7.7`` counted a password failure against 7.7.7.7.
+    #
+    # PAM authentication failure lines accompany sshd "Failed password" events —
+    # they are separate log lines for the same auth event (two lines per failure).
+    # Two syslog PAM formats exist in the wild, and ``sshd_auth`` reads both:
+    #   A. modern Linux-PAM:  "pam_unix(sshd:auth): authentication failure"
+    #   B. older Red Hat:     "sshd(pam_unix)[19939]: authentication failure"
+    # The loghub Linux fixture is format B; OpenSSH and most post-2010 distros
+    # are format A.
+    #
+    # ``connection_closed`` alone is still a search: sshd writes the phrase
+    # mid-message (``fatal: Write failed: Connection reset by peer``) and so
+    # does every other network daemon, so it has no fixed position to anchor
+    # to. It is not an auth category and feeds no auth total.
     _CONNECTION_CLOSED_RE = re.compile(
         r"Connection closed|Connection reset", re.IGNORECASE
     )
-    _BREAK_IN_ATTEMPT_RE = re.compile(r"POSSIBLE BREAK-IN ATTEMPT", re.IGNORECASE)
-    # PAM authentication failure lines accompany sshd "Failed password" events —
-    # they are separate log lines for the same auth event (two lines per failure).
-    # Counting them separately gives a more complete per-IP auth failure tally.
-    #
-    # Two syslog PAM formats exist in the wild:
-    #   A. modern Linux-PAM:  "pam_unix(sshd:auth): authentication failure"
-    #   B. older Red Hat:     "sshd(pam_unix)[19939]: authentication failure"
-    # Both must match — the loghub Linux fixture is format B; OpenSSH and most
-    # post-2010 distros are format A.
-    _PAM_AUTH_FAILURE_RE = re.compile(
-        r"(?:pam_unix\([^)]*\)|\(pam_unix\)\[\d+\]):\s*authentication failure",
-        re.IGNORECASE,
+    # The order events are counted in on one line, which is the insertion
+    # order ``event_counts.most_common()`` breaks ties by.
+    _LINE_EVENT_ORDER: tuple = (
+        "failed_password",
+        "accepted_login",
+        "invalid_user",
+        "connection_closed",
+        "break_in_attempt",
+        "pam_auth_failure",
+        "ssh_session_opened",
     )
     # Numeric state codes (e.g. "error state 6") are internal to the log source;
     # the log itself does not document their meanings. Detection triggers a note
     # in FILE SUMMARY to prevent the agent from asserting meanings from training data.
     _STATE_CODE_RE = re.compile(r"\berror state \d+\b", re.IGNORECASE)
-    # Successful SSH session opens — PAM-style syslog logs a "session opened
-    # for user <name>" line from sshd instead of "Accepted password". Counted
-    # separately so the breakdown table distinguishes SSH successes from
-    # local su/kerberos sessions (which also emit "session opened" but from
-    # a different service process).
-    _SSH_SESSION_RE = re.compile(r"sshd[^:]*:\s*session opened for user", re.IGNORECASE)
+    # Successful SSH session opens (``ssh_session_opened``) — PAM-style syslog
+    # logs a "session opened for user <name>" line from sshd instead of
+    # "Accepted password". Counted from an sshd tag only, so the breakdown
+    # table distinguishes SSH successes from local su/kerberos sessions (which
+    # also emit "session opened" but from a different service process).
     # Auth-relevant event types included in the per-IP breakdown table, in
     # the order the table renders them.
     # ssh_session_opened is intentionally excluded: "session opened" lines
@@ -716,22 +727,10 @@ class LogsAndErrorsExtractor:
     # <ip> port <n> ssh2`` (OpenSSH auth.c ``auth_log``). A keyboard-
     # interactive brute force is ``Failed keyboard-interactive/pam for ...``
     # lines, and without these every such attempt read as zero (fm#1627
-    # review). This pattern is an OUTCOME test only — it adds no event
-    # category — and a line it shares with ``failed_password`` is still one
-    # outcome line, because the tally is per line.
-    # Deliberately NOT outcomes:
-    #   ``Failed none`` — the client's initial ``none`` method request, sent
-    #     to learn which methods the server allows. It carries no credential
-    #     (loghub OpenSSH_2k has four, all ``for invalid user``).
-    #   ``Partial``/``Postponed`` — one step of a multi-step login, whose
-    #     own ``Accepted``/``Failed`` line follows; counting them would count
-    #     one attempt twice.
-    _SSHD_AUTH_OUTCOME_RE = re.compile(
-        r"\b(?:Failed|Accepted)\s+"
-        r"(?:password|publickey|hostbased|keyboard-interactive(?:/\w+)?"
-        r"|gssapi(?:-[\w-]+)?)\s+for\s",
-        re.IGNORECASE,
-    )
+    # review). ``sshd_auth.AUTH_OUTCOME_RE`` is that OUTCOME test — it adds no
+    # event category — and a line it shares with ``failed_password`` is still
+    # one outcome line, because the tally is per line. ``Failed none`` and
+    # ``Partial``/``Postponed`` are deliberately not outcomes (see there).
     # Event types that mark a source IP as an "attacker" for the purpose of
     # disambiguating Accepted password lines (ISS-026). An IP that ONLY
     # appears in accepted_login (and never in any of these) is treated as a
@@ -1074,28 +1073,27 @@ class LogsAndErrorsExtractor:
 
             # Semantic event classification — also track first/last timestamp
             # per event type so the entity profile can report temporal span.
-            matched_events = []
-            if self._FAILED_PASSWORD_RE.search(line):
-                event_counts["failed_password"] += 1
-                matched_events.append("failed_password")
-            if self._ACCEPTED_PASSWORD_RE.search(line):
-                event_counts["accepted_login"] += 1
-                matched_events.append("accepted_login")
-            if self._INVALID_USER_RE.search(line):
-                event_counts["invalid_user"] += 1
-                matched_events.append("invalid_user")
+            # sshd's events come from the words sshd opened its message with
+            # (fm#1657); see ``sshd_auth``.
+            sshd = read_sshd_auth_line(line)
+            line_events = set(sshd.events)
             if self._CONNECTION_CLOSED_RE.search(line):
-                event_counts["connection_closed"] += 1
-                matched_events.append("connection_closed")
-            if self._BREAK_IN_ATTEMPT_RE.search(line):
-                event_counts["break_in_attempt"] += 1
-                matched_events.append("break_in_attempt")
-            if self._PAM_AUTH_FAILURE_RE.search(line):
-                event_counts["pam_auth_failure"] += 1
-                matched_events.append("pam_auth_failure")
-            if self._SSH_SESSION_RE.search(line):
-                event_counts["ssh_session_opened"] += 1
-                matched_events.append("ssh_session_opened")
+                line_events.add("connection_closed")
+            matched_events = [ev for ev in self._LINE_EVENT_ORDER if ev in line_events]
+            for ev in matched_events:
+                event_counts[ev] += 1
+            # Which IPs this line's events are CREDITED to (fm#1657). An sshd
+            # auth line is credited to the address in sshd's own slot and to
+            # nothing else: its login name, key id or disconnect reason can
+            # spell any address, and crediting every IPv4 on the line let a
+            # login name plant attempts against one. No slot, or an ambiguous
+            # one, credits no IP — the event still counts above. A line with
+            # no sshd auth event keeps every IPv4 on it.
+            line_is_outcome = sshd.outcome
+            if sshd.events or line_is_outcome:
+                event_ips = [ip for ip in line_ips if ip == sshd.address]
+            else:
+                event_ips = line_ips
             # An attempt OUTCOME, for the breakdown's ``auth total``
             # (fm#1627). Decided per line, so a ``Failed password`` line that
             # both the category and the method pattern match is one outcome.
@@ -1106,11 +1104,8 @@ class LogsAndErrorsExtractor:
             line_is_category_outcome = not self._AUTH_OUTCOME_EVENTS.isdisjoint(
                 matched_events
             )
-            line_is_outcome = line_is_category_outcome or bool(
-                self._SSHD_AUTH_OUTCOME_RE.search(line)
-            )
             line_is_other_outcome = line_is_outcome and not line_is_category_outcome
-            for ip in line_ips if line_is_outcome else ():
+            for ip in event_ips if line_is_outcome else ():
                 ip_auth_outcome_counts[ip] += 1
                 if line_is_other_outcome:
                     ip_other_outcome_counts[ip] += 1
@@ -1124,7 +1119,7 @@ class LogsAndErrorsExtractor:
                             event_last_ts[ev] = ts
                     # Track per-IP burst spans on attack-event lines — enables
                     # describing per-IP bursty behavior in the entity profile.
-                    for ip in line_ips:
+                    for ip in event_ips:
                         if ip not in ip_attack_first_ts or ts < ip_attack_first_ts[ip]:
                             ip_attack_first_ts[ip] = ts
                         if ip not in ip_attack_last_ts or ts > ip_attack_last_ts[ip]:
@@ -1132,18 +1127,18 @@ class LogsAndErrorsExtractor:
                 # Per-IP per-event-type counts — correlate IPs with events on the
                 # same line so the agent can answer "how many auth attempts did X make"
                 # directly from the extract rather than chaining search_file calls.
-                # ``line_ips`` is per-line distinct (fm#1587), so an IP written
+                # ``event_ips`` is per-line distinct (fm#1587), so an IP written
                 # twice on one line no longer counts its event twice.
                 # ``ip_auth_line_counts`` applies the same rule one level up,
                 # to the EVENT (fm#1596): a line matching two auth categories
                 # — "Failed password for invalid user X from IP" matches both
-                # _FAILED_PASSWORD_RE and _INVALID_USER_RE — is one auth
+                # failed_password and invalid_user — is one auth
                 # LINE, so it increments that tally once while still
                 # incrementing each category it matched. The tally decides
                 # which IPs get a breakdown row; the ``auth total`` is the
                 # outcome tally above (fm#1627).
                 line_is_auth = not self._AUTH_EVENTS.isdisjoint(matched_events)
-                for ip in line_ips:
+                for ip in event_ips:
                     if ip not in ip_event_counts:
                         ip_event_counts[ip] = Counter()
                     for ev in matched_events:
