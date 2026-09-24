@@ -23,8 +23,10 @@ import pytest
 
 from faultmaven.core.investigation.prompts import context_builder as cb
 from faultmaven.core.investigation.prompts.fence import mint_token
-from faultmaven.modules.agent.domain.services.orientation import EMPTY_TURN_TEXT
-from faultmaven.modules.case.contracts import MESSAGE_METADATA_USER_EMPTY
+from faultmaven.modules.case.contracts import (
+    EMPTY_TURN_TEXT,
+    MESSAGE_METADATA_USER_EMPTY,
+)
 
 
 def _marker_row(turn: int) -> dict:

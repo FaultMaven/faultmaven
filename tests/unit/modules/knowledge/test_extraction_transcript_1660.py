@@ -31,11 +31,9 @@ from faultmaven.core.investigation.milestone_engine import (
     RESPONSE_WITHHELD_TEXT,
 )
 from faultmaven.core.investigation.prompts.context_builder import NO_ANSWER_LINE
-from faultmaven.modules.agent.domain.services.orientation import (
+from faultmaven.modules.case.contracts import (
     EMPTY_AGENT_RESPONSE_TEXT,
     EMPTY_TURN_TEXT,
-)
-from faultmaven.modules.case.contracts import (
     MESSAGE_METADATA_AGENT_SYNTHESIZED,
     MESSAGE_METADATA_USER_EMPTY,
 )

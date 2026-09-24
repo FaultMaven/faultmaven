@@ -61,8 +61,8 @@ class CaseRepository(ABC):
     - InMemoryCaseRepository: Testing and development
     """
 
-    #: Shape of a minted message id. Matches what the turn path mints
-    #: (``investigation_service`` builds ``msg_<uuid4 hex[:12]>``), so a row
+    #: Shape of a minted message id. Matches what every writer mints
+    #: (``append_message_row`` builds ``msg_<uuid4 hex[:12]>``), so a row
     #: minted here is indistinguishable from one the live path wrote.
     _MESSAGE_ID_HEX = 12
 

@@ -15,8 +15,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.modules.agent.domain.services.orientation import EMPTY_TURN_TEXT
-from faultmaven.modules.case.contracts import MESSAGE_METADATA_USER_EMPTY
+from faultmaven.modules.case.contracts import (
+    EMPTY_TURN_TEXT,
+    MESSAGE_METADATA_USER_EMPTY,
+)
 
 
 def _row(role: str, content: str, *, server_written: bool = False) -> dict:

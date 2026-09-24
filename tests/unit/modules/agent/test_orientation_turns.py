@@ -28,11 +28,11 @@ from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
 )
-from faultmaven.modules.agent.domain.services.orientation import (
+from faultmaven.modules.case.contracts import (
     EMPTY_AGENT_RESPONSE_TEXT,
     EMPTY_TURN_TEXT,
+    MESSAGE_METADATA_AGENT_SYNTHESIZED,
 )
-from faultmaven.modules.case.contracts import MESSAGE_METADATA_AGENT_SYNTHESIZED
 from faultmaven.modules.case.domain.models import CaseState, TurnOutcome, TurnProgress
 
 pytestmark = pytest.mark.unit

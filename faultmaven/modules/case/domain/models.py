@@ -5226,13 +5226,18 @@ class Case(BaseModel):
 
         Per case-storage-design.md Section 4.7, each message contains:
         - message_id: str - Unique identifier
-        - case_id: str - Case this message belongs to
         - turn_number: int - Which turn this message belongs to
         - role: str - "user" | "assistant" | "system"
         - content: str - The actual message text
         - created_at: datetime - When message was created (ISO format)
         - token_count: Optional[int] - Number of tokens in content
         - metadata: dict - Additional data (sources, tools used, etc.)
+        - author_id: Optional[str] - The user who wrote it; None on server rows
+
+        A row is appended ONLY by ``append_message_row`` (case contracts), which
+        decides per row kind what blank content means — a blank row aborts the
+        whole aggregate save (#1452). The case id is not carried on the row:
+        the repository binds it from the case that holds it.
 
         NOTE: Does NOT contain session_id (per case-and-session-concepts.md)
         Sessions provide authentication only, not message ownership.

@@ -31,13 +31,13 @@ from faultmaven.core.investigation.milestone_engine import (
     RESPONSE_WITHHELD_TEXT,
 )
 from faultmaven.modules.agent.domain.services.orientation import (
-    EMPTY_AGENT_RESPONSE_TEXT,
-    EMPTY_TURN_TEXT,
     last_investigation_message,
 )
 from faultmaven.modules.agent.domain.services.out_of_band import OutOfBandTriage
 from faultmaven.modules.agent.domain.services.query_classifier import classify_query
 from faultmaven.modules.case.contracts import (
+    EMPTY_AGENT_RESPONSE_TEXT,
+    EMPTY_TURN_TEXT,
     MESSAGE_METADATA_AGENT_SYNTHESIZED,
     MESSAGE_METADATA_USER_EMPTY,
 )

@@ -29,80 +29,6 @@ if TYPE_CHECKING:
 
 
 # ============================================================
-# case_messages row metadata keys
-# ============================================================
-
-#: Set on a user row whose content the SERVER wrote because the user sent no
-#: message at all — a bare ``@FaultMaven`` (#1420). The row is real: the turn
-#: is charged and it advances the message clock, and ``case_messages`` requires
-#: non-blank content, so it can neither be omitted nor left empty.
-#:
-#: Anything that presents a user row as something the USER SAID must skip a row
-#: carrying this. Quoting it back to the model reads as a reply the user never
-#: made; counting it as title signal names the case after a placeholder
-#: (#1434).
-#:
-#: It lives here rather than beside the writer because it is part of the shape
-#: of a ``case_messages`` row, which this module owns, and its readers are in
-#: other modules.
-MESSAGE_METADATA_USER_EMPTY = "user_message_empty"
-
-#: Set on an ASSISTANT row whose content the SERVER wrote in place of an answer
-#: the model did not usefully give (#1433, #1442, #1451). Two writers set it:
-#: ``MilestoneEngine``, which synthesizes a placeholder keyed on the provider's
-#: normalised stop reason (withheld by a safety filter, truncated, empty,
-#: no signal), and ``InvestigationService``'s persistence backstop for a raw
-#: empty answer that bypassed the engine.
-#:
-#: Shape-neutral on purpose: it was ``agent_response_empty`` until the engine's
-#: placeholders began marking truncated and filtered turns too, which are not
-#: empty. It carries no stop reason — the reason picks the placeholder TEXT,
-#: and nothing reads it off the row.
-#:
-#: Anything that presents an assistant row as something the ASSISTANT SAID must
-#: not quote a row carrying this: replayed to the model as its own prior words,
-#: the placeholder reads as an answer it gave. See
-#: :func:`is_server_written_assistant_row`.
-MESSAGE_METADATA_AGENT_SYNTHESIZED = "agent_response_synthesized"
-
-
-def is_server_written_user_row(msg: dict) -> bool:
-    """A USER row whose content the server wrote (#1420, #1434).
-
-    Lives here, beside the key it reads, because it has four call sites across
-    two modules (``context_builder`` x3, ``case_service`` x1) and the rule was
-    implemented twice before this — once in each module — and the two copies
-    had already diverged on the one thing that makes it safe: the role check.
-
-    The role check is not cosmetic. An assistant row's ``metadata`` IS the
-    engine's own per-turn metadata dict, which many handlers write into; a
-    predicate that ignored ``role`` would silently delete the ASSISTANT's
-    answer from the prompt the day anything stamped this key there.
-    """
-    if msg.get("role") != "user":
-        return False
-    return bool((msg.get("metadata") or {}).get(MESSAGE_METADATA_USER_EMPTY))
-
-
-def is_server_written_assistant_row(msg: dict) -> bool:
-    """An ASSISTANT row whose content the server wrote (#1451).
-
-    The mirror of :func:`is_server_written_user_row`, and role-checked for the
-    same reason in the other direction: the rule describes one kind of row, and
-    a role-blind predicate would let a stray key on a USER row replace what the
-    user actually typed with a line saying the assistant did not answer.
-
-    A row this returns True for is not skipped by the prompt renderers — they
-    render a neutral marker line in its place, because a turn the model failed
-    to answer is information the next turn needs. What they must never do is
-    quote it as ``ASSISTANT: <text>``.
-    """
-    if msg.get("role") != "assistant":
-        return False
-    return bool((msg.get("metadata") or {}).get(MESSAGE_METADATA_AGENT_SYNTHESIZED))
-
-
-# ============================================================
 # Import and Re-export Case-owned models
 # ============================================================
 
@@ -121,6 +47,21 @@ from faultmaven.modules.case.domain.owned_models.evidence import (
     EvidenceListFilter,
     EvidenceUploadRequest,
     StorageBackend,
+)
+
+# case_messages rows: markers, flags, predicates, and the ONE constructor. They
+# are the shape of a row in a table this module owns; their readers and writers
+# are in other modules, which import them from here. ``append_message_row`` is
+# the only way a row reaches ``Case.messages`` (#1452).
+from faultmaven.modules.case.domain.owned_models.message_row import (
+    EMPTY_AGENT_RESPONSE_TEXT,
+    EMPTY_TURN_TEXT,
+    MESSAGE_METADATA_AGENT_SYNTHESIZED,
+    MESSAGE_METADATA_USER_EMPTY,
+    MessageRowKind,
+    append_message_row,
+    is_server_written_assistant_row,
+    is_server_written_user_row,
 )
 
 # Case-owned Report models (Case module owns reports table per module-organization-design.md)
@@ -602,8 +543,12 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
 # ============================================================
 
 __all__ = [
+    "EMPTY_AGENT_RESPONSE_TEXT",
+    "EMPTY_TURN_TEXT",
     "MESSAGE_METADATA_AGENT_SYNTHESIZED",
     "MESSAGE_METADATA_USER_EMPTY",
+    "MessageRowKind",
+    "append_message_row",
     "is_server_written_assistant_row",
     "is_server_written_user_row",
     # Repository and Service Contracts
