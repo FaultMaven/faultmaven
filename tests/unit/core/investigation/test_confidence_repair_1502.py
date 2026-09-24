@@ -340,7 +340,7 @@ def test_classify(raw, expected):
     ],
 )
 def test_decide_link_at_ingest(raw, exists, expected):
-    action, value = decide_link_at_ingest(raw, link_exists=exists)
+    action, value = decide_link_at_ingest(raw, re_emitted=exists)
     assert action is expected[0]
     assert value == (pytest.approx(expected[1]) if expected[1] is not None else None)
 
@@ -963,14 +963,18 @@ def test_re_emitted_hypothesis_link_keeps_its_stored_value(raw):
 
 
 @pytest.mark.parametrize("omitted", [..., None])
-def test_re_emitted_hypothesis_link_without_a_value_keeps_its_stored_value(omitted):
-    """The 1.0 default used to overwrite a stored hedge whenever a re-listing
-    left the field out (or, under strict mode, sent it as ``null``) — the
-    defect the node path documents avoiding."""
+@pytest.mark.parametrize("stance", ["refutes", "supports"])
+def test_an_omitted_hypothesis_link_confidence_is_unchanged_from_main(omitted, stance):
+    """#1502 is about OUT-OF-RANGE values. An omitted (or strict-mode ``null``)
+    confidence does what it did on ``main`` — the schema's 1.0 default is
+    written, at the same stance or a flipped one — and this change must not
+    alter it."""
     case, h = _hyp_case()
     _apply_links(case, [_parsed_hyp_link(0.4)])
-    _apply_links(case, [_parsed_hyp_link(omitted)])
-    assert [link.stance_confidence for link in h.evidence_links] == [0.4]
+    _apply_links(case, [_parsed_hyp_link(omitted, stance=stance)])
+    assert [
+        (link.stance.value, link.stance_confidence) for link in h.evidence_links
+    ] == [(stance, 1.0)]
 
 
 def test_new_hypothesis_link_without_a_value_gets_full_confidence():
@@ -984,6 +988,135 @@ def test_an_explicit_conforming_value_still_overwrites():
     _apply_links(case, [_parsed_hyp_link(0.4)])
     _apply_links(case, [_parsed_hyp_link(0.8)])
     assert [link.stance_confidence for link in h.evidence_links] == [0.8]
+
+
+# ---------------------------------------------------------------------------
+# A stance FLIP is a new claim, not a re-emission
+# ---------------------------------------------------------------------------
+#
+# "Re-emitted" keyed on evidence_id alone kept the stored confidence under the
+# NEW stance: a confident REFUTES re-emitted as SUPPORTS with garbage became a
+# confident SUPPORTS — causal grounding on the node axis, and a "material"
+# revision that reset the #1136 stall counter. The stored value is confidence
+# in the other claim, so absence cannot mean "keep" it: the flip is decided as
+# a new link, and pruning it leaves the stored link exactly as ``main`` did.
+
+GARBAGE = [float("nan"), -1, "high", 10**400]
+
+
+def _stored_hyp_link(case: Case, h: Hypothesis, stance: str, confidence: float):
+    from faultmaven.modules.case.contracts import HypothesisEvidenceLink
+
+    h.evidence_links.append(
+        HypothesisEvidenceLink(
+            hypothesis_id=h.hypothesis_id,
+            evidence_id=EV_ID,
+            stance=EvidenceStance(stance),
+            reasoning="r",
+            stance_confidence=confidence,
+        )
+    )
+
+
+def _hyp_links(h: Hypothesis):
+    return [(link.stance.value, link.stance_confidence) for link in h.evidence_links]
+
+
+@pytest.mark.parametrize("raw", GARBAGE)
+def test_a_garbage_stance_flip_leaves_the_stored_hypothesis_link_alone(raw):
+    case, h = _hyp_case()
+    _stored_hyp_link(case, h, "refutes", 0.9)
+    metadata, fields = _apply_links(case, [_parsed_hyp_link(raw, stance="supports")])
+    assert _hyp_links(h) == [("refutes", 0.9)]  # main's outcome
+    # Not written, so not a material revision: the #1136 stall arm stays put.
+    assert "hypothesis_evidence_links_applied" not in metadata
+    assert [f["action"] for f in fields] == ["pruned"]
+
+
+@pytest.mark.parametrize("raw, expected", [(90, 0.9), (True, 1.0)])
+def test_a_repairable_stance_flip_is_decided_as_a_new_link(raw, expected):
+    case, h = _hyp_case()
+    _stored_hyp_link(case, h, "refutes", 0.9)
+    metadata, fields = _apply_links(case, [_parsed_hyp_link(raw, stance="supports")])
+    assert _hyp_links(h) == [("supports", pytest.approx(expected))]
+    assert metadata["hypothesis_evidence_links_applied"] == 1
+    assert [f["action"] for f in fields] == ["rescaled" if raw == 90 else "coerced"]
+
+
+def test_one_body_that_flips_its_own_link_keeps_the_repaired_first_claim():
+    """``[REFUTES 90, SUPPORTS 'high']`` in ONE body: the first entry is new
+    and rescaled; the second flips the link the first just wrote, with no
+    usable number, so it is pruned rather than inheriting 0.9 as SUPPORTS."""
+    case, h = _hyp_case()
+    parsed, _, _ = _ladder(
+        _diag(
+            {
+                "hypothesis_evidence_links": [
+                    {**_hlink(90), "stance": "refutes"},
+                    {**_hlink("high"), "stance": "supports"},
+                ]
+            }
+        ),
+        D,
+    )
+    metadata, fields = _apply_links(
+        case, parsed.state_updates.hypothesis_evidence_links
+    )
+    assert _hyp_links(h) == [("refutes", pytest.approx(0.9))]
+    assert metadata["hypothesis_evidence_links_applied"] == 1
+    assert [f["action"] for f in fields] == ["rescaled", "pruned"]
+
+
+def _node_with_stored_link(stance: str, confidence: float) -> tuple[Case, str]:
+    case = _graph_case()
+    created, _ = _ingest(case, [_parsed_node_link(confidence, stance=stance)])
+    return case, created[0]
+
+
+def _node_support_ev_ids(case: Case, node_id: str) -> list:
+    from faultmaven.core.investigation.causal_graph import _node_evidence_tally
+
+    return _node_evidence_tally(
+        case.causal_nodes[node_id], {EV_ID: EvidenceCategory.CAUSAL_EVIDENCE}
+    )[2]
+
+
+@pytest.mark.parametrize("raw", GARBAGE)
+def test_a_garbage_stance_flip_manufactures_no_node_grounding(raw):
+    case, node_id = _node_with_stored_link("refutes", 0.9)
+    _, fields = _ingest(
+        case, [_parsed_node_link(raw, stance="supports", node_ref=node_id)]
+    )
+    links = _node_links(case, node_id)
+    assert [(link.stance.value, link.stance_confidence) for link in links] == [
+        ("refutes", 0.9)
+    ]
+    assert _node_support_ev_ids(case, node_id) == []
+    assert [f["action"] for f in fields] == ["pruned"]
+
+
+def test_a_repairable_node_stance_flip_is_decided_as_a_new_link():
+    case, node_id = _node_with_stored_link("refutes", 0.9)
+    _, fields = _ingest(
+        case, [_parsed_node_link(90, stance="supports", node_ref=node_id)]
+    )
+    links = _node_links(case, node_id)
+    assert [(link.stance.value, link.stance_confidence) for link in links] == [
+        ("supports", pytest.approx(0.9))
+    ]
+    assert [f["action"] for f in fields] == ["rescaled"]
+
+
+def test_an_omitted_node_stance_flip_is_unchanged_from_main():
+    """On the node axis ``main`` already lets an omitted confidence inherit
+    the stored value, flip or not. That is an OMITTED value, outside #1502, so
+    it is pinned as it stands rather than changed here."""
+    case, node_id = _node_with_stored_link("refutes", 0.9)
+    _ingest(case, [_parsed_node_link(None, stance="supports", node_ref=node_id)])
+    links = _node_links(case, node_id)
+    assert [(link.stance.value, link.stance_confidence) for link in links] == [
+        ("supports", 0.9)
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -1654,14 +1654,22 @@ def ingest_emitted_chain(
             None,
         )
         # A value the schema SET ASIDE as out of range (fm#1502) is decided
-        # here, the only point that knows new from re-emitted: a re-emitted
-        # link keeps its stored value (the ``None`` branch below); a new one is
-        # rescaled or coerced when it can be and otherwise NOT written — the
-        # ``1.0`` a new link's absence means must not stand in for garbage, or a
-        # REFUTES link becomes a decisive disconfirmation nobody asserted.
+        # here, the only point that knows new from re-emitted: a re-emission of
+        # the same claim (same evidence, same stance) keeps its stored value
+        # (the ``None`` branch below); a new link — or a stance FLIP, whose
+        # stored value is confidence in the other claim — is rescaled or
+        # coerced when it can be and otherwise NOT written, which leaves any
+        # stored link as it was. The ``1.0`` a new link's absence means must
+        # not stand in for garbage, and neither may the stored confidence of the
+        # opposite stance: either would manufacture grounding (or a decisive
+        # disconfirmation) nobody asserted.
         settled = settle_set_aside_link(
             link,
-            link_exists=existing_idx is not None,
+            stored_stance=(
+                node.evidence_links[existing_idx].stance
+                if existing_idx is not None
+                else None
+            ),
             where=f"{nid}<-{ev_id}",
             notes=validation_repairs,
         )

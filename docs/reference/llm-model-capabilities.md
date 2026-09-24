@@ -207,7 +207,7 @@ field's role and never by its value (fm#1502,
 |---|---|---|
 | ADD-shaped (no prior value) | `HypothesisToAdd.likelihood`, `EvidenceToAdd.likelihood`, `ReasoningConclusion.confidence`, `RootCauseConclusionUpdate.likelihood`, `KnowledgeMatch.match_likelihood` | `(1, 100]` is read as a percentage (`90 → 0.90`) and a `bool` coerced to `1.0`/`0.0`; anything else prunes **that record only** — for the two single-object rows, the `root_cause_conclusion` / `knowledge_match` sub-object is nulled |
 | UPDATE-shaped (absence means "keep") | `HypothesisUpdate.likelihood`, `milestones.root_cause_likelihood`, `working_conclusion.likelihood` | the field is dropped; the record and the stored value stand |
-| Links | `NodeEvidenceLinkToAdd` / `HypothesisEvidenceLinkToAdd` `.stance_confidence` | set aside by validation, decided at ingest: a new link is rescaled or coerced, otherwise **not written** (the `1.0` a new link's absence means must not stand in); a re-emitted link keeps its stored value |
+| Links | `NodeEvidenceLinkToAdd` / `HypothesisEvidenceLinkToAdd` `.stance_confidence` | set aside by validation, decided at ingest: a new link — or a re-emission that flips the stance, whose stored value is confidence in the other claim — is rescaled or coerced, otherwise **not written** (neither the `1.0` a new link's absence means nor the flipped stance's stored value may stand in); a re-emission at the same stance keeps its stored value |
 
 The bound stays in the emitted schema — the repair runs beside it, never
 instead of it. Every action is counted on `faultmaven_schema_field_repairs_total`

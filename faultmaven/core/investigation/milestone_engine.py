@@ -12254,17 +12254,17 @@ class MilestoneEngine:
             ):
                 continue
 
-            # New versus re-emitted decides what the link's confidence means
-            # when the model gave none, or gave one the schema set aside
-            # (fm#1502) — and storage is an upsert by evidence_id, so only here
-            # is "re-emitted" knowable. ``None`` tells ``link_evidence`` to keep
-            # the stored value on a re-emitted link and use full confidence on
-            # a new one, the rule the node path already follows.
+            # A confidence the schema SET ASIDE as out of range (fm#1502) is
+            # decided here, where "re-emitted" is knowable: storage is an upsert
+            # by evidence_id, and only the stored link says whether this one
+            # re-states the same claim.
+            stored = next(
+                (el for el in hypothesis.evidence_links if el.evidence_id == e_id),
+                None,
+            )
             stance_confidence = self._resolve_link_confidence(
                 link,
-                link_exists=any(
-                    el.evidence_id == e_id for el in hypothesis.evidence_links
-                ),
+                stored_stance=stored.stance if stored is not None else None,
                 where=f"{h_id}<-{e_id}",
                 metadata=metadata,
             )
@@ -12293,47 +12293,40 @@ class MilestoneEngine:
     def _resolve_link_confidence(
         link: Any,
         *,
-        link_exists: bool,
+        stored_stance: Any,
         where: str,
         metadata: dict[str, Any],
     ) -> Any:
         """The ``stance_confidence`` to store for a hypothesis link.
 
-        Returns a number, ``None`` ("keep the stored value on a re-emitted link,
-        full confidence on a new one" — ``link_evidence`` applies it), or
-        ``_PRUNE_LINK`` when the link must not be written at all.
+        Returns a number, ``None`` (keep the stored value — ``link_evidence``
+        applies it), or ``_PRUNE_LINK`` when the link must not be written.
 
-        - A value the schema SET ASIDE as out of range is decided here, where
-          new versus re-emitted is known (fm#1502): re-emitted keeps the stored
-          value; new is rescaled or coerced when it can be and otherwise
-          pruned. The schema's ``1.0`` default must not stand in for it — on a
-          REFUTES link that would be a decisive disconfirmation nobody asserted.
-        - A value the model OMITTED (or sent as ``null``) is ``None`` for the
-          same reason on a re-emitted link. The field's ``1.0`` default used to
-          overwrite a stored hedge whenever a routine re-listing left it out —
-          the defect the node path documents avoiding.
-        - Anything else is the model's own conforming value.
+        Only a value the schema SET ASIDE as out of range is decided here
+        (fm#1502): a re-emission of the same claim (same evidence, same stance)
+        keeps the stored value; a new link, or a stance flip, is rescaled or
+        coerced when it can be and otherwise pruned — leaving any stored link
+        as it was. The schema's ``1.0`` default must not stand in, and nor may
+        the stored confidence of the opposite stance: on REFUTES the first is a
+        decisive disconfirmation nobody asserted, and on SUPPORTS the second is
+        grounding nobody asserted.
 
-        Duck-typed like the rest of this apply path: a non-Pydantic link has no
-        fields-set record, so its ``stance_confidence`` is read as given.
+        Every other value — conforming, omitted, or ``null`` — is the link's own
+        field, exactly as before this change: an in-range or absent value is
+        not what #1502 is about.
         """
         settled = settle_set_aside_link(
             link,
-            link_exists=link_exists,
+            stored_stance=stored_stance,
             where=where,
             notes=metadata.setdefault("validation_repairs", []),
         )
-        if settled is not None:
-            action, value = settled
-            if action is ConfidenceAction.PRUNED:
-                return _PRUNE_LINK
-            return value  # None when dropped: the stored value stands
-        fields_set = getattr(link, "model_fields_set", None)
-        if isinstance(fields_set, (set, frozenset)) and (
-            "stance_confidence" not in fields_set
-        ):
-            return None
-        return getattr(link, "stance_confidence", None)
+        if settled is None:
+            return link.stance_confidence
+        action, value = settled
+        if action is ConfidenceAction.PRUNED:
+            return _PRUNE_LINK
+        return value  # None when dropped: the stored value stands
 
     # =========================================================================
     # Evidence Need apply-layer (Phase 3 of evidence-needs rollout)

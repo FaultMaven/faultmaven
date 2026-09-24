@@ -275,7 +275,8 @@ class HypothesisManager:
             stance_confidence: Confidence in the stance (0.0-1.0). ``None``
                 means the caller has no value to assert: an existing link for
                 this evidence KEEPS its stored confidence, and a new one gets
-                full confidence (1.0) — the rule the causal-node path applies
+                full confidence (1.0). Passed only for an out-of-range value
+                the schema set aside on a re-emission of the same claim
                 (fm#1502). A number overwrites, as before.
 
         Returns:

@@ -28,7 +28,11 @@ field's ROLE, never by its value:
   a new link is rescaled or coerced when it can be, otherwise pruned — never
   given the default, which on a REFUTES link would be a decisive
   disconfirmation manufactured from garbage; a re-emitted link keeps its stored
-  value.
+  value. "Re-emitted" means the SAME CLAIM: the same evidence at the same
+  stance. A re-emission that flips the stance is a new claim, and the stored
+  value is confidence in the old one — keeping it would, for example, turn a
+  confident REFUTES into a confident SUPPORTS built from garbage — so it is
+  decided as a new link, and pruning it leaves the stored link as it was.
 
 Why a percentage rescale and not a clamp or a sentinel: it is the only repair
 that keeps what the model meant, so it weakens neither a support nor a
@@ -170,20 +174,25 @@ def classify(raw: Any) -> tuple[str, Optional[float]]:
 
 
 def decide_link_at_ingest(
-    raw: Any, *, link_exists: bool
+    raw: Any, *, re_emitted: bool
 ) -> tuple[ConfidenceAction, Optional[float]]:
     """Decide a set-aside link confidence once ingest knows whether the link
-    already exists.
+    re-states a stored one.
 
-    - Re-emitted link: ``(DROPPED, None)`` — the caller keeps the stored value.
-      Even a rescalable ``90`` is dropped here: the record is UPDATE-shaped, and
-      a stored value is what absence already promises.
-    - New link, repairable: ``(RESCALED | COERCED, value)``.
-    - New link, unrepairable: ``(PRUNED, None)`` — the caller skips the link.
-      The field's default must never stand in: ``1.0`` on a REFUTES link is a
-      decisive disconfirmation nobody asserted.
+    ``re_emitted`` means a stored link for the same evidence asserts the SAME
+    stance. A stance flip is not a re-emission: the stored value is confidence
+    in a different claim, so absence cannot mean "keep" it.
+
+    - Re-emitted: ``(DROPPED, None)`` — the caller keeps the stored value. Even
+      a rescalable ``90`` is dropped here: the record is UPDATE-shaped, and a
+      stored value is what absence already promises.
+    - New, or a stance flip, repairable: ``(RESCALED | COERCED, value)``.
+    - New, or a stance flip, unrepairable: ``(PRUNED, None)`` — the caller
+      skips the link, so a stored link is left exactly as it was. The field's
+      default must never stand in: ``1.0`` on a REFUTES link is a decisive
+      disconfirmation nobody asserted.
     """
-    if link_exists:
+    if re_emitted:
         return ConfidenceAction.DROPPED, None
     kind, value = classify(raw)
     if kind == "rescaled":
@@ -210,9 +219,16 @@ def set_aside_link_confidence(link: Any) -> Any:
 
 
 def settle_set_aside_link(
-    link: Any, *, link_exists: bool, where: str, notes: Optional[list] = None
+    link: Any,
+    *,
+    stored_stance: Any,
+    where: str,
+    notes: Optional[list] = None,
 ) -> Optional[tuple[ConfidenceAction, Optional[float]]]:
     """Ingest's half of a link confidence the schema set aside.
+
+    ``stored_stance`` is the stance of the stored link for the same evidence,
+    or ``None`` when there is none.
 
     ``None`` when nothing was set aside — the link's own field stands.
     Otherwise decides it (:func:`decide_link_at_ingest`), counts the decision,
@@ -224,7 +240,10 @@ def settle_set_aside_link(
     raw = set_aside_link_confidence(link)
     if raw is None:
         return None
-    action, value = decide_link_at_ingest(raw, link_exists=link_exists)
+    re_emitted = stored_stance is not None and stored_stance == getattr(
+        link, "stance", None
+    )
+    action, value = decide_link_at_ingest(raw, re_emitted=re_emitted)
     repair = ConfidenceRepair(
         schema=type(link).__name__,
         field="stance_confidence",
