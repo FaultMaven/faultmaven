@@ -37,6 +37,7 @@ import inspect
 import pathlib
 import sys
 import types
+import uuid
 from unittest.mock import Mock
 
 import pytest
@@ -455,6 +456,22 @@ _DUNDER_FABRICATORS = {
 }
 
 
+def _walk_sys_modules_for_file():
+    """Make ``inspect`` read ``__file__`` off every ``sys.modules`` entry.
+
+    ``inspect.stack()`` is what crashed, but it reaches that walk only on a
+    cache miss: once the caller's frames are in ``inspect.modulesbyfile`` it
+    returns without reading any module's ``__file__``, so late in a long session
+    it passes whatever is installed (measured: this control read DID NOT RAISE
+    in a serial CI run). A code object under a filename nothing has seen forces
+    the miss every time. ``getsourcefile`` rather than ``getmodule``: the latter
+    swallows the TypeError from its own nested walk and returns None, while
+    ``getsourcefile`` -- the call ``inspect.stack()`` makes -- lets it out.
+    """
+    code = compile("None", f"<harness-probe-{uuid.uuid4().hex}>", "eval")
+    inspect.getsourcefile(code)
+
+
 def test_a_module_answering_file_with_a_mock_breaks_inspect_stack():
     """POSITIVE CONTROL for the dunder arm: the mechanism is real.
 
@@ -468,7 +485,7 @@ def test_a_module_answering_file_with_a_mock_breaks_inspect_stack():
     sys.modules[name] = _AnswersEverything(name)
     try:
         with pytest.raises(TypeError):
-            inspect.stack()
+            _walk_sys_modules_for_file()
     finally:
         del sys.modules[name]
 
@@ -505,7 +522,7 @@ def test_every_harness_stand_in_refuses_dunders_and_inspect_stack_works():
             getattr(module, _UNDEFINED_DUNDER_PROBE)
         file_attr = getattr(module, "__file__", None)
         assert file_attr is None or isinstance(file_attr, str), (name, file_attr)
-    inspect.stack()
+    _walk_sys_modules_for_file()
 
 
 # --------------------------------------------------------------------------- #
