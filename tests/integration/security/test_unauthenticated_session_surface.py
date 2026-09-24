@@ -44,9 +44,9 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
-from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
+from faultmaven.api.route_enumeration import iter_served_routes
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.api.v1.dependencies import get_session_service
 from faultmaven.modules.auth.api.session import router as session_router
@@ -505,8 +505,7 @@ def test_the_heartbeat_is_the_only_ungated_route_on_this_router():
 
     ungated = sorted(
         f"{method} {route.path}"
-        for route in app.routes
-        if isinstance(route, APIRoute)
+        for route in iter_served_routes(app)
         for method in route.methods
         if method not in {"HEAD", "OPTIONS"}
         and not any(
