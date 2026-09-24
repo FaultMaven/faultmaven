@@ -356,7 +356,17 @@ jobs:
           # attribution at all — which is why the cap above has to clear the
           # cost for any of this to be worth anything, and why the two shipped
           # together.
+          #
+          # `-n logical --dist loadfile` (#1594): one worker per vCPU, each file
+          # kept on one worker. `logical`, not `auto` -- `auto` counts PHYSICAL
+          # cores and these runners report 2 of 4. `loadfile` keeps module-scoped
+          # fixtures paid once per module. Measured on #1644's head: 12 complete
+          # xdist runs per job, every failure list empty and identical, and
+          # the pytest phase 2.32x faster here (2.16x on Cloud). pytest-cov
+          # combines the workers' data into one .coverage before the reports and
+          # the threshold step below read it.
           pytest tests/ \
+            -n logical --dist loadfile \
             --cov=faultmaven \
             --cov-report=xml \
             --cov-report=term-missing \
@@ -535,8 +545,9 @@ jobs:
           # Same flags as Test Standalone, including the floor rather than a
           # top-N. See the note there for why. This job's selection is the
           # larger of the two, so its report is the one that also covers the
-          # `cloud`-marked tests.
+          # `cloud`-marked tests. The same `-n logical --dist loadfile` too.
           pytest tests/ \
+            -n logical --dist loadfile \
             --cov=faultmaven \
             --cov-report=xml \
             --cov-report=term-missing \
