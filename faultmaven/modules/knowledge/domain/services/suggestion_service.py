@@ -14,6 +14,10 @@ from typing import Any, Dict, List, Optional
 
 from faultmaven.exceptions import ConflictError, ServiceUnavailableException
 from faultmaven.infrastructure.llm.truncation import generate_with_truncation_retry
+from faultmaven.modules.case.contracts import (
+    is_server_written_assistant_row,
+    is_server_written_user_row,
+)
 from faultmaven.modules.knowledge.contracts import ISuggestionRepository
 from faultmaven.modules.knowledge.domain.models.conversion import ValidationResult
 from faultmaven.modules.knowledge.domain.models.suggestion import (
@@ -50,6 +54,45 @@ from faultmaven.utils.serialization import to_json_compatible
 #: record — and, for an approved one, the only link from its case to the
 #: runbook it produced — not queue depth.
 UNREVIEWED_STATUSES = (SuggestionStatus.PENDING_REVIEW, SuggestionStatus.DRAFT)
+
+
+def _extraction_transcript(messages: List[dict]) -> str:
+    """The case conversation as the extraction prompt shows it, or "".
+
+    Rows are ``case_messages`` dicts, which is what ``get_messages`` returns.
+    This used to read them with ``getattr``, which on a dict finds neither
+    attribute, so every row rendered as ``[unknown]: {<the whole row>}`` —
+    ids, author, timestamps and metadata included — and the one thing that
+    would have kept a placeholder out, its flag, was never read. The doubles
+    returned attribute objects, so no test saw the production shape. (Nor does
+    production reach this yet: ``extract_knowledge_from_case`` reads the case
+    through two methods no case repository has, so it gets no rows at all —
+    #1661.)
+
+    A row the SERVER wrote is not something either party said (#1434, #1451),
+    and it is skipped on both sides (#1660):
+
+    * a user row standing in for a turn that carried no message ("(no
+      message)");
+    * an assistant row standing in for an answer the model did not give
+      ("[Response withheld by safety filter]", "(this turn produced no
+      answer)").
+
+    Skipped rather than marked, as the auto-titler does and unlike the
+    investigation history renderers: the marker exists so a model CONTINUING
+    the conversation knows its previous turn went unanswered, and the
+    extraction model does not continue it — it distils a runbook from it, where
+    a line saying the assistant failed to answer is not incident content.
+    """
+    lines = []
+    for msg in messages:
+        content = msg.get("content")
+        if not content or is_server_written_user_row(msg):
+            continue
+        if is_server_written_assistant_row(msg):
+            continue
+        lines.append(f"[{msg.get('role', 'unknown')}]: {content}")
+    return "Messages:\n" + "\n".join(lines) if lines else ""
 
 
 class SuggestionService:
@@ -341,12 +384,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         # Build extraction prompt
         messages_section = ""
         if include_messages and messages:
-            formatted_messages = []
-            for msg in messages[:50]:  # Limit to last 50 messages
-                role = getattr(msg, "role", "unknown")
-                content = getattr(msg, "content", str(msg))
-                formatted_messages.append(f"[{role}]: {content}")
-            messages_section = "Messages:\n" + "\n".join(formatted_messages)
+            messages_section = _extraction_transcript(messages[:50])
 
         evidence_section = ""
         if include_evidence and evidence:

@@ -234,6 +234,41 @@ def _backfill_consumed_turn(
         case.turns_without_progress = 0
 
 
+def _record_composed_reply(case: "Case", agent_response: str) -> None:
+    """Re-derive this turn's record when the service composed its reply onto
+    a blank answer (#1660).
+
+    The clarification note is appended AFTER the turn is recorded — by the
+    engine's Step 6, or by :func:`_backfill_consumed_turn` above — and both
+    record a blank answer as unanswered (``agent_response_synthesized``). The
+    note then makes the reply non-blank, so the persistence backstop never
+    fires and the row goes out unflagged. One turn, two verdicts: the EARLIER
+    TURNS summary said "no answer" while the RECENT window quoted the note.
+
+    Settled the way the engine settles its own composition (#1442): prose
+    composed onto a missing answer is a real reply, not a placeholder. The note
+    is the question the user was actually shown, and the next turn needs it —
+    "treat it as application logs" answers it. So the record follows the row,
+    and is re-derived from the text rather than carried over, exactly as the
+    engine re-records after composing a gate notice.
+
+    Only called for a blank base the engine did not flag. A placeholder the
+    engine synthesized is not blank; that row stays flagged and so does its
+    record.
+    """
+    if not case.turn_history or case.turn_history[-1].turn_number != case.current_turn:
+        return
+    # ``TurnProgress`` is frozen: replace the record, never mutate it.
+    case.turn_history[-1] = case.turn_history[-1].model_copy(
+        update={
+            "agent_response_summary": _summarize_for_history(
+                agent_response.strip(), 500
+            ),
+            "agent_response_synthesized": not agent_response.strip(),
+        }
+    )
+
+
 def _summarize_for_history(text: str, max_length: int) -> str:
     """Bound a message for the turn record, as the engine's own recorder does."""
     text = text or ""
@@ -2402,7 +2437,16 @@ class InvestigationService:
             if not clarification:
                 clarification_note = None
             if clarification_note:
+                # #1660: the note is the whole reply when the answer was blank,
+                # and the turn record — written above as unanswered — has to
+                # say what the row will. A row the engine flagged keeps its
+                # flag below, so its record is left as it is.
+                composed_onto_nothing = not agent_response_text.strip() and not (
+                    turn_meta.get(MESSAGE_METADATA_AGENT_SYNTHESIZED)
+                )
                 agent_response_text += clarification_note
+                if composed_onto_nothing:
+                    _record_composed_reply(updated_case, agent_response_text)
 
             # 4. Append the agent response and save.
             #    ⚠️ This is NOT an atomic commit of both messages, though it used

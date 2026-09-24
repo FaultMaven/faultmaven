@@ -63,6 +63,10 @@ from faultmaven.core.investigation.cause_assurance import (
 from faultmaven.core.investigation.cause_assurance import (
     problem_anchor_statements as _problem_anchor_statements,
 )
+from faultmaven.core.investigation.confidence_repair import (
+    ConfidenceAction,
+    settle_set_aside_link,
+)
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.lifecycle_metrics import (
     causal_and_group_regroup_refused_total,
@@ -1381,6 +1385,7 @@ def ingest_emitted_chain(
     node_evidence: list,
     current_turn: int,
     evidence_created_ids: list | None = None,
+    validation_repairs: list[str] | None = None,
 ) -> list[str | None]:
     """Build the causal graph from a turn's LLM-emitted chain fragments (lazy
     backward expansion, methodology §5/S3). Pure: no I/O, no LLM.
@@ -1401,6 +1406,11 @@ def ingest_emitted_chain(
     ``evidence_created_ids`` are the evidence ids added earlier this turn (the
     caller's ``metadata['evidence_added']``), against which ``new_index_N``
     evidence refs resolve — without it, same-turn rung evidence is dropped.
+
+    ``validation_repairs``, when given, receives one line per out-of-range
+    ``stance_confidence`` decided here (fm#1502) — the caller passes the turn's
+    ``metadata['validation_repairs']``. Each decision is also counted on
+    ``faultmaven_schema_field_repairs_total``, with or without it.
 
     Returns the created node ids in emission order (``None`` for any skipped
     node, so ``new_index_N`` indices stay aligned), so the caller can resolve
@@ -1643,6 +1653,30 @@ def ingest_emitted_chain(
             (i for i, el in enumerate(node.evidence_links) if el.evidence_id == ev_id),
             None,
         )
+        # A value the schema SET ASIDE as out of range (fm#1502) is decided
+        # here, the only point that knows new from re-emitted: a re-emission of
+        # the same claim (same evidence, same stance) keeps its stored value
+        # (the ``None`` branch below); a new link — or a stance FLIP, whose
+        # stored value is confidence in the other claim — is rescaled or
+        # coerced when it can be and otherwise NOT written, which leaves any
+        # stored link as it was. The ``1.0`` a new link's absence means must
+        # not stand in for garbage, and neither may the stored confidence of the
+        # opposite stance: either would manufacture grounding (or a decisive
+        # disconfirmation) nobody asserted.
+        settled = settle_set_aside_link(
+            link,
+            stored_stance=(
+                node.evidence_links[existing_idx].stance
+                if existing_idx is not None
+                else None
+            ),
+            where=f"{nid}<-{ev_id}",
+            notes=validation_repairs,
+        )
+        if settled is not None:
+            action, emitted_confidence = settled
+            if action is ConfidenceAction.PRUNED:
+                continue
         if emitted_confidence is None:
             if existing_idx is not None:
                 emitted_confidence = node.evidence_links[existing_idx].stance_confidence

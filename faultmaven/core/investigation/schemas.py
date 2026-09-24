@@ -51,10 +51,21 @@ from pydantic import (
     BeforeValidator,
     Field,
     PrivateAttr,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
+from pydantic_core import PydanticCustomError
 
+from faultmaven.core.investigation.confidence_repair import (
+    CONFIDENCE_UNREPAIRABLE,
+    LINK_SET_ASIDE_ATTR,
+    ConfidenceAction,
+    ConfidenceRepair,
+    classify,
+    report,
+    short_repr,
+)
 from faultmaven.modules.agent.domain.models.agentic import QueryIntent  # noqa: F401
 from faultmaven.modules.case.contracts import (
     EvidenceCategory,
@@ -128,6 +139,124 @@ def _coerce_bare_int_to_new_index(v: Any) -> Any:
 # question ([[project_pydantic_shape_failures_backlog]]) and applies to every
 # ``str`` field, not just ID-shaped ones. It is not settled here.
 IdRef = Annotated[str, BeforeValidator(_coerce_bare_int_to_new_index)]
+
+
+# =============================================================================
+# Confidence fields: what an out-of-range value costs (fm#1502)
+# =============================================================================
+#
+# Every probability-shaped field below keeps ``Field(ge=0.0, le=1.0)`` — that
+# bound is what reaches the wire (fm#355) and it is not relaxed here. These
+# validators only decide what a value the provider did NOT hold to the bound
+# costs, and the answer depends on the field's ROLE (the rules and their reasons
+# are in ``confidence_repair``):
+#
+# - ``_repair_add_confidence`` — ADD-shaped: rescale a percentage, coerce a
+#   bool, otherwise raise so the backstop prunes THIS record only.
+# - ``_drop_update_confidence`` — UPDATE-shaped, where absence means "keep the
+#   stored value": drop the field, keep the record.
+# - ``_set_aside_link_confidence`` — links, where absence means full confidence
+#   on a new link but "keep" on a re-emitted one: set the value aside for ingest.
+#
+# The census in ``test_confidence_repair_1502.py`` fails if a [0, 1] field
+# exists without one of these, so a new confidence field cannot silently fall
+# back to the whole-record prune.
+
+
+def _repair_add_confidence(cls: type, v: Any, info: ValidationInfo) -> Any:
+    """ADD-shaped confidence: repair it, or fail its own record.
+
+    Raises a ``CONFIDENCE_UNREPAIRABLE`` error rather than returning a value
+    when nothing can be recovered: the degradation ladder prunes the list entry
+    (the ``loc`` carries its index) or nulls the optional sub-object that holds
+    it — never a sibling, never all of ``state_updates``.
+    """
+    if v is None:
+        return v  # absence is the field's own business (default or required)
+    kind, value = classify(v)
+    if kind == "conforming":
+        return value
+    if kind in ("rescaled", "coerced"):
+        report(
+            info.context,
+            ConfidenceRepair(
+                schema=cls.__name__,
+                field=info.field_name or "?",
+                action=ConfidenceAction(kind),
+                raw=v,
+                value=value,
+            ),
+        )
+        return value
+    raise PydanticCustomError(
+        CONFIDENCE_UNREPAIRABLE,
+        "confidence {raw} is outside [0, 1] and is not a percentage or a "
+        "boolean; nothing to recover, so the record carrying it is pruned",
+        {"schema": cls.__name__, "field": info.field_name or "?", "raw": short_repr(v)},
+    )
+
+
+def _drop_update_confidence(cls: type, v: Any, info: ValidationInfo) -> Any:
+    """UPDATE-shaped confidence: an out-of-range value drops the FIELD.
+
+    ``None`` is what the consumer reads as "keep the stored value", so returning
+    it keeps the record and leaves the stored value alone. A rescalable ``90``
+    and a ``bool`` are dropped too, not repaired: the record already has a value,
+    and the ruling keeps it rather than guess.
+    """
+    if v is None:
+        return None
+    kind, value = classify(v)
+    if kind == "conforming":
+        return value
+    report(
+        info.context,
+        ConfidenceRepair(
+            schema=cls.__name__,
+            field=info.field_name or "?",
+            action=ConfidenceAction.DROPPED,
+            raw=v,
+        ),
+    )
+    return None
+
+
+def _set_aside_link_confidence(
+    cls: type, data: Any, handler: Any, info: ValidationInfo
+) -> Any:
+    """Link confidence: move a non-conforming value OUT of the schema.
+
+    The value is removed from the input, so the field takes its declared
+    absence (``None`` on a node link, the ``1.0`` default on a hypothesis link
+    — but outside ``model_fields_set`` either way), and the raw value is kept on
+    a private attribute that no schema renders. Ingest reads it back
+    (``confidence_repair.set_aside_link_confidence``) and decides new versus
+    re-emitted, which only ingest can know.
+    """
+    raw = None
+    if isinstance(data, dict):
+        candidate = data.get("stance_confidence")
+        if candidate is not None:
+            kind, value = classify(candidate)
+            if kind == "conforming":
+                data = {**data, "stance_confidence": value}
+            else:
+                raw = candidate
+                data = {k: v for k, v in data.items() if k != "stance_confidence"}
+    instance = handler(data)
+    if raw is not None:
+        setattr(instance, LINK_SET_ASIDE_ATTR, raw)
+        report(
+            info.context,
+            ConfidenceRepair(
+                schema=cls.__name__,
+                field="stance_confidence",
+                action=ConfidenceAction.SET_ASIDE,
+                raw=raw,
+            ),
+        )
+    return instance
+
 
 # =============================================================================
 # Unified Ingestion Pipeline (v4.1)
@@ -253,6 +382,11 @@ class ReasoningConclusion(BaseModel):
         ge=0.0, le=1.0, description="Confidence in this inference"
     )
 
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _repair_confidence(cls, v: Any, info: ValidationInfo) -> Any:
+        return _repair_add_confidence(cls, v, info)
+
 
 def _coerce_justification_to_text(v: Any) -> Any:
     """Accept the shapes a provider reaches for when writing prose into a field.
@@ -260,13 +394,15 @@ def _coerce_justification_to_text(v: Any) -> Any:
     Declaring the justifications as four ``Optional[str]`` fields is what makes
     the enclosing schema strict-representable, but it also narrowed a type that
     used to be ``Dict[str, Any]`` — under which ANY value validated. That
-    narrowing has no recovery path: the error location
+    narrowing had no recovery path: the error location
     (``internal_reasoning.milestone_justifications.<milestone>``) carries no
-    list index, so ``_prune_invalid_list_entries`` cannot prune it; the rung
-    below only blanks ``state_updates``, which leaves ``internal_reasoning``
-    just as invalid; and the ``agent_response`` rung does not fire when the
-    model DID answer. ``_validate_with_degradation`` re-raises and the turn
-    500s — the exact class of failure strict mode was adopted to remove.
+    list index; the ``state_updates`` rung leaves ``internal_reasoning`` just
+    as invalid; and the ``agent_response`` rung does not fire when the model
+    DID answer, so ``_validate_with_degradation`` re-raised and the turn 500ed.
+    Since fm#1502 the ladder nulls an invalid OPTIONAL sub-object instead
+    (``_prune_invalid_sub_records``), which here would discard the whole
+    ``internal_reasoning`` — every justification and conclusion for one badly
+    typed reason. Coercing the value keeps them, so it stays the answer.
 
     A justification is prose that is only ever read as "is this milestone
     justified" plus a truncated log line, so a model that answers with a list
@@ -398,6 +534,13 @@ class KnowledgeMatch(BaseModel):
     match_summary: str
     suggested_solution: Optional[str] = None
 
+    # ADD-shaped (fm#1502): an unrepairable value nulls ``knowledge_match``
+    # alone — the ladder prunes an optional sub-object, not all state_updates.
+    @field_validator("match_likelihood", mode="before")
+    @classmethod
+    def _repair_match_likelihood(cls, v: Any, info: ValidationInfo) -> Any:
+        return _repair_add_confidence(cls, v, info)
+
 
 class KnowledgeResolution(BaseModel):
     """Records instant resolution via KB match."""
@@ -468,6 +611,13 @@ class MilestoneUpdates(NullTolerantModel):
     mitigation_accepted: Optional[bool] = None
     mitigation_verified: Optional[bool] = None
     solution_accepted: Optional[bool] = None
+
+    # UPDATE-shaped (fm#1502): ``None`` keeps ``progress.root_cause_likelihood``
+    # as it stands, so an out-of-range value costs this field and nothing else.
+    @field_validator("root_cause_likelihood", mode="before")
+    @classmethod
+    def _drop_root_cause_likelihood(cls, v: Any, info: ValidationInfo) -> Any:
+        return _drop_update_confidence(cls, v, info)
 
 
 class ProblemVerificationUpdate(NullTolerantModel):
@@ -582,10 +732,14 @@ class EvidenceToAdd(NullTolerantModel):
             return EvidenceCategory(v)
         return v
 
-    @field_validator("likelihood")
+    # ADD-shaped (fm#1502). This replaced ``validate_likelihood``, an
+    # after-mode ``max(0, min(1, v))`` clamp that could never fire — an after
+    # validator runs once ``le=1.0`` has already rejected the value — and would
+    # have been the clamp the ruling rejects if it had.
+    @field_validator("likelihood", mode="before")
     @classmethod
-    def validate_likelihood(cls, v: float) -> float:
-        return max(0.0, min(1.0, v))
+    def _repair_likelihood(cls, v: Any, info: ValidationInfo) -> Any:
+        return _repair_add_confidence(cls, v, info)
 
     @model_validator(mode="after")
     def _source_file_required_unless_user_description(self) -> "EvidenceToAdd":
@@ -640,6 +794,14 @@ class HypothesisToAdd(BaseModel):
         ),
     )
 
+    # ADD-shaped (fm#1502): the statement, category, rationale and chain are
+    # worth more than one bad number, so a percentage is rescaled rather than
+    # the hypothesis pruned.
+    @field_validator("likelihood", mode="before")
+    @classmethod
+    def _repair_likelihood(cls, v: Any, info: ValidationInfo) -> Any:
+        return _repair_add_confidence(cls, v, info)
+
 
 class HypothesisUpdate(BaseModel):
     """Update to an existing hypothesis.
@@ -687,6 +849,15 @@ class HypothesisUpdate(BaseModel):
             "root). Not for REFUTED entries."
         ),
     )
+
+    # UPDATE-shaped (fm#1502): ``None`` is "no likelihood change", so the
+    # stored value stands and the rest of the entry — a REFUTED state and its
+    # reason included — still applies. Pruning the entry used to lose the
+    # refutation to a bad number.
+    @field_validator("likelihood", mode="before")
+    @classmethod
+    def _drop_likelihood(cls, v: Any, info: ValidationInfo) -> Any:
+        return _drop_update_confidence(cls, v, info)
 
     @field_validator("state", mode="before")
     @classmethod
@@ -750,6 +921,17 @@ class HypothesisEvidenceLinkToAdd(NullTolerantModel):
         le=1.0,
         description="Confidence in the stance assessment (0.0-1.0)",
     )
+
+    # fm#1502: new versus re-emitted is decided at ingest — see
+    # ``_set_aside_link_confidence`` and ``confidence_repair``.
+    _stance_confidence_set_aside: Any = PrivateAttr(default=None)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _set_aside_confidence(
+        cls, data: Any, handler: Any, info: ValidationInfo
+    ) -> Any:
+        return _set_aside_link_confidence(cls, data, handler, info)
 
 
 # Chain-emission contract (Two-Dimensional Hypothesis Methodology §5/§9.1).
@@ -858,6 +1040,17 @@ class NodeEvidenceLinkToAdd(BaseModel):
             "to keep the existing value when re-emitting a link."
         ),
     )
+
+    # fm#1502: new versus re-emitted is decided at ingest — see
+    # ``_set_aside_link_confidence`` and ``confidence_repair``.
+    _stance_confidence_set_aside: Any = PrivateAttr(default=None)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _set_aside_confidence(
+        cls, data: Any, handler: Any, info: ValidationInfo
+    ) -> Any:
+        return _set_aside_link_confidence(cls, data, handler, info)
 
 
 class EvidenceNeedUpdate(NullTolerantModel):
@@ -1074,6 +1267,14 @@ class WorkingConclusionUpdate(NullTolerantModel):
     next_steps: Optional[List[str]] = Field(default_factory=list)
     blockers: Optional[List[str]] = Field(default_factory=list)
 
+    # UPDATE-shaped (fm#1502): absence means "keep". Before this, an
+    # out-of-range value here had no list index to prune and cost the turn
+    # every one of its state_updates.
+    @field_validator("likelihood", mode="before")
+    @classmethod
+    def _drop_likelihood(cls, v: Any, info: ValidationInfo) -> Any:
+        return _drop_update_confidence(cls, v, info)
+
 
 class BlockerType(str, Enum):
     """Type of blocker preventing investigation progress."""
@@ -1170,6 +1371,15 @@ class RootCauseConclusionUpdate(NullTolerantModel):
             "node in the graph."
         ),
     )
+
+    # ADD-shaped (fm#1502), not UPDATE: absence here means the 0.7 DEFAULT,
+    # which feeds ``ConfidenceLevel.from_score`` — dropping the field would
+    # write that default, the clamp the ruling rejects. So repair, or null
+    # ``root_cause_conclusion`` alone.
+    @field_validator("likelihood", mode="before")
+    @classmethod
+    def _repair_likelihood(cls, v: Any, info: ValidationInfo) -> Any:
+        return _repair_add_confidence(cls, v, info)
 
 
 class SolutionToAdd(NullTolerantModel):
@@ -1486,6 +1696,13 @@ class BaseInteractionResponse(BaseModel):
     # the engine's synthesis step, which holds the provider's stop reason,
     # decides it. Read through ``milestone_engine.is_agent_response_synthesized``.
     _agent_response_synthesized: bool = PrivateAttr(default=False)
+
+    # The out-of-range confidences validation repaired, dropped or pruned on the
+    # way to this instance (fm#1502), as ``confidence_repair.ConfidenceRepair``
+    # records. Written only by ``MilestoneEngine._validate_with_degradation``,
+    # which is the one place that knows which validation attempt succeeded;
+    # read by the apply step onto the turn's ``validation_repairs``.
+    _confidence_repairs: list = PrivateAttr(default_factory=list)
 
     @field_validator("suggested_follow_ups", mode="before")
     @classmethod

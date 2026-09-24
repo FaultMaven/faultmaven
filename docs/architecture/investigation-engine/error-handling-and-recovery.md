@@ -580,9 +580,10 @@ Validation errors from multiple sources are merged into `system_feedback` on the
 |--------|-------------|---------|
 | Reasoning-first validator | `reasoning_validation_errors` | Missing milestone justifications |
 | Progress monitor | `breakout_action` (turn metadata; the monitor result also carries a `prompt_injection` field) | Transparency guidance + repair-pattern injection (e.g., "try different category" on anchoring) |
-| State validator | `validation_repairs` | Automatic state corrections applied |
 
 This ensures the LLM receives corrective instructions for the next turn even when the current turn's issues are non-fatal.
+
+`TurnProgress.validation_repairs` is a separate channel: a persisted per-turn record of what the engine corrected, which nothing feeds back into the prompt. It carries the state validator's repairs, the apply step's rejections (`metadata["validation_repairs"]` — before fm#1502 those were appended and never reached the record), and the schema's out-of-range confidence repairs (fm#1502, §3.4). The #1142 telemetry stream's `validation_repairs` count is the state validator's alone.
 
 Rule 2 (Evidence-Grounded) compliance is enforced solely at the prompt layer; there is no post-generation diagnostic-reasoning validator. See [agent-behavioral-rules.md § Post-Generation Validators (Historical Case Study)](./agent-behavioral-rules.md#post-generation-validators-historical-case-study) for the architectural reasoning behind the earlier removal.
 
@@ -595,6 +596,7 @@ Some LLMs (notably Fireworks/DeepSeek V3) return shapes that would otherwise fai
 | `*StateUpdate.outcome` | `Optional[TurnOutcome]` with default `CONVERSATION` | The server recomputes outcome from actual state changes via `determine_turn_outcome()`; the LLM's value is ignored. Making it optional turns an LLM omission into a no-op instead of a 500. |
 | `BaseInteractionResponse.suggested_follow_ups` | `field_validator(mode="before")` parses a JSON string into a list, returning `None` on parse failure | Suggestions are advisory UI affordances; a malformed list shouldn't fail the entire turn. |
 | `state_updates` (top-level) | Coerced to `{}` when the LLM returns `null` or an unparseable string (see `milestone_engine.py` JSON repair passes) | Allows Pydantic field defaults to fire when the LLM truncates output mid-object. |
+| The ten `[0, 1]` confidence fields | By role (fm#1502): an ADD-shaped value in `(1, 100]` is rescaled as a percentage and a `bool` coerced; an UPDATE-shaped value is dropped (the stored value stands); a link's is set aside for ingest to decide new versus re-emitted | A provider that does not enforce `ge=0, le=1` answers `90` meaning 90%. The bound stays on the wire; this decides what a value that ignored it costs. See `docs/reference/llm-model-capabilities.md` §"Value constraints". |
 
 The rule: defensive coercion is reserved for fields where the server has an authoritative or safe-default value. Fields whose values genuinely come from the LLM (`agent_response`, `evidence_to_add` entries, milestone justifications) stay strict — they cannot be quietly defaulted without losing fidelity, so they remain required and surface as a validation error when missing.
 
@@ -603,11 +605,13 @@ The rule: defensive coercion is reserved for fields where the server has an auth
 A single malformed sub-record emitted by the LLM (e.g. `evidence_to_add` with `source_type=text` and no `source_file_id`; `evidence_need_updates{state: FULFILLED}` with no `fulfilling_evidence_id`) makes the *whole* `InvestigationResponse_*` fail `model_validate_json` — an unhandled `ValidationError` that 500s the turn **before any milestone logic runs**, so the per-milestone surgical strip never gets a chance. The cross-field invariants themselves are correct and stay (they gate on real facts); what's added is a general parse-time recovery policy, `_validate_with_degradation` (general, not per-invariant):
 
 1. Validate as-is.
-2. On failure, **prune the exact list entries the `ValidationError` loc points at** (general across `evidence_to_add` / `evidence_need_updates` / `hypotheses_to_add` / any list field) and re-validate — the bad sub-records are quarantined and logged (`structured_output_degraded`), the rest of the turn survives.
-3. Else drop `state_updates` entirely and keep the conversational `agent_response`.
+2. On failure, **prune the exact sub-records the `ValidationError` loc points at** — the list entry for a loc carrying an index (general across `evidence_to_add` / `evidence_need_updates` / `hypotheses_to_add` / any list field), or, for a loc without one, the deepest *optional* sub-object on its path, which is nulled (`root_cause_conclusion`, `knowledge_match`, `milestones`, …; fm#1502) — and re-validate. The bad sub-records are quarantined and logged (`structured_output_degraded`), the rest of the turn survives.
+3. Else drop `state_updates` entirely and keep the conversational `agent_response`. This rung builds on the pruned body, so a record step 2 removed outside `state_updates` stays removed.
 4. Else re-raise.
 
-Wired into both the schema-tool-call and text-fallback parse paths. This is distinct from the field-level defensive coercion in §3.3 (which handles known per-field LLM quirks): the backstop is the general safety net for *any* schema with cross-field validators. Provider-native constrained generation remains the upstream mitigation; the backstop is the safety net, not a per-variant patch.
+An out-of-range confidence is usually settled before step 2, inside Pydantic (§3.3). Validators report what they did through the validation context, one sink per attempt, and the ladder counts the successful attempt's reports: `faultmaven_schema_field_repairs_total`, a `repaired` outcome for a body whose only defects were repaired, and a note on the turn's `validation_repairs`.
+
+Wired into every validation site: the schema-tool call, the text fallback, and the non-tool single-shot path. This is distinct from the field-level defensive coercion in §3.3 (which handles known per-field LLM quirks): the backstop is the general safety net for *any* schema with cross-field validators. Provider-native constrained generation remains the upstream mitigation; the backstop is the safety net, not a per-variant patch.
 
 ---
 

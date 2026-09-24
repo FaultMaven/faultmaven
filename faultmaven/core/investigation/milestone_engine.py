@@ -36,6 +36,11 @@ from uuid import uuid4
 # Module initialization
 logger = logging.getLogger(__name__)
 
+#: ``MilestoneEngine._resolve_link_confidence``'s answer for a link that must
+#: not be written (fm#1502). A sentinel, because ``None`` already means "keep
+#: the stored value".
+_PRUNE_LINK = object()
+
 from faultmaven.core.investigation.case_telemetry import (
     TELEMETRY_HANDOFF_KEY,
     TurnPath,
@@ -71,6 +76,17 @@ from faultmaven.core.investigation.cause_assurance import (
     evidence_datum_key,
     grade_cause_assurance,
     runbook_conversion_ready,
+)
+from faultmaven.core.investigation.confidence_repair import (
+    CONFIDENCE_REPAIRS_CONTEXT_KEY,
+    CONFIDENCE_UNREPAIRABLE,
+    MEANING_PRESERVING_ACTIONS,
+    ConfidenceAction,
+    ConfidenceRepair,
+    settle_set_aside_link,
+)
+from faultmaven.core.investigation.confidence_repair import (
+    count as count_confidence_repair,
 )
 from faultmaven.core.investigation.evidence_need_linking import (
     link_evidence_suggestions_to_needs,
@@ -6822,7 +6838,17 @@ class MilestoneEngine:
                 blocked_reasons=progress_metrics.blocked_reasons,
                 next_steps=progress_metrics.next_steps,
                 repair_pattern=stagnation_str,
-                validation_repairs=validation_repairs,
+                # The state validator's repairs, then everything the turn's
+                # apply steps recorded on ``metadata["validation_repairs"]`` —
+                # the schema's confidence repairs (fm#1502) and the apply-time
+                # rejections. The latter were appended to that key and read by
+                # nothing, so no turn record carried them; this is where the
+                # channel lands. The #1142 telemetry count below stays the state
+                # validator's alone, which is what that stream documents.
+                validation_repairs=[
+                    *validation_repairs,
+                    *metadata.get("validation_repairs", []),
+                ],
             )
             case_updated.turn_history.append(turn_record)
 
@@ -9234,14 +9260,26 @@ class MilestoneEngine:
         class (redesign §9 / the deferred "S4" item):
 
         1. Try to validate as-is.
-        2. On failure, PRUNE the specific list entries the ValidationError points
+        2. On failure, PRUNE the specific sub-records the ValidationError points
            at (keyed off the error ``loc`` paths — general, not per-invariant)
-           and re-validate. The bad sub-records are quarantined; everything else
-           on the turn survives.
-        3. If it still fails (a top-level / non-list error), drop ``state_updates``
-           entirely and keep the conversational ``agent_response`` — the turn
-           survives as a conversational reply rather than a 500.
+           and re-validate: the list entry for a ``loc`` with an index, or, for
+           one without, the deepest OPTIONAL sub-object on its path (nulled —
+           ``root_cause_conclusion``, ``knowledge_match``, ``milestones``; fm#1502).
+           The bad sub-records are quarantined; everything else on the turn
+           survives.
+        3. If it still fails (an error on no prunable path), drop
+           ``state_updates`` entirely and keep the conversational
+           ``agent_response`` — the turn survives as a conversational reply
+           rather than a 500.
         4. If even that fails, re-raise the original error (truly unrecoverable).
+
+        An out-of-range confidence usually never reaches step 2: the schema's
+        validators rescale a percentage, coerce a bool, or drop the field of an
+        update-shaped record inside Pydantic (fm#1502). They report through the
+        validation context, and ``_account_confidence`` turns the successful
+        attempt's reports into the field-level counter, the body's ``repaired``
+        outcome and the turn's ``validation_repairs``. Only an unrepairable
+        value on an ADD-shaped record raises, and step 2 prunes that record.
 
         Upstream remains the real fix: provider-native constrained generation so
         the LLM cannot emit the invalid shape ([[project-llm-structured-output-strategy]]).
@@ -9252,17 +9290,40 @@ class MilestoneEngine:
         def _record(outcome: str):
             self._record_schema_validation(schema_model, outcome)
 
+        def _validate(obj):
+            # One attempt, with its OWN repair sink: validators report through
+            # the validation context (fm#1502), and an attempt that fails must
+            # report nothing — only the attempt whose result is returned counts.
+            sink: list[ConfidenceRepair] = []
+            parsed = schema_model.model_validate_json(
+                json.dumps(obj), context={CONFIDENCE_REPAIRS_CONTEXT_KEY: sink}
+            )
+            return parsed, sink
+
         try:
-            parsed = schema_model.model_validate_json(json.dumps(content_obj))
-            _record("clean")
-            return parsed
+            parsed, repairs = _validate(content_obj)
+            # A repair happens INSIDE Pydantic, so this is a first-try success
+            # either way — and a body whose confidences were rewritten is not
+            # one the model got right. ``repaired`` only when every action kept
+            # the model's meaning; a dropped field or a link value set aside for
+            # ingest discarded something, which is what ``pruned`` counts.
+            _record(
+                "clean"
+                if not repairs
+                else (
+                    "repaired"
+                    if all(r.action in MEANING_PRESERVING_ACTIONS for r in repairs)
+                    else "pruned"
+                )
+            )
+            return self._account_confidence(parsed, repairs, None)
         except ValidationError as original_error:
-            pruned, dropped = self._prune_invalid_list_entries(
-                content_obj, original_error
+            pruned, dropped, unhandled = self._prune_invalid_sub_records(
+                content_obj, original_error, schema_model
             )
             if dropped:
                 try:
-                    parsed = schema_model.model_validate_json(json.dumps(pruned))
+                    parsed, repairs = _validate(pruned)
                     logger.warning(
                         "structured_output_degraded: pruned invalid sub-record(s) "
                         f"{dropped} from {schema_model.__name__} and continued "
@@ -9270,24 +9331,29 @@ class MilestoneEngine:
                         extra={"schema": schema_model.__name__, "pruned": dropped},
                     )
                     _record("pruned")
-                    return parsed
+                    return self._account_confidence(parsed, repairs, original_error)
                 except ValidationError:
                     pass  # fall through to the conversational fallback
 
+            # What the prune step removed stays removed below: the fallback
+            # rungs build on the pruned body, so a record already quarantined
+            # outside ``state_updates`` (an ``internal_reasoning`` conclusion)
+            # cannot come back and fail the rung that drops everything else.
+            base = pruned if dropped else content_obj
+
             # Last resort: keep the response text, drop all structured updates.
             if isinstance(content_obj, dict) and content_obj.get("state_updates"):
-                fallback = {**content_obj, "state_updates": {}}
+                fallback = {**base, "state_updates": {}}
                 try:
-                    parsed = schema_model.model_validate_json(json.dumps(fallback))
+                    parsed, repairs = _validate(fallback)
                     # The prune path already logs its locs ("Turn preserved"); this
-                    # branch is reached only when a NON-prunable (non-list-indexed)
-                    # validator error remains — log exactly those so each fallback
-                    # is self-diagnosing (was it correctly non-prunable, or a prune
+                    # branch is reached only when an error the prune step could
+                    # not place remains (no list index, no optional sub-object on
+                    # its path) — log exactly those so each fallback is
+                    # self-diagnosing (was it correctly non-prunable, or a prune
                     # gap?). Reference: S4 backstop observability.
                     non_prunable = [
-                        (list(e.get("loc", ())), e.get("msg", ""))
-                        for e in original_error.errors()
-                        if not any(isinstance(p, int) for p in e.get("loc", ()))
+                        (list(e.get("loc", ())), e.get("msg", "")) for e in unhandled
                     ]
                     logger.warning(
                         "structured_output_degraded: dropped all state_updates from "
@@ -9300,7 +9366,7 @@ class MilestoneEngine:
                         },
                     )
                     _record("state_dropped")
-                    return parsed
+                    return self._account_confidence(parsed, repairs, original_error)
                 except ValidationError:
                     pass
 
@@ -9329,7 +9395,6 @@ class MilestoneEngine:
                 content_obj.get("agent_response"), str
             ):
                 placeholder = ""
-                base = pruned if dropped else content_obj
                 # Prefer keeping the model's state_updates; only DROP them as a
                 # last resort — and say so, so a state-update loss is never logged
                 # as a mere field-fill.
@@ -9339,7 +9404,7 @@ class MilestoneEngine:
                 ):
                     try:
                         patched = {**candidate, "agent_response": placeholder}
-                        parsed = schema_model.model_validate_json(json.dumps(patched))
+                        parsed, repairs = _validate(patched)
                         logger.warning(
                             "structured_output_degraded: blanked missing "
                             f"agent_response on {schema_model.__name__} (model "
@@ -9360,7 +9425,7 @@ class MilestoneEngine:
                             if state_dropped
                             else "response_synthesized"
                         )
-                        return parsed
+                        return self._account_confidence(parsed, repairs, original_error)
                     except ValidationError:
                         continue
 
@@ -9368,27 +9433,49 @@ class MilestoneEngine:
             raise original_error
 
     @staticmethod
-    def _prune_invalid_list_entries(content_obj, error):
-        """Remove the list entries a ValidationError flags. Returns (obj, [paths]).
+    def _prune_invalid_sub_records(content_obj, error, schema_model=None):
+        """Remove the sub-records a ValidationError flags.
 
-        Each ValidationError ``loc`` for a list sub-record looks like
-        ``('state_updates', 'evidence_to_add', 0, 'source_file_id')`` or
-        ``(..., 0)``. We take the deepest int in the loc as the offending list
-        index and drop that entry from the corresponding list. General across any
-        list field (evidence_to_add, evidence_need_updates, hypotheses_to_add, …).
+        Returns ``(obj, pruned_paths, unhandled_errors)``.
+
+        - A ``loc`` carrying a list index — ``('state_updates',
+          'evidence_to_add', 0, 'source_file_id')`` or ``(..., 0)`` — prunes the
+          entry at the DEEPEST index. General across any list field.
+        - A ``loc`` with no index is placed on the deepest OPTIONAL sub-object
+          along its path, read from ``schema_model``, and that sub-object is
+          set to ``None`` — ``('state_updates', 'root_cause_conclusion',
+          'likelihood')`` nulls ``root_cause_conclusion`` (fm#1502). Absence is
+          what an optional sub-object means when the model has nothing to say,
+          so this costs that sub-object and nothing else, where the next rung
+          would drop every ``state_updates``. A required object (``state_updates``
+          itself) or a non-object field (``outcome``) is never nulled: the error
+          is returned as unhandled and falls through as before.
+
+        Without ``schema_model`` only list entries are pruned.
         """
         import copy
 
         obj = copy.deepcopy(content_obj)
         to_remove: dict[tuple, set] = {}
+        to_null: set[tuple] = set()
+        unhandled: list[dict] = []
         for err in error.errors():
-            loc = err.get("loc", ())
+            loc = tuple(err.get("loc", ()))
             int_positions = [i for i, part in enumerate(loc) if isinstance(part, int)]
-            if not int_positions:
-                continue  # top-level / non-list error — not prunable here
-            last = int_positions[-1]
-            list_path = loc[:last]
-            to_remove.setdefault(list_path, set()).add(loc[last])
+            if int_positions:
+                last = int_positions[-1]
+                list_path = loc[:last]
+                to_remove.setdefault(list_path, set()).add(loc[last])
+                continue
+            prefix = (
+                MilestoneEngine._optional_sub_record_prefix(schema_model, loc)
+                if schema_model is not None
+                else None
+            )
+            if prefix is None:
+                unhandled.append(err)
+            else:
+                to_null.add(prefix)
 
         dropped: list[str] = []
         for list_path, indices in to_remove.items():
@@ -9406,7 +9493,98 @@ class MilestoneEngine:
                         del node[idx]
                         path_str = ".".join(str(p) for p in list_path)
                         dropped.append(f"{path_str}[{idx}]")
-        return obj, dropped
+
+        # Shortest first, so a sub-object inside one already nulled is skipped
+        # (its parent is None by then) rather than reported twice.
+        for path in sorted(to_null, key=len):
+            parent = obj
+            for key in path[:-1]:
+                parent = parent.get(key) if isinstance(parent, dict) else None
+            if isinstance(parent, dict) and parent.get(path[-1]) is not None:
+                parent[path[-1]] = None
+                dropped.append(".".join(str(p) for p in path))
+        return obj, dropped, unhandled
+
+    @staticmethod
+    def _optional_sub_record_prefix(schema_model, loc) -> Optional[tuple]:
+        """The deepest prefix of ``loc`` naming an ``Optional[BaseModel]`` field.
+
+        Walks the field annotations from ``schema_model`` down the string parts
+        of ``loc``; stops at the first part that is not a model field or whose
+        type is not a model. ``None`` when no optional sub-object lies on the
+        path.
+
+        Reads resolved annotations only: a quoted forward reference pydantic
+        left unresolved would hide the sub-object it names, and the error would
+        fall through to the drop-all rung. ``test_confidence_repair_1502``'s
+        census fails if any field reachable from an engine schema carries one.
+        """
+        import types
+        import typing
+
+        from pydantic import BaseModel
+
+        model = schema_model
+        best: Optional[tuple] = None
+        for depth, part in enumerate(loc):
+            fields = getattr(model, "model_fields", None)
+            if not isinstance(part, str) or not fields or part not in fields:
+                break
+            annotation = fields[part].annotation
+            nullable = False
+            if typing.get_origin(annotation) in (typing.Union, types.UnionType):
+                args = typing.get_args(annotation)
+                members = [a for a in args if a is not type(None)]
+                nullable = len(members) < len(args)
+                annotation = members[0] if len(members) == 1 else None
+            if not (isinstance(annotation, type) and issubclass(annotation, BaseModel)):
+                break
+            if nullable:
+                best = tuple(loc[: depth + 1])
+            model = annotation
+        return best
+
+    @staticmethod
+    def _account_confidence(parsed, repairs, original_error):
+        """Make the confidence actions behind ``parsed`` observable (fm#1502).
+
+        ``repairs`` are what the successful attempt's validators reported;
+        ``original_error``, when the ladder degraded, carries the unrepairable
+        ADD-shaped values whose records the ladder pruned. Each action is
+        counted on ``faultmaven_schema_field_repairs_total`` and kept on the
+        response for the apply step to write onto the turn's
+        ``validation_repairs``. A link value set aside for ingest is neither:
+        ingest counts what it decides.
+        """
+        kept = [r for r in repairs if r.action is not ConfidenceAction.SET_ASIDE]
+        if original_error is not None:
+            for err in original_error.errors():
+                if err.get("type") != CONFIDENCE_UNREPAIRABLE:
+                    continue
+                ctx = err.get("ctx") or {}
+                kept.append(
+                    ConfidenceRepair(
+                        schema=str(ctx.get("schema", "?")),
+                        field=str(ctx.get("field", "?")),
+                        action=ConfidenceAction.PRUNED,
+                        raw=err.get("input"),
+                        where=".".join(str(p) for p in err.get("loc", ())),
+                    )
+                )
+        if not kept:
+            return parsed
+        for repair in kept:
+            count_confidence_repair(repair)
+        logger.warning(
+            "structured_output_confidence_repaired",
+            extra={
+                "schema": type(parsed).__name__,
+                "repairs": [repair.note() for repair in kept],
+            },
+        )
+        if "_confidence_repairs" in getattr(type(parsed), "__private_attributes__", {}):
+            parsed._confidence_repairs = kept
+        return parsed
 
     def _log_dropped_fields(
         self,
@@ -10395,6 +10573,16 @@ class MilestoneEngine:
             if upload_report is not None
             else self._report_turn_uploads(case, attachments)
         )
+        # What validation had to do to the model's confidence values (fm#1502).
+        # Seeded here, before any apply step appends its own repairs, because
+        # this is the first point with both the accepted response and the
+        # turn's metadata in hand; ingest adds its link decisions to the same
+        # list.
+        confidence_notes = [
+            repair.note() for repair in getattr(response_obj, "_confidence_repairs", [])
+        ]
+        if confidence_notes:
+            metadata["validation_repairs"] = confidence_notes
 
         # POST-PROCESSING: Apply LLM failure mitigation (Pattern-based fallback)
         # This repairs LLM classification failures before applying state updates
@@ -11063,6 +11251,7 @@ class MilestoneEngine:
             getattr(updates, "node_evidence_links", None) or [],
             case.current_turn,
             evidence_created_ids=metadata.get("evidence_added", []),
+            validation_repairs=metadata.setdefault("validation_repairs", []),
         )
 
         def _resolve_root(ref: str | None) -> str | None:
@@ -12062,6 +12251,23 @@ class MilestoneEngine:
             ):
                 continue
 
+            # A confidence the schema SET ASIDE as out of range (fm#1502) is
+            # decided here, where "re-emitted" is knowable: storage is an upsert
+            # by evidence_id, and only the stored link says whether this one
+            # re-states the same claim.
+            stored = next(
+                (el for el in hypothesis.evidence_links if el.evidence_id == e_id),
+                None,
+            )
+            stance_confidence = self._resolve_link_confidence(
+                link,
+                stored_stance=stored.stance if stored is not None else None,
+                where=f"{h_id}<-{e_id}",
+                metadata=metadata,
+            )
+            if stance_confidence is _PRUNE_LINK:
+                continue
+
             # Counts only a NEW or materially revised link (#1136). Storage is an
             # upsert by evidence_id, so counting every call let a model re-emitting
             # the same link each turn hold ``turns_without_progress`` at 0 forever —
@@ -12074,11 +12280,64 @@ class MilestoneEngine:
                 link.stance,
                 case.current_turn,
                 reasoning=link.reasoning,
-                stance_confidence=link.stance_confidence,
+                stance_confidence=stance_confidence,
             ):
                 metadata["hypothesis_evidence_links_applied"] = (
                     metadata.get("hypothesis_evidence_links_applied", 0) + 1
                 )
+
+    @staticmethod
+    def _resolve_link_confidence(
+        link: Any,
+        *,
+        stored_stance: Any,
+        where: str,
+        metadata: dict[str, Any],
+    ) -> Any:
+        """The ``stance_confidence`` to store for a hypothesis link.
+
+        Returns a number, ``None`` (keep the stored value — ``link_evidence``
+        applies it), or ``_PRUNE_LINK`` when the link must not be written.
+
+        Only a value the schema SET ASIDE as out of range is decided here
+        (fm#1502): a re-emission of the same claim (same evidence, same stance)
+        keeps the stored value; a new link, or a stance flip, is rescaled or
+        coerced when it can be and otherwise pruned — leaving any stored link
+        as it was. The schema's ``1.0`` default must not stand in, and nor may
+        the stored confidence of the opposite stance: on REFUTES the first is a
+        decisive disconfirmation nobody asserted, and on SUPPORTS the second is
+        grounding nobody asserted.
+
+        An OMITTED (or strict-mode ``null``) confidence follows the same
+        new-versus-re-emitted rule, per the 2026-09-24 ruling: on a re-emission
+        of the same claim it keeps the stored value — the schema's ``1.0``
+        default used to overwrite a stored hedge whenever a routine re-listing
+        left the field out, "the exact defect the node path documents
+        avoiding" — and on a new link or a stance flip it is full confidence,
+        the default, as before. A conforming value is the link's own, as before.
+
+        Duck-typed like the rest of this apply path: a link that is not a
+        Pydantic model has no fields-set record, so its ``stance_confidence``
+        is read as given.
+        """
+        settled = settle_set_aside_link(
+            link,
+            stored_stance=stored_stance,
+            where=where,
+            notes=metadata.setdefault("validation_repairs", []),
+        )
+        if settled is None:
+            fields_set = getattr(link, "model_fields_set", None)
+            omitted = isinstance(fields_set, (set, frozenset)) and (
+                "stance_confidence" not in fields_set
+            )
+            if omitted and stored_stance is not None and stored_stance == link.stance:
+                return None  # a true re-emission: the stored value stands
+            return link.stance_confidence
+        action, value = settled
+        if action is ConfidenceAction.PRUNED:
+            return _PRUNE_LINK
+        return value  # None when dropped: the stored value stands
 
     # =========================================================================
     # Evidence Need apply-layer (Phase 3 of evidence-needs rollout)

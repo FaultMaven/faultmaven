@@ -126,7 +126,8 @@ class StubCaseRepository:
         )
 
     async def get_messages(self, case_id: str):
-        return [SimpleNamespace(**m) for m in self._case.get("messages", [])]
+        # Dicts, the shape every repository's ``get_messages`` returns (#1660).
+        return [dict(m) for m in self._case.get("messages", [])]
 
     async def get_evidence(self, case_id: str):
         return [SimpleNamespace(**e) for e in self._case.get("evidence", [])]

@@ -29,20 +29,32 @@ Read as rates, never the numerator alone:
 
 - ``faultmaven_schema_validation_total``: every structured response body the
   engine validated, by ``schema`` and ``outcome``, one increment per body.
-  Two sites feed it and BOTH must, or the denominator silently excludes a
-  whole class of turn: the degradation ladder (``_validate_with_degradation``,
-  reached from the tool-augmented path and from ``_parse_text_as_schema``) and
-  the non-tool structured single-shot path, which validates directly with
-  ``model_validate_json`` and is what a tool-incapable model, the
-  ``ToolCallingUnsupportedError`` fallback and a FUNCTION_CALLING single shot
-  all run.
+  Every body goes through the degradation ladder
+  (``_validate_with_degradation``), which is the one place that counts: it is
+  reached from the tool-augmented path's schema-tool call, from
+  ``_parse_text_as_schema``, and from the non-tool structured single-shot path
+  (what a tool-incapable model, the ``ToolCallingUnsupportedError`` fallback, a
+  FUNCTION_CALLING single shot and fm#1116's tool-less turn all run). That last
+  path used to validate directly with ``model_validate_json`` and count
+  separately; it has shared the ladder since fm#1116.
 
-  Outcomes: ``clean`` (validated as-is), ``pruned`` (invalid sub-records
-  quarantined), ``state_dropped`` (state_updates unrecoverable, conversational
-  fallback), ``response_synthesized`` (required agent_response missing,
-  placeholder filled, state_updates KEPT),
+  Outcomes: ``clean`` (validated as emitted), ``repaired`` (validated first
+  try, but only after an out-of-range confidence was rescaled from a percentage
+  or a ``bool`` coerced — the model's meaning kept, nothing discarded; fm#1502),
+  ``pruned`` (part of the body was discarded to keep the rest: an invalid list
+  entry or optional sub-object quarantined, or an out-of-range confidence
+  removed — dropped from an update-shaped record, or set aside for ingest to
+  decide on a link), ``state_dropped`` (state_updates unrecoverable,
+  conversational fallback), ``response_synthesized`` (required agent_response
+  missing, placeholder filled, state_updates KEPT),
   ``response_synthesized_state_dropped`` (the placeholder validated only after
   dropping every state update as well), ``failed`` (unrecoverable, re-raised).
+
+  ``repaired`` is its own outcome rather than ``clean`` because a repair
+  happens INSIDE Pydantic: the ladder sees a first-try success, and folding it
+  into ``clean`` would report a body whose confidences were all rewritten as
+  one the model got right. ``repaired`` applies only when nothing was pruned
+  or dropped; a body that needed both a repair and a prune is ``pruned``.
 
   The A/B "schema-validity" metric is ``clean / total``. Read state loss as
   ``(state_dropped + response_synthesized_state_dropped) / total`` — the
@@ -52,6 +64,17 @@ Read as rates, never the numerator alone:
   state-loss rate under-reports. The outcomes are not claimed to form a total
   order of severity; each names a specific loss, and a consumer sums the ones
   it cares about.
+
+- ``faultmaven_schema_field_repairs_total``: every out-of-range confidence the
+  engine acted on, by ``schema`` (the model class owning the field, e.g.
+  ``HypothesisToAdd``), ``field`` and ``action`` — ``rescaled`` (a value in
+  ``(1, 100]`` read as a percentage), ``coerced`` (a ``bool``), ``dropped``
+  (removed from an update-shaped record, the stored value kept) or ``pruned``
+  (the record carrying it removed). Field-level where the outcome above is
+  body-level, so a repair and a drop are counted separately (fm#1502). Link
+  confidences are counted at INGEST, the only point that knows whether the link
+  is new; a body that never reaches ingest (a retried or failed generation)
+  contributes nothing for them.
 """
 
 from faultmaven.infrastructure.shims.metrics import Counter
@@ -76,6 +99,7 @@ tool_call_attempts_total = Counter(
 # computed over a population that quietly changed shape.
 SCHEMA_VALIDATION_OUTCOMES = (
     "clean",
+    "repaired",
     "pruned",
     "state_dropped",
     "response_synthesized",
@@ -85,11 +109,22 @@ SCHEMA_VALIDATION_OUTCOMES = (
 
 schema_validation_total = Counter(
     "faultmaven_schema_validation_total",
-    "Structured response bodies the engine validated (degradation ladder and "
-    "non-tool single-shot path), labeled by ``schema`` and final ``outcome`` "
-    "(clean | pruned | state_dropped | response_synthesized | "
+    "Structured response bodies the engine validated (every body goes through "
+    "the degradation ladder), labeled by ``schema`` and final ``outcome`` "
+    "(clean | repaired | pruned | state_dropped | response_synthesized | "
     "response_synthesized_state_dropped | failed). Schema-validity rate = "
     "clean / total; state-loss rate = (state_dropped + "
     "response_synthesized_state_dropped) / total.",
     ["schema", "outcome"],
+)
+
+# Pinned by tests, for the same reason as the tuple above.
+SCHEMA_FIELD_REPAIR_ACTIONS = ("rescaled", "coerced", "dropped", "pruned")
+
+schema_field_repairs_total = Counter(
+    "faultmaven_schema_field_repairs_total",
+    "Out-of-range confidence values the engine acted on, labeled by ``schema`` "
+    "(owning model class), ``field`` and ``action`` (rescaled | coerced | "
+    "dropped | pruned). Link confidences are counted at ingest.",
+    ["schema", "field", "action"],
 )

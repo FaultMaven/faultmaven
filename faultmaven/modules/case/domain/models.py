@@ -4371,7 +4371,12 @@ class TurnProgress(BaseModel):
 
     validation_repairs: List[str] = Field(
         default_factory=list,
-        description="State repairs made by StateValidator this turn (e.g., 'Fixed milestone ordering')",
+        description=(
+            "What the engine corrected this turn: the StateValidator's repairs "
+            "(e.g., 'Fixed milestone ordering'), the apply step's rejections, "
+            "and out-of-range confidence values rescaled, coerced, dropped or "
+            "pruned (fm#1502)"
+        ),
     )
 
     # ============================================================
