@@ -30,7 +30,7 @@ import re
 from collections import defaultdict
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Callable, Literal, Optional
+from typing import Any, Callable, Literal, NamedTuple, Optional
 from uuid import uuid4
 
 # Module initialization
@@ -1188,6 +1188,119 @@ def _apply_stage_gate_signals(
         _apply_stage_gate_side_effects(
             case, stage_gate_completed, user_message, metadata
         )
+
+
+# =============================================================================
+# Tool-loop per-call bound: the estimator (#612, #614)
+# =============================================================================
+
+
+class _ToolLoopBudget(NamedTuple):
+    """The two limits on one tool-loop call (#614), kept apart because they
+    bound different things.
+
+    - ``soft`` — the size/cost target on ``messages`` alone:
+      ``prompt_target + tool_observation_max_tokens``. The ``tools=`` payload is
+      not counted against it. It governs observation elision only, exactly as
+      before #614.
+    - ``window`` — the receiving model's context window when the resolver knows
+      it, else ``None``; ``response_reserve`` is the output room the registry
+      holds for that model. Together they give the HARD cap, :meth:`hard`.
+    """
+
+    soft: int
+    window: Optional[int]
+    response_reserve: int = 0
+
+    def hard(self, max_tokens: int) -> Optional[int]:
+        """The prompt tokens — ``messages`` plus ``tools=`` — a call may send
+        when it asks for ``max_tokens`` of completion, so that prompt plus
+        completion stays inside the window: ``window - max(max_tokens,
+        response_reserve)``. ``None`` when the window is unknown. Keyed on the
+        call's OWN completion cap, because the loop asks for more than the
+        registry's reserve (8,000 against 6,000 by default) and a truncation
+        retry doubles it (to 16,000)."""
+        if self.window is None:
+            return None
+        return self.window - max(max_tokens, self.response_reserve)
+
+
+# Stands in for the elided tool-exchange groups (INV-4: never a silent drop).
+# One string, so the head-fit check before the loop and the bound inside it
+# reserve the same marker.
+_TOOL_LOOP_ELISION_MARKER = (
+    "[Earlier tool calls and their results were elided to stay within "
+    "the context budget. Re-run a search if you need those specifics.]"
+)
+
+
+def _tool_loop_message_tokens(
+    m: dict,
+    provider_name: Any,
+    model: Any,
+    token_cache: Optional[dict] = None,
+) -> int:
+    """The estimator the tool-loop bound applies to one message:
+    ``estimate_tokens`` for the loop's provider name and model — tiktoken
+    cl100k for openai/openrouter/anthropic/fireworks, ``len // 4`` for gemini,
+    local, and the router (whose name, ``LLMRouter``, is not a provider)."""
+    from faultmaven.utils.token_estimation import estimate_tokens
+
+    # Memoize by object identity — `messages` is append-only within a turn and
+    # every dict is held alive in it, so ids are stable and the large,
+    # unchanging head is tokenized once, not once per iteration.
+    key = id(m)
+    if token_cache is not None and key in token_cache:
+        return token_cache[key]
+    parts = [str(m.get("content") or "")]
+    if m.get("tool_calls"):
+        parts.append(str(m.get("tool_calls")))
+    # Reasoning artifacts are part of the WIRE payload and must be counted, or
+    # this bound is not a bound. For a thinking-carrying assistant turn the
+    # provider serializes provider_metadata["assistant_content"] (Anthropic
+    # thinking / redacted_thinking blocks) or ["assistant_parts"] (Gemini parts
+    # with thoughtSignatures) INSTEAD OF `content` — reasoning text that can
+    # run to thousands of tokens. Estimating from `content` alone under-counts
+    # those turns by roughly the size of their reasoning, so the bound would
+    # report "under budget" while the request it green-lights blows the
+    # provider's context limit — precisely the failure it exists to prevent.
+    if m.get("provider_metadata"):
+        parts.append(str(m.get("provider_metadata")))
+    val = estimate_tokens(
+        " ".join(parts),
+        provider=provider_name if isinstance(provider_name, str) else "local",
+        model=model if isinstance(model, str) else None,
+    )
+    if token_cache is not None:
+        token_cache[key] = val
+    return val
+
+
+def _tool_payload_tokens(
+    tools: Optional[list],
+    provider_name: Any,
+    model: Any,
+    token_cache: Optional[dict] = None,
+) -> int:
+    """Estimated tokens of one call's ``tools=`` payload (#614): the same
+    ``estimate_tokens`` call as the messages, over the JSON the definitions are
+    sent as. Memoized under a tuple key, which cannot collide with the
+    messages' int keys in a shared cache."""
+    if not tools:
+        return 0
+    from faultmaven.utils.token_estimation import estimate_tokens
+
+    key = ("tools", id(tools))
+    if token_cache is not None and key in token_cache:
+        return token_cache[key]
+    val = estimate_tokens(
+        json.dumps(tools, default=str),
+        provider=provider_name if isinstance(provider_name, str) else "local",
+        model=model if isinstance(model, str) else None,
+    )
+    if token_cache is not None:
+        token_cache[key] = val
+    return val
 
 
 def _is_context_length_error(exc: Exception) -> bool:
@@ -5564,6 +5677,22 @@ class MilestoneEngine:
             model_name=model_name,
         )
 
+        def _build_tool_loop_base(
+            *,
+            target_tokens: int,
+            provider_name: Optional[str],
+            model_name: Optional[str],
+        ) -> str:
+            # #614: re-assembled for the model the tool loop sends to, when the
+            # chat-sized prompt does not fit there.
+            return get_prompt_for_case(
+                case,
+                user_message,
+                provider_name=provider_name,
+                model_name=model_name,
+                target_tokens=target_tokens,
+            )
+
         # Pass tools with auto tool_choice — LLM decides whether to invoke
         # kb_qa, web_search, etc. based on the user's question.
         tools_kwargs: dict[str, Any] = {}
@@ -5573,6 +5702,7 @@ class MilestoneEngine:
                 case, user_id=user_id
             )
             tools_kwargs["force_tool_use"] = False
+            tools_kwargs["base_prompt_builder"] = _build_tool_loop_base
 
         response_obj = await self._generate_structured_output(
             prompt,
@@ -6516,16 +6646,38 @@ class MilestoneEngine:
             # the full-evidence prompt for that fallback.
             _tools_avail = self._tools_effectively_available()
 
-            def _build_prompt(tools_available: bool) -> str:
+            def _build_prompt(
+                tools_available: bool,
+                *,
+                target_tokens: Optional[int] = None,
+                sizing_provider: Optional[str] = provider_name,
+                sizing_model: Optional[str] = model_name,
+            ) -> str:
                 return get_prompt_for_case(
                     case,
                     user_message,
                     kb_results=None,
-                    provider_name=provider_name,
-                    model_name=model_name,
+                    provider_name=sizing_provider,
+                    model_name=sizing_model,
                     processing_mode=processing_mode,
                     entity_highlight_groups=entity_highlight_groups,
                     tools_available=tools_available,
+                    target_tokens=target_tokens,
+                )
+
+            def _build_tool_loop_base(
+                *,
+                target_tokens: int,
+                provider_name: Optional[str],
+                model_name: Optional[str],
+            ) -> str:
+                # #614: the same prompt, re-assembled for the model the tool
+                # loop sends to, when the chat-sized one does not fit there.
+                return _build_prompt(
+                    _tools_avail,
+                    target_tokens=target_tokens,
+                    sizing_provider=provider_name,
+                    sizing_model=model_name,
                 )
 
             # fm#1116: decide the generation route BEFORE the single prompt
@@ -6627,6 +6779,7 @@ class MilestoneEngine:
                     fallback_prompt_builder=(
                         (lambda: _build_prompt(False)) if _tools_avail else None
                     ),
+                    base_prompt_builder=_build_tool_loop_base,
                 )
             else:
                 response_obj = await self._generate_structured_output(
@@ -7539,23 +7692,33 @@ class MilestoneEngine:
 
     # Constants for tool-augmented generation
     #
-    # What bounds a turn's tool loop (#611). The loop makes
+    # What bounds a turn's tool loop (#611, #614). The loop makes
     # MAX_TOOL_ITERATIONS + 1 calls: iterations 0..MAX_TOOL_ITERATIONS-1 may
     # call tools, the last is schema-only.
     #
     # The MESSAGE bound is structural. _bound_tool_loop_messages trims the
-    # ``messages`` of every call to _resolve_tool_loop_budget:
+    # ``messages`` of every call to the SOFT cap from _resolve_tool_loop_budget:
     #
-    #     per_call = min(PROMPT_TARGET_TOKENS + PROMPT_TOOL_OBSERVATION_MAX_TOKENS,
-    #                    the model's window budget)
-    #              = 32,000 + 16,000 = 48,000 with shipped defaults.
+    #     soft = PROMPT_TARGET_TOKENS + PROMPT_TOOL_OBSERVATION_MAX_TOKENS
+    #          = 32,000 + 16,000 = 48,000 with shipped defaults.
     #
     # That is a bound on ``messages`` only, in ESTIMATED tokens: providers with
     # no local tokenizer (gemini, and the router, whose name is not a provider)
     # are estimated at len // 4, which read 1.5-1.7x under cl100k on two log
     # samples. It does not count the ``tools=`` payload — the schema tool alone
-    # is ~950 (TerminalResponse) to ~11,000 (InvestigationResponse_Diagnosis)
-    # cl100k tokens, plus up to ~2,400 for the investigation tools.
+    # is ~950 (TerminalResponse) to ~11,300 (InvestigationResponse_Diagnosis)
+    # cl100k tokens, plus ~1,100 for the six investigation tools the DA
+    # registry can hold. That payload is bounded only by the WINDOW (#614):
+    # when the resolver knows the receiving model's context window, the HARD
+    # cap holds messages plus that call's tools= payload (the schema tool alone
+    # on the final iteration) to what the window leaves beside the completion
+    # the call asks for — its max_tokens (8,000; 16,000 on a truncation retry,
+    # which is bounded again), or the registry's reserve if larger.
+    # _fit_tool_loop_base fits the base to that before the first call,
+    # re-assembling it for the receiving model, or refusing the loop, when it
+    # does not fit; with the window unknown it never touches the base. With no
+    # window known (the router) or a large one, the loop sends and elides
+    # exactly what it did before.
     #
     # PROMPT_TURN_TOKEN_CEILING (150,000) is a separate, METERED net: after each
     # non-final call it compares the turn's spend_weighted_tokens — real
@@ -7567,25 +7730,30 @@ class MilestoneEngine:
     # final anyway), i.e. when those calls average more than 50,000 each with
     # defaults. That is NOT excluded by the message bound. An uncached turn
     # with a full-size base and the Diagnosis schema meters ~3 x (32,000 +
-    # 11,000 + 2,400) = ~136,000 for the base alone; the observation allowance,
-    # outputs, or a len // 4 undercount carries it past 150,000, and the ceiling
-    # removes the last tool round. Where the provider serves the repeated
-    # prefix from its prompt cache on calls after the first, that prefix counts
-    # at 0.25 and the ceiling stays out of normal turns.
+    # 1,350 + 11,300 + 1,100) = ~137,000 for the base, system instruction and
+    # tools alone; the observation allowance, outputs, or a len // 4 undercount
+    # carries it past 150,000, and the ceiling removes the last tool round.
+    # Where the provider serves the repeated prefix from its prompt cache on
+    # calls after the first, that prefix counts at 0.25 and the ceiling stays
+    # out of normal turns.
     #
     # Raising PROMPT_TARGET_TOKENS or PROMPT_TOOL_OBSERVATION_MAX_TOKENS moves
     # the metered spend toward the ceiling; raise the ceiling with them. Pinned
-    # by TestToolLoopSpendBound in test_milestone_engine_tool_loop.py.
+    # by TestToolLoopSpendBound in test_milestone_engine_tool_loop.py, and what
+    # each cap counts by TestToolLoopBoundSplitsSoftAndHardCaps /
+    # TestToolLoopBaseFitsTheReceivingModel.
     MAX_TOOL_ITERATIONS = 4
     TOOL_RESULT_MAX_CHARS = 8000
     MAX_DEEP_ANALYSIS = 1
 
-    def _resolve_tool_loop_budget(self, provider_name: str) -> int:
-        """Per-call token budget for the tool loop: min(model hard ceiling,
-        prompt_target + a bounded observation scratchpad). Best-known method for
-        an agent working context — the base task fits the jar, the accumulated
-        tool observations get a bounded allowance, and no call may exceed the
-        model's hard limit."""
+    def _resolve_tool_loop_budget(self, provider_name: str) -> _ToolLoopBudget:
+        """The two caps on every tool-loop call (#614). The SOFT cap is
+        ``prompt_target + a bounded observation scratchpad`` on ``messages``
+        alone — the base task fits the jar, the accumulated tool observations get
+        a bounded allowance. The HARD cap comes from the model's window when
+        known: no call's prompt — messages plus the tools payload it carries —
+        plus the completion it asks for may exceed it (``_ToolLoopBudget.hard``).
+        """
         from faultmaven.config.settings import get_settings
         from faultmaven.utils.model_context import resolve_model_budget
 
@@ -7596,13 +7764,14 @@ class MilestoneEngine:
         try:
             pn = provider_name if isinstance(provider_name, str) else None
             resolved = resolve_model_budget(pn, self.da_model)
-            budget = resolved.prompt_target + obs
-            if resolved.prompt_budget is not None:  # known window → hard ceiling
-                budget = min(budget, resolved.prompt_budget)
-            return budget
+            return _ToolLoopBudget(
+                soft=resolved.prompt_target + obs,
+                window=resolved.context_window,  # None: unknown, trust the target
+                response_reserve=resolved.response_reserve or 0,
+            )
         except Exception:
             # Best-effort — never let budget resolution break a turn.
-            return 32_000 + obs
+            return _ToolLoopBudget(soft=32_000 + obs, window=None)
 
     def _bound_tool_loop_messages(
         self,
@@ -7610,59 +7779,53 @@ class MilestoneEngine:
         budget_tokens: int,
         provider_name: str,
         token_cache: Optional[dict] = None,
+        *,
+        tools: Optional[list[dict]],
+        window_tokens: Optional[int],
     ) -> list[dict]:
-        """Keep the tool-loop ``messages`` within ``budget_tokens`` by eliding the
-        OLDEST tool-exchange groups (an assistant tool-call message plus its tool
-        results), preserving the system + base task messages and the most-recent
-        exchanges. This bounds the ACCUMULATED tool observations so the request
-        cannot grow unbounded across iterations.
+        """Keep one tool-loop call within its two caps by eliding the OLDEST
+        tool-exchange groups (an assistant tool-call message plus its tool
+        results), preserving the system + base task messages and the
+        most-recent exchanges. This bounds the ACCUMULATED tool observations so
+        the request cannot grow unbounded across iterations.
 
-        Scope: the head (system + base task) is sized upstream by the assembling
-        model and is never trimmed here, and the ``tools=`` schema payload is not
-        counted — so on a dedicated DA provider whose window is smaller than the
-        base's target, or with a very large tool schema, the sent request can
-        still exceed the budget; the §7.1 runtime context-length recovery is the
-        net for that (see #614).
+        - ``budget_tokens`` is the SOFT cap: ``messages`` alone, a size/cost
+          target. The ``tools=`` payload is not counted against it, so where no
+          window is known the bound is exactly what it was before #614.
+        - ``window_tokens`` is the HARD cap: the prompt tokens the receiving
+          model's window leaves beside THIS call's completion
+          (``_ToolLoopBudget.hard(max_tokens)``), or ``None`` when the window is
+          unknown. ``messages`` PLUS ``tools`` — the list sent as ``tools=`` on
+          this call, the schema tool alone on the final iteration — must fit it
+          (#614). A request that would still exceed it is refused with
+          ``ToolCallingUnsupportedError`` (the caller takes the non-tool path),
+          never returned; ``_fit_tool_loop_base`` makes that unreachable for the
+          head it has fitted, at the first attempt's completion cap.
+
+        Both are REQUIRED keywords, so no call site can bound a request while
+        silently skipping the window or leaving its tools uncounted: ``None``
+        states "no tools" / "window unknown".
 
         Invariants: the elided span is replaced by a single marker (INV-4 — never
         a silent drop; the agent can re-run a search), and whole assistant/tool
         groups are elided together so tool_call ↔ tool_result pairing stays valid
         (providers reject an orphan tool result).
         """
-        from faultmaven.utils.token_estimation import estimate_tokens
-
-        _prov = provider_name if isinstance(provider_name, str) else "local"
-        _model = self.da_model if isinstance(self.da_model, str) else None
 
         def _tok(m: dict) -> int:
-            # Memoize by object identity — `messages` is append-only within a
-            # turn and every dict is held alive in it, so ids are stable and the
-            # large, unchanging head is tokenized once, not once per iteration.
-            key = id(m)
-            if token_cache is not None and key in token_cache:
-                return token_cache[key]
-            parts = [str(m.get("content") or "")]
-            if m.get("tool_calls"):
-                parts.append(str(m.get("tool_calls")))
-            # Reasoning artifacts are part of the WIRE payload and must be
-            # counted, or this bound is not a bound. For a thinking-carrying
-            # assistant turn the provider serializes
-            # provider_metadata["assistant_content"] (Anthropic thinking /
-            # redacted_thinking blocks) or ["assistant_parts"] (Gemini parts
-            # with thoughtSignatures) INSTEAD OF `content` — reasoning text
-            # that can run to thousands of tokens. Estimating from `content`
-            # alone under-counts those turns by roughly the size of their
-            # reasoning, so this function would report "under budget" while
-            # the request it green-lights blows the provider's context limit
-            # — precisely the failure it exists to prevent.
-            if m.get("provider_metadata"):
-                parts.append(str(m.get("provider_metadata")))
-            val = estimate_tokens(" ".join(parts), provider=_prov, model=_model)
-            if token_cache is not None:
-                token_cache[key] = val
-            return val
+            return _tool_loop_message_tokens(
+                m, provider_name, self.da_model, token_cache
+            )
 
-        if sum(_tok(m) for m in messages) <= budget_tokens:
+        msg_cap = budget_tokens
+        tools_tokens = 0
+        if window_tokens is not None:
+            tools_tokens = _tool_payload_tokens(
+                tools, provider_name, self.da_model, token_cache
+            )
+            msg_cap = min(msg_cap, window_tokens - tools_tokens)
+        total = sum(_tok(m) for m in messages)
+        if total <= msg_cap:
             return messages
 
         head = messages[:2]  # system + base task (always kept)
@@ -7674,14 +7837,14 @@ class MilestoneEngine:
             else:
                 groups[-1].append(m)
 
-        marker = {
-            "role": "user",
-            "content": (
-                "[Earlier tool calls and their results were elided to stay within "
-                "the context budget. Re-run a search if you need those specifics.]"
-            ),
-        }
-        avail = budget_tokens - sum(_tok(m) for m in head) - _tok(marker)
+        marker = {"role": "user", "content": _TOOL_LOOP_ELISION_MARKER}
+        # Counted WITHOUT the by-id cache: the marker is not held in `messages`,
+        # so once the returned list is dropped its address can be reused by a
+        # later message dict — which would then read the marker's count from the
+        # cache and be under-counted (#614).
+        marker_tokens = _tool_loop_message_tokens(marker, provider_name, self.da_model)
+        head_tokens = sum(_tok(m) for m in head)
+        avail = msg_cap - head_tokens - marker_tokens
         kept: list[list[dict]] = []
         for g in reversed(groups):
             gt = sum(_tok(m) for m in g)
@@ -7691,19 +7854,152 @@ class MilestoneEngine:
             else:
                 break
         if len(kept) == len(groups):
-            return messages  # nothing to elide (head already near budget)
+            out, sent = messages, total  # nothing to elide (head near the cap)
+        else:
+            logger.warning(
+                "tool_loop_context_bounded: elided %d of %d tool-exchange group(s) "
+                "to fit the %d-token budget",
+                len(groups) - len(kept),
+                len(groups),
+                msg_cap,
+            )
+            out = list(head) + [marker]
+            for g in kept:
+                out.extend(g)
+            sent = msg_cap - avail
+        if window_tokens is not None and sent + tools_tokens > window_tokens:
+            from faultmaven.exceptions import ToolCallingUnsupportedError
 
-        logger.warning(
-            "tool_loop_context_bounded: elided %d of %d tool-exchange group(s) to "
-            "fit the %d-token budget",
-            len(groups) - len(kept),
-            len(groups),
-            budget_tokens,
-        )
-        out = list(head) + [marker]
-        for g in kept:
-            out.extend(g)
+            raise ToolCallingUnsupportedError(
+                message=(
+                    f"Tool-loop head plus tools payload exceeds the "
+                    f"{window_tokens}-token window budget; not sending."
+                ),
+                provider=provider_name if isinstance(provider_name, str) else None,
+                model=self.da_model,
+            )
         return out
+
+    async def _fit_tool_loop_base(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        budget: _ToolLoopBudget,
+        provider_name: str,
+        max_tokens: int,
+        base_prompt_builder: Optional[Callable[..., str]] = None,
+        redaction_ctx: Any | None = None,
+        token_cache: Optional[dict] = None,
+    ) -> list[dict]:
+        """Return the loop's opening ``[system, base task]`` messages with the
+        base sized to the WINDOW of the model that receives the tool loop
+        (#614), or refuse the loop.
+
+        The base arrives assembled for the chat path (through the router, which
+        names no provider or model: ``PROMPT_TARGET_TOKENS``, no window clamp,
+        ``len // 4``), but the loop sends it to ``provider_name`` /
+        ``self.da_model`` — a dedicated DA model whose window can be too small
+        for it — beside a system instruction and a ``tools=`` payload the
+        assembly never saw. When that window is known, the head must fit
+        ``budget.hard(max_tokens)`` — the window less the completion the first
+        attempt asks for — beside the largest ``tools`` list the loop offers and
+        the elision marker, or no iteration's request can.
+
+        Only the window. When it is unknown, or the head fits it, the base is
+        sent as assembled, exactly as before #614: the SOFT cap governs
+        observation elision, not the base, and shrinking the base to it would
+        send less case context to buy observation room nobody was short of.
+
+        When it does not fit, it is RE-ASSEMBLED through the same allocator at
+        the room that is left (``base_prompt_builder(target_tokens=...,
+        provider_name=..., model_name=...)`` → ``get_prompt_for_case``), which
+        drops content by the assembly's own priority rules and, if even that
+        cannot fit, takes the minimal fallback prompt. The rebuilt text is raw
+        case content, so it is redacted like the original, and it goes in a NEW
+        message dict; the dropped one's count leaves the by-id ``token_cache``
+        with it, so a later dict reusing its address cannot read it. A base that
+        still does not fit — or no builder — raises
+        ``ToolCallingUnsupportedError``: nothing is sent, and the caller takes
+        the non-tool path through the router the original base was sized for.
+
+        Counted through ``token_cache`` on the loop's own message dicts, so the
+        head is tokenized once per turn here, and the bound reuses the counts.
+        """
+        from faultmaven.exceptions import ToolCallingUnsupportedError
+
+        limit = budget.hard(max_tokens)
+        if limit is None:
+            return messages  # window unknown: nothing to overflow, send as main
+
+        def _tok(m: dict) -> int:
+            return _tool_loop_message_tokens(
+                m, provider_name, self.da_model, token_cache
+            )
+
+        system_msg, base_msg = messages[0], messages[1]
+        tools_tokens = _tool_payload_tokens(
+            tools, provider_name, self.da_model, token_cache
+        )
+        fixed = (
+            _tok(system_msg)
+            + _tool_loop_message_tokens(
+                {"content": _TOOL_LOOP_ELISION_MARKER}, provider_name, self.da_model
+            )
+            + tools_tokens
+        )
+        room = limit - fixed
+        base_tokens = _tok(base_msg)
+        if base_tokens <= room:
+            return messages
+
+        # What the base is re-assembled FOR: the name and model the tool loop
+        # sends to, so the allocator counts with this estimator and clamps to
+        # this model's window.
+        sizing_provider = provider_name if isinstance(provider_name, str) else None
+        model = self.da_model if isinstance(self.da_model, str) else None
+        logger.warning(
+            "tool_loop_base_resized: base task prompt (%d tokens) does not fit the "
+            "%d-token window of provider %s (model %s) beside a %d-token "
+            "completion and %d tokens of system instruction, tools payload and "
+            "elision marker; re-assembling it at %d tokens",
+            base_tokens,
+            budget.window,
+            provider_name,
+            model,
+            budget.window - limit,
+            fixed,
+            room,
+        )
+        resized: Optional[str] = None
+        if base_prompt_builder is not None and room > 0:
+            try:
+                resized = base_prompt_builder(
+                    target_tokens=room,
+                    provider_name=sizing_provider,
+                    model_name=model,
+                )
+                if redaction_ctx and resized:
+                    resized = await redaction_ctx.asanitize(resized)
+            except Exception as exc:  # never break the turn on a rebuild
+                logger.warning("tool-loop base re-assembly failed: %s", exc)
+                resized = None
+        if resized:
+            resized_msg = {**base_msg, "content": resized}
+            if _tok(resized_msg) <= room:
+                if token_cache is not None:
+                    token_cache.pop(id(base_msg), None)
+                return [system_msg, resized_msg, *messages[2:]]
+        raise ToolCallingUnsupportedError(
+            message=(
+                f"The base task prompt cannot fit the {budget.window}-token window "
+                f"of provider {provider_name} (model {model}) beside a "
+                f"{budget.window - limit}-token completion and {fixed} tokens of "
+                f"system instruction, tools payload and elision marker; not "
+                f"sending the tool loop."
+            ),
+            provider=provider_name if isinstance(provider_name, str) else None,
+            model=self.da_model,
+        )
 
     @staticmethod
     def _build_schema_tool(schema_model: Any, provider: Any) -> list[dict]:
@@ -7758,6 +8054,7 @@ class MilestoneEngine:
         redaction_ctx: Any | None = None,
         case: Any | None = None,
         force_tool_use: bool = False,
+        base_prompt_builder: Optional[Callable[..., str]] = None,
     ) -> BaseInteractionResponse:
         """Run a bounded tool-calling loop with investigation tools.
 
@@ -7786,6 +8083,12 @@ class MilestoneEngine:
             tool_context: ToolContext for tool execution
             max_tokens: Max tokens for LLM calls
             case: Case object for evidence access and DA count persistence
+            base_prompt_builder: Re-assembles the base task prompt for the model
+                that receives this loop, called as ``(target_tokens=...,
+                provider_name=..., model_name=...)`` only when ``prompt`` does
+                not fit a KNOWN window beside the completion, the system
+                instruction and the tools (see ``_fit_tool_loop_base``).
+                ``None``: a base that does not fit is refused instead.
 
         Returns:
             Instantiated Pydantic model (BaseInteractionResponse)
@@ -7798,9 +8101,14 @@ class MilestoneEngine:
         logger.info(
             f"Tool-augmented generate using provider: {provider_name}{model_info}"
         )
-        # Per-call size budget: every tool-loop call is bounded to this so an
-        # oversized prompt can never be sent (accumulated observations compact to
-        # fit — see _bound_tool_loop_messages / _resolve_tool_loop_budget).
+        # Per-call caps: messages within the soft cap (prompt_target +
+        # observations), and — when the model's window is known — messages plus
+        # that call's tools= payload within what the window leaves beside that
+        # call's completion, so no request is sent whose ESTIMATED prompt plus
+        # requested completion exceeds the window (the base is fitted before the
+        # loop, accumulated observations compact to fit — see
+        # _fit_tool_loop_base / _bound_tool_loop_messages /
+        # _resolve_tool_loop_budget).
         tool_loop_budget = self._resolve_tool_loop_budget(provider_name)
         # Label vocabulary for the tool-result budget metrics below. The
         # tool name on a tool call is MODEL-SUPPLIED, so it is unbounded:
@@ -7856,10 +8164,25 @@ class MilestoneEngine:
             tool_names,
             schema_tool_name,
         )
-        messages = [
-            {"role": "system", "content": da_system_instruction},
-            {"role": "user", "content": prompt},
-        ]
+        # Size the base to the WINDOW of the model that receives it (#614): when
+        # the window is known, the head must fit it beside the first attempt's
+        # completion, the largest tools= payload (all_tools) and the elision
+        # marker — or no call can. With the window unknown it is sent as
+        # assembled. Raises ToolCallingUnsupportedError (→ the non-tool path)
+        # when it cannot fit.
+        messages = await self._fit_tool_loop_base(
+            [
+                {"role": "system", "content": da_system_instruction},
+                {"role": "user", "content": prompt},
+            ],
+            all_tools,
+            tool_loop_budget,
+            provider_name,
+            max_tokens,
+            base_prompt_builder=base_prompt_builder,
+            redaction_ctx=redaction_ctx,
+            token_cache=_msg_token_cache,
+        )
         deep_analysis_count = 0
 
         # Per-evidence DA failure tracking for auto-vectorization (v5.2)
@@ -7921,12 +8244,19 @@ class MilestoneEngine:
             )
 
             # Pass da_model when using dedicated provider
-            # Hard-bound EVERY tool-loop call: the accumulated observations can
-            # never grow the sent prompt past the budget. The full `messages`
-            # history is kept for accumulation; only a bounded, most-recent view
-            # is sent.
+            # Bound EVERY tool-loop call: messages within the soft cap, and
+            # messages plus THIS call's tools= payload within what the window
+            # leaves beside its completion, when the window is known (#614 — the
+            # schema tool alone on the final iteration).
+            # The full `messages` history is kept for accumulation; only a
+            # bounded, most-recent view is sent.
             bounded_messages = self._bound_tool_loop_messages(
-                messages, tool_loop_budget, provider_name, token_cache=_msg_token_cache
+                messages,
+                tool_loop_budget.soft,
+                provider_name,
+                token_cache=_msg_token_cache,
+                tools=tools_for_call,
+                window_tokens=tool_loop_budget.hard(max_tokens),
             )
             generate_kwargs = dict(
                 prompt="",
@@ -7973,6 +8303,19 @@ class MilestoneEngine:
                 under-report exactly on the turns that cost the most.
                 """
                 call_kwargs = dict(generate_kwargs, max_tokens=cap)
+                if cap != max_tokens and tool_loop_budget.window is not None:
+                    # A truncation retry asks for a bigger completion: bound the
+                    # prompt again for THIS cap, so prompt plus completion still
+                    # fits the window (#614). Refuses rather than sends if even
+                    # the head cannot fit beside it.
+                    call_kwargs["messages"] = self._bound_tool_loop_messages(
+                        messages,
+                        tool_loop_budget.soft,
+                        provider_name,
+                        token_cache=_msg_token_cache,
+                        tools=tools_for_call,
+                        window_tokens=tool_loop_budget.hard(cap),
+                    )
                 result = await provider.generate(**call_kwargs)
                 if self.da_provider is not None:
                     # A dedicated DA provider is a concrete provider instance,
@@ -10063,6 +10406,7 @@ class MilestoneEngine:
         fallback_prompt_builder: Optional[Callable[[], str]] = None,
         reasoning_intent: Optional[Any] = None,
         min_output_tokens: Optional[int] = None,
+        base_prompt_builder: Optional[Callable[..., str]] = None,
     ) -> BaseInteractionResponse:
         """Structured-output generation with runtime context-length recovery.
 
@@ -10086,6 +10430,7 @@ class MilestoneEngine:
                 fallback_prompt_builder=fallback_prompt_builder,
                 reasoning_intent=reasoning_intent,
                 min_output_tokens=min_output_tokens,
+                base_prompt_builder=base_prompt_builder,
             )
         except Exception as exc:
             if (
@@ -10143,6 +10488,7 @@ class MilestoneEngine:
         fallback_prompt_builder: Optional[Callable[[], str]] = None,
         reasoning_intent: Optional[Any] = None,
         min_output_tokens: Optional[int] = None,
+        base_prompt_builder: Optional[Callable[..., str]] = None,
     ) -> BaseInteractionResponse:
         """
         Generate structured output from LLM using provider-agnostic capability system.
@@ -10165,6 +10511,9 @@ class MilestoneEngine:
             force_tool_use: If True, tool_choice="required" (DA turns).
                 If False, tool_choice="auto" (LLM decides).
             redaction_ctx: Case-scoped redaction context for PII sanitization
+            base_prompt_builder: Re-assembles the base for the model the tool
+                loop sends to, when ``prompt`` does not fit there (#614); see
+                ``_tool_augmented_generate``. Unused on the non-tool path.
 
         Returns:
             Instantiated Pydantic model
@@ -10205,6 +10554,7 @@ class MilestoneEngine:
                         force_tool_use=force_tool_use,
                         redaction_ctx=redaction_ctx,
                         case=case,
+                        base_prompt_builder=base_prompt_builder,
                     )
                 except ToolCallingUnsupportedError as e:
                     logger.warning(

@@ -2671,8 +2671,9 @@ class PromptBudgetSettings(BaseSettings):
             "the tool loop is schema-only. The structural bound is on messages "
             "only: MAX_TOOL_ITERATIONS + 1 calls, each trimmed to "
             "PROMPT_TARGET_TOKENS + PROMPT_TOOL_OBSERVATION_MAX_TOKENS estimated "
-            "tokens. Because this meters more than that, it can remove the last "
-            "tool round on an uncached turn with a full-size prompt (the first "
+            "tokens; the tools payload is bounded only by the model's window, "
+            "when known. Because this meters more than that, it can remove the "
+            "last tool round on an uncached turn with a full-size prompt (the first "
             "MAX_TOOL_ITERATIONS - 1 calls averaging over a third of this "
             "each); prefix-cache hits keep it out of normal turns. Raise it "
             "with either of those two settings."
@@ -2699,9 +2700,12 @@ class PromptBudgetSettings(BaseSettings):
         description=(
             "Bounded scratchpad allowance for accumulated tool-loop observations "
             "(tool calls + results). Each tool-loop LLM call is hard-bounded to "
-            "min(model_ceiling, prompt_target + this) — so no continuation call "
-            "grows unbounded past the jar. When the accumulated tool exchanges "
-            "would exceed it, the OLDEST are elided (with a marker; the agent can "
+            "prompt_target + this on its messages (the tools payload not "
+            "counted), and messages plus the tools payload plus the requested "
+            "completion to the model's window when it is known — so no "
+            "continuation call grows unbounded past the jar or the window. When "
+            "the accumulated tool exchanges would exceed "
+            "either, the OLDEST are elided (with a marker; the agent can "
             "re-search), keeping the base task + newest observations."
         ),
     )

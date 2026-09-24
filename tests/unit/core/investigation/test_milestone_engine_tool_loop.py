@@ -1198,12 +1198,14 @@ _TEST_CEILING = 100_001
 @pytest.mark.asyncio
 class TestToolLoopSpendBound:
     """#611: the MESSAGE bound on each tool-loop call is structural
-    (``prompt_target + tool_observation_max_tokens``, clamped to the window),
-    and ``PROMPT_TURN_TOKEN_CEILING`` is a separate net over METERED,
-    cost-weighted spend. Pins what milestone_engine's MAX_TOOL_ITERATIONS
-    comment, the settings description and prompt-sizing-optimization.md §4.3
-    say: the formula, the measure the ceiling reads, and that it changes the
-    loop only when crossed within the first ``MAX_TOOL_ITERATIONS - 1`` calls."""
+    (``prompt_target + tool_observation_max_tokens``; since #614 the model's
+    window is a separate hard cap on messages plus the ``tools=`` payload —
+    pinned by ``TestToolLoopBoundSplitsSoftAndHardCaps``), and
+    ``PROMPT_TURN_TOKEN_CEILING`` is a separate net over METERED, cost-weighted
+    spend. Pins what milestone_engine's MAX_TOOL_ITERATIONS comment, the
+    settings description and prompt-sizing-optimization.md §4.3 say: the
+    formula, the measure the ceiling reads, and that it changes the loop only
+    when crossed within the first ``MAX_TOOL_ITERATIONS - 1`` calls."""
 
     async def test_shipped_defaults_are_the_documented_numbers(self):
         from faultmaven.config.settings import (
@@ -1218,20 +1220,28 @@ class TestToolLoopSpendBound:
         assert MilestoneEngine.MAX_TOOL_ITERATIONS == 4
 
     @pytest.mark.parametrize(
-        "prompt_budget, expected",
+        "window, reserve, hard_at_8k, hard_at_16k",
         [
-            (None, 32_000 + 17_000),  # unknown window: target + observations
-            (1_000_000, 32_000 + 17_000),  # window larger than the sum
-            (40_000, 40_000),  # window smaller than the sum: clamped
+            # The soft cap is target + observations whatever the window. The
+            # hard cap is the window less the call's OWN completion cap, or the
+            # registry's reserve when that is larger (#614).
+            (None, None, None, None),  # unknown window: no hard cap
+            (1_000_000, 16_000, 984_000, 984_000),  # reserve above the cap
+            (40_000, 6_000, 32_000, 24_000),  # the cap above the reserve
         ],
     )
-    async def test_per_call_bound_is_target_plus_observations_clamped(
-        self, prompt_budget, expected
+    async def test_soft_cap_is_target_plus_observations_hard_cap_is_the_window(
+        self, window, reserve, hard_at_8k, hard_at_16k
     ):
         from types import SimpleNamespace
 
         engine = _make_engine()
-        resolved = SimpleNamespace(prompt_target=32_000, prompt_budget=prompt_budget)
+        resolved = SimpleNamespace(
+            prompt_target=32_000,
+            prompt_budget=None if window is None else window - reserve,
+            context_window=window,
+            response_reserve=reserve,
+        )
         fake_settings = SimpleNamespace(
             prompt_budget=SimpleNamespace(tool_observation_max_tokens=17_000)
         )
@@ -1245,7 +1255,10 @@ class TestToolLoopSpendBound:
                 return_value=fake_settings,
             ),
         ):
-            assert engine._resolve_tool_loop_budget("openai") == expected
+            caps = engine._resolve_tool_loop_budget("openai")
+        assert caps.soft == 32_000 + 17_000
+        assert caps.window == window
+        assert (caps.hard(8_000), caps.hard(16_000)) == (hard_at_8k, hard_at_16k)
 
     async def _run_loop(self, monkeypatch, per_call_buckets: list) -> list:
         """Drive the real loop with a model that always wants another search.
@@ -1355,6 +1368,1226 @@ class TestToolLoopSpendBound:
 
         assert len(offered) == n + 1
         assert all("search_file" in names for names in offered[:n])
+
+
+# =========================================================================
+# The per-call bound: a soft cap on messages, the window on what is sent (#614)
+# =========================================================================
+
+
+def _est(text: str, provider: str = "local", model: Optional[str] = None) -> int:
+    from faultmaven.utils.token_estimation import estimate_tokens
+
+    return estimate_tokens(text, provider=provider, model=model)
+
+
+def _msg_tokens(m: dict, provider: str = "local", model=None) -> int:
+    """The bound's documented per-message estimate, written out independently
+    of the engine's helper so a change to the helper cannot pass by agreeing
+    with itself."""
+    parts = [str(m.get("content") or "")]
+    if m.get("tool_calls"):
+        parts.append(str(m.get("tool_calls")))
+    if m.get("provider_metadata"):
+        parts.append(str(m.get("provider_metadata")))
+    return _est(" ".join(parts), provider, model)
+
+
+def _tools_tokens(tools, provider: str = "local", model=None) -> int:
+    return _est(json.dumps(tools, default=str), provider, model) if tools else 0
+
+
+def _sent_tokens(call: dict, provider: str = "local", model=None) -> int:
+    """Estimated size of one recorded ``generate`` call: messages + tools=."""
+    return sum(_msg_tokens(m, provider, model) for m in call["messages"]) + (
+        _tools_tokens(call["tools"], provider, model)
+    )
+
+
+def _heavy_search_tool(description_chars: int) -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": "search_file",
+            "description": "d" * description_chars,
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+            },
+        },
+    }
+
+
+def _recording_provider(result_after: int, provider_name=None):
+    """A provider that calls search_file ``result_after`` times (or until
+    only the schema tool is offered), then the schema tool. Snapshots each
+    call's messages (the loop appends to the list it may have passed) and
+    tools."""
+    calls: list = []
+
+    async def _generate(**kwargs):
+        calls.append(
+            {
+                "messages": list(kwargs["messages"]),
+                "tools": kwargs["tools"],
+                "max_tokens": kwargs["max_tokens"],
+            }
+        )
+        names = [t["function"]["name"] for t in kwargs["tools"]]
+        if len(calls) > result_after or names == ["SampleResponse"]:
+            return _make_schema_response(
+                {"agent_response": "done", "next_action": "continue"}
+            )
+        return _make_tool_call_response(
+            "search_file", {"query": "q"}, call_id=f"c{len(calls)}"
+        )
+
+    provider = AsyncMock()
+    if provider_name is not None:
+        provider.provider_name = provider_name
+    provider.generate = AsyncMock(side_effect=_generate)
+    return provider, calls
+
+
+def _registry_returning(result_chars: int):
+    registry = _make_mock_registry()
+    registry.execute_tool.return_value = ToolResult(
+        success=True, data="r" * result_chars
+    )
+    return registry
+
+
+def _caps(soft: int, prompt_limit: Optional[int]):
+    """A budget whose hard cap, for a call asking the loop's default 8,000
+    completion tokens, is ``prompt_limit``. Imported lazily so this module
+    still imports against a tree without it (the regression pin below is
+    revert-verified against one)."""
+    from faultmaven.core.investigation.milestone_engine import _ToolLoopBudget
+
+    window = None if prompt_limit is None else prompt_limit + 8_000
+    return _ToolLoopBudget(soft=soft, window=window, response_reserve=0)
+
+
+def _groups_history(n: int, result_chars: int = 2_000) -> list:
+    msgs = [
+        {"role": "system", "content": "SYS " + "s" * 400},
+        {"role": "user", "content": "BASE " + "b" * 400},
+    ]
+    for i in range(n):
+        msgs.append(
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": f"c{i}", "function": {"name": "x"}}],
+            }
+        )
+        msgs.append(
+            {"role": "tool", "tool_call_id": f"c{i}", "content": "r" * result_chars}
+        )
+    return msgs
+
+
+_MARKER_TEXT = (
+    "[Earlier tool calls and their results were elided to stay within "
+    "the context budget. Re-run a search if you need those specifics.]"
+)
+
+
+def _main_bound(messages: list, budget: int, provider: str, model) -> list:
+    """The elision rule of origin/main's ``_bound_tool_loop_messages`` before
+    #614 (d8ba79c6b), written out as the reference: ``messages`` alone within
+    ONE budget, ``min(prompt_target + observations, window)``, tools never
+    counted. Returns what main would send, the marker as the string MARKER."""
+
+    def tok(m):
+        return _msg_tokens(m, provider, model)
+
+    if sum(tok(m) for m in messages) <= budget:
+        return list(messages)
+    head, rest = messages[:2], messages[2:]
+    groups: list = []
+    for m in rest:
+        if m.get("role") == "assistant" or not groups:
+            groups.append([m])
+        else:
+            groups[-1].append(m)
+    avail = budget - sum(tok(m) for m in head) - _est(_MARKER_TEXT, provider, model)
+    kept: list = []
+    for g in reversed(groups):
+        gt = sum(tok(m) for m in g)
+        if gt <= avail:
+            kept.insert(0, g)
+            avail -= gt
+        else:
+            break
+    if len(kept) == len(groups):
+        return list(messages)
+    out = list(head) + ["MARKER"]
+    for g in kept:
+        out.extend(g)
+    return out
+
+
+def _shape(sent: list, history: list) -> list:
+    """What a call sent, as positions in the full history (MARKER for the
+    elision marker), so two runs compare by decision, not by object."""
+    index = {id(m): i for i, m in enumerate(history)}
+    return [
+        (
+            "MARKER"
+            if (
+                m == "MARKER"
+                or (isinstance(m, dict) and m.get("content") == _MARKER_TEXT)
+            )
+            else index[id(m)]
+        )
+        for m in sent
+    ]
+
+
+def _real_da_registry(result_chars: int):
+    """The six tools the DA registry can hold, with their real schemas; only
+    execution is stubbed."""
+    from faultmaven.modules.agent.tools.deep_analysis_tool import DeepAnalysisTool
+    from faultmaven.modules.agent.tools.kb_tool_adapter import (
+        CaseEvidenceQAAdapter,
+        KBToolAdapter,
+    )
+    from faultmaven.modules.agent.tools.search_file_tool import SearchFileTool
+    from faultmaven.modules.agent.tools.vectorize_file_tool import VectorizeFileTool
+    from faultmaven.modules.agent.tools.web_search import WebSearchTool
+
+    registry = MagicMock()
+    registry.get_all_tools.return_value = [
+        SearchFileTool(storage_service=MagicMock()),
+        DeepAnalysisTool(tier2_service=MagicMock()),
+        WebSearchTool(settings=MagicMock(), provider=MagicMock()),
+        KBToolAdapter(wrapped_tool=MagicMock()),
+        VectorizeFileTool(case_vector_store=MagicMock(), storage_service=MagicMock()),
+        CaseEvidenceQAAdapter(wrapped_tool=MagicMock()),
+    ]
+    registry.execute_tool = AsyncMock(
+        return_value=ToolResult(success=True, data="r" * result_chars)
+    )
+    return registry
+
+
+def _diagnosis_turn_provider(provider_name: str):
+    """Two parallel searches per tool iteration; a valid Diagnosis answer as
+    soon as the schema tool is the only one offered."""
+    calls: list = []
+
+    async def _generate(**kwargs):
+        calls.append(
+            {
+                "messages": list(kwargs["messages"]),
+                "tools": kwargs["tools"],
+                "max_tokens": kwargs["max_tokens"],
+            }
+        )
+        names = [t["function"]["name"] for t in kwargs["tools"]]
+        if names == ["InvestigationResponse_Diagnosis"]:
+            return _make_schema_response(
+                {"agent_response": "done", "state_updates": {}},
+                schema_name="InvestigationResponse_Diagnosis",
+            )
+        n = len(calls)
+        return LLMResponse(
+            content="",
+            confidence=0.9,
+            provider="test",
+            model="test-model",
+            tokens_used=0,
+            response_time_ms=0,
+            tool_calls=[
+                ToolCall(
+                    id=f"{k}{n}",
+                    type="function",
+                    function={
+                        "name": "search_file",
+                        "arguments": json.dumps({"query": f"q{k}{n}"}),
+                    },
+                )
+                for k in ("a", "b")
+            ],
+        )
+
+    provider = AsyncMock()
+    provider.provider_name = provider_name
+    provider.generate = AsyncMock(side_effect=_generate)
+    return provider, calls
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestToolLoopBoundSplitsSoftAndHardCaps:
+    """#614: every tool-loop call keeps ``messages`` within the SOFT cap
+    (``prompt_target + tool_observation_max_tokens``, tools not counted — the
+    pre-#614 rule), and, when the model's window is known, ``messages`` PLUS
+    that call's ``tools=`` payload within the window (the HARD cap). Counted
+    with the estimator the bound uses for messages (``len // 4`` for these
+    unnamed providers). The final iteration sends only the schema tool."""
+
+    @pytest.mark.parametrize(
+        "da",
+        [None, ("gemini", "gemini-3.7-flash")],
+        ids=["router-window-unknown", "gemini-da-1m-window"],
+    )
+    async def test_default_config_elides_exactly_what_main_did(self, monkeypatch, da):
+        """The regression pin. On a full-size diagnosis turn — a 32,000-token
+        base, the real Diagnosis schema tool and the six investigation tools
+        (~12,200 tokens of tools payload) — every call sends exactly what
+        origin/main sent, both through the router (window unknown) and to a
+        large-window DA model. Counting the tools against the soft cap left
+        ~2,150 tokens for observations here instead of ~14,400."""
+        from faultmaven.config.settings import get_settings
+        from faultmaven.core.investigation.schemas import (
+            InvestigationResponse_Diagnosis,
+        )
+        from faultmaven.utils.model_context import resolve_model_budget
+
+        settings = get_settings()
+        monkeypatch.setattr(settings.model_context, "prompt_target_tokens", 32_000)
+        monkeypatch.setattr(
+            settings.prompt_budget, "tool_observation_max_tokens", 16_000
+        )
+        provider_name, da_model = da if da else ("LLMRouter", None)
+        provider, calls = _diagnosis_turn_provider(provider_name)
+        registry = _real_da_registry(result_chars=7_600)
+        repo = MagicMock()
+        repo.save = AsyncMock()
+        engine = MilestoneEngine(
+            llm_provider=provider if da is None else AsyncMock(),
+            repository=repo,
+            investigation_tools=registry,
+            da_provider=provider if da else None,
+            da_model=da_model,
+        )
+        real_bound = engine._bound_tool_loop_messages
+        decisions: list = []
+
+        def spy(messages, *args, **kwargs):
+            out = real_bound(messages, *args, **kwargs)
+            # Snapshot both: a pass-through returns the live history, which
+            # the loop keeps appending to.
+            decisions.append((list(messages), list(out)))
+            return out
+
+        engine._bound_tool_loop_messages = spy
+
+        await engine._tool_augmented_generate(
+            prompt="B" * (4 * 32_000),
+            schema_model=InvestigationResponse_Diagnosis,
+            investigation_tools=engine._build_da_tool_schemas(),
+            tool_context=MagicMock(),
+        )
+
+        resolved = resolve_model_budget(provider_name, da_model)
+        main_budget = resolved.prompt_target + 16_000
+        if resolved.prompt_budget is not None:
+            main_budget = min(main_budget, resolved.prompt_budget)
+        assert main_budget == 48_000
+        assert len(decisions) == len(calls) == MilestoneEngine.MAX_TOOL_ITERATIONS + 1
+        est_model = da_model
+        for (history, sent), call in zip(decisions, calls):
+            expected = _main_bound(history, main_budget, provider_name, est_model)
+            assert _shape(sent, history) == _shape(expected, history)
+            assert _shape(call["messages"], history) == _shape(expected, history)
+        # Positive controls: main elided something on this turn, so the pin
+        # covers an elision decision and not only pass-throughs; and on every
+        # tool call the history main kept plus the tools sent is over the soft
+        # cap — the regime where counting the tools against it elides more.
+        assert any(
+            "MARKER" in _main_bound(h, 48_000, provider_name, est_model)
+            for h, _ in decisions
+        )
+        for (history, _), call in zip(decisions[:-1], calls[:-1]):
+            kept = _main_bound(history, 48_000, provider_name, est_model)
+            kept_tokens = sum(
+                (
+                    _est(_MARKER_TEXT, provider_name, est_model)
+                    if m == "MARKER"
+                    else _msg_tokens(m, provider_name, est_model)
+                )
+                for m in kept
+            )
+            if len(history) > 2:
+                assert (
+                    kept_tokens + _tools_tokens(call["tools"], provider_name, est_model)
+                    > 48_000
+                )
+
+    async def test_a_tight_window_keeps_messages_plus_tools_within_it(self):
+        heavy = _heavy_search_tool(12_000)  # ~3,000 tokens of tools payload
+        provider, calls = _recording_provider(result_after=10)
+        engine = _make_engine(
+            mock_provider=provider, mock_registry=_registry_returning(2_000)
+        )
+        window = 5_000
+        # The soft cap is far away: only the window can bind here.
+        engine._resolve_tool_loop_budget = lambda _name: _caps(10**6, window)
+
+        await engine._tool_augmented_generate(
+            prompt="BASE " + "b" * 400,
+            schema_model=SampleResponse,
+            investigation_tools=[heavy],
+            tool_context=MagicMock(),
+        )
+
+        tool_calls = calls[: MilestoneEngine.MAX_TOOL_ITERATIONS]
+        assert all(len(c["tools"]) == 2 for c in tool_calls)
+        for c in calls:
+            assert _sent_tokens(c) <= window
+        # Positive control: the window binds — observations were elided on the
+        # tool calls, with the tools taking ~3,000 of the 5,000.
+        assert _tools_tokens([heavy]) > 2_500
+        assert any(
+            "elided to stay within" in str(m["content"])
+            for c in tool_calls
+            for m in c["messages"]
+        )
+
+    async def test_the_soft_cap_does_not_count_the_tools_the_window_does(self):
+        """Same history, same number: as the soft cap nothing is elided though
+        messages + tools exceed it; as the window the oldest group goes."""
+        engine = _make_engine()
+        tools = [_heavy_search_tool(4_000)]
+        msgs = _groups_history(3)
+        messages_only = sum(_msg_tokens(m) for m in msgs)
+        cap = messages_only + _tools_tokens(tools) // 2
+        assert messages_only + _tools_tokens(tools) > cap
+
+        assert (
+            engine._bound_tool_loop_messages(
+                msgs, cap, "local", tools=tools, window_tokens=None
+            )
+            is msgs
+        )
+        out = engine._bound_tool_loop_messages(
+            msgs, 10**6, "local", tools=tools, window_tokens=cap
+        )
+        assert out is not msgs
+        assert sum(_msg_tokens(m) for m in out) + _tools_tokens(tools) <= cap
+        assert "elided to stay within" in out[2]["content"]
+
+    async def test_the_final_iteration_counts_only_the_schema_tool(self):
+        """The final call offers the schema tool alone, so it has the
+        investigation tools' share of the window back for observations: it
+        keeps history that would not fit beside ALL the tools."""
+        heavy = _heavy_search_tool(12_000)
+        provider, calls = _recording_provider(result_after=10)
+        engine = _make_engine(
+            mock_provider=provider, mock_registry=_registry_returning(2_000)
+        )
+        window = 5_000
+        engine._resolve_tool_loop_budget = lambda _name: _caps(10**6, window)
+
+        await engine._tool_augmented_generate(
+            prompt="BASE " + "b" * 400,
+            schema_model=SampleResponse,
+            investigation_tools=[heavy],
+            tool_context=MagicMock(),
+        )
+
+        final = calls[-1]
+        n = MilestoneEngine.MAX_TOOL_ITERATIONS
+        assert len(calls) == n + 1
+        schema_only = final["tools"]
+        all_tools = calls[0]["tools"]
+        assert [t["function"]["name"] for t in schema_only] == ["SampleResponse"]
+        final_messages = sum(_msg_tokens(m) for m in final["messages"])
+        # Bounded against what it sends ...
+        assert final_messages + _tools_tokens(schema_only) <= window
+        # ... and NOT against the tools it does not send: this much history
+        # beside all the tools would be over.
+        assert final_messages + _tools_tokens(all_tools) > window
+        # Positive control: the tool iterations before it were held to the
+        # all-tools reading, so the final call kept more.
+        last_tool_call = calls[n - 1]
+        assert (
+            sum(_msg_tokens(m) for m in last_tool_call["messages"])
+            + _tools_tokens(all_tools)
+            <= window
+        )
+        assert len(final["messages"]) > len(last_tool_call["messages"])
+
+    async def test_every_caller_must_state_the_tools_and_the_window(self):
+        """Neither has a default: a new call site that forgets one fails loudly
+        instead of bounding its request with the window skipped or the tools
+        uncounted."""
+        engine = _make_engine()
+        msgs = [{"role": "system", "content": "S"}, {"role": "user", "content": "B"}]
+        # Positive control: stating "no tools, window unknown" is accepted.
+        assert (
+            engine._bound_tool_loop_messages(
+                msgs, 100, "local", tools=None, window_tokens=None
+            )
+            is msgs
+        )
+        with pytest.raises(TypeError):
+            engine._bound_tool_loop_messages(msgs, 100, "local", window_tokens=None)
+        with pytest.raises(TypeError):
+            engine._bound_tool_loop_messages(msgs, 100, "local", tools=None)
+
+    async def test_a_request_past_the_window_is_refused_a_soft_overrun_is_not(self):
+        """The window is the hard limit: a head that overflows it beside this
+        call's tools raises instead of being sent. The soft cap is a target:
+        a head over it is sent as main sent it."""
+        from faultmaven.exceptions import ToolCallingUnsupportedError
+
+        engine = _make_engine()
+        tools = [_heavy_search_tool(4_000)]
+        msgs = [
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "BASE " + "b" * 4_000},
+        ]
+        head = sum(_msg_tokens(m) for m in msgs)
+        assert (
+            engine._bound_tool_loop_messages(
+                msgs, head - 100, "local", tools=tools, window_tokens=None
+            )
+            is msgs
+        )
+        # Positive control: without the tools the same head fits the window.
+        assert (
+            engine._bound_tool_loop_messages(
+                msgs, 10**6, "local", tools=None, window_tokens=head + 100
+            )
+            is msgs
+        )
+        with pytest.raises(ToolCallingUnsupportedError, match=_BOUND_REFUSAL):
+            engine._bound_tool_loop_messages(
+                msgs, 10**6, "local", tools=tools, window_tokens=head + 100
+            )
+
+    async def test_the_token_cache_holds_only_messages_still_alive(self):
+        """The cache is keyed by ``id()``. The elision marker lives only in
+        the returned view, so a count cached for it outlives it — and a later
+        message dict allocated at its address reads the marker's ~30 tokens
+        instead of its own (measured on main: 39 of 40 such dicts). Only
+        messages the history keeps alive may be cached."""
+        engine = _make_engine()
+        msgs = _groups_history(3)
+        cache: dict = {}
+        out = engine._bound_tool_loop_messages(
+            msgs, 1_000, "local", cache, tools=None, window_tokens=None
+        )
+        # Positive control: an elision happened, so a marker was counted.
+        assert any(m.get("content") == _MARKER_TEXT for m in out)
+        live = {id(m) for m in msgs}
+        assert {k for k in cache if isinstance(k, int)} <= live
+
+
+# =========================================================================
+# The base is sized to the model that receives the loop (#614 F2)
+# =========================================================================
+
+_DA_PROVIDER = "openai"  # tokenizer-backed: the bound counts in cl100k
+_DA_MODEL = "tiny-window-da-model"
+
+
+def _da_engine(
+    window: int,
+    reserve: int,
+    monkeypatch,
+    result_after: int = 1,
+    provider_name: str = _DA_PROVIDER,
+    result_chars: int = 1_500,
+    da_model: str = _DA_MODEL,
+):
+    """An engine whose dedicated DA model has a small KNOWN window (through
+    the operator override the budget resolver reads — for ``_DA_MODEL``; any
+    other ``da_model`` resolves through the built-in registry), and whose DA
+    provider records every call."""
+    from faultmaven.utils import model_context
+
+    monkeypatch.setattr(
+        model_context,
+        "_get_overrides",
+        lambda: {_DA_MODEL: model_context.ModelWindow(window, reserve)},
+    )
+    provider, calls = _recording_provider(result_after, provider_name=provider_name)
+    provider.supports_tool_calling = MagicMock(return_value=True)
+    repo = MagicMock()
+    repo.save = AsyncMock()
+    engine = MilestoneEngine(
+        llm_provider=AsyncMock(),
+        repository=repo,
+        investigation_tools=_registry_returning(result_chars),
+        da_provider=provider,
+        da_model=da_model,
+    )
+    return engine, provider, calls
+
+
+# What each layer says when it refuses — so a test can tell WHICH refused, and
+# the bound's own guard downstream cannot stand in for a broken fit upstream.
+_FIT_REFUSAL = "not sending the tool loop"
+_BOUND_REFUSAL = "Tool-loop head plus tools payload exceeds"
+
+
+def _chat_sized_base(tokens: int) -> str:
+    """A base that is ``tokens``-ish in cl100k — the size the CHAT model's
+    target allowed, far more than the DA window takes."""
+    line = "2026-09-24T10:00:01Z ERROR pool timeout conn=4411 host=db-7\n"
+    return "BASE\n" + line * (tokens // _est(line, _DA_PROVIDER, _DA_MODEL) + 1)
+
+
+def _sized_text(tag: str, tokens: int) -> str:
+    return tag + " " + "word " * max(0, tokens - 8)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestToolLoopBaseFitsTheReceivingModel:
+    """#614 F2: a dedicated DA model with a smaller window than the chat
+    model's target gets a head that fits its per-call budget — the base is
+    re-assembled for it — and a head that cannot fit is never sent."""
+
+    async def test_a_smaller_da_window_gets_a_head_that_fits(self, monkeypatch):
+        engine, provider, calls = _da_engine(20_000, 2_000, monkeypatch)
+        caps = engine._resolve_tool_loop_budget(_DA_PROVIDER)
+        # The window less the first attempt's 8,000-token completion.
+        assert caps.hard(8_000) == 12_000 < caps.soft
+        budget = caps.hard(8_000)
+        base = _chat_sized_base(20_000)
+        seen: list = []
+
+        def builder(*, target_tokens, provider_name, model_name):
+            seen.append((target_tokens, provider_name, model_name))
+            return _sized_text("RESIZED", target_tokens - 200)
+
+        await engine._tool_augmented_generate(
+            prompt=base,
+            schema_model=SampleResponse,
+            investigation_tools=engine._build_da_tool_schemas(),
+            tool_context=MagicMock(),
+            base_prompt_builder=builder,
+        )
+
+        # Positive control: the chat-sized base alone overflows the DA budget.
+        assert _est(base, _DA_PROVIDER, _DA_MODEL) > budget
+        # Re-assembled once, FOR the receiving model, at the room left beside
+        # the system instruction, the largest tools payload and the marker.
+        [(target, sized_for, model)] = seen
+        assert (sized_for, model) == (_DA_PROVIDER, _DA_MODEL)
+        all_tools = calls[0]["tools"]
+        system = calls[0]["messages"][0]
+        assert target <= budget - _msg_tokens(
+            system, _DA_PROVIDER, _DA_MODEL
+        ) - _tools_tokens(all_tools, _DA_PROVIDER, _DA_MODEL)
+        assert len(calls) == 2
+        for c in calls:
+            assert c["messages"][1]["content"].startswith("RESIZED")
+            assert _sent_tokens(c, _DA_PROVIDER, _DA_MODEL) <= budget
+
+    async def test_a_head_that_fits_is_sent_as_assembled(self, monkeypatch):
+        """Positive control for the one above: no overflow, no re-assembly."""
+        engine, provider, calls = _da_engine(20_000, 2_000, monkeypatch)
+        builder = MagicMock()
+
+        await engine._tool_augmented_generate(
+            prompt="BASE small",
+            schema_model=SampleResponse,
+            investigation_tools=engine._build_da_tool_schemas(),
+            tool_context=MagicMock(),
+            base_prompt_builder=builder,
+        )
+
+        builder.assert_not_called()
+        assert all(c["messages"][1]["content"] == "BASE small" for c in calls)
+
+    @pytest.mark.parametrize("rebuild", ["none", "still_too_big", "raises"])
+    async def test_a_head_that_cannot_fit_is_never_sent(self, monkeypatch, rebuild):
+        from faultmaven.exceptions import ToolCallingUnsupportedError
+
+        engine, provider, calls = _da_engine(20_000, 2_000, monkeypatch)
+
+        def too_big(**_kw):
+            return _chat_sized_base(20_000)
+
+        def broken(**_kw):
+            raise RuntimeError("assembly failed")
+
+        builder = {"none": None, "still_too_big": too_big, "raises": broken}[rebuild]
+        with pytest.raises(ToolCallingUnsupportedError, match=_FIT_REFUSAL):
+            await engine._tool_augmented_generate(
+                prompt=_chat_sized_base(20_000),
+                schema_model=SampleResponse,
+                investigation_tools=engine._build_da_tool_schemas(),
+                tool_context=MagicMock(),
+                base_prompt_builder=builder,
+            )
+        provider.generate.assert_not_called()
+
+    async def test_the_fitted_head_leaves_room_for_the_elision_marker(
+        self, monkeypatch
+    ):
+        """A base re-assembled to exactly the room left must still take the
+        marker when observations are elided on a later call — the fit reserves
+        it, or the bound would refuse mid-loop."""
+        engine, provider, calls = _da_engine(
+            20_000,
+            2_000,
+            monkeypatch,
+            result_after=2,
+            provider_name="local",  # len // 4: token counts exact by length
+            result_chars=6_000,
+        )
+
+        def exact(*, target_tokens, provider_name, model_name):
+            return "R" * (4 * target_tokens)  # exactly target_tokens tokens
+
+        await engine._tool_augmented_generate(
+            prompt="B" * 4 * 20_000,
+            schema_model=SampleResponse,
+            investigation_tools=engine._build_da_tool_schemas(),
+            tool_context=MagicMock(),
+            base_prompt_builder=exact,
+        )
+
+        budget = engine._resolve_tool_loop_budget("local").hard(8_000)
+        assert len(calls) == 3
+        # Positive control: the room was filled, so observations were elided
+        # and the marker had to fit in what the fit reserved for it.
+        assert any(
+            "elided to stay within" in str(m["content"])
+            for c in calls[1:]
+            for m in c["messages"]
+        )
+        for c in calls:
+            assert _sent_tokens(c, "local", _DA_MODEL) <= budget
+
+    async def test_the_builder_reaches_the_loop_through_the_structured_path(
+        self, monkeypatch
+    ):
+        """The seam the call sites hand the builder to:
+        _generate_structured_output → _inner → _tool_augmented_generate."""
+        engine, provider, calls = _da_engine(20_000, 2_000, monkeypatch)
+        seen: list = []
+
+        def builder(*, target_tokens, provider_name, model_name):
+            seen.append(target_tokens)
+            return _sized_text("RESIZED", target_tokens - 200)
+
+        result = await engine._generate_structured_output(
+            _chat_sized_base(20_000),
+            SampleResponse,
+            investigation_tools=engine._build_da_tool_schemas(),
+            tool_context=MagicMock(),
+            base_prompt_builder=builder,
+        )
+
+        assert isinstance(result, SampleResponse)
+        assert len(seen) == 1
+        assert calls and all(
+            c["messages"][1]["content"].startswith("RESIZED") for c in calls
+        )
+
+    @staticmethod
+    def _spy_on_the_bound(engine) -> list:
+        real_bound = engine._bound_tool_loop_messages
+        decisions: list = []
+
+        def spy(messages, *args, **kwargs):
+            out = real_bound(messages, *args, **kwargs)
+            decisions.append((list(messages), list(out)))
+            return out
+
+        engine._bound_tool_loop_messages = spy
+        return decisions
+
+    async def test_an_unknown_window_sends_the_base_as_main_did(self, monkeypatch):
+        """The router path with ``PROMPT_TOOL_OBSERVATION_MAX_TOKENS=1000`` (an
+        allowed setting): the head is over the soft cap, but with the window
+        unknown nothing can overflow, so the base goes out whole and the
+        observations elide exactly as main elided them. A fit against the soft
+        cap rebuilt this base smaller for nothing."""
+        from faultmaven.config.settings import get_settings
+
+        settings = get_settings()
+        monkeypatch.setattr(settings.model_context, "prompt_target_tokens", 32_000)
+        monkeypatch.setattr(
+            settings.prompt_budget, "tool_observation_max_tokens", 1_000
+        )
+        provider, calls = _recording_provider(result_after=2, provider_name="LLMRouter")
+        engine = _make_engine(
+            mock_provider=provider, mock_registry=_registry_returning(2_000)
+        )
+        decisions = self._spy_on_the_bound(engine)
+        caps = engine._resolve_tool_loop_budget("LLMRouter")
+        assert caps.window is None and caps.soft == 33_000
+        system_tokens = _est(
+            MilestoneEngine._build_da_system_instruction(
+                ["search_file"], "SampleResponse"
+            ),
+            "LLMRouter",
+        )
+        base = "B" * (4 * (caps.soft - system_tokens + 500))
+        builder = MagicMock()
+
+        await engine._tool_augmented_generate(
+            prompt=base,
+            schema_model=SampleResponse,
+            investigation_tools=engine._build_da_tool_schemas(),
+            tool_context=MagicMock(),
+            base_prompt_builder=builder,
+        )
+
+        builder.assert_not_called()
+        assert all(c["messages"][1]["content"] == base for c in calls)
+        for history, sent in decisions:
+            main = _main_bound(history, caps.soft, "LLMRouter", None)
+            assert _shape(sent, history) == _shape(main, history)
+        # Positive control: the head alone is over the soft cap.
+        head = calls[0]["messages"][:2]
+        assert sum(_msg_tokens(m, "LLMRouter") for m in head) > caps.soft
+
+    async def test_a_large_known_window_sends_a_dense_base_as_main_did(
+        self, monkeypatch
+    ):
+        """A cl100k DA (``openai/gpt-4o``, a 128K window) with a log-dense
+        base: over the soft cap in cl100k, far inside the window. Main sent it
+        whole and elided observations; so does this."""
+        engine, provider, calls = _da_engine(
+            20_000,
+            2_000,
+            monkeypatch,
+            result_after=2,
+            provider_name="openai",
+            da_model="gpt-4o",
+        )
+        decisions = self._spy_on_the_bound(engine)
+        caps = engine._resolve_tool_loop_budget("openai")
+        assert caps.window == 128_000
+        base = _chat_sized_base(caps.soft + 5_000)
+        builder = MagicMock()
+
+        await engine._tool_augmented_generate(
+            prompt=base,
+            schema_model=SampleResponse,
+            investigation_tools=engine._build_da_tool_schemas(),
+            tool_context=MagicMock(),
+            base_prompt_builder=builder,
+        )
+
+        builder.assert_not_called()
+        assert all(c["messages"][1]["content"] == base for c in calls)
+        main_budget = min(caps.soft, caps.window - caps.response_reserve)
+        for history, sent in decisions:
+            main = _main_bound(history, main_budget, "openai", "gpt-4o")
+            assert _shape(sent, history) == _shape(main, history)
+        # Positive control: the base alone is over the soft cap in cl100k.
+        assert _est(base, "openai", "gpt-4o") > caps.soft
+
+    async def test_a_32k_local_window_leaves_room_for_each_calls_completion(
+        self, monkeypatch
+    ):
+        """The window holds the prompt AND the completion. The registry
+        reserves 6,000 for output, but the loop asks for 8,000: a head fitted
+        to the reserve sent 26,408 + 8,000 = 34,408 into a 32,768 window, which
+        vLLM rejects. Every call's prompt plus its own ``max_tokens`` fits."""
+        window = 32_768
+        engine, provider, calls = _da_engine(
+            window,
+            6_000,
+            monkeypatch,
+            result_after=3,
+            provider_name="local",
+            result_chars=6_000,
+        )
+        caps = engine._resolve_tool_loop_budget("local")
+        assert (caps.window, caps.response_reserve) == (window, 6_000)
+        seen: list = []
+
+        def exact(*, target_tokens, provider_name, model_name):
+            seen.append(target_tokens)
+            return "R" * (4 * target_tokens)  # len // 4: exactly the target
+
+        await engine._tool_augmented_generate(
+            prompt="B" * (4 * 32_000),  # the chat path's full-size base
+            schema_model=SampleResponse,
+            investigation_tools=engine._build_da_tool_schemas(),
+            tool_context=MagicMock(),
+            base_prompt_builder=exact,
+        )
+
+        assert len(calls) == 4
+        for c in calls:
+            assert _sent_tokens(c, "local") + c["max_tokens"] <= window
+        # Positive control: the head was rebuilt to fill what the window leaves
+        # beside the 8,000-token completion — not the 6,000 reserve.
+        assert len(seen) == 1
+        assert window - 8_000 - _sent_tokens(calls[0], "local") < 100
+
+    @staticmethod
+    def _truncating_provider(provider_name: str, result_after: int):
+        """Searches ``result_after`` times, then answers the schema — with the
+        FIRST schema answer reported cut (stop reason MAX_TOKENS), so the
+        truncation ladder retries it at a doubled cap."""
+        from faultmaven.infrastructure.llm.providers.base import StopReason
+
+        calls: list = []
+
+        async def _generate(**kwargs):
+            calls.append(
+                {
+                    "messages": list(kwargs["messages"]),
+                    "tools": kwargs["tools"],
+                    "max_tokens": kwargs["max_tokens"],
+                }
+            )
+            names = [t["function"]["name"] for t in kwargs["tools"]]
+            if len(calls) > result_after or names == ["SampleResponse"]:
+                resp = _make_schema_response(
+                    {"agent_response": "done", "next_action": "continue"}
+                )
+                if not any(c.get("cut") for c in calls):
+                    calls[-1]["cut"] = True
+                    resp.stop_reason = StopReason.MAX_TOKENS
+                return resp
+            return _make_tool_call_response(
+                "search_file", {"query": "q"}, call_id=f"c{len(calls)}"
+            )
+
+        provider = AsyncMock()
+        provider.provider_name = provider_name
+        provider.supports_tool_calling = MagicMock(return_value=True)
+        provider.generate = AsyncMock(side_effect=_generate)
+        return provider, calls
+
+    def _truncation_engine(self, monkeypatch, window: int, result_after: int):
+        from faultmaven.utils import model_context
+
+        monkeypatch.setattr(
+            model_context,
+            "_get_overrides",
+            lambda: {_DA_MODEL: model_context.ModelWindow(window, 2_000)},
+        )
+        provider, calls = self._truncating_provider("local", result_after)
+        repo = MagicMock()
+        repo.save = AsyncMock()
+        engine = MilestoneEngine(
+            llm_provider=AsyncMock(),
+            repository=repo,
+            investigation_tools=_registry_returning(7_600),
+            da_provider=provider,
+            da_model=_DA_MODEL,
+        )
+        return engine, calls
+
+    async def test_a_truncation_retry_is_bounded_for_its_raised_cap(self, monkeypatch):
+        """The retry asks for 16,000, not 8,000: its prompt is bounded again
+        for THAT cap, eliding observations the first attempt could keep."""
+        window = 24_000
+        engine, calls = self._truncation_engine(monkeypatch, window, result_after=4)
+
+        await engine._tool_augmented_generate(
+            prompt="BASE small",
+            schema_model=SampleResponse,
+            investigation_tools=engine._build_da_tool_schemas(),
+            tool_context=MagicMock(),
+        )
+
+        first, retry = calls[-2], calls[-1]
+        assert first.get("cut") and (first["max_tokens"], retry["max_tokens"]) == (
+            8_000,
+            16_000,
+        )
+        for c in calls:
+            assert _sent_tokens(c, "local") + c["max_tokens"] <= window
+        # Positive control: re-sending the first attempt's prompt at the raised
+        # cap would have overflowed — the re-bound is what kept the retry in.
+        assert _sent_tokens(first, "local") + 16_000 > window
+        assert len(retry["messages"]) < len(first["messages"])
+
+    async def test_a_retry_whose_head_cannot_fit_is_refused(self, monkeypatch):
+        """On a window the head fills beside 8,000, the head cannot fit beside
+        16,000: the retry is refused, never sent, and the turn falls back."""
+        from faultmaven.exceptions import ToolCallingUnsupportedError
+
+        window = 24_000
+        engine, calls = self._truncation_engine(monkeypatch, window, result_after=0)
+        # A base filling the room the window leaves beside an 8,000 completion.
+        caps = engine._resolve_tool_loop_budget("local")
+        tools = engine._build_da_tool_schemas()
+        fixed = (
+            _est(
+                MilestoneEngine._build_da_system_instruction(
+                    ["search_file"], "SampleResponse"
+                ),
+                "local",
+            )
+            + _est(_MARKER_TEXT, "local")
+            + 200  # tools payload and slack
+        )
+        base = "B" * (4 * (caps.hard(8_000) - fixed))
+
+        with pytest.raises(ToolCallingUnsupportedError):
+            await engine._tool_augmented_generate(
+                prompt=base,
+                schema_model=SampleResponse,
+                investigation_tools=tools,
+                tool_context=MagicMock(),
+            )
+        # Positive control: the first attempt was sent, cut, and the retry at
+        # 16,000 was never sent.
+        assert [c["max_tokens"] for c in calls] == [8_000]
+        assert calls[0].get("cut")
+
+    async def test_the_dropped_base_leaves_the_token_cache(self, monkeypatch):
+        """The cache is keyed by ``id()``: once the chat-sized base is replaced,
+        its count must go with it, or a later message dict allocated at its
+        address reads a ~20,000-token count."""
+        engine, _provider, _calls = _da_engine(20_000, 2_000, monkeypatch)
+        caps = engine._resolve_tool_loop_budget(_DA_PROVIDER)
+        head = [
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": _chat_sized_base(20_000)},
+        ]
+        cache: dict = {}
+        out = await engine._fit_tool_loop_base(
+            head,
+            engine._build_da_tool_schemas(),
+            caps,
+            _DA_PROVIDER,
+            8_000,
+            base_prompt_builder=lambda **kw: _sized_text("RESIZED", 2_000),
+            token_cache=cache,
+        )
+        # Positive control: the base was replaced.
+        assert out[1] is not head[1] and out[1]["content"].startswith("RESIZED")
+        live = {id(m) for m in out}
+        assert {k for k in cache if isinstance(k, int)} <= live
+
+    async def test_the_reassembled_base_is_redacted_like_the_original(
+        self, monkeypatch
+    ):
+        """The rebuilt text is raw case content going to a provider reached
+        without the router's sanitizer, so it passes the case redaction."""
+        engine, provider, calls = _da_engine(20_000, 2_000, monkeypatch)
+        redaction_ctx = MagicMock()
+        redaction_ctx.asanitize = AsyncMock(
+            side_effect=lambda text: text.replace("alice@example.com", "[EMAIL_1]")
+        )
+
+        def builder(*, target_tokens, provider_name, model_name):
+            return "RESIZED alice@example.com " + _sized_text("", target_tokens - 300)
+
+        await engine._tool_augmented_generate(
+            prompt=_chat_sized_base(20_000),
+            schema_model=SampleResponse,
+            investigation_tools=engine._build_da_tool_schemas(),
+            tool_context=MagicMock(),
+            redaction_ctx=redaction_ctx,
+            base_prompt_builder=builder,
+        )
+
+        sent_base = calls[0]["messages"][1]["content"]
+        assert sent_base.startswith("RESIZED [EMAIL_1]")
+        assert "alice@example.com" not in sent_base
+
+    async def test_the_real_allocator_reassembles_a_base_that_fits(self, monkeypatch):
+        """Through ``get_prompt_for_case``: a heavy case assembled for the
+        chat budget (32K target, ``len // 4``) is re-assembled for a DA model
+        whose tokenizer and window both make it too big, and every call then
+        fits — with the main template, not the minimal fallback."""
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).parent))
+        import test_prompt_budget_allocator as allocator_tests
+
+        from faultmaven.core.investigation.prompts.templates import (
+            get_prompt_for_case,
+        )
+
+        case = allocator_tests._pressure_case()
+        chat_base = get_prompt_for_case(case, "why slow?")
+        # A 26K per-call budget: under the chat-sized head, over the ~22K the
+        # investigation template needs before it falls to the fallback.
+        engine, provider, calls = _da_engine(34_000, 4_000, monkeypatch)
+        budget = engine._resolve_tool_loop_budget(_DA_PROVIDER).hard(8_000)
+
+        def builder(**kw):
+            return get_prompt_for_case(case, "why slow?", **kw)
+
+        await engine._tool_augmented_generate(
+            prompt=chat_base,
+            schema_model=SampleResponse,
+            investigation_tools=engine._build_da_tool_schemas(),
+            tool_context=MagicMock(),
+            base_prompt_builder=builder,
+        )
+
+        # Positive control: the chat-sized head does not fit beside the tools.
+        fixed = _msg_tokens(
+            calls[0]["messages"][0], _DA_PROVIDER, _DA_MODEL
+        ) + _tools_tokens(calls[0]["tools"], _DA_PROVIDER, _DA_MODEL)
+        assert _est(chat_base, _DA_PROVIDER, _DA_MODEL) + fixed > budget
+        sent_base = calls[0]["messages"][1]["content"]
+        assert sent_base != chat_base
+        assert "INVESTIGATING" in sent_base  # main template, sections squeezed
+        for c in calls:
+            assert _sent_tokens(c, _DA_PROVIDER, _DA_MODEL) <= budget
+
+
+def _hex_log(lines: int, seed: int) -> str:
+    """Log lines dense in hex ids: cl100k counts them MORE than ``len // 4``
+    (prose is the other way round), so a prompt sized under the wrong
+    estimator overshoots a cl100k target instead of undershooting it."""
+    import random
+
+    rnd = random.Random(seed)
+    return "".join(
+        f"2026-09-24T10:{i % 60:02d}:01Z id={rnd.getrandbits(128):032x} "
+        f"trace={rnd.getrandbits(64):016x} err=0x{rnd.getrandbits(32):08x}\n"
+        for i in range(lines)
+    )
+
+
+def _dense_case():
+    """Four historical log files, twelve turns of history and a journal, all
+    hex-dense: enough to fill the investigation template's sections."""
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).parent))
+    import test_context_sliding_window as t
+
+    from faultmaven.modules.case.domain.models import JournalEntry
+
+    evidence = [
+        t._make_evidence(
+            summary=f"ev {i}",
+            extract=_hex_log(60, seed=i),
+            source_file_id=f"file_{i:012x}",
+            collected_at_turn=i + 1,
+        )
+        for i in range(4)
+    ]
+    case = t._make_case_with_evidence(evidence)
+    case.messages = []
+    for i in range(1, 13):
+        case.messages.append(
+            {"turn_number": i, "role": "user", "content": _hex_log(12, seed=100 + i)}
+        )
+        case.messages.append(
+            {
+                "turn_number": i,
+                "role": "assistant",
+                "content": _hex_log(12, seed=200 + i),
+            }
+        )
+    case.current_turn = 13
+    case.investigation_journal = [
+        JournalEntry(
+            turn=i, entry_type="finding", content=_hex_log(1, seed=300 + i)[:190]
+        )
+        for i in range(1, 15)
+    ]
+    return case
+
+
+_DA_ELIDED = 'elided="directed_analysis"'
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestBothCallSitesWireTheBaseBuilder:
+    """The re-assembly is only as good as its wiring: both call sites that
+    put the base on the tool loop hand it a builder that assembles THIS turn's
+    prompt, for the model the loop names, within the target it names — and,
+    on the investigation turn, with the same tool availability the turn was
+    built with. Checked on hex-dense content, where sizing under the receiver's
+    tokenizer and under the chat path's ``len // 4`` give different answers:
+    on prose cl100k counts lower, and a builder that dropped the receiver's
+    name still fit."""
+
+    @staticmethod
+    def _assert_builder_sizes_for_the_receiver(builder) -> str:
+        from faultmaven.utils.token_estimation import estimate_tokens
+
+        receiver = ("anthropic", "claude-sonnet-4-6")
+        wide = builder(
+            target_tokens=10**6,
+            provider_name=receiver[0],
+            model_name=receiver[1],
+        )
+        cl100k = estimate_tokens(wide, *receiver)
+        len4 = estimate_tokens(wide, "local")
+        # Positive control: on this content cl100k counts well above len // 4,
+        # so a target between them separates the two sizings ...
+        assert len4 + 400 < cl100k
+        target = (cl100k + len4) // 2
+        # ... a build sized for the chat names (len // 4) is over it ...
+        unsized = builder(target_tokens=target, provider_name=None, model_name=None)
+        assert estimate_tokens(unsized, *receiver) > target
+        # ... and one sized for the receiver keeps to it.
+        sized = builder(
+            target_tokens=target,
+            provider_name=receiver[0],
+            model_name=receiver[1],
+        )
+        assert estimate_tokens(sized, *receiver) <= target
+        return sized
+
+    async def test_the_investigation_turn_passes_a_builder_for_its_prompt(self):
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).parent))
+        import test_toolless_turn_single_shot_routing as routing
+
+        engine = routing._tool_engine()
+        await engine.process_turn(
+            case=_dense_case(),
+            user_message="search the logs for err=0x",
+            intent_data={"query_mode": "directed_analysis"},
+        )
+
+        kwargs = engine._generate_structured_output.call_args.kwargs
+        turn_prompt = engine._generate_structured_output.call_args.args[0]
+        assert kwargs.get("investigation_tools") is not None
+        sized = self._assert_builder_sizes_for_the_receiver(
+            kwargs["base_prompt_builder"]
+        )
+        assert "search the logs for err=0x" in sized
+        # The rebuild keeps the turn's tool availability: historical evidence
+        # stays an index + stub, as in the prompt the turn built (positive
+        # control: that prompt has it).
+        assert _DA_ELIDED in turn_prompt
+        assert _DA_ELIDED in sized
+
+    async def test_the_terminal_qa_turn_passes_a_builder_for_its_prompt(self):
+        from types import SimpleNamespace
+
+        from faultmaven.core.investigation.schemas import TerminalResponse
+        from faultmaven.modules.case.domain.models import CaseState
+
+        # The router's shape: no provider_name, no config — the chat names the
+        # terminal prompt is assembled for resolve to (None, None).
+        engine = _make_engine(
+            mock_provider=SimpleNamespace(), mock_registry=_make_mock_registry()
+        )
+        engine._generate_structured_output = AsyncMock(
+            return_value=TerminalResponse(agent_response="ok", state_updates={})
+        )
+        engine._remaining_regens_for = AsyncMock(return_value=0)
+        engine._case_has_runbook_draft = AsyncMock(return_value=False)
+        case = _dense_case()
+        # Past the RESOLVED validator (resolved_at etc.), as the INV-12 tests
+        # do: only the state the Q&A prompt renders from matters here.
+        object.__setattr__(case, "state", CaseState.RESOLVED)
+
+        await engine._process_terminal_qa(case, "what fixed it?", metadata={})
+
+        kwargs = engine._generate_structured_output.call_args.kwargs
+        assert kwargs.get("investigation_tools") is not None
+        sized = self._assert_builder_sizes_for_the_receiver(
+            kwargs["base_prompt_builder"]
+        )
+        assert "what fixed it?" in sized
 
 
 # =========================================================================

@@ -6,6 +6,7 @@ This module defines the core templates for FaultMaven's THREE-TEMPLATE system:
 3. TERMINAL: Documentation and summary.
 """
 
+import dataclasses
 import logging
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -3602,6 +3603,7 @@ def get_prompt_for_case(
     processing_mode: Optional[str] = None,
     entity_highlight_groups: Optional[Sequence[EntityHighlightGroup]] = None,
     tools_available: bool = False,
+    target_tokens: Optional[int] = None,
 ) -> str:
     """Build the final prompt based on case state and stage.
 
@@ -3627,6 +3629,13 @@ def get_prompt_for_case(
             evidence index+stub elision — the extract is only dropped (telling the
             agent to search_file) when search_file will actually run. Conservative
             default False: no elision unless the caller confirms tools work.
+        target_tokens: Optional HARD cap on the assembled prompt, in the
+            provider's estimated tokens. It lowers both the fill target and the
+            overflow ceiling the backstop enforces, so the result fits it or is
+            the minimal fallback prompt. The tool loop uses it to re-assemble a
+            base that fits what is left of its per-call budget after the system
+            instruction and the ``tools=`` payload (#614). ``None`` (every other
+            caller) leaves the resolved budget unchanged.
 
     Returns:
         Formatted prompt for the LLM
@@ -3749,7 +3758,13 @@ def get_prompt_for_case(
             )
 
     return _budgeted_prompt(
-        case, user_message, _build_ctx, _render, provider_name, model_name
+        case,
+        user_message,
+        _build_ctx,
+        _render,
+        provider_name,
+        model_name,
+        target_tokens=target_tokens,
     )
 
 
@@ -3760,6 +3775,7 @@ def _budgeted_prompt(
     render,
     provider_name: Optional[str],
     model_name: Optional[str],
+    target_tokens: Optional[int] = None,
 ) -> str:
     """Whole-prompt token-budget accountant + overflow/starvation backstop.
 
@@ -3788,6 +3804,20 @@ def _budgeted_prompt(
     # Single assembly path: resolve the budget (unknown provider/model trusts the
     # configured target with no hard ceiling) and assemble through the allocator.
     resolved = resolve_model_budget(provider_name, model_name)
+    if target_tokens is not None:
+        # A caller-imposed hard cap (#614): lower the fill target AND the
+        # ceiling, so the overflow backstop enforces it — re-assemble tighter,
+        # then the minimal fallback. Never raises either value.
+        cap = max(1, int(target_tokens))
+        resolved = dataclasses.replace(
+            resolved,
+            prompt_target=min(resolved.prompt_target, cap),
+            prompt_budget=(
+                cap
+                if resolved.prompt_budget is None
+                else min(resolved.prompt_budget, cap)
+            ),
+        )
     return _assemble_allocated(
         case,
         build_ctx,

@@ -123,33 +123,74 @@ tool-less build keeps the full extract (safety verified). A playbook-S9 eval sho
 
 ### 4.3 Per-turn budget + cross-provider base caching (goal 3)
 
-- **The message bound is structural; the ceiling is a metered net (#611).**
-  The loop makes `MAX_TOOL_ITERATIONS + 1` calls (iterations
-  `0..MAX_TOOL_ITERATIONS-1` may call tools, the last is schema-only), and since
-  #612 `_bound_tool_loop_messages` trims each call's `messages` to
-  `_resolve_tool_loop_budget`:
+- **Two per-call caps, both structural; the ceiling is a metered net (#611,
+  #614).** The loop makes `MAX_TOOL_ITERATIONS + 1` calls (iterations
+  `0..MAX_TOOL_ITERATIONS-1` may call tools, the last is schema-only), and
+  `_resolve_tool_loop_budget` returns two caps, because they bound different
+  things:
 
   ```
-  per_call = min(PROMPT_TARGET_TOKENS + PROMPT_TOOL_OBSERVATION_MAX_TOKENS, model window budget)
-           = 32,000 + 16,000 = 48,000            (shipped defaults)
+  soft = PROMPT_TARGET_TOKENS + PROMPT_TOOL_OBSERVATION_MAX_TOKENS    messages alone
+       = 32,000 + 16,000 = 48,000            (shipped defaults)
+  hard = context window − max(that call's max_tokens, response reserve), when known
+                                             messages + that call's tools= payload
   ```
 
-  That bound is structural, but it covers less than it looks:
-
-  - **`messages` only.** The `tools=` payload is not counted. Measured with
-    cl100k on this tree, the schema tool alone is 950 (`TerminalResponse`),
-    2,111 (`InquiryResponse`), 7,438 / 9,557 / 10,455 / 10,987
+  - **The soft cap is a size/cost target on `messages` alone** — the pre-#614
+    rule, unchanged. The `tools=` payload is not counted against it, so where no
+    window is known (every call through the router) or the window is far above
+    it (Gemini's 1M), the loop elides exactly what it did before #614.
+  - **The hard cap is the window, completion included.** When the resolver
+    knows the window — a dedicated DA model in the registry or
+    `MODEL_CONTEXT_WINDOWS` — `messages` plus the `tools=` payload of that call
+    must fit what the window leaves beside the completion the call asks for: its
+    own `max_tokens`, or the registry's response reserve if that is larger. The
+    loop asks for 8,000 against a default reserve of 6,000, and a truncation
+    retry doubles it to 16,000, so the reserve alone let a 32,768-token window
+    be sent 26,408 prompt tokens plus an 8,000-token completion (vLLM rejects
+    that). The retry's prompt is bounded again for its raised cap, and refused
+    if even the head cannot fit beside it. The payload differs by iteration: all
+    tools on the tool iterations, the schema tool alone on the last. No request
+    goes out whose *estimated* prompt plus requested completion exceeds a known
+    window; one that would is refused before it is sent. Measured on
+    this tree (cl100k), the schema tool is 982 (`TerminalResponse`), 2,201
+    (`InquiryResponse`), 7,641 / 9,846 / 10,784 / 11,328
     (`InvestigationResponse_Mitigation` / `_Treatment` / `_General` /
-    `_Diagnosis`; 2–3% more in strict form), and the investigation tools add up
-    to ~2,400. Output tokens are not counted either.
-  - **Estimated tokens.** The trim counts with `estimate_tokens` for the
-    provider name. Gemini, and the router (whose name, `LLMRouter`, is not a
-    provider), have no local tokenizer and fall back to `len // 4`, which read
-    1.51× and 1.65× under cl100k on two log files from the dev evidence store.
-  - The system + task head is sized upstream and never trimmed here; the runtime
+    `_Diagnosis`, strict form), and the six investigation tools the DA registry
+    can hold 1,131 (`web_search` among them is 121) — not the ~2,400 an earlier
+    measurement quoted.
+  - **The head is fitted to the window before the first call**
+    (`_fit_tool_loop_base`). The base task arrives assembled for the chat path —
+    and since the router exposes no provider or model name, that means
+    `PROMPT_TARGET_TOKENS` with no window clamp, counted at `len // 4`. Only a
+    known window can reject it, so only a known window is checked: the head must
+    fit it beside the first attempt's completion, the largest `tools=` payload,
+    the DA system instruction and the elision marker. A dedicated DA model with a
+    smaller window can break that. With the window unknown, or when the head
+    fits, the base is sent as assembled, exactly as before #614 — the soft cap
+    governs observation elision, not the base, and shrinking the base to it
+    would send less case context to buy observation room nobody was short of.
+    When it does not fit, the base is **re-assembled for the receiving
+    model** through the same allocator (`get_prompt_for_case(target_tokens=…)`):
+    sections drop by the allocator's own priority order, below its floor it takes
+    the minimal `FALLBACK_*` prompt, and the rebuilt text is redacted like the
+    original. If even that cannot fit, the loop is refused before anything is
+    sent and the turn takes the non-tool path through the router the original
+    base was sized for. The investigation template alone is ~19,000 cl100k
+    tokens, so a re-assembly with less than ~21,000 tokens of room lands on the
+    fallback prompt. Whether the loop should run on that minimal prompt at all,
+    rather than hand the turn to the chat model with the full base, is an open
+    question. On a default deployment nothing is re-assembled.
+  - **Every call is bounded** (`_bound_tool_loop_messages`): the oldest tool
+    exchanges are elided until both caps hold.
+  - **Estimated tokens.** Both count with `estimate_tokens` for the loop's
+    provider name and model — the `tools=` payload over the JSON it is sent as.
+    Gemini, and the router (whose name, `LLMRouter`, is not a provider), have no
+    local tokenizer and fall back to `len // 4`, which read 1.51× and 1.65×
+    under cl100k on two log files from the dev evidence store. The runtime
     context-length recovery
     ([`prompt-token-budget-allocation.md`](./prompt-token-budget-allocation.md)
-    §7.1) is the net for a request that still overflows.
+    §7.1) remains the net for a request whose real size the estimate missed.
 
   `PROMPT_TURN_TOKEN_CEILING` (150,000 default, formerly a hard-coded abort) is
   a separate, **metered** net. After each non-final call it compares the turn's
@@ -161,9 +202,11 @@ tool-less build keeps the full extract (safety verified). A playbook-S9 eval sho
   calls (after that, the next iteration is final anyway), i.e. when those three
   calls average more than 50,000 each with defaults.
 
-  **The message bound does not rule that out.** An uncached turn with a
-  full-size base and the Diagnosis schema meters about
-  `3 × (32,000 + 11,000 + 2,400) ≈ 136,000` for the base and tools alone; the
+  **The soft cap does not rule that out.** It bounds messages only; the tools
+  payload rides on top of it, bounded only by the window. An uncached turn with
+  a full-size base and the Diagnosis schema meters about
+  `3 × (32,000 + 1,350 + 11,300 + 1,100) ≈ 137,000` for the base, the system
+  instruction and the tools alone; the
   observation allowance (up to 16,000 per call once tools have run), the
   outputs, or a `len // 4` undercount of the base carries it past 150,000, and
   the ceiling removes the last tool round. What keeps it out of normal turns is
@@ -171,12 +214,14 @@ tool-less build keeps the full extract (safety verified). A playbook-S9 eval sho
   prefix from its prompt cache on calls after the first, that prefix counts at
   0.25. Whether the ceiling *should* be able to bite on an uncached normal turn
   is an open design question, not settled here. `TestToolLoopSpendBound` pins
-  the per-call formula against `_resolve_tool_loop_budget` and the ceiling's
-  crossing semantics on the metered measure.
+  the caps against `_resolve_tool_loop_budget` and the ceiling's crossing
+  semantics on the metered measure; `TestToolLoopBoundSplitsSoftAndHardCaps` and
+  `TestToolLoopBaseFitsTheReceivingModel` pin what each cap counts, including
+  that a default deployment elides exactly what it did before #614.
 
   **Raising `PROMPT_TARGET_TOKENS` or `PROMPT_TOOL_OBSERVATION_MAX_TOKENS` moves
   metered spend toward the ceiling — raise the ceiling with them.** A dedicated
-  DA model with a smaller window (#614) can only lower `per_call`.
+  DA model with a smaller window can only lower what a call sends.
   - **Both guards compare a *cost-weighted* spend, not raw tokens.** The measure
     is `spend_weighted_tokens = input + output + cache_write + 0.25 × cache_read`:
     cache reads are real bytes in the window but billed at a fraction (~0.1× on
