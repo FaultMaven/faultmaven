@@ -263,8 +263,8 @@ label existed for is untouched.
 ### 1. Propose
 
 Sort every issue filed since the last round into three piles, by labelling
-it — the label **is** the pile, and an issue carrying none is one nobody has
-sorted yet:
+it — the label **is** the pile, and an issue carrying none, and not labelled
+`tracking`, is one nobody has sorted yet:
 
 - **`pile:ready`** — the answer is known; it needs work, not a call.
 - **`pile:blocked`** — it needs a ruling before anyone can build it.
@@ -275,6 +275,23 @@ sorted yet:
 Each pile is then a query over open issues, which is why nothing here has a
 rule about carrying a closed number forward: a closed issue is not in the
 answer.
+
+**An issue labelled `tracking` is in no pile**, whatever `pile:` label it
+also carries: the `Queue` board, a campaign tracker, a document refined each
+round. None of them is work a lane can be dispatched against. Only the
+`Queue` used to be exempt, and round 15 found the gap from both sides: #819
+carried `tracking` **and** `pile:ready`, so a tracker was dispatchable and
+counted in the rule-4 tier, and #1499 sat in ready with no label to say what
+it was — and it could not simply be unlabelled, because a bare issue reads
+as an unsorted arrival and is sorted straight back into ready. So the ready
+query excludes `tracking`, the sort skips it, and the metrics name a tracker
+still carrying a pile label as a leftover to remove. A tracker leaves the
+way anything finished does: it closes when what it tracks is done — and
+because the lanes that close its children never look at it, the sort
+checks each open tracker for that and closes it, rather than leaving the
+exit to whoever happens to notice. One that turns out to be work loses the
+label and gets a pile. The metrics list every open tracker each run, which is what
+keeps the label from becoming a quiet way to take work out of every pile.
 
 Three rules keep `pile:blocked` from silting up. The first and the last were
 learned the expensive way — the pile held at 12 for six rounds, and when it
@@ -287,9 +304,11 @@ which nothing else was watching.
   different states that look identical in a label, and the second is not
   owner latency. #1513 spent six rounds counted against the owner while
   waiting on #1294. Say which at the moment the label goes on, as a line
-  reading `**Blocked on:** #N …` or `**Blocked on:** <the ruling> …` — the
-  issue reference **first**, because that is what separates a dependency
-  from a ruling that merely mentions an issue. A reference anywhere else is
+  reading `**Blocked on:** #N …`, `**Blocked on:** <the ruling> …` or
+  `**Blocked on:** condition — <what would be observed>` — the issue
+  reference, or the word `condition`, **first**, because that is what
+  separates a dependency or a deferral from a ruling that merely mentions an
+  issue or a condition. A reference anywhere else is
   read as neither: `**Blocked on:** an owner ruling on #1294's shape` comes
   back as *stated but unreadable* and is reported for rewording, rather than
   being guessed either way. **In the body, not in a
@@ -312,6 +331,31 @@ which nothing else was watching.
   one gets it the next time you sort** — that pass has to phrase its
   question for *Needs your call* anyway, so the statement is the phrasing
   written down.
+- **A deferral on a condition is its own form, and the condition is
+  something to check.** A ruling that says "not yet — when X is observed" is
+  neither a question nor a dependency, and the grammar had no third form
+  for it: #673 (*models must ground causal chains
+  reliably*) and #723 (*traces show a spurious close*) were counted as
+  **waiting on a ruling**, so *Needs your call* would list a question
+  nobody had, while the exit the procedure named — *re-read the condition
+  as you sort* — had nothing to re-read, because nobody measured either.
+  So the condition form is bucketed separately by the metrics (*waiting on
+  a condition*), and the condition must be written as something the sort
+  can **run**: a query, a metric, a log or trace count, and where to look.
+  A condition the agent cannot run from where it stands — a deployment's
+  Prometheus it has no access to — is not skipped: *Needs your call* says
+  it was not checked and what the check needs, which hands that round's
+  check to the owner. Where nothing can observe it today, the line says so —
+  `condition — unobservable today:` and what would have to exist — and the
+  metrics name it under *Nothing can check*. That is not a failure to hide:
+  a deferral nothing can check has exactly one exit, the owner, and saying
+  so is what puts it in front of them. Two limits keep the form from
+  swallowing the other two: the word must open the line with nothing
+  before it, and a condition that names an issue is reported as
+  unreadable, because waiting on an issue is the `#N` form — read as a
+  condition it has no edge, and nothing moves it when that issue closes.
+  The first cut of this rule admitted a word before `condition` and read
+  "the condition in #1116 must hold first" exactly that way.
 - **A blocked item whose named issue has closed moves to ready as you
   sort.** Its condition is met and nothing else will notice — the label is
   the pile, and closing #N writes no label on anything waiting for it. The
@@ -329,6 +373,29 @@ not a queue of hard decisions. It was mostly a queue of unexamined labels.
 Nothing re-asks *why* an item is blocked once the label is on, so blocked-ness
 becomes a fact rather than a claim — which is the same failure this campaign
 keeps finding in code.
+
+**The ready pile has the mirror of that failure, and the sort reads for it
+too.** The sort takes only unlabelled issues, so an item that entered ready
+carrying a question — or grew one in its thread since — is never read
+again. Its only exits are the rule-4 slot and being ranked into a round, so
+it waits, in the pile that is supposed to hold only answered work. Round 15
+read all 81 ready bodies and found **5** that were not ready work: an owner
+question (#835), a deferral on a trigger (#723), a dependency on an open
+issue (#1114), and two mixed issues (#1040, #1463). Rounds 13-14 had found
+four more among the tier's ten oldest. So `scripts/backlog_metrics.py`
+lists the candidates each run under *Ready items that read like a
+question* — ready items whose body carries decision, gating or trigger
+language and **no recorded ruling** — and the sort **reads** each one, the
+way rule 3's hot seams are read rather than applied. It is never a label
+move: the language is a symptom, and most hits are prose about the code.
+Round 15's own first pass proved the point in the other direction too — it
+counted only one spelling of a ruling, and moved #1451 and #1502, both
+ruled under `## Ruling recorded`, to blocked as open questions. A false
+"not ruled" asks the owner a question they have answered, so the detector
+reads every ruling heading this repository's issues use, and the reader
+still checks the thread before moving anything. An item read and left
+ready gets nothing written, and the list names it again next round; that
+re-read is the price of never moving on the heuristic alone.
 
 The third pile exists because running this procedure on 2026-09-16 found two
 beta gates that were neither ready nor blocked on a ruling. Calling them
@@ -373,9 +440,11 @@ proposal:
    than only the new ones. Each gets the question in one sentence, the
    options, a recommendation, and what it unblocks. Answering should take
    one word. An item already ruled on and **deferred** is listed here too,
-   carrying its ruling and the condition it waits on instead of a question:
-   it is shown, never re-asked, and dropping it from the list would take it
-   out of every pile.
+   carrying its ruling, the condition it waits on and what this round's
+   check of it found, instead of a question: it is shown, never re-asked,
+   and dropping it from the list would take it out of every pile. One whose
+   condition nothing can observe is the exception — it is asked, because
+   its only exit is the owner: build the measurement, re-rule, or close.
 3. **Yours to run** — the third pile, listed so it is visible, never
    ranked.
 4. **Settled from last round** — what *Settle the last round* did with each
@@ -589,7 +658,9 @@ anything shipping a new guard — it is a round by itself.
 **Ranking is incremental.** A new issue is compared against the current
 candidates when it arrives, and that is the only comparison it gets. Nothing
 re-sorts the whole backlog each round, which would be work proportional to the
-backlog for comparisons already made. Losing that comparison is not a state:
+backlog for comparisons already made — and reading the ready pile's question
+list under *Propose* is not a re-sort either: it can move an item out of
+ready, never within its order. Losing that comparison is not a state:
 the item keeps the place the comparison gave it, and the pile drains past it.
 That only holds if the place survives the round, so the **ranked head** — the
 items holding rules 1-3, in order — is written into the `Queue` body and
@@ -810,21 +881,27 @@ owner's call is then whether to ship the bug, take it on themselves, or drop
 it.
 
 Recording a decision is not the same as closing the issue. A ruling puts its
-issue in exactly one of the four places an issue can be, and what the agent
-records says which:
+issue in exactly one of four places — every place an issue can be but
+`tracking`, which holds no work to rule on — and what the agent records says
+which:
 
 - **It implies work** — re-filed as the defect or feature that work is, with
   the ruling as its spec, into **ready**. The pull request that delivers it
   closes it: by `Closes`, or at the next round's *Settle the last round* if
   that pull request could only carry `Refs`.
 - **It defers** — "not yet" rather than "never". The issue stays
-  **blocked**, with the ruling and the condition that would revisit it both
-  recorded, and the proposal lists it as answered-and-waiting rather than as
-  a question, so leaving it there costs the owner nothing. The owning agent
-  re-reads that condition each round as it sorts — being listed is what
-  gives the check somewhere to happen — and moves the issue to ready the
-  round the condition holds. A deferral naming no condition is not a
-  complete ruling, and asking for one is the next question.
+  **blocked**, with the ruling recorded and the condition that would
+  revisit it written as its `**Blocked on:** condition — …` line, and the
+  proposal lists it as answered-and-waiting rather than as a question, so
+  leaving it there costs the owner nothing. The owning agent **checks** that
+  condition each round as it sorts — being listed is what gives the check
+  somewhere to happen, and a condition written as a query or a count is
+  what makes it a check rather than a re-reading — and moves the issue to
+  ready the round the condition holds. A deferral naming no condition is
+  not a complete ruling, and asking for one is the next question; one
+  naming a condition nothing can observe is complete but has no exit but
+  the owner, and is asked as such. A deferral whose trigger is another
+  issue landing is a dependency, and takes the `#N` form.
 - **It implies none** — the behaviour is right as it stands, so the owning
   agent **closes** the issue as it records the ruling, quoting it. It never
   reaches ready: ready means a lane can be dispatched against it, and there
@@ -875,8 +952,10 @@ text is read as description: four survived three review rounds of an earlier
 draft and were found only this way, two more — just as old — were found only
 on the second such read, and the third read found two more again, both of
 them live at the time: a partly-delivered remainder with nowhere to go, and
-a blocker of exactly one with no promotion path. Three reads, eight leaks,
-and not one of them found by reading the prose. **Then read the result the
+a blocker of exactly one with no promotion path. The fourth, in round 15,
+found three (#1639): a ready item that is really a question, a deferral on
+a condition nothing checks, and a tracker with no pile. Four reads, eleven
+leaks, and not one of them found by reading the prose. **Then read the result the
 same way before shipping it.** A pass that closes leaks writes new states:
 the pass that added the blocking-finding exception under *Building* created
 the first state here that the round itself could not leave, and its own

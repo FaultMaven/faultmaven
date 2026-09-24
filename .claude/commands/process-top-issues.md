@@ -36,24 +36,61 @@ An issue's pile is a **label on that issue**, not a list in a shared blob:
 | label | pile |
 |---|---|
 | `pile:ready` | the answer is known; it needs work, not a call |
-| `pile:blocked` | needs an owner ruling, or a lane stopped on it |
+| `pile:blocked` | needs an owner ruling, waits on an issue or a condition, or a lane stopped on it |
 | `pile:yours` | only the owner can run it — live deployment, credentials |
+| `tracking` | **in no pile** — the `Queue`, a campaign tracker, a document refined each round |
 
 Create any that is missing before you use one; `gh issue edit` fails the
 **whole** edit on a label the repository does not have.
+
+**`tracking` takes an issue out of every pile, whatever `pile:` label it also
+carries.** A tracker is not work a lane can be dispatched against, so in ready
+it would be counted in the rule-4 tier and named as the reserved slot's buy;
+and bare it would read as an unsorted arrival, which step 2 sorts straight
+back into ready (#819 carried `tracking` and `pile:ready` both; #1499 sat in
+ready untagged). So the ready query below excludes it, step 2 does not sort
+it, and a `pile:` label on it is a leftover to remove — the metrics name any
+under *Tracking, but carrying a `pile:` label*. Moving an issue **into**
+tracking is the same two edits as any move, add first: `--add-label
+tracking`, then `--remove-label pile:<whichever>`; the intermediate is a
+tracker with a leftover, which nothing dispatches. **Out of it**: a tracker
+closes when what it tracks is done — whoever closes the last of it closes the
+tracker too — and one that turns out to be work gets a pile and loses the
+label, again add first. The metrics list every open tracker each run, so the
+label cannot quietly take real work out of every pile.
 
 Three rules when you apply `pile:blocked`, the first and last from a pile
 that held at 12 for six rounds and then lost ten of twelve in one reading:
 
 - **Say what it is blocked ON, in the issue BODY, in one form**, as you
-  label it. "Needs an owner ruling" and "needs #N to land" look identical in
-  a label and only the first is owner latency (#1513 was miscounted for six
-  rounds). One line, the reference first:
+  label it. "Needs an owner ruling", "needs #N to land" and "waits until
+  something is observed" look identical in a label and only the first is
+  owner latency (#1513 was miscounted for six rounds; #673 was counted as a
+  ruling nobody owed). One line, the reference — or the word `condition` —
+  first:
 
   ```
   **Blocked on:** #1294 — the arithmetic moves when that ladder splits.
   **Blocked on:** an owner ruling on which axis owns the degrade policy.
+  **Blocked on:** condition — `llm_stop_reasons_total{stop_reason="max_tokens"}` above 1% of calls over a week.
+  **Blocked on:** condition — unobservable today: nothing records <what>; observing it needs <the instrument>.
   ```
+
+  The third form is a **deferral on something to be observed** — neither a
+  question nor a dependency — and the script counts it in its own bucket,
+  *waiting on a condition*, never as a ruling. State the condition as
+  something step 2 can **check** — a query, a metric, a log or trace count,
+  and where to look — because step 2 checks it every round and a condition
+  it cannot run is one nothing ever checks. If nothing can observe it today,
+  write `condition — unobservable today:` and what would have to exist; the
+  metrics name those under *Nothing can check*, because their only exit is
+  the owner. `condition` (or `precondition`) must open the statement with
+  **nothing before it** — not an article, not a qualifier — so `an owner
+  ruling on the condition for …` stays a ruling. And a condition must not
+  name an issue: `condition — #1116 lands` is waiting on an issue, which is
+  the `#N` form, and the metrics report it as *stated but unreadable* for
+  you to reword. Read as a condition it would have no edge, and nothing
+  would move it when #1116 closed.
 
   The body rather than a comment, because this is a current value that
   *Picking*'s promotion rule and `scripts/backlog_metrics.py` both read
@@ -63,11 +100,11 @@ that held at 12 for six rounds and then lost ten of twelve in one reading:
   but unreadable* and is reported for you to reword. A line naming an issue
   **and** something it cannot resolve — `**Blocked on:** #1294 and #9999` —
   is reported as both, so the half it could not read is never dropped. The
-  label with nothing after it, or with `TBD`, counts as **stating nothing**
-  rather than as a ruling: *Needs your call* lists the ruling bucket, and an
-  entry there with no question in it is a round spent waiting on an answer
-  nobody was asked for. The metrics count all three, so no gap is
-  invisible.
+  label with nothing after it, or with `TBD` — or `condition` with no
+  condition after it — counts as **stating nothing** rather than as a
+  ruling: *Needs your call* lists the ruling bucket, and an entry there with
+  no question in it is a round spent waiting on an answer nobody was asked
+  for. The metrics count all of these, so no gap is invisible.
 - **A blocked item whose named issue has closed goes to ready as you sort** —
   `--add-label pile:ready`, then `--remove-label pile:blocked`. Closing #N
   writes no label on anything waiting for it, so nothing else will notice.
@@ -107,9 +144,23 @@ blocked it is already right, and on one *out of* blocked it costs a re-ask
 next proposal — which is the cheap direction to be wrong in, because the
 expensive one would be dispatching a lane at an item that was pulled. Say so
 in *Measurement* so a half-finished move is visible rather than merely safe.
-**No** `pile:` label means an unsorted arrival, which step 2 sorts — and
+**No** `pile:` label means an unsorted arrival, which step 2 sorts — unless
+the issue carries `tracking`, which is in no pile and is never sorted — and
 nothing bare is ever dispatched either, because step 4 dispatches from the
 ready query, which a bare issue is not in.
+
+**The ready query** — the one step 4 dispatches from, and the one every
+"ready" in this file means:
+
+```bash
+gh issue list --state open --label pile:ready --limit 500 \
+  --json number,title,labels,createdAt,body \
+  --jq 'map(select(any(.labels[]; .name == "tracking") | not))'
+```
+
+The tracker is dropped in `--jq` rather than with `--search "-label:tracking"`
+on purpose: `--search` switches `gh` to the search index, which lags a label
+edit, so an item pulled a moment ago could still come back from it.
 
 Adding a label already present is a no-op and so is removing one that is
 absent, both exit 0, which is what makes every move below safe to repeat.
@@ -351,10 +402,11 @@ gh issue list --state open --limit 500 --json number,title,labels,createdAt,body
 
 Label each issue carrying no `pile:` label — every new arrival, and anything
 a half-finished move left bare — using *What escalates* in the procedure.
-**Except the `Queue` issue itself, which is in no pile**: it is the board, not
-an item on it, and a `pile:ready` on it would be open, singly-labelled and
-returned by the ready query, so step 4 would dispatch a lane at the board.
-`pile:yours` is work no agent can do: a live deployment check, a console or
+**Except anything labelled `tracking`, which is in no pile** — the `Queue`
+first among them: it is the board, not an item on it, and a `pile:ready` on it
+would put it in the rule-4 tier and in reach of step 4. An arrival that is
+itself a tracker gets `tracking` rather than a pile. `pile:yours` is work no
+agent can do: a live deployment check, a console or
 credential an agent lacks. List it, never rank it into a round. Compare each
 new issue against the current candidates and place it; do not re-sort the
 backlog. Losing does not have to be undone — the item keeps its place and the
@@ -375,8 +427,58 @@ has to list anyway:
   you are about to phrase its question for the proposal, and that line is
   the phrasing written down. The script counts them, so the gap is visible
   rather than merely present;
-- an item **ruled and deferred** is re-read against its condition and moves
-  to ready the round the condition holds.
+- an item **waiting on a condition** — the metrics list each under *Waiting
+  on a condition* with the condition quoted — is **checked**: run what the
+  condition names, and move the item to ready the round it holds. One you
+  cannot run from where you stand — a deployment's Prometheus you have no
+  access to — is not skipped: its row in *Needs your call* says `not
+  checked: needs <what>`, which hands the check to the owner that round
+  rather than letting it lapse in silence. A ruled
+  deferral whose line is still a ruling-shaped sentence gets rewritten into
+  `**Blocked on:** condition — …` now, or the script keeps counting it as a
+  question. One the metrics name under *Nothing can check* goes into *Needs
+  your call* with its condition marked unobservable and the owner's three
+  exits as the options — build the measurement (a ready item), re-rule, or
+  close — because nothing else will ever move it.
+
+**Then read the ready pile's question list, which the ready query cannot
+settle either.** An item that entered ready carrying a question, a
+dependency or a deferral — or grew one in its thread since — has no other
+reader: this step sorts only unlabelled issues, and ready's only other exits
+are the rule-4 slot and being ranked into a round. Round 15 found **5 of 81**
+ready items that were not ready work (#835, #723, #1114, #1040, #1463). The
+metrics list the candidates under *Ready items that read like a question*:
+ready items whose body carries decision, gating or trigger language and no
+recorded ruling (a `**Ruled` body line, or a `Ruling` / `Ruled` / `Owner
+ruling(s)` / `Decision record` heading in the body or a comment). **Read
+each one; the list is never a label move** — the language is a symptom, and
+most hits are prose about the code. For each, one of:
+
+- it is ready work — leave it. Nothing is written, so the list names it
+  again next round; that re-read is the price of never moving an item on
+  the heuristic alone, and it is small because the list is;
+- it needs a ruling, waits on an issue, or waits on a condition — move it to
+  `pile:blocked` (the two edits) with its `**Blocked on:**` line in the form
+  that fits;
+- it is mixed — split it, as for any label;
+- it is a tracker — `tracking`, per *The piles are labels*;
+- its question was answered in a form the list does not recognise — record
+  the ruling in the body as a `**Ruled <date>.**` line, so the next round
+  does not read it again. Before moving an item to blocked, **read its
+  comments for a ruling under any heading**: round 15 moved #1451 and #1502
+  to blocked as open questions when both had been ruled under `## Ruling
+  recorded`, which the detector of the day did not read — asking the owner a
+  question they have answered is the expensive direction here.
+
+This is reading, not re-sorting: nothing is re-ranked, and an item that stays
+keeps the place its first comparison gave it.
+
+**Last, the trackers** — the metrics list every open one under *Tracking, in
+no pile*. A tracker's children are closed by lanes that never look at it, so
+nothing else notices when its work is done: close any whose tracked work has
+all closed, citing what closed it. The board and a document refined each
+round never qualify, and that is the whole of the check. A `pile:` label the
+metrics name on one (*Tracking, but carrying a `pile:` label*) is removed now.
 
 The piles need no rebuilding: each is a query over open issues, so an item
 the owner closed — a *yours* item they ran, a blocked item closed by a "leave
@@ -434,9 +536,12 @@ itself.
 ### Needs your call (every blocked item, not only the new ones)
 | # | the question | options | my recommendation | unblocks |
 
-Deferred items belong in this table too, with the ruling and the condition
-they wait on in place of the question and options. Listed, never re-asked —
-and never omitted, or they leave every pile.
+Deferred items belong in this table too — every item the metrics list under
+*Waiting on a condition* — with the ruling and the condition they wait on in
+place of the question and options, and what this round's check of it found.
+Listed, never re-asked — and never omitted, or they leave every pile. The
+exception is one under *Nothing can check*: that is a question, because its
+only exit is the owner — build the measurement, re-rule, or close.
 
 ### Yours to run (never ranked into a round)
 | # | what only you can do |
@@ -450,6 +555,7 @@ Piles: ready <n> · blocked <n> · yours <n>
 Rule-4 tier: <the script's figure> (last round: <n, or "n/a — first
   computed figure">) — an upper bound
 Carrying more than one pile label: <the script's line, or none>
+Read like a question: <the script's count> — <what reading each one did>
 ```
 
 The rule-4 line is **quoted from the script's own *Rule-4 tier* section**,
@@ -475,10 +581,14 @@ comment on its own issue, then:
   is, with the ruling as its spec: `--add-label pile:ready`, then
   `--remove-label pile:blocked`.
 - **defers** ("(b) **for now**", "(3) **at a second tenant**") — leave
-  `pile:blocked` where it is and record the condition that would revisit it.
-  List it in the next proposal as answered-and-waiting, not as a question,
-  and re-read the condition when you sort: it moves to ready the round it
-  holds. Do not close it: a deferral is "not yet", not "never".
+  `pile:blocked` where it is and rewrite its `**Blocked on:**` line into the
+  condition form — `**Blocked on:** condition — <what step 2 will check>`,
+  or `condition — unobservable today: …` — so the metrics stop counting it
+  as a question. List it in the next proposal as answered-and-waiting, not
+  as a question, and check the condition when you sort: it moves to ready
+  the round it holds. Do not close it: a deferral is "not yet", not "never".
+  A deferral whose trigger is another issue landing is a dependency, and
+  takes the `#N` form instead.
 - **implies none** (the behaviour is right as it stands) — **close** the
   issue there, quoting the ruling. Its labels stop mattering the moment it
   closes, so leave them.
@@ -500,7 +610,8 @@ their order, not their membership.
 Dispatch them in the order the ranked head gives,
 **skipping any the ready query does not return, any it returns that carries a
 second `pile:` label, and any this step has already built** — the ready query
-being `gh issue list --state open --label pile:ready`, and "already built"
+being the one under *The piles are labels* (open, `pile:ready`, and not
+`tracking`), and "already built"
 being a pull request on this item's lane branch that is **open or merged**
 and was opened **after this round's proposal** — step 0's query, unchanged:
 
@@ -524,7 +635,10 @@ round skip it as built. Matched on the branch tail rather than a prefix,
 because `fix/` is the convention and not the whole of it — `chore/`,
 `feat/`, `docs/` and `demo/` carry 19 of the last 129 lane branches.
 
-Three conditions, because the query expresses only the first: an item mid-move
+Three conditions, because the query expresses only the first — and its
+`tracking` filter is part of that first: a tracker carrying a leftover
+`pile:ready` is singly pile-labelled, so without it nothing here would skip
+the tracker. An item mid-move
 carries both labels and `--label pile:ready` still returns it, and an item
 whose lane has delivered stays open and singly-labelled until the owner merges.
 
