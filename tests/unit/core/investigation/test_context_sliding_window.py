@@ -640,28 +640,45 @@ class TestRelevanceOrder:
         assert "HI s" in result, "the downgraded Tier A row's summary was dropped"
         assert "L1 s" not in result and "L2 s" not in result
 
-    def test_chat_evidence_cap_keeps_the_newest_five_as_loaded(self):
-        """Tier C's "5 most recent" is stated by key. Over ``case.evidence`` as
-        the repositories load it (newest first) the old ``[-5:]`` slice kept
-        the five OLDEST chat rows."""
-        rows = [
+    @staticmethod
+    def _chat_rows():
+        return [
             _make_evidence(
-                summary=f"chat row from turn {turn}",
+                summary=f"chat row from turn {turn} " + "c" * 150,
                 source_file_id=None,
                 source_type=EvidenceSourceType.USER_DESCRIPTION,
                 collected_at_turn=turn,
             )
             for turn in range(1, 9)
         ]
-        case = _make_case_with_evidence(_as_loaded(rows, "newest_first"))
+
+    @_LOAD_ORDERS
+    def test_chat_evidence_cap_keeps_the_newest_five(self, order):
+        """Tier C's "5 most recent" is stated by key. Over ``case.evidence`` as
+        the repositories load it (newest first) the old ``[-5:]`` slice kept
+        the five OLDEST chat rows; run over both orders, a slice from either
+        end fails one of them."""
+        case = _make_case_with_evidence(_as_loaded(self._chat_rows(), order))
         case.current_turn = 9
         result = _build_evidence_context(case)
 
-        for turn in range(4, 9):
-            assert f"chat row from turn {turn}<" in result
-        for turn in range(1, 4):
-            assert f"chat row from turn {turn}<" not in result
+        present = [t for t in range(1, 9) if f"chat row from turn {t} " in result]
+        assert present == [4, 5, 6, 7, 8]
         assert 'count="3"' in result
+
+    @_LOAD_ORDERS
+    def test_chat_evidence_under_budget_pressure_keeps_the_newest(self, order):
+        """The five are rendered newest first, because the fill is
+        skip-not-break against the shared budget: whatever is walked first
+        gets the room. Walked oldest first, pressure dropped the newest."""
+        case = _make_case_with_evidence(_as_loaded(self._chat_rows(), order))
+        case.current_turn = 9
+        result = _build_evidence_context(case, char_budget_override=700)
+
+        present = [t for t in range(1, 9) if f"chat row from turn {t} " in result]
+        # Premise: the budget really does squeeze the five.
+        assert 0 < len(present) < 5
+        assert present == list(range(9 - len(present), 9))
 
 
 # ============================================================

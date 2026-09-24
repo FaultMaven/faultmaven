@@ -530,17 +530,22 @@ These are properties of the allocator's structure, asserted by tests (§14):
   budget within the §6 `margin` tolerance** (not exact equality, since the
   Anthropic-proxy estimate is inexact).
 - **INV-4 (no silent loss):** any compaction/elision/drop leaves a marker; a
-  non-empty section is never quietly removed. *As built*, the boundary is two
-  tokens (`_SILENT_DROP_MAX_TOKENS`): `_truncate_to` cannot fit even its marker
-  at or below it and returns `""`, so the allocator renders a non-empty section
-  allotted 0, 1 or 2 tokens as the same bare `[...]` itself (#610). That
-  marker is **charged to the margin**, not taken from another section — a
-  section reaches that allotment only when pass B has nothing left, so every
-  section after it is in the same state — at 1–2 tokens each (under 20 across
-  all nine) against `PROMPT_OVERHEAD_MARGIN_TOKENS` (256). An *empty* section (no
-  content existed) still renders as nothing. What INV-4 does **not** promise is
-  room: sections below the conversation carry no floor, and at a small target
-  they may be reduced to the marker without the starvation fallback firing (§7).
+  non-empty section is never quietly removed. *As built*, the rule is keyed on
+  the **outcome**, not on an allotment threshold: any variable section that had
+  content and would render as `""` renders as the bare `[...]` marker instead,
+  whatever emptied it (#610). Three things can: an allotment of 0; an allotment
+  of 1–2 tokens, where `_truncate_to` cannot fit even its marker; and a head cut
+  of a **fenced** section that lands inside its opening delimiter, which
+  `reseal` must refuse — for `entity_highlights`, whose renderer preamble
+  precedes its fenced element, that is every allotment up to roughly the
+  preamble plus the opening tag (69 of the 246 allotments of the block the
+  tests sweep), not two. The marker is **charged to the margin**, not taken from another
+  section — a section ends up empty only when its allotment could not hold its
+  content — at 1–2 tokens each (under 20 across all nine) against
+  `PROMPT_OVERHEAD_MARGIN_TOKENS` (256). An *empty* section (no content existed)
+  still renders as nothing. What INV-4 does **not** promise is room: sections
+  below the conversation carry no floor, and at a small target they may be
+  reduced to the marker without the starvation fallback firing (§7).
 - **INV-5 (never negative):** `section_budget` floors at 0; an oversized reserve
   degrades via §6 caps and the §7 starvation backstop, never a negative budget.
 

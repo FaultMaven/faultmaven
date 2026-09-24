@@ -99,7 +99,8 @@ see [Lifecycle Logic §2](./investigation-lifecycle-logic.md)):
   index.
 - **Tier B** — remaining file-backed evidence → summary only.
 - **Tier C** — chat-extracted evidence (`source_file_id IS NULL`) → summary only,
-  the five most recent (by `collected_at_turn`, then `collected_at`).
+  the five most recent (by `collected_at_turn`, then `collected_at`), rendered
+  newest first so budget pressure drops the older of them.
 
 **One ordering, stated by key.** The score ranking decides all three questions
 over file-backed evidence — which rows are Tier A, which of them keep their full

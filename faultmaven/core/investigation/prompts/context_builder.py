@@ -736,17 +736,18 @@ def get_token_budget_for_provider(
     return default_budget
 
 
-#: Allotments at or below this many tokens cannot carry any of a section's
-#: content. ``TokenBudget._truncate_to`` returns "" for them, and the allocator
-#: renders a non-empty section allotted this little as
-#: :data:`_SECTION_DROPPED_MARKER` instead — one constant for both, so the
-#: boundary INV-4 is enforced at cannot drift from the one truncation has (#610).
+#: Allotments at or below this many tokens cannot hold even the truncation
+#: marker, so ``TokenBudget._truncate_to`` returns "" for them and
+#: ``_shrink_fenced_tail`` returns :data:`_SECTION_DROPPED_MARKER`. The
+#: allocator does NOT key INV-4 on this number: it marks any non-empty section
+#: that rendered as "" for whatever reason, because a fenced section can also
+#: be emptied well above it (#610).
 _SILENT_DROP_MAX_TOKENS = 2
 
 #: The one marker for "content existed here and none of it fit". Emitted by
 #: ``_truncate_to`` when only the marker fits, by ``_shrink_fenced_tail`` when
 #: the conversation's delimiters leave no room for body, and by the allocator
-#: for a non-empty section at or below :data:`_SILENT_DROP_MAX_TOKENS` (#610).
+#: for any non-empty section that would otherwise render as "" (#610).
 _SECTION_DROPPED_MARKER = "[...]"
 
 
@@ -800,8 +801,9 @@ class TokenBudget:
         leaves at least a bare ``[...]`` marker, so a section is never *silently*
         dropped (INV-4). At or below the floor it returns "", because a limit
         that small cannot hold even the marker; the allocator, which is the
-        caller that can reach that floor, emits the marker there itself and
-        charges it to the margin (#610). Does not mutate ``used_tokens``.
+        caller that can reach that floor, marks any section that renders as ""
+        and charges the marker to the margin (#610). Does not mutate
+        ``used_tokens``.
         """
         if not text or token_limit <= _SILENT_DROP_MAX_TOKENS:
             return ""
@@ -2314,10 +2316,12 @@ def _render_evidence_block(
     # "Most recent" is stated by key, not read off list order: ``case.evidence``
     # arrives newest-first from both repositories, so the ``[-5:]`` slice this
     # used to take over it kept the five OLDEST chat rows in production — the
-    # same inherited-order misreading as #1609's Tier A. Rendered oldest to
-    # newest, as before.
+    # same inherited-order misreading as #1609's Tier A. Rendered NEWEST first,
+    # because the loop below is a skip-not-break fill against the shared
+    # budget: whatever comes first gets the room, so under pressure the older
+    # of the five give way, not the newest.
     n_omitted += max(0, len(text_evidence) - 5)
-    for ev in sorted(text_evidence, key=_evidence_recency_key)[-5:]:
+    for ev in sorted(text_evidence, key=_evidence_recency_key, reverse=True)[:5]:
         label = _evidence_label(ev, case)
         label_attr = _attr("label", label)
         # One rule, three tiers. There is no file to defer to here —
@@ -3405,35 +3409,7 @@ def _allocate_sections(
         alloc = floor_grant + take_extra
         remaining -= take_extra
 
-        # Tokens this section needs to render ANY of its content whole: the
-        # compact fidelity for the conversation, the text itself otherwise.
-        # Zero exactly when the section is empty, which renders as nothing. A
-        # section that is itself only 1-2 tokens long fits a 1-2 token
-        # allotment and renders as itself, not as the marker.
-        smallest_whole = (
-            (compact_tokens or graduated_tokens)
-            if key == "conversation_history"
-            else size
-        )
-        if alloc <= _SILENT_DROP_MAX_TOKENS and alloc < smallest_whole:
-            # INV-4 at the boundary the code actually has (#610): below 3 tokens
-            # ``_truncate_to`` returns "" rather than its marker, so a section
-            # allotted 0, 1 or 2 tokens used to vanish unmarked — and the
-            # sections that reach 0 under a small target include
-            # ``hypotheses``, ``candidate_solutions`` and ``working_conclusion``,
-            # engine state the model is asked to UPDATE, which absent and
-            # unmarked read as "none exist". Emit the same bare marker
-            # ``_truncate_to`` emits when it has room for nothing else.
-            #
-            # Charged to the margin, not to ``remaining``: a section reaches
-            # this branch only when ``remaining`` is already (nearly) 0, so
-            # every section after it is here too and there is nothing left to
-            # take the marker's tokens from. The cost is 1-2 tokens per
-            # section (measured) — under 20 across all nine — against
-            # ``overhead_margin_tokens`` (256); ``used_tokens`` below counts
-            # them, so the running total stays honest.
-            rendered = _SECTION_DROPPED_MARKER
-        elif key == "conversation_history":
+        if key == "conversation_history":
             # Continuity: pick the largest fidelity that fits; if even compact
             # must be cut, keep the TAIL (latest turns are at the end).
             if alloc <= 0:
@@ -3464,6 +3440,37 @@ def _allocate_sections(
             # margin absorbs that, and the recount below keeps the running
             # total honest.
             rendered = reseal(rendered, text)
+
+        has_content = bool(
+            (graduated_history or compact_history)
+            if key == "conversation_history"
+            else text
+        )
+        if has_content and not rendered:
+            # INV-4, keyed on the OUTCOME (#610): a section that had content
+            # and rendered as nothing carries a marker, whatever emptied it.
+            # Three things can, and a threshold would have to predict all of
+            # them: an allotment of 0 (pass B had nothing left);
+            # ``_truncate_to`` below its floor (it cannot fit even its marker
+            # at <= 2 tokens, so returns ""); and ``reseal`` refusing a head
+            # cut that landed inside a fenced section's OPENING delimiter —
+            # which, for a section with a preamble before its fenced element
+            # (``entity_highlights``), is every allotment up to the preamble
+            # plus the opening tag, dozens of tokens, not two. The sections
+            # that reach these states under a small target include
+            # ``hypotheses``, ``candidate_solutions`` and
+            # ``working_conclusion``, engine state the model is asked to
+            # UPDATE, which absent and unmarked read as "none exist".
+            #
+            # The marker is ``_truncate_to``'s own bare ``[...]``, carrying no
+            # caller bytes and no delimiter. Charged to the margin, not to
+            # ``remaining``: a section ends up empty only when its allotment
+            # could not hold its content, so there is nothing to take the
+            # marker's tokens from. 1-2 tokens per section (measured), under
+            # 20 across all nine, against ``overhead_margin_tokens`` (256);
+            # ``used_tokens`` below counts them, so the running total stays
+            # honest.
+            rendered = _SECTION_DROPPED_MARKER
 
         ctx[key] = rendered
         # Reuse the known size when the section was admitted whole (no recount).

@@ -449,6 +449,71 @@ def test_a_non_empty_section_allotted_two_tokens_or_fewer_is_marked(room):
     )
 
 
+def _entity_highlights_block() -> str:
+    """A real ``entity_highlights`` section: renderer preamble, then a fenced
+    element — the shape whose opening delimiter a head cut can land inside."""
+    from faultmaven.core.investigation.prompts.context_builder import (
+        EntityHighlightGroup,
+        EntityHighlightRow,
+        _render_entity_highlights,
+    )
+    from faultmaven.core.investigation.prompts.fence import PromptFence
+
+    groups = [
+        EntityHighlightGroup(
+            "ip_address",
+            tuple(
+                EntityHighlightRow(f"10.0.{i}.{i * 7}", 12 - i, i % 2 == 0)
+                for i in range(8)
+            ),
+        ),
+        EntityHighlightGroup(
+            "service",
+            tuple(
+                EntityHighlightRow(f"payments-api-{i}", 5 + i, False) for i in range(8)
+            ),
+        ),
+    ]
+    return _render_entity_highlights(groups, PromptFence("deadbeef"))
+
+
+def test_a_fenced_section_is_never_silently_empty_at_any_allotment():
+    """INV-4 keyed on the outcome, not a threshold (#610 review). A head cut of
+    a fenced section that lands inside its OPENING delimiter makes ``reseal``
+    answer "" — at allotments far above 2 for a section with a preamble. Every
+    allotment from 0 to the section's full size must render real content or
+    the marker. Swept one token at a time: the band is contiguous and a coarser
+    step skips most of it."""
+    from faultmaven.core.investigation.prompts.context_builder import (
+        _SECTION_DROPPED_MARKER,
+        _SILENT_DROP_MAX_TOKENS,
+    )
+
+    block = _entity_highlights_block()
+    size = _count(block)
+    probe = TokenBudget(10**9, provider_name=PROVIDER, model_name=MODEL)
+    _allocate(probe)
+    reserve = probe.used_tokens
+
+    marked_above_floor = 0
+    for alloc in range(0, size + 1):
+        budget = TokenBudget(reserve + alloc, provider_name=PROVIDER, model_name=MODEL)
+        ctx, _ = _allocate(budget, entity_highlights_str=block)
+        rendered = ctx["entity_highlights"]
+        assert rendered, f"entity_highlights vanished unmarked at allotment {alloc}"
+        if rendered == _SECTION_DROPPED_MARKER and alloc > _SILENT_DROP_MAX_TOKENS:
+            marked_above_floor += 1
+    # Positive control: the sweep crossed the reseal band (allotments above the
+    # 2-token floor that still cannot keep the opening delimiter). Without it
+    # this test would pass on a section that never reaches that band.
+    assert marked_above_floor > 0
+    # And the whole section renders as itself once it fits.
+    budget = TokenBudget(reserve + size, provider_name=PROVIDER, model_name=MODEL)
+    assert (
+        _allocate(budget, entity_highlights_str=block)[0]["entity_highlights"] == block
+    )
+
+
 def test_a_section_that_fits_a_tiny_allotment_renders_as_itself():
     """The marker replaces content that did NOT fit, never content that did: a
     one-token section granted its one token renders verbatim, and only the
@@ -469,10 +534,10 @@ def test_a_section_that_fits_a_tiny_allotment_renders_as_itself():
     assert ctx["kb_results"] == _SECTION_DROPPED_MARKER
 
 
-def test_the_allocator_marks_at_the_boundary_truncation_leaves_empty():
-    """The two boundaries are one constant, so they cannot drift apart: the
-    largest allotment ``_truncate_to`` still answers "" for is exactly where
-    the allocator takes over."""
+def test_truncate_to_is_empty_at_its_floor_and_marked_just_above():
+    """``_truncate_to``'s own boundary: "" at the floor (where it cannot fit
+    even its marker — the allocator marks that outcome itself), the bare marker
+    one token above."""
     from faultmaven.core.investigation.prompts.context_builder import (
         _SECTION_DROPPED_MARKER,
         _SILENT_DROP_MAX_TOKENS,

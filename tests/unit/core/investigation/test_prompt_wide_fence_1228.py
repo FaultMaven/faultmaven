@@ -812,11 +812,16 @@ class TestTruncationCannotStripTheFence:
     def test_the_sweep_reaches_the_cut_opening_delimiter_window(self):
         """The other anti-vacuity guard, for the narrower window this class
         exists to cover: budgets where truncation lands INSIDE the block's own
-        opening delimiter, so there is no element left to re-close."""
+        opening delimiter, so there is no element left to re-close.
+
+        ``reseal`` answers "" there, and since #610 the allocator renders that
+        outcome as INV-4's bare ``[...]`` rather than as nothing — so the
+        window is recognised by the marker. Nothing in the marker can reopen
+        the element: it carries no caller bytes and no delimiter."""
         dropped = [
             b
             for b, ctx in self._sweep(step=5, maker=self._bare_case)
-            if ctx["entity_highlights"] == ""
+            if ctx["entity_highlights"] == "[...]"
             and 250 <= b <= 320  # the window observed on this shape
         ]
         assert dropped, "sweep never hit the cut-delimiter window"
