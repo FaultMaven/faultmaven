@@ -169,19 +169,8 @@ OTHER_READERS: dict[tuple[str, str], tuple[int, str]] = {
     (
         "faultmaven/infrastructure/llm/providers/anthropic.py",
         "AnthropicProvider.generate",
-    ): (
-        4,
-        _WIRE,
-    ),
-    (
-        "faultmaven/infrastructure/llm/providers/local_provider.py",
-        "LocalProvider._call_openai_compatible_api",
     ): (1, _WIRE),
     ("faultmaven/infrastructure/llm/router.py", "LLMRouter.generate"): (1, _WIRE),
-    ("faultmaven/infrastructure/llm/router.py", "LLMRouter._update_opik_span"): (
-        1,
-        _WIRE,
-    ),
 }
 
 
@@ -319,8 +308,15 @@ def read_sites(source: str) -> Counter:
                 _dump_carries(node, turn_names)
             )
         elif isinstance(node, ast.Subscript):
+            # A subscript ASSIGNED to (``call_kwargs["messages"] = ...``) or
+            # deleted builds a payload; it reads nothing. The attribute arm
+            # already excludes writes, and #1667's tool loop tripped this one.
             key = node.slice
-            hit = isinstance(key, ast.Constant) and key.value in _FIELDS
+            hit = (
+                isinstance(key, ast.Constant)
+                and key.value in _FIELDS
+                and not isinstance(node.ctx, (ast.Store, ast.Del))
+            )
         if hit:
             found[scope_of(node)] += 1
     return found
@@ -455,6 +451,10 @@ class TestTheDetector:
             "def f(case, rows):\n    case.messages.extend(rows)",
             "def f(case):\n    return len(case.messages)",
             "def f(case):\n    return case.message_count",
+            # Building an LLM request payload assigns a "messages" KEY; it
+            # reads no case row. #1667's tool loop tripped the census here.
+            "def f(kwargs, msgs):\n    kwargs['messages'] = msgs",
+            "def f(payload):\n    del payload['messages']",
         ],
     )
     def test_writes_and_counts_are_not_reads(self, snippet):
