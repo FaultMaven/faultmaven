@@ -973,6 +973,35 @@ def reset_container():
 
 
 @pytest.fixture
+def private_base_container():
+    """A ``BaseDIContainer`` of the test's own; the process singleton restored after.
+
+    ``BaseDIContainer.__new__`` stores the singleton on whichever class it was
+    called through, and ``DIContainer`` inherits that attribute until it sets
+    its own. So ``BaseDIContainer()`` called before anything in the process
+    has called ``DIContainer()`` makes the BASE instance the one every later
+    ``DIContainer()`` -- and the ``container`` proxy -- hands out: a sync,
+    MagicMock-composed container where the real one is expected. The next
+    ``await container.initialize()`` then fails with ``object NoneType can't
+    be used in 'await' expression``, or on the ``allow_degraded`` keyword the
+    base does not take (#1636). A serial run never showed it because an app
+    boot earlier in the run had already made a ``DIContainer``; an xdist worker
+    need not have.
+
+    Production never constructs ``BaseDIContainer`` directly, so the fix is
+    that a test which does gets a private one and puts back what was there.
+    """
+    from faultmaven.container.base import BaseDIContainer
+
+    saved = BaseDIContainer.__dict__.get("_instance")
+    BaseDIContainer._instance = None
+    try:
+        yield BaseDIContainer()
+    finally:
+        BaseDIContainer._instance = saved
+
+
+@pytest.fixture
 def sample_session_context():
     """Sample session context for testing."""
     return SessionContext(
