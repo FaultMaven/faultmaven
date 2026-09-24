@@ -2,10 +2,15 @@
 
 #1451's rule — no row the server wrote is rendered to a model as something a
 party SAID — was enforced on five surfaces by PR #1658. The triage classifier
-was a sixth: it is shown "the assistant's previous message", picked by
+was a sixth: it is shown the assistant's last message, picked by
 ``orientation.last_investigation_message``, and that helper applied no check.
 A turn the model failed to answer therefore put ``[Response withheld by safety
 filter]`` in front of the classifier as the assistant's own words.
+
+Skipped, not marked: the classifier answers with one routing digit, so it can
+not go on to build on server text as its own; what it needs is what the
+assistant last actually asked. Because that can now be an older turn's answer,
+the block says "last answer", not "previous message".
 
 Driven through ``OutOfBandTriage.triage``, which is the path that builds the
 prompt and routes it, with only the router doubled so the routed prompt can be
@@ -61,6 +66,8 @@ ASIDE = (
 
 REAL_ANSWER = "Postgres was the OOM victim. Could you share free -m from db-01?"
 
+LABEL = "The assistant's last answer began:"
+
 
 def _row(role: str, content: str, **metadata) -> dict:
     return {"role": role, "content": content, "metadata": metadata}
@@ -96,8 +103,8 @@ class TestTheTriagePrompt:
         self, placeholder
     ):
         """The newest assistant row is the server's; the one before it is the
-        model's. The classifier is shown the model's — the question a short
-        reply is most likely still answering."""
+        model's. The classifier is shown the model's, labelled as what it is —
+        the last ANSWER, which is not the previous message here."""
         prompt = await _routed_prompt(
             _case(
                 [
@@ -110,10 +117,10 @@ class TestTheTriagePrompt:
         )
         assert placeholder not in prompt
         # Positive control: the block is still there, carrying a real answer.
-        assert "The assistant's previous message began:" in prompt
-        assert REAL_ANSWER in prompt
+        assert f"{LABEL}\n<<<\n{REAL_ANSWER}" in prompt
+        assert "previous message" not in prompt
 
-    async def test_with_no_real_answer_there_is_no_previous_message_block(self):
+    async def test_with_no_real_answer_there_is_no_last_answer_block(self):
         prompt = await _routed_prompt(
             _case(
                 [
@@ -123,7 +130,7 @@ class TestTheTriagePrompt:
             )
         )
         assert RESPONSE_WITHHELD_TEXT not in prompt
-        assert "previous message began" not in prompt
+        assert LABEL not in prompt
 
     async def test_an_answer_is_still_quoted(self):
         """The guard reads the flag: an unflagged answer is the model's."""

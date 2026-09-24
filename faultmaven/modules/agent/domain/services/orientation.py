@@ -223,11 +223,13 @@ def last_investigation_message(case: Any, limit: int = _ASK_CHARS) -> Optional[s
       classifier as the assistant's words, which #1451 forbids, and tell the
       user "Where we left off: [Response withheld by safety filter]".
 
-    Skipped rather than marked, because neither reader is a transcript the
-    model continues from: the triage prompt uses this to disambiguate a short
-    reply, which the last thing the model actually asked settles, and the
-    greeting quotes it back to the user. That is the auto-titler's reading of
-    #1451, not the history renderers'.
+    Skipped rather than marked, because neither reader is a transcript a model
+    continues from. The triage classifier answers with one routing digit, so
+    the harm #1451 guards against — a model reading server text as its own
+    words and building on it — cannot occur there; what it needs is what the
+    assistant last actually asked, which a placeholder is not. The greeting
+    quotes this back to the user. That is the auto-titler's reading of #1451,
+    not the history renderers'.
 
     Shared with ``out_of_band`` for the same reason; one predicate, one place.
     """
