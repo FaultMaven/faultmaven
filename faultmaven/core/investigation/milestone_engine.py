@@ -7388,33 +7388,43 @@ class MilestoneEngine:
 
     # Constants for tool-augmented generation
     #
-    # MAX_TOOL_ITERATIONS is the PRIMARY bound on a turn's tool-loop spend, and
-    # the bound is structural rather than a tuned number (#611). The loop makes
-    # MAX_TOOL_ITERATIONS + 1 generations: iterations 0..MAX_TOOL_ITERATIONS-1
-    # may call tools, the last is schema-only. Each generation's request is
-    # hard-bounded by _resolve_tool_loop_budget to
+    # What bounds a turn's tool loop (#611). The loop makes
+    # MAX_TOOL_ITERATIONS + 1 calls: iterations 0..MAX_TOOL_ITERATIONS-1 may
+    # call tools, the last is schema-only.
+    #
+    # The MESSAGE bound is structural. _bound_tool_loop_messages trims the
+    # ``messages`` of every call to _resolve_tool_loop_budget:
     #
     #     per_call = min(PROMPT_TARGET_TOKENS + PROMPT_TOOL_OBSERVATION_MAX_TOKENS,
     #                    the model's window budget)
-    #              = 32,000 + 16,000 = 48,000 with shipped defaults,
+    #              = 32,000 + 16,000 = 48,000 with shipped defaults.
     #
-    # so tool-loop prompt tokens are at most (MAX_TOOL_ITERATIONS + 1) * per_call
-    # (240,000 raw with defaults), before truncation retries.
+    # That is a bound on ``messages`` only, in ESTIMATED tokens: providers with
+    # no local tokenizer (gemini, and the router, whose name is not a provider)
+    # are estimated at len // 4, which read 1.5-1.7x under cl100k on two log
+    # samples. It does not count the ``tools=`` payload — the schema tool alone
+    # is ~950 (TerminalResponse) to ~11,000 (InvestigationResponse_Diagnosis)
+    # cl100k tokens, plus up to ~2,400 for the investigation tools.
     #
-    # PROMPT_TURN_TOKEN_CEILING (150,000) is kept as a NET, not the bound. It can
-    # change what the loop does only if it is crossed after the first
-    # MAX_TOOL_ITERATIONS - 1 generations — later, the iteration it would force
-    # schema-only is already the final one. Those generations' prompts total at
-    # most (MAX_TOOL_ITERATIONS - 1) * per_call = 144,000 <= 150,000, so the
-    # tool-loop prompts alone cannot trip it early. What it still catches is the
-    # spend that product does not count, all metered into the same turn tracker:
-    # output tokens, truncation retries, fallback attempts, and LLM calls made
-    # by tools (deep_analysis, kb_qa synthesis) or earlier in process_turn.
+    # PROMPT_TURN_TOKEN_CEILING (150,000) is a separate, METERED net: after each
+    # non-final call it compares the turn's spend_weighted_tokens — real
+    # provider tokens of every metered call in the turn (messages, tools
+    # payload, output, truncation retries, fallback attempts, LLM calls made by
+    # tools), cache reads weighted 0.25 — and once over, every remaining
+    # iteration is schema-only. It can change the loop only when crossed within
+    # the first MAX_TOOL_ITERATIONS - 1 calls (after that, the next iteration is
+    # final anyway), i.e. when those calls average more than 50,000 each with
+    # defaults. That is NOT excluded by the message bound. An uncached turn
+    # with a full-size base and the Diagnosis schema meters ~3 x (32,000 +
+    # 11,000 + 2,400) = ~136,000 for the base alone; the observation allowance,
+    # outputs, or a len // 4 undercount carries it past 150,000, and the ceiling
+    # removes the last tool round. Where the provider serves the repeated
+    # prefix from its prompt cache on calls after the first, that prefix counts
+    # at 0.25 and the ceiling stays out of normal turns.
     #
-    # Raising PROMPT_TARGET_TOKENS or PROMPT_TOOL_OBSERVATION_MAX_TOKENS so that
-    # (MAX_TOOL_ITERATIONS - 1) * per_call exceeds the ceiling turns the net into
-    # a limiter that cuts normal turns short — raise the ceiling with them.
-    # Pinned by TestToolLoopSpendBound in test_milestone_engine_tool_loop.py.
+    # Raising PROMPT_TARGET_TOKENS or PROMPT_TOOL_OBSERVATION_MAX_TOKENS moves
+    # the metered spend toward the ceiling; raise the ceiling with them. Pinned
+    # by TestToolLoopSpendBound in test_milestone_engine_tool_loop.py.
     MAX_TOOL_ITERATIONS = 4
     TOOL_RESULT_MAX_CHARS = 8000
     MAX_DEEP_ANALYSIS = 1

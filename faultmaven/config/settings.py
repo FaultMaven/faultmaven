@@ -2665,17 +2665,17 @@ class PromptBudgetSettings(BaseSettings):
         le=2_000_000,
         validation_alias="PROMPT_TURN_TOKEN_CEILING",
         description=(
-            "Per-turn spend net: once a turn's cumulative cost-weighted token "
-            "spend (every metered LLM call in the turn) crosses this, the tool "
-            "loop is forced to wrap up on the next iteration (schema-only). Not "
-            "the primary bound, which is structural: MAX_TOOL_ITERATIONS + 1 "
-            "tool-loop calls, each capped at PROMPT_TARGET_TOKENS + "
-            "PROMPT_TOOL_OBSERVATION_MAX_TOKENS. With defaults the calls that "
-            "precede the final one total at most 3 x 48,000 = 144,000, under "
-            "this ceiling, so it fires only on spend outside that product "
-            "(output, retries, fallbacks, LLM calls made by tools). Raise it "
-            "with either of those two settings, or it starts cutting normal "
-            "turns short."
+            "Per-turn spend net: once a turn's cost-weighted spend (metered "
+            "provider tokens of every LLM call in the turn, including the tools "
+            "payload and output; cache reads at 0.25) crosses this, the rest of "
+            "the tool loop is schema-only. The structural bound is on messages "
+            "only: MAX_TOOL_ITERATIONS + 1 calls, each trimmed to "
+            "PROMPT_TARGET_TOKENS + PROMPT_TOOL_OBSERVATION_MAX_TOKENS estimated "
+            "tokens. Because this meters more than that, it can remove the last "
+            "tool round on an uncached turn with a full-size prompt (the first "
+            "MAX_TOOL_ITERATIONS - 1 calls averaging over a third of this "
+            "each); prefix-cache hits keep it out of normal turns. Raise it "
+            "with either of those two settings."
         ),
     )
     turn_token_budget: int = Field(

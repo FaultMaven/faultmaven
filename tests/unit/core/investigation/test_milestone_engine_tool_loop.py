@@ -1189,19 +1189,23 @@ def _shipped_default(settings_cls, field: str) -> int:
     return settings_cls.model_fields[field].default
 
 
+# Deliberately not the shipped 150,000 and not a multiple of 3, so a
+# hard-coded ceiling and an off-by-one comparison cannot pass by coincidence.
+_TEST_CEILING = 100_001
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 class TestToolLoopSpendBound:
-    """#611: the primary per-turn bound is structural —
-    ``(MAX_TOOL_ITERATIONS + 1)`` tool-loop calls, each capped at
-    ``prompt_target + tool_observation_max_tokens`` — and
-    ``PROMPT_TURN_TOKEN_CEILING`` is a net above it. These pin the documented
-    arithmetic (milestone_engine's MAX_TOOL_ITERATIONS comment, the settings
-    description, prompt-sizing-optimization.md §4.3) and the loop semantics it
-    rests on: the ceiling can change the loop only when crossed within the first
-    ``MAX_TOOL_ITERATIONS - 1`` calls."""
+    """#611: the MESSAGE bound on each tool-loop call is structural
+    (``prompt_target + tool_observation_max_tokens``, clamped to the window),
+    and ``PROMPT_TURN_TOKEN_CEILING`` is a separate net over METERED,
+    cost-weighted spend. Pins what milestone_engine's MAX_TOOL_ITERATIONS
+    comment, the settings description and prompt-sizing-optimization.md §4.3
+    say: the formula, the measure the ceiling reads, and that it changes the
+    loop only when crossed within the first ``MAX_TOOL_ITERATIONS - 1`` calls."""
 
-    async def test_shipped_ceiling_sits_above_every_non_final_call(self):
+    async def test_shipped_defaults_are_the_documented_numbers(self):
         from faultmaven.config.settings import (
             ModelContextSettings,
             PromptBudgetSettings,
@@ -1210,33 +1214,59 @@ class TestToolLoopSpendBound:
         target = _shipped_default(ModelContextSettings, "prompt_target_tokens")
         obs = _shipped_default(PromptBudgetSettings, "tool_observation_max_tokens")
         ceiling = _shipped_default(PromptBudgetSettings, "turn_token_ceiling")
-        per_call = target + obs
-        n = MilestoneEngine.MAX_TOOL_ITERATIONS
+        assert (target, obs, ceiling) == (32_000, 16_000, 150_000)
+        assert MilestoneEngine.MAX_TOOL_ITERATIONS == 4
 
-        # The numbers the docs quote.
-        assert (target, obs, per_call, ceiling) == (32_000, 16_000, 48_000, 150_000)
-        assert (n + 1) * per_call == 240_000
-        # The claim: the calls that could precede an early wrap-up cannot reach
-        # the ceiling on prompt tokens alone, so it stays a net, not a limiter.
-        assert (n - 1) * per_call == 144_000
-        assert (n - 1) * per_call <= ceiling
+    @pytest.mark.parametrize(
+        "prompt_budget, expected",
+        [
+            (None, 32_000 + 17_000),  # unknown window: target + observations
+            (1_000_000, 32_000 + 17_000),  # window larger than the sum
+            (40_000, 40_000),  # window smaller than the sum: clamped
+        ],
+    )
+    async def test_per_call_bound_is_target_plus_observations_clamped(
+        self, prompt_budget, expected
+    ):
+        from types import SimpleNamespace
 
-    async def _run_loop(self, tokens_per_call: int) -> list:
-        """Drive the real loop with a model that always wants another search,
-        metering ``tokens_per_call`` input tokens per call into the turn tracker
-        (standing in for the registry chokepoint). Returns the per-call tool
-        name lists."""
+        engine = _make_engine()
+        resolved = SimpleNamespace(prompt_target=32_000, prompt_budget=prompt_budget)
+        fake_settings = SimpleNamespace(
+            prompt_budget=SimpleNamespace(tool_observation_max_tokens=17_000)
+        )
+        with (
+            patch(
+                "faultmaven.utils.model_context.resolve_model_budget",
+                return_value=resolved,
+            ),
+            patch(
+                "faultmaven.config.settings.get_settings",
+                return_value=fake_settings,
+            ),
+        ):
+            assert engine._resolve_tool_loop_budget("openai") == expected
+
+    async def _run_loop(self, monkeypatch, per_call_buckets: list) -> list:
+        """Drive the real loop with a model that always wants another search.
+        Call *i* meters ``per_call_buckets[i]`` (a dict of token buckets) into
+        the turn tracker, standing in for the registry chokepoint, with the
+        ceiling set to ``_TEST_CEILING``. Returns the tool names offered per
+        call."""
+        from faultmaven.config.settings import get_settings
         from faultmaven.infrastructure.llm.metering import (
             TurnTokenTracker,
             active_token_tracker,
         )
 
+        monkeypatch.setattr(
+            get_settings().prompt_budget, "turn_token_ceiling", _TEST_CEILING
+        )
         tracker = TurnTokenTracker()
         offered: list = []
 
         async def _generate(**kwargs):
             names = [t["function"]["name"] for t in kwargs["tools"]]
-            offered.append(names)
             if names == ["SampleResponse"]:
                 resp = _make_schema_response(
                     {"agent_response": "done", "next_action": "continue"}
@@ -1245,7 +1275,9 @@ class TestToolLoopSpendBound:
                 resp = _make_tool_call_response(
                     "search_file", {"query": "q"}, call_id=f"c{len(offered)}"
                 )
-            resp.input_tokens = tokens_per_call
+            for bucket, value in per_call_buckets[len(offered)].items():
+                setattr(resp, bucket, value)
+            offered.append(names)
             tracker.add(resp)
             return resp
 
@@ -1269,38 +1301,60 @@ class TestToolLoopSpendBound:
             active_token_tracker.reset(token)
         return offered
 
-    def _live_ceiling(self) -> int:
-        # The loop reads the resolved setting, so the behavioural cases are
-        # sized against the same value it will compare to.
-        from faultmaven.config.settings import get_settings
+    @staticmethod
+    def _split(total: int, parts: int) -> list:
+        """``parts`` integers summing exactly to ``total``."""
+        base = total // parts
+        return [base] * (parts - 1) + [total - base * (parts - 1)]
 
-        return get_settings().prompt_budget.turn_token_ceiling
-
-    async def test_ceiling_crossed_after_the_last_tool_round_changes_nothing(self):
+    async def test_spend_at_the_ceiling_within_the_early_calls_changes_nothing(
+        self, monkeypatch
+    ):
+        """The first n-1 calls meter EXACTLY the ceiling: not over it, so all
+        tool rounds run. The n-th call crosses it — and the ceiling does fire
+        there — but the iteration it would force schema-only is already final."""
         n = MilestoneEngine.MAX_TOOL_ITERATIONS
-        # The largest per-call spend whose first n-1 calls stay within the
-        # ceiling. The n-th call crosses it — and the ceiling does fire there —
-        # but the iteration it would force schema-only is already final.
-        per_call = self._live_ceiling() // (n - 1)
+        early = self._split(_TEST_CEILING, n - 1)
+        buckets = [{"input_tokens": t} for t in early] + [
+            {"input_tokens": _TEST_CEILING}
+        ] * 2
 
-        offered = await self._run_loop(per_call)
+        offered = await self._run_loop(monkeypatch, buckets)
 
         assert len(offered) == n + 1
         assert all("search_file" in names for names in offered[:n])
         assert offered[n] == ["SampleResponse"]
 
-    async def test_ceiling_crossed_before_the_last_tool_round_wraps_up(self):
-        """Positive control: one token more per call and the first n-1 calls
-        cross the ceiling, so the ceiling takes the last tool round away. This
-        is what makes the case above a measurement rather than a no-op."""
+    async def test_spend_over_the_ceiling_within_the_early_calls_cuts_a_round(
+        self, monkeypatch
+    ):
+        """One token over across the first n-1 calls and the ceiling takes the
+        last tool round away. This is what makes the case above a measurement
+        rather than a no-op."""
         n = MilestoneEngine.MAX_TOOL_ITERATIONS
-        per_call = self._live_ceiling() // (n - 1) + 1
+        early = self._split(_TEST_CEILING + 1, n - 1)
+        buckets = [{"input_tokens": t} for t in early] + [{"input_tokens": 1}]
 
-        offered = await self._run_loop(per_call)
+        offered = await self._run_loop(monkeypatch, buckets)
 
         assert len(offered) == n
         assert all("search_file" in names for names in offered[: n - 1])
         assert offered[n - 1] == ["SampleResponse"]
+
+    async def test_ceiling_reads_cost_weighted_spend_not_raw_tokens(self, monkeypatch):
+        """Cache reads count at 0.25. The early calls are raw-over (by 4x) but
+        cost-weighted exactly at the ceiling, so no round is cut — a ceiling
+        compared on ``total_tokens`` would cut one."""
+        n = MilestoneEngine.MAX_TOOL_ITERATIONS
+        early = self._split(_TEST_CEILING, n - 1)
+        buckets = [{"cache_read_tokens": 4 * t} for t in early] + [
+            {"input_tokens": _TEST_CEILING}
+        ] * 2
+
+        offered = await self._run_loop(monkeypatch, buckets)
+
+        assert len(offered) == n + 1
+        assert all("search_file" in names for names in offered[:n])
 
 
 # =========================================================================
