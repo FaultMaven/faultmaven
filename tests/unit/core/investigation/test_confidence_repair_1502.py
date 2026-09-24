@@ -964,17 +964,39 @@ def test_re_emitted_hypothesis_link_keeps_its_stored_value(raw):
 
 @pytest.mark.parametrize("omitted", [..., None])
 @pytest.mark.parametrize("stance", ["refutes", "supports"])
-def test_an_omitted_hypothesis_link_confidence_is_unchanged_from_main(omitted, stance):
-    """#1502 is about OUT-OF-RANGE values. An omitted (or strict-mode ``null``)
-    confidence does what it did on ``main`` — the schema's 1.0 default is
-    written, at the same stance or a flipped one — and this change must not
-    alter it."""
+def test_an_omitted_confidence_on_a_true_re_emission_keeps_the_stored_value(
+    omitted, stance
+):
+    """The 2026-09-24 ruling, §3: a re-emitted link keeps its stored value,
+    "including HypothesisEvidenceLinkToAdd, whose 1.0 default already
+    overwrites a stored value today when the field is omitted". A re-emission
+    is the same evidence AT THE SAME STANCE. ``main`` wrote 1.0 here, promoting
+    a deliberate 0.3 hedge into causal grounding on a routine re-listing (or a
+    strict-mode ``null``)."""
     case, h = _hyp_case()
-    _apply_links(case, [_parsed_hyp_link(0.4)])
-    _apply_links(case, [_parsed_hyp_link(omitted, stance=stance)])
+    _apply_links(case, [_parsed_hyp_link(0.3, stance=stance)])
+    metadata, fields = _apply_links(case, [_parsed_hyp_link(omitted, stance=stance)])
     assert [
         (link.stance.value, link.stance_confidence) for link in h.evidence_links
-    ] == [(stance, 1.0)]
+    ] == [(stance, 0.3)]
+    # Nothing was out of range, so nothing is counted or noted.
+    assert fields == []
+    assert metadata.get("validation_repairs", []) == []
+    # A restatement, not a revision: the #1136 stall arm stays put.
+    assert "hypothesis_evidence_links_applied" not in metadata
+
+
+@pytest.mark.parametrize("omitted", [..., None])
+def test_an_omitted_confidence_on_a_stance_flip_is_full_confidence(omitted):
+    """A flip is a new claim, so omitted means what it means on a new link —
+    full confidence, the schema default — exactly as on ``main`` (H3). The
+    stored 0.3 was confidence in the OTHER stance."""
+    case, h = _hyp_case()
+    _apply_links(case, [_parsed_hyp_link(0.3, stance="refutes")])
+    _apply_links(case, [_parsed_hyp_link(omitted, stance="supports")])
+    assert [
+        (link.stance.value, link.stance_confidence) for link in h.evidence_links
+    ] == [("supports", 1.0)]
 
 
 def test_new_hypothesis_link_without_a_value_gets_full_confidence():

@@ -209,8 +209,11 @@ field's role and never by its value (fm#1502,
 | UPDATE-shaped (absence means "keep") | `HypothesisUpdate.likelihood`, `milestones.root_cause_likelihood`, `working_conclusion.likelihood` | the field is dropped; the record and the stored value stand |
 | Links | `NodeEvidenceLinkToAdd` / `HypothesisEvidenceLinkToAdd` `.stance_confidence` | set aside by validation, decided at ingest: a new link — or a re-emission that flips the stance, whose stored value is confidence in the other claim — is rescaled or coerced, otherwise **not written** (neither the `1.0` a new link's absence means nor the flipped stance's stored value may stand in); a re-emission at the same stance keeps its stored value |
 
-The bound stays in the emitted schema — the repair runs beside it, never
-instead of it. Every action is counted on `faultmaven_schema_field_repairs_total`
+An OMITTED link confidence follows the same new-versus-re-emitted rule: a
+re-emission at the same stance keeps its stored value (on a hypothesis link the
+`1.0` default used to overwrite it), and a new link or a stance flip gets full
+confidence. The bound stays in the emitted schema — the repair runs beside it,
+never instead of it. Every action is counted on `faultmaven_schema_field_repairs_total`
 (`schema`, `field`, `action`) and noted on the turn's `validation_repairs`, and
 a body whose only defects were repaired counts as `repaired` rather than
 `clean` on `faultmaven_schema_validation_total`, so the schema-validity rate

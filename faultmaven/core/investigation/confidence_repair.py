@@ -28,8 +28,8 @@ field's ROLE, never by its value:
   a new link is rescaled or coerced when it can be, otherwise pruned — never
   given the default, which on a REFUTES link would be a decisive
   disconfirmation manufactured from garbage; a re-emitted link keeps its stored
-  value. "Re-emitted" means the SAME CLAIM: the same evidence at the same
-  stance. A re-emission that flips the stance is a new claim, and the stored
+  value — and so does one whose confidence was simply omitted, on both axes.
+  "Re-emitted" means the SAME CLAIM: the same evidence at the same stance. A re-emission that flips the stance is a new claim, and the stored
   value is confidence in the old one — keeping it would, for example, turn a
   confident REFUTES into a confident SUPPORTS built from garbage — so it is
   decided as a new link, and pruning it leaves the stored link as it was.

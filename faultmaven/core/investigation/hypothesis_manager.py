@@ -275,9 +275,10 @@ class HypothesisManager:
             stance_confidence: Confidence in the stance (0.0-1.0). ``None``
                 means the caller has no value to assert: an existing link for
                 this evidence KEEPS its stored confidence, and a new one gets
-                full confidence (1.0). Passed only for an out-of-range value
-                the schema set aside on a re-emission of the same claim
-                (fm#1502). A number overwrites, as before.
+                full confidence (1.0). The engine passes it for a re-emission
+                of the same claim (same evidence, same stance) whose confidence
+                was omitted or set aside as out of range (fm#1502). A number
+                overwrites, as before.
 
         Returns:
             ``True`` when this call added a link or changed what an existing one

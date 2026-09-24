@@ -12311,9 +12311,17 @@ class MilestoneEngine:
         decisive disconfirmation nobody asserted, and on SUPPORTS the second is
         grounding nobody asserted.
 
-        Every other value — conforming, omitted, or ``null`` — is the link's own
-        field, exactly as before this change: an in-range or absent value is
-        not what #1502 is about.
+        An OMITTED (or strict-mode ``null``) confidence follows the same
+        new-versus-re-emitted rule, per the 2026-09-24 ruling: on a re-emission
+        of the same claim it keeps the stored value — the schema's ``1.0``
+        default used to overwrite a stored hedge whenever a routine re-listing
+        left the field out, "the exact defect the node path documents
+        avoiding" — and on a new link or a stance flip it is full confidence,
+        the default, as before. A conforming value is the link's own, as before.
+
+        Duck-typed like the rest of this apply path: a link that is not a
+        Pydantic model has no fields-set record, so its ``stance_confidence``
+        is read as given.
         """
         settled = settle_set_aside_link(
             link,
@@ -12322,6 +12330,12 @@ class MilestoneEngine:
             notes=metadata.setdefault("validation_repairs", []),
         )
         if settled is None:
+            fields_set = getattr(link, "model_fields_set", None)
+            omitted = isinstance(fields_set, (set, frozenset)) and (
+                "stance_confidence" not in fields_set
+            )
+            if omitted and stored_stance is not None and stored_stance == link.stance:
+                return None  # a true re-emission: the stored value stands
             return link.stance_confidence
         action, value = settled
         if action is ConfidenceAction.PRUNED:
