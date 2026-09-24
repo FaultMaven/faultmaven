@@ -2252,7 +2252,8 @@ class TestHandlerHappyPath:
 
         saved = await repo.get(case.case_id)
         uf = next(f for f in saved.uploaded_files if f.file_id == "file_aaaaaaaaaaaa")
-        assert uf.data_type == "logs"
+        # The fine-grained ``DataType`` the click named (#583), not "logs".
+        assert uf.data_type == "logs_and_errors"
         assert uf.summary == "new summary"
         assert uf.structural_index == "new index content"
 
@@ -2659,14 +2660,17 @@ class TestOutOfBandReclassificationRetiresTheQuestion:
     without going through the turn seam, so nothing rewrites
     ``last_suggestions`` and the file's clarification choices stay armed. The
     referent check (``OFFERED_DATA_TYPE_KEY``) catches that only when the
-    COARSE value moves: ``data_type`` holds an ``EvidenceSourceType``, a 12→6
-    projection, so ``logs_and_errors`` → ``command_output`` (both ``logs``)
-    left the question live and a typed "Application logs (…)" on the next turn
-    overwrote the answer the user had just given.
+    STORED value moves. Before #583 the column held a 12→6 projection, so
+    ``logs_and_errors`` → ``command_output`` (both ``logs``) left the question
+    live and a typed "Application logs (…)" on the next turn overwrote the
+    answer the user had just given. Since #583 it holds the ``DataType``, and
+    the case the referent check still cannot see is an answer that CONFIRMS
+    the type the file already had (``same_data_type``) — the stored value does
+    not move, so only the writer's own drop retires the question.
 
-    Both directions are asserted from one driver, because the cross-source-type
+    All directions are asserted from one driver, because the cross-source-type
     case is the control: if it also failed, the test would be measuring the
-    plumbing rather than the projection.
+    plumbing rather than the stored value.
     """
 
     _FAILED_AS_LOGS_SUGGESTIONS = ["logs_and_errors", "structured_config"]
@@ -2674,9 +2678,10 @@ class TestOutOfBandReclassificationRetiresTheQuestion:
     @staticmethod
     def _failed_as_logs():
         """The classifier's best-effort arm: ``classification_failed`` at 0.50
-        WITH a concrete type, so the row lands at ``logs`` rather than at
-        ``text``. That is what makes a within-source-type reclassification
-        reachable at all — the stamp has to already read ``logs``."""
+        WITH a concrete type, so the row lands at ``logs_and_errors`` rather
+        than at ``unstructured_text``. That is what makes a same-type answer
+        reachable at all — the stamp has to already read the type the user
+        then confirms."""
         result = MagicMock()
         result.summary = "preview summary"
         result.structural_index = "index"
@@ -2733,10 +2738,10 @@ class TestOutOfBandReclassificationRetiresTheQuestion:
         )
         saved = await repo.get(case.case_id)
         uploaded = saved.uploaded_files[0]
-        assert uploaded.data_type == "logs", (
+        assert uploaded.data_type == "logs_and_errors", (
             "the premise of this suite: the armed question was minted while "
-            "the file already read 'logs', so a reclassification within that "
-            "source type cannot move the stamp"
+            "the file already read 'logs_and_errors', so an answer confirming "
+            "that type cannot move the stamp"
         )
         assert self._clarified_file_ids(saved.last_suggestions) == [uploaded.file_id]
         # The LLM anchors a claim on the file later (post-010: Evidence is born
@@ -2753,8 +2758,8 @@ class TestOutOfBandReclassificationRetiresTheQuestion:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "override",
-        [DataType.COMMAND_OUTPUT, DataType.STRUCTURED_CONFIG],
-        ids=["within_source_type", "across_source_types"],
+        [DataType.LOGS_AND_ERRORS, DataType.COMMAND_OUTPUT, DataType.STRUCTURED_CONFIG],
+        ids=["same_data_type", "within_source_type", "across_source_types"],
     )
     async def test_the_question_is_retired(
         self, preprocessing_service, file_storage, override

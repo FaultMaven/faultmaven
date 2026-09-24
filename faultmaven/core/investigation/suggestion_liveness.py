@@ -117,17 +117,23 @@ OFFERED_TURN_KEY = "offered_turn"
 #: Comparing it is what keeps a widened window from also widening fm#918's
 #: out-of-band exposure, and it needs no cooperation from the writer.
 #:
-#: Deliberately lossy in one direction and never the other. ``data_type`` holds
-#: an ``EvidenceSourceType``, a 12→6 projection of ``DataType``, so a
-#: reclassification WITHIN a source type (logs_and_errors → command_output,
-#: both ``logs``) leaves it unchanged. That is a missed drop, never a wrong
-#: one: the value cannot change except by reclassification, so this can never
-#: retire a question the user has not answered.
+#: A raw comparison against the value's OWN earlier snapshot, so it is
+#: indifferent to which vocabulary the column holds (#583: the fine-grained
+#: ``DataType`` on rows written since, the 6-valued ``EvidenceSourceType``
+#: string on rows written before). The value cannot change except by a
+#: writer, so this can never retire a question the user has not answered.
 #:
-#: The missed drop is REACHABLE, and is fm#918's exposure 1 rather than a
+#: Deliberately lossy in one direction and never the other, on rows written
+#: before #583 only: those writers stored a 12→6 projection of ``DataType``,
+#: so a reclassification WITHIN a source type (logs_and_errors →
+#: command_output, both ``logs``) left the value unchanged — a missed drop,
+#: never a wrong one. Since #583 the writers store the ``DataType`` itself and
+#: that miss no longer arises for a row they write.
+#:
+#: The missed drop WAS reachable, and is fm#918's exposure 1 rather than a
 #: theoretical edge: a file that failed classification as ``logs_and_errors``
 #: (the classifier's best-effort arm fails at 0.50 with a concrete type, so
-#: the row lands at ``logs``) is reclassified through
+#: the row landed at ``logs``) is reclassified through
 #: ``PATCH /evidence/{id}/classification`` to ``command_output``, the stamp
 #: still reads ``logs``, and typing "Application logs (x.log)" next turn mints
 #: a reclassification that overwrites the answer the user just gave. So this
@@ -391,9 +397,10 @@ def drop_clarifications_for_file(
     load-mutate-save without rebuilding the list.
 
     Exact where ``OFFERED_DATA_TYPE_KEY`` is a proxy: it names the attachment
-    rather than comparing a 12→6 projection of its type, so it retires a
-    within-source-type reclassification (logs_and_errors → command_output) that
-    the referent check cannot see. The referent check stays as the backstop for
+    rather than comparing its type, so it retires a reclassification the
+    referent check cannot see — on a row written before #583 the column held
+    a 12→6 projection, and a within-source-type move (logs_and_errors →
+    command_output) left it unchanged. The referent check stays as the backstop for
     any future writer that does not call this.
 
     Follow-ups are untouched — they are not about a file — and ``None`` is

@@ -23,6 +23,7 @@ from .models import (
     UnifiedDataType,
     generate_concise_summary,
     to_unified_data_type,
+    unified_data_type_of,
 )
 from .vector_storage import (
     VectorIndexOutcome,
@@ -40,6 +41,7 @@ __all__ = [
     "Chunk",
     "FileInfo",
     "to_unified_data_type",
+    "unified_data_type_of",
     "generate_concise_summary",
     "chunk_structural_index",
     "store_in_vector_db_background",

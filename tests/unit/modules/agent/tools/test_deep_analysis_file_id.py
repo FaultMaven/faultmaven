@@ -115,3 +115,44 @@ async def test_deep_analysis_unknown_id_still_errors():
 
     assert not result.success
     assert "not found" in (result.error or "").lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stored,expected",
+    [
+        ("structured_config", "configuration"),
+        ("logs_and_errors", "logs"),
+        ("metrics_and_performance", "metrics"),
+        ("configuration", "configuration"),
+        ("logs", "logs"),
+        ("code", "code"),
+    ],
+    ids=[
+        "datatype_config",
+        "datatype_logs",
+        "datatype_metrics",
+        "legacy_config",
+        "legacy_logs",
+        "legacy_code",
+    ],
+)
+async def test_deep_analysis_reads_both_stored_vocabularies(stored, expected):
+    """#583: the file-id branch hands Tier 2 the file's unified type whichever
+    vocabulary the row holds. It mapped the column through a table keyed on
+    the 6-valued strings, so a row written as ``structured_config`` — every
+    row since #583 — reached Tier 2 as TEXT."""
+    from faultmaven.core.preprocessing.models import UnifiedDataType
+
+    tier2 = _fake_tier2()
+    tool = DeepAnalysisTool(tier2_service=tier2)
+    case = _case_with_orphan_file()
+    case.uploaded_files[0].data_type = stored
+
+    result = await tool.execute_with_context(
+        {"evidence_id": "file_fa0e00000001", "query": "anything"},
+        _ctx(case),
+    )
+
+    assert result.success, result.error
+    assert tier2.analyze.await_args.kwargs["data_type"] is UnifiedDataType(expected)

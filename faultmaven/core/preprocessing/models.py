@@ -104,6 +104,36 @@ def to_unified_data_type(detailed: DetailedDataType) -> UnifiedDataType:
     return _DETAILED_TO_UNIFIED.get(detailed, UnifiedDataType.TEXT)
 
 
+def unified_data_type_of(stored: Optional[str]) -> Optional[UnifiedDataType]:
+    """Read boundary for ``UploadedFile.data_type``: either vocabulary in, 6 out.
+
+    The column holds two vocabularies and always will (#583). Rows written
+    since #583 carry the fine-grained ``DataType`` value (``logs_and_errors``);
+    rows written before carry the 6-valued ``EvidenceSourceType`` /
+    ``UnifiedDataType`` string (``logs``), which are the same six strings.
+    Both are read here rather than migrated, so the column needs no data
+    migration and every consumer that needs the coarse type gets it from ONE
+    fold — ``to_unified_data_type`` — whichever writer produced the row.
+
+    The two vocabularies are disjoint (pinned by a test), so there is no value
+    whose meaning depends on which one it is read as.
+
+    Returns ``None`` for an absent or unrecognised value, so each caller states
+    its own fallback instead of inheriting one it cannot see.
+    """
+    if not stored:
+        return None
+    value = str(stored).strip().lower()
+    try:
+        return to_unified_data_type(DetailedDataType(value))
+    except ValueError:
+        pass
+    try:
+        return UnifiedDataType(value)
+    except ValueError:
+        return None
+
+
 # =============================================================================
 # Tier 0+1 Output: PreprocessingResult
 # =============================================================================

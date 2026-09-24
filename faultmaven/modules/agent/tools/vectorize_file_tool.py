@@ -227,17 +227,23 @@ class VectorizeFileTool(AgentTool):
             # file-level classification (file_meta.data_type, set at
             # preprocessing time); fall back to evidence.source_type
             # when the file row lacks one.
-            from faultmaven.core.preprocessing.models import UnifiedDataType
+            #
+            # Through the read boundary (#583): the column holds the
+            # fine-grained ``DataType`` on rows written since #583 and the
+            # 6-valued string on rows written before. Parsing it as
+            # ``UnifiedDataType`` alone sent every new row — a
+            # ``logs_and_errors`` file included — down the TEXT fallback.
+            from faultmaven.core.preprocessing.models import (
+                UnifiedDataType,
+                unified_data_type_of,
+            )
 
             data_type_str = (
                 file_meta.data_type
                 if (file_meta is not None and file_meta.data_type)
                 else evidence.source_type.value
             )
-            try:
-                data_type = UnifiedDataType(data_type_str)
-            except (ValueError, KeyError):
-                data_type = UnifiedDataType.TEXT
+            data_type = unified_data_type_of(data_type_str) or UnifiedDataType.TEXT
 
             # Run vectorization
             from faultmaven.core.preprocessing.vector_storage import (
@@ -253,7 +259,10 @@ class VectorizeFileTool(AgentTool):
                 metadata={
                     "evidence_id": evidence_id,
                     "case_id": context.case_id,
-                    "data_type": data_type_str,
+                    # The file's own classification, verbatim. The chunk's
+                    # ``data_type`` is the folded one the store writes, so
+                    # it reads alike across both stored vocabularies.
+                    "file_data_type": data_type_str,
                 },
                 case_vector_store=self.case_vector_store,
             )

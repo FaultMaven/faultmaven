@@ -360,3 +360,82 @@ class TestAdvisoryRuleIsStatedOnce:
         rule has to hold for whatever "we were not told it is indexed" looks
         like at the call site, not just for literal False."""
         assert append_vectorization_advisory("before", falsy) == "before"
+
+
+class TestDataTypeReadBoundary:
+    """#583: the file row holds either vocabulary, and both chunk alike.
+
+    ``UploadedFile.data_type`` is written as the fine-grained ``DataType``
+    (``logs_and_errors``) since #583; rows written before hold the 6-valued
+    string (``logs``) and were not migrated. This tool parsed the column with
+    ``UnifiedDataType(...)`` and fell back to TEXT on anything else, so every
+    row the new writers produce would have been indexed as plain text.
+
+    Driven through the REAL ``store_in_vector_db_background`` (only the
+    embedder is doubled) so the assertion is on the chunks that reach the
+    store, not on an argument the store might then overwrite — the caller's
+    metadata dict is merged over the chunk's own keys, and it used to carry
+    the raw column value under ``data_type``.
+    """
+
+    @staticmethod
+    def _context_with_file_type(file_data_type: str):
+        ev = _make_evidence(source_type_value="text")
+        context = _make_context(evidence_items=[ev])
+        context.in_memory_case.uploaded_files[0].data_type = file_data_type
+        return context
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "stored,expected",
+        [
+            ("logs_and_errors", "logs"),
+            ("command_output", "logs"),
+            ("structured_config", "configuration"),
+            ("logs", "logs"),
+            ("configuration", "configuration"),
+        ],
+        ids=[
+            "datatype_logs",
+            "datatype_command_output",
+            "datatype_config",
+            "legacy_logs",
+            "legacy_config",
+        ],
+    )
+    async def test_both_vocabularies_chunk_as_their_unified_type(
+        self, tool, mock_settings, stored, expected
+    ):
+        from faultmaven.core.preprocessing.models import UnifiedDataType
+
+        store = MagicMock()
+        store.add_documents = AsyncMock()
+        tool.case_vector_store = store
+        context = self._context_with_file_type(stored)
+
+        with (
+            patch(
+                "faultmaven.core.preprocessing.vector_storage.model_cache"
+            ) as model_cache,
+            patch(
+                "faultmaven.core.preprocessing.vector_storage.store_in_vector_db_background",
+                wraps=__import__(
+                    "faultmaven.core.preprocessing.vector_storage",
+                    fromlist=["store_in_vector_db_background"],
+                ).store_in_vector_db_background,
+            ) as spy,
+        ):
+            model_cache.aembed_texts = AsyncMock(
+                side_effect=lambda texts: [[0.0] * 4 for _ in texts]
+            )
+            result = await tool.execute_with_context(
+                params={"evidence_id": "ev_abc"}, context=context
+            )
+
+        assert result.success, result.error
+        assert spy.call_args.kwargs["data_type"] is UnifiedDataType(expected)
+        docs = store.add_documents.call_args.kwargs["documents"]
+        assert docs, "positive control: the store received chunks"
+        assert {d["metadata"]["data_type"] for d in docs} == {expected}
+        # The row's own value is kept, verbatim, beside the folded one.
+        assert {d["metadata"]["file_data_type"] for d in docs} == {stored}

@@ -145,6 +145,7 @@ class DeepAnalysisTool(AgentTool):
             from faultmaven.core.preprocessing.models import (
                 AnalysisContext,
                 UnifiedDataType,
+                unified_data_type_of,
             )
 
             _TYPE_MAP = {
@@ -244,9 +245,13 @@ class DeepAnalysisTool(AgentTool):
                         error=f"Evidence {evidence_id} not found in this case.{alts}",
                     )
                 file_ref = file_meta.storage_ref
-                ft = getattr(file_meta, "data_type", None)
-                if ft:
-                    data_type = _TYPE_MAP.get(str(ft).lower(), UnifiedDataType.TEXT)
+                # Through the read boundary (#583): the column holds the
+                # fine-grained ``DataType`` on rows written since #583, which
+                # ``_TYPE_MAP`` (keyed on the 6-valued strings) never matches.
+                data_type = (
+                    unified_data_type_of(getattr(file_meta, "data_type", None))
+                    or UnifiedDataType.TEXT
+                )
                 # NOTE: the triage-to-escalation metric
                 # (record_triage_escalation_if_same_turn) is intentionally not
                 # emitted here. That helper is Evidence-keyed (it inspects the
