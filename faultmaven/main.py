@@ -686,6 +686,17 @@ async def lifespan(app: FastAPI):
 
         validate_deployment_coherence(settings)
 
+        # Fail fast if no persistent database is configured (fm#1647). An empty
+        # or in-memory DATABASE_URL used to boot as far as the enterprise seed
+        # and die there as "Critical bootstrap failure". Placed BEFORE
+        # resolve_pseudonym_key, which creates the data directory and writes
+        # the key file, so a refused boot leaves nothing on disk; and outside
+        # the test-environment skip below, because no test boots the app
+        # without a database. The jobs runner calls the same gate.
+        from .config.persistent_database import require_persistent_database
+
+        require_persistent_database(settings)
+
         # Fail fast if redaction has no pseudonym key it may use. Resolving is
         # what creates the standalone key file, so doing it here also means the
         # first redaction of the process is never the thing that writes it.
@@ -771,17 +782,17 @@ async def lifespan(app: FastAPI):
             # approve broke INTERMITTENTLY — whichever worker took the approve
             # request had never seen the suggestion and answered 404 (#1214).
             #
-            # Nothing is logged about it now, and nothing should be. This code
-            # runs BEFORE ``compose_application``, so at this point the store
-            # does not exist yet and any statement here — reassuring or
-            # otherwise — would be a guess about a decision that has not been
-            # taken. ``create_suggestion_service`` makes that decision (keyed
-            # off ``persistent_database_configured``) and warns there if it
-            # lands on the non-durable store, and the standing answer is on
-            # GET /admin/config/status as 'suggestion_store_worker_safe',
-            # which reads the composed repository. That is also where it
-            # belongs: a startup log line has rolled out of `kubectl logs`
-            # long before anyone investigates an intermittent 404.
+            # Nothing is logged about it now, and nothing should be. The store
+            # is the database-backed one (#1227): ``create_suggestion_service``
+            # picks it off ``persistent_database_configured``, and the
+            # persistent-database gate above has already refused to boot the
+            # API without one (fm#1647), so the API never holds the in-memory
+            # store that factory falls back to. The standing
+            # answer is on GET /admin/config/status as
+            # 'suggestion_store_worker_safe', which reads the composed
+            # repository rather than predicting it here — a startup log line
+            # has rolled out of `kubectl logs` long before anyone investigates
+            # an intermittent 404.
         else:
             logger.debug(f"Using single worker (WORKERS={workers})")
         logger.info("Configuration validated successfully")

@@ -69,11 +69,18 @@ def mock_container():
     return container
 
 
+#: What a runnable deployment's settings carry. The runner refuses to start a
+#: job without a persistent database (fm#1647), and a bare MagicMock's
+#: ``database_url`` is a MagicMock, which is not one.
+PERSISTENT_DATABASE_URL = "sqlite+aiosqlite:///./data/faultmaven.db"
+
+
 @pytest.fixture
 def mock_settings():
     """Create mock settings."""
     settings = MagicMock()
     settings.server.run_scheduler = False
+    settings.database.database_url = PERSISTENT_DATABASE_URL
     return settings
 
 
@@ -783,6 +790,73 @@ class TestJobsPathBootGates:
         mock_container.initialize.assert_not_called()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "database_url",
+        ["", ":memory:", "sqlite+aiosqlite:///:memory:"],
+        ids=["empty", "bare-memory", "sqlite-memory"],
+    )
+    async def test_non_persistent_database_refuses_the_job(
+        self, database_url, mock_container, monkeypatch
+    ):
+        """The web lifespan's persistent-database gate runs here too (fm#1647).
+
+        Real settings built from the environment, not a double, and the
+        coherence gate NOT patched: the refusal must come from the database
+        gate on the path ``run_job`` actually takes, before the container
+        initializes (where it used to fail as a bootstrap error).
+        """
+        from faultmaven.config.persistent_database import NonPersistentDatabaseError
+        from faultmaven.config.settings import reset_settings
+        from faultmaven.jobs.run import run_job
+
+        monkeypatch.setenv("DATABASE_URL", database_url)
+        reset_settings()
+        try:
+            with (
+                patch("faultmaven.container.container", mock_container),
+                patch(
+                    "faultmaven.providers.tenancy.factory.requested_tenant_provider",
+                    return_value="single",
+                ),
+            ):
+                with pytest.raises(
+                    NonPersistentDatabaseError, match="needs a database"
+                ):
+                    await run_job("case_cleanup")
+        finally:
+            monkeypatch.undo()
+            reset_settings()
+
+        mock_container.initialize.assert_not_called()
+
+    def test_cli_exits_nonzero_naming_the_default(
+        self, mock_container, monkeypatch, capsys
+    ):
+        """Through ``main()``: exit 1, and the operator is told the fix."""
+        from faultmaven.config.settings import reset_settings
+        from faultmaven.jobs import run as run_module
+
+        monkeypatch.setenv("DATABASE_URL", "")
+        reset_settings()
+        try:
+            with (
+                patch("faultmaven.container.container", mock_container),
+                # main() calls load_dotenv(); a developer's .env must not
+                # repopulate the variable this test empties.
+                patch("dotenv.load_dotenv"),
+            ):
+                exit_code = run_module.main(["case_cleanup"])
+        finally:
+            monkeypatch.undo()
+            reset_settings()
+
+        assert exit_code == 1
+        err = capsys.readouterr().err
+        assert "sqlite+aiosqlite:///./data/faultmaven.db" in err
+        assert "needs a database" in err
+        mock_container.initialize.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_rls_role_guard_failure_is_terminal(
         self, mock_container, mock_settings
     ):
@@ -1268,6 +1342,7 @@ class TestDryRunLeverIsNotAnEnabler:
                 orphan_file_ttl_hours=24,
             ),
             server=SimpleNamespace(run_scheduler=False),
+            database=SimpleNamespace(database_url=PERSISTENT_DATABASE_URL),
         )
         sweep = AsyncMock(return_value={"status": "completed"})
 

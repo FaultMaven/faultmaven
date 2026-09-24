@@ -415,10 +415,11 @@ def create_suggestion_service(
     database and every write vanishes before the next read — and with
     ``case_repository`` degrading to in-memory on the same configuration, the
     suggestion's ``case_id`` foreign key would have no case row to point at, so
-    extract would 500 where the old dict store worked. Falling back to the
-    in-memory repository keeps that deployment working AND keeps
-    ``GET /admin/config/status`` truthful, because that repository reports
-    ``is_durable == False``.
+    extract would 500 where the old dict store worked.
+
+    The API lifespan and the jobs runner refuse a non-persistent
+    ``DATABASE_URL`` at boot (fm#1647); the ``fm-*`` operator CLIs do not yet
+    (#1659). Outside those, the in-memory arm is a test seam.
     """
     from faultmaven.config.settings import persistent_database_configured
     from faultmaven.modules.knowledge.domain.services.suggestion_service import (
@@ -799,8 +800,9 @@ def create_user_service(
         )
         from faultmaven.modules.auth.domain.services.user_service import UserService
 
-        # Use the persistent database when one is configured, else InMemory for
-        # ephemeral/no-database development. Keyed off the ONE shared predicate
+        # Use the persistent database when one is configured, else InMemory.
+        # The API and jobs runner refuse the latter at boot (fm#1647); the
+        # fm-* CLIs do not yet (#1659). Keyed off the ONE shared predicate
         # (fm#1128) — the user store selects with the same call, so the store
         # login writes to and the store this service reads for /auth/me cannot
         # disagree about whether a database is in play. NOT a shared session
@@ -812,7 +814,7 @@ def create_user_service(
             logger.debug("UserService using SessionlessUserRepository")
         else:
             user_repo = InMemoryUserRepository()
-            logger.debug("UserService using InMemoryUserRepository (development)")
+            logger.debug("UserService using InMemoryUserRepository (no database)")
 
         from faultmaven.infrastructure.persistence.sessionless_audit_repository import (
             SessionlessAuditRepository,

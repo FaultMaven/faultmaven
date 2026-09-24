@@ -342,6 +342,8 @@ async def run_job(
         ImportError: If job module cannot be imported
         DeploymentCoherenceError: If the running config contradicts
             DEPLOYMENT_MODE, or (under multi) the DB role is RLS-exempt.
+        NonPersistentDatabaseError: If DATABASE_URL configures no persistent
+            database (empty, ``:memory:`` or in-memory SQLite).
         JobTenantScopeError: If the job's tenant-scope requirements cannot be
             satisfied under the configured tenancy mode.
         JobArgumentError: If a job-specific argument (see JOB_SPECIFIC_FLAGS)
@@ -385,6 +387,10 @@ async def run_job(
     # config contradicts DEPLOYMENT_MODE. A CronJob must not run against
     # tenanted data under a configuration the API itself would refuse to boot.
     from faultmaven.config.deployment_coherence import validate_deployment_coherence
+    from faultmaven.config.persistent_database import (
+        NonPersistentDatabaseError,
+        require_persistent_database,
+    )
     from faultmaven.providers.tenancy.factory import (
         BUILTIN_MULTI,
         requested_tenant_provider,
@@ -394,6 +400,15 @@ async def run_job(
         validate_deployment_coherence(settings)
     except DeploymentCoherenceError:
         logger.critical("Refusing to run job: deployment configuration is incoherent")
+        raise
+
+    # Same persistent-database gate as the web lifespan (fm#1647): without it a
+    # job on an empty or in-memory DATABASE_URL fails inside the container's
+    # bootstrap, three layers down, exactly as the API used to.
+    try:
+        require_persistent_database(settings)
+    except NonPersistentDatabaseError:
+        logger.critical("Refusing to run job: no persistent database is configured")
         raise
 
     is_multi_tenant = requested_tenant_provider() == BUILTIN_MULTI

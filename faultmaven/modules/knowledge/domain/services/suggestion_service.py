@@ -225,9 +225,11 @@ corrected runbook, starting at the opening `---`, and output nothing else.
                 number happens to be.
             suggestion_repository: The store (#1227) — REQUIRED. Production
                 passes a ``DatabaseSuggestionRepository`` over
-                ``knowledge_suggestions``; a deployment with no database
-                configured, and every unit test, passes
-                ``InMemorySuggestionRepository``.
+                ``knowledge_suggestions``; tests pass
+                ``InMemorySuggestionRepository`` (so does the composition root
+                when no persistent database is configured, which the API and
+                jobs runner refuse at boot, fm#1647; the ``fm-*`` CLIs do not
+                yet, #1659).
 
                 There is deliberately no default. A default would make the one
                 mistake that matters — composing a service whose store nobody

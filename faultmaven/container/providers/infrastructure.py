@@ -418,11 +418,13 @@ def create_case_repository(settings: FaultMavenSettings) -> Any | None:
     Provider Selection (Deployment-Agnostic):
     - Local Deployment (Self-Host): SessionlessCaseRepository → SQLite
     - Cloud Deployment (Enterprise): SessionlessCaseRepository → PostgreSQL
-    - Test/Ephemeral: InMemoryCaseRepository (no persistence)
+    - No persistent database: InMemoryCaseRepository (no persistence)
 
     Configuration:
-    - DATABASE_URL set → SessionlessCaseRepository (persistent database)
-    - DATABASE_URL=:memory: or unset → InMemoryCaseRepository (ephemeral)
+    - persistent DATABASE_URL → SessionlessCaseRepository
+    - empty / ``:memory:`` / in-memory SQLite → InMemoryCaseRepository. The API
+      and jobs runner refuse such a URL at boot (fm#1647); the ``fm-*`` CLIs do
+      not yet (#1659). An UNSET ``DATABASE_URL`` is the persistent SQLite default.
 
     Returns None if initialization fails.
     """
@@ -434,7 +436,8 @@ def create_case_repository(settings: FaultMavenSettings) -> Any | None:
         # Persistence decided by the shared predicate (fm#1128) — this was the
         # third inline copy of the DATABASE_URL rule.
         if not persistent_database_configured(database_url):
-            # Ephemeral storage (testing, no database available)
+            # Ephemeral storage. The API and jobs runner never get here
+            # (fm#1647); tests and the fm-* CLIs can (#1659).
             from faultmaven.modules.case.infrastructure.case_repository import (
                 InMemoryCaseRepository,
             )
@@ -482,7 +485,8 @@ def create_user_store(redis_client: Any, settings: FaultMavenSettings) -> Any:
 
     Provider selection:
     1. Database (SQLite/PostgreSQL) - if database is available (persistent)
-    2. Redis (real or FakeRedis) - fallback when no database configured
+    2. Redis (real or FakeRedis) - when no persistent database is configured,
+       which the API and jobs runner refuse at boot (fm#1647; CLIs: #1659)
 
     Args:
         redis_client: Async Redis-compatible client (always provided)

@@ -724,10 +724,13 @@ def _suggestion_store_is_durable(app) -> bool:
     a database-backed one is fine. What an operator needs to know is which
     store this process holds.
 
-    ``False`` covers both bad answers — a non-durable store is composed (which
-    is CORRECT, not a fault, on a deployment with no database configured), or no
+    ``False`` covers both bad answers — a non-durable store is composed, or no
     suggestion service is composed at all and the routes answer 503. They have
     the same consequence for scaling out, and the ``config_hint`` names both.
+    The first is unreachable in the API process that serves this: its boot
+    refuses a non-persistent database (fm#1647), the one configuration that
+    composes the in-memory store. Reported anyway, because this answers from
+    the running object.
     """
     service = getattr(getattr(app, "state", None), "suggestion_service", None)
     repository = getattr(service, "_repository", None) if service else None
@@ -739,8 +742,9 @@ def _suggestion_store_is_durable(app) -> bool:
     # deployment — and it would go stale the moment a third implementation
     # appears or the database one is composed over an ephemeral URL. The
     # composition root is what keeps the claim honest: it picks the in-memory
-    # repository (``is_durable == False``) whenever
-    # ``persistent_database_configured`` says there is no database to write to.
+    # repository (``is_durable == False``) only when
+    # ``persistent_database_configured`` says there is no database to write to,
+    # which the API's boot refuses (fm#1647).
     return bool(getattr(repository, "is_durable", False))
 
 
@@ -1159,7 +1163,10 @@ async def get_env_config_status(
             # (#1214's shape — non-durable and per worker, so with WORKERS>1 or
             # more than one pod an extract and its approve land on different
             # processes and the approve 404s on an id the API just issued), and
-            # when no suggestion service was composed at all. It reads True only
+            # when no suggestion service was composed at all. The API's boot
+            # refuses a non-persistent DATABASE_URL (fm#1647), so in the process
+            # serving this False means the second case, and the hint says so.
+            # It reads True only
             # when the process actually holds the database-backed store, which
             # is the point: the field answers "is what is running right now safe
             # to scale out", and a value derived from WORKERS could not tell
@@ -1174,10 +1181,10 @@ async def get_env_config_status(
                 ),
                 config_hint=(
                     "True when the process holds the database-backed suggestion "
-                    "store. False means no persistent DATABASE_URL is configured "
-                    "(so the store is in-memory), or no suggestion service is "
-                    "composed at all — configure a database, and until then run "
-                    "WORKERS=1"
+                    "store. False means no suggestion service was composed, so "
+                    "the suggestion routes answer 503. A non-persistent "
+                    "DATABASE_URL cannot be the cause: the API refuses to boot "
+                    "on one."
                 ),
             ),
         }
