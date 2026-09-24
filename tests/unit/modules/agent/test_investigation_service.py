@@ -16,6 +16,7 @@ from faultmaven.exceptions import (
     ServiceException,
     ValidationException,
 )
+from faultmaven.models.api import DataType
 from faultmaven.models.api_models import (
     AttachmentResult,
     IntentType,
@@ -882,6 +883,9 @@ class TestInvestigationServiceProcessTurn:
                 summary="Test log file summary",
                 structural_index="ERROR line 42: connection refused",
                 data_type=AsyncMock(value="logs"),
+                # A real ``PreprocessingResult`` always carries it (required
+                # field), and it is what intake stores since #583.
+                detailed_data_type=DataType.LOGS_AND_ERRORS,
                 content_hash="abc123",
                 extraction_method="structure_extraction",
             )
@@ -948,6 +952,9 @@ class TestInvestigationServiceProcessTurn:
                 summary="Pasted text summary",
                 structural_index="Some extracted content",
                 data_type=AsyncMock(value="text"),
+                # A real ``PreprocessingResult`` always carries it (required
+                # field), and it is what intake stores since #583.
+                detailed_data_type=DataType.UNSTRUCTURED_TEXT,
                 content_hash="hash123",
                 extraction_method="structure_extraction",
             )
@@ -1028,6 +1035,9 @@ class TestInvestigationServiceProcessTurn:
                 summary="Log file summary",
                 structural_index="ERROR at line 42",
                 data_type=AsyncMock(value="logs"),
+                # A real ``PreprocessingResult`` always carries it (required
+                # field), and it is what intake stores since #583.
+                detailed_data_type=DataType.LOGS_AND_ERRORS,
                 content_hash="hash456",
                 extraction_method="structure_extraction",
             )

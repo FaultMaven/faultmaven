@@ -2003,9 +2003,16 @@ class UploadedFile(BaseModel):
         default=None,
         description=(
             "Preprocessor's data-type classification of the file's "
-            "content (e.g., 'logs', 'metrics', 'configuration'). "
-            "Distinct from evidence.source_type, which classifies an "
-            "individual extract's source type."
+            "content. Written as the fine-grained ``DataType`` value "
+            "(e.g., 'logs_and_errors', 'metrics_and_performance', "
+            "'structured_config'); rows written before #583 hold the "
+            "6-valued ``EvidenceSourceType`` string ('logs', 'metrics', "
+            "'configuration', ...) and were not migrated. A consumer that "
+            "needs the 6-valued type reads it through "
+            "``core.preprocessing.models.unified_data_type_of``, which "
+            "accepts both; never parse the column as one vocabulary. "
+            "Distinct from evidence.source_type, which stays 6-valued and "
+            "classifies an individual extract's source type."
         ),
         max_length=50,
     )

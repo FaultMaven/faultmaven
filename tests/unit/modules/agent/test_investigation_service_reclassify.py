@@ -198,7 +198,10 @@ class TestHappyPath:
         uf = next(f for f in saved.uploaded_files if f.file_id == "file_aaaaaaaaaaaa")
         assert uf.structural_index == "new index content"
         assert uf.summary == "new summary"
-        assert uf.data_type == updated.source_type.value
+        # The file row holds the fine-grained ``DataType`` (#583); the
+        # Evidence row stays on the 6-valued projection of it.
+        assert uf.data_type == DataType.LOGS_AND_ERRORS.value
+        assert updated.source_type.value == "logs"
 
         # Preprocessing was called with user_override + previous metadata.
         kwargs = preprocessing_service.reclassify_evidence.call_args.kwargs

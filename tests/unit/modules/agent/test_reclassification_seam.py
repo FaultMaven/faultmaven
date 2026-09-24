@@ -207,7 +207,8 @@ class TestEveryRowBehindTheFileIsRealigned:
 
         saved = await _out_of_band(rig)
 
-        assert saved.uploaded_files[0].data_type == EvidenceSourceType.LOGS.value
+        # The file row holds the fine-grained ``DataType`` (#583).
+        assert saved.uploaded_files[0].data_type == DataType.LOGS_AND_ERRORS.value
         assert {ev.evidence_id: ev.source_type for ev in saved.evidence} == {
             EV_1: EvidenceSourceType.LOGS,
             EV_2: EvidenceSourceType.LOGS,
@@ -471,7 +472,7 @@ class TestAMidTurnReclassificationSurvivesTheTurn:
         assert rig.tool_result.data["source_type"] == EvidenceSourceType.LOGS.value
 
         uploaded = saved.uploaded_files[0]
-        assert uploaded.data_type == EvidenceSourceType.LOGS.value, (
+        assert uploaded.data_type == DataType.LOGS_AND_ERRORS.value, (
             "the end-of-turn aggregate save wrote the pre-reclassification "
             "case back over the tool's write (#1465)"
         )

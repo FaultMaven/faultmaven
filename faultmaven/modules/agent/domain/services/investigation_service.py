@@ -53,6 +53,7 @@ from faultmaven.core.investigation.turn_pipeline import (
     submitted_name,
 )
 from faultmaven.core.investigation.turn_uploads import report_turn_uploads
+from faultmaven.core.preprocessing.models import unified_data_type_of
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
@@ -308,6 +309,27 @@ def _infer_source_type(data_type: DataType) -> EvidenceSourceType:
     return _DATA_TYPE_TO_SOURCE_TYPE.get(data_type, EvidenceSourceType.TEXT)
 
 
+def _published_source_type(uploaded_file: "UploadedFile") -> str:
+    """``AttachmentResult.source_type`` for *uploaded_file*: the 6-valued string.
+
+    ``UploadedFile.data_type`` holds the fine-grained ``DataType`` on rows
+    written since #583 and the 6-valued string on rows written before; the
+    API field is documented as the 6-valued vocabulary, so it is folded here
+    rather than changing the published contract. An unrecognised value is
+    passed through rather than erased — it is what the row says.
+
+    No coercion of a non-string: the field is ``Optional[str]``, its writers
+    store ``DataType.value`` off a required field, and the repositories load a
+    string column, so none reaches here in production. The only way one
+    does is a test double whose preprocessing result lacks a real
+    ``detailed_data_type`` — and failing ``AttachmentResult`` validation
+    loudly is the right outcome for that, not a ``str()`` of a Mock.
+    """
+    stored = uploaded_file.data_type
+    folded = unified_data_type_of(stored)
+    return folded.value if folded else (stored or "")
+
+
 def _classification_block(preprocessing_result) -> Optional[Dict[str, Any]]:
     """The re-extraction's ``classification`` verdict, if it published one.
 
@@ -382,7 +404,6 @@ def _refreshed_coverage(
 def _file_row_with_reclassification(
     file_meta: "UploadedFile",
     preprocessing_result,
-    new_source_type: EvidenceSourceType,
 ) -> "UploadedFile":
     """UploadedFile row updated with re-extracted preprocessing artifacts.
 
@@ -414,7 +435,11 @@ def _file_row_with_reclassification(
     """
     return file_meta.model_copy(
         update={
-            "data_type": new_source_type.value,
+            # The fine-grained ``DataType``, not the 6-valued projection
+            # (#583): lossless, and what the reclassification was keyed on.
+            # Readers go through ``unified_data_type_of``, which accepts both
+            # vocabularies, so rows written before #583 need no migration.
+            "data_type": preprocessing_result.detailed_data_type.value,
             "summary": preprocessing_result.summary,
             "structural_index": preprocessing_result.structural_index,
             **_refreshed_coverage(file_meta, preprocessing_result),
@@ -507,7 +532,7 @@ def _reclassified_collections(
         # contradiction rather than reconciling it.
         raise NotFoundError("UploadedFile", file_id)
     new_files_list[file_index] = _file_row_with_reclassification(
-        new_files_list[file_index], preprocessing_result, new_source_type
+        new_files_list[file_index], preprocessing_result
     )
 
     # The rows are re-derived against the case as it will be AFTER the file
@@ -2591,7 +2616,10 @@ class InvestigationService:
                         # and naming the chip from it reports a filename they
                         # never sent.
                         filename=submitted_name(att.filename, res.uploaded_file),
-                        source_type=res.uploaded_file.data_type or "",
+                        # Published as the 6-valued vocabulary (see the
+                        # field's description), so folded at the read
+                        # boundary: the row may hold either one (#583).
+                        source_type=_published_source_type(res.uploaded_file),
                         file_size=res.uploaded_file.size_bytes,
                         processing_status=(
                             "duplicate" if res.duplicate_of else "completed"
@@ -2966,9 +2994,10 @@ class InvestigationService:
         # during INVESTIGATING.
         uploaded_file.summary = preprocessing_result.summary
         uploaded_file.structural_index = preprocessing_result.structural_index
-        uploaded_file.data_type = _infer_source_type(
-            preprocessing_result.detailed_data_type
-        ).value
+        # The fine-grained ``DataType`` (#583) — see
+        # ``_file_row_with_reclassification`` for why, and
+        # ``unified_data_type_of`` for how both vocabularies are read.
+        uploaded_file.data_type = preprocessing_result.detailed_data_type.value
         uploaded_file.coverage_start_ts = preprocessing_result.coverage_start_ts
         uploaded_file.coverage_end_ts = preprocessing_result.coverage_end_ts
         # WHICH pattern produced that span, carried with it. Consumers state the
@@ -3548,7 +3577,12 @@ class InvestigationService:
         preprocessing_result, new_source_type = await self._reextract_under_override(
             file_meta, data_type
         )
-        previous_type = file_meta.data_type or "unknown"
+        # Folded for the metric label, whose ``to_type`` is the 6-valued
+        # ``preprocessing_result.data_type``: the row may hold either
+        # vocabulary (#583), and a label mixing the two would split one
+        # transition across series.
+        previous = unified_data_type_of(file_meta.data_type)
+        previous_type = previous.value if previous else "unknown"
 
         # One seam (#1470): the file row, EVERY Evidence row backed by it,
         # and the retirement of the question this answers. Claim content —
@@ -3975,11 +4009,12 @@ class InvestigationService:
         # fm#918 rather than decided here.
         #
         # Answering the question here is exact; the referent
-        # check in ``suggestion_is_live`` compares the 12→6 projection
-        # and cannot see a reclassification WITHIN a source type
-        # (logs_and_errors → command_output, both ``logs``), which is
-        # how a typed "Application logs (x.log)" on the next turn
-        # overwrote the answer the user had just given here.
+        # check in ``suggestion_is_live`` compares the stored value, and
+        # on a row written before #583 that was the 12→6 projection,
+        # which cannot see a reclassification WITHIN a source type
+        # (logs_and_errors → command_output, both ``logs``) — how a
+        # typed "Application logs (x.log)" on the next turn overwrote
+        # the answer the user had just given here.
         #
         # Now true of BOTH triggers. It used to be true of ``api`` only:
         # on ``trigger="agent_tool"`` this whole write — the file row, the

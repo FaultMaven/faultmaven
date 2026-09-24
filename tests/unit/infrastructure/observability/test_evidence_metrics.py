@@ -18,6 +18,7 @@ import pytest
 
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.infrastructure.observability import evidence_metrics as m
+from faultmaven.models.api import DataType
 from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
@@ -98,6 +99,9 @@ def _make_preprocessing_result(content_hash: str = "hash_xyz"):
     result.summary = "Log summary"
     result.structural_index = "ERROR line 1"
     result.data_type = MagicMock(value="logs")
+    # A real ``PreprocessingResult`` always carries it (required field), and
+    # it is what intake stores in ``UploadedFile.data_type`` since #583.
+    result.detailed_data_type = DataType.LOGS_AND_ERRORS
     result.content_hash = content_hash
     result.extraction_method = "crime_scene"
     return result
