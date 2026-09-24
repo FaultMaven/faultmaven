@@ -259,7 +259,7 @@ class HypothesisManager:
         stance: EvidenceStance,
         turn: int,
         reasoning: str = "Linked by agent",
-        stance_confidence: float = 1.0,
+        stance_confidence: float | None = 1.0,
     ) -> bool:
         """Link evidence to hypothesis. Returns whether the link was NEW or
         MATERIALLY CHANGED.
@@ -272,7 +272,11 @@ class HypothesisManager:
                 likelihood effect.
             turn: Current turn number
             reasoning: Explanation of why evidence is linked
-            stance_confidence: Confidence in the stance (0.0-1.0)
+            stance_confidence: Confidence in the stance (0.0-1.0). ``None``
+                means the caller has no value to assert: an existing link for
+                this evidence KEEPS its stored confidence, and a new one gets
+                full confidence (1.0) — the rule the causal-node path applies
+                (fm#1502). A number overwrites, as before.
 
         Returns:
             ``True`` when this call added a link or changed what an existing one
@@ -297,13 +301,6 @@ class HypothesisManager:
         ``reasoning`` prose is worded — rewording is the LLM behaviour this whole
         change exists to stop counting.
         """
-        link = HypothesisEvidenceLink(
-            hypothesis_id=hypothesis.hypothesis_id,
-            evidence_id=evidence_id,
-            stance=stance,
-            reasoning=reasoning,
-            stance_confidence=stance_confidence,
-        )
         # evidence_links is now List[HypothesisEvidenceLink] (junction-table
         # backed). Upsert by evidence_id: replace an existing link if one
         # already exists for this evidence_id, else append.
@@ -314,6 +311,19 @@ class HypothesisManager:
                 if existing.evidence_id == evidence_id
             ),
             None,
+        )
+        if stance_confidence is None:
+            stance_confidence = (
+                hypothesis.evidence_links[existing_idx].stance_confidence
+                if existing_idx is not None
+                else 1.0
+            )
+        link = HypothesisEvidenceLink(
+            hypothesis_id=hypothesis.hypothesis_id,
+            evidence_id=evidence_id,
+            stance=stance,
+            reasoning=reasoning,
+            stance_confidence=stance_confidence,
         )
         if existing_idx is not None:
             prior = hypothesis.evidence_links[existing_idx]

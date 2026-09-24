@@ -127,7 +127,8 @@ A STRICT provider enforces types and required keys. Whether it also enforces
 **value constraints** — `minimum`/`maximum`, `maxLength`, `pattern` — is a
 separate question, and the engine depends on the answer: its `likelihood` /
 `confidence` fields are `Field(ge=0, le=1)`, and a model that answers `95`
-fails Pydantic and 500s the turn.
+fails Pydantic. (It 500ed the turn when fm#355 was filed; what it costs now is
+at the end of this section.)
 
 FaultMaven used to strip those keywords twice on the way out —
 `to_strict_schema` dropped them as "descriptive", and
@@ -196,6 +197,24 @@ bytes, which does not approach the constrained-decoding ceiling behind
 `_SCHEMA_CAPACITY_DENYLIST_PREFIXES`. Groq's free tier refuses a schema that
 size on TPM (10,071 tokens against an 8,000 limit) **before and after**, so it
 is unmeasured there rather than changed.
+
+Where the bound is **not** enforced — FUNCTION_CALLING and BEST_EFFORT
+providers — the engine decides what an out-of-range confidence costs, by the
+field's role and never by its value (fm#1502,
+`core/investigation/confidence_repair.py`):
+
+| Role | Fields | Out-of-range value |
+|---|---|---|
+| ADD-shaped (no prior value) | `HypothesisToAdd.likelihood`, `EvidenceToAdd.likelihood`, `ReasoningConclusion.confidence`, `RootCauseConclusionUpdate.likelihood`, `KnowledgeMatch.match_likelihood` | `(1, 100]` is read as a percentage (`90 → 0.90`) and a `bool` coerced to `1.0`/`0.0`; anything else prunes **that record only** — for the two single-object rows, the `root_cause_conclusion` / `knowledge_match` sub-object is nulled |
+| UPDATE-shaped (absence means "keep") | `HypothesisUpdate.likelihood`, `milestones.root_cause_likelihood`, `working_conclusion.likelihood` | the field is dropped; the record and the stored value stand |
+| Links | `NodeEvidenceLinkToAdd` / `HypothesisEvidenceLinkToAdd` `.stance_confidence` | set aside by validation, decided at ingest: a new link is rescaled or coerced, otherwise **not written** (the `1.0` a new link's absence means must not stand in); a re-emitted link keeps its stored value |
+
+The bound stays in the emitted schema — the repair runs beside it, never
+instead of it. Every action is counted on `faultmaven_schema_field_repairs_total`
+(`schema`, `field`, `action`) and noted on the turn's `validation_repairs`, and
+a body whose only defects were repaired counts as `repaired` rather than
+`clean` on `faultmaven_schema_validation_total`, so the schema-validity rate
+does not report a rewritten body as one the model got right.
 
 ## Known Model-Specific Behaviors
 
