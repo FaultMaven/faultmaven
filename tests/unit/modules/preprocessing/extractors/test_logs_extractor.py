@@ -928,7 +928,7 @@ class TestIPAuthBreakdown:
 
     def _ssh_log_with_mixed_events(self) -> str:
         lines = []
-        # IP 10.0.0.1: 5 failed_password + 3 invalid_user = 8 auth events
+        # IP 10.0.0.1: 5 failed_password + 3 invalid_user lines = 5 attempts
         for _ in range(5):
             lines.append(
                 "Dec 10 06:55:00 host sshd[1]: Failed password for root from 10.0.0.1 port 22"
@@ -937,7 +937,7 @@ class TestIPAuthBreakdown:
             lines.append(
                 "Dec 10 07:00:00 host sshd[1]: Invalid user admin from 10.0.0.1 port 22"
             )
-        # IP 10.0.0.2: 2 failed_password only = 2 auth events
+        # IP 10.0.0.2: 2 failed_password only = 2 attempts
         for _ in range(2):
             lines.append(
                 "Dec 10 07:30:00 host sshd[2]: Failed password for guest from 10.0.0.2 port 22"
@@ -956,8 +956,11 @@ class TestIPAuthBreakdown:
 
     def test_auth_breakdown_shows_total(self, extractor):
         result = extractor.extract(self._ssh_log_with_mixed_events())
-        # 10.0.0.1: 5 failed + 3 invalid = 8
-        assert "auth total=8" in _sm(result)
+        # 10.0.0.1: 5 Failed password (outcome) lines = 5 attempts; the 3
+        # Invalid user lines are pre-auth context, not attempts (fm#1627)
+        assert "10.0.0.1: failed_password=5, invalid_user=3 → auth total=5" in _sm(
+            result
+        )
 
     def test_auth_breakdown_absent_for_non_auth_logs(self, extractor):
         """Logs with only HTTP paths and no auth events must not emit a breakdown."""

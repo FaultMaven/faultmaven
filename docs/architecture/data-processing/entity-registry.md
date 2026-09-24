@@ -112,17 +112,26 @@ document-scoped fails rather than passing quietly.
   mod_jk worker-state tallies are *occurrence* counts rendered as prose in the
   structural index; they render "occurrences", not "lines", and none of them
   reaches this table. A line carrying two HRESULTs recorded two events.
-- The `IP auth breakdown` block's `auth total` **is** a line count — the
-  number of lines carrying at least one auth event for that IP (fm#1596). It
-  used to sum the per-event-category counts, which double-counts every
-  `Failed password for invalid user` line, because the categories are not
-  mutually exclusive. The per-category numbers beside it are per line as
-  well, and are still what says *which* categories a line matched; what
-  changed is that they are no longer added together. A line count is still
-  **not an attempt count**: sshd logs one password attempt against an invalid
-  user on three lines that carry the IP (`Invalid user`, the `pam_unix`
-  authentication failure, `Failed password`), so the total is an upper bound
-  on attempts, and the rendered header says that rather than calling it one.
+- The `IP auth breakdown` block's `auth total` is **not** a line count: it
+  counts **attempts**, by outcome line (fm#1627). sshd logs one password
+  attempt against an invalid user on three lines that carry the IP (`Invalid
+  user`, the `pam_unix` authentication failure, `Failed password`), and
+  exactly one of them — the outcome — is written once per attempt. sshd
+  writes that outcome for every method, `Failed <method> for …` /
+  `Accepted <method> for …` (password, publickey, keyboard-interactive/pam,
+  hostbased, gssapi-*), so per IP the total is the number of lines carrying
+  one, counted once per line. `Failed none` is excluded: it is the client's
+  initial method query and carries no credential (loghub OpenSSH_2k has
+  four). Where the IP has no outcome line, the total is the
+  `pam_auth_failure` count, because Format B logs (loghub Linux) write none.
+  The per-category numbers beside it are per line, are never added together
+  (a `Failed password for invalid user` line matches two of them — fm#1596,
+  which first stopped the summing and counted auth lines), and are what says
+  *which* categories fired; outcomes for a method no category names are
+  shown as `other_method_outcome=N`. Which IPs get a row is decided by any
+  auth line or such an outcome, so an IP with only `Invalid user` lines
+  renders `invalid_user=N → auth total=0` rather than vanishing — `0` means
+  no authentication outcome and no PAM failure was logged for it.
 
 #### Rows written before fm#1587
 

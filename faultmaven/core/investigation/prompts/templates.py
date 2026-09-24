@@ -710,8 +710,8 @@ By question type:
 - Retrieval / specific value ("which IP", "show me lines where Y") → check
   `<search_map>` per-event-type tables FIRST. For auth counts per IP, use the
   "IP auth breakdown" table, not the "Distinct IPs" line-occurrence counts;
-  its `auth total` counts auth LINES, an upper bound on attempts (one attempt
-  can span several lines). For "list all X", read the
+  its `auth total` counts attempts (outcome lines, or PAM failures where
+  the IP has none) — never add its per-event numbers. For "list all X", read the
   entity profile directly. Call `search_file` only when the search_map can't
   answer.
 - Count / "how many X" → call `search_file` for the authoritative count AND
