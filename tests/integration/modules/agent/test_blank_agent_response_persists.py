@@ -43,7 +43,7 @@ from faultmaven.modules.agent.domain.services.investigation_service import (
 from faultmaven.modules.agent.domain.services.orientation import (
     EMPTY_AGENT_RESPONSE_TEXT,
 )
-from faultmaven.modules.case.contracts import MESSAGE_METADATA_AGENT_EMPTY
+from faultmaven.modules.case.contracts import MESSAGE_METADATA_AGENT_SYNTHESIZED
 from faultmaven.modules.case.domain.models import Case, CaseState, InquiryData
 from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
     SQLiteCaseRepository,
@@ -102,7 +102,7 @@ async def session(sqlite_engine):
         yield s
 
 
-def _service(session, agent_response: str):
+def _service(session, agent_response: str, extra_metadata: dict | None = None):
     """The real service on a real repository, with an engine that answers
     exactly what the test asks it to — including nothing."""
     engine = create_autospec(MilestoneEngine, instance=True)
@@ -112,7 +112,11 @@ def _service(session, agent_response: str):
         return {
             "case_updated": case,
             "agent_response": agent_response,
-            "metadata": {"milestones_completed": [], "progress_made": False},
+            "metadata": {
+                "milestones_completed": [],
+                "progress_made": False,
+                **(extra_metadata or {}),
+            },
         }
 
     engine.process_turn = AsyncMock(side_effect=_turn)
@@ -179,7 +183,7 @@ class TestBlankAgentResponsePersists:
         assert assistant, "the failed turn must be recorded, not dropped"
         assert assistant[-1]["content"] == EMPTY_AGENT_RESPONSE_TEXT
         # And it says the turn FAILED, rather than reading as a quiet answer.
-        assert assistant[-1]["metadata"].get(MESSAGE_METADATA_AGENT_EMPTY) is True
+        assert assistant[-1]["metadata"].get(MESSAGE_METADATA_AGENT_SYNTHESIZED) is True
 
     async def test_a_real_answer_is_stored_verbatim(self, session):
         service = _service(session, "the connection pool was exhausted")
@@ -193,7 +197,70 @@ class TestBlankAgentResponsePersists:
         reloaded = await service.repository.get(case.case_id)
         assistant = [m for m in reloaded.messages if m["role"] == "assistant"]
         assert assistant[-1]["content"] == "the connection pool was exhausted"
-        assert not assistant[-1]["metadata"].get(MESSAGE_METADATA_AGENT_EMPTY)
+        assert not assistant[-1]["metadata"].get(MESSAGE_METADATA_AGENT_SYNTHESIZED)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestSynthesizedAnswerRoundTrip:
+    """#1442/#1451 through the real service and a real repository: the flag
+    the engine or the backstop sets must reach both the persisted row AND the
+    turn record, and the reloaded case must render a marker, not the text.
+
+    The engine double here records no ``TurnProgress``, so the turn record is
+    the service's own backfill — the path the engine's terminal short-circuit
+    takes in production.
+    """
+
+    async def _reloaded(self, session, answer, extra_metadata=None):
+        service = _service(session, answer, extra_metadata)
+        case = _case()
+        await service.repository.save(case)
+        await service.process_turn(
+            case_id=case.case_id, user_id=USER_ID, payload=TurnPayload(query="why?")
+        )
+        return await service.repository.get(case.case_id)
+
+    async def _prompt_history(self, case) -> str:
+        from faultmaven.core.investigation.prompts import context_builder as cb
+        from faultmaven.core.investigation.prompts.fence import mint_token
+
+        return cb._build_verbatim_history(case.messages, cb.PromptFence(mint_token()))
+
+    async def test_an_engine_placeholder_is_persisted_flagged(self, session):
+        placeholder = "[Response withheld by safety filter]"
+        reloaded = await self._reloaded(
+            session, placeholder, {MESSAGE_METADATA_AGENT_SYNTHESIZED: True}
+        )
+
+        assistant = [m for m in reloaded.messages if m["role"] == "assistant"][-1]
+        # The engine's own wording is kept — the backstop does not overwrite it.
+        assert assistant["content"] == placeholder
+        assert assistant["metadata"].get(MESSAGE_METADATA_AGENT_SYNTHESIZED) is True
+        assert reloaded.turn_history[-1].agent_response_synthesized is True
+
+        from faultmaven.core.investigation.prompts.context_builder import (
+            NO_ANSWER_LINE,
+        )
+
+        history = await self._prompt_history(reloaded)
+        assert placeholder not in history
+        assert NO_ANSWER_LINE in history
+        assert "USER: why?" in history
+
+    async def test_the_backstop_marks_the_turn_record_too(self, session):
+        reloaded = await self._reloaded(session, "")
+
+        assert reloaded.turn_history[-1].agent_response_synthesized is True
+        history = await self._prompt_history(reloaded)
+        assert EMPTY_AGENT_RESPONSE_TEXT not in history
+
+    async def test_a_real_answer_is_not_marked_anywhere(self, session):
+        reloaded = await self._reloaded(session, "the pool was exhausted")
+
+        assert reloaded.turn_history[-1].agent_response_synthesized is False
+        history = await self._prompt_history(reloaded)
+        assert "ASSISTANT: the pool was exhausted" in history
 
 
 @pytest.mark.asyncio

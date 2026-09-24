@@ -851,11 +851,13 @@ class TestStructuredOutputDegradation:
         assert parsed.agent_response == "Survives as conversation."
         assert parsed.state_updates.evidence_to_add == []
 
-    def test_synthesizes_missing_agent_response_keeps_state(self, caplog):
+    def test_blanks_missing_agent_response_keeps_state(self, caplog):
         # gemini-3.5-flash sometimes omits the required agent_response ITSELF on
         # resolution turns. The rungs above preserve agent_response, so they
-        # cannot help; this rung synthesizes a placeholder and KEEPS the model's
-        # otherwise-valid state_updates instead of 500ing.
+        # cannot help; this rung fills it with "" and KEEPS the model's
+        # otherwise-valid state_updates instead of 500ing. It writes no TEXT:
+        # the wording is chosen by ``_synthesize_agent_response``, which holds
+        # the stop reason (#1442).
         import logging
 
         from faultmaven.core.investigation.schemas import (
@@ -883,19 +885,18 @@ class TestStructuredOutputDegradation:
             parsed = eng._validate_with_degradation(
                 content, InvestigationResponse_Diagnosis
             )
-        assert parsed.agent_response  # a non-empty placeholder was synthesized
+        assert parsed.agent_response == ""  # structural only, no wording here
         # the model's valid work survives — state_updates are NOT dropped here
         summaries = [e.summary for e in parsed.state_updates.evidence_to_add]
         assert summaries == ["good"]
         assert any(
-            "synthesized missing agent_response" in r.getMessage()
-            for r in caplog.records
+            "blanked missing agent_response" in r.getMessage() for r in caplog.records
         )
 
-    def test_synthesizes_missing_agent_response_drops_invalid_state(self):
+    def test_blanks_missing_agent_response_drops_invalid_state(self):
         # Both gaps at once (the turn-7 500 shape): no agent_response AND an
         # unrepairable state_updates error. The turn must still survive — the
-        # placeholder is synthesized and the bad state is dropped, never a 500.
+        # answer is blanked and the bad state is dropped, never a 500.
         from faultmaven.core.investigation.schemas import (
             InvestigationResponse_Diagnosis,
         )
@@ -905,7 +906,7 @@ class TestStructuredOutputDegradation:
         parsed = eng._validate_with_degradation(
             content, InvestigationResponse_Diagnosis
         )
-        assert parsed.agent_response  # placeholder synthesized, no 500
+        assert parsed.agent_response == ""  # blanked, no 500
 
     def test_fallback_logs_non_prunable_errors(self, caplog):
         # A NON-prunable error (loc has no list index) forces the conversational

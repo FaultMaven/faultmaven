@@ -70,3 +70,64 @@ class TestTitlerIgnoresServerWrittenRows:
         context = await _context(rows)
 
         assert EMPTY_TURN_TEXT in context
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestTitlerIgnoresSynthesizedAssistantRows:
+    """The assistant mirror (#1451). A placeholder the engine or the service
+    backstop wrote in place of an answer — "[Response withheld by safety
+    filter]" — is not what the case is about, and must not become title
+    signal. Skipped rather than marked: this context is title input, not a
+    transcript the model continues from."""
+
+    WITHHELD = "[Response withheld by safety filter]"
+
+    def _assistant(self, content: str, *, synthesized: bool) -> dict:
+        from faultmaven.modules.case.contracts import (
+            MESSAGE_METADATA_AGENT_SYNTHESIZED,
+        )
+
+        return {
+            "role": "assistant",
+            "content": content,
+            "created_at": "2026-06-13T10:15:30+00:00",
+            "metadata": (
+                {MESSAGE_METADATA_AGENT_SYNTHESIZED: True} if synthesized else {}
+            ),
+        }
+
+    async def test_the_placeholder_is_not_offered_as_signal(self):
+        rows = [
+            _row("user", "postgres OOMs every night at 02:00"),
+            self._assistant(self.WITHHELD, synthesized=True),
+            _row("user", "hello?"),
+            _row("assistant", "trailing"),  # excluded as the current query
+        ]
+        context = await _context(rows)
+
+        assert self.WITHHELD not in context
+        assert "postgres OOMs every night at 02:00" in context
+
+    async def test_an_assistant_that_wrote_that_text_still_counts(self):
+        """Positive control: keyed on the flag, not on the string."""
+        rows = [
+            _row("user", "why?"),
+            self._assistant(self.WITHHELD, synthesized=False),
+            _row("assistant", "trailing"),
+        ]
+        context = await _context(rows)
+
+        assert self.WITHHELD in context
+
+    async def test_a_user_row_carrying_the_key_is_not_dropped(self):
+        """Role-checked: the assistant rule never removes a user's words."""
+        from faultmaven.modules.case.contracts import (
+            MESSAGE_METADATA_AGENT_SYNTHESIZED,
+        )
+
+        user = _row("user", "the disk is full")
+        user["metadata"] = {MESSAGE_METADATA_AGENT_SYNTHESIZED: True}
+        context = await _context([user, _row("assistant", "trailing")])
+
+        assert "the disk is full" in context

@@ -67,6 +67,7 @@ from faultmaven.modules.case.contracts import (
     NeedPriority,
     NeedPurpose,
     NeedState,
+    is_server_written_assistant_row,
     is_server_written_user_row,
 )
 from faultmaven.modules.case.domain.models import CauseState
@@ -2468,7 +2469,11 @@ def _build_turn_summary(turn) -> str:
     # Without this, summarized turns lose critical detail like "analyzed
     # nova-api logs, found VM lifecycle events" → just "1 evidence added".
     agent_part = ""
-    if turn.agent_response_summary:
+    if turn.agent_response_synthesized:
+        # A placeholder the server wrote (#1451): say the turn went
+        # unanswered, as a bare line — never as ``Agent: <placeholder>``.
+        agent_part = f" | {NO_ANSWER_LINE}"
+    elif turn.agent_response_summary:
         agent_part = f" | Agent: {turn.agent_response_summary[:200]}"
     elif not outcome_desc:
         # No structural metadata AND no agent summary — use outcome as fallback
@@ -2518,6 +2523,17 @@ def _fence_conversation(body: str, fence: PromptFence) -> str:
 #: empty message (#1343). Neither is investigation context, and quoting either
 #: invites the model to pick the tangent, or its own recap, back up.
 ASIDE_LINE = "(aside — not part of the investigation)"
+
+#: One line for an ASSISTANT turn whose text the server wrote because the model
+#: gave no usable answer (#1442, #1451) — the assistant counterpart of
+#: ``ASIDE_LINE``, and rendered the same way: a bare line, never
+#: ``ASSISTANT: <line>``. The row is not skipped, because a turn the model failed
+#: to answer is information: eliding it leaves two user turns back to back, so
+#: the model reads its previous turn as answered and a user's "you didn't
+#: answer" arrives with no context. Nor is the placeholder quoted, because it is
+#: server text and would read as the model's own words (#1434's rule). One line
+#: whatever the stop reason; the reason chose the placeholder, not this.
+NO_ANSWER_LINE = "(no answer — the assistant produced no usable reply this turn)"
 
 #: Truncation for a turn's one-line EARLIER TURNS preview. ONE value: the two
 #: call sites used 100 and 150, so the same turn rendered at two lengths
@@ -2662,6 +2678,9 @@ def _build_graduated_history(case: Case, fence: PromptFence) -> str:
                 result += f"{ASIDE_LINE}\n"
         if turn_num in asides:
             continue
+        if is_server_written_assistant_row(msg):
+            result += f"{NO_ANSWER_LINE}\n"  # #1451
+            continue
 
         if role == "ASSISTANT":
             content = _smart_truncate_agent_response(content)
@@ -2692,6 +2711,9 @@ def _build_verbatim_history(messages: list, fence: PromptFence) -> str:
             if turn_num in asides:
                 result += f"{ASIDE_LINE}\n"  # #1329, see _build_graduated_history
         if turn_num in asides:
+            continue
+        if is_server_written_assistant_row(msg):
+            result += f"{NO_ANSWER_LINE}\n"  # #1451, see _build_graduated_history
             continue
 
         result += f"{role}: {content}\n"
@@ -3152,8 +3174,11 @@ def _build_compact_history(
             recent_history += (
                 f"User provided: {len(last_turn.evidence_added)} evidence artifacts\n"
             )
-        if last_turn.agent_response_summary and not last_is_aside:
-            recent_history += f"Agent: {last_turn.agent_response_summary[:200]}\n"
+        if not last_is_aside:
+            if last_turn.agent_response_synthesized:
+                recent_history += f"{NO_ANSWER_LINE}\n"  # #1451
+            elif last_turn.agent_response_summary:
+                recent_history += f"Agent: {last_turn.agent_response_summary[:200]}\n"
         recent_history += "</previous_turn>"
     recent_history += "\n\n<current_turn>\n"
     recent_history += f"User: {user_message_safe}\n"

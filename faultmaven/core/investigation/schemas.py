@@ -50,6 +50,7 @@ from pydantic import (
     BaseModel,
     BeforeValidator,
     Field,
+    PrivateAttr,
     field_validator,
     model_validator,
 )
@@ -1478,6 +1479,13 @@ class BaseInteractionResponse(BaseModel):
         default=None,
         description="2-4 contextual follow-up actions the user can take. Each should be specific to the current investigation state.",
     )
+
+    # Set by ``MilestoneEngine`` when it wrote ``agent_response`` itself because
+    # the model gave no usable one (#1442). Private, so it is part of neither
+    # the JSON schema the model is asked to fill nor anything it can set: only
+    # the engine's synthesis step, which holds the provider's stop reason,
+    # decides it. Read through ``milestone_engine.is_agent_response_synthesized``.
+    _agent_response_synthesized: bool = PrivateAttr(default=False)
 
     @field_validator("suggested_follow_ups", mode="before")
     @classmethod

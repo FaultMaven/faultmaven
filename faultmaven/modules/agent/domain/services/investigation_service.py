@@ -103,7 +103,7 @@ from faultmaven.modules.agent.domain.services.query_classifier import (
     classify_query,
 )
 from faultmaven.modules.case.contracts import (
-    MESSAGE_METADATA_AGENT_EMPTY,
+    MESSAGE_METADATA_AGENT_SYNTHESIZED,
     MESSAGE_METADATA_USER_EMPTY,
     Case,
     CaseState,
@@ -219,6 +219,14 @@ def _backfill_consumed_turn(
             outcome=metadata.get("outcome") or TurnOutcome.CONVERSATION,
             user_message_summary=_summarize_for_history(user_message, 200),
             agent_response_summary=_summarize_for_history(agent_response, 500),
+            # #1451: the engine's terminal short-circuit reports a placeholder
+            # it synthesized on the metadata; a blank answer is about to be
+            # replaced by this service's own backstop marker. Either way the
+            # summary is not something the agent said.
+            agent_response_synthesized=(
+                bool(metadata.get(MESSAGE_METADATA_AGENT_SYNTHESIZED))
+                or not (agent_response or "").strip()
+            ),
             system_feedback=(previous.system_feedback if previous else None),
         )
     )
@@ -2433,22 +2441,20 @@ class InvestigationService:
             #    "Service-dispatched" is NOT a synonym for "no engine save".
             #    See the STEP-2 comment for the full ordering.
             # An empty ``agent_response`` is a FAILED turn, not a quiet one.
-            # It reaches here unguarded from ``result["agent_response"]``: the
-            # engine's semantic check covers one parse path, and a MAX_TOKENS
-            # or CONTENT_FILTER stop can still deliver "". Blank content aborts
-            # the aggregate save and takes the user's turn with it, for a turn
-            # already charged — so it is recorded, honestly, rather than
-            # dropped or left blank (#1433).
-            # A LAST-RESORT backstop, not a policy. ``MilestoneEngine`` owns
-            # the degradation ladder and decides deliberately that a
-            # model-supplied "" is the model's own choice and is never
-            # overwritten — see its comment on the placeholder rung. That
-            # decision predates the constraint that makes it unsurvivable:
-            # blank content is refused by the repository, and because this row
-            # is part of an AGGREGATE save the refusal takes the user's turn,
-            # the evidence and the hypotheses with it, for a turn already
-            # charged. Reconciling the two policies in the engine — which knows
-            # the stop reason — is filed separately; this only stops the crash.
+            # Blank content aborts the aggregate save and takes the user's turn
+            # with it, for a turn already charged — so it is recorded,
+            # honestly, rather than dropped or left blank (#1433).
+            # A PERSISTENCE BACKSTOP, not a policy (#1442). ``MilestoneEngine``
+            # owns response synthesis: it holds the provider's stop reason and
+            # names an unusable answer by it (withheld, truncated, empty, no
+            # signal). This layer receives only a string, so anything it wrote
+            # would be blind — it therefore writes nothing contextual, and
+            # exists only so a raw "" whose text never came through the
+            # engine's synthesis (the out-of-band answer, for one, is generated
+            # by this service) cannot abort the aggregate save:
+            # blank content is refused by the repository, and the refusal
+            # takes the user's turn, the evidence and the hypotheses with it,
+            # for a turn already charged.
             agent_response_empty = not str(agent_response_text or "").strip()
             if agent_response_empty:
                 logger.warning(
@@ -2470,7 +2476,7 @@ class InvestigationService:
                 # is bound by ``result.setdefault("metadata", {})`` far above
                 # and has already been ``.pop()``-ed from by then, so a None
                 # would have raised long before this line.
-                turn_meta[MESSAGE_METADATA_AGENT_EMPTY] = True
+                turn_meta[MESSAGE_METADATA_AGENT_SYNTHESIZED] = True
 
             agent_message = {
                 "message_id": f"msg_{uuid4().hex[:12]}",

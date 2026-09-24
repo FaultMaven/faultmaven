@@ -4317,6 +4317,21 @@ class TurnProgress(BaseModel):
         default=None, description="Summary of agent response", max_length=500
     )
 
+    # The turn-history counterpart of the ``agent_response_synthesized`` row
+    # flag (#1451). It has to live here too: the prompt's EARLIER TURNS and
+    # <previous_turn> blocks render from this record, never from the row, and
+    # the summary above holds whatever text the turn returned — so on a turn
+    # the model did not answer it holds the server's placeholder. Storing None
+    # as the summary instead is not an alternative: the renderer then falls
+    # back to the outcome name, which says the turn was a conversation.
+    agent_response_synthesized: bool = Field(
+        default=False,
+        description=(
+            "True when agent_response_summary summarizes a placeholder the "
+            "server wrote in place of an answer, not something the agent said"
+        ),
+    )
+
     # ============================================================
     # System Feedback (for iterative correction)
     # ============================================================
