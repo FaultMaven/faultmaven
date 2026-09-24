@@ -970,10 +970,16 @@ _NOT_THE_RULE = {
         "faultmaven/modules/preprocessing/extractors/command_output_extractor.py",
         r"PID\s+USER\s+%CPU\s+%MEM\s+VSZ\s+RSS",
     ): "matches the ps(1) header row, extracts no name",
-    # The sshd event rules moved to ``sshd_auth`` and are matched at the
-    # message start there (fm#1657). The address-slot regexes beside them
-    # read past the client's login name to the address and deliberately
-    # spell no ``user``, so they are not here.
+    (
+        "faultmaven/modules/preprocessing/extractors/logs_extractor.py",
+        r"invalid user",
+    ): "presence test for the event counter, extracts no name",
+    (
+        "faultmaven/modules/preprocessing/extractors/logs_extractor.py",
+        r"sshd[^:]*:\s*session opened for user",
+    ): "event matcher for the session counter, extracts no name",
+    # fm#1657's anchored reading of the same events, beside the search above
+    # (which it leaves to lines whose header it does not read).
     (
         "faultmaven/modules/preprocessing/extractors/sshd_auth.py",
         r"(?:[\w-]+:\s+)?"
@@ -993,18 +999,6 @@ _NOT_THE_RULE = {
         "faultmaven/modules/preprocessing/extractors/sshd_auth.py",
         r"Invalid user\s",
     ): "selects the getpwnamallow address-slot shape, extracts no name",
-    (
-        "faultmaven/modules/preprocessing/extractors/sshd_auth.py",
-        r"(?<![^\s,;|])(?:Failed|Accepted|Partial|Postponed|Invalid user"
-        r"|input_userauth_request:|maximum authentication|Too many authentication"
-        r"|Connection (?:closed|reset|from)|Disconnected from|Disconnecting"
-        r"|Received disconnect|Timeout, client|Unable to negotiate|pam_unix\("
-        r"|reverse mapping|Address\s|(?:error|fatal|debug\d?):)",
-    ): "words that can open an sshd message (the header fallback), extracts no name",
-    (
-        "faultmaven/modules/preprocessing/extractors/sshd_auth.py",
-        r"""['"()]|\bport\s+\d|:\s*\d+:\s|\b(?:user|for|from|by)\s""",
-    ): "text that refuses the header fallback, extracts no name",
 }
 
 

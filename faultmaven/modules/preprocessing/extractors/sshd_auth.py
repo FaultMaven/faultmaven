@@ -26,18 +26,17 @@ those:
   lookalike can make two slots parse; such a line is credited to nobody,
   because either choice could be the attacker's.
 
-Finding the message start means removing the header a log pipeline writes in
-front of it. The shapes read positionally are listed on
-:func:`split_syslog_line`; a line with no header is read as message-only (its
-first word is the message's), which is right for ``journalctl -o cat`` and
-``sshd -e``. A header none of those shapes reads — ``grep -H`` output, BusyBox
-``facility.level`` columns, ``log show`` columns, and whatever comes next —
-must not count LESS than a search did, so :func:`read_sshd_auth_line` falls
-back to where sshd's message starts in it — sshd's own tag, or the first word
-that opens an event message (:func:`_fallback_message`). The fallback runs
-only after the positional reading found no sshd tag and no event, and every
-line that carries a client's login name opens with an auth phrase the
-positional reading already counts, so a login name never reaches it.
+THE RULE. Finding the message start means removing the header a log pipeline
+writes in front of it, and there is always another export format. So this
+reading applies only to a line it POSITIVELY reads: one whose header gives
+sshd's own tag (``sshd[pid]:``, ``sshd-session[pid]:``, ``sshd(pam_unix)[pid]:``,
+``sshd@<unit>[pid]:``), or whose message start, as read, opens with an sshd
+event. Every other line is ``SshdAuthLine.read = False``, and the logs
+extractor reads it exactly as it did before fm#1657 — the same patterns
+searched anywhere, every IPv4 credited. An unread format therefore never
+counts less than that, by construction, and keeps that reading's exposure;
+every format read here gets the protection. A line with no word any rule of
+either reading needs is decided here as "no event" (``_EVENT_WORDS``).
 """
 
 from __future__ import annotations
@@ -65,10 +64,11 @@ _LEVEL_WORD = (
 # flag ``-``, and a level column some exporters put before the host. Every
 # alternative starts with a digit, a bracket, ``@`` or ``-``, or is a fixed
 # name — none is a word an sshd message starts with, so this run cannot
-# extend into a message.
+# extend into a message. The bracket's first run excludes digits so an
+# unclosed ``[`` costs one pass over the line, not one per digit in it.
 _TIME_TOKEN = (
     rf"(?:{_MONTH}|{_WEEKDAY}|{_TIMEZONE}|{_LEVEL_WORD}|-"
-    r"|\[[^\]\n]*\d[^\]\n]*\]"
+    r"|\[[^\]\n\d]*\d[^\]\n]*\]"
     r"|@[0-9A-Fa-f]{24}"
     r"|[+-]?\d[\dTZ:.,/+-]*)"
 )
@@ -78,8 +78,10 @@ _TIME_TOKEN = (
 # some syslogds write the program as a path (``/usr/sbin/sshd[1]:``). A
 # socket-activated sshd is a unit instance (``sshd@7-10.0.0.5:22-….service``),
 # and ``log show --style compact`` writes ``[pid:tid]`` with no colon.
-_TAG_TAIL = r"(?P<module>\([^()\s]*\))?(?:\[[\w:]+\]:?|:)(?:\s+|$)"
-_TAG = r"(?P<program>\(?[A-Za-z_/][\w./-]*\)?(?:@[^\s\[\]]*)?)" + _TAG_TAIL
+_TAG = (
+    r"(?P<program>\(?[A-Za-z_/][\w./-]*\)?(?:@[^\s\[\]]*)?)"
+    r"(?P<module>\([^()\s]*\))?(?:\[[\w:]+\]:?|:)(?:\s+|$)"
+)
 # A host never ends in ``:`` — a token that does is the tag. Without that
 # exclusion ``sshd[1]: error: x`` would read ``sshd[1]:`` as the host.
 _HOST = r"\S*[^\s:]"
@@ -93,7 +95,7 @@ _SYSLOG_HEADER_RE = re.compile(
     # BGL/Thunderbird prefix: flag, epoch, dotted date, node — then an
     # ordinary BSD line (same shape as ``LogsAndErrorsExtractor._BGL_LINE_RE``).
     r"(?:(?:-|[A-Z][A-Z0-9]{2,11})\s+[12]\d{9}\s+\d{4}\.\d{2}\.\d{2}\s+\S+\s+)?"
-    rf"(?P<time>(?:{_TIME_TOKEN}\s+)*)"
+    rf"(?:{_TIME_TOKEN}\s+)*"
     # CRI container log (``/var/log/containers``): ``<ts> stderr F <msg>``.
     r"(?:(?:stdout|stderr)\s+[FP]\s+)?"
     # ``journalctl -o export`` / ``-o verbose``: one field per line.
@@ -120,20 +122,10 @@ _MESSAGE_PREFIX_RE = re.compile(
     + r")?"
 )
 # JSON-lines exports carry the message as one field (journald ``MESSAGE``,
-# docker json-file ``log``).
-_JSON_MESSAGE_KEYS = ("MESSAGE", "log", "message", "msg")
+# docker json-file ``log``). Any other key is a format this module does not
+# read, and the line is left to the search.
+_JSON_MESSAGE_KEYS = ("MESSAGE", "log")
 _JSON_PROGRAM_KEYS = ("SYSLOG_IDENTIFIER",)
-# Exports that write the program as a FIELD rather than a tag. Each is read
-# only at the start of the line, before any word of the message:
-#   TSV: leading tab-terminated fields with no space in them (syslog escapes
-#        a tab in message text, so a login name cannot end one);
-#   quoted CSV: the whole line is quoted fields (a quote inside one is
-#        doubled, so a login name cannot end one either);
-#   ``stern``: ``<pod> <container> <message>``, for a container named sshd*.
-_TSV_PREFIX_RE = re.compile(r"(?:[^\s]*\t)+")
-_CSV_LINE_RE = re.compile(r'"(?:[^"]|"")*"(?:,"(?:[^"]|"")*")+\s*')
-_CSV_FIELD_RE = re.compile(r'"((?:[^"]|"")*)"')
-_STERN_PREFIX_RE = re.compile(r"[\w.-]+\s+(?P<program>sshd[\w.-]*)\s+")
 
 
 @dataclass(frozen=True)
@@ -161,64 +153,31 @@ def split_syslog_line(line: str) -> SyslogMessage:
     * CRI container logs, ``docker compose logs`` and ``kubectl logs
       --prefix`` prefixes, ``journalctl -o export``/``verbose`` ``MESSAGE=``
       lines, and JSON lines (``journalctl -o json``, docker json-file);
-    * exports that carry the program as a field: TSV, quoted CSV, ``stern``;
     * no header at all (``journalctl -o cat``, ``sshd -e``), where the message
       is the line.
 
     After the tag, Solaris' msgid, a level prefix and rsyslog's
-    ``message repeated N times: [ … ]`` wrapper are removed too.
+    ``message repeated N times: [ … ]`` wrapper are removed too. Whether the
+    split is one the reader TRUSTS is decided by :func:`read_sshd_auth_line`.
     """
-    return _split(line)[0]
-
-
-def _split(line: str) -> tuple[SyslogMessage, bool]:
-    """:func:`split_syslog_line`, and whether a timestamp opened the line."""
     # Leading indentation is a paste artefact (and ``journalctl -o verbose``'s
     # field indent), never part of what sshd wrote.
     line = line.lstrip()
     if line.startswith("{"):
-        return _split_json_line(line), False
-    fields = _split_field_export(line)
-    if fields is not None:
-        return fields, False
+        return _split_json_line(line)
+    return _split_text_line(line)
+
+
+def _split_text_line(line: str) -> SyslogMessage:
     rfc5424 = _RFC5424_HEADER_RE.match(line)
     if rfc5424:
         program, module, rest = rfc5424.group("program"), "", line[rfc5424.end() :]
-        timed = True
     else:
         header = _SYSLOG_HEADER_RE.match(line)
         program = header.group("program") or ""
         module = header.group("module") or ""
         rest = line[header.end() :]
-        timed = bool(header.group("time"))
-    return SyslogMessage(program, module, _strip_message_prefix(rest)), timed
-
-
-def _split_field_export(line: str) -> SyslogMessage | None:
-    """TSV, quoted CSV and ``stern`` lines, whose program is a field."""
-    csv = _CSV_LINE_RE.fullmatch(line)
-    if csv:
-        fields = [f.replace('""', '"') for f in _CSV_FIELD_RE.findall(line)]
-        at = next((i for i, f in enumerate(fields[:-1]) if _is_sshd(f)), None)
-        if at is None:
-            program, message = "", fields[-1]
-        else:
-            program, message = fields[at], '","'.join(fields[at + 1 :])
-        return _with_program(split_syslog_line(message), program)
-    tsv = _TSV_PREFIX_RE.match(line)
-    if tsv:
-        program = tsv.group(0).rstrip("\t").rsplit("\t", 1)[-1]
-        return _with_program(split_syslog_line(line[tsv.end() :]), program)
-    stern = _STERN_PREFIX_RE.match(line)
-    if stern:
-        rest = line[stern.end() :]
-        return _with_program(split_syslog_line(rest), stern.group("program"))
-    return None
-
-
-def _with_program(inner: SyslogMessage, program: str) -> SyslogMessage:
-    """``inner``, taking the wrapper's program when the text named none."""
-    return SyslogMessage(inner.program or program, inner.module, inner.text)
+    return SyslogMessage(program, module, _strip_message_prefix(rest))
 
 
 def _strip_message_prefix(rest: str) -> str:
@@ -245,85 +204,15 @@ def _split_json_line(line: str) -> SyslogMessage:
         (record[k] for k in _JSON_PROGRAM_KEYS if isinstance(record.get(k), str)), ""
     )
     # The field may itself hold a whole syslog line (docker json-file of a
-    # container that runs syslogd); a bare message has no header to remove.
-    return _with_program(split_syslog_line(value.rstrip("\n")), program)
+    # container that runs syslogd). It is read as text, never as JSON again:
+    # one level, however the value is nested.
+    inner = _split_text_line(value.rstrip("\n").lstrip())
+    return SyslogMessage(inner.program or program, inner.module, inner.text)
 
 
 def _is_sshd(program: str) -> bool:
     """``sshd``, ``sshd-session``, ``sshd-auth``, ``sshd@…``, ``/usr/sbin/sshd``."""
     return program.lower().rsplit("/", 1)[-1].lstrip("(").startswith("sshd")
-
-
-# ---------------------------------------------------------------------------
-# A header no shape above reads.
-# ---------------------------------------------------------------------------
-
-# Where sshd's message can start on a line whose header no shape above reads:
-# just after sshd's own tag, or — where the header has no tag of sshd's at all
-# (``web1 | sshd | Failed password …``, an unquoted CSV) — at the first word
-# that opens an event message. sshd's level prefixes are in the list too: a
-# message they open is not an event, and its tail can be a client's (``debug1:
-# Remote protocol version 2.0, remote software version <the client's>``).
-_ANY_SSHD_TAG_RE = re.compile(
-    r"(?<![\w.@-])(?P<program>sshd(?:-session|-auth)?(?:@[^\s\[\]]*)?)" + _TAG_TAIL
-)
-_MESSAGE_LEAD_RE = re.compile(
-    # A lead word starts a column: after whitespace or a delimiter (``,;|``).
-    r"(?<![^\s,;|])(?:Failed|Accepted|Partial|Postponed|Invalid user"
-    r"|input_userauth_request:|maximum authentication|Too many authentication"
-    r"|Connection (?:closed|reset|from)|Disconnected from|Disconnecting"
-    r"|Received disconnect|Timeout, client|Unable to negotiate|pam_unix\("
-    r"|reverse mapping|Address\s|(?:error|fatal|debug\d?):)",
-    re.IGNORECASE,
-)
-# The first tag-shaped or lead-shaped text on a line with NO tag of sshd's
-# (``journalctl -o cat``) can be a client's. The fallback is reached there
-# only by a message that does not open with an auth phrase — every line that
-# carries a login name does — and the text before any client field such a
-# message carries contains one of these: the address slot (``… port 22:11:
-# <reason>``, ``… port 22: … vs. <version>``), the disconnect code (``from
-# 1.2.3.4: 11: <reason>``), a quote or parenthesis (``identification
-# '<id>'``, ``(<old>,…) -> (<new>,…)``), or the word that introduces a client
-# name (``for``, ``from``, ``by``, ``user``). None of them is in a header:
-# grep's path and line number, a facility.level column, a host label, ``log
-# show`` columns, a timestamp.
-_FALLBACK_REFUSED_RE = re.compile(
-    r"""['"()]|\bport\s+\d|:\s*\d+:\s|\b(?:user|for|from|by)\s""", re.IGNORECASE
-)
-
-
-def _fallback_message(line: str, positional: SyslogMessage) -> SyslogMessage | None:
-    """Where sshd's message starts on a line the positional reading missed.
-
-    A tag the positional reading took that is not sshd's is a wrapper's —
-    ``pdsh``'s ``web1:``, socklog's ``auth.info:`` — when what follows it is
-    itself a syslog line, so that is re-read as one, whatever program wrote it
-    (a wrapped ``vsftpd`` PAM line counts as it would unwrapped). It must open
-    with a timestamp: another program's message (``myapp[1]: <its text>``) is
-    not re-read.
-
-    With no tag taken, the message starts at sshd's first tag or first lead
-    word, whichever comes first, unless the text before it could be a client
-    field's (``_FALLBACK_REFUSED_RE``). The first one is the only candidate:
-    what follows a message's opening words is sshd's or a client's, never a
-    second header.
-    """
-    if positional.program:
-        nested, timed = _split(positional.text)
-        return nested if timed and nested.program else None
-    line = line.lstrip()
-    tag = _ANY_SSHD_TAG_RE.search(line) if "sshd" in line else None
-    lead = _MESSAGE_LEAD_RE.search(line, 0, tag.start() if tag else len(line))
-    if lead is not None:
-        start, program, module, body = lead.start(), "", "", lead.start()
-    elif tag is not None:
-        start, program, module = tag.start(), tag.group("program"), tag.group("module")
-        body = tag.end()
-    else:
-        return None
-    if _FALLBACK_REFUSED_RE.search(line, 0, start):
-        return None
-    return SyslogMessage(program, module or "", _strip_message_prefix(line[body:]))
 
 
 # ---------------------------------------------------------------------------
@@ -457,9 +346,12 @@ _SLOT_SHAPES: tuple[_SlotShape, ...] = (
         re.compile(r"maximum authentication attempts exceeded\s", re.IGNORECASE),
         re.compile(r".*" + _FROM_SLOT + _ANY_TAIL, re.IGNORECASE),
     ),
-    # auth.c ``getpwnamallow``: ``Invalid user X from <ip>[ port <n>]``
+    # auth.c ``getpwnamallow``: ``Invalid user X from <ip>[ port <n>]``.
+    # Case-sensitive: sshd capitalises this message, and the lower-case
+    # ``invalid user X`` of ``input_userauth_request: invalid user X`` carries
+    # no address — headerless output can read that function name as the tag.
     _SlotShape(
-        re.compile(r"Invalid user\s", re.IGNORECASE),
+        re.compile(r"Invalid user\s"),
         re.compile(
             r".*\sfrom\s+(?P<addr>\S+)(?:\s+port\s+\d+)?" + _ANY_TAIL, re.IGNORECASE
         ),
@@ -484,12 +376,12 @@ _SLOT_SHAPES: tuple[_SlotShape, ...] = (
         re.compile(r".*?" + _BARE_SLOT + _REASON_TAIL, re.IGNORECASE),
     ),
 )
-# pam_unix: ``… ruser=<r> rhost=<host>[  user=<name>]``. ``ruser`` is the
-# service's to fill, and vsftpd fills it with the client's FTP ``USER``
-# (sysdeputil.c), so an earlier ``rhost=`` can be a client's. After the slot
-# PAM writes only ``user=`` for an account that exists: the RIGHTMOST
-# ``rhost=`` is the slot.
-_PAM_RHOST_RE = re.compile(r"(?:.*\s)?rhost=(?P<addr>\S*)")
+# pam_unix: ``… ruser=<r> rhost=<host>[  user=<name>]``. Client text can sit
+# on either side of the slot: vsftpd fills ``ruser`` with the client's FTP
+# ``USER`` (sysdeputil.c), and with pam_unix's ``audit`` option an unknown
+# login is logged as ``user=<name>`` after it. One ``rhost=`` is the slot; a
+# second means one of them is a client's, and the line is credited to nobody.
+_PAM_RHOST_RE = re.compile(r"(?:^|\s)rhost=(?P<addr>\S*)")
 
 
 def _slot_address(message: str) -> str | None:
@@ -509,9 +401,19 @@ def _slot_address(message: str) -> str | None:
     return None
 
 
+def _rhost_address(message: str) -> str | None:
+    slots = [m.group("addr") for m in _PAM_RHOST_RE.finditer(message)]
+    return slots[0] if len(slots) == 1 else None
+
+
 @dataclass(frozen=True)
 class SshdAuthLine:
     """The sshd auth reading of one log line.
+
+    ``read`` is True when this module's reading is the one to use — the line
+    was positively read (module docstring), or holds no word any rule needs.
+    When False, the caller reads the line exactly as before fm#1657, and the
+    other fields are empty.
 
     ``events`` are the categories whose phrase opens the message, in the
     extractor's per-line order. ``outcome`` is True on an attempt's outcome
@@ -522,13 +424,16 @@ class SshdAuthLine:
     events: tuple[str, ...]
     outcome: bool
     address: str | None
+    read: bool = True
 
 
-_NOT_AUTH = SshdAuthLine((), False, None)
-# A word every event rule above needs, lower-cased: a line holding none of
-# them cannot be an event under any reading, so neither reading runs. Most
-# lines of most logs hold none. A rule that stops needing one of these must
-# leave it here — ``test_every_rule_needs_an_event_word`` checks.
+_NO_EVENT = SshdAuthLine((), False, None)
+_UNREAD = SshdAuthLine((), False, None, read=False)
+# A word every event rule needs — this module's AND the search the unread
+# reading uses — lower-cased: a line holding none of them cannot be an event
+# under either reading, so it is decided here without parsing. Most lines of
+# most logs hold none. ``test_every_rule_needs_an_event_word`` checks both
+# rule sets against this list.
 _EVENT_WORDS = (
     "password",
     "publickey",
@@ -543,7 +448,7 @@ _EVENT_WORDS = (
 
 
 def read_sshd_auth_line(line: str) -> SshdAuthLine:
-    """Classify ``line`` by the words sshd opened its message with.
+    """Read ``line`` by the words sshd opened its message with, if it can.
 
     The categories are those the logs extractor counts from sshd —
     ``failed_password``, ``accepted_login``, ``invalid_user``,
@@ -552,17 +457,19 @@ def read_sshd_auth_line(line: str) -> SshdAuthLine:
     writes that phrase mid-message (``fatal: Write failed: Connection reset by
     peer``), as does every other network daemon, so there is no fixed
     position to anchor it to.
+
+    Returns ``read=False`` for a line this module does not positively read.
     """
     lowered = line.lower()
     if not any(word in lowered for word in _EVENT_WORDS):
-        return _NOT_AUTH
+        return _NO_EVENT
     message = split_syslog_line(line)
     reading = _read_message(message)
-    if reading is None and not _is_sshd(message.program):
-        fallback = _fallback_message(line, message)
-        if fallback is not None:
-            reading = _read_message(fallback)
-    return reading or _NOT_AUTH
+    if reading is not None:
+        return reading
+    if _is_sshd(message.program):
+        return _NO_EVENT
+    return _UNREAD
 
 
 def _read_message(message: SyslogMessage) -> SshdAuthLine | None:
@@ -597,8 +504,7 @@ def _read_message(message: SyslogMessage) -> SshdAuthLine | None:
     if break_in:
         address = break_in.group("reverse_addr") or break_in.group("forward_addr")
     elif pam_failure:
-        rhost = _PAM_RHOST_RE.match(text)
-        address = rhost.group("addr") if rhost else None
+        address = _rhost_address(text)
     else:
         address = _slot_address(text)
     return SshdAuthLine(tuple(events), outcome, _unmapped(address))
