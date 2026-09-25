@@ -11021,8 +11021,9 @@ class MilestoneEngine:
                 f"{case.case_id}; preserved the rest. Continuing with response."
             )
             # Tell the model, or it re-claims the same milestone unjustified
-            # and is stripped again (fm#1677). Head of the feedback: the turn
-            # record truncates from the tail, and these name what was lost.
+            # and is stripped again (fm#1677). The turn record truncates
+            # feedback from the tail; the strip is the turn's first writer, and
+            # prepending keeps this at the head should that order change.
             not_recorded = (
                 f"Milestones {sorted(stripped)} were NOT recorded this turn. "
                 if stripped
