@@ -43,7 +43,7 @@ Spawn a `general-purpose` subagent via the Task tool. Pass a fully self-containe
 > - `.claude/skills/architecture/SKILL.md`
 > - *(plus any additional skill files listed below)*
 >
-> Additional skills for this review: `<SKILL_LIST>`
+> Additional skills for this review (each is `.claude/skills/<name>/SKILL.md`): `<SKILL_LIST>`
 >
 > Read the authoritative design documents each skill points to. Do not skip this step.
 >

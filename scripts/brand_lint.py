@@ -32,6 +32,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ALLOW_MARKER = "brand-lint: allow"
+CANONICAL_SOURCE = ".claude/skills/brand-messaging/SKILL.md"
 
 # Brand-facing files that describe FaultMaven as a product. NOT technical/
 # architecture docs, NOT the brand skill/command (they hold the pattern list).
@@ -50,7 +51,7 @@ CORE_FILES = [
     "docs/README.md",
 ]
 
-# (regex, guidance). Patterns mirror brand-messaging.md §3/§7.
+# (regex, guidance). Patterns mirror the brand-messaging skill §3/§7.
 # NOTE: 'AIOps platform' / 'observability platform' / 'playbook' are deliberately
 # NOT grepped — FaultMaven references those categories by contrast (intended
 # positioning), so a substring match false-positives. They stay §3 review rules.
@@ -135,15 +136,13 @@ def main() -> int:
         _scan(rel, _COMPILED["CORE_ONLY"], hits)
 
     if hits:
-        print(
-            "Brand-messaging lint failed (canonical: .claude/skills/brand-messaging/SKILL.md):\n"
-        )
+        print(f"Brand-messaging lint failed (canonical: {CANONICAL_SOURCE}):\n")
         for h in hits:
             print(f"  {h}")
         print(
             "\nFix the wording, or append 'brand-lint: allow' to the line for a "
             "deliberate, justified use.\nWhen retiring a NEW term, add it here AND "
-            "to brand-messaging.md §7 in the same change."
+            f"to {CANONICAL_SOURCE} §7 in the same change."
         )
         return 1
 
