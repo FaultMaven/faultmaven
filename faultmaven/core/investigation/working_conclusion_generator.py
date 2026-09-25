@@ -14,6 +14,7 @@ Key Features:
 - Evidence completeness per hypothesis
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List
@@ -80,6 +81,7 @@ class ProgressMetrics:
 def generate_working_conclusion(
     case: Case,
     current_turn: int,
+    likelihood_overrides: Mapping[str, float] | None = None,
 ) -> WorkingConclusion:
     """Generate working conclusion based on current case state.
 
@@ -91,6 +93,9 @@ def generate_working_conclusion(
     Args:
         case: Current case with hypotheses, evidence, and progress
         current_turn: Current conversation turn number
+        likelihood_overrides: Per-hypothesis likelihood to score it at in
+            place of its current one — the value a pending update will leave
+            (see ``milestone_engine._settled_working_conclusion``).
 
     Returns:
         WorkingConclusion representing agent's current understanding
@@ -118,8 +123,12 @@ def generate_working_conclusion(
             return rcc_mirror
         return _create_early_stage_conclusion(case, current_turn)
 
+    def _scored(h: Hypothesis) -> float:
+        return (likelihood_overrides or {}).get(h.hypothesis_id, h.likelihood)
+
     # Find highest likelihood hypothesis
-    best_hypothesis = max(active_hypotheses, key=lambda h: h.likelihood)
+    best_hypothesis = max(active_hypotheses, key=_scored)
+    best_likelihood = _scored(best_hypothesis)
 
     # Count supporting evidence
     supporting_count = len(best_hypothesis.supporting_evidence)
@@ -128,12 +137,9 @@ def generate_working_conclusion(
     # Generate caveats
     caveats = _generate_caveats(best_hypothesis)
 
-    # Determine if can proceed with solution (≥70% likelihood)
-    can_proceed = best_hypothesis.likelihood >= 0.70
-
     return WorkingConclusion(
         statement=best_hypothesis.statement,
-        likelihood=best_hypothesis.likelihood,
+        likelihood=best_likelihood,
         reasoning=(
             f"Based on {supporting_count} supporting evidence "
             f"item{'' if supporting_count == 1 else 's'} linked to this "

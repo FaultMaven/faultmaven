@@ -54,6 +54,10 @@ from faultmaven.modules.case.domain.models import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
+    Hypothesis,
+    HypothesisCategory,
+    HypothesisGenerationMode,
+    HypothesisState,
     InquiryData,
     InvestigationActionType,
     MitigationRecord,
@@ -470,6 +474,20 @@ class TestWorkingConclusionLicense:
     def _case_with_pending_offer(self) -> Case:
         case = _make_case(established=False)
         case.progress.symptom_verified = True
+        # The hypothesis the 0.65 conclusion is built from: the recompute
+        # rebuilds the working conclusion from the hypotheses before its
+        # license re-check, so a conclusion with nothing behind it would not
+        # survive to be tested.
+        hypothesis = Hypothesis(
+            statement="the pool is exhausted",
+            category=HypothesisCategory.DATABASE,
+            state=HypothesisState.ACTIVE,
+            generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+            rationale="observed stuck queries holding all slots",
+            likelihood=0.65,
+            generated_at_turn=4,
+        )
+        case.hypotheses[hypothesis.hypothesis_id] = hypothesis
         case.working_conclusion = WorkingConclusion(
             statement="the pool is exhausted",
             reasoning="observed stuck queries holding all slots",

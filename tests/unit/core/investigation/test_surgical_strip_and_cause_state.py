@@ -116,18 +116,18 @@ class TestSolutionStateDerivation:
     test_solution_offer_liveness.py)."""
 
     def _case(self):
-        return SimpleNamespace(
-            case_id="case_test",
-            current_turn=3,
-            progress=InvestigationProgress(),
-            hypotheses={},
-            solutions=[],
-            evidence=[],
-            causal_nodes={},
-            causal_edges={},
-            root_cause_conclusion=None,
-            proposed_actions=[],
+        # A real Case: the recompute rebuilds the working conclusion from it
+        # before the license re-check (fm#1679), which a stand-in lacked the
+        # fields for.
+        case = Case(
+            enterprise_id="org_test",
+            title="derivation",
+            description="Cross-account AssumeRole fails for the data-processor pods.",
         )
+        case.inquiry.problem_statement_confirmed = True
+        case.state = CaseState.INVESTIGATING
+        case.current_turn = 3
+        return case
 
     def test_solution_state_selected_when_ladder_advanced(self):
         # The gate ladder is a forward-only fact: solution_accepted keeps the
