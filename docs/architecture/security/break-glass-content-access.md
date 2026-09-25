@@ -5,7 +5,7 @@ transcript — in the Cloud deployment, and why that path is shaped the way it i
 
 This is the content row of ADR-012 D8/D9. The metadata row (the cross-tenant
 case *list*) is documented alongside `GET /api/v1/admin/cases`; the durable audit
-trail both paths write to is `operator_access_audit` (migration 035).
+trail both paths write to is `operator_access_audit`.
 
 ## The boundary
 
@@ -37,6 +37,20 @@ POST /api/v1/admin/grants
         "expires_at": "...", "revoked_at": null, ... }
 ```
 
+The request is validated before anything is written; a value outside these
+limits is a 422 and creates no grant (`BreakGlassGrantRequest` in
+`faultmaven/models/api_models.py`):
+
+| Field | Limit |
+|-------|-------|
+| `reason` | Required. Surrounding whitespace is stripped, and the stripped value must be at least 20 characters (`MIN_GRANT_REASON_LENGTH`) and at most 2000 (`MAX_GRANT_REASON_LENGTH`). The stripped value is what is stored. |
+| `ttl_minutes` | Optional, default 60 (`DEFAULT_GRANT_TTL_MINUTES`); from 1 to 240 (`MAX_GRANT_TTL_MINUTES`). |
+| `case_id`, `enterprise_id` | Required, 1 to 36 characters; longer is rejected, never truncated. |
+
+The grant surface is create (`POST /api/v1/admin/grants`), list
+(`GET /api/v1/admin/grants`) and revoke
+(`POST /api/v1/admin/grants/{grant_id}/revoke`). There is no extend.
+
 There is no single `state` field, deliberately. Approval, revocation and expiry
 are three independent reasons a grant may not authorise anything, so collapsing
 them into one word would either lose information a reviewer needs or invite a
@@ -54,12 +68,14 @@ one reason string.
 
 **A reason, checked for substance.** `reason` is required, is stored on the grant
 *and* denormalised onto every audit row the grant authorises, and is rejected
-below `MIN_REASON_LENGTH`. A length floor does not make a justification
+below `MIN_GRANT_REASON_LENGTH` (20 characters once surrounding whitespace is
+stripped). A length floor does not make a justification
 meaningful — nothing at this layer can — but it does stop the field degrading
 into `"."`, which is the failure mode that makes an audit trail worthless.
 
-**A TTL, and no way to extend one.** `expires_at` is immutable; the database
-rejects an UPDATE that changes it. Needing longer means creating a *new* grant,
+**A TTL, and no way to extend one.** The window is 60 minutes unless the request
+asks for less or more, and never more than 240. `expires_at` is immutable; the
+database rejects an UPDATE that changes it, and the API has no extend route. Needing longer means creating a *new* grant,
 with a fresh reason and a fresh audit row. An extendable grant converges on a
 standing one, which is the thing this design exists to prevent.
 
@@ -173,14 +189,12 @@ row names. Attribution comes from the request, never from the assertion.
 ### What is still deferred
 
 The all-tenant metadata **list** still refuses (403) under `multi`. It cannot be
-solved by rebinding — it must span every organization at once, and there is no
-single org to bind to. The settled answer is a `SECURITY DEFINER` function owned
-by the `faultmaven` role returning metadata columns only, so the bypass is
+solved by rebinding — it must span every enterprise at once, and there is no
+single enterprise to bind to. The settled answer is a `SECURITY DEFINER` function
+owned by the `faultmaven` role returning metadata columns only, so the bypass is
 bounded by a *return type that physically cannot carry a title or description*.
-That is not built yet: `multi` cannot boot today (it is gated behind the WorkOS
-organization→FaultMaven organization SSO mapping), and shipping PostgreSQL-only
-SQL that no deployment exercises would be untested by construction. It lands with
-the `multi` cutover.
+That is not built yet, so under `multi` the list answers 403 rather than a
+result RLS has silently narrowed to the operator's own enterprise.
 
 Evidence **file** content is likewise not yet reachable through this path. The
 grant model covers it unchanged — same gate, same audit action — but the file
