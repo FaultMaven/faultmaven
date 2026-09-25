@@ -616,7 +616,7 @@ The hypothesis lifecycle:
 - **CAPTURED** → **ACTIVE** → **VALIDATED** / **REFUTED** / **INCONCLUSIVE** / **RETIRED**
 - Evidence links with stances: SUPPORTS, REFUTES, NEUTRAL
 - Confidence formula: `initial + (0.15 x supporting) - (0.20 x refuting)`
-- Stagnation decay: `likelihood x 0.85^iterations_without_progress`
+- Stagnation decay: `likelihood x 0.85` once per stagnant turn (a turn that touched the hypothesis without progress); a hypothesis that causal evidence supports is never aged by time alone ([methodology §6](./two-dimensional-hypothesis-methodology.md))
 - Anchoring detection: 4+ hypotheses in same category refuted
 
 ### 6.2 New Constraint: Hypothesis Before Causal Evidence

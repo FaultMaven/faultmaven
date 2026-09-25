@@ -229,6 +229,28 @@ def test_validate_on_active_records_strong_prior():
     assert "validated once" in metadata.get("system_feedback", "")
 
 
+def test_validate_records_progress_so_the_same_turn_does_not_decay_it():
+    """Moving belief to 1.0 is progress. Without recording it, a stagnation
+    counter left over from earlier turns made the validate turn a stagnant turn,
+    and housekeeping decayed the user's recorded belief before the reply."""
+    eng = _make_engine()
+    case = _make_case()
+    h = _hyp(
+        HypothesisState.ACTIVE,
+        last_progress_at_turn=3,
+        last_updated_turn=5,
+        iterations_without_progress=2,
+    )
+    case.hypotheses = {h.hypothesis_id: h}
+
+    _apply(eng, case, h.hypothesis_id, "validate")
+    eng._perform_hypothesis_housekeeping(case, {})
+
+    assert h.likelihood == 1.0
+    assert h.iterations_without_progress == 0
+    assert h.last_progress_at_turn == case.current_turn
+
+
 def test_unknown_hypothesis_id_is_a_noop():
     eng = _make_engine()
     case = _make_case()

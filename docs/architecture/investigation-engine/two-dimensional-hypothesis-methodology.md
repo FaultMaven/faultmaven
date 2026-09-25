@@ -342,7 +342,9 @@ validation (§7.1.1) fall out of the arithmetic rather than needing to be bolted
 on as special cases.
 
 **Decay counts investigation turns, not wall-clock turns.** Stagnation decay
-(`belief × 0.85^iterations_without_progress`) and anchoring detection key on
+multiplies belief by 0.85 once per stagnant turn — a turn that touched the
+hypothesis without progress — and never on a turn that did not touch it.
+Decay and anchoring detection key on
 `iterations_without_progress`, which must advance **only on investigation turns**
 — a turn where a node was *eligible* to progress and didn't (new evidence
 analyzed, a proposed test's result returned, or a node-state transition
@@ -356,14 +358,28 @@ the very chain it is testing. The counter is per-node and resets at
 One exception, at the flat-hypothesis layer: an ACTIVE hypothesis that *no* turn
 ever touches gets no investigation-turn increment (nothing engages it), so it
 would otherwise sit at its prior forever — never decaying, never tripping
-anchoring. The housekeeping loop closes that gap with an origin-blind, age-based
-stagnation sweep (`advance_stagnation_if_ignored`): once such a hypothesis has
-gone `IGNORED_STAGNATION_TURN_THRESHOLD` turns since its last progress, its
-counter advances one per turn so decay and anchoring act on it (#713). This is
-conservative and reversible — decay only lowers belief, and the moment evidence
-touches the hypothesis its likelihood recomputes from `initial_likelihood` (the
-age-decay is erased) — so an ignored candidate stalls/soft-retires rather than
-lingering, and never reaches a conclusion on age alone.
+anchoring. The housekeeping loop closes that gap with a provenance-blind,
+age-based stagnation sweep (`advance_stagnation_if_ignored`): once such a
+hypothesis has gone `IGNORED_STAGNATION_TURN_THRESHOLD` turns since its last
+progress, its counter advances one per turn so decay and anchoring act on it
+(#713). This is conservative and reversible — decay only lowers belief, and the
+moment evidence touches the hypothesis its likelihood recomputes from
+`initial_likelihood` (the age-decay is erased) — so an ignored candidate
+stalls/soft-retires rather than lingering, and never reaches a conclusion on age
+alone.
+
+The exception does not cover a hypothesis that **causal evidence supports**: a
+SUPPORTS link at `CAUSAL_STANCE_CONFIDENCE_MIN` to a `CAUSAL_EVIDENCE` row, on the
+hypothesis or on its chain root. Support from symptom evidence does not count —
+a symptom log supports every sibling that would explain the symptom, and one such
+link already lifts a 0.5 prior above the cause-identification bar. A causally
+supported hypothesis goes untouched for a different reason:
+the investigation has stopped testing it, typically because the user is applying
+its fix and nothing is left to ask of it. Those turns wait on the user, which the
+rule above says must not advance the counter, so the sweep leaves it alone. Aging
+it anyway took the leading cause from 0.95 to 0.36 in three turns, below the
+cause-identification bar, while its fix was being verified (#1678). A supported
+hypothesis still stagnates when a turn engages it without progress.
 
 ---
 

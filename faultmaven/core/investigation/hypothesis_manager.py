@@ -15,12 +15,17 @@ Hypothesis Lifecycle (matches HypothesisState enum):
 - ACTIVE: Currently being tested (promoted from CAPTURED or systematic generation)
 - VALIDATED: Confirmed by evidence (likelihood ≥0.70 + ≥2 supporting evidence)
 - REFUTED: Disproved by evidence (likelihood ≤0.20 + ≥2 refuting evidence)
-- INCONCLUSIVE: System-automated — likelihood 0.3–0.5 stagnant for 3+ turns
-- RETIRED: System-automated (likelihood <0.30) or manual abandonment without disproof
+- INCONCLUSIVE: System-automated — likelihood 0.3–0.5 stagnant for 3+ turns,
+  checked when a likelihood update lands (decay alone never transitions)
+- RETIRED: System-automated (likelihood <0.30, checked when a likelihood update
+  lands; age-driven retirement goes only through anti-anchoring) or manual
+  abandonment without disproof
 
 Confidence Management:
 - Evidence-ratio based: initial + (0.15 × supporting) - (0.20 × refuting)
-- Confidence decay for stagnation: base × 0.85^iterations_without_progress
+- Confidence decay for stagnation: × 0.85 once per stagnant turn (a turn that
+  touched the hypothesis without progress); a hypothesis that causal evidence
+  supports is never aged by time alone
 - Auto-transition to VALIDATED/REFUTED based on thresholds
 
 Anchoring Prevention:
@@ -85,6 +90,11 @@ ANCHORING_SAME_CATEGORY_THRESHOLD = 4
 # lingering at its prior forever. Kept equal to that horizon on purpose — do not
 # diverge the two without cause.
 IGNORED_STAGNATION_TURN_THRESHOLD = 3
+
+# Stagnation decay (``apply_likelihood_decay``): each stagnant turn multiplies
+# belief by the factor once, never below the floor.
+STAGNATION_DECAY_FACTOR = 0.85
+STAGNATION_DECAY_FLOOR = 0.1
 
 
 #: Recorded when an anti-anchoring retirement removes a hypothesis that was
@@ -551,6 +561,33 @@ class HypothesisManager:
             for link in node.evidence_links
         )
 
+    @classmethod
+    def _causally_supported(cls, hypothesis: Hypothesis, case: "Case") -> bool:
+        """Whether causal evidence supports the hypothesis: a SUPPORTS link at
+        ``stance_confidence >= CAUSAL_STANCE_CONFIDENCE_MIN`` to a
+        CAUSAL_EVIDENCE row, on the hypothesis itself or on its chain root
+        (``_chain_root_confidently_supported``).
+
+        The age sweep's exemption. Deliberately narrower than the B1 raise cap
+        in ``update_hypothesis_likelihood``, which accepts a confident SUPPORTS
+        link to any evidence: a symptom log "supports" every sibling that would
+        explain the symptom, so crediting it here would let non-discriminating
+        siblings hold their belief — above the cause-identification bar, since
+        one link lifts a 0.5 prior to 0.65 — for as long as nobody touches them.
+        Only causally-grounding support counts toward validation (§7.1), and
+        only it exempts a hypothesis from being aged.
+        """
+        categories = {
+            e.evidence_id: getattr(e, "category", None) for e in (case.evidence or [])
+        }
+        return any(
+            link.stance == EvidenceStance.SUPPORTS
+            and (link.stance_confidence if link.stance_confidence is not None else 1.0)
+            >= CAUSAL_STANCE_CONFIDENCE_MIN
+            and categories.get(link.evidence_id) == EvidenceCategory.CAUSAL_EVIDENCE
+            for link in hypothesis.evidence_links
+        ) or cls._chain_root_confidently_supported(hypothesis, case)
+
     def _check_state_transition(
         self,
         hypothesis: Hypothesis,
@@ -607,12 +644,13 @@ class HypothesisManager:
         self,
         hypothesis: Hypothesis,
         current_turn: int,
+        case: "Case",
     ) -> Hypothesis:
-        """Age an ACTIVE hypothesis toward stagnation when no turn is touching it.
+        """Age an ignored hypothesis that causal evidence does not support.
 
         ``iterations_without_progress`` otherwise advances ONLY when a hypothesis
         is engaged (evidence linked / a likelihood update that fails to move
-        belief >= 5%). A hypothesis that is simply IGNORED — never touched by
+        belief >= 5%). A prior that is simply IGNORED — never touched by
         evidence — keeps ``iterations_without_progress == 0`` forever, so
         ``apply_likelihood_decay`` no-ops and stagnation-based anchoring never
         fires on it: it lingers at its prior as a permanent unrefuted sibling
@@ -622,17 +660,29 @@ class HypothesisManager:
         feeding the SAME decay/anchoring machinery a repeatedly-tested hypothesis
         already drives.
 
-        Conservative and origin-BLIND by construction: it only ADVANCES the
+        A hypothesis that causal evidence supports (``_causally_supported``) is
+        not aged: belief that evidence earned is not lowered by time. One whose
+        support is in
+        and whose fix the user is carrying out goes untouched for exactly that
+        reason, and those turns wait on the user rather than test anything.
+        Aging it there took the leading cause from 0.95 to 0.36 in three turns,
+        below the cause-identification bar, while its fix was being verified
+        (#1678). A supported hypothesis still stagnates when a turn ENGAGES it
+        without progress; it is only exempt from aging by time.
+
+        Conservative and provenance-blind by construction: it only ADVANCES the
         stagnation counter (which can lower belief over time or stall the theory)
         — it never raises likelihood, validates, refutes, concludes, or reads a
-        hypothesis's provenance. A hypothesis touched THIS turn (its
-        ``last_updated_turn`` already reached ``current_turn`` via the evidence
-        path or its own creation) is skipped, so the counter is never
-        double-advanced in one turn.
+        hypothesis's origin (seeded and self-generated priors age identically).
+        A hypothesis touched THIS turn (its ``last_updated_turn`` already reached
+        ``current_turn`` via the evidence path or its own creation) is skipped,
+        so the counter is never double-advanced in one turn.
 
         Args:
             hypothesis: hypothesis to age
             current_turn: current conversation turn
+            case: the case — its evidence categories and causal graph decide
+                whether the hypothesis is causally supported.
         """
         if hypothesis.state != HypothesisState.ACTIVE:
             return hypothesis
@@ -641,6 +691,9 @@ class HypothesisManager:
             return hypothesis
         turns_since_progress = current_turn - hypothesis.last_progress_at_turn
         if turns_since_progress < IGNORED_STAGNATION_TURN_THRESHOLD:
+            return hypothesis
+        # Checked last: it scans the case's evidence, the two above are free.
+        if self._causally_supported(hypothesis, case):
             return hypothesis
 
         hypothesis.iterations_without_progress += 1
@@ -659,18 +712,33 @@ class HypothesisManager:
         hypothesis: Hypothesis,
         current_turn: int,
     ) -> Hypothesis:
-        """Apply likelihood decay to stagnant hypothesis
+        """Decay belief by one step on a turn that left the hypothesis stagnant.
 
-        Likelihood decay formula: base * 0.85^iterations_without_progress
+        A stagnant turn is one that touched the hypothesis — engaged it, or aged
+        it through ``advance_stagnation_if_ignored`` — without progress: the
+        stagnation counter is positive, ``last_updated_turn`` reached this turn,
+        and ``last_progress_at_turn`` did not. Each such turn multiplies belief
+        by ``STAGNATION_DECAY_FACTOR`` once, floored at
+        ``STAGNATION_DECAY_FLOOR``; a prior aged on each of ``n`` turns ends at
+        ``× 0.85^n``.
+
+        A turn that did not touch the hypothesis is not a stagnant turn and does
+        not decay it. Decaying on every turn while the counter stayed positive
+        compounded (``× 0.85^n`` per turn, ``0.85^(n(n+1)/2)`` in total) and
+        kept eroding a supported hypothesis the investigation had stopped
+        testing because it was waiting on the user (#1678).
         """
         if (
             hypothesis.state == HypothesisState.ACTIVE
             and hypothesis.iterations_without_progress > 0
+            and hypothesis.last_updated_turn >= current_turn
+            and hypothesis.last_progress_at_turn < current_turn
         ):
             old_likelihood = hypothesis.likelihood
-            # Apply decay factor
-            decay_factor = 0.85**hypothesis.iterations_without_progress
-            hypothesis.likelihood = max(0.1, hypothesis.likelihood * decay_factor)
+            hypothesis.likelihood = max(
+                STAGNATION_DECAY_FLOOR,
+                hypothesis.likelihood * STAGNATION_DECAY_FACTOR,
+            )
 
             logger.info(
                 f"Applied likelihood decay to hypothesis {hypothesis.hypothesis_id}: "
