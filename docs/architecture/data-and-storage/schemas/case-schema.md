@@ -319,13 +319,11 @@ class Case(BaseModel):
 
 ## 4. PostgreSQL Schema
 
-> **IMPORTANT - Distributed Architecture**: FaultMaven uses **separate PostgreSQL clusters**:
-> - **`auth_db`**: Users, organizations, roles (managed by Auth module)
-> - **`cases_db`**: Cases and investigation data (this schema)
->
-> Foreign key constraints between clusters are **not possible**. The `user_id` and `organization_id`
-> fields in `cases_db` reference entities in `auth_db` but are enforced at the application layer,
-> not via database FK constraints.
+> **One database**: the case tables live in the same database as the users, organizations and
+> enterprises tables (the one `DATABASE_URL` names), so the references between them are real
+> foreign keys: `cases.enterprise_id` → `enterprises` (`ON DELETE CASCADE`),
+> `cases.organization_id` → `organizations` (`ON DELETE SET NULL`) and `cases.user_id` → `users`
+> (`ON DELETE SET NULL`).
 
 ### 4.1 Table Design (case-domain tables)
 
