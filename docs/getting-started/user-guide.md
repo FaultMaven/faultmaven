@@ -298,7 +298,8 @@ docker-compose restart
 **API Key Errors**
 ```bash
 # Verify your .env file has at least one LLM provider API key
-cat .env | grep API_KEY
+# (prints the names of the keys that have a value, never the values)
+grep -oE '^(export +)?[A-Z0-9_]*API_KEY=.' .env | sed -E 's/^export +//; s/=.*//'
 ```
 
 **Session Expired**
