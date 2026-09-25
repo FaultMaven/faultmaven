@@ -8,6 +8,8 @@ Documentation for FaultMaven contributors.
 |----------|-------------|
 | [Environment Variables](./environment-variables.md) | Required configuration |
 | [Datetime Standard](./datetime-standard.md) | Date/time handling conventions |
+| [Script Usage Guide](./script-usage-guide.md) | `faultmaven.sh`, `faultmaven-dev.sh` and the utility scripts |
+| [Local Troubleshooting](./local-troubleshooting.md) | First checks for import, port, database, `lint-imports`, provider and auth problems on a checkout |
 
 ## Testing
 

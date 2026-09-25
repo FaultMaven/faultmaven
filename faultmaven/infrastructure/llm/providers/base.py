@@ -703,10 +703,10 @@ class BaseLLMProvider(ABC):
         the provider API as a body field. That makes "remember to pop the
         router's knobs first" a convention rather than a mechanism — and the
         convention already has holes for the older ``cache_prompt`` knob. A
-        provider written from the checklist in ``CLAUDE.md`` with the copied
-        merge idiom would send ``reasoning_intent`` and ``min_output_tokens``
-        on every routed call and be dead on arrival against any
-        OpenAI-compatible endpoint.
+        provider written from the checklist in
+        ``.claude/rules/llm-providers.md`` with the copied merge idiom would
+        send ``reasoning_intent`` and ``min_output_tokens`` on every routed
+        call and be dead on arrival against any OpenAI-compatible endpoint.
 
         Routing the merge through here makes the discard automatic: a provider
         that consumes a knob pops it before calling this, and one that does not

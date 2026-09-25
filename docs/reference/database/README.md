@@ -2,7 +2,7 @@
 
 ## Schema
 
-FaultMaven uses **Alembic** for database migrations. The current schema (33 tables across 3 domains) is created by a clean baseline migration plus subsequent migrations for `reports`, `conversion_jobs`, and `conversion_drafts`.
+FaultMaven uses **Alembic** for database migrations. The chain is a single baseline, `001_enterprise_baseline` (ADR-017), which creates every table, the PostgreSQL RLS policies, the append-only operator triggers, the last-admin constraint trigger, and the seed rows (the Standalone enterprise, the Standalone default team, the RBAC roles and permissions). It runs on SQLite as well as PostgreSQL — PostgreSQL-only DDL (RLS, triggers, partial indexes, `ON CONFLICT`) is dialect-guarded and column types stay SQLite-compatible. `alembic heads` prints the current head; `tests/integration/test_alembic_migrations.py` pins it together with the expected table set.
 
 - **Authoritative source**: `alembic/versions/` in the repo root
 - **ER diagram**: [docs/architecture/data-and-storage/er-diagram.md](../../architecture/data-and-storage/er-diagram.md) (regenerate via `scripts/generate_er_diagram.py`)
@@ -15,6 +15,22 @@ alembic upgrade head          # Apply all migrations
 alembic revision --autogenerate -m "description"  # Create new migration
 alembic downgrade -1          # Revert last migration
 ```
+
+### Tables by domain
+
+**User domain:** `users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `team_invitations`, `user_audit_log`, `oauth_authorization_codes`, `token_revocations`
+
+**Case domain:** `cases`, `case_messages`, `case_actions`, `case_tags`, `case_checkpoints`, `case_entities`, `evidence`, `hypotheses`, `hypothesis_evidence`, `solutions`, `uploaded_files`, `investigation_sessions`, `reports`, `conversion_jobs`, `conversion_drafts`
+
+Investigation activity is recorded in `case_messages` and `case_actions`. `investigation_sessions.total_agent_executions` is a counter on the session row, not a pointer into a table of executions: `agent_executions` / `agent_tool_calls` are gone, together with their ORM models and the `ICaseRepository` read/write methods (#1350).
+
+**Knowledge domain (case-adjacent):** `knowledge_items`, `knowledge_suggestions`
+
+**Tenancy, sharing and usage:** `enterprises`, `sso_org_mappings`, `sso_personal_enterprises`, `resource_shares`, `turn_usage` — semantics in `.claude/rules/data-model.md` and [sso-org-mapping.md](../../architecture/security/sso-org-mapping.md)
+
+**Config domain:** `config_overrides` (dashboard-managed settings, hot-reloaded at runtime — cloud mode only; standalone uses `.env` as the sole source of truth)
+
+This listing is by hand; the ER diagram is generated from the ORM models, so trust the diagram on a disagreement.
 
 Historical pre-Alembic SQL scripts are preserved at `docs/archive/legacy-schema/` for reference only. Do not apply them.
 

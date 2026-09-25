@@ -1,4 +1,8 @@
-"""``CLAUDE.md``'s reasoning-intent call-site table must match the code (#1357).
+"""The reasoning-intent call-site table must match the code (#1357).
+
+The table lives in ``.claude/rules/llm-providers.md`` — the path-scoped
+guidance loaded when LLM code is touched. It was CLAUDE.md's until the root
+guide was slimmed; the guard moved with it.
 
 The table under *"A caller can declare what a call needs from reasoning"* is
 hand-maintained, and it drifted the first time the set changed: fm#1116 added a
@@ -41,7 +45,7 @@ import pytest
 from faultmaven.infrastructure.llm.providers.base import ReasoningIntent
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_CLAUDE_MD = _PROJECT_ROOT / "CLAUDE.md"
+_LLM_RULES = _PROJECT_ROOT / ".claude/rules/llm-providers.md"
 _PACKAGE = _PROJECT_ROOT / "faultmaven"
 _ENGINE = _PACKAGE / "core" / "investigation" / "milestone_engine.py"
 
@@ -208,7 +212,7 @@ def test_the_scanner_finds_the_shipped_call_sites() -> None:
     """Positive control: the AST scan is not silently finding nothing.
 
     Without this, an import rename or a parse that quietly returned zero would
-    make the guard below pass against any CLAUDE.md at all — the same vacuity
+    make the guard below pass against any rules file at all — the same vacuity
     the sibling #1246 guard has to defend against.
     """
     assert _declared_call_sites(), "the AST scan found no declaring call site"
@@ -288,9 +292,9 @@ def test_the_table_parser_reads_the_shipped_table() -> None:
     documents none" — a real failure, but reported as drift rather than as the
     parser losing its footing.
     """
-    documented = _documented_call_sites(_CLAUDE_MD.read_text(encoding="utf-8"))
+    documented = _documented_call_sites(_LLM_RULES.read_text(encoding="utf-8"))
     assert documented, (
-        f"no rows parsed under the {_TABLE_HEADER!r} header in CLAUDE.md — "
+        f"no rows parsed under the {_TABLE_HEADER!r} header in {_LLM_RULES.name} — "
         "the table was renamed, moved or reshaped; update this parser with it"
     )
 
@@ -300,14 +304,14 @@ def test_the_table_parser_reads_the_shipped_table() -> None:
 def test_claude_md_documents_every_reasoning_intent_call_site() -> None:
     """The guard: the table lists exactly the calls that declare an intent."""
     declared = _declared_call_sites()
-    documented = _documented_call_sites(_CLAUDE_MD.read_text(encoding="utf-8"))
+    documented = _documented_call_sites(_LLM_RULES.read_text(encoding="utf-8"))
 
     missing = declared - documented
     stale = documented - declared
     assert not missing and not stale, (
-        "CLAUDE.md's reasoning-intent call-site table has drifted from the "
-        f"code (#1357).\n  undocumented in CLAUDE.md: {sorted(missing)}\n"
-        f"  claimed by CLAUDE.md but not in the code: {sorted(stale)}\n"
+        "llm-providers.md's reasoning-intent call-site table has drifted from the "
+        f"code (#1357).\n  undocumented in llm-providers.md: {sorted(missing)}\n"
+        f"  claimed by llm-providers.md but not in the code: {sorted(stale)}\n"
         "Paths in the table are relative to faultmaven/. Add, remove or "
         "correct the row — and re-read the prose around the table, which "
         "asserts what the declared intents are and whether any of them lifts "
@@ -335,12 +339,12 @@ def test_claude_md_counts_the_call_sites_correctly() -> None:
 
     wrong = [
         match.group(0)
-        for match in _CALL_SITE_COUNT.finditer(_CLAUDE_MD.read_text(encoding="utf-8"))
+        for match in _CALL_SITE_COUNT.finditer(_LLM_RULES.read_text(encoding="utf-8"))
         if (word := match.group(1).lower()) in recognised or word.isdigit()
         if word not in expected
     ]
     assert not wrong, (
-        f"CLAUDE.md counts the reasoning-intent call sites as {wrong}; the code "
+        f"llm-providers.md counts the reasoning-intent call sites as {wrong}; the code "
         f"declares {total} ({_NUMBER_WORDS[total]})."
     )
 
@@ -360,19 +364,19 @@ def test_claude_md_states_the_output_floor_correctly() -> None:
     """
     floor = _engine_constant("TOOLLESS_INFERENCE_OUTPUT_FLOOR")
     cap = _engine_constant("STRUCTURED_OUTPUT_MAX_TOKENS")
-    text = _CLAUDE_MD.read_text(encoding="utf-8")
+    text = _LLM_RULES.read_text(encoding="utf-8")
 
     quoted = re.search(r"TOOLLESS_INFERENCE_OUTPUT_FLOOR``?\s*\((\d+)\)", text)
     assert quoted, (
-        "CLAUDE.md no longer quotes TOOLLESS_INFERENCE_OUTPUT_FLOOR's value; "
+        "llm-providers.md no longer quotes TOOLLESS_INFERENCE_OUTPUT_FLOOR's value; "
         "either restore the '(N)' form or drop this guard with it"
     )
     assert int(quoted.group(1)) == floor, (
-        f"CLAUDE.md says TOOLLESS_INFERENCE_OUTPUT_FLOOR is "
+        f"llm-providers.md says TOOLLESS_INFERENCE_OUTPUT_FLOOR is "
         f"{quoted.group(1)}; milestone_engine.py says {floor}."
     )
     assert floor < cap, (
-        f"CLAUDE.md says the floor sits 'well under' "
+        f"llm-providers.md says the floor sits 'well under' "
         f"STRUCTURED_OUTPUT_MAX_TOKENS, but {floor} is not below {cap} — the "
         "floor would raise the generation cap instead of only forbidding a "
         "starvable partition."

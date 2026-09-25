@@ -482,15 +482,22 @@ alembic upgrade head
 
 ## Migration History
 
-| Version                        | Revision       | Date       | Description                                                                     |
-|--------------------------------|----------------|------------|---------------------------------------------------------------------------------|
-| `001_clean_baseline`           | `424078e5aa04` | 2026-03-17 | Clean baseline: 30 tables (auth, case, knowledge, config) + RBAC seed data      |
-| `add_scope_isolation_...`      | `0a6eafc2e4cf` | 2026-03-24 | Add `scope_isolation` fields to `knowledge_items`                               |
-| `add_source_type_to_conversions` | —            | 2026-03-26 | Add `conversion_jobs` + `conversion_drafts` tables for document→runbook pipeline |
-| `add_reports_table`            | —              | 2026-03-29 | Add `reports` table (TD-001 migration)                                          |
-| `add_kb_metadata_to_drafts`    | —              | 2026-04-04 | Add KB metadata fields to `conversion_drafts`                                   |
+The chain is a single baseline: `001_enterprise_baseline`
+(`alembic/versions/20260906_1200_a1e0c17bd001_001_enterprise_baseline.py`)
+creates every table, the RLS policies, the append-only operator triggers, the
+last-admin constraint trigger and the seed rows. There is no chain because the
+isolation key moved a tier (ADR-017): every tenant-scoped table, every policy
+and both SSO lookup tables changed at once, and the system was pre-user — no
+backward compatibility, no data preservation. Existing deployments are wiped
+(`fm-wipe-deployment --wipe`) and re-provisioned on this baseline, so there is
+nothing to migrate *from*; `downgrade()` drops everything. The migration's own
+docstring carries the reasoning per table group.
 
-Current total: **33 tables**.
+Run `alembic heads` for the current head. Do not copy a revision id from prose:
+a lane that parents a new migration onto a revision read from a document
+parents onto one that may no longer be the head (#1246).
+`tests/integration/test_alembic_migrations.py` pins `HEAD_REVISION` and the
+expected table set, and fails when a migration lands without them moving.
 
 ## Related Documentation
 
