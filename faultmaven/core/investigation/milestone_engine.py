@@ -1594,6 +1594,25 @@ def _infer_milestones(
 # =============================================================================
 
 
+def _milestone_already_recorded(
+    progress: InvestigationProgress, milestone: str
+) -> bool:
+    """Whether the case already records ``milestone`` as reached.
+
+    Covers the boolean fields of ``MilestoneUpdates``. A name it does not know
+    reads as not recorded, so a milestone added to the schema later is still
+    validated rather than waved through.
+    """
+    mitigation = progress.mitigation
+    recorded = {
+        "symptom_verified": progress.symptom_verified,
+        "solution_accepted": progress.solution_accepted,
+        "mitigation_accepted": mitigation is not None and mitigation.accepted,
+        "mitigation_verified": mitigation is not None and mitigation.verified,
+    }
+    return bool(recorded.get(milestone, False))
+
+
 def validate_reasoning_first(
     response_obj: BaseInteractionResponse, case: Case
 ) -> tuple[bool, list[str], set[str]]:
@@ -1624,6 +1643,8 @@ def validate_reasoning_first(
         internal_reasoning, no actionable evidence) implicate every completed
         milestone; per-milestone justification gaps implicate only that one.
         Turn-reference format errors implicate no milestone (advisory only).
+        A milestone the case already records is not a completion, so it is
+        never offending.
 
     Skip Conditions (validation bypassed):
         1. Response is InquiryResponse or TerminalResponse (no investigation milestones)
@@ -1659,11 +1680,21 @@ def validate_reasoning_first(
         # No milestones being completed, no validation needed
         return True, [], set()
 
-    # Get list of milestone fields being completed (set to True)
+    # Get list of milestone fields being completed (set to True). A milestone
+    # the case already records is a restatement, not a completion: the prompt
+    # and ``MilestoneJustifications`` ask for a justification only for a
+    # milestone the model CHANGES, and models restate standing booleans.
+    # Rejecting the restatement stripped a no-op and would feed back that an
+    # achieved milestone was rejected (fm#1677). The apply path and the stage
+    # gate absorb a restatement themselves.
     completed_milestones = []
     milestone_dict = milestones.model_dump(exclude_none=True)
     for milestone_name, value in milestone_dict.items():
-        if isinstance(value, bool) and value is True:
+        if (
+            isinstance(value, bool)
+            and value is True
+            and not _milestone_already_recorded(case.progress, milestone_name)
+        ):
             completed_milestones.append(milestone_name)
 
     if not completed_milestones:
@@ -1701,17 +1732,21 @@ def validate_reasoning_first(
     # key arrives populated, ``null`` where the model had nothing to say, so a
     # membership test against the raw model would report every milestone as
     # justified and this gate would never fire again (fm#1057).
+    #
+    # One message for all of them, not one each: the errors are delivered to
+    # the next turn through ``system_feedback``, which the turn record caps at
+    # 1000 characters, so their size must not grow with the milestone count.
     justifications = internal_reasoning.milestone_justifications.as_dict()
-    for milestone in completed_milestones:
-        if milestone not in justifications:
-            offending.add(milestone)
-            errors.append(
-                f"Milestone '{milestone}' completed without justification. "
-                f"You MUST set internal_reasoning.milestone_justifications.{milestone} "
-                f"to a justification citing specific evidence IDs. "
-                f"Example: {{{milestone}: 'Confirmed via ev_abc123 (logs) showing X and ev_def456 (metrics) showing Y'}}. "
-                f"Leaving {milestone} null or blank is what caused this rejection."
-            )
+    unjustified = [m for m in completed_milestones if m not in justifications]
+    if unjustified:
+        offending.update(unjustified)
+        errors.append(
+            f"Milestones {unjustified} completed without justification. To "
+            "claim one, set it True again and set "
+            "internal_reasoning.milestone_justifications.<milestone> to the "
+            "evidence that shows it, citing evidence IDs; null or blank is "
+            "no justification."
+        )
 
     # Check 1.5: Warn if trying to complete milestones with no actionable evidence.
     # Contextual evidence (raw uploads) cannot justify milestones — only
@@ -6956,20 +6991,6 @@ class MilestoneEngine:
                     log_msg += f", repair: {progress_result.repair_type.value}"
                 logger.info(log_msg)
 
-            # Step 5.9b: Wire reasoning_validation_errors into system_feedback.
-            # This is the reasoning-first validator — a structural check that
-            # required milestone justifications are present. Rule 2 (Evidence-
-            # Grounded) compliance is enforced only at the prompt layer; there
-            # is no post-generation diagnostic-reasoning validator.
-            if metadata.get("reasoning_validation_errors"):
-                errors = metadata["reasoning_validation_errors"]
-                current_feedback = metadata.get("system_feedback", "") or ""
-                metadata["system_feedback"] = (
-                    f"{current_feedback}\n"
-                    f"REASONING VALIDATION: {'; '.join(errors)}. "
-                    "Provide internal_reasoning with milestone_justifications."
-                ).strip()
-
             # Step 6: Record turn progress
             turn_record = self._create_turn_record(
                 turn_number=case_updated.current_turn,
@@ -10998,6 +11019,19 @@ class MilestoneEngine:
             logger.info(
                 f"Surgically stripped {stripped or 'no'} milestone(s) for case "
                 f"{case.case_id}; preserved the rest. Continuing with response."
+            )
+            # Tell the model, or it re-claims the same milestone unjustified
+            # and is stripped again (fm#1677). Head of the feedback: the turn
+            # record truncates from the tail, and these name what was lost.
+            not_recorded = (
+                f"Milestones {sorted(stripped)} were NOT recorded this turn. "
+                if stripped
+                else ""
+            )
+            _add_system_feedback(
+                metadata,
+                f"REASONING VALIDATION: {not_recorded}" + " ".join(validation_errors),
+                prepend=True,
             )
 
         # Dispatch based on response type

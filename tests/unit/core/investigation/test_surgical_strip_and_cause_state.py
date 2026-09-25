@@ -52,7 +52,7 @@ def _case(*, evidence=True):
         state=CaseState.INVESTIGATING,
         is_terminal=False,
         pending_transition=None,
-        progress=SimpleNamespace(solution_verified=False),
+        progress=InvestigationProgress(),
         evidence=["ev_1"] if evidence else [],
         current_turn=5,
         case_id="case_test",

@@ -578,10 +578,12 @@ Validation errors from multiple sources are merged into `system_feedback` on the
 
 | Source | Feedback Key | Content |
 |--------|-------------|---------|
-| Reasoning-first validator | `reasoning_validation_errors` | Missing milestone justifications |
+| Reasoning-first validator | none: the strip in `_process_response_structured` prepends it, so truncation keeps it | The milestones that were not recorded and why (no justification, no `internal_reasoning`, no evidence) |
 | Progress monitor | `breakout_action` (turn metadata; the monitor result also carries a `prompt_injection` field) | Transparency guidance + repair-pattern injection (e.g., "try different category" on anchoring) |
 
 This ensures the LLM receives corrective instructions for the next turn even when the current turn's issues are non-fatal.
+
+The reasoning-first validator judges only milestones the model is newly claiming. A milestone the case already records is a restatement: it is not validated, not stripped, and produces no feedback. The prompt asks for a justification only for a milestone the model changes, and models routinely restate standing booleans; rejecting the restatement would tell the model an achieved milestone was rejected.
 
 `TurnProgress.validation_repairs` is a separate channel: a persisted per-turn record of what the engine corrected, which nothing feeds back into the prompt. It carries the state validator's repairs, the apply step's rejections (`metadata["validation_repairs"]` — before fm#1502 those were appended and never reached the record), and the schema's out-of-range confidence repairs (fm#1502, §3.4). The #1142 telemetry stream's `validation_repairs` count is the state validator's alone.
 
