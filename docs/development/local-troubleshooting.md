@@ -47,12 +47,15 @@ Architecture section of `CLAUDE.md`.
 
 ## LLM provider issues
 
-```bash
-echo $CHAT_PROVIDER
-echo $OPENAI_API_KEY               # or the relevant provider key
+Settings come from `.env`, not your shell, so do not `echo` variables — and
+never print an API key into a terminal or an agent transcript. Ask the running
+app what it resolved:
 
+```bash
 # $TOKEN from POST /api/v1/auth/dev-login {"username":"admin"} — the bootstrap
-# admin holds the operator roles.
+# admin holds the operator roles. role_routing names the provider and model
+# each role resolved to, whether it was set or inherited, and whether the
+# provider actually initialized (an uncredentialed pin is inert).
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/v1/admin/llm/config
 
 # The debug router when mounted (platform-admin only since #1474: no header
@@ -68,7 +71,7 @@ Provider capabilities and the shipped defaults: `.claude/rules/llm-providers.md`
 ## JWT / auth issues
 
 ```bash
-echo $AUTH_MODE
+grep -E '^(AUTH_MODE|OAUTH_ENABLED)=' .env  # oauth needs BOTH: AUTH_MODE=oauth and OAUTH_ENABLED=true
 python scripts/generate_oauth_keys.py       # oauth mode needs the RSA key pair
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/v1/auth/me
 ```

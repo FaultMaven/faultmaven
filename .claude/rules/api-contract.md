@@ -2,6 +2,8 @@
 paths:
   - "faultmaven/api/**"
   - "faultmaven/main.py"
+  - "faultmaven/models/**"
+  - "scripts/generation_environment.py"
   - "faultmaven/modules/*/api/**"
   - "docs/reference/api/**"
   - "scripts/generate_api_docs.py"
@@ -17,39 +19,25 @@ this file holds only the semantics a reader cannot get from a route signature.
 
 ## The reference is generated
 
-`docs/reference/api/openapi.json` and `docs/reference/api/README.md` are
-generated from the running app by `scripts/generate_api_docs.py`. Never edit
-them by hand — the `api-contract-drift` CI job regenerates and diffs, so a
-change to any route, schema or docstring must ship with its regenerated
-artifact in the same PR:
+The rule — never hand-edit `docs/reference/api/*`, regenerate with the lockfile
+installed, ship the artifact in the same PR — is in root `CLAUDE.md` §Code
+Quality, and how auth is derived into the spec is in §Security Rules. What
+follows is why the artifact looks the way it does.
 
-```bash
-python scripts/generate_api_docs.py
-git add docs/reference/api/openapi.json docs/reference/api/README.md
-```
+`scripts/generate_api_docs.py` empties the environment (down to
+`_SYSTEM_ENVIRONMENT_KEYS`, via `scripts/generation_environment.py`) and applies
+its own pinned settings, so the artifact is a function of the code rather than
+of your `.env`. It documents the **maximal deployed surface** — OAuth, SSO and
+`/metrics` mounted, the debug router excluded. The exclusion is the generator's
+doing, not the router's: it pins `ENVIRONMENT` to `production`, which rules out
+the automatic mount, and the emptied environment means the mounting flag cannot
+arrive from your shell.
 
-The generator empties the environment and applies its own pinned settings, so
-the artifact is a function of the code rather than of your `.env`. It documents
-the **maximal deployed surface** (OAuth, SSO and `/metrics` mounted; the debug
-router excluded). The debug router is NOT development-only —
-`ENABLE_DEBUG_ENDPOINTS` mounts it in any environment — so what excludes it is
-the generator itself: `ENVIRONMENT=production` rules out the automatic mount,
-and emptying the environment down to `_SYSTEM_ENVIRONMENT_KEYS` means the flag
-cannot arrive from your shell.
-
-**Regenerate with the lockfile installed** (`pip install -r requirements/dev.txt`).
 FastAPI and Pydantic decide how schemas are emitted, so the document depends on
 their versions as well as on the code — a stale local FastAPI produces a
 valid-looking artifact that CI rejects, with the diff showing up in schema shape
 (`ctx`/`input` on ValidationError, `const` vs a single-value `enum`,
 `contentMediaType` vs `format: binary`) rather than in routes.
-
-Which operations require authentication is derived from the dependency graph:
-a route gains `security` in the spec because `require_authentication` declares
-the `HTTPBearer` scheme. An auth dependency that reads the `Authorization`
-header directly emits no `security` and would publish a protected route as
-open — `tests/integration/api/test_openapi_documents_auth.py` fails on that,
-and on any new auth dependency it has not been told how to classify.
 
 The contract version clients pin is `API_CONTRACT_VERSION` in
 `faultmaven/api/contract_version.py`; when and how to move it:
@@ -85,14 +73,6 @@ The contract version clients pin is `API_CONTRACT_VERSION` in
 
 ## Debug endpoints
 
-Mounted when `ENVIRONMENT=development`, or in any environment (staging and
-production included) when `ENABLE_DEBUG_ENDPOINTS=true`. The `Environment` enum
-admits development/staging/production; any other value is a startup
-`ValidationError`, not a debug mount. **`/debug/routes`, `/debug/health`,
-`/debug/config` and `/debug/llm-providers` require the platform administrator
-role** (#1474): an anonymous caller gets **401**, an authenticated caller
-without the role gets **403 "Platform administrator access required"** — so a
-403 here is the gate working, not a bug. The standalone bootstrap account is
-granted the operator roles on every startup, so a local `dev-login` token
-reaches them. `GET /debug/cases/{case_id}/causal-graph` is the fifth route on
-the same router and takes `require_authentication` only.
+When the debug router mounts and who may call it is stated once, in root
+`CLAUDE.md` §Security Rules, where `test_no_unauthenticated_operations.py`
+reads it; this file deliberately carries no copy.

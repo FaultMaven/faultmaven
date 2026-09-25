@@ -482,16 +482,19 @@ alembic upgrade head
 
 ## Migration History
 
-The chain is a single baseline: `001_enterprise_baseline`
+While the chain is a single baseline, `001_enterprise_baseline`
 (`alembic/versions/20260906_1200_a1e0c17bd001_001_enterprise_baseline.py`)
 creates every table, the RLS policies, the append-only operator triggers, the
 last-admin constraint trigger and the seed rows. There is no chain because the
 isolation key moved a tier (ADR-017): every tenant-scoped table, every policy
 and both SSO lookup tables changed at once, and the system was pre-user — no
-backward compatibility, no data preservation. Existing deployments are wiped
-(`fm-wipe-deployment --wipe`) and re-provisioned on this baseline, so there is
-nothing to migrate *from*; `downgrade()` drops everything. The migration's own
-docstring carries the reasoning per table group.
+backward compatibility, no data preservation. An existing deployment is
+re-provisioned on this baseline, not migrated: the database is dropped and
+re-created and the migration Job re-run, and `fm-wipe-deployment --wipe` clears
+the surfaces a `DROP DATABASE` does not reach (vectors, object storage, Redis) —
+follow [deployment-wipe.md](../operations/deployment-wipe.md) exactly. So there
+is nothing to migrate *from*; `downgrade()` drops everything. The migration's
+own docstring carries the reasoning per table group.
 
 Run `alembic heads` for the current head. Do not copy a revision id from prose:
 a lane that parents a new migration onto a revision read from a document

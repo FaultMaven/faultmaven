@@ -301,7 +301,7 @@ def test_the_table_parser_reads_the_shipped_table() -> None:
 
 @pytest.mark.unit
 @pytest.mark.architecture
-def test_claude_md_documents_every_reasoning_intent_call_site() -> None:
+def test_llm_rules_document_every_reasoning_intent_call_site() -> None:
     """The guard: the table lists exactly the calls that declare an intent."""
     declared = _declared_call_sites()
     documented = _documented_call_sites(_LLM_RULES.read_text(encoding="utf-8"))
@@ -321,7 +321,7 @@ def test_claude_md_documents_every_reasoning_intent_call_site() -> None:
 
 @pytest.mark.unit
 @pytest.mark.architecture
-def test_claude_md_counts_the_call_sites_correctly() -> None:
+def test_llm_rules_count_the_call_sites_correctly() -> None:
     """Every prose count of "N call sites" matches the table.
 
     Two sentences carry the count — one in the Gemini shape-rule paragraph, one
@@ -351,7 +351,7 @@ def test_claude_md_counts_the_call_sites_correctly() -> None:
 
 @pytest.mark.unit
 @pytest.mark.architecture
-def test_claude_md_states_the_output_floor_correctly() -> None:
+def test_llm_rules_state_the_output_floor_correctly() -> None:
     """The two numeric claims the #1357 prose added are pinned to the code.
 
     The table records the constant's *name*, so on its own it would let the

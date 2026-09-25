@@ -4,6 +4,10 @@ paths:
   - "faultmaven/modules/case/**"
   - "faultmaven/infrastructure/persistence/**"
   - "faultmaven/cli/**"
+  - "faultmaven/modules/agent/domain/services/investigation_service.py"
+  - "faultmaven/infrastructure/protection/tenant_turn_cap.py"
+  - "faultmaven/config/constants.py"
+  - "faultmaven/bootstrap/data_init.py"
   - "faultmaven/api/middleware/tenant_scope.py"
   - "faultmaven/api/middleware/principal.py"
   - "faultmaven/api/routes/**"
@@ -26,7 +30,7 @@ tables by domain: `docs/reference/database/README.md`. Auth design:
 | Mode | Algorithm | Use case | Configuration |
 |------|-----------|----------|---------------|
 | `local` | HS256 (symmetric) | Self-hosted, single-user | `AUTH_MODE=local`, `JWT_SECRET_KEY` |
-| `oauth` | RS256 (asymmetric) | Cloud, multi-user, browser extension | `AUTH_MODE=oauth`, RSA key pair (`JWT_PRIVATE_KEY_PATH`, `JWT_PUBLIC_KEY_PATH`; `python scripts/generate_oauth_keys.py`) |
+| `oauth` | RS256 (asymmetric) | Cloud, multi-user, browser extension | `AUTH_MODE=oauth` **and** `OAUTH_ENABLED=true` (startup refuses one without the other; the flag mounts the OAuth router in `main.py`), RSA key pair (`JWT_PRIVATE_KEY_PATH`, `JWT_PUBLIC_KEY_PATH`; `python scripts/generate_oauth_keys.py`) |
 
 Both modes mint the same token shape (`sub`, `username`, `email`, `roles`,
 `scopes`, `exp`/`iat`, `iss=faultmaven`, `aud=faultmaven-api`, `jti`, `type`,
@@ -86,13 +90,9 @@ infrastructure/persistence/
 └── case_vector_store.py                  # Vector storage for cases
 ```
 
-Investigation activity is recorded in `case_messages` and `case_actions`.
-`investigation_sessions.total_agent_executions` is a counter on the session
-row, not a pointer into a table of executions: `agent_executions` /
-`agent_tool_calls` are gone, together with their ORM models and the
-`ICaseRepository` read/write methods — `get_case_with_details` no longer
-accepts `include_executions`, so the call raises `TypeError` rather than
-returning an empty list (#1350).
+The removed `agent_executions` / `agent_tool_calls` tables, and what
+`investigation_sessions.total_agent_executions` is instead (#1350):
+`docs/reference/database/README.md` §Tables by domain.
 
 ## Tenancy (ADR-017)
 

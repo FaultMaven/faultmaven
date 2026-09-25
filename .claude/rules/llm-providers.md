@@ -10,7 +10,7 @@ paths:
   - ".env.example"
   - "tests/unit/infrastructure/llm/**"
   - "tests/unit/core/investigation/**"
-  - "tests/unit/architecture/test_claude_md_pins_reasoning_intent_call_sites.py"
+  - "tests/unit/architecture/test_llm_rules_pin_reasoning_intent_call_sites.py"
 ---
 
 # LLM providers, structured output and the turn budget
@@ -18,7 +18,7 @@ paths:
 Loaded when LLM-facing code is touched. Two tests pin this file:
 `tests/unit/infrastructure/llm/test_groq_model_defaults.py` (the Groq row of
 the provider table names the shipped default) and
-`tests/unit/architecture/test_claude_md_pins_reasoning_intent_call_sites.py`
+`tests/unit/architecture/test_llm_rules_pin_reasoning_intent_call_sites.py`
 (the `| Call site | Declares |` table and every "N call sites" count match the
 code, and the quoted `TOOLLESS_INFERENCE_OUTPUT_FLOOR` value matches
 `milestone_engine.py`).
@@ -353,18 +353,5 @@ design: `docs/architecture/core-architecture/structured-output-capability-system
 
 ## Diagnosing a provider locally
 
-```bash
-echo $CHAT_PROVIDER
-echo $OPENAI_API_KEY  # (or the relevant provider key)
-
-# The always-mounted operator surface, which needs no debug flag; $TOKEN from
-# POST /api/v1/auth/dev-login {"username":"admin"} — the bootstrap admin holds
-# the operator roles.
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/v1/admin/llm/config
-
-# The debug router when it is mounted (platform-admin only since #1474:
-# no header -> 401, a non-operator token -> 403)
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8090/debug/llm-providers
-
-./faultmaven.sh logs api
-```
+`docs/development/local-troubleshooting.md` §LLM provider issues — the resolved
+role routing is read from `GET /api/v1/admin/llm/config`, never by echoing keys.

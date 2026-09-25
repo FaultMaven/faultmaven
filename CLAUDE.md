@@ -43,7 +43,7 @@ Version floors: `pyproject.toml`. The pins CI installs: `requirements/dev.txt` (
 ```text
 faultmaven/
 ├── main.py                 # FastAPI entry point; composition root in the lifespan
-├── api/                    # Shared middleware (middleware/), dependencies, exception handlers, admin routes (routes/)
+├── api/                    # Shared middleware (middleware/), v1/auth_dependencies.py (require_authentication), exception handlers, admin routes (routes/)
 ├── modules/                # Feature modules — the primary code organisation
 │   ├── auth/ case/ knowledge/                  # VERTICAL MODULES: own tables, contracts.py, infrastructure/
 │   └── agent/ evidence/ preprocessing/ report/  # DOMAIN SERVICES: business logic only
@@ -79,7 +79,7 @@ Modular monolith: **Vertical Modules** own data, **Domain Services** hold busine
 | Type | Modules | Has | Rule |
 |------|---------|-----|------|
 | Vertical Module | `auth`, `case`, `knowledge` | own tables; `contracts.py` (interfaces such as `ICaseRepository` + DTOs); `infrastructure/` (repositories) | other modules import only from its `contracts.py` |
-| Domain Service | `agent`, `evidence`, `preprocessing`, `report` | `api/` + `domain/` (+ `tools/` in agent) — NO `contracts.py`, NO `infrastructure/` | reaches data through Case/Auth contracts, injected via DI |
+| Domain Service | `agent`, `evidence`, `preprocessing`, `report` | NO `contracts.py`, NO `infrastructure/`; otherwise the shape varies — `agent` and `report` have `api/` + `domain/` (agent also `tools/`, `jobs/`), `evidence` has `domain/` only, `preprocessing` is flat (`classifier.py`, `extractors/`, `preprocessing_service.py`) | reaches data through Case/Auth contracts, injected via DI |
 
 ```python
 from faultmaven.modules.case.contracts import ICaseRepository, EvidenceArtifact   # CORRECT
@@ -89,7 +89,7 @@ from faultmaven.modules.evidence.domain.validators import validate_evidence     
 ```
 
 - Boundaries are enforced by import-linter: `.importlinter` holds the contracts (15 today) and `lint-imports` prints the authoritative list.
-- The `case` module owns evidence, reports and investigation sessions (`domain/owned_models/`); `evidence` and `report` re-export from Case contracts.
+- The `case` module owns evidence, reports, checkpoints and message rows (`domain/owned_models/`) and investigation sessions (`domain/investigation_session.py`); `evidence/domain/models.py` re-exports from Case contracts.
 - Agent tools (`modules/agent/tools/`) include one `kb_qa` (every knowledge scope via metadata filter — there is no per-scope variant), `case_evidence_qa`, `document_qa_tool`, `search_file` / `deep_analysis` (query strategies over raw files), `read_file`, the `list_evidence*` and entity tools, `vectorize_file` and `web_search` (Tavily).
 - Design docs: `docs/architecture/core-architecture/` (start at `module-organization-design.md`). The `architecture` skill applies when adding endpoints, services or modules.
 
@@ -118,9 +118,10 @@ python scripts/generate_api_docs.py --check   # API-reference drift (CI gate)
 
 ## Testing
 
+- **NO CODE MERGES WITHOUT TESTS** — unit tests for logic, integration tests for routes.
 - `asyncio_mode = auto`: plain `async def` tests run. `--strict-markers` is on — mark categories with `@pytest.mark.unit` / `integration` / `security` / `llm` / … from the list in `pytest.ini`.
 - Fixtures come from `tests/conftest.py` (`reset_container` gives a fresh DI container). Mock interfaces, not concrete providers.
-- Some tests read documentation, and `.github/scripts/classify_docs_only.py` treats a document a test names as executable: this file (`test_claude_md_pins_no_migration_head.py`: no alembic revision id here; `test_no_unauthenticated_operations.py`: its `ENVIRONMENT=` / `ENABLE_DEBUG_ENDPOINTS` lines name only settable values) and `.claude/rules/llm-providers.md` (`test_claude_md_pins_reasoning_intent_call_sites.py`, `test_groq_model_defaults.py`). Move pinned text and its test together.
+- Some tests read documentation, and `.github/scripts/classify_docs_only.py` treats a document a test names as executable: this file (`test_claude_md_pins_no_migration_head.py`: no alembic revision id here; `test_no_unauthenticated_operations.py`: its `ENVIRONMENT=` / `ENABLE_DEBUG_ENDPOINTS` lines name only settable values) and `.claude/rules/llm-providers.md` (`test_llm_rules_pin_reasoning_intent_call_sites.py`, `test_groq_model_defaults.py`). Move pinned text and its test together.
 - Standards, patterns and the architecture-testing guide: `docs/development/testing/`.
 
 ## Code Quality
@@ -128,7 +129,7 @@ python scripts/generate_api_docs.py --check   # API-reference drift (CI gate)
 - `ruff check faultmaven/ tests/` and `black --check faultmaven/ tests/` are the CI `code-quality` gate. **Never add `--select`** to ruff — it REPLACES `[tool.ruff.lint].select` instead of narrowing it. Import sorting is ruff's `I` rules (ruff replaced isort in #179); do not run `isort`, which is not a gate and rewrites files across the repo. `ruff check .` / `black .` also cover `scripts/`, `alembic/` and `docs/`, which CI deliberately does not lint.
 - mypy is **not** a gate: nothing in CI runs it, and `ignore_errors = true` in `pyproject.toml` means it reports nothing unless paths are passed explicitly.
 - `docs/reference/api/openapi.json` and `docs/reference/api/README.md` are **generated** by `scripts/generate_api_docs.py`. Never hand-edit them: a change to any route, schema or docstring ships with the regenerated artifact in the same PR, produced with the lockfile installed (`pip install -r requirements/dev.txt`) — the `api-contract-drift` job regenerates and diffs. Details and contract versioning: `.claude/rules/api-contract.md`, `docs/development/api-contract-changes.md`.
-- Pre-commit: `pre-commit install` (detect-secrets, check-api-keys, check-hardcoded-rsa-keys, JSON/YAML checks), or the black-only hook `./scripts/install-git-hooks.sh` — `docs/CONTRIBUTING.md` §"Pre-commit hooks".
+- Pre-commit: `pre-commit install` runs black, `ruff --fix`, detect-secrets, check-api-keys, check-hardcoded-rsa-keys, check-kb-pack, brand-lint, venv-staleness and the standard file checks; `./scripts/install-git-hooks.sh` is the lighter black-only alternative — `docs/CONTRIBUTING.md` §"Pre-commit hooks".
 
 ## Configuration
 
@@ -139,7 +140,7 @@ Pydantic settings (`faultmaven/config/settings.py`) read `.env`; environment var
 | LLM | `CHAT_PROVIDER` (the anchor; unset roles follow it) + `*_API_KEY`; role overrides `CODE_PROVIDER`, `MULTIMODAL_PROVIDER`, `SYNTHESIS_PROVIDER`, `CLASSIFIER_PROVIDER`, `KNOWLEDGE_PROVIDER`, `DA_PROVIDER` — `.claude/rules/llm-providers.md` |
 | Knowledge | `KB_PREFETCH_ENABLED` (default `true`; governs the KB **push** — the deterministic pre-fetch into the prompt — only; the `kb_qa` **pull** stays registered either way; gated at both ends, and `GET /admin/config/status` reports `kb_prefetch`), `KB_PACK_DIR`, `ENABLE_WEB_SEARCH` + `TAVILY_API_KEY` |
 | Storage | `DATABASE_URL` / `DB_BACKEND` (SQLite default, PostgreSQL), `REDIS_URL` / `REDIS_HOST` (FakeRedis default), `VECTOR_STORAGE_TYPE` / `CHROMADB_URL` (PersistentClient default; external server via the URL) |
-| Auth | `AUTH_MODE` (`local` = HS256 + `JWT_SECRET_KEY`; `oauth` = RS256 key pair), `JWT_ACCESS_TOKEN_EXPIRY_MINUTES` / `JWT_REFRESH_TOKEN_EXPIRY_DAYS` (both modes; out of range fails startup), `OAUTH_REDIRECT_URI_PATTERNS`, `OAUTH_FIRST_PARTY_CLIENTS` + `OAUTH_FIRST_PARTY_REDIRECT_PATTERNS` (nothing skips consent until both are set) — `.claude/rules/data-model.md`, `docs/architecture/security/iam-design.md` |
+| Auth | `AUTH_MODE` (`local` = HS256 + `JWT_SECRET_KEY`; `oauth` = RS256 key pair **and** `OAUTH_ENABLED=true` — startup refuses one without the other, and the flag is what mounts the OAuth router), `JWT_ACCESS_TOKEN_EXPIRY_MINUTES` / `JWT_REFRESH_TOKEN_EXPIRY_DAYS` (both modes; out of range fails startup), `OAUTH_REDIRECT_URI_PATTERNS`, `OAUTH_FIRST_PARTY_CLIENTS` + `OAUTH_FIRST_PARTY_REDIRECT_PATTERNS` (nothing skips consent until both are set) — `.claude/rules/data-model.md`, `docs/architecture/security/iam-design.md` |
 | Tenancy | `TENANT_PROVIDER` (`multi` = PostgreSQL RLS), `TENANT_DAILY_TURN_CAP` (accounts in no organization only), `SSO_JIT_PERSONAL_TENANT_ENABLED`, `TEAM_INVITATION_TTL_DAYS` — `.claude/rules/data-model.md` |
 | Protection | `PROTECTION_PROFILE` (`hardened` default / `development`) selects the rate-limit preset in `faultmaven/config/protection.py`. There is **no** rate-limit env knob and no variable switches limiting off (`SKIP_SERVICE_CHECKS` no longer does, fm#990); `ENVIRONMENT` can only *veto* a development profile, never select one, so no deployment that configures nothing arms the `X-Dev-Bypass` / `X-Test-Bypass` headers (fm#985). `GET /admin/config/status` reports `features.request_protection_hardened`. `docs/operations/security/client-protection.md` |
 | Limits / CORS | `MAX_UPLOAD_SIZE_MB`, `CORS_ALLOW_ORIGINS`, `CORS_ALLOW_CREDENTIALS` |
@@ -155,7 +156,7 @@ alembic heads                                      # the only way to learn the c
 ```
 
 - **Never write an alembic revision id into this file.** A lane that parents a migration onto a revision read from prose parents onto a non-head (#1246). `tests/integration/test_alembic_migrations.py` pins `HEAD_REVISION` and the expected table set; a new migration moves both.
-- While the chain is a single baseline (`001_enterprise_baseline`, ADR-017 — pre-user, no backward compatibility, existing deployments are wiped with `fm-wipe-deployment --wipe` and re-provisioned) there is no history to step through: `downgrade()` drops everything, and the migration's docstring carries the per-table reasoning.
+- While the chain is a single baseline (`001_enterprise_baseline`, ADR-017 — pre-user, no backward compatibility) there is no history to step through: `downgrade()` drops everything, and the migration's docstring carries the per-table reasoning. Re-provisioning an existing deployment means **drop and re-create the database, then re-run the migration Job**; `fm-wipe-deployment --wipe` clears only the surfaces a `DROP DATABASE` does not reach (vectors, object storage, Redis). Follow `docs/operations/deployment-wipe.md` exactly.
 - Every migration runs on **SQLite and PostgreSQL**: PostgreSQL-only DDL (RLS, triggers, partial indexes, `ON CONFLICT`) is dialect-guarded and column types stay SQLite-compatible. Conventions: `docs/guides/database-migrations.md`; `/migrate` command.
 - ORM models: `faultmaven/infrastructure/persistence/models.py` (every table). ER diagram: `docs/architecture/data-and-storage/er-diagram.md` (`python scripts/generate_er_diagram.py --update`); tables by domain: `docs/reference/database/README.md`; schema specs: `docs/architecture/data-and-storage/schemas/`.
 - Tenancy (ADR-017): the **enterprise isolates** (RLS on `enterprise_id`, NOT NULL on every tenant-scoped row), the **organization bills** (nullable `organization_id`, never a visibility predicate), the **team shares** (formed by consent — accepting an invitation is the only call that writes `team_members`). Invariants, sharing and the turn-usage ledger: `.claude/rules/data-model.md`.
@@ -172,14 +173,14 @@ alembic heads                                      # the only way to learn the c
 
 - PII redaction via Presidio (cloud); JWT auth (HS256 local / RS256 oauth) with JTI-based revocation; OAuth 2.0 + PKCE for the extension; RBAC; CORS; rate limiting per IP and per user (presets — see Configuration). Design: `docs/architecture/security/`.
 - Secrets never enter the repo: pre-commit `detect-secrets`, `check-api-keys`, `check-hardcoded-rsa-keys`.
-- Debug router (`/debug/routes|health|config|llm-providers`): mounted when `ENVIRONMENT=development` or, in any environment, when `ENABLE_DEBUG_ENDPOINTS=true`; the `Environment` enum admits only development/staging/production. All four routes require the **platform administrator** role (#1474): anonymous → 401, authenticated non-operator → 403. Full surface semantics: `.claude/rules/api-contract.md`.
-- Which operations require auth is derived from the dependency graph: a route gains `security` in the OpenAPI spec because `require_authentication` declares the `HTTPBearer` scheme. `tests/integration/api/test_openapi_documents_auth.py` fails on an auth dependency that reads the header directly.
+- Debug router (`/debug/routes|health|config|llm-providers`): mounted when `ENVIRONMENT=development` or, in any environment (staging and production included), when `ENABLE_DEBUG_ENDPOINTS=true`. The `Environment` enum admits only development/staging/production — any other value is a startup `ValidationError`, not a debug mount. All four routes require the **platform administrator** role (#1474): anonymous → 401, authenticated non-operator → 403 "Platform administrator access required" (a Cloud beta account included — a 403 here is the gate working). The standalone bootstrap account holds the operator roles on every startup, so a local `dev-login` token reaches them. `GET /debug/cases/{case_id}/causal-graph` is the fifth route on the same router and takes `require_authentication` only. This bullet is the one copy of that rule (a test reads it here); the generated API reference excludes the router by construction (`.claude/rules/api-contract.md`).
+- Which operations require auth is derived from the dependency graph: a route gains `security` in the OpenAPI spec because `require_authentication` declares the `HTTPBearer` scheme. An auth dependency that reads the header directly emits no `security` and would publish a protected route as open — `tests/integration/api/test_openapi_documents_auth.py` fails on that, and on any new auth dependency it has not been told how to classify.
 - Operator reads of case content go through the audited `/admin/cases` surface (break-glass under cloud, ADR-012 D9): `docs/architecture/security/break-glass-content-access.md`.
 
 ## Common Tasks
 
 - **New endpoint**: route in the module's `api/routes.py`, logic in `domain/services/`, tests in `tests/unit/modules/` and `tests/integration/`, regenerate the API reference, run `lint-imports`. `/new-endpoint` command; `architecture` skill.
-- **New module**: vertical = `contracts.py` + `api/` + `domain/` + `infrastructure/` (repository under `infrastructure/persistence/`), routes registered in `main.py`; domain service = `api/` + `domain/` only, models from Case contracts, repository via DI. Either way add a layer-boundary contract to `.importlinter` and the entry to `.claude/manifest.json`.
+- **New module**: vertical = `contracts.py` + `api/` + `domain/` + `infrastructure/` (repository under `infrastructure/persistence/`), routes registered in `main.py`; domain service = `domain/` (plus `api/` when it serves routes), models from Case contracts, repository via DI. Either way add a layer-boundary contract to `.importlinter` and the entry to `.claude/manifest.json`.
 - **New LLM provider**: the checklist in `.claude/rules/llm-providers.md` §"Adding a New LLM Provider"; long-form guide `docs/guides/adding-llm-providers.md`.
 - **Modifying Database Schema**: 1. edit `faultmaven/infrastructure/persistence/models.py`; 2. `alembic revision --autogenerate -m "description"`; 3. review the file in `alembic/versions/` (both directions populated, PostgreSQL-only DDL dialect-guarded); 4. `alembic upgrade head`; 5. move `HEAD_REVISION` and the table set in `tests/integration/test_alembic_migrations.py`.
 

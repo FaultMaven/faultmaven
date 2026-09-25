@@ -97,10 +97,14 @@ To get started with local development for the `faultmaven` monolith:
 
 ## Pre-commit hooks
 
-The pre-commit framework (`.pre-commit-config.yaml`) runs **detect-secrets**,
-**check-api-keys** (custom API-key patterns), **check-hardcoded-rsa-keys** and
-the standard JSON/YAML/trailing-whitespace hooks. It is the recommended setup
-and matches CI:
+The pre-commit framework (`.pre-commit-config.yaml`) runs **black** and **ruff**
+(`--fix`, failing the commit when it rewrote something), **detect-secrets**,
+**check-api-keys** (custom API-key patterns), **check-hardcoded-rsa-keys**,
+**check-kb-pack** (the KB pack is valid and in sync with its runbook sources),
+**brand-lint**, **venv-staleness** (warns when a virtualenv is behind its
+lockfile) and the standard file hooks (JSON/YAML, merge conflicts, private keys,
+large files, whitespace, line endings). It is the recommended setup and matches
+CI:
 
 ```bash
 pip install pre-commit
