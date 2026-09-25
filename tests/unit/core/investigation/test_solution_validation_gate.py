@@ -240,7 +240,7 @@ class TestM5SolutionGate:
         action = case.proposed_actions[-1]
         assert action.action_type == InvestigationActionType.DIAGNOSTIC
         assert action.downgrade_reason is not None
-        assert "root cause is not yet established" in action.downgrade_reason
+        assert "the root cause was not established" in action.downgrade_reason
         assert case.progress.solution_proposed is False
 
     async def test_solution_allowed_when_cause_identified(self):

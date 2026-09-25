@@ -605,7 +605,12 @@ def _solution_cause_validated(case: Case) -> bool:
        yields the PRIOR turn's value. The ``RootCauseConclusion`` is applied
        early in the same method (before this gate), so on the opportunistic
        same-turn "validate the root AND propose the fix" path the RCC branch of
-       ``_cause_identified`` correctly sees this turn's grounding.
+       ``_cause_identified`` correctly sees this turn's grounding. The working
+       conclusion is rebuilt just before the solutions step
+       (``_refresh_working_conclusion``), so its leg sees the hypotheses this
+       turn created and evidence-linked. Only the LLM's own likelihood updates
+       land later (deferred past chain emission for the B1 cap); a license they
+       would grant is seen next turn (fm#1679).
 
     A premature SOLUTION (cause not established by any signal) is downgraded to
     DIAGNOSTIC — flow continues; the LLM grounds the root or proposes a
@@ -621,6 +626,25 @@ def _solution_cause_validated(case: Case) -> bool:
     from faultmaven.core.investigation.terminal_transitions import _cause_identified
 
     return _cause_identified(case)
+
+
+def _refresh_working_conclusion(case: Case) -> None:
+    """Rebuild ``case.working_conclusion`` from the case as it stands now.
+
+    The end-of-turn build (Step 5.6) runs after ``_apply_investigation_updates``,
+    so within that method the field held the PREVIOUS turn's conclusion, and the
+    license legs that read it judged this turn on last turn's hypotheses. A
+    hypothesis the model created at 0.65 had its fix downgraded by M5 on the same
+    turn, then licensed on the next with nothing new learned (fm#1679).
+
+    ``generate_working_conclusion`` is a pure function of the case, so calling it
+    mid-turn and again at Step 5.6 is safe; Step 5.6 stays because hypothesis
+    lifecycle steps after this method still move likelihoods.
+    """
+    if case.state == CaseState.INVESTIGATING:
+        case.working_conclusion = generate_working_conclusion(
+            case=case, current_turn=case.current_turn
+        )
 
 
 def _coerce_intervention_quadrant(raw: object) -> Optional[InterventionQuadrant]:
@@ -773,15 +797,19 @@ def _withdraw_unlicensed_solution_offers(
 
     Known timing edges (documented, accepted):
 
-    - The ``working_conclusion`` proxy leg reads the PREVIOUS turn's
-      conclusion (regeneration runs after this recompute), so a license
-      resting solely on it clears on the FOLLOWING turn's recompute —
-      one-turn lag. The prompt frame still exits same-turn regardless: the
+    - The ``working_conclusion`` proxy leg is rebuilt just before this
+      recompute (``_refresh_working_conclusion``), so a license resting
+      solely on it clears in the same turn when this turn's emission lowers
+      the leading hypothesis. Housekeeping decay runs AFTER the recompute, so
+      a license lost to decay clears on the FOLLOWING turn — one-turn lag.
+      The prompt frame still exits same-turn regardless: the
       Zone-3-pending conjunction requires ``cause_state == IDENTIFIED``,
       which the demotion drops in this same recompute. cause_state / RCC /
       contest falls withdraw same-turn.
-    - The reverse composition — M5 admits on the PRIOR turn's truth, this
-      re-check reads the settled truth — means an offer emitted in the very
+    - The reverse composition — M5 admits on the truth as of the solutions
+      step (the PRIOR turn's cause_state; this turn's RCC and working
+      conclusion before chain emission), this re-check reads the settled
+      truth — means an offer emitted in the very
       turn that knocks its cause down is admitted then withdrawn SAME TURN
       (pinned; the engine must not end a turn presenting a fix for a cause
       it no longer asserts). The assistant's already-delivered prose may
@@ -1073,11 +1101,13 @@ def _apply_stage_gate_signals(
                 metadata,
                 "SYSTEM: 'solution_accepted' was not registered — no "
                 "SOLUTION proposal is currently pending (it may have been "
-                "withdrawn or superseded since it was made). If the user "
-                "executed a fix and the root cause stands established, "
-                "re-propose the fix as a SolutionToAdd this turn and set the "
-                "milestone when the user confirms against the standing "
-                "proposal; if the problem is already resolved, record the "
+                "downgraded, withdrawn or superseded since it was made). If "
+                "the user has already carried out the fix, register it in ONE "
+                "response: re-propose it as a SolutionToAdd, set "
+                "solution_accepted justified by their report, and include a "
+                "root_cause_conclusion backed by the evidence if the root "
+                "cause is not yet established; do not ask them to accept it "
+                "again. If the problem is already resolved, record the "
                 "confirming causal_absence evidence instead.",
             )
         else:
@@ -12243,11 +12273,14 @@ class MilestoneEngine:
             )
 
         # 5. Solutions
-        # 5. Solutions
         #
         # Redesign R5/§2: the former pre-path solutions ban is removed. There
         # is no path commit gate; solution/workaround proposals are allowed
         # opportunistically during INVESTIGATING.
+        #
+        # M5 below licenses a fix on the working conclusion among other legs,
+        # so it must read the hypotheses as they stand now, not last turn's.
+        _refresh_working_conclusion(case)
         if hasattr(updates, "solutions_to_add") and updates.solutions_to_add:
             for s_item in updates.solutions_to_add:
                 # R9: causal-graph linkage carried by the emission (optional;
@@ -12313,16 +12346,23 @@ class MilestoneEngine:
                         f"(M5 — a permanent fix requires an established root cause)"
                     )
                     action_type = InvestigationActionType.DIAGNOSTIC
+                    # Rendered on every turn this action stays pending, so it
+                    # states what was true WHEN it was proposed, never the
+                    # current state, and gives a recovery that works either
+                    # way: an RCC licenses the fix whatever the other legs say
+                    # (fm#1679). ``ProposedAction.downgrade_reason`` holds at
+                    # most 500 characters.
                     downgrade_reason = (
-                        "Your previous SOLUTION proposal was downgraded to "
-                        "DIAGNOSTIC because the root cause is not yet established "
-                        "— no validated chain root, no root-cause conclusion, and "
-                        "no high-confidence working conclusion. A permanent fix "
-                        "must target an established root cause — a diagnostic test "
-                        "is not a solution (M5). State the root cause (a "
-                        "root_cause_conclusion) backed by the evidence that "
-                        "confirms it, then re-propose the fix; or, to intervene "
-                        "now, propose a temporary mitigation (WORKAROUND) instead."
+                        "Downgraded from SOLUTION: when proposed, the root cause "
+                        "was not established (no validated chain root, "
+                        "root-cause conclusion or working conclusion at 0.6+); "
+                        "a permanent fix needs one (M5). To register it, send "
+                        "in ONE response a root_cause_conclusion backed by "
+                        "evidence (needs a verified symptom) and the fix as a "
+                        "SolutionToAdd. If the user already carried out the "
+                        "fix, also set solution_accepted, justified by their "
+                        "report; do not ask them to accept it again. Or propose "
+                        "a WORKAROUND mitigation."
                     )
 
                 # 3D: Symptom-evidence gate — MITIGATION requires at least one
@@ -12441,6 +12481,10 @@ class MilestoneEngine:
         # a chain-contract turn (record -> node-link -> set likelihood) must
         # not be capped and gaslit for links it did emit.
         self._apply_deferred_likelihood_updates(case, metadata, case.current_turn)
+        # Again after the chain and the deferred likelihoods: the recompute's
+        # license re-check withdraws an offer whose cause fell, and must judge
+        # the working-conclusion leg on this turn's hypotheses too.
+        _refresh_working_conclusion(case)
 
         # Recompute engine-owned assessment vars (cause_state / solution_state)
         # now that this turn's hypotheses and solutions are applied (redesign R1).
