@@ -619,13 +619,15 @@ def _case_in_investigating_with_evidence():
     pending transition, and carrying evidence so the no-evidence check passes."""
     from unittest.mock import MagicMock
 
-    from faultmaven.modules.case.contracts import CaseState
+    from faultmaven.modules.case.contracts import CaseState, InvestigationProgress
 
     case = MagicMock()
     case.case_id = "case_test"
     case.state = CaseState.INVESTIGATING
     case.is_terminal = False
     case.pending_transition = None
-    case.progress.solution_verified = False
+    # A real progress record: a MagicMock one reads every milestone as
+    # already recorded, and the gate judges only new claims (fm#1677).
+    case.progress = InvestigationProgress()
     case.evidence = [MagicMock()]
     return case
