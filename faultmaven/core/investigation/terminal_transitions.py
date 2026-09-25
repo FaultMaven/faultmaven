@@ -54,6 +54,7 @@ from faultmaven.modules.case.contracts import (
     CauseState,
     InvestigationActionType,
     SolutionState,
+    WorkingConclusion,
 )
 
 # Likelihood at or above which a ``working_conclusion`` counts as a known cause
@@ -116,7 +117,9 @@ def is_substantive_reply(user_message: "str | None") -> bool:
     return "?" in msg or " but " in msg or msg.endswith(" but")
 
 
-def cause_identification_leg(case: "Case") -> "str | None":
+def cause_identification_leg(
+    case: "Case", working_conclusion: WorkingConclusion | None = None
+) -> "str | None":
     """Which leg of the cause-identification gate is satisfied, or ``None``.
 
     The single source of truth for cause-knowledge. Returns the FIRST satisfied
@@ -181,25 +184,31 @@ def cause_identification_leg(case: "Case") -> "str | None":
         case.root_cause_conclusion, "root_cause", None
     ):
         return "rcc"
+    wc = (
+        working_conclusion
+        if working_conclusion is not None
+        else case.working_conclusion
+    )
     if (
-        case.working_conclusion
-        and getattr(case.working_conclusion, "statement", None)
-        and getattr(case.working_conclusion, "likelihood", 0)
-        >= CAUSE_IDENTIFIED_LIKELIHOOD
+        wc
+        and getattr(wc, "statement", None)
+        and getattr(wc, "likelihood", 0) >= CAUSE_IDENTIFIED_LIKELIHOOD
         # #987: a MIRROR of the RootCauseConclusion is not an independent
-        # signal — whenever one exists the `rcc` leg above already governs. The
-        # working conclusion is read from the PREVIOUS turn (it regenerates
-        # after the recompute), so counting a mirror here would let a conclusion
-        # retracted THIS turn keep satisfying the backstop through its own
-        # stale reflection, for one turn after retraction cleared every other
-        # consumer.
-        and not getattr(case.working_conclusion, "mirrors_root_cause_conclusion", False)
+        # signal — whenever one exists the `rcc` leg above already governs. A
+        # working conclusion can be built before a retraction later in the same
+        # turn (M5's settled preview is built in the solutions step, and a
+        # caller's case can still carry last turn's), so counting a mirror here
+        # would let a retracted conclusion keep satisfying the backstop through
+        # its own stale reflection after retraction cleared every other consumer.
+        and not getattr(wc, "mirrors_root_cause_conclusion", False)
     ):
         return "working_conclusion"
     return None
 
 
-def _cause_identified(case: "Case") -> bool:
+def _cause_identified(
+    case: "Case", working_conclusion: WorkingConclusion | None = None
+) -> bool:
     """Whether the root cause is known, per the authoritative signal.
 
     Thin predicate over :func:`cause_identification_leg` — the cause is known iff
@@ -207,7 +216,10 @@ def _cause_identified(case: "Case") -> bool:
     logic in one place means the INV-41 backstop-reliance metric
     (``resolution_cause_leg_total``) can never disagree with the gate it observes.
     """
-    return cause_identification_leg(case) is not None
+    return (
+        cause_identification_leg(case, working_conclusion=working_conclusion)
+        is not None
+    )
 
 
 def _has_causal_absence(case: "Case") -> bool:

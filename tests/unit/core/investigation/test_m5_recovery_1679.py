@@ -10,9 +10,9 @@ fix they had already carried out.
 
 - ``TestLicenseReadsThisTurn`` — M5 and the end-of-turn license re-check judge
   the working-conclusion leg on the hypotheses as they stand, not on the field.
-- ``TestLicenseReadsTheSettledTurn`` — M5 scores a hypothesis no higher than
-  the model's pending likelihood update, and the re-check judges the value the
-  turn settles on.
+- ``TestLicenseReadsTheSettledTurn`` — M5 scores each hypothesis at the value
+  the model's pending likelihood update will leave, and the re-check reads the
+  conclusion rebuilt after the cause recompute.
 - ``TestAppliedFixRecovery`` — the one-response path both notes now promise
   registers the fix from the downgraded state.
 """
@@ -25,6 +25,7 @@ from types import SimpleNamespace
 import pytest
 
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
+from faultmaven.core.investigation import milestone_engine
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import MilestoneUpdates, SolutionToAdd
 from faultmaven.modules.case.domain.models import (
@@ -243,8 +244,8 @@ def _pending(likelihood: float) -> dict:
 @pytest.mark.asyncio
 class TestLicenseReadsTheSettledTurn:
     """Mid-turn, an evidence link has already rewritten the likelihood by
-    formula while the model's own value lands later. M5 must not read a belief
-    the turn never settles on."""
+    formula, while the model's own value lands after chain emission. M5 must
+    judge the value the turn settles on, in either direction."""
 
     async def test_a_pending_lowering_binds_m5_even_with_a_same_turn_accept(self):
         """The formula put the hypothesis at 0.65; the model says 0.45 and, in
@@ -266,6 +267,23 @@ class TestLicenseReadsTheSettledTurn:
         (diagnostic,) = _actions(case, InvestigationActionType.DIAGNOSTIC)
         assert diagnostic.downgrade_reason is not None
 
+    async def test_a_formula_reset_below_the_bar_does_not_refuse_a_held_license(self):
+        """Stood at 0.8 last turn; a new supporting link resets the formula to
+        0.2 + 2×0.15 = 0.5; the model restates 0.85. Licensed before and after
+        the turn, so the fix must stand."""
+        case = _case(leading_likelihood=0.5, stale_wc=0.8, supported=True)
+        hypothesis = case.hypotheses["hyp_000000000001"]
+        hypothesis.initial_likelihood = 0.2
+
+        await _engine_with_manager()._apply_investigation_updates(
+            case, _Updates(solutions_to_add=_fix()), _pending(0.85)
+        )
+
+        assert hypothesis.likelihood == pytest.approx(0.85)
+        (offer,) = _actions(case, InvestigationActionType.SOLUTION)
+        assert offer.state == "pending"
+        assert offer.downgrade_reason is None
+
     async def test_a_pending_raise_does_not_withhold_a_license_already_held(self):
         case = _case(leading_likelihood=0.65, stale_wc=None, supported=True)
 
@@ -281,11 +299,26 @@ class TestLicenseReadsTheSettledTurn:
         assert case.hypotheses["hyp_000000000001"].likelihood == pytest.approx(0.8)
         assert case.progress.solution_accepted is True
 
-    async def test_a_standing_fix_survives_when_the_update_restores_its_license(self):
-        """The recompute's re-check must judge the settled value: the estimate
-        M5 used (0.5, the lower of formula and update) would withdraw an offer
-        the turn ends up licensing at 0.7."""
-        case = _case(leading_likelihood=0.5, stale_wc=0.65, supported=True)
+    async def test_a_raise_the_prior_cap_will_hold_does_not_license(self):
+        """No confident supporting link: the B1 cap holds the model's 0.8 at
+        max(0.55, prior cap), so M5 must not score it at 0.8."""
+        case = _case(leading_likelihood=0.55, stale_wc=None)
+
+        await _engine_with_manager()._apply_investigation_updates(
+            case, _Updates(solutions_to_add=_fix()), _pending(0.8)
+        )
+
+        assert case.hypotheses["hyp_000000000001"].likelihood == pytest.approx(0.55)
+        assert case.proposed_actions[-1].action_type == (
+            InvestigationActionType.DIAGNOSTIC
+        )
+
+    async def test_a_license_refuted_inside_the_recompute_is_withdrawn_that_turn(
+        self, monkeypatch
+    ):
+        """M6 demotion runs inside the cause recompute, after every likelihood
+        update. The re-check must read the conclusion rebuilt after it."""
+        case = _case(leading_likelihood=0.65, stale_wc=0.65)
         case.proposed_actions.append(
             ProposedAction(
                 case_id=case.case_id,
@@ -294,14 +327,24 @@ class TestLicenseReadsTheSettledTurn:
                 proposed_in_turn=3,
             )
         )
+        real = milestone_engine._recompute_cause_state_from_chain
 
-        await _engine_with_manager()._apply_investigation_updates(
-            case, _Updates(), _pending(0.7)
+        def _recompute_with_m6(case, **kwargs):
+            validated = real(case, **kwargs)
+            hypothesis = case.hypotheses["hyp_000000000001"]
+            hypothesis.state = HypothesisState.REFUTED
+            hypothesis.likelihood = 0.0
+            return validated
+
+        monkeypatch.setattr(
+            milestone_engine, "_recompute_cause_state_from_chain", _recompute_with_m6
         )
 
-        assert case.hypotheses["hyp_000000000001"].likelihood == pytest.approx(0.7)
+        await _make_engine()._apply_investigation_updates(case, _Updates(), _meta())
+
         (offer,) = _actions(case, InvestigationActionType.SOLUTION)
-        assert offer.state == "pending"
+        assert offer.state == "superseded"
+        assert offer.superseded_reason == "license_lost"
 
 
 def _downgraded_case() -> Case:
@@ -363,8 +406,10 @@ class TestAppliedFixRecovery:
         assert "is not yet established" not in note
         for part in ("ONE response", "root_cause_conclusion", "SolutionToAdd"):
             assert part in note
-        assert "already carried out the fix" in note
+        assert "already applied that fix" in note
         assert "no rival cause is contested" in note
+        # What M5 exists to refuse must stay refused on the retro path.
+        assert "a diagnostic test is not a fix" in note
         assert "solution_accepted" in note
 
     async def test_a_refused_accept_names_that_path(self):
@@ -383,3 +428,7 @@ class TestAppliedFixRecovery:
         assert "'solution_accepted' was not registered" in feedback
         assert "ONE response" in feedback
         assert "do not ask them to accept it again" in feedback
+        # Only for a cause that stands: the notice also answers a fix withdrawn
+        # because its cause fell, which a fresh conclusion must not re-license.
+        assert "the root cause stands established" in feedback
+        assert "root_cause_conclusion" not in feedback

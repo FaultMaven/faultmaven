@@ -456,31 +456,18 @@ class HypothesisManager:
             Updated hypothesis
         """
         old_likelihood = hypothesis.likelihood
-        capped = max(0.0, min(1.0, new_likelihood))  # Clamp to [0, 1]
-        has_supporting_evidence = any(
-            link.stance == EvidenceStance.SUPPORTS
-            and (link.stance_confidence if link.stance_confidence is not None else 1.0)
-            >= CAUSAL_STANCE_CONFIDENCE_MIN
-            for link in hypothesis.evidence_links
-        ) or self._chain_root_confidently_supported(hypothesis, case)
-        # The cap is a CEILING ON RAISES, never a demotion: a hypothesis
-        # legitimately above the prior bar (belief earned via the evidence
-        # formula, which counts links this qualifying test may reject) keeps
-        # its earned value as the effective ceiling — forcing 0.95 down to
-        # 0.5 would both punish an honest small correction and reset the
-        # stagnation counters (|delta| >= 0.05 reads as progress).
-        ceiling = max(old_likelihood, NEW_HYPOTHESIS_MAX_PRIOR)
-        if not has_supporting_evidence and capped > ceiling:
+        requested = max(0.0, min(1.0, new_likelihood))  # Clamp to [0, 1]
+        capped = self.likelihood_after_update(hypothesis, new_likelihood, case)
+        if capped < requested:
             logger.info(
                 "Capped evidence-free likelihood update %.3f -> %.3f on %s "
                 "(ceiling=max(current, NEW_HYPOTHESIS_MAX_PRIOR); %s)",
+                requested,
                 capped,
-                ceiling,
                 hypothesis.hypothesis_id,
                 reason,
             )
             hypothesis_likelihood_capped_no_evidence_total.inc()
-            capped = ceiling
         hypothesis.likelihood = capped
         hypothesis.last_updated_turn = current_turn
         # Progress is judged on the APPLIED value (consistent with
@@ -505,6 +492,37 @@ class HypothesisManager:
         self._check_state_transition(hypothesis, current_turn)
 
         return hypothesis
+
+    @classmethod
+    def likelihood_after_update(
+        cls,
+        hypothesis: Hypothesis,
+        new_likelihood: float,
+        case: "Case | None" = None,
+    ) -> float:
+        """The likelihood ``update_hypothesis_likelihood`` would apply, without
+        applying it.
+
+        The B1 cap: with no qualifying supporting evidence the hypothesis is
+        still a PRIOR, so a raise stops at ``max(current, NEW_HYPOTHESIS_MAX_PRIOR)``.
+        It is a CEILING ON RAISES, never a demotion: a hypothesis legitimately
+        above the prior bar (belief earned via the evidence formula, which counts
+        links this qualifying test may reject) keeps its earned value as the
+        effective ceiling — forcing 0.95 down to 0.5 would both punish an honest
+        small correction and reset the stagnation counters (|delta| >= 0.05
+        reads as progress). A lowering always lands as asked.
+        """
+        requested = max(0.0, min(1.0, new_likelihood))
+        has_supporting_evidence = any(
+            link.stance == EvidenceStance.SUPPORTS
+            and (link.stance_confidence if link.stance_confidence is not None else 1.0)
+            >= CAUSAL_STANCE_CONFIDENCE_MIN
+            for link in hypothesis.evidence_links
+        ) or cls._chain_root_confidently_supported(hypothesis, case)
+        ceiling = max(hypothesis.likelihood, NEW_HYPOTHESIS_MAX_PRIOR)
+        if not has_supporting_evidence and requested > ceiling:
+            return ceiling
+        return requested
 
     @staticmethod
     def _chain_root_confidently_supported(
