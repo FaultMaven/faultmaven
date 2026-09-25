@@ -1,6 +1,6 @@
 ---
 description: Run tests, fix failures, re-run until green, report what changed
-allow_all_tools: true
+allowed-tools: Bash(.venv/bin/python -m pytest:*), Bash(python -m pytest:*), Bash(pytest:*), Edit
 ---
 
 # Fix Tests

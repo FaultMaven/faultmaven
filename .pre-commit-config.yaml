@@ -143,7 +143,7 @@ repos:
 
       # Brand-messaging terminology lint. Fails on retired terms in brand-facing
       # files (README, CLAUDE.md, pyproject, docs/README). Canonical source is
-      # .claude/skills/brand-messaging.md §3/§7; this is the downstream check.
+      # .claude/skills/brand-messaging/SKILL.md §3/§7; this is the downstream check.
       - id: brand-lint
         name: brand-messaging terminology lint
         entry: python scripts/brand_lint.py

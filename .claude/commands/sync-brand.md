@@ -16,7 +16,7 @@ None required. Optional: `$ARGUMENTS` can be a specific repo name to include in 
 
 ### 1. Read the canonical skill
 
-Read `.claude/skills/brand-messaging.md` in full. This is the canonical source for product messaging in FaultMaven. Claude Code operates in one repo at a time, so the copy in this repo is canonical; copies in downstream repos are downstream.
+Read `.claude/skills/brand-messaging/SKILL.md` in full. This is the canonical source for product messaging in FaultMaven. Claude Code operates in one repo at a time, so the copy in this repo is canonical; copies in downstream repos are downstream.
 
 ### 2. Collect brand-facing content in this repo
 
@@ -45,7 +45,7 @@ List inconsistencies in one of these categories:
 
 ### 4. Produce the propagation checklist
 
-Identify what has changed in the canonical skill (git log on `.claude/skills/brand-messaging.md` for recent commits, plus anything the user mentions as recently edited). For each substantive change, describe it **in messaging terms**, not file-level diff terms.
+Identify what has changed in the canonical skill (git log on `.claude/skills/brand-messaging/SKILL.md` for recent commits, plus anything the user mentions as recently edited). For each substantive change, describe it **in messaging terms**, not file-level diff terms.
 
 Good:
 - *"Value proposition #1 was rephrased from 'evidence-first' to 'evidence-centric'. Downstream repos should search for 'evidence-first' and update."*
@@ -66,7 +66,7 @@ Write the report to `docs/working/SYNC-BRAND-<YYYY-MM-DD>.md` with this structur
 # Brand Sync — <date>
 
 ## Canonical Skill
-`.claude/skills/brand-messaging.md` (commit: <short-sha>)
+`.claude/skills/brand-messaging/SKILL.md` (commit: <short-sha>)
 
 ## Inconsistencies in This Repo
 - [<file>]: <what> — canonical says <X>, file says <Y>

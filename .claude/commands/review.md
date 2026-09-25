@@ -40,10 +40,10 @@ Spawn a `general-purpose` subagent via the Task tool. Pass a fully self-containe
 > You are performing an architectural review of a FaultMaven code diff. You will not fix anything — your job is to produce a review report.
 >
 > **Step 1 — Load skills.** Read each of these files in order and follow their procedures:
-> - `.claude/skills/architecture.md`
+> - `.claude/skills/architecture/SKILL.md`
 > - *(plus any additional skill files listed below)*
 >
-> Additional skills for this review: `<SKILL_LIST>`
+> Additional skills for this review (each is `.claude/skills/<name>/SKILL.md`): `<SKILL_LIST>`
 >
 > Read the authoritative design documents each skill points to. Do not skip this step.
 >
