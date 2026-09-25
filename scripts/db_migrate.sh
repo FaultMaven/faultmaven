@@ -18,22 +18,19 @@
 #   stamp <revision>  Stamp database with revision (without running migrations)
 #
 # Options:
-#   --database=auth   Target auth database only
-#   --database=cases  Target cases database only
-#   --sql             Generate SQL without executing (offline mode)
-#   --verbose         Enable verbose output
+#   --sql             upgrade only: print the SQL instead of executing it
+#                     (offline mode)
+#   --verbose, -v     status, heads: verbose output (history is always verbose)
 #
 # Examples:
 #   ./scripts/db_migrate.sh upgrade                    # Apply all migrations
-#   ./scripts/db_migrate.sh upgrade --database=cases   # Apply to cases DB only
+#   ./scripts/db_migrate.sh upgrade --sql              # Print the SQL only
 #   ./scripts/db_migrate.sh downgrade                  # Rollback one migration
 #   ./scripts/db_migrate.sh create add_user_roles      # Create new migration
 #   ./scripts/db_migrate.sh status                     # Check current status
 #
 # Environment Variables:
-#   DATABASE_URL     - Primary database URL
-#   AUTH_DB_URL      - Auth database URL
-#   CASES_DB_URL     - Cases database URL
+#   DATABASE_URL     - The one database FaultMaven uses (see alembic/env.py)
 #
 
 set -e
@@ -55,7 +52,6 @@ cd "$PROJECT_ROOT"
 # Parse arguments
 COMMAND=""
 MESSAGE=""
-DATABASE=""
 SQL_MODE=""
 VERBOSE=""
 REVISION=""
@@ -66,10 +62,6 @@ while [[ $# -gt 0 ]]; do
             COMMAND="$1"
             shift
             ;;
-        --database=*)
-            DATABASE="${1#*=}"
-            shift
-            ;;
         --sql)
             SQL_MODE="--sql"
             shift
@@ -77,6 +69,11 @@ while [[ $# -gt 0 ]]; do
         --verbose|-v)
             VERBOSE="-v"
             shift
+            ;;
+        -*)
+            echo -e "${RED}Error: unknown option: $1${NC}" >&2
+            echo "Run $0 with no arguments for usage." >&2
+            exit 2
             ;;
         *)
             if [[ -z "$MESSAGE" && "$COMMAND" == "create" ]]; then
@@ -89,10 +86,16 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Build database option
-DB_OPTION=""
-if [[ -n "$DATABASE" ]]; then
-    DB_OPTION="-x database=$DATABASE"
+# Each option belongs to the alembic subcommands that accept it, and alembic
+# only takes a subcommand's options AFTER the subcommand. Refuse an option the
+# command cannot honour rather than drop it silently.
+if [[ -n "$SQL_MODE" && "$COMMAND" != "upgrade" ]]; then
+    echo -e "${RED}Error: --sql applies to 'upgrade' only${NC}" >&2
+    exit 2
+fi
+if [[ -n "$VERBOSE" && "$COMMAND" != "status" && "$COMMAND" != "heads" ]]; then
+    echo -e "${RED}Error: --verbose applies to 'status' and 'heads' only${NC}" >&2
+    exit 2
 fi
 
 # Help function
@@ -112,14 +115,12 @@ show_help() {
     echo "  stamp <revision>  Stamp database with revision"
     echo ""
     echo "Options:"
-    echo "  --database=auth   Target auth database only"
-    echo "  --database=cases  Target cases database only"
-    echo "  --sql             Generate SQL without executing"
-    echo "  --verbose, -v     Enable verbose output"
+    echo "  --sql             upgrade only: print the SQL instead of executing it"
+    echo "  --verbose, -v     status, heads: verbose output"
     echo ""
     echo "Examples:"
     echo "  $0 upgrade                    # Apply all migrations"
-    echo "  $0 upgrade --database=cases   # Apply to cases DB only"
+    echo "  $0 upgrade --sql              # Print the SQL only"
     echo "  $0 downgrade                  # Rollback one migration"
     echo "  $0 create add_user_roles      # Create new migration"
     echo "  $0 status                     # Check current status"
@@ -128,29 +129,24 @@ show_help() {
 # Execute command
 case $COMMAND in
     upgrade)
-        echo -e "${GREEN}Applying migrations...${NC}"
-        if [[ -n "$DATABASE" ]]; then
-            echo -e "${BLUE}Target database: $DATABASE${NC}"
+        if [[ -n "$SQL_MODE" ]]; then
+            alembic upgrade head --sql
+        else
+            echo -e "${GREEN}Applying migrations...${NC}"
+            alembic upgrade head
+            echo -e "${GREEN}✓ Migrations applied successfully${NC}"
         fi
-        alembic $DB_OPTION $SQL_MODE $VERBOSE upgrade head
-        echo -e "${GREEN}✓ Migrations applied successfully${NC}"
         ;;
 
     downgrade)
         echo -e "${YELLOW}Rolling back one migration...${NC}"
-        if [[ -n "$DATABASE" ]]; then
-            echo -e "${BLUE}Target database: $DATABASE${NC}"
-        fi
-        alembic $DB_OPTION $SQL_MODE $VERBOSE downgrade -1
+        alembic downgrade -1
         echo -e "${GREEN}✓ Rollback completed successfully${NC}"
         ;;
 
     status)
         echo -e "${BLUE}Current migration status:${NC}"
-        if [[ -n "$DATABASE" ]]; then
-            echo -e "${BLUE}Target database: $DATABASE${NC}"
-        fi
-        alembic $DB_OPTION current $VERBOSE
+        alembic current $VERBOSE
         ;;
 
     history)
@@ -190,10 +186,7 @@ case $COMMAND in
             exit 1
         fi
         echo -e "${YELLOW}Stamping database with revision: $REVISION${NC}"
-        if [[ -n "$DATABASE" ]]; then
-            echo -e "${BLUE}Target database: $DATABASE${NC}"
-        fi
-        alembic $DB_OPTION stamp $REVISION
+        alembic stamp "$REVISION"
         echo -e "${GREEN}✓ Database stamped successfully${NC}"
         ;;
 

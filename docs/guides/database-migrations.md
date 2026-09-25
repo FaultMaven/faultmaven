@@ -38,7 +38,9 @@ see [Migration History](#migration-history).
 | Kubernetes | A migration Job. The app connects as a non-owner role that cannot run DDL, so `RUN_STARTUP_MIGRATIONS=false` turns the startup run off. |
 
 `RUN_STARTUP_MIGRATIONS` defaults to `true`. The startup run is given 60 seconds;
-past that it logs `Alembic migration timed out after 60 seconds`.
+past that it logs `Alembic migration timed out after 60 seconds` and raises
+`RuntimeError`, and the app does not start. A failed migration stops the boot the
+same way.
 
 ## Quick Start
 
@@ -46,11 +48,15 @@ Run Alembic from the repository root, where `alembic.ini` lives.
 
 ### 1. Point at a database
 
+Use the same URL the app uses; `alembic/env.py` swaps the async driver for a
+sync one itself, so one `DATABASE_URL` serves both the app and Alembic.
+
 ```bash
 # Standalone default (the same file the app opens when run from the repo root)
-export DATABASE_URL=sqlite:///./data/faultmaven.db
+mkdir -p data    # SQLite creates the file, not its directory
+export DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db
 # OR PostgreSQL:
-# export DATABASE_URL=postgresql://user:pass@host:5432/faultmaven
+# export DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/faultmaven
 ```
 
 ### 2. Apply all migrations
@@ -86,15 +92,8 @@ already set in the environment) and then resolves the URL:
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `DATABASE_URL` | The one database the app opens and Alembic migrates | `sqlite:///./data/faultmaven.db` |
+| `DATABASE_URL` | The one database the app opens and Alembic migrates | `sqlite+aiosqlite:///./data/faultmaven.db` |
 | `RUN_STARTUP_MIGRATIONS` | Run `alembic upgrade head` at app startup (default `true`) | `false` when a migration Job owns the schema |
-
-> ⚠️ `alembic/env.py` and `scripts/db_migrate.sh` still accept a
-> `-x database=auth|cases` / `--database=auth|cases` selector that builds a URL
-> from `AUTH_DB_*` / `CASES_DB_*` variables. It is a leftover of a retired
-> two-database layout: the application never opens those databases, so a
-> migration run through the selector lands in a database nothing reads. Do not
-> use it.
 
 ### Database support
 
@@ -219,6 +218,17 @@ PostgreSQL 16 service before running the tests marked `postgres`.
   rename) and emits a plain `ALTER TABLE` on PostgreSQL. `op.add_column`, and
   `op.drop_column` of a column no index, constraint or trigger uses, need no
   rebuild.
+- **Drop an indexed column inside a batch, index first.** A plain
+  `op.drop_column` of an indexed column fails on SQLite, and so does a batch
+  that drops only the column: it stops with `no such column` and leaves
+  `_alembic_tmp_<table>` behind. Drop the index in the same batch, before the
+  column:
+
+  ```python
+  with op.batch_alter_table("cases") as batch_op:
+      batch_op.drop_index("ix_cases_example")
+      batch_op.drop_column("example")
+  ```
 - **A SQLite rebuild does not carry triggers.** The baseline gives SQLite
   triggers to `operator_access_audit`, `operator_access_grants` and
   `team_members`. Rebuilding one of those tables drops its triggers *silently* —
@@ -259,6 +269,10 @@ alembic upgrade +2             # by relative count
 # Or
 alembic upgrade head --sql
 ```
+
+Offline mode cannot render a batch operation on SQLite: batch mode reflects the
+live table, so `--sql` stops with `This operation cannot proceed in --sql mode`
+unless the migration passes a complete `Table` as `copy_from=`.
 
 ## Rolling Back Migrations
 
@@ -370,15 +384,15 @@ alembic upgrade head
 
 **Cause**: Migration was partially applied or a table was created manually.
 
-**Solution**:
-```bash
-# Option 1: Stamp the database to skip the migration
-alembic stamp <revision>
+**Solution**: rebuild the database from empty. Do not `alembic stamp` past the
+failure: while the chain is a single baseline, stamping marks the whole schema
+applied, and whatever the migration had not yet created (tables, triggers, RLS
+policies, seed rows) is simply missing.
 
-# Option 2 (development only, data loss): rebuild from empty
-alembic downgrade base
-alembic upgrade head
-```
+- **SQLite**: with the API stopped, delete `data/faultmaven.db` and run
+  `alembic upgrade head`.
+- **PostgreSQL**: drop and re-create the database, then re-run the migration Job
+  ([Re-provisioning a Database](#re-provisioning-a-database)).
 
 ### "Multiple Heads" Error
 
@@ -441,7 +455,7 @@ docker run -d --name faultmaven-pg \
   -p 5432:5432 \
   postgres:16
 
-export DATABASE_URL=postgresql://postgres:test@localhost:5432/faultmaven
+export DATABASE_URL=postgresql+asyncpg://postgres:test@localhost:5432/faultmaven
 alembic upgrade head
 ```
 
@@ -455,9 +469,11 @@ alembic upgrade head
 3. On PostgreSQL the upgrade runs in one transaction, so a failure rolls it back
    and the database stays at its previous revision. On SQLite (Alembic logs
    `Will assume non-transactional DDL.`) statements that ran before the failure
-   stay applied; for a development database, the simplest recovery is to
-   delete the file and run `alembic upgrade head` again. To inspect or repair
-   the recorded revision by hand:
+   stay applied, including the `_alembic_tmp_<table>` copy of a failed batch
+   operation — until it is dropped, the next batch on that table fails with
+   `table _alembic_tmp_<table> already exists`. For a development database, the
+   simplest recovery is to delete the file and run `alembic upgrade head`
+   again. To inspect or repair the recorded revision by hand:
 
 ```sql
 -- Check current state

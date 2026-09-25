@@ -18,7 +18,7 @@ If missing, reject with a usage example: `/migrate add archived_at to cases`.
 
 Read `docs/guides/database-migrations.md` fully. It covers FaultMaven's migration conventions (one database, chaining onto the real head, the test pins, SQLite/PostgreSQL compatibility including the SQLite trigger hazards of batch mode, seed data). Do not skip this step — most of the conventions are not mechanically enforced.
 
-Also skim `CLAUDE.md` §Modifying Database Schema for the top-level procedure.
+The guide's "Creating Migrations" and "SQLite and PostgreSQL" sections are the procedure this command follows.
 
 ### 2. Confirm the model state is the source of truth
 
@@ -45,7 +45,7 @@ Read the generated file in `alembic/versions/`. Check:
 - **`down_revision` matches the output of `alembic heads`.** The migration must chain correctly; never take a revision id from a document.
 - **SQLite vs PostgreSQL compatibility.** Every migration runs on both. Flag any of these for user review:
   - `op.alter_column` (SQLite has no `ALTER COLUMN`; needs `batch_alter_table`)
-  - `op.drop_column` of a column an index, constraint or trigger uses (SQLite refuses; needs batch mode)
+  - `op.drop_column` of an indexed column (SQLite refuses). It needs `batch_alter_table` with the index dropped first in the same batch — a batch that drops only the column fails with `no such column` and leaves `_alembic_tmp_<table>` behind
   - A batch rebuild of a table that carries SQLite triggers (`operator_access_audit`, `operator_access_grants`, `team_members`) — the rebuild drops them silently — or that those triggers read (`users`, `teams`) — the rebuild fails at the rename. The migration must drop and re-create the affected SQLite triggers around the batch operation.
   - PostgreSQL-only DDL (RLS policies, PL/pgSQL triggers, `NOW()`) not guarded on `op.get_context().dialect.name`
   - PostgreSQL-specific types (`JSONB`, `ARRAY`, `UUID`) without the SQLite variant the model uses

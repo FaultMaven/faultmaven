@@ -43,7 +43,7 @@ limits is a 422 and creates no grant (`BreakGlassGrantRequest` in
 
 | Field | Limit |
 |-------|-------|
-| `reason` | Required. Surrounding whitespace is stripped, and the stripped value must be at least 20 characters (`MIN_GRANT_REASON_LENGTH`) and at most 2000 (`MAX_GRANT_REASON_LENGTH`). The stripped value is what is stored. |
+| `reason` | Required. At most 2000 characters as sent (`MAX_GRANT_REASON_LENGTH`); at least 20 once surrounding whitespace is stripped (`MIN_GRANT_REASON_LENGTH`). The stripped value is what is stored. |
 | `ttl_minutes` | Optional, default 60 (`DEFAULT_GRANT_TTL_MINUTES`); from 1 to 240 (`MAX_GRANT_TTL_MINUTES`). |
 | `case_id`, `enterprise_id` | Required, 1 to 36 characters; longer is rejected, never truncated. |
 

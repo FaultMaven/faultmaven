@@ -93,6 +93,33 @@ def run_alembic(command: str, database_url: str) -> subprocess.CompletedProcess:
     return result
 
 
+def run_helper_script(args: str, database_url: str) -> subprocess.CompletedProcess:
+    """Run ``scripts/db_migrate.sh`` the way a developer does.
+
+    The script calls a bare ``alembic``, so the directory of the interpreter
+    running these tests goes first on PATH: the ``alembic`` it finds is the one
+    installed next to that interpreter, not a shim elsewhere on PATH.
+    ``PYTHONPATH`` pins ``import faultmaven`` to this checkout, as in
+    ``run_alembic``.
+    """
+    env = os.environ.copy()
+    env["DATABASE_URL"] = database_url
+    env["PATH"] = f"{Path(sys.executable).parent}{os.pathsep}{env.get('PATH', '')}"
+    existing_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        f"{PROJECT_ROOT}{os.pathsep}{existing_pythonpath}"
+        if existing_pythonpath
+        else str(PROJECT_ROOT)
+    )
+    return subprocess.run(
+        [str(PROJECT_ROOT / "scripts" / "db_migrate.sh"), *shlex.split(args)],
+        cwd=PROJECT_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
 def get_tables(db_path: str) -> list[str]:
     """Get list of tables from SQLite database."""
     conn = sqlite3.connect(db_path)
@@ -429,6 +456,75 @@ class TestHelperScript:
 
         assert script_path.exists(), "Helper script db_migrate.sh not found"
         assert os.access(script_path, os.X_OK), "Helper script is not executable"
+
+    def test_upgrade_sql_prints_the_sql_and_touches_no_database(
+        self, clean_database, database_url
+    ):
+        """``upgrade --sql`` is offline mode: SQL on stdout, nothing executed.
+
+        alembic takes ``--sql`` only after the subcommand; placed before it,
+        alembic rejects the whole invocation.
+        """
+        result = run_helper_script("upgrade --sql", database_url)
+
+        assert result.returncode == 0, result.stderr
+        assert "CREATE TABLE cases" in result.stdout
+        assert not os.path.exists(TEST_DB) or get_tables(TEST_DB) == []
+
+    def test_upgrade_applies_the_migrations(self, clean_database, database_url):
+        result = run_helper_script("upgrade", database_url)
+
+        assert result.returncode == 0, result.stderr
+        assert get_current_revision(database_url) == HEAD_REVISION
+
+    @pytest.mark.parametrize("args", ["status --verbose", "heads -v"])
+    def test_verbose_reaches_the_commands_that_accept_it(
+        self, clean_database, database_url, args
+    ):
+        assert run_alembic("upgrade head", database_url).returncode == 0
+
+        result = run_helper_script(args, database_url)
+
+        assert result.returncode == 0, result.stderr
+        assert HEAD_REVISION in result.stdout
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            # The retired two-database selector: there is one database.
+            "upgrade --database=auth",
+            "upgrade --database=cases",
+            # Options the command cannot honour are refused, not dropped.
+            "downgrade --sql",
+            "upgrade --verbose",
+        ],
+    )
+    def test_an_option_the_command_cannot_honour_is_refused(
+        self, clean_database, database_url, args
+    ):
+        result = run_helper_script(args, database_url)
+
+        assert result.returncode == 2, result.stdout + result.stderr
+        # The script's own refusal, not alembic's argparse ("alembic: error:").
+        assert "Error: " in result.stderr, result.stderr
+        assert not os.path.exists(TEST_DB) or get_tables(TEST_DB) == []
+
+
+class TestDatabaseSelection:
+    """alembic/env.py migrates the one database the application opens."""
+
+    def test_an_x_database_argument_does_not_redirect_the_migration(
+        self, clean_database, database_url
+    ):
+        """A leftover ``-x database=auth`` still migrates ``DATABASE_URL``.
+
+        The two-database selector built a URL for an ``auth_db`` / ``cases_db``
+        that the application never opens.
+        """
+        result = run_alembic("-x database=auth upgrade head", database_url)
+
+        assert result.returncode == 0, result.stderr
+        assert set(get_tables(TEST_DB)) == set(EXPECTED_TABLES)
 
 
 class TestDatabaseSchemaIntegrity:

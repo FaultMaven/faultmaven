@@ -3,24 +3,20 @@ FaultMaven Alembic Environment Configuration
 
 This module configures Alembic for FaultMaven's database migration system.
 
+FaultMaven keeps every table in ONE database: the one ``DATABASE_URL`` names,
+which is also the database the application opens.
+
 Features:
-- Environment-based database URL configuration
-- Multi-database support (auth_db and cases_db)
+- Environment-based database URL configuration (``DATABASE_URL``)
 - SQLite and PostgreSQL compatibility
 - Automatic driver conversion (asyncpg -> psycopg2 for sync operations)
 
 Environment Variables:
-    DATABASE_URL: Primary database URL (used if no specific DB selected)
-    AUTH_DB_URL: Auth database connection URL
-    CASES_DB_URL: Cases database connection URL
+    DATABASE_URL: The database to migrate. Unset: ``data/faultmaven.db``
+        (SQLite) under the project root.
 
 Usage:
-    # Single database mode (uses DATABASE_URL)
     alembic upgrade head
-
-    # Multi-database mode (use -x to select database)
-    alembic -x database=auth upgrade head   # Migrate auth_db
-    alembic -x database=cases upgrade head  # Migrate cases_db
 """
 
 import os
@@ -57,47 +53,15 @@ target_metadata = Base.metadata
 
 def get_database_url() -> str:
     """
-    Get the database URL from environment or command-line options.
+    Get the database URL to migrate.
 
     Priority:
-    1. Command-line: alembic -x database=auth/cases
-    2. Environment: DATABASE_URL
-    3. Environment: AUTH_DB_URL or CASES_DB_URL (based on -x option)
-    4. Default: SQLite for development
+    1. Environment: DATABASE_URL (async drivers converted to sync ones)
+    2. Default: SQLite ``data/faultmaven.db`` under the project root
 
     Returns:
         str: Database connection URL
     """
-    # Check for -x database=auth/cases option
-    db_option = context.get_x_argument(as_dictionary=True).get("database")
-
-    if db_option == "auth":
-        url = os.getenv("AUTH_DB_URL")
-        if url:
-            return _convert_async_url(url)
-
-        # Build URL from individual components
-        host = os.getenv("AUTH_DB_HOST", "localhost")
-        port = os.getenv("AUTH_DB_PORT", "5432")
-        name = os.getenv("AUTH_DB_NAME", "auth_db")
-        user = os.getenv("AUTH_DB_USER", "postgres")
-        password = os.getenv("AUTH_DB_PASSWORD", "")
-        return f"postgresql://{user}:{password}@{host}:{port}/{name}"
-
-    elif db_option == "cases":
-        url = os.getenv("CASES_DB_URL")
-        if url:
-            return _convert_async_url(url)
-
-        # Build URL from individual components
-        host = os.getenv("CASES_DB_HOST", "localhost")
-        port = os.getenv("CASES_DB_PORT", "5432")
-        name = os.getenv("CASES_DB_NAME", "cases_db")
-        user = os.getenv("CASES_DB_USER", "postgres")
-        password = os.getenv("CASES_DB_PASSWORD", "")
-        return f"postgresql://{user}:{password}@{host}:{port}/{name}"
-
-    # Check for single DATABASE_URL
     url = os.getenv("DATABASE_URL")
     if url:
         return _convert_async_url(url)
