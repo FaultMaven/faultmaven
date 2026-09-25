@@ -599,8 +599,8 @@ async def test_mcp_client_tool():
 # Check command is correct
 npx -y @modelcontextprotocol/server-github --help
 
-# Check environment variables
-echo $GITHUB_TOKEN
+# Check the token is set (without printing it)
+[ -n "$GITHUB_TOKEN" ] && echo "GITHUB_TOKEN is set" || echo "GITHUB_TOKEN is NOT set"
 
 # Check logs
 tail -f logs/faultmaven.log | grep MCP
