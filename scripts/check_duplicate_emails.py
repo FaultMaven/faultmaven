@@ -7,7 +7,10 @@ It's used before applying the email uniqueness constraint migration to identify
 any data conflicts that need to be resolved.
 
 Usage:
-    python scripts/check_duplicate_emails.py [--database auth|cases]
+    python scripts/check_duplicate_emails.py
+
+Database: the one the app uses — DATABASE_URL (environment, then .env), else
+the default local SQLite file data/faultmaven.db. See scripts/app_database.py.
 
 Exit Codes:
     0: No duplicates found
@@ -17,7 +20,6 @@ Exit Codes:
 
 import argparse
 import asyncio
-import os
 import sys
 from pathlib import Path
 from typing import List, Tuple
@@ -29,6 +31,8 @@ sys.path.insert(0, str(project_root))
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
+
+from app_database import resolve_database_url  # noqa: E402, I001
 
 
 async def check_duplicates(database_url: str) -> Tuple[bool, List[dict]]:
@@ -115,66 +119,15 @@ def print_duplicates(duplicates: List[dict]) -> None:
     print()
 
 
-def get_database_url(db_option: str = None) -> str:
-    """
-    Get database URL from environment variables.
-
-    Args:
-        db_option: 'auth' or 'cases' to select specific database
-
-    Returns:
-        Database connection URL
-    """
-    if db_option == "auth":
-        url = os.getenv("AUTH_DB_URL")
-        if url:
-            return url
-
-        # Build from components
-        host = os.getenv("AUTH_DB_HOST", "localhost")
-        port = os.getenv("AUTH_DB_PORT", "5432")
-        name = os.getenv("AUTH_DB_NAME", "auth_db")
-        user = os.getenv("AUTH_DB_USER", "postgres")
-        password = os.getenv("AUTH_DB_PASSWORD", "")
-        return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{name}"
-
-    elif db_option == "cases":
-        url = os.getenv("CASES_DB_URL")
-        if url:
-            return url
-
-        # Build from components
-        host = os.getenv("CASES_DB_HOST", "localhost")
-        port = os.getenv("CASES_DB_PORT", "5432")
-        name = os.getenv("CASES_DB_NAME", "cases_db")
-        user = os.getenv("CASES_DB_USER", "postgres")
-        password = os.getenv("CASES_DB_PASSWORD", "")
-        return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{name}"
-
-    # Default to DATABASE_URL
-    url = os.getenv("DATABASE_URL")
-    if url:
-        return url
-
-    # Default to SQLite for development
-    sqlite_path = project_root / "faultmaven.db"
-    return f"sqlite+aiosqlite:///{sqlite_path}"
-
-
 async def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
         description="Check for duplicate email addresses in users table"
     )
-    parser.add_argument(
-        "--database",
-        choices=["auth", "cases"],
-        help="Specific database to check (auth or cases)",
-    )
     args = parser.parse_args()
 
     try:
-        database_url = get_database_url(args.database)
+        database_url = resolve_database_url()
         print(
             f"Checking database: {database_url.split('@')[-1] if '@' in database_url else database_url}"
         )

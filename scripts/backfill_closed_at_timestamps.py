@@ -18,8 +18,8 @@ Usage:
     # Apply changes
     python scripts/backfill_closed_at_timestamps.py
 
-    # Specific database
-    python scripts/backfill_closed_at_timestamps.py --database cases
+Database: the one the app uses — DATABASE_URL (environment, then .env), else
+the default local SQLite file data/faultmaven.db. See scripts/app_database.py.
 
 Exit Codes:
     0: Success (backfill complete or no missing timestamps)
@@ -30,7 +30,6 @@ Exit Codes:
 import argparse
 import asyncio
 import json
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,6 +42,8 @@ sys.path.insert(0, str(project_root))
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
+
+from app_database import resolve_database_url  # noqa: E402, I001
 
 
 async def get_cases_missing_closed_at(session: AsyncSession) -> List[Dict[str, Any]]:
@@ -129,49 +130,10 @@ async def backfill_case_closed_at(
     return True
 
 
-def get_database_url(db_option: str = None) -> str:
-    """Get database URL from environment variables."""
-    if db_option == "auth":
-        url = os.getenv("AUTH_DB_URL")
-        if url:
-            return url
-
-        host = os.getenv("AUTH_DB_HOST", "localhost")
-        port = os.getenv("AUTH_DB_PORT", "5432")
-        name = os.getenv("AUTH_DB_NAME", "auth_db")
-        user = os.getenv("AUTH_DB_USER", "postgres")
-        password = os.getenv("AUTH_DB_PASSWORD", "")
-        return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{name}"
-
-    elif db_option == "cases":
-        url = os.getenv("CASES_DB_URL")
-        if url:
-            return url
-
-        host = os.getenv("CASES_DB_HOST", "localhost")
-        port = os.getenv("CASES_DB_PORT", "5432")
-        name = os.getenv("CASES_DB_NAME", "cases_db")
-        user = os.getenv("CASES_DB_USER", "postgres")
-        password = os.getenv("CASES_DB_PASSWORD", "")
-        return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{name}"
-
-    url = os.getenv("DATABASE_URL")
-    if url:
-        return url
-
-    sqlite_path = project_root / "faultmaven.db"
-    return f"sqlite+aiosqlite:///{sqlite_path}"
-
-
 async def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
         description="Backfill missing closed_at timestamps in cases table"
-    )
-    parser.add_argument(
-        "--database",
-        choices=["auth", "cases"],
-        help="Specific database to check (typically 'cases')",
     )
     parser.add_argument(
         "--dry-run",
@@ -187,7 +149,7 @@ async def main():
     args = parser.parse_args()
 
     try:
-        database_url = get_database_url(args.database)
+        database_url = resolve_database_url()
         engine = create_async_engine(database_url, echo=False)
         async_session = sessionmaker(
             engine, class_=AsyncSession, expire_on_commit=False
