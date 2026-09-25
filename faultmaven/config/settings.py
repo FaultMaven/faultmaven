@@ -1027,42 +1027,10 @@ class DatabaseSettings(BaseSettings):
     )
 
     # ============================================
-    # PostgreSQL Configuration (K8s Deployment)
+    # Storage Adapter Selection
     # ============================================
-
-    # Storage adapter selection
     user_storage_type: str = Field(default="inmemory")
     case_storage_type: str = Field(default="database")
-
-    # PostgreSQL - Auth Database (for user data)
-    auth_db_host: str = Field(default="postgres.faultmaven.local")
-    auth_db_port: int = Field(default=30432)
-    auth_db_name: str = Field(default="auth_db")
-    auth_db_user: str = Field(default="auth_service")
-    auth_db_password: Optional[SecretStr] = Field(default=None)
-
-    # PostgreSQL - Cases Database (for case data)
-    cases_db_host: str = Field(default="postgres.faultmaven.local")
-    cases_db_port: int = Field(default=30432)
-    cases_db_name: str = Field(default="cases_db")
-    cases_db_user: str = Field(default="case_service")
-    cases_db_password: Optional[SecretStr] = Field(default=None)
-
-    @property
-    def auth_db_url(self) -> str:
-        """Build PostgreSQL auth database URL"""
-        password = (
-            self.auth_db_password.get_secret_value() if self.auth_db_password else ""
-        )
-        return f"postgresql+asyncpg://{self.auth_db_user}:{password}@{self.auth_db_host}:{self.auth_db_port}/{self.auth_db_name}"
-
-    @property
-    def cases_db_url(self) -> str:
-        """Build PostgreSQL cases database URL"""
-        password = (
-            self.cases_db_password.get_secret_value() if self.cases_db_password else ""
-        )
-        return f"postgresql+asyncpg://{self.cases_db_user}:{password}@{self.cases_db_host}:{self.cases_db_port}/{self.cases_db_name}"
 
     # ============================================
     # Session Storage Adapter Configuration
