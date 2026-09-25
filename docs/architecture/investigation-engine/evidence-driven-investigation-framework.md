@@ -1065,9 +1065,9 @@ The `action_type` is determined by the system when creating the ProposedAction f
 - `WORKAROUND` solution type → `MITIGATION` (a mitigation insert)
 - Otherwise → `SOLUTION`
 - Downgraded to `DIAGNOSTIC`, with a `downgrade_reason` the next prompts render as `ENGINE_NOTE`, when:
-  - a `SOLUTION` targets a root cause that is not established (M5: no validated chain root, no root-cause conclusion, no working conclusion at 0.6 or above, judged on this turn's hypotheses);
+  - a `SOLUTION` targets a root cause that is not established (M5: none of the shared cause-identification legs holds — a validated chain root, a root-cause conclusion, a working conclusion at 0.6 or above — or a contest between rival causes suppresses them). The working conclusion is judged on this turn's hypotheses, each scored no higher than the model's pending likelihood update for it;
   - a `MITIGATION` has no symptom evidence to target (3D).
-- A downgraded fix the user has already carried out is registered in ONE response: a `root_cause_conclusion`, the fix again as a `SolutionToAdd`, and `solution_accepted` justified by the user's report. The stage gates run after the solutions step, so the re-proposal supersedes the `DIAGNOSTIC` and is accepted in the same turn.
+- A downgraded fix the user has already carried out is registered in ONE response: a `root_cause_conclusion` (it counts once the symptom is verified and no rival cause is contested), the fix again as a `SolutionToAdd`, and `solution_accepted` justified by the user's report. The stage gates run after the solutions step, so the re-proposal supersedes the `DIAGNOSTIC` and is accepted in the same turn.
 
 The system uses `action_type` to determine which gate milestone to set when user compliance is detected.
 

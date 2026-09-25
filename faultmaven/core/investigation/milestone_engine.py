@@ -608,9 +608,10 @@ def _solution_cause_validated(case: Case) -> bool:
        ``_cause_identified`` correctly sees this turn's grounding. The working
        conclusion is rebuilt just before the solutions step
        (``_refresh_working_conclusion``), so its leg sees the hypotheses this
-       turn created and evidence-linked. Only the LLM's own likelihood updates
-       land later (deferred past chain emission for the B1 cap); a license they
-       would grant is seen next turn (fm#1679).
+       turn created and evidence-linked. The LLM's own likelihood updates land
+       later (deferred past chain emission for the B1 cap), so each hypothesis
+       is scored no higher than its pending update: one that lowers belief
+       binds M5 now, and a license one would grant is seen next turn (fm#1679).
 
     A premature SOLUTION (cause not established by any signal) is downgraded to
     DIAGNOSTIC — flow continues; the LLM grounds the root or proposes a
@@ -628,7 +629,9 @@ def _solution_cause_validated(case: Case) -> bool:
     return _cause_identified(case)
 
 
-def _refresh_working_conclusion(case: Case) -> None:
+def _refresh_working_conclusion(
+    case: Case, pending_likelihoods: list[tuple[str, float]] | None = None
+) -> None:
     """Rebuild ``case.working_conclusion`` from the case as it stands now.
 
     The end-of-turn build (Step 5.6) runs after ``_apply_investigation_updates``,
@@ -637,14 +640,28 @@ def _refresh_working_conclusion(case: Case) -> None:
     hypothesis the model created at 0.65 had its fix downgraded by M5 on the same
     turn, then licensed on the next with nothing new learned (fm#1679).
 
+    ``pending_likelihoods`` are the model's likelihood updates not yet applied
+    (``deferred_likelihood_updates``). Before they land, an evidence link has
+    already rewritten the likelihood by formula, which can stand ABOVE what the
+    model said: scoring the hypothesis there would license a fix — and let a
+    same-turn ``solution_accepted`` make it permanent — on a belief the turn
+    never settles on. Each hypothesis is scored at the lower of the two. That is
+    exact when the update lowers (a lowering always lands) and never above the
+    settled value when it raises (a raise never lands below the current value).
+
     ``generate_working_conclusion`` is a pure function of the case, so calling it
     mid-turn and again at Step 5.6 is safe; Step 5.6 stays because hypothesis
     lifecycle steps after this method still move likelihoods.
     """
-    if case.state == CaseState.INVESTIGATING:
-        case.working_conclusion = generate_working_conclusion(
-            case=case, current_turn=case.current_turn
-        )
+    if case.state != CaseState.INVESTIGATING:
+        return
+    ceilings: dict[str, float] = {}
+    for h_id, likelihood in pending_likelihoods or ():
+        value = max(0.0, min(1.0, likelihood))
+        ceilings[h_id] = min(value, ceilings.get(h_id, value))
+    case.working_conclusion = generate_working_conclusion(
+        case=case, current_turn=case.current_turn, likelihood_ceilings=ceilings
+    )
 
 
 def _coerce_intervention_quadrant(raw: object) -> Optional[InterventionQuadrant]:
@@ -12279,8 +12296,9 @@ class MilestoneEngine:
         # opportunistically during INVESTIGATING.
         #
         # M5 below licenses a fix on the working conclusion among other legs,
-        # so it must read the hypotheses as they stand now, not last turn's.
-        _refresh_working_conclusion(case)
+        # so it must read the hypotheses as they stand now, not last turn's,
+        # and no higher than the model's own pending likelihood updates.
+        _refresh_working_conclusion(case, metadata.get("deferred_likelihood_updates"))
         if hasattr(updates, "solutions_to_add") and updates.solutions_to_add:
             for s_item in updates.solutions_to_add:
                 # R9: causal-graph linkage carried by the emission (optional;
@@ -12349,20 +12367,21 @@ class MilestoneEngine:
                     # Rendered on every turn this action stays pending, so it
                     # states what was true WHEN it was proposed, never the
                     # current state, and gives a recovery that works either
-                    # way: an RCC licenses the fix whatever the other legs say
-                    # (fm#1679). ``ProposedAction.downgrade_reason`` holds at
-                    # most 500 characters.
+                    # way: an RCC licenses the fix once the symptom is verified
+                    # and no rival cause is contested, whatever the other legs
+                    # say (fm#1679). ``ProposedAction.downgrade_reason`` holds
+                    # at most 500 characters.
                     downgrade_reason = (
-                        "Downgraded from SOLUTION: when proposed, the root cause "
-                        "was not established (no validated chain root, "
-                        "root-cause conclusion or working conclusion at 0.6+); "
-                        "a permanent fix needs one (M5). To register it, send "
-                        "in ONE response a root_cause_conclusion backed by "
-                        "evidence (needs a verified symptom) and the fix as a "
-                        "SolutionToAdd. If the user already carried out the "
-                        "fix, also set solution_accepted, justified by their "
-                        "report; do not ask them to accept it again. Or propose "
-                        "a WORKAROUND mitigation."
+                        "Downgraded from SOLUTION: when proposed, no root cause "
+                        "was established, and a permanent fix needs one (M5). "
+                        "To register it, send in ONE response a "
+                        "root_cause_conclusion backed by evidence and the fix "
+                        "as a SolutionToAdd; the conclusion counts once the "
+                        "symptom is verified and no rival cause is contested. "
+                        "If the user already carried out the fix, also set "
+                        "solution_accepted, justified by their report; do not "
+                        "ask them to accept it again. Or propose a WORKAROUND "
+                        "mitigation."
                     )
 
                 # 3D: Symptom-evidence gate — MITIGATION requires at least one

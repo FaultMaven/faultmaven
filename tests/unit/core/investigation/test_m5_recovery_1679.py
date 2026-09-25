@@ -10,8 +10,9 @@ fix they had already carried out.
 
 - ``TestLicenseReadsThisTurn`` — M5 and the end-of-turn license re-check judge
   the working-conclusion leg on the hypotheses as they stand, not on the field.
-- ``TestLicenseReadsTheSettledTurn`` — the re-check also sees likelihood
-  updates that land after M5 (deferred past chain emission).
+- ``TestLicenseReadsTheSettledTurn`` — M5 scores a hypothesis no higher than
+  the model's pending likelihood update, and the re-check judges the value the
+  turn settles on.
 - ``TestAppliedFixRecovery`` — the one-response path both notes now promise
   registers the fix from the downgraded state.
 """
@@ -32,8 +33,10 @@ from faultmaven.modules.case.domain.models import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
+    EvidenceStance,
     Hypothesis,
     HypothesisCategory,
+    HypothesisEvidenceLink,
     HypothesisGenerationMode,
     HypothesisState,
     InquiryData,
@@ -77,11 +80,15 @@ def _make_engine() -> MilestoneEngine:
     return eng
 
 
-def _case(*, leading_likelihood: float, stale_wc: float | None = None) -> Case:
+def _case(
+    *, leading_likelihood: float, stale_wc: float | None = None, supported: bool = False
+) -> Case:
     """Symptom verified, no root-cause conclusion, one ACTIVE hypothesis.
 
     ``stale_wc`` is what ``case.working_conclusion`` still holds from the
     previous turn; ``None`` is turn 4's state (no hypothesis existed on turn 3).
+    ``supported`` gives the hypothesis a confident SUPPORTS link, so a raise
+    is not held at the evidence-free prior cap.
     """
     case = Case(
         user_id="u1",
@@ -118,6 +125,19 @@ def _case(*, leading_likelihood: float, stale_wc: float | None = None) -> Case:
         rationale="203/EXEC on a path that no longer exists",
         likelihood=leading_likelihood,
         generated_at_turn=4,
+        evidence_links=(
+            [
+                HypothesisEvidenceLink(
+                    hypothesis_id="hyp_000000000001",
+                    evidence_id="ev_000000000001",
+                    stance=EvidenceStance.SUPPORTS,
+                    reasoning="203/EXEC on the configured path",
+                    stance_confidence=0.9,
+                )
+            ]
+            if supported
+            else []
+        ),
     )
     case.hypotheses[hyp.hypothesis_id] = hyp
     if stale_wc is not None:
@@ -206,28 +226,82 @@ class TestLicenseReadsThisTurn:
         assert offer.superseded_reason == "license_lost"
 
 
+def _engine_with_manager() -> MilestoneEngine:
+    engine = _make_engine()
+    engine.hypothesis_manager = HypothesisManager()
+    return engine
+
+
+def _pending(likelihood: float) -> dict:
+    """Metadata carrying the model's likelihood update for the one hypothesis,
+    as ``_apply_hypothesis_updates`` stashes it for after chain emission."""
+    metadata = _meta()
+    metadata["deferred_likelihood_updates"] = [("hyp_000000000001", likelihood)]
+    return metadata
+
+
 @pytest.mark.asyncio
 class TestLicenseReadsTheSettledTurn:
-    async def test_a_fix_undercut_later_in_the_turn_is_withdrawn_that_turn(self):
-        """M5 admits on the hypotheses at the solutions step; the model's own
-        likelihood update lands after chain emission and drops the leader to
-        0.55. The end-of-turn re-check must judge that settled value."""
-        case = _case(leading_likelihood=0.65, stale_wc=None)
-        engine = _make_engine()
-        engine.hypothesis_manager = HypothesisManager()
-        metadata = _meta()
-        # What _apply_hypothesis_updates stashes for an LLM likelihood update.
-        metadata["deferred_likelihood_updates"] = [("hyp_000000000001", 0.55)]
+    """Mid-turn, an evidence link has already rewritten the likelihood by
+    formula while the model's own value lands later. M5 must not read a belief
+    the turn never settles on."""
 
-        await engine._apply_investigation_updates(
-            case, _Updates(solutions_to_add=_fix()), metadata
+    async def test_a_pending_lowering_binds_m5_even_with_a_same_turn_accept(self):
+        """The formula put the hypothesis at 0.65; the model says 0.45 and, in
+        the same response, proposes the fix and marks it accepted."""
+        case = _case(leading_likelihood=0.65, stale_wc=0.45)
+
+        await _engine_with_manager()._apply_investigation_updates(
+            case,
+            _Updates(
+                solutions_to_add=_fix(),
+                milestones=MilestoneUpdates(solution_accepted=True),
+            ),
+            _pending(0.45),
         )
 
-        assert case.hypotheses["hyp_000000000001"].likelihood == pytest.approx(0.55)
+        assert case.hypotheses["hyp_000000000001"].likelihood == pytest.approx(0.45)
+        assert case.progress.solution_accepted is False
+        assert _actions(case, InvestigationActionType.SOLUTION) == []
+        (diagnostic,) = _actions(case, InvestigationActionType.DIAGNOSTIC)
+        assert diagnostic.downgrade_reason is not None
+
+    async def test_a_pending_raise_does_not_withhold_a_license_already_held(self):
+        case = _case(leading_likelihood=0.65, stale_wc=None, supported=True)
+
+        await _engine_with_manager()._apply_investigation_updates(
+            case,
+            _Updates(
+                solutions_to_add=_fix(),
+                milestones=MilestoneUpdates(solution_accepted=True),
+            ),
+            _pending(0.8),
+        )
+
+        assert case.hypotheses["hyp_000000000001"].likelihood == pytest.approx(0.8)
+        assert case.progress.solution_accepted is True
+
+    async def test_a_standing_fix_survives_when_the_update_restores_its_license(self):
+        """The recompute's re-check must judge the settled value: the estimate
+        M5 used (0.5, the lower of formula and update) would withdraw an offer
+        the turn ends up licensing at 0.7."""
+        case = _case(leading_likelihood=0.5, stale_wc=0.65, supported=True)
+        case.proposed_actions.append(
+            ProposedAction(
+                case_id=case.case_id,
+                action_type=InvestigationActionType.SOLUTION,
+                description="Point ExecStart at /usr/bin/billing-exporter",
+                proposed_in_turn=3,
+            )
+        )
+
+        await _engine_with_manager()._apply_investigation_updates(
+            case, _Updates(), _pending(0.7)
+        )
+
+        assert case.hypotheses["hyp_000000000001"].likelihood == pytest.approx(0.7)
         (offer,) = _actions(case, InvestigationActionType.SOLUTION)
-        assert offer.state == "superseded"
-        assert offer.superseded_reason == "license_lost"
-        assert case.progress.solution_proposed is False
+        assert offer.state == "pending"
 
 
 def _downgraded_case() -> Case:
@@ -285,11 +359,12 @@ class TestAppliedFixRecovery:
         note = case.proposed_actions[-1].downgrade_reason
         # What was true when it was proposed, not a claim about now: the note
         # is rendered on every later turn the action stays pending.
-        assert "when proposed, the root cause was not established" in note
+        assert "when proposed, no root cause was established" in note
         assert "is not yet established" not in note
         for part in ("ONE response", "root_cause_conclusion", "SolutionToAdd"):
             assert part in note
         assert "already carried out the fix" in note
+        assert "no rival cause is contested" in note
         assert "solution_accepted" in note
 
     async def test_a_refused_accept_names_that_path(self):
