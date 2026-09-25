@@ -25,6 +25,7 @@ import pytest
 
 from faultmaven.core.investigation.milestone_engine import (
     MilestoneEngine,
+    _milestone_already_recorded,
     validate_reasoning_first,
 )
 from faultmaven.core.investigation.schemas import InternalReasoning, MilestoneUpdates
@@ -126,6 +127,26 @@ class TestRestatementIsNotJudged:
 
         assert is_valid is False
         assert offending == {milestone}
+
+    def test_verification_is_judged_while_only_acceptance_is_recorded(self):
+        """The mitigation record carries both gates; recording acceptance must
+        not make a first claim of verification read as a restatement."""
+        progress = InvestigationProgress()
+        _RECORD["mitigation_accepted"](progress)
+
+        is_valid, _, offending = validate_reasoning_first(
+            _response(MilestoneUpdates(mitigation_verified=True), _NO_JUSTIFICATIONS),
+            _validator_case(progress),
+        )
+
+        assert is_valid is False
+        assert offending == {"mitigation_verified"}
+
+    def test_an_unknown_milestone_reads_as_not_recorded(self):
+        """Fail closed: a name the lookup does not know is still validated."""
+        progress = InvestigationProgress(symptom_verified=True, solution_accepted=True)
+
+        assert _milestone_already_recorded(progress, "not_a_milestone") is False
 
     def test_restatement_beside_a_new_claim_implicates_only_the_new_one(self):
         progress = InvestigationProgress(symptom_verified=True)
