@@ -454,6 +454,49 @@ ss -tlnp | grep -E ':(8090|8000|3000)'
 # - Example cases
 ```
 
+## Utility Scripts
+
+One-off maintenance and development scripts under `scripts/`. None of these
+ship in the wheel or the image — an operator procedure that must run inside a
+deployment is an `fm-*` entrypoint instead
+([operator CLI](../operations/operator-cli.md)).
+
+```bash
+# User & account management (dev-only, run from a checkout)
+python scripts/create_builtin_accounts.py  # Create default users
+python scripts/resolve_duplicate_emails.py # Fix duplicate email issues
+python scripts/check_duplicate_emails.py   # Check for duplicate emails
+python scripts/auth/create_user.py         # Create a new user
+python scripts/auth/list_users.py          # List all users
+python scripts/auth/list_users_fast.py     # Fast user listing
+
+# OAuth & security
+python scripts/generate_oauth_keys.py      # Generate OAuth RSA keys
+python scripts/test_rbac.py                # Test RBAC configuration
+
+# Database & storage
+./scripts/db_migrate.sh                    # Database migrations
+python scripts/verify_vector_storage.py    # Verify ChromaDB
+python scripts/cleanup_corrupt_cases.py    # Database maintenance
+python scripts/backfill_closed_at_timestamps.py  # Backfill case timestamps
+python scripts/generate_er_diagram.py --update   # Regenerate the ER diagram from the ORM models
+
+# Architecture & validation
+python scripts/check_import_violations.py  # Check architecture
+python scripts/generate_api_docs.py --check  # Detect API reference drift (CI gate)
+python scripts/generate_api_docs.py        # Regenerate the API reference (commit the result)
+python scripts/backlog_metrics.py          # Is the backlog converging? Residue flow, survival, fix latency, rule-4 tier (#1453)
+
+# Development & testing
+python scripts/setup_env.py                # Environment setup
+python scripts/tests.py --unit             # Test runner (also --integration, --ci, --ci-full, --ci-nightly, --coverage)
+./scripts/run_load_tests.sh                # Run Locust load tests
+./scripts/test_integration_logging.sh      # Test integration logging
+
+# Local LLM
+./scripts/local_llm_service.sh             # Manage local LLM service (Ollama/vLLM)
+```
+
 ## Getting Help
 
 ```bash

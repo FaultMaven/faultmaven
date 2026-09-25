@@ -8,16 +8,19 @@ Documentation for FaultMaven contributors.
 |----------|-------------|
 | [Environment Variables](./environment-variables.md) | Required configuration |
 | [Datetime Standard](./datetime-standard.md) | Date/time handling conventions |
+| [Script Usage Guide](./script-usage-guide.md) | `faultmaven.sh`, `faultmaven-dev.sh` and the utility scripts |
+| [Local Troubleshooting](./local-troubleshooting.md) | First checks for import, port, database, `lint-imports`, provider and auth problems on a checkout |
 
 ## Testing
 
 | Document | Description |
 |----------|-------------|
-| [Testing Standards](./testing-standards.md) | Testing requirements and patterns |
-| [Testing Investigation](./testing-investigation.md) | Testing the investigation framework |
-| [Architecture Testing Guide](./architecture-testing-guide.md) | Testing architectural boundaries |
-| [New Test Patterns](./new-test-patterns.md) | Modern testing approaches |
-| [Performance Testing](./performance-testing.md) | Load and performance tests |
+| [Testing Documentation](./testing/README.md) | Index of the testing docs |
+| [Testing Standards](./testing/standards.md) | Testing requirements and patterns |
+| [Architecture Testing Guide](./testing/guide.md) | Testing architectural boundaries |
+| [Comprehensive Architecture Testing](./testing/architecture.md) | Container-based and boundary test suites |
+| [Modern Test Patterns](./testing/patterns.md) | Modern testing approaches |
+| [Performance Testing](./testing/performance.md) | Load and performance tests |
 
 ## Technical Reference
 
@@ -32,7 +35,7 @@ Documentation for FaultMaven contributors.
 
 1. Read the [Contributing Guide](../CONTRIBUTING.md)
 2. Set up your [Environment Variables](./environment-variables.md)
-3. Review [Testing Standards](./testing-standards.md)
+3. Review [Testing Standards](./testing/standards.md)
 4. Understand the [Architecture](../architecture/)
 
 ## Related Documentation

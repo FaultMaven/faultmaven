@@ -74,7 +74,9 @@ def test_every_shipped_source_names_the_current_default():
     the only files the sweep existed for.
 
     A positive claim has no exemption to slip through: whatever else a file
-    says, it must name the model actually shipped.
+    says, it must name the model actually shipped. The provider table lives
+    in ``.claude/rules/llm-providers.md`` (it was CLAUDE.md's until the root
+    guide was slimmed).
     """
     from pathlib import Path
 
@@ -84,13 +86,13 @@ def test_every_shipped_source_names_the_current_default():
     env_example = (root / ".env.example").read_text()
     assert f"GROQ_MODEL={default}" in env_example
 
-    claude_md = (root / "CLAUDE.md").read_text()
+    rules_md = (root / ".claude/rules/llm-providers.md").read_text()
     groq_rows = [
         line
-        for line in claude_md.splitlines()
+        for line in rules_md.splitlines()
         if line.startswith("|") and "`GROQ_API_KEY`" in line
     ]
-    assert groq_rows, "CLAUDE.md no longer documents Groq in its provider table"
+    assert groq_rows, "llm-providers.md no longer documents Groq in its provider table"
     for row in groq_rows:
         assert default in row, f"provider table names a different model: {row}"
 

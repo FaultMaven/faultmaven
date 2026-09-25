@@ -399,7 +399,8 @@ class LLMSettings(BaseSettings):
     groq_knowledge_model: Optional[str] = Field(default=None)
 
     # Default chat model per provider (the effective default when the user does
-    # not pin a model). Canonical set = docs/CLAUDE.md "Supported LLM Providers".
+    # not pin a model). Canonical set = .claude/rules/llm-providers.md
+    # "Supported LLM Providers".
     # Keep this, registry.py default_model, and .env.example in sync —
     # scripts/check_env_example_sync.py enforces all three (CI + pre-commit).
     # Defaults are performance-weighted (token-usage billing → quality drives UX),

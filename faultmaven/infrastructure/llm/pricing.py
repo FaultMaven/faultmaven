@@ -53,9 +53,10 @@ class TokenRates:
 
 
 # Best-effort published rates as of mid-2026 for the models FaultMaven ships
-# with (see repo CLAUDE.md "Supported LLM Providers"). Keys are lowercased and
-# matched by substring, so an entry like "claude-sonnet-4-6" also matches
-# "anthropic/claude-sonnet-4-6" (OpenRouter) or a dated snapshot suffix.
+# with (see .claude/rules/llm-providers.md "Supported LLM Providers"). Keys are
+# lowercased and matched by substring, so an entry like "claude-sonnet-4-6"
+# also matches "anthropic/claude-sonnet-4-6" (OpenRouter) or a dated snapshot
+# suffix.
 # Anthropic prompt-cache: write ~1.25x input (5-min TTL), read ~0.1x input.
 # OpenAI-family cached input is ~0.5x input; write is not separately billed.
 #
