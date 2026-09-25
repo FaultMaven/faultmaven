@@ -1,7 +1,7 @@
 name: Brand Lint
 
 # Enforces FaultMaven's canonical product terminology in brand-facing files.
-# Source of truth: .claude/skills/brand-messaging.md (§3 terminology, §7 enforcement).
+# Source of truth: .claude/skills/brand-messaging/SKILL.md (§3 terminology, §7 enforcement).
 # Pure stdlib — no dependencies to install.
 
 on:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Brand-messaging lint: fail on retired terminology in brand-facing files.
 
-Canonical source: ``.claude/skills/brand-messaging.md`` (§3 terminology, §7
+Canonical source: ``.claude/skills/brand-messaging/SKILL.md`` (§3 terminology, §7
 enforcement). This is the automation §7 calls for — a downstream check; the skill
 remains the source of truth.
 
@@ -136,7 +136,7 @@ def main() -> int:
 
     if hits:
         print(
-            "Brand-messaging lint failed (canonical: .claude/skills/brand-messaging.md):\n"
+            "Brand-messaging lint failed (canonical: .claude/skills/brand-messaging/SKILL.md):\n"
         )
         for h in hits:
             print(f"  {h}")

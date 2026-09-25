@@ -1,6 +1,5 @@
 ---
 description: Run tests, fix failures, re-run until green, report what changed
-allow_all_tools: true
 ---
 
 # Fix Tests

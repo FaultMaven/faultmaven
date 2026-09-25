@@ -1,6 +1,5 @@
 ---
 description: Run one round of issue processing — settle what the last round left, propose a round of items plus the questions blocking others, build what is approved, report. Opens PRs; never merges.
-allow_all_tools: true
 ---
 
 # /process-top-issues

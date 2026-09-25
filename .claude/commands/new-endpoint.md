@@ -16,7 +16,7 @@ If the argument is missing or not one of the valid modules, reject the invocatio
 
 ### 1. Load the architecture skill
 
-Read `.claude/skills/architecture.md` and follow its procedure. Do not rely on auto-loading.
+Read `.claude/skills/architecture/SKILL.md` and follow its procedure. Do not rely on auto-loading.
 
 ### 2. Look up the module in the manifest
 

@@ -6,7 +6,7 @@ This document provides essential context for AI assistants working with the Faul
 
 FaultMaven is an **AI-powered troubleshooting copilot**. It correlates the logs, metrics, and configs you share with runbooks, documentation, and past fixes to deliver contextual AI-driven incident investigation. It works a problem the way a seasoned engineer does — goal-driven, methodical, evidence-based, self-learning — and never forgets what it learns.
 
-**Deployment positioning:** run it yourself, or let us run it for you — same engine, both first-class. Local-model and air-gapped claims are gated on a verified end-to-end run. Canonical wording and rules: `.claude/skills/brand-messaging.md` §1 "Deployment positioning".
+**Deployment positioning:** run it yourself, or let us run it for you — same engine, both first-class. Local-model and air-gapped claims are gated on a verified end-to-end run. Canonical wording and rules: `.claude/skills/brand-messaging/SKILL.md` §1 "Deployment positioning".
 
 **Key Value Propositions:**
 - Evidence-centric investigation (logs, metrics, configs, past solutions)
