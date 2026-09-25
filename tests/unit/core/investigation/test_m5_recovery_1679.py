@@ -24,8 +24,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation import milestone_engine
+from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import MilestoneUpdates, SolutionToAdd
 from faultmaven.modules.case.domain.models import (
