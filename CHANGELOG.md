@@ -94,10 +94,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MCP (Model Context Protocol) integration guide
 - Comprehensive tool catalog and developer guide
 - Email uniqueness constraint migration (008_email_uniqueness_constraint)
-- Database migration scripts for data integrity:
-  - `scripts/check_duplicate_emails.py` - Check for duplicate email addresses
-  - `scripts/resolve_duplicate_emails.py` - Resolve duplicate emails (auto/interactive modes)
-  - `scripts/backfill_closed_at_timestamps.py` - Backfill missing closed_at timestamps
 
 ### Changed (Existing)
 

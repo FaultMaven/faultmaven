@@ -862,13 +862,8 @@ VECTOR_STORAGE_TYPE=chromadb   # PersistentClient on disk
 ```bash
 # .env.production
 CASE_STORAGE_TYPE=database
-DATABASE_URL=postgresql+asyncpg://case_service:${DB_PASSWORD}@postgres.faultmaven.local:30432/cases_db
-# (Legacy per-service vars retained for backwards compatibility)
-CASES_DB_HOST=postgres.faultmaven.local
-CASES_DB_PORT=30432
-CASES_DB_NAME=cases_db
-CASES_DB_USER=case_service
-CASES_DB_PASSWORD=${DB_PASSWORD}
+# One database holds every table (users, cases, knowledge, ...)
+DATABASE_URL=postgresql+asyncpg://faultmaven_app:${DB_PASSWORD}@postgres.faultmaven.local:30432/faultmaven
 
 REDIS_HOST=redis.faultmaven.local
 REDIS_PORT=6379
@@ -906,23 +901,11 @@ CHROMADB_COLLECTION=faultmaven_kb
 CASE_STORAGE_TYPE=database           # or: inmemory
 USER_STORAGE_TYPE=database           # or: inmemory
 
-# DATABASE_URL determines SQL dialect at runtime:
-DATABASE_URL=postgresql+asyncpg://case_service:${DB_PASSWORD}@postgres.faultmaven.local:30432/cases_db
-# For local:
+# DATABASE_URL names the ONE database that holds every table, and its
+# dialect selects the repository implementation at runtime:
+DATABASE_URL=postgresql+asyncpg://faultmaven_app:${DB_PASSWORD}@postgres.faultmaven.local:30432/faultmaven
+# For local (the default when DATABASE_URL is unset):
 # DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db
-
-# (Legacy per-service DB vars still read by some code paths)
-CASES_DB_HOST=postgres.faultmaven.local
-CASES_DB_PORT=30432
-CASES_DB_NAME=cases_db
-CASES_DB_USER=case_service
-CASES_DB_PASSWORD=secure_password
-
-USERS_DB_HOST=postgres.faultmaven.local
-USERS_DB_PORT=30432
-USERS_DB_NAME=users_db
-USERS_DB_USER=user_service
-USERS_DB_PASSWORD=secure_password
 
 # ===========================================
 # CACHED DATA (Sessions, Temp State)

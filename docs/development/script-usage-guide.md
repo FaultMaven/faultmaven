@@ -464,8 +464,6 @@ deployment is an `fm-*` entrypoint instead
 ```bash
 # User & account management (dev-only, run from a checkout)
 python scripts/create_builtin_accounts.py  # Create default users
-python scripts/resolve_duplicate_emails.py # Fix duplicate email issues
-python scripts/check_duplicate_emails.py   # Check for duplicate emails
 python scripts/auth/create_user.py         # Create a new user
 python scripts/auth/list_users.py          # List all users
 python scripts/auth/list_users_fast.py     # Fast user listing
@@ -478,7 +476,6 @@ python scripts/test_rbac.py                # Test RBAC configuration
 ./scripts/db_migrate.sh                    # Database migrations
 python scripts/verify_vector_storage.py    # Verify ChromaDB
 python scripts/cleanup_corrupt_cases.py    # Database maintenance
-python scripts/backfill_closed_at_timestamps.py  # Backfill case timestamps
 python scripts/generate_er_diagram.py --update   # Regenerate the ER diagram from the ORM models
 
 # Architecture & validation

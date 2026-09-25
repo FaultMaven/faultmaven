@@ -48,10 +48,10 @@ For the data-type × backend × deployment breakdown, see:
 └────────────┬──────────────────────────────────────────────────────────┘
              │
              ├──> UserRepository Interface
-             │    └──> PostgreSQL (auth_db.users)
+             │    └──> PostgreSQL (users table)
              │
              ├──> CaseRepository Interface
-             │    └──> PostgreSQL (cases_db.* hybrid schema)
+             │    └──> PostgreSQL (cases + case-domain tables, hybrid schema)
              │
              ├──> ISessionStore Interface
              │    ├──> Redis (primary, TTL-based)
@@ -84,9 +84,9 @@ For the data-type × backend × deployment breakdown, see:
 ┌───────────────────────────────────────────────────────────────────────┐
 │                     INFRASTRUCTURE LAYER                               │
 ├───────────────────────────────────────────────────────────────────────┤
-│ PostgreSQL Clusters:                                                  │
-│   - auth_db: User accounts, roles, SSO                                │
-│   - cases_db: Investigation data, evidence, hypotheses, reports       │
+│ PostgreSQL (one database; SQLite in standalone):                      │
+│   - Users, organizations, teams, roles, SSO mappings                  │
+│   - Cases, evidence, hypotheses, reports, knowledge items             │
 │                                                                        │
 │ Redis (real or FakeRedis for local deployment):                        │
 │   - Session state (session:{id}, idle timeout 30 min / record TTL 24h)│
