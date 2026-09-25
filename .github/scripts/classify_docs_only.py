@@ -974,9 +974,11 @@ def probe(tests_dir: pathlib.Path) -> ProbeResult:
 def collect_literals(tests_dir: pathlib.Path) -> set:
     """Every string literal under ``tests_dir`` that could name a document.
 
-    Documentation a test READS is not inert: tests pin CLAUDE.md's migration
-    head and its reasoning-intent call-site table, the user guide's Groq
-    models, and the key files under docs/architecture/. Ask the test tree which
+    Documentation a test READS is not inert: tests pin CLAUDE.md (no alembic
+    revision named; only settable ENVIRONMENT values), the reasoning-intent
+    call-site table and Groq default in .claude/rules/llm-providers.md, the
+    user guide's Groq models, and the key files under docs/architecture/. Ask
+    the test tree which
     paths those are instead of keeping a second list here that drifts silently
     -- a new pinning test re-arms the suites for its document simply by
     existing.

@@ -38,19 +38,19 @@ upgrade head` is a no-op and reports success. The failure then shows up at
 runtime as a missing column or a missing constraint — for the team-consent
 amendment, every invitation read raises on `team_invitations.revoked_by`.
 
-**The same applies to a database stamped at the RETIRED chain**, i.e. anything
-provisioned before the baseline replaced it. Alembic cannot walk from the old
-chain's head to `a1e0c17bd001` — there is no path — so the upgrade is again a
-no-op, and the symptom is not a missing column but a database with the *old*
-schema entirely: every test and every process that boots the app fails on the
-first query. This is not hypothetical; it is what a developer machine looks like
-the first time it meets this campaign.
+**A database stamped at the RETIRED chain** — anything provisioned before the
+baseline replaced it — cannot be upgraded either. Its `alembic_version` names a
+revision that is no longer in `alembic/versions/`, so `alembic upgrade head`
+fails with `Can't locate revision identified by '<id>'`, and so does the app's
+startup migration. The database still holds the *old* schema entirely. This is
+not hypothetical; it is what a developer machine looks like the first time it
+meets this campaign.
 
 So, for any environment that is not being wiped anyway:
 
 ```bash
-# NOT `alembic upgrade head` — from either the retired chain OR an earlier
-# `a1e0c17bd001`, it will do nothing and say it worked.
+# NOT `alembic upgrade head` — from an earlier `a1e0c17bd001` it does nothing
+# and says it worked; from the retired chain it cannot locate the revision.
 dropdb faultmaven && createdb faultmaven
 alembic upgrade head
 ```

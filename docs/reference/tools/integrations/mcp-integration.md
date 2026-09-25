@@ -1,5 +1,9 @@
 # MCP (Model Context Protocol) Integration Guide
 
+> **Not implemented.** This page describes a design. The modules it imports
+> (`faultmaven.tools`, `faultmaven.infrastructure.mcp`), the `MCP_SERVER_ENV`
+> setting and the `mcp` package are not in this repository.
+
 How to integrate Model Context Protocol servers with FaultMaven's tool ecosystem.
 
 ## Overview
@@ -598,9 +602,6 @@ async def test_mcp_client_tool():
 ```bash
 # Check command is correct
 npx -y @modelcontextprotocol/server-github --help
-
-# Check environment variables
-echo $GITHUB_TOKEN
 
 # Check logs
 tail -f logs/faultmaven.log | grep MCP

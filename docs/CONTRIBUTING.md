@@ -95,6 +95,34 @@ To get started with local development for the `faultmaven` monolith:
 
 ---
 
+## Pre-commit hooks
+
+The pre-commit framework (`.pre-commit-config.yaml`) runs **black** and **ruff**
+(`--fix`, failing the commit when it rewrote something), **detect-secrets**,
+**check-api-keys** (custom API-key patterns), **check-hardcoded-rsa-keys**,
+**check-kb-pack** (the KB pack is valid and in sync with its runbook sources),
+**brand-lint**, **venv-staleness** (warns when a virtualenv is behind its
+lockfile) and the standard file hooks (JSON/YAML, merge conflicts, private keys,
+large files, whitespace, line endings). It is the recommended setup and matches
+CI:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+The lightweight alternative formats staged Python with black and nothing else:
+
+```bash
+./scripts/install-git-hooks.sh   # points core.hooksPath at the tracked .githooks/
+```
+
+That hook (`.githooks/pre-commit`) formats only *staged* `.py` files, prefers
+the `.venv` black, and warns if its version drifts from the pinned
+`black==26.3.1` (CI runs `black --check`, so local formatting must match). To
+switch back to the framework: `git config --unset core.hooksPath && pre-commit
+install`.
+
 ## Pull Request Process
 
 1.  **Create a Branch:** Create a new branch for your feature or bug fix from the `main` branch.
@@ -103,7 +131,7 @@ To get started with local development for the `faultmaven` monolith:
     ```
 
 2.  **Make Your Changes:** Write your code and any accompanying tests.
-    * **Coding Style:** Please follow the **Black** code style (pinned `black==26.3.1`; CI runs `black --check`). To auto-format staged Python on commit, install the git hook once: `./scripts/install-git-hooks.sh` (or use the full pre-commit framework — see [faultmaven/CLAUDE.md](../CLAUDE.md) "Pre-commit Hooks").
+    * **Coding Style:** Please follow the **Black** code style (pinned `black==26.3.1`; CI runs `black --check`). To auto-format staged Python on commit, install the git hook once: `./scripts/install-git-hooks.sh` (or use the full pre-commit framework — see [Pre-commit hooks](#pre-commit-hooks) below).
     * **Error Logging:** All error logging MUST include `exc_info=True` or use `logger.exception()`. See [Logging Policy](operations/monitoring/logging-policy.md#error-logging-standards) for details.
     * **Commit Messages:** Please follow the [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) specification. For example: `feat: Add new data classifier for TOML files`.
 

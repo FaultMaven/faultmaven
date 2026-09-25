@@ -279,7 +279,7 @@ def test_new_provider_basic_model_best_effort():
 
 ## Current Provider Support
 
-FaultMaven ships 9 LLM providers (see `faultmaven/CLAUDE.md` § Supported LLM Providers). Capability detection is implemented per provider; the table below is generated from the `get_structured_output_capability()` overrides in `faultmaven/infrastructure/llm/providers/`.
+FaultMaven ships 9 LLM providers (see `.claude/rules/llm-providers.md` § Supported LLM Providers). Capability detection is implemented per provider; the table below is generated from the `get_structured_output_capability()` overrides in `faultmaven/infrastructure/llm/providers/`.
 
 | Provider | STRICT Models | BEST_EFFORT Models | FUNCTION_CALLING Models |
 |----------|---------------|-------------------|------------------------|

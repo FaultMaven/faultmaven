@@ -1,6 +1,8 @@
 # CLAUDE.md - AI Assistant Guide for FaultMaven
 
-This document provides essential context for AI assistants working with the FaultMaven codebase.
+Context for coding agents working in this repository. This file holds what
+most sessions need; detail lives where it loads on demand — `.claude/rules/*.md`
+(loaded when a matching file is touched) and `docs/`.
 
 ## Project Overview
 
@@ -8,1303 +10,189 @@ FaultMaven is an **AI-powered troubleshooting copilot**. It correlates the logs,
 
 **Deployment positioning:** run it yourself, or let us run it for you — same engine, both first-class. Local-model and air-gapped claims are gated on a verified end-to-end run. Canonical wording and rules: `.claude/skills/brand-messaging/SKILL.md` §1 "Deployment positioning".
 
-**Key Value Propositions:**
-- Evidence-centric investigation (logs, metrics, configs, past solutions)
-- Knowledge flywheel (learns from resolved incidents)
-- Multi-LLM support (9 providers: Anthropic, OpenAI, Gemini, Fireworks, Groq, HuggingFace, Cohere, OpenRouter, Local Ollama/vLLM)
-- Zero context-switching (browser extension integrates into existing tools)
+**Key Value Propositions:** evidence-centric investigation (logs, metrics, configs, past solutions); knowledge flywheel (learns from resolved incidents); multi-LLM support (9 providers: Anthropic, OpenAI, Gemini, Fireworks, Groq, HuggingFace, Cohere, OpenRouter, local Ollama/vLLM); zero context-switching (browser extension integrates into existing tools).
 
-**System Components:**
 | Component | Purpose |
 |-----------|---------|
 | FaultMaven API (this repo) | Backend investigation engine, knowledge base, AI orchestration |
-| FaultMaven Dashboard | Web UI — the full product in a browser tab, and the surface a Cloud beta account lands on. Works end to end on its own |
+| FaultMaven Dashboard | Web UI — the full product in a browser tab; works end to end on its own |
 | FaultMaven Copilot | Browser extension for in-context troubleshooting |
-| FaultMaven Slack Agent | Answers in the incident thread. **No self-serve install during beta** — workspaces are connected by hand (fm#1457), and the Community Slack is where anyone can try it with no account |
+| FaultMaven Slack Agent | Answers in the incident thread; while the beta runs, workspaces are connected by hand (fm#1457) |
 
-## Architecture
-
-### Module Architecture (Vertical Slice + Domain Services)
-
-FaultMaven uses a hybrid architecture with **Vertical Modules** (own data) and **Domain Services** (business logic only):
-
-```
-faultmaven/
-├── main.py                 # FastAPI entry point
-├── api/                    # Shared API middleware, dependencies, error handling
-│   ├── dependencies.py     # DI for legacy code
-│   ├── exception_handlers.py
-│   ├── middleware/         # request middleware (see the directory)
-│   │   ├── auth.py                    # JWT/OAuth authentication
-│   │   ├── client_ip.py               # Trusted-proxy client IP resolution
-│   │   ├── contract_probe.py          # API contract validation
-│   │   ├── deduplication.py           # Request deduplication
-│   │   ├── idempotency.py             # Idempotent request handling
-│   │   ├── logging.py                 # Request/response logging
-│   │   ├── performance.py             # Performance monitoring
-│   │   ├── rate_limiting.py           # Rate limiting
-│   │   ├── request_id.py              # Request ID injection
-│   │   ├── system_optimization.py     # System optimization
-│   │   ├── tenant_scope.py            # Request-scoped tenant binding
-│   │   └── trailing_slash.py          # URL normalization
-│   ├── v1/                 # API v1 utilities and dependencies
-│   └── routes/             # Admin routes (admin.py, admin_config.py, sessions.py)
-├── modules/                # Feature modules (primary code organization)
-│   │
-│   │ # VERTICAL MODULES (own database tables, have contracts.py + infrastructure/)
-│   ├── auth/               # Authentication, JWT, OAuth 2.0, RBAC
-│   ├── case/               # Investigation cases (owns evidence, reports, investigation sessions)
-│   ├── knowledge/          # Knowledge base, RAG, vector search
-│   │
-│   │ # DOMAIN SERVICES (business logic only, NO contracts.py, NO infrastructure/)
-│   ├── agent/              # Investigation orchestration & AI tools
-│   ├── evidence/           # Evidence processing (uses Case repository)
-│   ├── preprocessing/      # Data classification, extraction (11 extractors), chunking
-│   └── report/             # Report generation (uses Case repository)
-│
-├── core/                   # Core investigation engine
-│   ├── investigation/      # Milestone-based investigation framework
-│   │   ├── milestone_engine.py      # Main investigation orchestrator (process_turn)
-│   │   ├── hypothesis_manager.py    # Hypothesis lifecycle & confidence scoring
-│   │   ├── schemas.py               # Pydantic schemas for structured LLM output
-│   │   ├── working_conclusion_generator.py  # Progress metrics
-│   │   └── prompts/                 # Prompt templates and context building
-│   │       ├── templates.py         # INQUIRY/INVESTIGATING/TERMINAL templates
-│   │       └── context_builder.py   # Token-aware context assembly
-│   ├── preprocessing/      # Tier 0/1 mechanical preprocessor
-│   └── processing/         # Log analyzer, pattern learner
-├── infrastructure/         # Shared adapters
-│   ├── llm/                # LLM provider routing, caching
-│   │   ├── providers/      # 9 LLM providers (see Supported LLM Providers)
-│   │   ├── router.py       # Provider routing with fallback chain
-│   │   ├── cache.py        # Response caching
-│   │   └── local_llm_manager.py
-│   ├── persistence/        # Database layer (SQLAlchemy)
-│   ├── knowledge/          # Vector databases (ChromaDB)
-│   ├── auth/               # JWT, bcrypt, RBAC, user stores
-│   ├── security/           # PII protection (Presidio)
-│   ├── protection/         # System protection and rate limiting
-│   ├── caching/            # Intelligent cache
-│   ├── storage/            # File storage (local, S3, Azure)
-│   ├── logging/            # Structured logging (structlog), coordinator
-│   ├── observability/      # Opik tracing, Prometheus metrics, APM, alerting, SLA, confidence/dashboard services
-│   ├── health/             # Health checks, SLA tracker, component monitor
-│   ├── jobs/               # Background job service
-│   ├── tasks/              # Async task management
-│   ├── shims/              # Compatibility shims (enterprise feature flags)
-│   └── concurrency/        # Report lock manager
-├── bootstrap/              # Application startup and service factories
-├── cli/                    # Operator console entrypoints (fm-*, [project.scripts])
-├── config/                 # Pydantic-settings configuration
-│   ├── settings.py         # Main settings with validation
-│   ├── presets.py          # Configuration presets
-│   ├── feature_flags.py    # Feature toggles
-│   └── protection.py       # Protection configuration
-├── container/              # Dependency injection
-│   ├── base.py             # Base container
-│   ├── registry.py         # Service registry
-│   └── providers/          # Infrastructure, services, tools providers
-├── services/               # Shared service utilities (BaseService class + request-scoped DI factory)
-└── models/                 # Shared interfaces, API schemas, domain models
-```
-
-### Module Types
-
-**Vertical Modules (Auth, Case, Knowledge):**
-- Own database tables
-- Have `contracts.py` - exposes interfaces (ICaseRepository, etc.) and DTOs
-- Have `infrastructure/` - repositories for persistence
-- Other modules import from their contracts
-
-**Domain Services (Evidence, Agent, Report):**
-- Business logic only, NO data ownership
-- NO `contracts.py` (nothing to expose)
-- NO `infrastructure/` (use Case repository via contracts)
-- Import models from Case contracts
-
-```
-# Vertical Module structure (Case, Auth, Knowledge)
-module/
-├── contracts.py            # Public interfaces (ICaseRepository, DTOs)
-├── api/
-│   └── routes.py           # FastAPI endpoints
-├── domain/
-│   ├── models/             # Domain entities
-│   ├── owned_models/       # Case-owned shared models (evidence, report, agent_execution)
-│   └── services/           # Business logic
-├── infrastructure/
-│   └── persistence/        # Repositories
-│       └── stores/         # Session/token stores (auth module)
-└── exceptions.py           # Module-specific exceptions
-
-# Case module infrastructure (multiple repository implementations)
-modules/case/infrastructure/
-├── case_repository.py              # Abstract base repository
-├── sqlite_case_repository.py       # SQLite implementation (default)
-├── postgresql_hybrid_case_repository.py  # PostgreSQL implementation
-├── database_case_repository.py     # Generic database repository
-├── sessionless_case_repository.py  # Sessionless repository variant
-├── investigation_session_repository.py  # Session management
-└── case_vector_store.py            # Vector storage for cases
-
-# Domain Service structure (Evidence, Agent, Report)
-module/
-├── api/
-│   └── routes.py           # FastAPI endpoints
-├── domain/
-│   ├── models.py           # Re-exports from Case contracts (backward compat)
-│   └── services/           # Business logic (uses Case repository)
-├── tools/                  # Agent tools (agent module only)
-└── exceptions.py           # Module-specific exceptions
-
-# Agent module tools (investigation capabilities)
-modules/agent/tools/
-├── base.py                 # Base tool class
-├── kb_qa.py                # Unified KB Q&A (answer_from_kb — all scopes via metadata filter)
-├── case_evidence_qa.py     # Case evidence queries (answer_from_case_evidence)
-├── knowledge_base.py       # Generic KB interaction tool
-├── document_qa_tool.py     # Document Q&A
-├── kb_tool_adapter.py      # Adapter between unified kb_qa and downstream tools
-├── kb_config.py            # Shared KB tool configuration
-├── list_evidence_tool.py   # List available evidence
-├── read_file_tool.py       # File reading tool
-├── search_file_tool.py     # Query strategy: keyword/regex/extractor search on raw files
-├── deep_analysis_tool.py   # Query strategy: interpreted search (dedicated LLM call on file sections)
-├── vectorize_file_tool.py  # Vectorize a file into the case vector store
-├── web_search.py           # Web search integration (Tavily)
-└── kb_configs/             # KB tool configurations
-    ├── unified_kb_config.py
-    └── case_evidence_config.py
-```
-
-### Cross-Module Import Rules
-
-```python
-# CORRECT: Domain Service uses Vertical Module's contract
-from faultmaven.modules.case.contracts import ICaseRepository, EvidenceArtifact
-
-# CORRECT: Use auth contracts for DTOs
-from faultmaven.modules.auth.contracts import UserDTO, AuthTokenDTO
-
-# WRONG: Domain Service bypasses contracts
-from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
-
-# WRONG: Vertical Module imports Domain Service internals
-from faultmaven.modules.evidence.domain.validators import validate_evidence
-```
-
-### Architecture Enforcement
-
-Architecture is enforced via **import-linter** (`.importlinter`). For the
-authoritative contract list and which are active, run `lint-imports`:
-
-| Contract | Description | Status |
-|----------|-------------|--------|
-| 1 | Service layer independence | Active |
-| 2 | Services cannot import API layer | Active |
-| 3 | Models cannot import services | Active |
-| 4 | Knowledge module layer boundaries | Active |
-| 5 | Case module layer boundaries | Active |
-| 6 | Auth module layer boundaries | Active |
-| 7 | Agent module layer boundaries | Active |
-| 8 | Evidence module layer boundaries | Active |
-| 9 | Report module layer boundaries | Active |
-| 10 | Other modules use auth contracts only | Active |
-| 11 | No direct database access to auth tables | Active |
-| 12 | Domain Services use Case contracts, not infrastructure | Active |
-| 13 | Other modules use Case contracts for shared models | Active |
-| 14 | Preprocessing module uses Case contracts only | Active |
-| 15 | Providers do not reach into module internals | Active |
-
-**Run architecture checks:**
-```bash
-lint-imports
-```
-
-## Authentication System
-
-FaultMaven uses a unified JWT-based authentication system supporting two modes:
-
-### Auth Modes
-
-| Mode | Algorithm | Use Case | Configuration |
-|------|-----------|----------|---------------|
-| `local` | HS256 (symmetric) | Self-hosted, single-user | `AUTH_MODE=local`, `JWT_SECRET_KEY` |
-| `oauth` | RS256 (asymmetric) | Cloud, multi-user, browser extension | `AUTH_MODE=oauth`, RSA key pair |
-
-### Key Auth Components
-
-```
-modules/auth/
-├── contracts.py                    # Public DTOs (UserDTO, AuthTokenDTO, SessionDTO)
-├── api/
-│   ├── auth.py                     # Login, register, token refresh
-│   ├── oauth.py                    # OAuth 2.0 flow with PKCE
-│   ├── session.py                  # Session management
-│   ├── teams.py                    # /teams — list, create, roster, invite, revoke, leave
-│   ├── invitations.py              # /invitations — the invitee's half: list, accept, decline
-│   └── rate_limiting.py            # Auth-specific rate limiting
-├── domain/
-│   ├── models/                     # User, Session, RBAC, Organization models
-│   └── services/
-│       ├── auth_service.py         # Core authentication logic
-│       ├── auth_session_service.py # Session management service
-│       ├── oauth_service.py        # OAuth 2.0 implementation
-│       ├── jwt_token_generator.py  # RS256/HS256 token generation
-│       ├── user_service.py         # User CRUD operations
-│       ├── organization_service.py # Organization management
-│       └── team_service.py         # Teams: create, the invitation rule, accept, leave
-└── infrastructure/
-    ├── repositories/               # User, session, OAuth code, team, org repositories
-    ├── stores/                     # Redis session stores (FakeRedis for local), token revocation
-    └── metrics/                    # OAuth metrics tracking
-```
-
-### Token Structure (Both Modes)
-
-```json
-{
-  "sub": "user_id",
-  "username": "john",
-  "email": "john@example.com",
-  "roles": ["user", "admin"],
-  "scopes": ["openid", "profile", "email", "cases:read", "cases:write"],
-  "exp": 1234567890,
-  "iat": 1234567890,
-  "iss": "faultmaven",
-  "aud": "faultmaven-api",
-  "jti": "unique-token-id",
-  "type": "access",
-  "auth_mode": "local"
-}
-```
+Python ≥ 3.11 (`requires-python`; classifiers cover 3.11–3.13). License: FSL-1.1-ALv2 (`LICENSE`). Versions are not written here: the package version is `pyproject.toml` `version`, the contract version clients pin is `API_CONTRACT_VERSION` in `faultmaven/api/contract_version.py`.
 
 ## Tech Stack
 
 | Layer | Technologies |
 |-------|--------------|
-| Framework | Python 3.11+, FastAPI 0.115.8+, Uvicorn, AsyncIO |
-| LLM/AI | OpenAI, Anthropic, Gemini, Fireworks, Groq, HuggingFace, Cohere, OpenRouter |
-| Database | SQLAlchemy 2.0+, SQLite (local), PostgreSQL (prod), Alembic 1.13+ |
-| Vector DB | ChromaDB 0.5.3+, sentence-transformers 3.0.1+ |
-| Cache | Redis 5.0+ (cloud), FakeRedis (local — full API parity, no external server) |
-| Auth | JWT (PyJWT 2.8+), bcrypt, RBAC, OAuth 2.0 with PKCE |
-| Observability | Opik 0.2.1+ (tracing), Prometheus (metrics), structlog (logging) |
-| Security | Presidio 2.2+ (PII redaction), cryptography 41+ |
-| Testing | pytest 8.0+, pytest-asyncio, pytest-cov, factory-boy, locust |
-| Code Quality | ruff 0.9.10 (lint + import sorting via its `I` rules), black 26.3.1, mypy 1.8+, import-linter 2.0+ |
+| Framework | Python 3.11+, FastAPI, Uvicorn, AsyncIO, Pydantic v2 + pydantic-settings |
+| LLM/AI | 9 providers behind one router (`faultmaven/infrastructure/llm/`) |
+| Database | SQLAlchemy 2.0 async (aiosqlite, asyncpg), SQLite (standalone), PostgreSQL (cloud), Alembic |
+| Vector DB | ChromaDB (PersistentClient in-process by default), BGE-M3 via sentence-transformers |
+| Cache / sessions | Redis (cloud), FakeRedis in-process (standalone — full API parity, no server) |
+| Auth | PyJWT, bcrypt, RBAC, OAuth 2.0 with PKCE |
+| Observability | Opik (tracing), Prometheus (metrics), structlog (logging) |
+| Security | Presidio (PII redaction), cryptography |
+| Testing | pytest, pytest-asyncio, pytest-cov, factory-boy, locust |
+| Code Quality | ruff (lint + import sorting via its `I` rules), black, mypy, import-linter |
 
-### Supported LLM Providers
+Version floors: `pyproject.toml`. The pins CI installs: `requirements/dev.txt` (ruff, black and FastAPI versions matter for the gates below).
 
-| Provider | Environment Variable | Models | Structured output | Notes |
-|----------|---------------------|--------|-------------------|-------|
-| Anthropic | `ANTHROPIC_API_KEY` | claude-sonnet-4-6 | **FUNCTION_CALLING** | Schema enforced via forced tool use; recommended for logic |
-| OpenAI | `OPENAI_API_KEY` | gpt-5.6-luna | **STRICT** (gpt-4o+) | Reasons by default: plain calls send `reasoning_effort: "none"` and tool calls force it (hard model constraint), while structured calls keep the `low` starvation floor — so `OPENAI_REASONING_EFFORT=none` is a no-op here (and warns per structured call) — leave it unset. A HIGHER value is NOT inert: it replaces the `"none"` shape default on plain calls. `gpt-5.4-mini` remains supported |
-| Google Gemini | `GEMINI_API_KEY` | gemini-3.7-flash | **STRICT** (1.5+) | **Shipped default provider + model.** Fast multimodal. The adapter version-gates the reduced 3.6/3.7 API surfaces (no sampling params, `thinkingLevel`-only, user-role function responses carrying the call id); `gemini-3.5-flash*` remain supported on the classic surface |
-| Fireworks AI | `FIREWORKS_API_KEY` | accounts/fireworks/models/deepseek-v4-flash | BEST_EFFORT | Strong open weights, but schema not enforced — see note |
-| Groq | `GROQ_API_KEY` | openai/gpt-oss-20b | **STRICT** (gpt-oss only; BEST_EFFORT otherwise) | Ultra-fast inference. Groq serves no Llama chat model any more — `llama-3.3-70b-versatile` 404s. Per-org TPM limits are low on the free tier (8k on `on_demand`), so a full-document call can 413 where a classifier-sized one succeeds |
-| HuggingFace | `HUGGINGFACE_API_KEY` | Mistral-Large-Instruct-2411 | BEST_EFFORT | Open models — NOT recommended (no tool calling) |
-| Cohere | `COHERE_API_KEY` | command-r-plus | BEST_EFFORT | Enterprise RAG (json_object only; not schema-enforced) |
-| OpenRouter | `OPENROUTER_API_KEY` | anthropic/claude-sonnet-4-6 | depends on routed model | Multi-model gateway (STRICT for `openai/*`, else FUNCTION_CALLING) |
-| Local (Ollama/vLLM) | `LOCAL_LLM_URL` | llama3.2, etc. | FUNCTION_CALLING (functionary/hermes on OpenAI-compatible transport only), else BEST_EFFORT | Private & offline. **The URL path picks the protocol** — bare host or `/v1` = OpenAI-compatible, `/api` = Ollama native — and one predicate (`resolve_local_transport`) decides both that dispatch and the capability answer, so they cannot disagree. Tool calling follows: assumed on the OpenAI-compatible path, impossible on `/api/generate` for any model. Never keyed on the hostname (#1356), so `http://ollama:11434/v1` is capable. `LOCAL_LLM_TOOL_CALLING=false` declares a stack built without tool support |
+## Repository Layout
 
-**Structured-output enforcement matters.** The investigation engine drives state
-from large schema-constrained LLM responses. **STRICT** providers enforce the
-schema natively (tool calling / `json_schema` response_format) — the engine gets
-valid state. **BEST_EFFORT** providers only request the schema in-prompt: the
-model can omit required fields, the engine drops the `state_updates`, and you get
-empty/degraded investigations. **Use a STRICT provider as `CHAT_PROVIDER`**
-(OpenAI, Anthropic, Gemini 1.5+). BEST_EFFORT providers (Fireworks incl.
-`deepseek-v3`/minimax, Groq, HuggingFace, Local) are fine for cheap
-`CLASSIFIER_PROVIDER`/`SYNTHESIS_PROVIDER` overrides but degrade primary CHAT.
-Capability is reported per-provider via `get_structured_output_capability()`.
-
-**A STRICT provider only enforces schemas that can be expressed strictly.**
-OpenAI's strict subset admits no optional keys and no free-form objects, so
-`utils/schema_converter.to_strict_schema` rewrites a schema to fit — every
-property required, formerly-optional ones rendered as null unions,
-`additionalProperties: false` throughout — and **refuses** when it cannot. All
-six response schemas are enforced: `InquiryResponse`, `TerminalResponse` and the
-four `InvestigationResponse_*`. The refusal valve remains for any schema that
-later grows a construct outside the subset — a free-form `Dict[str, Any]` is the
-one the project hit, and it is refused rather than sent with a `strict: true`
-the API rejects. Enforcement is scoped to the schema tool; investigation tools
-keep optional parameters.
-
-**The rewrite keeps the schema's value constraints** (`minimum`/`maximum`,
-`maxLength`, `pattern`, `minItems`/`maxItems`) — it drops only `default`,
-`examples`, `format` and the handful of keywords an API refuses. It used to
-drop the narrowing ones too, as "descriptive", and the Gemini adapter stripped
-them a second time; the engine's `likelihood: Field(ge=0, le=1)` therefore
-reached the model as a bare number and came back as `95`, which Pydantic
-rejects and the turn 500s (fm#355). Note what that means for fm#355's own
-proposal: routing the schema tool through Gemini's `response_schema` instead of
-function calling enforces **nothing** extra, because
-`generationConfig.responseSchema` and `FunctionDeclaration.parameters` are the
-same `Schema` message in the API and go through the same adapter resolver — the
-lever is what the schema contains, not which field carries it. Measured
-enforcement per provider, and where `maxLength` stops biting, is in
-`docs/reference/llm-model-capabilities.md` §"Value constraints"; the guard is
-`tests/unit/core/investigation/test_schema_constraints_reach_the_provider.py`,
-written end-to-end over both builders so a third stripper anywhere on either
-path fails it.
-
-The investigation schemas reached the subset by giving their two `Dict[str, Any]`
-fields declared shapes (fm#1057). `milestone_justifications` became
-`MilestoneJustifications`, one field per settable milestone — its key domain was
-always closed, so the wire shape (an object keyed by milestone name) is
-unchanged. `hypotheses_to_update` became a list whose entries carry
-`hypothesis_id`, because there the key domain is genuinely open.
-
-Because a strict response carries every key with `null` where the model had
-nothing, schema classes with **defaulted** fields inherit `NullTolerantModel`,
-which restores the default. The rule keys on "has a non-`None` default" rather
-than "is not `Optional`": the `Optional[List[X]] = default_factory=list` case
-accepts the null silently and would otherwise land as `None` in code expecting a
-list — 47 such fields in the investigation schemas alone. A field whose default
-*is* `None` keeps its `None`. Two consequences worth knowing: reading
-`milestone_justifications` must go through `as_dict()` (a plain `model_dump()`
-reports every milestone as justified and the reasoning gate stops firing), and a
-new gate milestone needs a matching justification field or it becomes
-unjustifiable — both pinned by `tests/unit/core/investigation/test_schema_strict_mode.py`.
-
-STRICT enforcement is necessary but not sufficient: a STRICT **thinking** model
-bills hidden reasoning against `maxOutputTokens`, which can starve the JSON
-output on deep-context turns (truncation to `MAX_TOKENS` → 500). The Gemini
-provider caps thinking on structured calls for **Gemini 3.x only** via
-`thinkingConfig.thinkingLevel: "low"` (3.x dropped the 2.5-era integer
-`thinkingBudget`). This is scoped to 3.x because that's where the starvation was
-observed (gemini-3.5-flash, the then-default); Gemini 2.5 is left at native dynamic
-thinking — it ran clean, and capping it would change a working reasoning path
-without evidence.
-
-On the **Gemini 3.7+ API surface** (`gemini-3.7-flash` onward; version-gated in
-the adapter as `(major, minor) >= (3, 7)`) the cap widens to **every call
-shape**, plain chat included: `thinkingLevel` is the only reasoning knob left
-there, the server default is `medium`, thinking bills at the full output rate,
-and the product profile for this path is little/no reasoning at low latency.
-The same surface gate also strips the removed sampling params
-(`temperature`/`topP`/`topK`). A second, EARLIER gate (`>= (3, 6)`) versions
-the tool-result shape: 3.6 rejects the classic `role: "function"` turn
-outright, so from 3.6 the adapter sends function responses as `role: "user"`
-turns carrying `id` + `name` (paired with the `functionCall.id` the API
-issues, which the adapter adopts as `ToolCall.id`; mandatory per the 3.7
-migration guide). Requests to 3.5-generation models are byte-for-byte
-unchanged — the classic shape measured working end-to-end (2026-08-26).
-Details: `docs/reference/llm-model-capabilities.md` §"Gemini 3.6/3.7 API
-surfaces".
-
-That shape-based rule is the **default**, and a caller can now refine it per
-call with a **reasoning intent** (`#1118`, below): `EXTRACTION` extends the cap
-to plain 3.x calls as well, and `INFERENCE` *lifts* it on structured calls —
-but only when the same call also declares an output floor, without which the
-provider refuses the lift and warns. (On the 3.7+ surface `INFERENCE` also
-lifts the all-shape default on plain calls, floor or no floor — plain-call
-starvation is non-fatal.) So "3.x structured calls are capped" is the
-default, not an invariant: **five call sites declare an intent** (see below),
-four of them `EXTRACTION` — the direction that asks for *less* reasoning,
-which can never lift a cap — and one `INFERENCE` on a **structured** call,
-the tool-less single-shot diagnostic turn (fm#1116), which lifts the cap
-deliberately and declares `TOOLLESS_INFERENCE_OUTPUT_FLOOR` to buy the lift.
-Reasoning here is **routed**, not suppressed: the provider's minimum where the
-model is transforming supplied context, its default where the model is
-reasoning over candidates.
-
-**Every response carries a normalised stop reason.** `LLMResponse.stop_reason`
-(`STOP | MAX_TOKENS | CONTENT_FILTER | TOOL_CALLS | UNKNOWN`, with a derived
-`is_truncated`) is populated by all nine providers from whatever their API
-calls it — `finish_reason: "length"`, `stop_reason: "max_tokens"`,
-`finishReason: "MAX_TOKENS"`, `done_reason`, llama.cpp's `stopped_limit`. Map
-new providers with `normalize_stop_reason()`; never match the raw strings, and
-never write a placeholder into `content` (that channel was retired in #1094).
-`UNKNOWN` means "no signal", not "finished" — HuggingFace as called supplies
-none — so it must never be collapsed into False, or every `if is_truncated`
-fails open. Consumers recover via
-`infrastructure/llm/truncation.generate_with_truncation_retry` (double the cap
-once); what happens if the retry is also cut is per-consumer — read paths
-(KB/evidence QA, tier-2) annotate and return the partial, write paths (runbook
-conversion) refuse to persist. The one exception is a call carrying an output
-floor (below): there a starved first attempt arrives as an exception rather
-than a response, the helper spends its one retry on it exactly as it would on
-a cut body, and a twice-starved call raises instead of returning a partial —
-the caller pre-declared that partial unusable. Pass `min_output_tokens` to the
-helper as well as to `route()`, or its doubling is computed from a cap the
-router has already raised and the "retry" repeats the first attempt
-verbatim. The reason is logged and counted at the router
-(`llm_stop_reasons_total`), and a response reported as cut is never written to
-the response cache — the key omits `max_tokens`, so a stored cut body is what a
-retry at a bigger cap would be served instead of reaching the provider.
-
-**The engine's retry ladder is budgeted against the turn deadline.** A turn is
-bounded by `AGENT_REQUEST_TIMEOUT` (per-provider via
-`AGENT_PROVIDER_TIMEOUT_OVERRIDES`), applied as an `asyncio.wait_for` at the
-turn route. The ladder inside it (`LLMErrorHandler.with_retry`, `max_retries=3`)
-costs `3T + 14s` against a hung provider, where `T` is the resolved per-call
-ceiling — `max(LLM_REQUEST_TIMEOUT, LLM_PROVIDER_TIMEOUT_OVERRIDES[provider])`,
-NOT `LLM_REQUEST_TIMEOUT` alone, which understates the shipped cluster shape
-threefold. Three PAID attempts, because the router's breaker opens on the third
-failure and short-circuits the fourth, plus all four backoffs (2 + 4 + 8; the
-eight seconds are spent before the attempt the breaker refuses). The two settings live in
-different classes with their own per-provider maps and nothing related them, so
-the turn used to be cancelled mid-ladder: the classification never ran and the
-caller got an opaque 504 instead of the honest 503 + `Retry-After`
-(#1278/#1292). `core/investigation/turn_budget.py` binds the deadline in a
-`ContextVar` at the one site that applies the `wait_for`.
-`LLMRouter._resolve_timeout` then **clamps every router-borne call's own
-timeout** to what is left — which bounds intent classification and KB/document
-synthesis too, not just the ladder, and keeps a cut-short call on the path that
-records a circuit-breaker failure (an outer `wait_for` would cancel it, and
-`CancelledError` is invisible to `call_external`'s handlers). `with_retry` adds
-a later backstop clamp for providers reached without the router, and **refuses a
-retry** whose backoff plus another attempt of the worst cost observed *in that
-ladder* would not fit. Refusing the ladder's last iteration reports
-`RETRY_EXHAUSTED` (nothing that could have changed the answer was lost);
-refusing an earlier one reports `TURN_BUDGET_EXHAUSTED`, whose remediation is
-the config. Both → 503. **Unbound context means unbounded**: outside a
-turn the budget reads `None` and every check is inert, which is why the binding
-is the seam the whole guard hangs on and has its own test. Whether a
-deployment's two timeouts actually fit is reported by
-`GET /admin/config/status` as `llm_retry_ladder_fits_turn_budget`.
-
-**Tool calling is required for the investigation role.** Directed Analysis
-(`search_file`, `deep_analysis`) needs function/tool calling; a tool-incapable
-model can't gather evidence yet would still conclude — the premature-conclusion
-failure FaultMaven guards against. A **startup fail-fast gate**
-(`config/investigation_capability.py`, `validate_investigation_tooling`, called
-from the lifespan beside the deployment-coherence and credential gates) **refuses
-to boot** when the resolved investigation model (`DA_PROVIDER` → `CHAT_PROVIDER`)
-can't do tool calling — unless `ALLOW_TOOLLESS_INVESTIGATION=true` (knowing
-opt-in to degraded/offline mode; `/health` then reports `degraded`). The per-turn
-runtime fallback in `milestone_engine` still covers transient tool failures on an
-otherwise-capable model. Capability is per-provider/model via
-`supports_tool_calling()` (HuggingFace: always False; Fireworks: a denylist for
-models that accept tools but time out on forced `tool_choice=required`; Local:
-derived from the transport the URL path names, and overridable by the operator
-— a self-hosted endpoint has no catalogue to key a denylist on, and its
-capability is a property of the serving stack rather than of the model's or the
-host's name).
-
-**A caller can declare what a call needs from reasoning, and the minimum
-output it can use.** Two optional, per-call-site knobs on `LLMRouter.route()`
-(#1118 / #1117) — and, since `milestone_engine` binds a concrete provider
-rather than routing, on the provider `generate()` signatures underneath it.
-Both default to absent, and where a call site passes neither the shape-based
-provider defaults above are what runs. **Five call sites ship declaring
-them**, four `EXTRACTION` and one `INFERENCE`:
-
-| Call site | Declares |
-|-----------|----------|
-| `core/investigation/intent_resolver.py` (intent classifier) | `reasoning_intent=EXTRACTION`, `min_output_tokens=CLASSIFIER_MIN_OUTPUT_TOKENS` |
-| `modules/agent/tools/document_qa_tool.py` (KB/doc answer synthesis) | `reasoning_intent=EXTRACTION` |
-| `modules/agent/domain/services/out_of_band.py` (out-of-band triage, #1329) | `reasoning_intent=EXTRACTION`, `min_output_tokens=TRIAGE_MIN_OUTPUT_TOKENS` |
-| `modules/agent/domain/services/out_of_band.py` (out-of-band answer, #1329) | `reasoning_intent=EXTRACTION` |
-| `core/investigation/milestone_engine.py` (tool-less single-shot diagnostic turn, fm#1116) | `reasoning_intent=INFERENCE`, `min_output_tokens=TOOLLESS_INFERENCE_OUTPUT_FLOOR` |
-
-The four `EXTRACTION` sites are grounded transformations of supplied context
-rather than reasoning over candidates, so they ask for *less* and can never
-lift a starvation guard. `document_qa_tool` declares the intent specifically
-so its cap is tier-independent: the shape default caps thinking only on the
-3.7+ surface, so on the shipped `gemini-3.5-flash-lite` synthesis pin that
-plain call would otherwise run uncapped.
-
-The `INFERENCE` site is the one call that asks for *more*, and it is a
-**structured** call. fm#1116: a turn with nothing to search takes a single-shot
-structured path instead of the tool loop, because gpt-5.x must pin
-`reasoning_effort: "none"` whenever function tools are attached — so a turn
-that runs the loop reasons at zero even though it has no tool to use, and
-diagnosis is reasoning over candidate causes, not extraction.
-`TOOLLESS_INFERENCE_OUTPUT_FLOOR` (2048) is what buys the lift: the Gemini
-provider refuses to lift a structured call's cap unless a floor is declared,
-and 2048 sits above every completion body measured on the replayed turn while
-staying well under `STRUCTURED_OUTPUT_MAX_TOKENS`, so it forbids a starvable
-partition without ever raising the cap. Note where the floor is and is not
-enforced: this path reaches the provider **directly**, so the router's own
-enforcement (pre-call budget bump, post-call `LLMOutputFloorError`) does not
-run on it — a body cut anyway is caught by the structured-output truncation
-ladder instead. On this path the floor's job is to authorise the lift, not to
-police the result.
-
-The knobs themselves:
-
-- `reasoning_intent` — `EXTRACTION` (grounded transformation of supplied
-  context: ask for the provider's minimum reasoning) or `INFERENCE` (reasoning
-  over candidates: ask for its default). Semantic on purpose — `reasoning_effort`
-  is OpenAI's word, `thinkingLevel` is Gemini's, and a call site has no business
-  knowing which provider answered. Each provider translates it; **hard model
-  constraints override it** (gpt-5.6 keeps its forced `reasoning_effort: "none"`
-  alongside tools); an intent that cannot be applied is **logged, never silently
-  dropped** — WARNING for `INFERENCE`, INFO for `EXTRACTION`. (An intent that
-  *was* delivered is not reported as a failure: on gpt-5.6 with tools the
-  forced `"none"` is exactly what `EXTRACTION` asked for.)
-- `min_output_tokens` — the minimum *visible* output the call needs. Reasoning
-  bills against the same budget as the answer on every provider (no second pool
-  exists), so this is a floor, not a new budget. Pre-call it raises `max_tokens`
-  to at least the floor; post-call a `MAX_TOKENS` stop measuring below it raises
-  `LLMOutputFloorError` rather than returning a body the caller pre-declared
-  unusable. Visible output is measured with the provider's real tokenizer when
-  the provider has one (`utils/token_estimation.estimate_tokens` covers openai,
-  openrouter, anthropic and fireworks) **and** the body is at or under
-  `_TOKENIZER_EXACT_MAX_CHARS` (4000 — tiktoken is super-linear on the degenerate
-  looped-output shape, 1.3 s of blocking CPU at 32k chars). Everything else —
-  the five providers it cannot tokenize, and any longer body — is **deliberately
-  bounded above by its **UTF-8 byte count**. The governing invariant is that the
-  estimate must never UNDER-state: under-stating fires the guard on a body that
-  met its floor and kills an otherwise-usable turn, while over-stating only wastes
-  a guard. Bytes are what make that *provable* rather than merely measured — a
-  byte-level BPE token consumes at least one byte, so N bytes cannot exceed N
-  tokens for any script. (Counting *characters* is only the ASCII corollary and
-  breaks outside it: `'🔥🚀💡'*100` is 300 characters but 800 tokens.) That is also
-  why neither a raw `len//4` (shape-dependent, understates dense JSON/CJK by 2-4x)
-  nor a scaled prefix sample (sound only under uniform density) is used. The cost
-  is guard reach on long bodies, which is affordable because starvation produces
-  short ones — and short bodies are tokenized exactly.
-
-Two invariants worth knowing before adopting them: **`INFERENCE` requires
-`min_output_tokens`** (it lifts starvation guards, and the floor is what makes
-that safe — the router raises `ValueError`, and the Gemini provider independently
-refuses the lift, because `milestone_engine` reaches providers without going
-through the router); and the **floor is unenforceable on a provider reporting no
-stop reason** (`UNKNOWN`) — a starved-looking body is warned about and returned,
-since "cut" and "short" are indistinguishable there. The pre-call bump raises
-`max_tokens` only *to* the floor, leaving no room for hidden reasoning: on a
-reasoning path the caller sizes `max_tokens` above the floor itself.
-
-### Capability Overrides
-
-Different LLM providers can be assigned to specific tasks:
-
-The shipped defaults are Gemini-anchored: `CHAT_PROVIDER=gemini` with
-`GEMINI_MODEL=gemini-3.7-flash`, and `classifier`/`synthesis`/`multimodal`
-pinned to gemini (the two small-output roles on `gemini-3.5-flash-lite`).
-`da`/`knowledge`/`structured_output` ship unset, so they follow
-`CHAT_PROVIDER` — flipping the anchor moves them and leaves the pins put,
-which is what makes an A/B comparison of the anchor a controlled one.
-
-Any role can be reassigned:
-
-```bash
-CHAT_PROVIDER=anthropic      # the anchor: unset roles follow it
-CODE_PROVIDER=openai         # Code generation tasks
-MULTIMODAL_PROVIDER=gemini   # Image analysis
-SYNTHESIS_PROVIDER=fireworks # Fast JSON generation
-CLASSIFIER_PROVIDER=groq     # Query routing
+```text
+faultmaven/
+├── main.py                 # FastAPI entry point; composition root in the lifespan
+├── api/                    # Shared middleware (middleware/), v1/auth_dependencies.py (require_authentication), exception handlers, admin routes (routes/)
+├── modules/                # Feature modules — the primary code organisation
+│   ├── auth/ case/ knowledge/                  # VERTICAL MODULES: own tables, contracts.py, infrastructure/
+│   └── agent/ evidence/ preprocessing/ report/  # DOMAIN SERVICES: business logic only
+├── core/
+│   ├── investigation/      # milestone_engine.py (process_turn), hypothesis_manager.py, progress_monitor.py,
+│   │                       # schemas.py, intent_resolver.py, turn_budget.py, prompts/{templates,context_builder}.py
+│   ├── preprocessing/      # Tier 0/1 mechanical preprocessor
+│   └── processing/         # Log analyzer, pattern learner
+├── infrastructure/         # Shared adapters: llm/ (providers/, router.py, cache.py, truncation.py, pricing.py),
+│                           # persistence/ (models.py = every ORM table), knowledge/ (ChromaDB), auth/, security/ (Presidio),
+│                           # protection/, storage/ (local, S3, Azure), logging/, observability/, health/, jobs/, tasks/, caching/, shims/, concurrency/
+├── bootstrap/              # Startup: startup.py, data_init.py (bootstrap admin), kb_init.py + kb_pack.py (KB pack ingestion)
+├── cli/                    # Operator console entrypoints (fm-*, `[project.scripts]`)
+├── config/                 # settings.py, presets.py, feature_flags.py, protection.py, investigation_capability.py, llm_config_overrides.py
+├── container/              # DI: base.py, registry.py, providers/ — implementation in faultmaven/_container_impl.py
+├── services/               # BaseService + request-scoped DI factory
+├── models/                 # Shared interfaces, API schemas, domain models
+└── utils/                  # schema_converter.py, token_estimation.py, …
+alembic/                    # Migrations (see Database)
+resources/knowledge/pack/   # Vendored KB pack: shipped runbooks + pre-built vectors (owned by faultmaven-kb-toolkit)
+scripts/                    # Dev and maintenance scripts — NOT in the wheel, NOT in the image
+tests/                      # unit/ (modules, api, infrastructure, services, cli, core) · integration/ (api, modules) · infrastructure/ · benchmarks/ · performance/ · health/ · load/ · installation/
+docs/                       # docs/README.md maps the tree and says where a new document goes
+.claude/                    # rules/ (path-scoped guidance) · skills/ · commands/ · manifest.json (module → type map)
 ```
 
-## Development Workflow
+Key files: `.env.example` (config template), `pyproject.toml`, `.importlinter`, `pytest.ini`, `docs/architecture/data-and-storage/er-diagram.md`.
 
-### Quick Start
+## Architecture
 
-```bash
-# Clone and setup
-git clone https://github.com/FaultMaven/faultmaven.git
-cd faultmaven
-cp .env.example .env
-# Edit .env: Set CHAT_PROVIDER and API key
+Modular monolith: **Vertical Modules** own data, **Domain Services** hold business logic only. `.claude/manifest.json` is the module → type map.
 
-# Start with Docker (pulls pre-built images from GHCR by default)
-./faultmaven.sh start
+| Type | Modules | Has | Rule |
+|------|---------|-----|------|
+| Vertical Module | `auth`, `case`, `knowledge` | own tables; `contracts.py` (interfaces such as `ICaseRepository` + DTOs); `infrastructure/` (repositories) | other modules import only from its `contracts.py` |
+| Domain Service | `agent`, `evidence`, `preprocessing`, `report` | NO `contracts.py`, NO `infrastructure/`; otherwise the shape varies — `agent` and `report` have `api/` + `domain/` (agent also `tools/`, `jobs/`), `evidence` has `domain/` only, `preprocessing` is flat (`classifier.py`, `extractors/`, `preprocessing_service.py`) | reaches data through Case/Auth contracts, injected via DI |
 
-# Build from source instead of pulling (contributors)
-./faultmaven.sh start --build              # build the API from this repo
-./faultmaven.sh start --build-dashboard    # also build the Dashboard from ../faultmaven-dashboard
-
-# Or run locally (development, no Docker)
-pip install -e ".[dev]"           # Install dependencies
-./scripts/faultmaven-dev.sh start # Start the server
+```python
+from faultmaven.modules.case.contracts import ICaseRepository, EvidenceArtifact   # CORRECT
+from faultmaven.modules.auth.contracts import UserDTO, AuthTokenDTO               # CORRECT
+from faultmaven.modules.case.infrastructure.case_repository import CaseRepository  # WRONG: bypasses the contract
+from faultmaven.modules.evidence.domain.validators import validate_evidence       # WRONG: another module's internals
 ```
 
-**Image source:** `./faultmaven.sh start` runs pre-built images from GHCR (`ghcr.io/faultmaven/faultmaven`, `…/faultmaven-dashboard`), pinnable via `FM_IMAGE_TAG` / `FM_DASHBOARD_IMAGE_TAG` in `.env`. The build path layers `docker-compose.build.yml` (API) / `docker-compose.dashboard-build.yml` (Dashboard) on top of `docker-compose.yml`.
+- Boundaries are enforced by import-linter: `.importlinter` holds the contracts (15 today) and `lint-imports` prints the authoritative list.
+- The `case` module owns evidence, reports, checkpoints and message rows (`domain/owned_models/`) and investigation sessions (`domain/investigation_session.py`); `evidence/domain/models.py` re-exports from Case contracts.
+- Agent tools (`modules/agent/tools/`) include one `kb_qa` (every knowledge scope via metadata filter — there is no per-scope variant), `case_evidence_qa`, `document_qa_tool`, `search_file` / `deep_analysis` (query strategies over raw files), `read_file`, the `list_evidence*` and entity tools, `vectorize_file` and `web_search` (Tavily).
+- Design docs: `docs/architecture/core-architecture/` (start at `module-organization-design.md`). The `architecture` skill applies when adding endpoints, services or modules.
 
-**Config (`.env`) is shared by both run modes.** The Docker stack and the process runner (`faultmaven-dev.sh`) read the *same* `.env` with the *same* parser: compose mounts `.env` read-only at `/app/.env` (not `env_file:`), so values are interpreted identically and `./faultmaven.sh restart` re-reads edits (it recreates the containers via `up -d --force-recreate` rather than restarting them, because `docker compose restart` reuses the same container and would pick up neither a refreshed image nor a changed compose config). Container-only overrides live in `docker-compose.yml`'s `environment:` (e.g. `HOST=0.0.0.0`) and take precedence over the file (pydantic env-var > `.env`).
-
-**Auto-Initialization:** On first startup, FaultMaven automatically:
-- Creates `data/` directories (database, ChromaDB, evidence, knowledge)
-- Runs database migrations
-- Creates a default admin account (`admin@local.faultmaven`)
-- Bootstraps the KB from the **KB pack**: a self-contained bundle of shipped runbooks + build-time BGE-M3 vectors (`resources/knowledge/pack`, or `KB_PACK_DIR`). Ingestion is atomic + idempotent (content-hash skip) and writes the pack's pre-chunked, pre-embedded chunks straight into `knowledge_items` + ChromaDB — **no embedding model at startup**, so it runs in seconds. Implementation: `faultmaven/bootstrap/kb_init.py` + `kb_pack.py`. The pack is built/owned by `faultmaven-kb-toolkit` (`kb-build-pack`) and vendored here; override `KB_PACK_DIR` to update the KB offline without rebuilding the image. Single-tenant only: under `TENANT_PROVIDER=multi` the web-startup bootstrap is skipped and the pack is seeded via the audited `kb_seed` maintenance job (#770, `docs/operations/evidence-job-scheduling.md`). See [`docs/architecture/knowledge-and-ai/kb-ingestion-architecture.md`](docs/architecture/knowledge-and-ai/kb-ingestion-architecture.md).
-
-Login via dev-login: `POST /api/v1/auth/dev-login` with `{"username": "admin"}`
-
-### Service Ports
-
-| Service | Port | Description |
-|---------|------|-------------|
-| API | 8090 | REST API |
-| Dashboard | 3333 | Web UI |
-| API Docs | 8090/docs | Swagger UI |
-| ChromaDB | 8000 | Vector DB (external mode) |
-| Redis | 6379 | Sessions (external mode) |
-
-### CLI Commands
-
-**Docker-based (faultmaven.sh v2.0.0):**
-```bash
-./faultmaven.sh start              # Start services (pre-built GHCR images)
-./faultmaven.sh start --pull       # Refresh images from registry, then start
-./faultmaven.sh start --build      # Build the API from source, then start
-./faultmaven.sh start --demo       # Start with demo data
-./faultmaven.sh stop               # Stop services
-./faultmaven.sh status             # Check health
-./faultmaven.sh logs [service]     # View logs
-./faultmaven.sh restart            # Recreate all (applies .env + local image changes)
-./faultmaven.sh create-user        # Create user account
-./faultmaven.sh test               # Run tests
-./faultmaven.sh health             # Health checks
-```
-
-**Local development (scripts/faultmaven-dev.sh):**
-```bash
-./scripts/faultmaven-dev.sh start  # Start API as local process
-./scripts/faultmaven-dev.sh stop   # Stop local process
-./scripts/faultmaven-dev.sh status # Check process status
-./scripts/faultmaven-dev.sh health # Run health checks
-./scripts/faultmaven-dev.sh test   # Run tests
-./scripts/faultmaven-dev.sh logs   # View logs
-```
-
-**Utility Scripts (scripts/):**
-```bash
-# User & Account Management
-python scripts/create_builtin_accounts.py  # Create default users
-
-# OAuth & Security
-python scripts/generate_oauth_keys.py      # Generate OAuth RSA keys
-python scripts/test_rbac.py                # Test RBAC configuration
-
-# Database & Storage
-./scripts/db_migrate.sh                    # Database migrations
-python scripts/verify_vector_storage.py    # Verify ChromaDB
-python scripts/cleanup_corrupt_cases.py    # Database maintenance
-
-# Architecture & Validation
-python scripts/check_import_violations.py  # Check architecture
-python scripts/generate_api_docs.py --check  # Detect API reference drift (CI gate)
-python scripts/backlog_metrics.py          # Is the backlog converging? Residue flow, survival, fix latency, rule-4 tier (#1453)
-
-# Development & Testing
-python scripts/setup_env.py                # Environment setup
-python scripts/generate_api_docs.py        # Regenerate the API reference (commit the result)
-./scripts/run_load_tests.sh                # Run Locust load tests
-./scripts/test_integration_logging.sh      # Test integration logging
-
-# User Management — dev-only, run from a checkout (scripts/auth/)
-python scripts/auth/create_user.py         # Create a new user
-python scripts/auth/list_users.py          # List all users
-python scripts/auth/list_users_fast.py     # Fast user listing
-
-# Local LLM
-./scripts/local_llm_service.sh             # Manage local LLM service (Ollama/vLLM)
-```
-
-**Operator console entrypoints (`faultmaven/cli/`, `[project.scripts]`):**
-
-Deployment procedures ship *with the installed package*, not as files under
-`scripts/` — the wheel excludes `scripts/` and the image never COPYs it, so a
-path-based in-pod invocation cannot work (#887). These land on `PATH` wherever
-FaultMaven is installed (API pod; locally after `pip install -e .`):
+## Commands
 
 ```bash
-fm-promote-platform-admin <username>       # Promote user to platform admin (deployment operator)
-fm-demote-platform-admin <username>        # Remove platform admin privileges
-fm-provision-service-account -u slack-agent  # Mint a service-account OAuth refresh credential (AUTH_MODE=oauth)
-fm-provision-sso-org --name ... --slug ... --domain acme.com --workos-org-id org_...  # Provision a Cloud tenant (enterprise carrying the customer's domain + organization) and its WorkOS org mapping (TENANT_PROVIDER=multi). Creates NO team — teams form by consent (ADR-017 D4)
-fm-remove-org-member --enterprise-id ... --organization-id ... --user alice --yes  # Remove a BILLING membership AND revoke that user's tokens, as one operation (#874); the account keeps its enterprise anchor — leaving an organization changes what is metered, not what is visible (ADR-017 D5)
-fm-personal-tenant retire --subject user_01H... --apply       # Retire a JIT personal tenant (fence the enterprise, revoke tokens, stamp the binding retired+policy, delete WorkOS org by recorded id, delete mapping); the account STAYS anchored (users.enterprise_id is NOT NULL, ADR-017 D3); --next-login refuse|fresh-tenant, dry run by default (#1045 D8)
-fm-personal-tenant re-anchor --subject user_01H... --enterprise-id ... --apply  # Move a personal account onto a mapped company enterprise (billing organization membership is a separate, deliberate act — ADR-017 D5)
-fm-personal-tenant purge-idp-org --provider-org-id org_01H... --apply             # Remove a provider-side organization no tenant claims (explicit id only)
-fm-reassign-cases --enterprise-id ... --from-user slack-agent --to-user slack-T0123 --case-ids-file ids.txt --dry-run  # Move cases to a new owner within one ENTERPRISE, with the team share and an audit row; the new owner must be anchored to that enterprise (faultmaven-slack-agent#61)
-fm-set-turn-cap --enterprise-id ... --organization-id ... --show                # Read one billing subject's daily investigation-turn cap and today's usage (or --account-id, read-only)
-fm-set-turn-cap --enterprise-id ... --organization-id ... --cap 200 --yes       # Raise/lower it, or --unlimited / --clear; effective on that subject's NEXT turn, no restart (ADR-016 D5.3, re-keyed to a billing subject by ADR-017 D5)
-fm-reset-kb --dry-run                      # Wipe/re-bootstrap the KB (refuses under TENANT_PROVIDER=multi)
-fm-wipe-deployment                         # Inventory every wipe surface (resolved targets, writes nothing)
-fm-wipe-deployment --verify                # Positively verify a clean slate; exit 5 on residue (#819)
-fm-wipe-deployment --wipe --confirm-target faultmaven --yes  # Wipe vectors + object storage + Redis
+cp .env.example .env                 # set CHAT_PROVIDER + its API key; both run modes read this one file
+./faultmaven.sh start                # Docker: API :8090 + Dashboard :3333 from pre-built GHCR images
+./faultmaven.sh start --build        # build the API from source instead (--build-dashboard for ../faultmaven-dashboard)
+./faultmaven.sh restart | stop | logs [service] | health
+pip install -e ".[dev]" && ./scripts/faultmaven-dev.sh start    # local process, no Docker (stop | health | logs | test)
 
-# In a pod:
-kubectl exec -it deploy/faultmaven-api -- fm-provision-sso-org --name ...
+python scripts/tests.py --unit       # also --integration, --ci, --ci-full, --ci-nightly, --coverage
+pytest tests/unit/ ; pytest -m "security" ; pytest -k "test_case"
+
+ruff check faultmaven/ tests/        # the lint gate, byte for byte
+black faultmaven/ tests/             # CI runs `black --check` on the same paths
+lint-imports                         # architecture boundaries
+python scripts/generate_api_docs.py --check   # API-reference drift (CI gate)
 ```
+
+- Ports: API 8090 (`/docs` = Swagger UI), Dashboard 3333. Redis (FakeRedis) and ChromaDB run **in-process** inside the API container. Images are `ghcr.io/faultmaven/faultmaven{,-dashboard}`, pinnable via `FM_IMAGE_TAG` / `FM_DASHBOARD_IMAGE_TAG`; `start --pull` refreshes them.
+- Compose mounts `.env` read-only at `/app/.env` (not `env_file:`), so both run modes parse it identically; `./faultmaven.sh restart` recreates containers (`up -d --force-recreate`) so `.env` edits and refreshed images apply. `docker-compose.yml` `environment:` entries override the file (pydantic env-var > `.env`).
+- First startup creates `data/`, runs migrations, creates the bootstrap admin (`admin@local.faultmaven`, holds the operator roles) and ingests the KB pack (`resources/knowledge/pack` or `KB_PACK_DIR`) with **no embedding model** — pre-chunked, pre-embedded, content-hash idempotent. Under `TENANT_PROVIDER=multi` the pack is seeded by the audited `kb_seed` job instead. Design: `docs/architecture/knowledge-and-ai/kb-ingestion-architecture.md`. Local login: `POST /api/v1/auth/dev-login {"username": "admin"}`.
+- `scripts/` never ships: anything an operator runs in a pod is an `fm-*` entrypoint in `faultmaven/cli/` — `docs/operations/operator-cli.md`. Dev scripts: `docs/development/script-usage-guide.md`. Local problems: `docs/development/local-troubleshooting.md`.
 
 ## Testing
 
-### Test Structure
-
-```
-tests/
-├── unit/              # Fast, isolated tests (~100+ files)
-│   ├── modules/       # Module-specific (agent, auth, evidence)
-│   ├── api/           # API endpoints, middleware
-│   ├── infrastructure/ # Persistence, logging
-│   ├── services/      # Service layer
-│   ├── cli/           # Operator console entrypoints (fm-*)
-│   └── core/          # Investigation engine
-├── integration/       # Cross-layer workflows
-│   ├── api/           # API integration tests
-│   └── modules/       # Module integration (auth, OAuth)
-├── infrastructure/    # External service tests
-├── benchmarks/        # Performance baselines (excluded from CI)
-├── performance/       # Overhead validation
-├── health/            # Docker smoke tests
-├── load/              # Locust stress tests
-└── installation/      # Setup verification
-```
-
-### Running Tests
-
-```bash
-# All tests
-./faultmaven.sh test
-
-# By category
-./faultmaven.sh test --unit
-./faultmaven.sh test --integration
-./faultmaven.sh test --coverage
-
-# CI modes
-./faultmaven.sh test --ci           # Fast (unit, parallel)
-./faultmaven.sh test --ci-full      # Unit + integration
-./faultmaven.sh test --ci-nightly   # All including benchmarks
-
-# Direct pytest
-pytest tests/unit/
-pytest -k "test_case"
-pytest -m "security"
-pytest -m "llm"
-```
-
-### Test Markers
-
-| Marker | Description |
-|--------|-------------|
-| `unit` | Unit tests (fast, isolated) |
-| `integration` | Cross-layer workflows |
-| `slow` | Long-running (excluded from fast CI) |
-| `enterprise` | Requires Redis, PostgreSQL |
-| `security` | Security-focused tests |
-| `benchmark` | Performance benchmarks |
-| `performance` | Overhead validation tests |
-| `asyncio` | Async tests |
-| `api` | API endpoint tests |
-| `llm` | LLM-related tests |
-| `agent` | Agent-related tests |
-| `session` | Session management tests |
-| `knowledge_base` | Knowledge base tests |
-| `architecture` | Architecture validation tests |
-
-### Writing Tests
-
-```python
-import pytest
-
-# Async test (asyncio_mode = auto in pyproject.toml)
-@pytest.mark.asyncio
-async def test_async_operation():
-    result = await some_async_function()
-    assert result is not None
-
-# Use fixtures from conftest.py
-def test_with_container(reset_container):
-    service = reset_container.get_agent_service()
-    assert service is not None
-
-# Mark with category
-@pytest.mark.unit
-@pytest.mark.llm
-async def test_llm_provider():
-    pass
-```
+- **NO CODE MERGES WITHOUT TESTS** — unit tests for logic, integration tests for routes.
+- `asyncio_mode = auto`: plain `async def` tests run. `--strict-markers` is on — mark categories with `@pytest.mark.unit` / `integration` / `security` / `llm` / … from the list in `pytest.ini`.
+- Fixtures come from `tests/conftest.py` (`reset_container` gives a fresh DI container). Mock interfaces, not concrete providers.
+- Some tests read documentation, and `.github/scripts/classify_docs_only.py` treats a document a test names as executable: this file (`test_claude_md_pins_no_migration_head.py`: no alembic revision id here; `test_no_unauthenticated_operations.py`: its `ENVIRONMENT=` / `ENABLE_DEBUG_ENDPOINTS` lines name only settable values) and `.claude/rules/llm-providers.md` (`test_llm_rules_pin_reasoning_intent_call_sites.py`, `test_groq_model_defaults.py`). Move pinned text and its test together.
+- Standards, patterns and the architecture-testing guide: `docs/development/testing/`.
 
 ## Code Quality
 
-### Linting and Formatting
-
-```bash
-# Lint with ruff — this is the gate, byte for byte (CI `code-quality` runs the
-# same line). Never add `--select`: it REPLACES [tool.ruff.lint].select in
-# pyproject.toml instead of narrowing it, which is how CI and the committed
-# config spent months enforcing two different policies.
-ruff check faultmaven/ tests/
-
-# Format — the gate's other line, same paths. Import sorting is ruff's `I`
-# rules above (ruff replaced isort in #179); do not run `isort`, which is not a
-# gate and rewrites files across the whole repo.
-black faultmaven/ tests/          # CI runs `black --check faultmaven/ tests/`
-
-# Type check — NOT a gate. Nothing in CI runs mypy and `ignore_errors = true`
-# in pyproject.toml means it reports nothing; pass paths explicitly.
-mypy faultmaven/
-
-# Architecture validation
-lint-imports
-
-# API reference drift (same check CI runs)
-python scripts/generate_api_docs.py --check
-```
-
-`ruff check .` (like `black .`) additionally covers `scripts/`, `alembic/` and `docs/`, which CI
-deliberately does not lint (#179). Whether those paths pass is therefore a
-measurement rather than a property of the gate, so it is stamped rather than
-claimed: against the rule set above, with ruff 0.9.10, `ruff check alembic/
-docs/` reports `All checks passed!` and `ruff check .` reports 12 errors —
-every one `I001` in `scripts/`, all auto-fixable (2026-09-15). Nothing holds
-that number anywhere, which is the point: widening the path scope is a separate
-decision from the rule set, and #179's PATH question is still open.
-
-### API Reference
-
-`docs/reference/api/openapi.json` and `docs/reference/api/README.md` are
-**generated** from the running app by `scripts/generate_api_docs.py`. Never edit
-them by hand — the `api-contract-drift` CI job regenerates and diffs, so a
-change to any route, schema or docstring must ship with its regenerated
-artifact in the same PR:
-
-```bash
-python scripts/generate_api_docs.py
-git add docs/reference/api/openapi.json docs/reference/api/README.md
-```
-
-The generator empties the environment and applies its own pinned settings, so
-the artifact is a function of the code rather than of your `.env`. It documents
-the **maximal deployed surface** (OAuth, SSO and `/metrics` mounted; the debug
-router excluded). The debug router is NOT development-only —
-`ENABLE_DEBUG_ENDPOINTS` mounts it in any environment — so what excludes it is
-the generator itself: `ENVIRONMENT=production` rules out the automatic mount,
-and emptying the environment down to `_SYSTEM_ENVIRONMENT_KEYS` means the flag
-cannot arrive from your shell.
-
-⚠️ **Regenerate with the lockfile installed** (`pip install -r
-requirements/dev.txt`). FastAPI and Pydantic decide how schemas are emitted, so
-the document depends on their versions as well as on the code — a stale local
-FastAPI produces a valid-looking artifact that CI rejects, with the diff showing
-up in schema shape (`ctx`/`input` on ValidationError, `const` vs a single-value
-`enum`, `contentMediaType` vs `format: binary`) rather than in routes.
-
-Which operations require authentication is derived from the dependency graph:
-a route gains `security` in the spec because `require_authentication` declares
-the `HTTPBearer` scheme. An auth dependency that reads the `Authorization`
-header directly emits no `security` and would publish a protected route as
-open — `tests/integration/api/test_openapi_documents_auth.py` fails on that,
-and on any new auth dependency it has not been told how to classify.
-
-### Pre-commit Hooks
-
-Pre-commit hooks (`.pre-commit-config.yaml`) include:
-- **detect-secrets** - API key detection
-- **check-api-keys** - Custom API key patterns
-- **check-hardcoded-rsa-keys** - RSA key detection
-- Standard hooks (JSON/YAML validation, trailing whitespace)
-
-**Install hooks (full suite — recommended, matches CI):**
-```bash
-pip install pre-commit
-pre-commit install
-```
-
-**Lightweight alternative (black auto-format only):**
-```bash
-./scripts/install-git-hooks.sh   # points core.hooksPath at tracked .githooks/
-```
-
-Use this when you only want black-on-commit without the full framework. The
-hook (`.githooks/pre-commit`) formats only *staged* `.py` files, prefers the
-`.venv` black, and warns if its version drifts from the pinned `black==26.3.1`
-(CI runs `black --check`, so local formatting must match). To switch back to the
-framework: `git config --unset core.hooksPath && pre-commit install`.
+- `ruff check faultmaven/ tests/` and `black --check faultmaven/ tests/` are the CI `code-quality` gate. **Never add `--select`** to ruff — it REPLACES `[tool.ruff.lint].select` instead of narrowing it. Import sorting is ruff's `I` rules (ruff replaced isort in #179); do not run `isort`, which is not a gate and rewrites files across the repo. `ruff check .` / `black .` also cover `scripts/`, `alembic/` and `docs/`, which CI deliberately does not lint.
+- mypy is **not** a gate: nothing in CI runs it, and `ignore_errors = true` in `pyproject.toml` means it reports nothing unless paths are passed explicitly.
+- `docs/reference/api/openapi.json` and `docs/reference/api/README.md` are **generated** by `scripts/generate_api_docs.py`. Never hand-edit them: a change to any route, schema or docstring ships with the regenerated artifact in the same PR, produced with the lockfile installed (`pip install -r requirements/dev.txt`) — the `api-contract-drift` job regenerates and diffs. Details and contract versioning: `.claude/rules/api-contract.md`, `docs/development/api-contract-changes.md`.
+- Pre-commit: `pre-commit install` runs black, `ruff --fix`, detect-secrets, check-api-keys, check-hardcoded-rsa-keys, check-kb-pack, brand-lint, venv-staleness and the standard file checks; `./scripts/install-git-hooks.sh` is the lighter black-only alternative — `docs/CONTRIBUTING.md` §"Pre-commit hooks".
 
 ## Configuration
 
-### Environment Variables
+Pydantic settings (`faultmaven/config/settings.py`) read `.env`; environment variables beat the file. Reference: `docs/development/environment-variables.md`.
 
-Key configuration in `.env`:
+| Category | Variables |
+|----------|-----------|
+| LLM | `CHAT_PROVIDER` (the anchor; unset roles follow it) + `*_API_KEY`; role overrides `CODE_PROVIDER`, `MULTIMODAL_PROVIDER`, `SYNTHESIS_PROVIDER`, `CLASSIFIER_PROVIDER`, `KNOWLEDGE_PROVIDER`, `DA_PROVIDER` — `.claude/rules/llm-providers.md` |
+| Knowledge | `KB_PREFETCH_ENABLED` (default `true`; governs the KB **push** — the deterministic pre-fetch into the prompt — only; the `kb_qa` **pull** stays registered either way; gated at both ends, and `GET /admin/config/status` reports `kb_prefetch`), `KB_PACK_DIR`, `ENABLE_WEB_SEARCH` + `TAVILY_API_KEY` |
+| Storage | `DATABASE_URL` / `DB_BACKEND` (SQLite default, PostgreSQL), `REDIS_URL` / `REDIS_HOST` (FakeRedis default), `VECTOR_STORAGE_TYPE` / `CHROMADB_URL` (PersistentClient default; external server via the URL) |
+| Auth | `AUTH_MODE` (`local` = HS256 + `JWT_SECRET_KEY`; `oauth` = RS256 key pair **and** `OAUTH_ENABLED=true` — startup refuses one without the other, and the flag is what mounts the OAuth router), `JWT_ACCESS_TOKEN_EXPIRY_MINUTES` / `JWT_REFRESH_TOKEN_EXPIRY_DAYS` (both modes; out of range fails startup), `OAUTH_REDIRECT_URI_PATTERNS`, `OAUTH_FIRST_PARTY_CLIENTS` + `OAUTH_FIRST_PARTY_REDIRECT_PATTERNS` (nothing skips consent until both are set) — `.claude/rules/data-model.md`, `docs/architecture/security/iam-design.md` |
+| Tenancy | `TENANT_PROVIDER` (`multi` = PostgreSQL RLS), `TENANT_DAILY_TURN_CAP` (accounts in no organization only), `SSO_JIT_PERSONAL_TENANT_ENABLED`, `TEAM_INVITATION_TTL_DAYS` — `.claude/rules/data-model.md` |
+| Protection | `PROTECTION_PROFILE` (`hardened` default / `development`) selects the rate-limit preset in `faultmaven/config/protection.py`. There is **no** rate-limit env knob and no variable switches limiting off (`SKIP_SERVICE_CHECKS` no longer does, fm#990); `ENVIRONMENT` can only *veto* a development profile, never select one, so no deployment that configures nothing arms the `X-Dev-Bypass` / `X-Test-Bypass` headers (fm#985). `GET /admin/config/status` reports `features.request_protection_hardened`. `docs/operations/security/client-protection.md` |
+| Limits / CORS | `MAX_UPLOAD_SIZE_MB`, `CORS_ALLOW_ORIGINS`, `CORS_ALLOW_CREDENTIALS` |
 
-| Category | Variables | Description |
-|----------|-----------|-------------|
-| LLM | `CHAT_PROVIDER`, `*_API_KEY` | Primary LLM provider |
-| Capability Overrides | `CODE_PROVIDER`, `MULTIMODAL_PROVIDER`, `SYNTHESIS_PROVIDER`, `CLASSIFIER_PROVIDER`, `KNOWLEDGE_PROVIDER` | Override specific agents |
-| External Tools | `ENABLE_WEB_SEARCH`, `TAVILY_API_KEY` | Web search capability |
-| Knowledge | `KB_PREFETCH_ENABLED` | Governs the KB **push** only (default `true`): the deterministic pre-fetch that injects matched runbooks into the prompt at case transitions. `kb_qa` (the **pull**) stays registered and elected either way, so `false` narrows what the model is handed unasked, never what it can ask for. Gated at BOTH ends — the pre-fetch skips the search and clears `case.kb_context`, and `context_builder` refuses to render a `kb_context` already on a reloaded case. `GET /admin/config/status` reports `kb_prefetch` |
-| Database | `DATABASE_URL`, `DB_BACKEND` | SQLite (default) or PostgreSQL |
-| Sessions | `REDIS_HOST`, `REDIS_URL` | FakeRedis (default) or real Redis |
-| Vectors | `VECTOR_STORAGE_TYPE`, `CHROMADB_URL` | `chromadb` (local PersistentClient by default; external server via `CHROMADB_URL`) |
-| Auth | `AUTH_MODE`, `JWT_SECRET_KEY` | `local` or `oauth` |
-| OAuth | `OAUTH_ENABLED`, `JWT_PRIVATE_KEY_PATH`, `JWT_PUBLIC_KEY_PATH` | OAuth 2.0 settings |
-| OAuth redirect | `OAUTH_REDIRECT_URI_PATTERNS` | Where an authorization code may be delivered. Default is the two `identity.launchWebAuthFlow` hosts — `^https://[a-p]{32}\.chromiumapp\.org/?$` (Chrome) and `^https://[a-f0-9]{40}\.extensions\.allizom\.org/?$` (Firefox, a 40-hex digest, **not** the `moz-extension` UUID). The old `chrome-extension://…/callback.html` forms were **removed** from the default in #1065 — a deployment serving pre-#192 extension builds must re-add them explicitly. Both patterns wildcard the extension id, so they identify *an* extension, not *ours* |
-| OAuth consent skip | `OAUTH_FIRST_PARTY_CLIENTS`, `OAUTH_FIRST_PARTY_REDIRECT_PATTERNS` | Which clients skip the consent screen. **Both are required and only the redirect proves anything** — `client_id` is caller-supplied, so the clients list narrows the field but identifies nobody. `OAUTH_FIRST_PARTY_REDIRECT_PATTERNS` defaults to `[]`, so **nothing skips consent** until a deployment pins its published extension id (#1066). Deliberate: a wrong consent skip fails silently — what goes wrong is that nothing appears — so `GET /admin/config/status` reports `first_party_consent_skip` to distinguish "never activated" from "working". All three parse as JSON lists; a bare value fails at startup |
-| JWT | `JWT_ACCESS_TOKEN_EXPIRY_MINUTES`, `JWT_REFRESH_TOKEN_EXPIRY_DAYS` | Access token lifetime in minutes (default 15, max 1440); refresh token lifetime in DAYS (default 7, max 90). Single source, effective in **both** auth modes (local/HS256 and cloud/RS256). Out-of-range values fail at startup; the retired `JWT_*_EXPIRE_*` spelling is rejected at startup |
-| Security | `CORS_ALLOW_ORIGINS`, `CORS_ALLOW_CREDENTIALS` | CORS settings |
-| Limits | `MAX_UPLOAD_SIZE_MB`, `TENANT_DAILY_TURN_CAP` | Evidence upload bounds, and the per-tenant investigation-turn cap (default 30/UTC day, **accounts in no organization only** — ADR-017 D5's whole meaning of "personal"; an organization is uncapped unless given a per-organization override via `fm-set-turn-cap`). There is **no rate-limit knob** — limits, windows and the on/off decision live in the presets in `faultmaven/config/protection.py`, chosen by `PROTECTION_PROFILE` (`hardened` default / `development`), **not** by `ENVIRONMENT`: standalone is a deployment shape, not a development environment, so no deployment that configures nothing arms the `X-Dev-Bypass` / `X-Test-Bypass` headers, whose presence alone skips all rate limiting (fm#985). `ENVIRONMENT` can only *veto* a development profile, never select one, and the installed posture is reported as `features.request_protection_hardened` on `GET /admin/config/status`. No environment variable switches rate limiting off — `SKIP_SERVICE_CHECKS` used to, and no longer does (fm#990). |
-
-### Storage Backends
-
-**Standalone (default, self-hosted):**
-- SQLite database
-- FakeRedis sessions/cache (in-process, no external server)
-- Local filesystem storage
-
-**Cloud (FaultMaven-hosted):**
-- PostgreSQL database
-- Redis sessions
-- ChromaDB vectors
-- S3/Azure blob storage
-- Presidio PII redaction
-- Opik tracing
+Standalone (default): SQLite, FakeRedis, local filesystem, `.env` as the sole source of settings. Cloud: PostgreSQL, Redis, S3/Azure blob storage, Presidio, Opik, and `config_overrides` (dashboard-managed settings hot-reloaded via `faultmaven/config/llm_config_overrides.py`).
 
 ## Database
 
-### Migrations
-
 ```bash
-# Create migration
-alembic revision --autogenerate -m "description"
-
-# Apply migrations
-alembic upgrade head
-
-# Downgrade
-alembic downgrade -1
+alembic revision --autogenerate -m "description"   # after editing faultmaven/infrastructure/persistence/models.py
+alembic upgrade head ; alembic downgrade -1
+alembic heads                                      # the only way to learn the current head
 ```
 
-### Key Tables (4 domains)
+- **Never write an alembic revision id into this file.** A lane that parents a migration onto a revision read from prose parents onto a non-head (#1246). `tests/integration/test_alembic_migrations.py` pins `HEAD_REVISION` and the expected table set; a new migration moves both.
+- While the chain is a single baseline (`001_enterprise_baseline`, ADR-017 — pre-user, no backward compatibility) there is no history to step through: `downgrade()` drops everything, and the migration's docstring carries the per-table reasoning. Re-provisioning an existing deployment means **drop and re-create the database, then re-run the migration Job**; `fm-wipe-deployment --wipe` clears only the surfaces a `DROP DATABASE` does not reach (vectors, object storage, Redis). Follow `docs/operations/deployment-wipe.md` exactly.
+- Every migration runs on **SQLite and PostgreSQL**: PostgreSQL-only DDL (RLS, triggers, partial indexes, `ON CONFLICT`) is dialect-guarded and column types stay SQLite-compatible. Conventions: `docs/guides/database-migrations.md`; `/migrate` command.
+- ORM models: `faultmaven/infrastructure/persistence/models.py` (every table). ER diagram: `docs/architecture/data-and-storage/er-diagram.md` (`python scripts/generate_er_diagram.py --update`); tables by domain: `docs/reference/database/README.md`; schema specs: `docs/architecture/data-and-storage/schemas/`.
+- Tenancy (ADR-017): the **enterprise isolates** (RLS on `enterprise_id`, NOT NULL on every tenant-scoped row), the **organization bills** (nullable `organization_id`, never a visibility predicate), the **team shares** (formed by consent — accepting an invitation is the only call that writes `team_members`). Invariants, sharing and the turn-usage ledger: `.claude/rules/data-model.md`.
 
-**User domain:** `users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `team_invitations`, `user_audit_log`, `oauth_authorization_codes`, `token_revocations`
+## Investigation Engine
 
-**Case domain:** `cases`, `case_messages`, `case_actions`, `case_tags`, `case_checkpoints`, `case_entities`, `evidence`, `hypotheses`, `hypothesis_evidence`, `solutions`, `uploaded_files`, `investigation_sessions`, `reports`, `conversion_jobs`, `conversion_drafts`
+- Case lifecycle: `INQUIRY → INVESTIGATING → RESOLVED | CLOSED` (`CaseState` in `faultmaven/modules/case/domain/models.py` — the authoritative enum source). Within INVESTIGATING the stages (`InvestigationStage`: DIAGNOSIS default, MITIGATION optional insert, TREATMENT) are **derived labels** re-computed from the gate milestones; they never drive prompt dispatch.
+- Milestones are opportunistic — several can complete in one turn. Gate milestones (`mitigation_accepted`, `mitigation_verified`, `solution_accepted`, `solution_verified`) fire on user compliance; progress indicators (`symptom_verified` LLM-set, `solution_proposed` programmatic, `cause_state` ∈ `UNKNOWN | CANDIDATES | IDENTIFIED` engine-derived and never path-stripped) inform focus only.
+- Hypotheses: `CAPTURED → ACTIVE → VALIDATED | REFUTED | INCONCLUSIVE | RETIRED` (`HypothesisState`); stagnant likelihood decays by `0.85^iterations_without_progress`; anchoring detection prevents fixation on weak theories.
+- Design docs are canonical and start at `docs/architecture/investigation-engine/README.md`; the `investigation-framework` skill applies to `modules/agent/` and `core/investigation/`. LLM-facing rules (structured output, stop reasons, turn budget, reasoning intent): `.claude/rules/llm-providers.md`.
+- DI: service-locator container (`faultmaven/container/`, implementation `faultmaven/_container_impl.py`), composed once in the `main.py` lifespan, resolved by interface. Async throughout: FastAPI endpoints, async drivers, concurrent LLM calls via `asyncio.gather()`.
 
-> Investigation activity is recorded in `case_messages` and `case_actions`. `investigation_sessions.total_agent_executions` is a counter on the session row, not a pointer into a table of executions: `agent_executions` / `agent_tool_calls` are gone, together with their ORM models and the `ICaseRepository` read/write methods — `get_case_with_details` no longer accepts `include_executions`, so the call raises `TypeError` rather than returning an empty list (#1350). They were written by `AgentOrchestrationService` behind `POST /cases/{id}/sessions/{sid}/execute`, which went with them.
+## Security Rules
 
-**Knowledge domain (case-adjacent):** `knowledge_items`, `knowledge_suggestions`
-
-**Tenancy (ADR-017 — supersedes ADR-013's "Organization is the hard-isolation boundary"):** three tiers answer three separate questions. `enterprises` **isolates** — PostgreSQL RLS keys on `enterprise_id`, denormalized NOT NULL onto every tenant-scoped table (`users.enterprise_id` included) and re-keyed via the `app.current_enterprise_id` session GUC (`app.current_org_id` no longer exists). `organizations` **bills** — `organizations.enterprise_id` NOT NULL FK, but `organization_id` on data rows is nullable billing attribution (`ON DELETE SET NULL`) stamped from the actor's organization at write time and never a visibility predicate; org roles (`admin`/`member`/`viewer`) stay the organization's *management* vocabulary and gate no data. `teams` **share** — parented by `teams.enterprise_id` (there is no `teams.organization_id`), so one team may span organizations of the same enterprise; membership requires the same enterprise. A team **forms by consent** (ADR-017 D4): any account may create one and is its team admin, the admin offers an address a place in `team_invitations`, and the invitee's own accept is the only call that writes a `team_members` row — a pending invitation grants nothing. Who may be offered a place is decided **by email domain**, before any account lookup, so the invitation endpoint is not an account-existence oracle: a personal enterprise (`domain IS NULL`) invites nobody, an address off the enterprise's domain is refused, and an address on its own domain whose account is anchored to another enterprise is refused with the *same* status and body. An offer to an address with no account is created unresolved and is stamped with the account id by the SSO sign-up path when — and only when — that address lands in the issuing enterprise; expiry is lazy (`TEAM_INVITATION_TTL_DAYS`, default 14; no sweeper) and settled through one reader, so accept/decline/revoke of an elapsed offer all answer **410** and record `expired`, never a withdrawal nobody made. ‼ The address key is `strip().lower()` because that is the index `users.email` is looked up by (`func.lower`) — case-folding would miss accounts where the two differ and silently skip the anchored-elsewhere refusal. A 404 on this surface carries **no** reason slug (the house `NotFoundError` envelope); only the 403/409/410 family does. ‼ Expiry is settled **after** the entitlement check, never inside the shared read — settling first let any account in the enterprise mutate a stranger's invitation and be told 404 for it. ‼ `team_service is None` means **single-tenant and nothing else**: it is read deployment-wide as "no team sharing here" (case read allowlist, KB visibility, engine, `GET /teams`), so a missing dependency under multi is fatal at startup rather than `None`. ‼ Every write on `ITeamRepository` carries `enterprise_id`, not just the reads. Standalone seeds one enterprise (`STANDALONE_ENTERPRISE_ID`, `…0002`) and one default team, and **no organization row** (`STANDALONE_ORG_ID` is deleted from `constants.py`). Sign-up (`SSO_JIT_PERSONAL_TENANT_ENABLED`, still OFF by default) derives the email domain: a `PERSONAL_EMAIL_DOMAINS` match yields a private enterprise per account; any other domain yields, or joins, that domain's enterprise (`enterprises.domain`) — a sign-up creates NO organization and NO team. `sso_org_mappings` now maps an IdP organization to an **enterprise** (not an organization); `sso_personal_orgs` is deleted, replaced by `sso_personal_enterprises` (keyed on `(provider, subject)` — a subject handle is unique only within an IdP). Account kinds are exactly `individual` and `service` (`users.account_kind`) — a team is a group of accounts, never an account, and the vocabulary that called one a team is retired. Which integration a service account serves is the separate `users.service_channel` column (e.g. `'slack'`).
-
-**Sharing:** `resource_shares` — polymorphic `(resource_type, resource_id, scope_type, scope_id)` association (ADR-013 §D4, unchanged by ADR-017 — teams still share by consent, just parented by the enterprise now). Single source of truth for team visibility of runbooks/cases/drafts; replaced the nullable `team_id` columns on `cases`/`knowledge_items`/`conversion_jobs`. v1 `scope_type=team`; `organization` reserved (D4a). Retrieval resolves it to a visible-id allowlist in SQL; ChromaDB metadata never carries team state.
-
-**Usage accounting:** `turn_usage` — keyed on `(enterprise_id, billing_subject_kind, billing_subject_id, usage_date)`, holding the investigation turns accepted that day. The enterprise leads the key because RLS scopes the table on it: a conflict target that omits it can resolve to a row the inserting session cannot see, and `ON CONFLICT DO UPDATE` then raises rather than counting — which after a same-day re-anchor refused every remaining turn of the UTC day. The ledger the per-tenant turn cap reserves against (ADR-016 D5.3, re-keyed to a billing subject by ADR-017 D5): the **billing subject** is the account's organization when it has one, and the account itself when it does not — "personal" is no longer a flag or a separate table, just the state of having no organization. The reservation is a single `INSERT … ON CONFLICT … DO UPDATE … WHERE turn_count < :cap RETURNING`, so a refused turn increments nothing. Rows are written for every billing subject, capped or not — an organization is never refused, but its counts are what the default is tuned against. The cap itself is `organizations.daily_turn_cap` (NULL = deployment policy, 0 = uncapped, N = N/day; only an organization is writable — an account in no organization has no row to carry an override), written by `fm-set-turn-cap --enterprise-id ... --organization-id ...` (or `--account-id`, read-only) and read on every turn. Charged inside `InvestigationService.process_turn`, after the case load and access check — so a 404/409/422 and a cross-tenant probe cost nothing. **Every message pays, asides included** (#1329, owner ruling: the cap bounds compute, not diagnostic progress, and a classifier-keyed exemption would be a free channel). What an out-of-band aside (small talk, trivia, a question about FaultMaven itself) changes is the route, not the charge: it is answered from a small prompt outside the engine, recorded with `TurnOutcome.OUT_OF_BAND`, excluded from every investigative-turn count, and hidden from every history fidelity; the message clock (`current_turn`) still advances, and the investigation turn is what clients should display — `TurnResponse.investigation_turn` on the reply to a submitted turn, `Message.investigation_turn` per conversation row (null on a `system` notice, which owns no turn), and `investigation_turn` on every schema that publishes a turn FOR DISPLAY — the case reads (`CaseUIResponse_*`, `CaseSummary`, `CaseDetail`, `AdminCaseMetadata`), the conversation rows (`Message`), and the evidence and uploaded-file rows (`EvidenceDetailsResponse`, `DerivedEvidenceSummary`, `SourceFileReference`, `UploadedFileMetadata`, `UploadedFileDetailsResponse`, `case_ui.EvidenceSummary`) — #1387/#1391, contract 3.6.0. The `*_at_turn` / `turn_number` / `current_turn` fields keep their meaning as the MESSAGE clock and are what anchors and jump-to-turn are keyed on: address a turn with those, display the ordinal. The row field is an **ordinal** (the clock at that row minus the asides at or before it), the other two are the case's running **count**; they are one formula (`Case.investigation_turn_at`) read at different points, and they agree on the newest row, which is what keeps a live label and a reloaded one equal. The clock is still what ADDRESSES a turn — conversation anchors, evidence `uploaded_at_turn` — so display the ordinal and address by the clock. Single-tenant deployments are never capped and never touch the ledger.
-
-**Config domain:** `config_overrides` (dashboard-managed settings, hot-reloaded at runtime — cloud mode only; local mode uses .env as sole source of truth)
-
-All tables have SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/models.py`. ER diagram: `docs/architecture/data-and-storage/er-diagram.md` (regenerate with `python scripts/generate_er_diagram.py --update`).
-
-### Migration
-
-One migration: `001_enterprise_baseline` (revision `a1e0c17bd001`,
-`alembic/versions/20260906_1200_a1e0c17bd001_001_enterprise_baseline.py`). It
-creates all 42 tables, the RLS policies, the append-only operator triggers, the
-last-admin constraint trigger, and the seed rows (the Standalone enterprise, the
-Standalone default team, the RBAC roles and permissions). `downgrade()` drops
-everything — there is one migration, so there is no history to step back
-through.
-
-There is no chain because the isolation key moved a tier (ADR-017): every
-tenant-scoped table, every policy and both SSO lookup tables change at once, and
-the owner's rule for the campaign is that the system is pre-user — **no backward
-compatibility, no data preservation**. A stacked migration would have been a
-re-statement of the whole schema with a dual-key period in the middle. Existing
-deployments are wiped (`fm-wipe-deployment --wipe`) and re-provisioned on this
-baseline, so there is nothing to migrate *from* and a single `CREATE` is the
-honest shape. The migration's own docstring carries the reasoning per table
-group; that is where it belongs, and it is deliberately not restated here.
-
-The baseline runs on **SQLite as well as PostgreSQL** — standalone is a
-first-class deployment — so the PostgreSQL-only DDL (RLS, triggers, partial
-indexes, `ON CONFLICT`) is dialect-guarded and the column types stay
-SQLite-compatible.
-
-**For the current head run `alembic heads`.** Do not restore a literal revision
-id into a narration elsewhere in this file: a lane that parents a new migration
-onto a revision read from prose parents onto one that may no longer be the head
-(#1246). `tests/integration/test_alembic_migrations.py` pins `HEAD_REVISION` and
-the expected table set, and fails when a migration lands without them moving.
-
-## Key Patterns
-
-### Investigation Framework (Milestone-Based)
-
-The investigation engine uses a **data-driven, milestone-based** approach:
-
-**State Lifecycle:** INQUIRY → INVESTIGATING → RESOLVED/CLOSED
-
-**Investigation Stages (within INVESTIGATING):**
-1. **SYMPTOM_VERIFICATION** - Verify symptoms, assess scope, establish timeline
-2. **HYPOTHESIS_FORMULATION** - Generate likely theories based on evidence
-3. **HYPOTHESIS_VALIDATION** - Test hypotheses with evidence linking
-4. **SOLUTION** - Propose and verify fixes
-
-**Key Characteristics:**
-- **Opportunistic completion** - Multiple milestones can complete in a single turn
-- **Data-driven transitions** - State changes when evidence thresholds are met
-- **Hypothesis lifecycle** - CAPTURED → ACTIVE → VALIDATED/REFUTED/RETIRED
-- **Confidence decay** - Stagnant hypotheses decay via `0.85^iterations` formula
-- **Anchoring detection** - Prevents fixation on weak theories
-
-**Progress Indicators (3)** — non-stage-driving; inform focus and analytics within DIAGNOSIS:
-`symptom_verified`, `cause_state`, `solution_proposed` — `symptom_verified` is LLM-set and `solution_proposed` programmatic; `cause_state` is an engine-derived enum (`UNKNOWN | CANDIDATES | IDENTIFIED`) that replaced the old `root_cause_identified` boolean, recomputed each turn from the LLM's grounded cause signal (never path-stripped).
-
-**Gate Milestones (4)** — Drive stage transitions when LLM detects user compliance:
-`mitigation_accepted`, `mitigation_verified`, `solution_accepted`, `solution_verified`
-
-Implemented in `core/investigation/milestone_engine.py` with hypothesis management in `hypothesis_manager.py` and progress monitoring in `progress_monitor.py`.
-
-### Dependency Injection
-
-- DI Container in `faultmaven/container/` with centralized implementation in `_container_impl.py`
-- Service locator pattern with providers (infrastructure, services, tools)
-- Composition Root pattern in `main.py` lifespan
-- Singleton container with lazy initialization and interface-based dependency resolution
-
-### Async Throughout
-
-- FastAPI async endpoints
-- Async database drivers (aiosqlite, asyncpg)
-- Concurrent LLM calls via `asyncio.gather()`
-
-## API Endpoints
-
-**Base URL:** `http://localhost:8090/api/v1`
-
-| Module | Endpoint | Description |
-|--------|----------|-------------|
-| Cases | `GET/POST /cases` | Case management CRUD |
-| Cases | `GET /cases/{id}` | Get case details |
-| Knowledge | `GET/POST /knowledge/documents` | Knowledge base CRUD |
-| Knowledge | `POST /knowledge/search` | Semantic search |
-| Knowledge | `POST /knowledge/convert` | Convert document to runbook drafts |
-| Knowledge | `POST /knowledge/runbooks/create` | Create runbook manually from template |
-| Knowledge | `GET /knowledge/drafts` | List all draft runbooks |
-| Knowledge | `POST /knowledge/scan` | Manual draft reconciliation (auto-scan removed; ingestion is now owned by startup bootstrap) |
-| Knowledge | `GET /knowledge/conversions` | List conversion jobs |
-| Knowledge | `GET /knowledge/conversions/by-case/{case_id}` | Get conversion for a case |
-| Knowledge | `PUT/POST/DELETE .../drafts/{id}` | Draft management (edit, verify, delete) |
-| Auth | `POST /auth/register` | User registration |
-| Auth | `POST /auth/login` | User login |
-| Auth | `POST /auth/refresh` | Token refresh |
-| OAuth | `GET /auth/oauth/authorize` | OAuth authorization |
-| OAuth | `POST /auth/oauth/token` | OAuth token exchange. **Takes RFC 6749 §3.2 form encoding *or* JSON**, and answers errors as RFC 6749 §5.2 objects (`{"error", "error_description"}`), not `{"detail"}` — so a rejected grant is a **400** `invalid_grant`, not a 401. Same for `POST /auth/oauth/revoke` (RFC 7009). Both routes take a raw `Request` and validate by hand, because FastAPI cannot declare two body encodings on one signature; that is also why their OpenAPI `requestBody` is written out in `openapi_extra` and why they document a 400 where every other operation documents a 422 (#1150) |
-| Cases | `POST /cases/{case_id}/turns` | Submit a turn (multipart: query, files, pasted content) — how raw data enters a case. **One file max** per turn (`maxItems: 1`); `pasted_content` is a separate field and does not count toward it, so a turn may carry one file *and* a paste. An **empty turn** (no query, no file, no paste — a bare `@FaultMaven` in Slack) is accepted and answered with a state-aware orientation, as are whole-message greetings and "help"; that intent is server-minted, a client-sent `greeting` is re-derived from the text (contract 2.8.0) |
-| Reports | `GET/POST /reports` | Terminal summaries (auto-generated) |
-| Teams | `GET /teams` | List the caller's teams (names for share badges + share-to-team picker) |
-| Teams | `POST /teams` | Create a team in the caller's enterprise; the creator is its team admin (ADR-017 D4 — any account may). Team + membership in ONE transaction; 409 `team_name_taken` for a live duplicate (the index is partial on `deleted_at IS NULL`, so a retired team frees its name) |
-| Teams | `GET /teams/{team_id}/members` | The roster, readable by the team's members |
-| Teams | `DELETE /teams/{team_id}/members/me` | Leave; 409 for the last admin while others remain, and the sole member leaving retires the team and closes its pending offers — live ones `revoked` by the leaver, elapsed ones `expired` with no `revoked_by`. Both decided under a row lock on the team — the rule is a read-then-write over the roster |
-| Teams | `POST /teams/{team_id}/invitations` | Offer an address a place (team admin). Decided **by domain** so nothing enumerates accounts: a personal enterprise invites nobody, an address off the enterprise's domain is refused, and an address on it whose account is anchored elsewhere is refused **identically** |
-| Teams | `GET /teams/{team_id}/invitations` | Every offer this team has issued and what became of it (team admin) |
-| Teams | `DELETE /teams/{team_id}/invitations/{invitation_id}` | Withdraw an offer (team admin) |
-| Invitations | `GET /invitations` | The live offers addressed to me — by `invited_user_id`, or by my address while the offer predates my account |
-| Invitations | `POST /invitations/{invitation_id}/accept` | Consent. **The only call that creates a team membership** — the stamp and the membership are ONE repository transaction, because either ordering leaks (stamp-first spends a one-shot token; membership-first leaves a member nobody consented to admit when a revoke lands mid-flight); 410 once it has expired |
-| Invitations | `DELETE /invitations/{invitation_id}` | Decline; recorded, so the admin sees the answer |
-| Sessions | `GET /sessions` | Session management |
-| Admin | `GET /admin/users` | List the operator's own organization's users — platform-admin only. Confined to the caller's tenant (#1318), `total` included |
-| Admin | `GET /admin/users/{id}` | User details — platform-admin only; a user of another organization answers the same 404 an absent id does |
-| Admin | `POST /admin/users/{id}/roles` | Assign an org-scoped role — platform-admin only, own tenant only |
-| Admin | `GET /admin/llm/config` | LLM provider status, fallback chain, and `role_routing` — the resolved (provider, model) for every capability role with its provenance (#1206). The anchor describes only the roles that FOLLOW it: classifier/synthesis/multimodal ship pinned elsewhere, so each row names the env key that decided it, whether the provider was set for that role or `inherited`, and whether it is actually initialized (an uncredentialed pin is inert and falls back to the chain). Read-only — role keys are not in the override allowlist |
-| Admin | `POST /admin/llm/config/test` | Test provider connection |
-| Admin | `GET /admin/config/status` | Environment configuration status |
-| Admin | `GET /admin/cases` | Cross-tenant case list (all users/orgs) — platform-admin only, audited. Deployment-split (ADR-012 D9): standalone returns full summaries (`view: "full"`), cloud returns ambient metadata with no title/description (`view: "metadata"`); titles need break-glass. 403 under `TENANT_PROVIDER=multi` (RLS would make the list silently partial) |
-| Admin | `GET /admin/cases/{id}` | Operator **content** read — title, description, state (ADR-012 D9). Standalone: standing access, audited not gated. Cloud: requires a live break-glass grant naming that case. Response envelope names how it was authorised (`access: "standing" \| "break_glass"`). Separate from `GET /cases/{id}`, which has no operator bypass |
-| Admin | `GET /admin/cases/{id}/messages` | Operator **transcript** read — same gate, same audit action, same envelope |
-| Admin | `POST /admin/grants` | Mint a break-glass grant over ONE case: reason (min 20 chars) + TTL (default 60 min, max 240). No extend path — needing longer means a new grant |
-| Admin | `GET /admin/grants` | List grants (not scoped to the caller — who holds access is the governance question) |
-| Admin | `POST /admin/grants/{id}/revoke` | End a grant early; idempotent, and any operator may revoke any grant |
-| Admin | `GET /admin/audit/operator-access` | The durable operator access trail (append-only) |
-
-**Health & Metrics Endpoints:**
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /health` | Overall health status |
-| `GET /health/dependencies` | Dependency health check |
-| `GET /health/sla` | SLA metrics |
-| `GET /health/logging` | Logging system health |
-| `GET /health/components/{name}` | Component-specific health |
-| `GET /health/patterns` | Error pattern detection |
-| `GET /readiness` | Kubernetes readiness probe |
-| `GET /metrics/performance` | Performance metrics |
-| `GET /metrics/realtime` | Real-time metrics |
-| `GET /metrics/alerts` | Alert status |
-| `GET /metrics/optimization` | System optimization metrics |
-| `GET /api/v1/meta/capabilities` | Backend capabilities for extension and dashboard |
-| `GET /v1/meta/capabilities` | Deprecated alias of the above, kept for installed extensions |
-
-**Debug Endpoints** — mounted when `ENVIRONMENT=development`, or in any environment (staging and production included) when `ENABLE_DEBUG_ENDPOINTS=true`. Only `development`: the `Environment` enum admits development/staging/production, so the values `testing` and `test` are not mounting values — setting either is a startup `ValidationError`. **All four require the platform administrator role** (#1474): an anonymous caller gets **401**, and an authenticated caller without the role gets **403 "Platform administrator access required"** — including a Cloud beta account, so a 403 here is the gate working, not a bug. The standalone bootstrap account is granted the operator roles on every startup, so a local `dev-login` token reaches them.
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /debug/routes` | List all registered routes |
-| `GET /debug/health` | Minimal debug health |
-| `GET /debug/config` | Configuration summary |
-| `GET /debug/llm-providers` | LLM provider status |
-
-`GET /debug/cases/{case_id}/causal-graph` is the fifth route on the same router and takes `require_authentication` only.
-
-**Documentation:** http://localhost:8090/docs
-
-## Important Files
-
-| File | Purpose |
-|------|---------|
-| `faultmaven/main.py` | FastAPI application entry point |
-| `faultmaven/config/settings.py` | Pydantic settings (unified config) |
-| `faultmaven/container/` | Dependency injection setup |
-| `faultmaven/bootstrap/startup.py` | Application bootstrap |
-| `faultmaven/modules/auth/contracts.py` | Auth DTOs and interfaces |
-| `faultmaven/modules/case/contracts.py` | Case DTOs and interfaces |
-| `faultmaven/modules/knowledge/contracts.py` | Knowledge DTOs and interfaces |
-| `faultmaven/modules/knowledge/domain/services/conversion_service.py` | Document-to-runbook conversion pipeline |
-| `faultmaven/modules/knowledge/api/conversion_routes.py` | Conversion API endpoints (feature-flagged) |
-| `.env.example` | Configuration template |
-| `pyproject.toml` | Dependencies, tool config, and `[project.scripts]` (the `fm-*` operator entrypoints) |
-| `faultmaven/cli/` | Operator console entrypoint modules targeted by `[project.scripts]` |
-| `faultmaven/infrastructure/persistence/models.py` | SQLAlchemy ORM models (every table) |
-| `faultmaven/config/llm_config_overrides.py` | Config override application + hot-reload (cloud mode only) |
-| `faultmaven/api/routes/admin_config.py` | Admin endpoints: LLM config, env status, features, connection test |
-| `.importlinter` | Architecture contracts (13 rules) |
-| `pytest.ini` | Test configuration |
-| `alembic/` | Database migration (single clean baseline) |
-| `faultmaven/_container_impl.py` | Centralized DI container implementation |
-| `scripts/generate_er_diagram.py` | Generate ER diagram from SQLAlchemy models |
+- PII redaction via Presidio (cloud); JWT auth (HS256 local / RS256 oauth) with JTI-based revocation; OAuth 2.0 + PKCE for the extension; RBAC; CORS; rate limiting per IP and per user (presets — see Configuration). Design: `docs/architecture/security/`.
+- Secrets never enter the repo: pre-commit `detect-secrets`, `check-api-keys`, `check-hardcoded-rsa-keys`.
+- Debug router (`/debug/routes|health|config|llm-providers`): mounted when `ENVIRONMENT=development` or, in any environment (staging and production included), when `ENABLE_DEBUG_ENDPOINTS=true`. The `Environment` enum admits only development/staging/production — any other value is a startup `ValidationError`, not a debug mount. All four routes require the **platform administrator** role (#1474): anonymous → 401, authenticated non-operator → 403 "Platform administrator access required" (a Cloud beta account included — a 403 here is the gate working). The standalone bootstrap account holds the operator roles on every startup, so a local `dev-login` token reaches them. `GET /debug/cases/{case_id}/causal-graph` is the fifth route on the same router and takes `require_authentication` only. This bullet is the one copy of that rule (a test reads it here); the generated API reference excludes the router by construction (`.claude/rules/api-contract.md`).
+- Which operations require auth is derived from the dependency graph: a route gains `security` in the OpenAPI spec because `require_authentication` declares the `HTTPBearer` scheme. An auth dependency that reads the header directly emits no `security` and would publish a protected route as open — `tests/integration/api/test_openapi_documents_auth.py` fails on that, and on any new auth dependency it has not been told how to classify.
+- Operator reads of case content go through the audited `/admin/cases` surface (break-glass under cloud, ADR-012 D9): `docs/architecture/security/break-glass-content-access.md`.
 
 ## Common Tasks
 
-### Adding a New API Endpoint
-
-1. Add route in appropriate module's `api/routes.py`
-2. Add business logic in module's `domain/services/`
-3. Add tests in `tests/unit/modules/` and `tests/integration/`
-4. Run `lint-imports` to verify architecture
-
-### Adding a New LLM Provider
-
-1. Implement provider in `infrastructure/llm/providers/`
-2. Inherit from `BaseLLMProvider` in `base.py`
-3. Merge leftover kwargs into the request body with **`self._merge_extra_kwargs(payload, kwargs, model=...)`**, never a hand-rolled `payload.update(kwargs)` — routing-level knobs (`reasoning_intent`, `min_output_tokens`, `cache_prompt`) are not API fields, and a provider that merges them raw sends them as body fields on every call and is rejected by any OpenAI-compatible endpoint. Consume a knob (pop it) only if the provider actually translates it.
-4. Populate `stop_reason` via `normalize_stop_reason()` (see the stop-reason section) — `UNKNOWN` is the honest default, not `STOP`
-5. Register in `infrastructure/llm/providers/registry.py`
-6. Add config in `config/settings.py`
-7. Document in `.env.example`
-8. Add tests in `tests/unit/infrastructure/` — `tests/unit/infrastructure/llm/providers/test_reasoning_intent.py` derives its coverage from `PROVIDER_SCHEMA`, so a newly registered provider is checked for knob handling automatically
-
-### Modifying Database Schema
-
-1. Update SQLAlchemy models in `infrastructure/persistence/models/`
-2. Create migration: `alembic revision --autogenerate -m "description"`
-3. Review generated migration in `alembic/versions/`
-4. Apply: `alembic upgrade head`
-
-### Adding a New Module
-
-**Vertical Module (owns data):**
-1. Create `modules/newmodule/` with `contracts.py`, `api/`, `domain/`, `infrastructure/`
-2. Define interfaces and DTOs in `contracts.py`
-3. Add repository in `infrastructure/persistence/`
-4. Add layer boundary contract in `.importlinter`
-5. Register routes in `main.py`
-
-**Domain Service (no data ownership):**
-1. Create `modules/newservice/` with `api/`, `domain/` only
-2. Import shared models from Case contracts
-3. Use Case repository via DI
-4. Add layer boundary contract in `.importlinter`
-
-## Security Considerations
-
-- **PII Redaction** - Automatic scrubbing via Presidio (enterprise)
-- **JWT Auth** - Stateless session management (HS256 local, RS256 OAuth)
-- **OAuth 2.0 with PKCE** - Browser extension integration
-- **RBAC** - Role-based access control
-- **Token Revocation** - JTI-based revocation tracking
-- **Secret Detection** - Pre-commit hooks prevent credential commits
-- **CORS** - Configurable origins for browser extension
-- **Rate Limiting** - Per-IP and per-user limits
+- **New endpoint**: route in the module's `api/routes.py`, logic in `domain/services/`, tests in `tests/unit/modules/` and `tests/integration/`, regenerate the API reference, run `lint-imports`. `/new-endpoint` command; `architecture` skill.
+- **New module**: vertical = `contracts.py` + `api/` + `domain/` + `infrastructure/` (repository under `infrastructure/persistence/`), routes registered in `main.py`; domain service = `domain/` (plus `api/` when it serves routes), models from Case contracts, repository via DI. Either way add a layer-boundary contract to `.importlinter` and the entry to `.claude/manifest.json`.
+- **New LLM provider**: the checklist in `.claude/rules/llm-providers.md` §"Adding a New LLM Provider"; long-form guide `docs/guides/adding-llm-providers.md`.
+- **Modifying Database Schema**: 1. edit `faultmaven/infrastructure/persistence/models.py`; 2. `alembic revision --autogenerate -m "description"`; 3. review the file in `alembic/versions/` (both directions populated, PostgreSQL-only DDL dialect-guarded); 4. `alembic upgrade head`; 5. move `HEAD_REVISION` and the table set in `tests/integration/test_alembic_migrations.py`.
 
 ## Documentation
 
-```
-docs/
-├── architecture/           # System design, ADRs
-│   ├── api-and-integration/    # API mapping, integration specs
-│   ├── case-and-session/       # Case lifecycle, session management
-│   ├── core-architecture/      # Module design, DI, service patterns
-│   ├── data-and-storage/       # Database schemas, vector storage
-│   ├── data-processing/        # Data classification, preprocessing
-│   ├── investigation-engine/   # Milestone framework, hypothesis management, prompts
-│   ├── knowledge-and-ai/       # RAG, vector operations
-│   ├── security/               # IAM design, PII handling
-│   ├── specifications/         # Formal specs (sessions, config, errors)
-│   ├── decisions/              # Architecture Decision Records (ADRs)
-│   └── diagrams/               # System diagrams (Mermaid)
-├── getting-started/        # Installation, quickstart, user guide
-├── guides/                 # How-to guides (config, migrations, KB)
-├── development/            # Dev standards, testing, datetime handling
-├── operations/             # Runbooks, monitoring, logging policies
-└── archive/                # Historical implementation notes
-```
+`docs/README.md` maps the tree (Diátaxis: getting-started, guides, architecture, reference, development, operations) and says where a new document goes. Never create files in the repository root. The canonical architecture documents are listed in `docs/architecture/architecture-overview.md`.
 
-## Troubleshooting
-
-### Import Errors
-```bash
-export PYTHONPATH="${PYTHONPATH}:$(pwd)"
-```
-
-### Async Test Issues
-Ensure `@pytest.mark.asyncio` decorator is used. asyncio_mode is set to "auto" in pyproject.toml.
-
-### Port Conflicts
-```bash
-./faultmaven.sh stop
-# Or check what's using ports:
-lsof -i :8090
-lsof -i :3333
-```
-
-### Database Issues
-```bash
-# Reset database
-rm -rf data/faultmaven.db
-alembic upgrade head
-```
-
-### Architecture Violations
-```bash
-# Check violations
-lint-imports
-
-# The output shows which imports violate contracts
-# Fix by using contracts.py interfaces instead of direct imports
-```
-
-### LLM Provider Issues
-```bash
-# Verify provider configuration
-echo $CHAT_PROVIDER
-echo $OPENAI_API_KEY  # (or relevant provider key)
-
-# Check debug endpoint (platform-admin only since #1474: no header -> 401,
-# a non-operator token -> 403). $TOKEN from
-# POST /api/v1/auth/dev-login {"username":"admin"} — the bootstrap admin holds
-# the operator roles.
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8090/debug/llm-providers
-
-# Or the always-mounted operator surface, which needs no debug flag:
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/v1/admin/llm/config
-
-# Check logs for API errors
-./faultmaven.sh logs api
-```
-
-### JWT/Auth Issues
-```bash
-# Verify auth mode
-echo $AUTH_MODE
-
-# For OAuth mode, ensure RSA keys exist
-python scripts/generate_oauth_keys.py
-
-# Check token validation
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/v1/auth/me
-```
-
-## Version Info
-
-- **Current Version:** 1.0.0
-- **Python Support:** 3.11, 3.12, 3.13
-- **License:** FSL-1.1-ALv2 (source-available; converts to Apache-2.0 two years after each release)
-- **Min Python:** 3.11
+| Detail | Location | Loads |
+|--------|----------|-------|
+| LLM providers, structured output, stop reasons, turn budget, reasoning intent, provider checklist | `.claude/rules/llm-providers.md` | on touching `infrastructure/llm/`, `core/investigation/`, `modules/agent/`, LLM config and tests |
+| Auth modes, tenancy, teams, sharing, turn-usage ledger, auth/case module maps | `.claude/rules/data-model.md` | on touching `modules/auth/`, `modules/case/`, persistence, CLI, alembic |
+| API surface semantics, generated reference, debug endpoints | `.claude/rules/api-contract.md` | on touching `api/`, `modules/*/api/`, `docs/reference/api/` |
+| Operator entrypoints (`fm-*`) | `docs/operations/operator-cli.md` | |
+| Local troubleshooting | `docs/development/local-troubleshooting.md` | |
+| Investigation framework, RAG, ingestion, architecture, brand copy | `.claude/skills/*/SKILL.md` | by skill trigger |

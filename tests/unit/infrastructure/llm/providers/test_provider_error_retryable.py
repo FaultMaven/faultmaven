@@ -90,7 +90,8 @@ _PROVIDERS = [
 # first version of this file enumerated them by hand, and that hand-list was
 # ALREADY incomplete — Gemini, HuggingFace and OpenRouter had to be bolted on —
 # which is exactly the shape that leaves the NEXT provider silently exempt.
-# Same convention as ``test_reasoning_intent.py``, which CLAUDE.md documents.
+# Same convention as ``test_reasoning_intent.py``, which
+# ``.claude/rules/llm-providers.md`` documents.
 #
 # ``local`` is excluded here and covered by ``test_local_transport_errors.py``
 # instead: it is the one provider that picks between THREE wire transports at
