@@ -666,8 +666,6 @@ Login via dev-login: `POST /api/v1/auth/dev-login` with `{"username": "admin"}`
 ```bash
 # User & Account Management
 python scripts/create_builtin_accounts.py  # Create default users
-python scripts/resolve_duplicate_emails.py # Fix duplicate email issues
-python scripts/check_duplicate_emails.py   # Check for duplicate emails
 
 # OAuth & Security
 python scripts/generate_oauth_keys.py      # Generate OAuth RSA keys
@@ -677,7 +675,6 @@ python scripts/test_rbac.py                # Test RBAC configuration
 ./scripts/db_migrate.sh                    # Database migrations
 python scripts/verify_vector_storage.py    # Verify ChromaDB
 python scripts/cleanup_corrupt_cases.py    # Database maintenance
-python scripts/backfill_closed_at_timestamps.py  # Backfill case timestamps
 
 # Architecture & Validation
 python scripts/check_import_violations.py  # Check architecture
