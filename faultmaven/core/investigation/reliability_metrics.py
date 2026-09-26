@@ -74,7 +74,10 @@ Read as rates, never the numerator alone:
   body-level, so a repair and a drop are counted separately (fm#1502). Link
   confidences are counted at INGEST, the only point that knows whether the link
   is new; a body that never reaches ingest (a retried or failed generation)
-  contributes nothing for them.
+  contributes nothing for them. One schema outside the engine is counted here
+  too: document triage's ``TriageResult.confidence`` (the classifier role,
+  fm#1672), whose unrepairable values are ``defaulted`` — treated as absent,
+  so the default's advisory path applies rather than the hard reject.
 """
 
 from faultmaven.infrastructure.shims.metrics import Counter
@@ -119,12 +122,12 @@ schema_validation_total = Counter(
 )
 
 # Pinned by tests, for the same reason as the tuple above.
-SCHEMA_FIELD_REPAIR_ACTIONS = ("rescaled", "coerced", "dropped", "pruned")
+SCHEMA_FIELD_REPAIR_ACTIONS = ("rescaled", "coerced", "dropped", "pruned", "defaulted")
 
 schema_field_repairs_total = Counter(
     "faultmaven_schema_field_repairs_total",
     "Out-of-range confidence values the engine acted on, labeled by ``schema`` "
     "(owning model class), ``field`` and ``action`` (rescaled | coerced | "
-    "dropped | pruned). Link confidences are counted at ingest.",
+    "dropped | pruned | defaulted). Link confidences are counted at ingest.",
     ["schema", "field", "action"],
 )

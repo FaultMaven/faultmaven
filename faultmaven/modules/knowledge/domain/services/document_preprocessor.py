@@ -22,6 +22,15 @@ from typing import Any, Dict, Optional
 
 import tiktoken
 
+from faultmaven.core.investigation.confidence_repair import (
+    ConfidenceAction,
+    ConfidenceRepair,
+    classify,
+    short_repr,
+)
+from faultmaven.core.investigation.confidence_repair import (
+    count as count_confidence_repair,
+)
 from faultmaven.infrastructure.llm.json_response import loads_llm_json
 from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionErrorCode,
@@ -193,6 +202,52 @@ Non-troubleshooting content includes: pure architecture docs, marketing material
 
 Respond with JSON:
 {"is_actionable": true/false, "confidence": 0.0-1.0, "reason": "brief explanation"}"""
+
+#: A "not actionable" verdict above this is a hard reject (``NOT_ACTIONABLE``);
+#: at or below it the document converts with a warning.
+TRIAGE_HARD_REJECT_CONFIDENCE = 0.8
+
+#: The confidence of a verdict that states none usable. It must stay at or below
+#: the threshold above, so a verdict without a usable confidence can only warn.
+TRIAGE_DEFAULT_CONFIDENCE = 0.5
+
+
+def _triage_confidence(raw: Any) -> float:
+    """Read the classifier's ``confidence`` with #1502's rule (fm#1672).
+
+    Nothing holds the classifier to ``0.0-1.0``, and a model that answers ``50``
+    meaning 50% used to clear the hard-reject threshold. ``classify`` is the one
+    implementation of the rule: a value in ``(1, 100]`` is a percentage and is
+    rescaled, a ``bool`` is coerced to ``1.0``/``0.0``, and anything else
+    (negative, above 100, NaN, infinity, not a number) is treated as absent and
+    takes :data:`TRIAGE_DEFAULT_CONFIDENCE` — the advisory path, never the hard
+    reject. A missing or ``null`` confidence is absence the model chose, not a
+    repair, and is not counted. Every repair is counted on
+    ``faultmaven_schema_field_repairs_total`` and logged with the raw value.
+    """
+    if raw is None:
+        return TRIAGE_DEFAULT_CONFIDENCE
+    kind, value = classify(raw)
+    if kind == "conforming":
+        return value
+    if kind in ("rescaled", "coerced"):
+        action = ConfidenceAction(kind)
+    else:
+        action, value = ConfidenceAction.DEFAULTED, TRIAGE_DEFAULT_CONFIDENCE
+    repair = ConfidenceRepair(
+        schema="TriageResult",
+        field="confidence",
+        action=action,
+        raw=raw,
+        value=value,
+    )
+    count_confidence_repair(repair)
+    logger.warning(
+        "Content triage confidence repaired: %s",
+        repair.note(),
+        extra={"action": action.value, "raw": short_repr(raw), "value": value},
+    )
+    return value
 
 
 # =============================================================================
@@ -663,7 +718,10 @@ class DocumentPreprocessor:
         # Stage 6: Content triage (classifier LLM)
         triage_result = await self._run_content_triage(extracted_text)
         if triage_result:
-            if not triage_result.is_actionable and triage_result.confidence > 0.8:
+            if (
+                not triage_result.is_actionable
+                and triage_result.confidence > TRIAGE_HARD_REJECT_CONFIDENCE
+            ):
                 return PreprocessingResult(
                     extracted_text=extracted_text,
                     source_metadata=source_metadata,
@@ -678,7 +736,10 @@ class DocumentPreprocessor:
                     ),
                     error_code=ConversionErrorCode.NOT_ACTIONABLE,
                 )
-            elif not triage_result.is_actionable and triage_result.confidence <= 0.8:
+            elif (
+                not triage_result.is_actionable
+                and triage_result.confidence <= TRIAGE_HARD_REJECT_CONFIDENCE
+            ):
                 warnings.append(
                     "This document may not contain sufficient troubleshooting content. "
                     "Generated runbooks may have incomplete sections."
@@ -756,7 +817,7 @@ class DocumentPreprocessor:
             result = loads_llm_json(response.content, strict=True)
             return TriageResult(
                 is_actionable=result.get("is_actionable", True),
-                confidence=float(result.get("confidence", 0.5)),
+                confidence=_triage_confidence(result.get("confidence")),
                 reason=result.get("reason", ""),
             )
         except Exception as e:

@@ -266,6 +266,11 @@ Upload (file + scope + metadata)
         Prompt: "Does this document contain troubleshooting procedures,
         diagnostic steps, error resolution, or incident response content?"
         Response: { is_actionable: bool, confidence: float, reason: str }
+        confidence is read with fm#1502's rule (fm#1672): (1, 100] is a
+          percentage and rescaled, a bool is coerced; anything else, or
+          none, is the 0.5 default, which can only warn. Each repair is
+          counted on faultmaven_schema_field_repairs_total
+          {schema="TriageResult"} and logged with the raw value.
         If not actionable (confidence > 0.8):
           → Reject with: "This document does not appear to contain
              troubleshooting content. The conversion pipeline produces
