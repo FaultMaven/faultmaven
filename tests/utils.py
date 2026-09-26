@@ -4,8 +4,10 @@ Provides common utilities for test ID generation, test data creation,
 and other shared test infrastructure.
 """
 
+from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterable, Iterator, List, Optional
 from uuid import uuid4
 
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
@@ -443,6 +445,60 @@ def generate_agent_execution_id() -> str:
 def generate_investigation_session_id() -> str:
     """Generate a valid investigation session ID."""
     return f"is_{uuid4().hex[:12]}"
+
+
+@contextmanager
+def sanitize_pii_pinned(value: bool) -> Iterator[None]:
+    """Pin ``SANITIZE_PII`` for the block, whatever the CI job exports.
+
+    The Standalone job runs with ``SANITIZE_PII=false`` and the Cloud job with
+    ``true`` (``ci-cd.yml``), so a test that INHERITS the flag tests a different
+    thing in each job, and one that is only green under one of them looks like
+    a pass in the other (#1661 shipped exactly that). Any test whose outcome
+    depends on the flag pins it here: env plus the settings-singleton reset, on
+    the way in and again on the way out, so the job's own value is restored for
+    whatever runs next.
+    """
+    import pytest
+
+    try:
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setenv("SANITIZE_PII", "true" if value else "false")
+            reset_settings_singleton()
+            assert get_live_settings().protection.sanitize_pii is value
+            yield
+    finally:
+        reset_settings_singleton()
+
+
+class SanitizerDouble(ABC):
+    """Base for hand-written sanitizer doubles handed to ``SuggestionService``.
+
+    Its abstract methods are the sanitizer methods the service reaches:
+    ``asanitize`` for the PII scan of the draft, and
+    ``sanitize_text_with_registry`` through the ``CaseRedactionContext`` that
+    redacts the extraction prompt under ``SANITIZE_PII`` (#1661). A double that
+    lacks one cannot be CONSTRUCTED — ``TypeError: Can't instantiate abstract
+    class`` — so it fails in every CI job, rather than passing the job where the
+    flag is off and failing the one where it is on.
+
+    (A ``MagicMock`` answers every attribute, so it cannot fail this way; the
+    ones still passed as a sanitizer are on paths that wire no provider, where
+    the prompt redaction is never reached.)
+
+    The set is not maintained by hand:
+    ``test_sanitizer_doubles_implement_what_the_service_calls`` derives it from
+    the production source and fails when the service starts calling another
+    method, and checks each against ``DataSanitizer``'s own signature.
+    """
+
+    @abstractmethod
+    async def asanitize(self, data: Any) -> Any: ...
+
+    @abstractmethod
+    def sanitize_text_with_registry(
+        self, text: str, entity_registry: Dict[str, Dict[str, str]]
+    ) -> str: ...
 
 
 class CaseReadDouble:

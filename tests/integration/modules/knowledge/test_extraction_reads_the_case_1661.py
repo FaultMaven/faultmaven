@@ -34,6 +34,7 @@ Four properties, one class each:
 from __future__ import annotations
 
 import ast
+import inspect
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -42,13 +43,13 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.config.settings import get_settings
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.core.investigation.prompts.context_builder import (
     _evidence_recency_key,
 )
 from faultmaven.exceptions import ConfigurationException, NotFoundError
 from faultmaven.infrastructure.persistence.models import Base
+from faultmaven.infrastructure.security import case_redaction
 from faultmaven.infrastructure.security.case_redaction import CaseRedactionContext
 from faultmaven.infrastructure.security.redaction import (
     DataSanitizer,
@@ -79,6 +80,7 @@ from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_reposito
     InMemorySuggestionRepository,
 )
 from tests.runbook_samples import valid_runbook
+from tests.utils import SanitizerDouble, sanitize_pii_pinned
 
 pytestmark = [pytest.mark.integration, pytest.mark.knowledge_base]
 
@@ -443,10 +445,31 @@ PII_EMAIL = "jane.doe@contoso.example"
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 
 
+# ``SANITIZE_PII`` is PINNED by every test below whose outcome depends on it,
+# never inherited: the Standalone CI job exports it false and the Cloud job true,
+# so an inherited value makes one test two different tests (#1661 shipped
+# ``test_with_redaction_off…`` green in Standalone and red in Cloud).
+
+
 @pytest.fixture
-def redaction_on(monkeypatch):
+def redaction_on():
     """``SANITIZE_PII=true`` — the flag the investigation path keys on."""
-    monkeypatch.setattr(get_settings().protection, "sanitize_pii", True)
+    with sanitize_pii_pinned(True):
+        yield
+
+
+@pytest.fixture
+def redaction_off():
+    """``SANITIZE_PII=false`` — the standalone default."""
+    with sanitize_pii_pinned(False):
+        yield
+
+
+@pytest.fixture(params=[False, True], ids=["sanitize_pii-off", "sanitize_pii-on"])
+def redaction_arm(request):
+    """Both values, pinned, for a behaviour that must be stated for each."""
+    with sanitize_pii_pinned(request.param):
+        yield request.param
 
 
 def _with_presidio(sanitizer: DataSanitizer) -> DataSanitizer:
@@ -521,9 +544,9 @@ class TestTheExtractionInputIsRedactedAsTheInvestigationPathRedactsIt:
             assert redacted in prompt, f"{redacted!r} missing for {value!r}"
 
     async def test_with_redaction_off_the_input_is_what_the_engine_would_send(
-        self, sqlite_repository
+        self, sqlite_repository, redaction_off
     ):
-        """``SANITIZE_PII`` unset (the standalone default): the engine sends its
+        """``SANITIZE_PII`` off (the standalone default): the engine sends its
         prompt as written, and so does extraction. The positive control for
         the test above — the values are in the case and do reach the prompt."""
         sanitizer = _with_presidio(DataSanitizer())
@@ -537,11 +560,12 @@ class TestTheExtractionInputIsRedactedAsTheInvestigationPathRedactsIt:
             assert value in provider.prompts[0]
 
     async def test_the_repair_turn_is_redacted_too(
-        self, sqlite_repository, redaction_on
+        self, sqlite_repository, redaction_arm
     ):
         """Redaction sits at the call, not at the assembly of the case block:
         the repair prompt carries the model's own previous draft, and a value
-        in it must not go back out in clear either."""
+        in it must not go back out in clear either. With the flag off, both
+        prompts go out as written — as the engine's would."""
         sanitizer = DataSanitizer()
         await _pii_case(sqlite_repository)
         rejected_draft = f"## Problem\nThe replica at {PII_IP} refused.\n"
@@ -551,40 +575,50 @@ class TestTheExtractionInputIsRedactedAsTheInvestigationPathRedactsIt:
 
         assert len(provider.prompts) == 2, "control: the repair turn ran"
         assert "REPAIR REQUIRED" in provider.prompts[1]
-        assert "The replica at <IP_ADDRESS_" in provider.prompts[1]
-        for prompt in provider.prompts:
-            assert PII_IP not in prompt
+        if redaction_arm:
+            assert "The replica at <IP_ADDRESS_" in provider.prompts[1]
+            for prompt in provider.prompts:
+                assert PII_IP not in prompt
+        else:
+            assert f"The replica at {PII_IP}" in provider.prompts[1]
 
     async def test_redaction_that_cannot_run_stops_the_send(
-        self, sqlite_repository, redaction_on
+        self, sqlite_repository, redaction_arm
     ):
-        """Fail-closed, as on the investigation path: the sanitizer's refusal
-        propagates. It is not caught into a skeleton draft, and nothing is sent
-        or stored."""
+        """Fail-closed, as on the investigation path: when redaction is
+        required, the sanitizer's refusal propagates. It is not caught into a
+        skeleton draft, and nothing is sent or stored. When it is not required
+        (flag off), the prompt redaction never runs, so it cannot refuse — the
+        engine does not call it either."""
 
         class _Refusing(DataSanitizer):
             def sanitize_text_with_registry(self, text, entity_registry):
                 raise RedactionUnavailableError("Presidio analyzer failed")
 
+            async def asanitize(self, data):  # the draft's PII scan: finds nothing
+                return data
+
         await _pii_case(sqlite_repository)
         provider = RecordingProvider()
         service = _service(sqlite_repository, provider, sanitizer=_Refusing())
 
-        with pytest.raises(RedactionUnavailableError):
+        if redaction_arm:
+            with pytest.raises(RedactionUnavailableError):
+                await _extract(service)
+            assert provider.prompts == []
+            assert await service._repository.count_for_enterprise(ENTERPRISE) == 0
+        else:
             await _extract(service)
+            assert len(provider.prompts) == 1
+            assert PII_IP in provider.prompts[0]
 
-        assert provider.prompts == []
-        assert await service._repository.count_for_enterprise(ENTERPRISE) == 0
-
-    @pytest.mark.parametrize("sanitize_pii", [True, False])
     @pytest.mark.parametrize("has_sanitizer", [True, False])
     async def test_it_redacts_exactly_when_the_investigation_path_does(
-        self, monkeypatch, sanitize_pii, has_sanitizer
+        self, redaction_arm, has_sanitizer
     ):
         """One decision, two call sites: the engine's ``_should_redact`` (in a
         module this change does not touch) and extraction's. The truth table
         pins them together so neither can move alone."""
-        monkeypatch.setattr(get_settings().protection, "sanitize_pii", sanitize_pii)
         sanitizer = DataSanitizer() if has_sanitizer else None
         service = _service(
             InMemoryCaseRepository(), RecordingProvider(), sanitizer=sanitizer
@@ -594,6 +628,7 @@ class TestTheExtractionInputIsRedactedAsTheInvestigationPathRedactsIt:
         engine = _investigation_path_redaction("case_aabb16611661", sanitizer)
 
         assert extraction.enabled is engine.enabled
+        assert extraction.enabled is (redaction_arm and has_sanitizer)
         assert extraction.sanitizer is sanitizer
 
     def test_the_provider_is_reached_only_through_the_redacting_call(self):
@@ -659,3 +694,97 @@ class TestTheExtractionInputIsRedactedAsTheInvestigationPathRedactsIt:
         # ``if not self._llm_provider`` guard and the ``generate`` call.
         assert sites.get("_generate_once", 0) >= 2, sites
         assert set(sites) == {"_generate_once"}, (handles, sites)
+
+    def test_sanitizer_doubles_implement_what_the_service_calls(self):
+        """The contract ``tests.utils.SanitizerDouble`` enforces at construction,
+        derived from the source rather than maintained by hand.
+
+        The sanitizer the service holds is reached in two modules: here, and in
+        the ``CaseRedactionContext`` the service hands it to. So: collect every
+        method called on ``self._sanitizer`` in the service and on
+        ``self.sanitizer`` in the redaction context, and require the double's
+        abstract methods to be exactly that set, each with ``DataSanitizer``'s
+        own parameters and sync/async shape. A method the code starts calling
+        tomorrow fails here in every CI job, instead of passing the job where
+        ``SANITIZE_PII`` is off and failing the one where it is on (#1661).
+
+        Every other read of ``self._sanitizer`` in the service must be one of
+        the two shapes that call nothing: a truthiness test, or handing it to
+        ``CaseRedactionContext`` (whose calls are collected). A new flow — the
+        sanitizer handed to some third collaborator — fails with its line.
+        """
+
+        def self_reads(module, attr: str):
+            tree = ast.parse(Path(module.__file__).read_text())
+            parents = {
+                child: node
+                for node in ast.walk(tree)
+                for child in ast.iter_child_nodes(node)
+            }
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.Attribute)
+                    and node.attr == attr
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id == "self"
+                    and isinstance(node.ctx, ast.Load)
+                ):
+                    yield node, parents.get(node), parents
+
+        def called(module, attr: str) -> tuple[set[str], list[int]]:
+            methods, unexplained = set(), []
+            for node, parent, parents in self_reads(module, attr):
+                if isinstance(parent, ast.Attribute):
+                    methods.add(parent.attr)
+                elif (
+                    isinstance(parent, ast.Call)
+                    and isinstance(parent.func, ast.Name)
+                    and parent.func.id == "bool"
+                ) or isinstance(parent, (ast.If, ast.UnaryOp, ast.Compare)):
+                    continue  # a truthiness / None test calls nothing
+                elif (
+                    isinstance(parent, ast.keyword)
+                    and parent.arg == "sanitizer"
+                    and isinstance(parents.get(parent), ast.Call)
+                    and getattr(parents[parent].func, "id", None)
+                    == "CaseRedactionContext"
+                ):
+                    continue  # collected from case_redaction below
+                else:
+                    unexplained.append(node.lineno)
+            return methods, unexplained
+
+        service_calls, service_flows = called(suggestion_service, "_sanitizer")
+        context_calls, context_flows = called(case_redaction, "sanitizer")
+
+        # Positive control: the scan sees the two calls that exist.
+        assert "asanitize" in service_calls, service_calls
+        assert "sanitize_text_with_registry" in context_calls, context_calls
+        assert not service_flows, (
+            f"self._sanitizer reaches something at lines {service_flows} that "
+            "this scan cannot follow — declare it, and add what it calls to "
+            "SanitizerDouble"
+        )
+        assert not context_flows, context_flows
+
+        reached = service_calls | context_calls
+        assert set(SanitizerDouble.__abstractmethods__) == reached, (
+            f"the service reaches {sorted(reached)}; SanitizerDouble requires "
+            f"{sorted(SanitizerDouble.__abstractmethods__)}"
+        )
+        for name in reached:
+            real, double = getattr(DataSanitizer, name), getattr(SanitizerDouble, name)
+            assert inspect.iscoroutinefunction(real) == inspect.iscoroutinefunction(
+                double
+            ), name
+            assert list(inspect.signature(real).parameters) == list(
+                inspect.signature(double).parameters
+            ), name
+
+        # And construction really refuses a double that lacks one.
+        class _ScanOnly(SanitizerDouble):
+            async def asanitize(self, data):
+                return data
+
+        with pytest.raises(TypeError, match="sanitize_text_with_registry"):
+            _ScanOnly()

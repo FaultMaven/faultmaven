@@ -50,7 +50,12 @@ from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_reposito
     InMemorySuggestionRepository,
 )
 from tests.runbook_samples import valid_runbook
-from tests.utils import CaseReadDouble, case_repository_holding
+from tests.utils import (
+    CaseReadDouble,
+    SanitizerDouble,
+    case_repository_holding,
+    sanitize_pii_pinned,
+)
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
@@ -85,7 +90,7 @@ class ScriptedProvider:
         raise AssertionError("provider called more times than the test scripted")
 
 
-class RedactingSanitizer:
+class RedactingSanitizer(SanitizerDouble):
     """A sanitizer that actually REWRITES.
 
     Every other double in this suite, and the eval driver, pass
@@ -94,16 +99,44 @@ class RedactingSanitizer:
     green suite AND a 8/8 measured pass rate: nothing in the lane exercised the
     branch that runs in cloud, over case transcripts, which is precisely where
     PII lives.
+
+    One rule, both entry points the service reaches (``SanitizerDouble``):
+    ``asanitize`` is the PII scan of the draft and records into ``seen``;
+    ``sanitize_text_with_registry`` is the extraction-prompt redaction that
+    runs under ``SANITIZE_PII`` (#1661) and records into ``prompts``. Kept
+    apart so a scan assertion does not change meaning with the flag.
     """
 
     def __init__(self, needle: str = "prod-db-01", replacement: str = "<HOST>"):
         self.needle = needle
         self.replacement = replacement
         self.seen: list[str] = []
+        self.prompts: list[str] = []
 
     async def asanitize(self, text: str) -> str:
         self.seen.append(text)
         return text.replace(self.needle, self.replacement)
+
+    def sanitize_text_with_registry(self, text, entity_registry):
+        self.prompts.append(text)
+        if self.needle in text:
+            entity_registry.setdefault("HOST", {})[self.needle] = self.replacement
+        return text.replace(self.needle, self.replacement)
+
+
+@pytest.fixture(params=[False, True], ids=["sanitize_pii-off", "sanitize_pii-on"])
+def redaction_arm(request):
+    """Both values of ``SANITIZE_PII``, pinned (#1661).
+
+    With a sanitizer AND a provider wired, the flag decides whether the
+    extraction prompt passes through the sanitizer before it is sent. The CI
+    jobs set the flag differently (Standalone off, Cloud on), so a test that
+    inherited it was a different test in each job, and these were green in one
+    and red in the other. They now run under both values, whatever the job
+    says.
+    """
+    with sanitize_pii_pinned(request.param):
+        yield request.param
 
 
 def _without_id_line(content: str) -> str:
@@ -570,6 +603,7 @@ class TestTheGateStillRefuses:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("redaction_arm")
 class TestRedactionKeepsTheDraftPublishable:
     """``_scan_for_pii`` used to scan ``f"{title}\n\n{content}"`` and assign the
     WHOLE sanitized buffer back to ``suggested_content``.
@@ -640,6 +674,18 @@ class TestRedactionKeepsTheDraftPublishable:
         assert suggestion.suggested_title == "Pool exhaustion on <HOST>"
         assert "prod-db-01" not in suggestion.suggested_title
 
+    async def test_the_prompt_is_redacted_exactly_when_the_flag_is_on(
+        self, redaction_arm
+    ):
+        """The control that makes the two arms two tests: the extraction prompt
+        passes through the sanitizer under ``SANITIZE_PII`` and not otherwise
+        (#1661). Everything else in this class must hold either way."""
+        _svc, sanitizer, _suggestion = await self._extract_with_redaction()
+
+        assert len(sanitizer.prompts) == (1 if redaction_arm else 0)
+        if redaction_arm:
+            assert "--- SOURCE MATERIAL: CASE ---" in sanitizer.prompts[0]
+
     async def test_title_and_content_are_scanned_as_separate_documents(self):
         """Never the concatenation — that is the thing that broke it."""
         _svc, sanitizer, suggestion = await self._extract_with_redaction()
@@ -682,10 +728,11 @@ class TestTheVerdictTracksEveryContentMutation:
     ``validation_passed=True`` describing text that no longer existed. They are
     now one paired helper rather than two calls each site must remember."""
 
-    class _BreakingOnRetry:
+    class _BreakingOnRetry(SanitizerDouble):
         """Fails the first scan, then redacts a required section heading — a
         redaction that itself breaks the gate, which is the case the pairing
-        exists for."""
+        exists for. The extraction prompt (redacted only under
+        ``SANITIZE_PII``, #1661) holds nothing it would rewrite."""
 
         def __init__(self):
             self.calls = 0
@@ -696,6 +743,10 @@ class TestTheVerdictTracksEveryContentMutation:
                 raise RuntimeError("presidio unavailable")
             return text.replace("## Sources", "## Redacted")
 
+        def sanitize_text_with_registry(self, text, entity_registry):
+            return text
+
+    @pytest.mark.usefixtures("redaction_arm")
     async def test_the_scan_failed_rescan_re_records_the_verdict(self):
         sanitizer = self._BreakingOnRetry()
         knowledge = MagicMock()
