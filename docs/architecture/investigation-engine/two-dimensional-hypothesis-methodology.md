@@ -366,16 +366,24 @@ progress, its counter advances one per turn so decay and anchoring act on it
 moment evidence touches the hypothesis its likelihood recomputes from
 `initial_likelihood` (the age-decay is erased) — so an ignored candidate
 stalls/soft-retires rather than lingering, and never reaches a conclusion on age
-alone.
+alone. The soft-retirement comes from anti-anchoring when the ignored candidate
+is part of a fixation (the top hypothesis stalled, or two or more stalled), and
+otherwise from the age-out: stagnant for the full 3-iteration horizon and below
+0.30, an ignored candidate without standing causal support is retired, under the
+same stand-down and root protections. Retired, not refuted — the cause can be
+reopened as a new hypothesis (INV-36).
 
-The exception does not cover a hypothesis that **causal evidence supports**: a
+The exception does not cover a hypothesis whose **causal support stands**: a
 SUPPORTS link at `CAUSAL_STANCE_CONFIDENCE_MIN` to a `CAUSAL_EVIDENCE` row, on the
-hypothesis or on its chain root. Support from symptom evidence does not count —
-a symptom log supports every sibling that would explain the symptom, and one such
-link already lifts a 0.5 prior above the cause-identification bar. A causally
-supported hypothesis goes untouched for a different reason:
-the investigation has stopped testing it, typically because the user is applying
-its fix and nothing is left to ask of it. Those turns wait on the user, which the
+hypothesis or on its chain head, with no confident REFUTES link on either and a
+head the graph has not derived REFUTED. Support from symptom evidence does not
+count — a symptom log supports every sibling that would explain the symptom, and
+one such link already lifts a 0.5 prior above the cause-identification bar. The
+test looks forwards, at whether any work is left on the hypothesis. One whose
+causal support stands goes untouched because the investigation is done with it,
+typically because the user is applying its fix and nothing is left to ask of it.
+A contradicted one still has open work — the contradiction — and if nobody is
+working on it, it is stagnating like any other. Those turns wait on the user, which the
 rule above says must not advance the counter, so the sweep leaves it alone. Aging
 it anyway took the leading cause from 0.95 to 0.36 in three turns, below the
 cause-identification bar, while its fix was being verified (#1678). A supported

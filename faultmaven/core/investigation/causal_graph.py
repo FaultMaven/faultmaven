@@ -2129,10 +2129,13 @@ def project_hypothesis_states_from_roots(case: Case) -> HypothesisProjection:
             # the age-based decay sweep skips non-ACTIVE hypotheses, so a
             # last_progress_at_turn left at the pre-validation touch would charge
             # the reverted candidate for the turns it spent VALIDATED and could
-            # decay/retire it the instant it reverts. A just-devalidated theory
-            # gets the same fresh grace as a newly-formed candidate.
+            # decay/retire it the instant it reverts, and a stagnation counter it
+            # built up before validating would let anti-anchoring retire it on
+            # the same turn. A just-devalidated theory gets the same fresh grace
+            # as a newly-formed candidate: clock and counter both restart.
             hyp.last_progress_at_turn = case.current_turn
             hyp.last_updated_turn = case.current_turn
+            hyp.iterations_without_progress = 0
             changed = True
     return HypothesisProjection(changed, newly_validated)
 

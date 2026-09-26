@@ -230,7 +230,8 @@ def test_ignored_hypothesis_eventually_trips_stagnation_anchoring():
     """The other half of #713: an ignored hypothesis must be able to TRIP
     stagnation-based anchoring. After enough ignored turns its stagnation counter
     crosses the anchoring horizon and the anti-anchoring intervention soft-retires
-    it (a stall, not a wrong answer)."""
+    it (a stall, not a wrong answer) and tells the LLM to broaden the
+    differential."""
     eng = _engine()
     h = _hyp(likelihood=0.3, created_turn=0)
     retired = False
@@ -243,6 +244,8 @@ def test_ignored_hypothesis_eventually_trips_stagnation_anchoring():
             retired = True
             # Retirement is an anti-anchoring soft-retire, never a refutation.
             assert h.refutation_reason is None
+            assert h.retirement_reason.startswith("Anti-anchoring")
+            assert "Broaden the differential" in meta.get("system_feedback", "")
             break
     assert retired, "an ignored hypothesis never tripped stagnation anchoring"
 

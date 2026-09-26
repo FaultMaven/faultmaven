@@ -11455,10 +11455,13 @@ class MilestoneEngine:
                 # does not read as a silent no-op.
                 hypothesis.likelihood = 1.0
                 hypothesis.last_updated_turn = case.current_turn
-                # Moving belief to 1.0 is progress, as any >= 0.05 move is on
-                # the likelihood-update paths. Left unrecorded, a positive
-                # stagnation counter from earlier turns makes this a stagnant
-                # turn and housekeeping decays the user's belief on the spot.
+                # The user's explicit validation restarts the stagnation clock,
+                # even when belief was already near 1.0: stagnation flags lines
+                # the investigation is not moving, and the user has just named
+                # this one as the line to pursue. Left unrecorded, a positive
+                # counter from earlier turns made this a stagnant turn, so
+                # housekeeping decayed the user's belief on the spot — or
+                # anti-anchoring retired the hypothesis the user just affirmed.
                 hypothesis.last_progress_at_turn = case.current_turn
                 hypothesis.iterations_without_progress = 0
                 current_fb = metadata.get("system_feedback", "") or ""
@@ -14231,6 +14234,26 @@ class MilestoneEngine:
         is_anchored, reason, hypothesis_ids = self.hypothesis_manager.detect_anchoring(
             active_hypotheses, case.current_turn
         )
+
+        # 3. Age-out: an ignored prior past the stagnation horizon and below the
+        # retirement threshold soft-retires. Anti-anchoring retires only on
+        # fixation, which a lone stalled prior beside a healthy leader is not, so
+        # without this it sat ACTIVE at the decay floor. Whatever anchoring
+        # flagged is left to the intervention below, which also tells the LLM to
+        # broaden the differential. Same stand-down and root protections as the
+        # intervention; runs here, ahead of the intervention's early returns.
+        if not self._awaiting_recent_evidence(case, _ANTI_ANCHORING_COOLDOWN_TURNS):
+            flagged = set(hypothesis_ids) if is_anchored else set()
+            count_held = support_count_held_root_ids(case)
+            for h in active_hypotheses:
+                if (
+                    h.hypothesis_id not in flagged
+                    and not is_chain_root_validated(h, case.causal_nodes)
+                    and h.root_node_id not in count_held
+                ):
+                    self.hypothesis_manager.retire_if_aged_out(
+                        h, case, case.current_turn
+                    )
 
         if is_anchored:
             logger.warning(f"Anchoring detected for case {case.case_id}: {reason}")

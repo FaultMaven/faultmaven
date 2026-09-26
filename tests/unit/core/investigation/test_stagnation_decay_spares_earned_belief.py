@@ -9,12 +9,18 @@ the cause-identification bar.
 Two rules close that, both asserted here on engine state (no LLM output):
 
 - The age sweep (``advance_stagnation_if_ignored``) does not age a hypothesis
-  that causal evidence supports. #713's protection against an ignored sibling
-  lingering at its prior is unchanged, and support from symptom evidence —
-  which every sibling can claim — does not exempt one.
+  whose causal support stands: confident support from causal evidence, with no
+  confident refutation and a head the graph has not refuted. Support from
+  symptom evidence — which every sibling can claim — does not exempt one, and a
+  contradicted hypothesis still has open work, so it ages when ignored.
 - Decay (``apply_likelihood_decay``) is one step (x0.85) per stagnant turn — a
   turn that touched the hypothesis without progress — and none on a turn that
-  did not touch it.
+  did not touch it. It never raises belief.
+
+#713's protection against an ignored prior lingering is intact, and completed:
+beside a leader that is no longer aged, anti-anchoring (which acts on fixation)
+never fires for a lone stalled prior, so the age-out retires it once it has
+gone the full stagnation horizon below the retirement threshold.
 """
 
 from __future__ import annotations
@@ -24,6 +30,9 @@ from uuid import uuid4
 
 import pytest
 
+from faultmaven.core.investigation.causal_graph import (
+    project_hypothesis_states_from_roots,
+)
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.modules.case.contracts import (
@@ -33,6 +42,7 @@ from faultmaven.modules.case.contracts import (
     CausalNode,
     Evidence,
     EvidenceCategory,
+    EvidenceNeed,
     EvidenceSourceType,
     EvidenceStance,
     Hypothesis,
@@ -41,6 +51,9 @@ from faultmaven.modules.case.contracts import (
     HypothesisGenerationMode,
     HypothesisState,
     InquiryData,
+    NeedPriority,
+    NeedPurpose,
+    NeedState,
     NodeEvidenceLink,
     NodeState,
     NodeType,
@@ -52,6 +65,8 @@ pytestmark = pytest.mark.unit
 
 CAUSAL = EvidenceCategory.CAUSAL_EVIDENCE
 SYMPTOM = EvidenceCategory.SYMPTOM_EVIDENCE
+CAUSAL_ABSENCE = EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+SUPPORTS, REFUTES = EvidenceStance.SUPPORTS, EvidenceStance.REFUTES
 
 
 def _engine() -> MilestoneEngine:
@@ -100,6 +115,7 @@ def _hyp(
     progress_turn: int,
     links: tuple[tuple[Evidence, EvidenceStance, float], ...] = (),
     root_node_id: str | None = None,
+    path: list[str] | None = None,
 ) -> Hypothesis:
     """A hypothesis last touched, with progress, at ``progress_turn``."""
     hid = f"hyp_{uuid4().hex[:12]}"
@@ -127,6 +143,7 @@ def _hyp(
             for ev, stance, confidence in links
         ],
         root_node_id=root_node_id,
+        path=path or [],
     )
 
 
@@ -326,3 +343,206 @@ def test_a_turn_that_restarts_the_stagnation_clock_does_not_decay():
     _housekeep(eng, case, 9)
 
     assert h.likelihood == 0.7
+
+
+def _head(
+    *links: tuple[Evidence, EvidenceStance, float],
+    state: NodeState = NodeState.INCONCLUSIVE,
+) -> CausalNode:
+    return CausalNode(
+        node_id=f"cn_{uuid4().hex[:12]}",
+        statement="connection string lacks sslmode",
+        node_type=NodeType.ROOT,
+        node_state=state,
+        validation_method=ValidationMethod.NONE,
+        belief=0.5,
+        actionable=True,
+        evidence_links=[
+            NodeEvidenceLink(
+                evidence_id=ev.evidence_id,
+                stance=stance,
+                reasoning="bears on the root",
+                stance_confidence=confidence,
+                linked_at_turn=5,
+            )
+            for ev, stance, confidence in links
+        ],
+        generated_at_turn=5,
+        refutation_reason=(
+            "the symptom persisted after the fix"
+            if state == NodeState.REFUTED
+            else None
+        ),
+    )
+
+
+def _ages_at_threshold(h: Hypothesis, case: Case) -> bool:
+    """Whether the sweep advances ``h`` once it is past the grace window."""
+    HypothesisManager().advance_stagnation_if_ignored(h, 3, case)
+    return h.iterations_without_progress == 1
+
+
+# ---------------------------------------------------------------------------
+# Contradiction ends the exemption
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("category", [CAUSAL_ABSENCE, SYMPTOM, CAUSAL])
+def test_a_confident_refutation_on_the_hypothesis_ends_the_exemption(category):
+    """The fix was applied and the symptom persists: the refutation is open
+    work, so a contradicted hypothesis nobody is working on ages."""
+    support, refute = _ev(CAUSAL), _ev(category)
+    h = _hyp(
+        likelihood=0.45,
+        progress_turn=0,
+        links=((support, SUPPORTS, 1.0), (refute, REFUTES, 0.9)),
+    )
+    assert _ages_at_threshold(h, _case([h], [support, refute]))
+
+
+def test_a_confident_refutation_on_the_chain_head_ends_the_exemption():
+    support, refute = _ev(CAUSAL), _ev(CAUSAL_ABSENCE)
+    head = _head((support, SUPPORTS, 1.0), (refute, REFUTES, 1.0))
+    h = _hyp(likelihood=0.5, progress_turn=0, root_node_id=head.node_id)
+    case = _case([h], [support, refute])
+    case.causal_nodes = {head.node_id: head}
+    assert _ages_at_threshold(h, case)
+
+
+def test_a_head_the_graph_refuted_ends_the_exemption():
+    """A REFUTED head keeps its old SUPPORTS link; the derived state wins."""
+    support = _ev(CAUSAL)
+    head = _head((support, SUPPORTS, 1.0), state=NodeState.REFUTED)
+    h = _hyp(likelihood=0.5, progress_turn=0, root_node_id=head.node_id)
+    case = _case([h], [support])
+    case.causal_nodes = {head.node_id: head}
+    assert _ages_at_threshold(h, case)
+
+
+def test_a_hedged_refutation_leaves_the_exemption_in_place():
+    support, refute = _ev(CAUSAL), _ev(CAUSAL_ABSENCE)
+    h = _hyp(
+        likelihood=0.65,
+        progress_turn=0,
+        links=((support, SUPPORTS, 1.0), (refute, REFUTES, 0.59)),
+    )
+    assert not _ages_at_threshold(h, _case([h], [support, refute]))
+
+
+def test_a_chain_head_named_only_by_the_path_is_recognised():
+    """A chain mid-expansion carries ``path`` before ``root_node_id``; support
+    on that head exempts the hypothesis like support on an assigned root."""
+    support = _ev(CAUSAL)
+    head = _head((support, SUPPORTS, 1.0))
+    h = _hyp(likelihood=0.65, progress_turn=0, path=[head.node_id])
+    case = _case([h], [support])
+    case.causal_nodes = {head.node_id: head}
+    assert not _ages_at_threshold(h, case)
+
+
+# ---------------------------------------------------------------------------
+# Decay never raises belief
+# ---------------------------------------------------------------------------
+
+
+def test_decay_never_lifts_a_hypothesis_below_the_floor():
+    eng = _engine()
+    low = _hyp(likelihood=0.05, progress_turn=0)
+    case = _case([low])
+
+    for turn in range(1, 8):
+        _housekeep(eng, case, turn)
+        assert low.likelihood <= 0.05, f"raised on turn {turn}"
+
+
+# ---------------------------------------------------------------------------
+# The age-out: an ignored prior soft-retires even beside a healthy leader
+# ---------------------------------------------------------------------------
+
+
+def test_an_ignored_prior_ages_out_beside_a_supported_leader():
+    """Anti-anchoring never fires here (the top hypothesis is not stalled and
+    only one is), so without the age-out the prior sat ACTIVE at the floor."""
+    eng = _engine()
+    leader, evidence = _supported_leader()
+    sibling = _hyp(likelihood=0.35, progress_turn=5)
+    case = _case([leader, sibling], evidence)
+
+    for turn in range(6, 10):
+        _housekeep(eng, case, turn)
+    # Aged on turns 8 and 9: two stagnant iterations, still inside the horizon.
+    assert sibling.state == HypothesisState.ACTIVE
+
+    _housekeep(eng, case, 10)  # third stagnant iteration, 0.35 x 0.85^3 < 0.30
+    assert sibling.state == HypothesisState.RETIRED
+    assert sibling.retirement_reason.startswith("Aged out")
+    assert sibling.refutation_reason is None
+    assert leader.state == HypothesisState.ACTIVE
+    assert leader.likelihood == 0.95
+
+
+def test_the_age_out_stands_down_while_requested_evidence_is_outstanding():
+    eng = _engine()
+    leader, evidence = _supported_leader()
+    sibling = _hyp(likelihood=0.35, progress_turn=5)
+    case = _case([leader, sibling], evidence)
+    case.evidence_needs = [
+        EvidenceNeed(
+            case_id=case.case_id,
+            purpose=NeedPurpose.SYMPTOM_VERIFICATION,
+            request_text="please attach the new migration pod's log",
+            rationale="shows whether the fix took",
+            priority=NeedPriority.MEDIUM,
+            state=NeedState.PENDING,
+            created_at_turn=10,
+        )
+    ]
+
+    for turn in range(6, 12):
+        _housekeep(eng, case, turn)
+    assert sibling.state == HypothesisState.ACTIVE  # asked on turn 10: waiting
+
+    _housekeep(eng, case, 12)  # the ask is no longer recent
+    assert sibling.state == HypothesisState.RETIRED
+
+
+# ---------------------------------------------------------------------------
+# A restarted clock restarts the counter
+# ---------------------------------------------------------------------------
+
+
+def test_activation_restarts_the_stagnation_counter():
+    h = _hyp(likelihood=0.4, progress_turn=2)
+    h.state = HypothesisState.CAPTURED
+    h.iterations_without_progress = 3
+    case = _case([h])
+    case.current_turn = 9
+
+    HypothesisManager.activate_queued_hypotheses(case)
+
+    assert h.state == HypothesisState.ACTIVE
+    assert h.iterations_without_progress == 0
+
+
+def test_a_reverted_hypothesis_is_not_retired_as_stalled_on_the_turn_it_reverts():
+    """VALIDATED -> ACTIVE gives the fresh grace of a new candidate: a counter
+    built up before validating no longer lets anti-anchoring retire it on the
+    same turn."""
+    eng = _engine()
+    reverted = []
+    for _ in range(2):
+        head = _head(state=NodeState.CANDIDATE)  # root no longer validated
+        h = _hyp(likelihood=0.5, progress_turn=2, root_node_id=head.node_id)
+        h.state = HypothesisState.VALIDATED
+        h.iterations_without_progress = 3
+        reverted.append((h, head))
+    case = _case([h for h, _ in reverted])
+    case.causal_nodes = {head.node_id: head for _, head in reverted}
+    case.current_turn = 9
+
+    project_hypothesis_states_from_roots(case)
+    _housekeep(eng, case, 9)
+
+    for h, _ in reverted:
+        assert h.state == HypothesisState.ACTIVE
+        assert h.iterations_without_progress == 0

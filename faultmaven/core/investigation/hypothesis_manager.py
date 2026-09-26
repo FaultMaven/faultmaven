@@ -18,14 +18,15 @@ Hypothesis Lifecycle (matches HypothesisState enum):
 - INCONCLUSIVE: System-automated — likelihood 0.3–0.5 stagnant for 3+ turns,
   checked when a likelihood update lands (decay alone never transitions)
 - RETIRED: System-automated (likelihood <0.30, checked when a likelihood update
-  lands; age-driven retirement goes only through anti-anchoring) or manual
-  abandonment without disproof
+  lands; age-driven retirement goes only through anti-anchoring and the age-out
+  of an ignored prior, ``retire_if_aged_out``) or manual abandonment without
+  disproof
 
 Confidence Management:
 - Evidence-ratio based: initial + (0.15 × supporting) - (0.20 × refuting)
 - Confidence decay for stagnation: × 0.85 once per stagnant turn (a turn that
-  touched the hypothesis without progress); a hypothesis that causal evidence
-  supports is never aged by time alone
+  touched the hypothesis without progress); a hypothesis whose causal support
+  stands (uncontradicted) is never aged by time alone
 - Auto-transition to VALIDATED/REFUTED based on thresholds
 
 Anchoring Prevention:
@@ -40,6 +41,7 @@ from typing import TYPE_CHECKING
 
 from faultmaven.core.investigation.cause_assurance import (
     CAUSAL_STANCE_CONFIDENCE_MIN,
+    evidence_category_map,
 )
 from faultmaven.core.investigation.lifecycle_metrics import (
     hypothesis_likelihood_capped_no_evidence_total,
@@ -54,6 +56,7 @@ from faultmaven.modules.case.contracts import (
     HypothesisEvidenceLink,
     HypothesisGenerationMode,
     HypothesisState,
+    NodeState,
 )
 
 if TYPE_CHECKING:
@@ -96,6 +99,15 @@ IGNORED_STAGNATION_TURN_THRESHOLD = 3
 STAGNATION_DECAY_FACTOR = 0.85
 STAGNATION_DECAY_FLOOR = 0.1
 
+# The stagnation horizon: anchoring detection, the INCONCLUSIVE transition and
+# the age-out all act once a hypothesis has gone this many stagnant iterations.
+STAGNATION_HORIZON_ITERATIONS = 3
+
+# Below this likelihood a hypothesis is retired: on a likelihood update
+# (``_check_state_transition``), or, for an ignored prior past the stagnation
+# horizon, by the age-out (``retire_if_aged_out``).
+LOW_CONFIDENCE_RETIREMENT_LIKELIHOOD = 0.3
+
 
 #: Recorded when an anti-anchoring retirement removes a hypothesis that was
 #: linked to evidence on some axis. Byte-identical to the string this mechanism
@@ -117,6 +129,14 @@ _RETIRED_GROUNDING_UNKNOWN = (
     "Anti-anchoring: retired a stalled hypothesis (grounding undetermined)"
 )
 
+#: Recorded by the age-out (``retire_if_aged_out``), which is not anti-anchoring:
+#: kept distinct so the anti-anchoring labels above keep measuring only their own
+#: retirements. Shown to users as the reason the hypothesis was set aside.
+_RETIRED_AGED_OUT = (
+    "Aged out: left untested without standing causal support until its "
+    "likelihood fell below the retirement threshold"
+)
+
 #: Recorded when the retired hypothesis was never linked to evidence on EITHER
 #: axis (flat or chain root) — the engine discarded a candidate it never tested.
 #: Distinguishing these two is the whole point of the label: without it, the
@@ -125,6 +145,35 @@ _RETIRED_GROUNDING_UNKNOWN = (
 _RETIRED_NEVER_GROUNDED = (
     "Anti-anchoring: retired a hypothesis that was never linked to evidence"
 )
+
+
+def _stance_confidence(link) -> float:
+    return link.stance_confidence if link.stance_confidence is not None else 1.0
+
+
+def _confident_causal_support(links, categories: dict) -> bool:
+    """A SUPPORTS link at ``stance_confidence >= CAUSAL_STANCE_CONFIDENCE_MIN``
+    to a CAUSAL_EVIDENCE row. ``categories`` is ``evidence_category_map(case)``,
+    so a link to evidence not on the case counts for nothing. One definition for
+    the B1 cap's chain-axis test and the age sweep's exemption."""
+    return any(
+        link.stance == EvidenceStance.SUPPORTS
+        and _stance_confidence(link) >= CAUSAL_STANCE_CONFIDENCE_MIN
+        and categories.get(link.evidence_id) == EvidenceCategory.CAUSAL_EVIDENCE
+        for link in links
+    )
+
+
+def _confident_refutation(links, categories: dict) -> bool:
+    """A REFUTES link at ``stance_confidence >= CAUSAL_STANCE_CONFIDENCE_MIN`` to
+    evidence on the case, of any category: a persisting symptom contradicts a
+    cause as surely as a causal datum does."""
+    return any(
+        link.stance == EvidenceStance.REFUTES
+        and _stance_confidence(link) >= CAUSAL_STANCE_CONFIDENCE_MIN
+        and link.evidence_id in categories
+        for link in links
+    )
 
 
 class HypothesisManager:
@@ -194,9 +243,11 @@ class HypothesisManager:
                 # non-ACTIVE hypotheses, so an un-refreshed last_progress_at_turn
                 # from its creation turn would charge those turns the instant it
                 # goes ACTIVE and pre-age a fresh candidate). Match the
-                # create_hypothesis grace — decay counts from activation.
+                # create_hypothesis grace — decay counts from activation, and a
+                # counter accrued while queued would trip anti-anchoring at once.
                 h.last_progress_at_turn = case.current_turn
                 h.last_updated_turn = case.current_turn
+                h.iterations_without_progress = 0
                 promoted.append(h.hypothesis_id)
         return promoted
 
@@ -550,43 +601,51 @@ class HypothesisManager:
         node = (case.causal_nodes or {}).get(hypothesis.root_node_id)
         if node is None:
             return False
-        categories = {
-            e.evidence_id: getattr(e, "category", None) for e in (case.evidence or [])
-        }
-        return any(
-            link.stance == EvidenceStance.SUPPORTS
-            and (link.stance_confidence if link.stance_confidence is not None else 1.0)
-            >= CAUSAL_STANCE_CONFIDENCE_MIN
-            and categories.get(link.evidence_id) == EvidenceCategory.CAUSAL_EVIDENCE
-            for link in node.evidence_links
+        return _confident_causal_support(
+            node.evidence_links, evidence_category_map(case)
         )
 
-    @classmethod
-    def _causally_supported(cls, hypothesis: Hypothesis, case: "Case") -> bool:
-        """Whether causal evidence supports the hypothesis: a SUPPORTS link at
-        ``stance_confidence >= CAUSAL_STANCE_CONFIDENCE_MIN`` to a
-        CAUSAL_EVIDENCE row, on the hypothesis itself or on its chain root
-        (``_chain_root_confidently_supported``).
+    @staticmethod
+    def _causal_support_stands(hypothesis: Hypothesis, case: "Case") -> bool:
+        """Whether causal evidence supports the hypothesis and nothing has
+        contradicted it — the age sweep's exemption.
 
-        The age sweep's exemption. Deliberately narrower than the B1 raise cap
-        in ``update_hypothesis_likelihood``, which accepts a confident SUPPORTS
-        link to any evidence: a symptom log "supports" every sibling that would
-        explain the symptom, so crediting it here would let non-discriminating
-        siblings hold their belief — above the cause-identification bar, since
-        one link lifts a 0.5 prior to 0.65 — for as long as nobody touches them.
-        Only causally-grounding support counts toward validation (§7.1), and
-        only it exempts a hypothesis from being aged.
+        Supported: a confident SUPPORTS link to a CAUSAL_EVIDENCE row, on the
+        hypothesis or on its chain head. Deliberately narrower than the B1 raise
+        cap, which accepts a confident SUPPORTS link to any evidence: a symptom
+        log "supports" every sibling that would explain the symptom, and one such
+        link lifts a 0.5 prior to 0.65, above the cause-identification bar.
+        Only causally-grounding support counts toward validation (§7.1).
+
+        Contradicted: a confident REFUTES link on the hypothesis or its chain
+        head, or a head the causal graph has derived REFUTED. Support is judged
+        forwards, by whether any work is left: an uncontested supported
+        hypothesis has none — it is untouched because the investigation is done
+        with it — while a contradiction is open work, and a contradicted
+        hypothesis nobody is working on is stagnating like any other.
+
+        The chain head is ``root_node_id`` when set, else ``path[0]`` (the
+        Hypothesis validator permits a path whose root is not yet assigned) —
+        the head resolution ``_never_grounded`` uses, for the same reason:
+        missing a grounded hypothesis here is the failure to avoid, since an
+        unrecognised one is aged. Head only: terminal path nodes are shared
+        symptom nodes.
         """
-        categories = {
-            e.evidence_id: getattr(e, "category", None) for e in (case.evidence or [])
-        }
-        return any(
-            link.stance == EvidenceStance.SUPPORTS
-            and (link.stance_confidence if link.stance_confidence is not None else 1.0)
-            >= CAUSAL_STANCE_CONFIDENCE_MIN
-            and categories.get(link.evidence_id) == EvidenceCategory.CAUSAL_EVIDENCE
-            for link in hypothesis.evidence_links
-        ) or cls._chain_root_confidently_supported(hypothesis, case)
+        categories = evidence_category_map(case)
+        head_id = hypothesis.root_node_id or next(iter(hypothesis.path or []), None)
+        head = (case.causal_nodes or {}).get(head_id) if head_id else None
+        head_links = head.evidence_links if head is not None else []
+        if not (
+            _confident_causal_support(hypothesis.evidence_links, categories)
+            or _confident_causal_support(head_links, categories)
+        ):
+            return False
+        contradicted = (
+            (head is not None and head.node_state == NodeState.REFUTED)
+            or _confident_refutation(hypothesis.evidence_links, categories)
+            or _confident_refutation(head_links, categories)
+        )
+        return not contradicted
 
     def _check_state_transition(
         self,
@@ -616,8 +675,8 @@ class HypothesisManager:
 
         # Check for inconclusive: stagnant in gray zone (0.3-0.5) for 3+ turns
         if (
-            0.3 <= hypothesis.likelihood <= 0.5
-            and hypothesis.iterations_without_progress >= 3
+            LOW_CONFIDENCE_RETIREMENT_LIKELIHOOD <= hypothesis.likelihood <= 0.5
+            and hypothesis.iterations_without_progress >= STAGNATION_HORIZON_ITERATIONS
         ):
             hypothesis.state = HypothesisState.INCONCLUSIVE
             logger.info(
@@ -632,7 +691,8 @@ class HypothesisManager:
 
         # Check for retirement due to low confidence
         elif (
-            hypothesis.likelihood < 0.3 and hypothesis.state != HypothesisState.RETIRED
+            hypothesis.likelihood < LOW_CONFIDENCE_RETIREMENT_LIKELIHOOD
+            and hypothesis.state != HypothesisState.RETIRED
         ):
             hypothesis.state = HypothesisState.RETIRED
             hypothesis.rationale = "Low confidence after testing"  # Mapped retirement_reason to rationale or logging
@@ -660,7 +720,7 @@ class HypothesisManager:
         feeding the SAME decay/anchoring machinery a repeatedly-tested hypothesis
         already drives.
 
-        A hypothesis that causal evidence supports (``_causally_supported``) is
+        A hypothesis whose causal support stands (``_causal_support_stands``) is
         not aged: belief that evidence earned is not lowered by time. One whose
         support is in
         and whose fix the user is carrying out goes untouched for exactly that
@@ -693,7 +753,7 @@ class HypothesisManager:
         if turns_since_progress < IGNORED_STAGNATION_TURN_THRESHOLD:
             return hypothesis
         # Checked last: it scans the case's evidence, the two above are free.
-        if self._causally_supported(hypothesis, case):
+        if self._causal_support_stands(hypothesis, case):
             return hypothesis
 
         hypothesis.iterations_without_progress += 1
@@ -719,8 +779,9 @@ class HypothesisManager:
         stagnation counter is positive, ``last_updated_turn`` reached this turn,
         and ``last_progress_at_turn`` did not. Each such turn multiplies belief
         by ``STAGNATION_DECAY_FACTOR`` once, floored at
-        ``STAGNATION_DECAY_FLOOR``; a prior aged on each of ``n`` turns ends at
-        ``× 0.85^n``.
+        ``STAGNATION_DECAY_FLOOR`` (a hypothesis already below the floor is left
+        where it is — decay never raises belief); a prior aged on each of ``n``
+        turns ends at ``× 0.85^n``.
 
         A turn that did not touch the hypothesis is not a stagnant turn and does
         not decay it. Decaying on every turn while the counter stayed positive
@@ -735,9 +796,11 @@ class HypothesisManager:
             and hypothesis.last_progress_at_turn < current_turn
         ):
             old_likelihood = hypothesis.likelihood
+            # The floor bounds the decay; it never lifts a hypothesis that is
+            # already below it.
             hypothesis.likelihood = max(
-                STAGNATION_DECAY_FLOOR,
-                hypothesis.likelihood * STAGNATION_DECAY_FACTOR,
+                min(old_likelihood, STAGNATION_DECAY_FLOOR),
+                old_likelihood * STAGNATION_DECAY_FACTOR,
             )
 
             logger.info(
@@ -747,6 +810,47 @@ class HypothesisManager:
             )
 
         return hypothesis
+
+    def retire_if_aged_out(
+        self,
+        hypothesis: Hypothesis,
+        case: "Case",
+        current_turn: int,
+    ) -> bool:
+        """Soft-retire an ignored prior at the end of its stagnation arc.
+
+        The age sweep's purpose is that an ignored candidate "stalls/soft-retires
+        rather than lingering" (#713). Decay alone only lowers it; the
+        retirement came from anti-anchoring, which acts on FIXATION — the top
+        hypothesis stalled, or two or more stalled. Beside a leader whose causal
+        support stands, and which is therefore not aged, neither holds, so the
+        prior sat ACTIVE at the decay floor for the rest of the case. This is the
+        retirement for that case: an ACTIVE hypothesis without standing causal
+        support, stagnant for the full horizon, and below the retirement
+        threshold. Retired, not refuted — a later turn can reopen the cause as a
+        new hypothesis (INV-36).
+
+        The caller applies the same stand-down and root protections as
+        anti-anchoring (``_perform_hypothesis_housekeeping``). Returns whether
+        the hypothesis was retired.
+        """
+        if (
+            hypothesis.state != HypothesisState.ACTIVE
+            or hypothesis.iterations_without_progress < STAGNATION_HORIZON_ITERATIONS
+            or hypothesis.likelihood >= LOW_CONFIDENCE_RETIREMENT_LIKELIHOOD
+            or self._causal_support_stands(hypothesis, case)
+        ):
+            return False
+        hypothesis.state = HypothesisState.RETIRED
+        hypothesis.retirement_reason = _RETIRED_AGED_OUT
+        hypothesis.last_updated_turn = current_turn
+        logger.info(
+            "Aged out hypothesis %s: likelihood=%.2f after %d stagnant iterations",
+            hypothesis.hypothesis_id,
+            hypothesis.likelihood,
+            hypothesis.iterations_without_progress,
+        )
+        return True
 
     def refute_hypothesis(
         self,
@@ -836,7 +940,7 @@ class HypothesisManager:
         stalled_hypotheses = [
             h.hypothesis_id
             for h in active_hypotheses
-            if h.iterations_without_progress >= 3
+            if h.iterations_without_progress >= STAGNATION_HORIZON_ITERATIONS
         ]
         if len(stalled_hypotheses) >= 2:
             return (
@@ -853,7 +957,10 @@ class HypothesisManager:
             top_hypothesis = sorted_by_likelihood[0]
             iterations_stagnant = top_hypothesis.iterations_without_progress
 
-            if iterations_stagnant >= 3 and top_hypothesis.likelihood < 0.7:
+            if (
+                iterations_stagnant >= STAGNATION_HORIZON_ITERATIONS
+                and top_hypothesis.likelihood < 0.7
+            ):
                 return (
                     True,
                     f"Anchoring: Top hypothesis stagnant for {iterations_stagnant} iterations "
