@@ -416,16 +416,26 @@ degraded by nature. (The "frees the room" phrasing means the smaller skeleton is
 what lets the fixed slots fit — not that freed budget is re-poured into the full
 section set.)
 
-The fallback's size must fit `MIN_PROMPT_BUDGET`, the floor of any ceiling,
+The fallback's size must fit the budget of the call that falls back to it,
 because the overflow arms return it without measuring it against the model
-ceiling. Its channels are capped (mostly in characters), which keeps an
-ordinary case well inside that. A case at every cap need not fit, and dense text
-such as log lines full of timestamps and ids, or CJK, takes several times the
-tokens at the same length. So `get_fallback_prompt_for_case` measures the render
-and redoes one over `_FALLBACK_MAX_TOKENS` (`MIN_PROMPT_BUDGET` less room for the
-degraded-mode notice the runtime recovery appends) with every quoted channel's
-cap scaled down. The quoted content gets shorter; the stubs, ids, fence
-structure and the notice's own cap stay.
+ceiling. The arms pass the budget they hold: the hard ceiling when the window is
+known, the operator's target otherwise. The runtime recovery holds none, so it
+uses `_FALLBACK_MAX_TOKENS`: `MIN_PROMPT_BUDGET`, the floor of any ceiling, less
+room for the degraded-mode notice it appends.
+
+The fallback's channels are capped (mostly in characters), which keeps an
+ordinary case well inside the smallest budget. A case at every cap need not fit,
+and dense text such as log lines full of timestamps and ids, or CJK, takes
+several times the tokens at the same length. So `get_fallback_prompt_for_case`
+measures the render and shrinks one over budget: the quoted case context first,
+the user's message only if the context at its minimum still does not fit. It
+narrows the cap factor between that minimum and the render over budget, and
+keeps the largest render that fits. The stubs, ids, fence structure and the
+notice's own cap stay, and a cut user message is marked as cut. The measure is
+cl100k when tiktoken can load it and the UTF-8 byte count when it cannot, so it
+never understates. It covers the prompt the engine assembles: the response
+schema some providers need in the prompt is appended later, outside every prompt
+budget, the main prompt's too.
 
 When the window is unknown (local/uncurated), there is no hard limit to check;
 the section budgeter still bounds to the resolved budget, and the starvation

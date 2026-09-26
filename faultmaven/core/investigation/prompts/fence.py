@@ -160,21 +160,32 @@ RE-verified for #1242 because the mint moved — a budget sweep from 1,000 to
 with exactly one live token, no unclosed fenced delimiter and no absorbed one
 (``tests/unit/core/investigation/test_fallback_fence_1242.py``).
 
-The fallback's SIZE has to fit ``model_context.MIN_PROMPT_BUDGET`` (2,000),
-the floor of any ceiling ``resolve_model_budget`` can return, because
-``_assemble_allocated``'s overflow branch returns it without re-measuring it
-against the model ceiling. Every input is capped (problem 200 chars, user
-message 500, three stubs x 200, twelve journal entries x 120, three
-hypotheses x 50, and the previous turn's notice at 100 tokens). An ordinary
-case fits well inside the budget at those caps. A case at every cap need not,
-and text that tokenizes denser at the same length, such as log lines full of
-timestamps and ids, or CJK, can take several times the budget. So
-``templates.get_fallback_prompt_for_case`` measures the render and redoes one
-over ``_FALLBACK_MAX_TOKENS`` with every quoted channel's cap scaled down (the
-notice keeps its own); tests pin the result for a case at every cap and for
-dense text. The measure is tiktoken's ``cl100k_base``, which the allocator
-also counts with for OpenAI, OpenRouter, Anthropic and Fireworks, not the live
-model's own tokenizer.
+The fallback's SIZE has to fit the budget of the call that falls back to it,
+because ``_assemble_allocated``'s overflow arms return it without re-measuring
+it against the model ceiling. The arms pass the budget they hold: the hard
+ceiling when the window is known, the operator's target otherwise. The runtime
+recovery, whose provider has just rejected a prompt, holds none, so it gets
+``_FALLBACK_MAX_TOKENS``: ``model_context.MIN_PROMPT_BUDGET`` (2,000), the floor
+of any ceiling ``resolve_model_budget`` can return, less room for the degraded
+notice it appends.
+
+Every input is capped: problem 200 chars, user message 500, three stubs x 200
+and their labels at a filename's 255, twelve journal entries x 120, three
+hypotheses x 50, and the previous turn's notice at 100 tokens. An ordinary case
+fits well inside the smallest budget at those caps. A case at every cap need
+not, and text that tokenizes denser at the same length, such as log lines full
+of timestamps and ids, or CJK, can take several times it. So
+``templates.get_fallback_prompt_for_case`` measures the render and shrinks one
+over budget: the quoted case context first, the user's message only if the
+context at its minimum still does not fit, and never the notice's cap. Every
+candidate is measured, so the result fits whenever the minimal render does.
+
+The measure is ``templates._fallback_tokens``: tiktoken's ``cl100k_base`` when
+it loads, the UTF-8 byte count when it does not. It never understates, which
+``estimate_tokens``'s four-characters-a-token fallback would. It is not the live
+model's own tokenizer. And it covers the prompt the engine assembles: for a
+provider that needs the response schema in the prompt, the schema instruction is
+appended later and sits outside every prompt budget, the main prompt's too.
 
 **FORGERY and ABSORPTION are different questions, and only the first one is
 about authorship.** This distinction is the whole lesson of #1254 and it is

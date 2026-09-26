@@ -40,6 +40,7 @@ from faultmaven.core.investigation.prompts.fence import TERMINATOR_NOTE
 from faultmaven.core.investigation.prompts.templates import (
     _FALLBACK_FEEDBACK_MAX_TOKENS,
     _FALLBACK_FENCE_RULE_HEAD,
+    _fallback_tokens,
     get_fallback_prompt_for_case,
     get_prompt_for_case,
 )
@@ -513,8 +514,7 @@ class TestTheFallbackRendersTheNotice:
         )
 
         def size(case: Case) -> int:
-            prompt = get_fallback_prompt_for_case(case, SUBSTANTIVE)
-            return estimate_tokens(prompt, provider="openai", model="gpt-4o")
+            return _fallback_tokens(get_fallback_prompt_for_case(case, SUBSTANTIVE))
 
         with_notice = get_fallback_prompt_for_case(noticed, SUBSTANTIVE)
         block = with_notice[
@@ -548,7 +548,7 @@ class TestTheFallbackRendersTheNotice:
         monkeypatch.setattr(
             templates,
             "get_fallback_prompt_for_case",
-            lambda *a: calls.append(a) or real(*a),
+            lambda *a, **k: calls.append(a) or real(*a, **k),
         )
         prompt = get_prompt_for_case(
             _fallback_case(CaseState.INVESTIGATING), SUBSTANTIVE, target_tokens=1200

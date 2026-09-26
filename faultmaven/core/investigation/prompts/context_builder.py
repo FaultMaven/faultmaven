@@ -1258,11 +1258,16 @@ def _attr(name: str, value) -> str:
     return f' {name}="{safe}"'
 
 
-def _label_attr(uf) -> str:
-    """``label="..."`` — the citable name of an ``<uploaded_file>``."""
+def _label_attr(uf, max_chars: Optional[int] = None) -> str:
+    """``label="..."`` — the citable name of an ``<uploaded_file>``.
+
+    ``max_chars`` cuts the name; only the fallback prompt passes it, to keep
+    its size bounded (#1688).
+    """
     if uf is None or not uf.filename:
         return ""
-    return _attr("label", uf.display_name)
+    name = uf.display_name
+    return _attr("label", name if max_chars is None else name[:max_chars])
 
 
 def _build_hash_first_seen(case) -> Dict[str, int]:

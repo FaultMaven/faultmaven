@@ -7,12 +7,12 @@ This module defines the core templates for FaultMaven's THREE-TEMPLATE system:
 """
 
 import dataclasses
+import functools
 import logging
 from typing import Any, Dict, List, Optional, Sequence
 
 from faultmaven.core.investigation.prompts.context_builder import (
     EntityHighlightGroup,
-    _cap_text_tokens,
     _label_attr,
     build_investigation_context,
     system_feedback_block,
@@ -3045,6 +3045,7 @@ def _fallback_stub_block(
     fence: PromptFence,
     rendered: Optional[list] = None,
     head_chars: int = 200,
+    label_chars: Optional[int] = None,
 ) -> str:
     """Compact addressable stub(s) for files uploaded THIS turn (INV-1).
 
@@ -3105,7 +3106,11 @@ def _fallback_stub_block(
                 fence.element(
                     "uploaded_file",
                     head,
-                    attrs=f' file_id="{uf.file_id}"{_label_attr(uf)} searchable="true"',
+                    attrs=(
+                        f' file_id="{uf.file_id}"'
+                        f"{_label_attr(uf, label_chars)}"
+                        ' searchable="true"'
+                    ),
                     inline=True,
                 )
             )
@@ -3179,65 +3184,142 @@ def _fallback_journal_digest(
 #: that must survive is the one written first.
 _FALLBACK_FEEDBACK_MAX_TOKENS = 100
 
-#: What the fallback counts tokens with. ``estimate_tokens`` maps this pair to
-#: tiktoken's ``cl100k_base``, as it does every ``gpt-4*`` name; the model name
-#: selects the encoding and nothing else. cl100k is also what the allocator
-#: counts with for OpenAI, OpenRouter, Anthropic and Fireworks (the other
-#: providers get four characters a token), and the fallback's size bound is
-#: stated and tested in it (``fence.py``). The fallback is built without the
-#: live provider, and counting without one falls back to four characters a
-#: token, which lets a CJK notice through at several times the cap.
-_FALLBACK_TOKENIZER = ("openai", "gpt-4o")
-
-#: The fallback's size budget, in ``_FALLBACK_TOKENIZER`` tokens. The overflow
-#: arms return the fallback without measuring it against the model ceiling, so
-#: it has to fit the smallest ceiling there is, ``MIN_PROMPT_BUDGET``, with
-#: room left for ``DEGRADED_NO_TOOLS_NOTICE``, which the runtime recovery
-#: appends after the fallback is built.
+#: The fallback's size budget when the caller does not know the model's
+#: ceiling: the runtime recovery, whose provider has just rejected a prompt as
+#: too long. It has to fit the smallest ceiling there is, ``MIN_PROMPT_BUDGET``,
+#: with room for ``DEGRADED_NO_TOOLS_NOTICE``, which that recovery appends. The
+#: overflow arms in ``_assemble_allocated`` pass the budget they already hold.
+#:
+#: The budget covers the prompt the engine assembles. A provider that needs the
+#: response schema in the prompt has it appended later, by
+#: ``_generate_structured_output_inner``; that text sits outside every prompt
+#: budget, the main prompt's as much as this one.
 _FALLBACK_MAX_TOKENS = MIN_PROMPT_BUDGET - 150
 
-#: How many times a render over budget is redone with smaller caps.
-_FALLBACK_SHRINK_ATTEMPTS = 4
+#: The quoted case context, in the order it is shrunk: all of it before the
+#: user's message, which is what the turn is answering.
+_FALLBACK_CONTEXT_CAPS = (
+    "problem",
+    "stub_head",
+    "stub_label",
+    "journal_entry",
+    "hypothesis",
+)
 
 
 @dataclasses.dataclass(frozen=True)
 class _FallbackCaps:
-    """The fallback's per-channel caps: characters, except the notice's tokens."""
+    """The fallback's per-channel caps: characters, except the notice's tokens.
+
+    The label cap is ``UploadedFile.filename``'s own limit, so an ordinary
+    render names a file exactly as the main prompt does (#666); it shrinks with
+    the rest of the context when it has to.
+    """
 
     problem: int = 200
-    user_message: int = 500
     stub_head: int = 200
+    stub_label: int = 255
     journal_entry: int = 120
     hypothesis: int = 50
+    user_message: int = 500
     notice_tokens: int = _FALLBACK_FEEDBACK_MAX_TOKENS
 
-    def scaled(self, factor: float) -> "_FallbackCaps":
-        """Every quoted channel's cap times ``factor``.
-
-        The notice keeps its cap. It is the engine's correction, reserved on
-        the main prompt too, and a cap scaled to a handful of tokens leaves its
-        heading over an empty body.
-        """
+    def with_context(self, factor: float) -> "_FallbackCaps":
+        """The quoted context's caps times ``factor``, at least one character."""
         return dataclasses.replace(
             self,
             **{
-                field.name: max(1, int(getattr(self, field.name) * factor))
-                for field in dataclasses.fields(self)
-                if field.name != "notice_tokens"
+                name: max(1, int(getattr(self, name) * factor))
+                for name in _FALLBACK_CONTEXT_CAPS
             },
         )
 
+    def with_user_message(self, factor: float) -> "_FallbackCaps":
+        """The user message's cap times ``factor``, at least one character."""
+        return dataclasses.replace(
+            self, user_message=max(1, int(self.user_message * factor))
+        )
 
-def _fallback_tokens(prompt: str) -> int:
-    from faultmaven.utils.token_estimation import estimate_tokens
 
-    provider, model = _FALLBACK_TOKENIZER
-    return estimate_tokens(prompt, provider=provider, model=model)
+def _fallback_tokens(text: str) -> int:
+    """The fallback's measure: tiktoken's ``cl100k_base`` count, or the UTF-8
+    byte count when that encoding cannot be loaded.
+
+    Never an understatement, which is what a size bound needs. The fallback is
+    built without the live provider, and ``estimate_tokens`` falls back to four
+    characters a token when the encoding is missing, which counts CJK and log
+    text at a fraction of its size. A byte-level BPE token consumes at least one
+    byte, so a byte count cannot fall below the token count in any script. The
+    same bound is what ``infrastructure/llm/router.py`` uses for output floors.
+    """
+    from faultmaven.utils.token_estimation import _get_tiktoken_encoder
+
+    encoder = _get_tiktoken_encoder("gpt-4")
+    if encoder is None:
+        return len(text.encode("utf-8"))
+    return len(encoder.encode(text))
+
+
+#: Appended to a notice cut to its cap.
+_NOTICE_CUT_MARKER = "\n[...truncated...]"
+
+
+@functools.lru_cache(maxsize=32)
+def _cap_notice(text: str, cap: int) -> str:
+    """``text`` cut head-first to ``cap`` tokens in :func:`_fallback_tokens`,
+    marker included. Cached: every render of one fallback caps the same notice.
+    """
+    if _fallback_tokens(text) <= cap:
+        return text
+    room = cap - _fallback_tokens(_NOTICE_CUT_MARKER)
+    kept, cut = 0, len(text)
+    while kept < cut:  # the longest head that fits ``room``
+        mid = (kept + cut + 1) // 2
+        if _fallback_tokens(text[:mid]) <= room:
+            kept = mid
+        else:
+            cut = mid - 1
+    return text[:kept] + _NOTICE_CUT_MARKER
+
+
+#: Bracket-narrowing steps per shrink stage, and how close to the budget a fit
+#: has to be to stop early.
+_FALLBACK_SOLVE_STEPS = 4
+_FALLBACK_SOLVE_SLACK = 0.03
+
+
+def _largest_fit(render, shrink, caps, budget, least_prompt, least_size, size):
+    """The render nearest ``budget`` from below, for caps between ``shrink(caps,
+    0)``, which fits, and ``caps``, which does not.
+
+    Interpolates inside that bracket and narrows it with each render: the size
+    only grows with the caps, but not linearly, because content shorter than its
+    cap does not shrink until the cap passes it. A single linear guess can
+    therefore land over budget, and falling back to the minimum from there drops
+    far more than it has to.
+    """
+    fit_factor, fit_prompt, fit_size = 0.0, least_prompt, least_size
+    over_factor, over_size = 1.0, size
+    for _ in range(_FALLBACK_SOLVE_STEPS):
+        if budget - fit_size <= budget * _FALLBACK_SOLVE_SLACK:
+            break
+        factor = fit_factor + (over_factor - fit_factor) * (budget - fit_size) / (
+            over_size - fit_size
+        )
+        prompt = render(shrink(caps, factor))
+        prompt_size = _fallback_tokens(prompt)
+        if prompt_size <= budget:
+            fit_factor, fit_prompt, fit_size = factor, prompt, prompt_size
+        else:
+            over_factor, over_size = factor, prompt_size
+    return fit_prompt
 
 
 def get_fallback_prompt_for_case(
     case: Case,
     user_message: str,
+    *,
+    max_tokens: Optional[int] = None,
 ) -> str:
     """Build simplified fallback prompt for token limit or error recovery.
 
@@ -3255,34 +3337,48 @@ def get_fallback_prompt_for_case(
     ``<uploaded_file>`` stubs now share a single ``render_fenced`` render
     instead of the stubs minting one of their own.
 
-    **Measured, and re-rendered smaller when over budget.** Every channel is
-    capped, and an ordinary case fits ``_FALLBACK_MAX_TOKENS`` at those caps.
-    A case at every cap need not, and denser text is further off: log lines
-    full of timestamps and ids, or CJK, take several times the tokens at the
-    same length. So the render is measured, and one over budget is redone with
-    every quoted channel's cap scaled down by the overshoot; the notice keeps
-    its own. Shrinking the caps shortens the quoted content only; the stubs,
-    ids and fence structure stay, so a current-turn upload is still
-    addressable (INV-1).
+    **Measured, and shrunk to fit ``max_tokens``** (``_FALLBACK_MAX_TOKENS``
+    when the caller has no budget of its own). Every channel is capped, and an
+    ordinary case fits well inside the smallest budget at those caps. A case at
+    every cap need not, and denser text is further off: log lines full of
+    timestamps and ids, or CJK, take several times the tokens at the same
+    length. A render over budget is shrunk in two stages, the quoted case
+    context first and the user's message only if the context at its minimum
+    still does not fit. Each stage renders its minimum once, which measures
+    what that stage cannot shrink, then narrows the cap factor between that
+    minimum and the render over budget (:func:`_largest_fit`), keeping the
+    largest render that fits. Every candidate is measured, and the minimum is
+    one, so the result fits whenever the minimal render does. Only quoted content gets shorter: the notice keeps its
+    cap, and the stubs, ids and fence structure stay, so a current-turn upload
+    is still addressable (INV-1).
     """
-    caps = _FallbackCaps()
-    for attempt in range(_FALLBACK_SHRINK_ATTEMPTS + 1):
-        prompt = render_fenced(
+    budget = _FALLBACK_MAX_TOKENS if max_tokens is None else max_tokens
+
+    def render(caps: _FallbackCaps) -> str:
+        return render_fenced(
             lambda fence: _fallback_body(case, user_message, fence, caps)
         )
-        size = _fallback_tokens(prompt)
-        if size <= _FALLBACK_MAX_TOKENS:
-            return prompt
-        # 0.9: the skeleton and the notice do not shrink with the caps, so a
-        # proportional cut alone undershoots.
-        caps = caps.scaled(0.9 * _FALLBACK_MAX_TOKENS / size)
+
+    caps = _FallbackCaps()
+    prompt = render(caps)
+    size = _fallback_tokens(prompt)
+    if size <= budget:
+        return prompt
+    for shrink in (_FallbackCaps.with_context, _FallbackCaps.with_user_message):
+        least = shrink(caps, 0.0)
+        least_prompt = render(least)
+        least_size = _fallback_tokens(least_prompt)
+        if least_size <= budget:
+            return _largest_fit(
+                render, shrink, caps, budget, least_prompt, least_size, size
+            )
+        caps, prompt, size = least, least_prompt, least_size
     logger.warning(
         "fallback_prompt_over_budget",
         extra={
             "case_id": getattr(case, "case_id", None),
             "tokens": size,
-            "budget": _FALLBACK_MAX_TOKENS,
-            "attempts": attempt + 1,
+            "budget": budget,
         },
     )
     return prompt
@@ -3384,20 +3480,31 @@ def _fallback_body(
         Capped before guarding for the reason every channel here is: the
         terminator has to see the bytes that actually render.
         """
-        return _guarded(
-            _cap_text_tokens(text, caps.notice_tokens, *_FALLBACK_TOKENIZER)
-        )
+        return _guarded(_cap_notice(text, caps.notice_tokens))
+
+    def _user(text: str) -> str:
+        """The user's message, capped. A cut says so, outside the quoted
+        element, so the model does not answer half a question as a whole one.
+        """
+        block = _fenced("user_message", text[: caps.user_message])
+        if len(text) > caps.user_message:
+            block += "\n(The user's message is cut short to fit this reduced prompt.)"
+        return block
 
     if case.state == CaseState.INQUIRY:
         stub_block = _fallback_stub_block(
-            case, fence, rendered, head_chars=caps.stub_head
+            case,
+            fence,
+            rendered,
+            head_chars=caps.stub_head,
+            label_chars=caps.stub_label,
         )
         # The previous turn's notice, through the main prompt's own reader, so
         # a turn that degrades to this fallback still delivers it (#1688).
         # INQUIRY and INVESTIGATING only: the main TERMINAL prompt has no
         # feedback slot either.
         feedback_block = system_feedback_block(case, guard=_notice)
-        user_block = _fenced("user_message", user_message[: caps.user_message])
+        user_block = _user(user_message)
         return FALLBACK_INQUIRY_TEMPLATE.format(
             fence_preamble=_fallback_preamble(fence, rendered),
             problem_summary=problem_block,
@@ -3450,10 +3557,14 @@ def _fallback_body(
             )
 
         stub_block = _fallback_stub_block(
-            case, fence, rendered, head_chars=caps.stub_head
+            case,
+            fence,
+            rendered,
+            head_chars=caps.stub_head,
+            label_chars=caps.stub_label,
         )
         feedback_block = system_feedback_block(case, guard=_notice)
-        user_block = _fenced("user_message", user_message[: caps.user_message])
+        user_block = _user(user_message)
 
         return FALLBACK_INVESTIGATION_TEMPLATE.format(
             fence_preamble=_fallback_preamble(fence, rendered),
@@ -3473,7 +3584,7 @@ def _fallback_body(
             if case.progress.solution_verified
             else case.closure_reason or "Closed"
         )
-        user_block = _fenced("user_message", user_message[: caps.user_message])
+        user_block = _user(user_message)
         return FALLBACK_TERMINAL_TEMPLATE.format(
             fence_preamble=_fallback_preamble(fence, rendered),
             state=case.state.value,
@@ -3998,6 +4109,10 @@ def _assemble_allocated(
     """Allocator assembly: template-aware section budget + backstop (§4/§6/§7)."""
     target = resolved.prompt_target
     ceiling = resolved.prompt_budget  # None when window unknown
+    # What a fallback from either arm below must fit: the hard ceiling when the
+    # window is known, the operator's target otherwise. Without it the fallback
+    # would shrink to the smallest ceiling there is on every model (#1688).
+    fallback_budget = (ceiling if ceiling is not None else target) - margin
 
     # First cut: size sections to the full target, then measure the fixed
     # template overhead so we can re-size so template + sections ≈ target (§6).
@@ -4032,7 +4147,9 @@ def _assemble_allocated(
     # prompt-token-budget-allocation.md §7.
     variable_room = target - template_overhead - reserve_tokens - margin
     if variable_room < min_viable:
-        fb = get_fallback_prompt_for_case(case, user_message)
+        fb = get_fallback_prompt_for_case(
+            case, user_message, max_tokens=fallback_budget
+        )
         logger.warning(
             "prompt_starvation_fallback",
             extra={
@@ -4069,7 +4186,9 @@ def _assemble_allocated(
             prompt = render(ctx)
             total = count(prompt)
         if total > ceiling:
-            fb = get_fallback_prompt_for_case(case, user_message)
+            fb = get_fallback_prompt_for_case(
+                case, user_message, max_tokens=fallback_budget
+            )
             logger.warning(
                 "prompt_overflow_fallback",
                 extra={
