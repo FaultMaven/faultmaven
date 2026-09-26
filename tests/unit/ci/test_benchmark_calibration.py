@@ -55,6 +55,7 @@ from __future__ import annotations
 import ast
 import math
 import os
+import re
 import warnings
 from pathlib import Path
 from typing import List, Tuple
@@ -2436,6 +2437,18 @@ class TestTheRestOfTheTree:
 
 
 # -------------------------------------------------------- the growth helper
+#
+# The first version of this helper compared t(16n)/t(n) with 64x, and this
+# class's quadratic control went GREEN on the CI runners while reading
+# 121-124x here: a two-size ratio carries the fixed per-call cost on both
+# sides, so it reads anything from 1 to 256 depending on a machine property.
+# The controls below are therefore held to a margin, not just to the verdict:
+# each quadratic reads ~50 against a bound of ~22.6 here and would still fail
+# if a runner read it at half, and each linear one reads ~6.
+
+
+_BACKTRACKING = re.compile(r"\s+y").search  # every start rescans to the end
+_SCAN = re.compile(r"y").search
 
 
 def _linear(text: str) -> int:
@@ -2446,28 +2459,107 @@ def _quadratic(text: str) -> int:
     return sum(text.count(text[i]) for i in range(0, len(text), 8))
 
 
+def _fixed_cost_only(text: str) -> tuple:
+    total = 0
+    for i in range(20000):
+        total += i
+    return total, len(text)
+
+
+def _fixed_cost_then_linear(text: str) -> tuple:
+    total = 0
+    for i in range(300):
+        total += i
+    return total, sum(1 for _ in text)
+
+
 class TestTheGrowthHelper:
     """``assert_linear_growth`` is a judge; these hold it to both columns."""
 
-    def test_a_linear_cost_passes(self):
+    @pytest.mark.parametrize(
+        "fn, payload_at, small",
+        [
+            (_SCAN, lambda n: " " * n, 4096),
+            (_linear, lambda n: "ab" * n, 512),
+        ],
+        ids=["regex-scan", "python-loop"],
+    )
+    def test_a_linear_cost_passes(self, fn, payload_at, small):
         from tests.wallclock import assert_linear_growth
 
-        assert_linear_growth(
-            _linear, lambda n: "ab" * n, small=512, label="linear control"
-        )
+        assert_linear_growth(fn, payload_at, small=small, label="linear control")
 
-    def test_a_quadratic_cost_fails(self):
+    @pytest.mark.parametrize(
+        "fn, payload_at, small",
+        [
+            (_BACKTRACKING, lambda n: " " * n, 64),
+            (_quadratic, lambda n: "ab" * n, 256),
+        ],
+        ids=["regex-backtracking", "python-rescan"],
+    )
+    def test_a_quadratic_cost_fails(self, fn, payload_at, small):
         from tests.wallclock import assert_linear_growth
 
-        with pytest.raises(AssertionError, match="quadratic ~256x"):
+        with pytest.raises(AssertionError, match="quadratic ~64x"):
+            assert_linear_growth(fn, payload_at, small=small, label="quadratic control")
+
+    def test_a_call_that_never_shows_its_work_is_refused(self):
+        """Miscalibrated, not linear: nothing grew across a 32768x input.
+
+        Passing it would be the hollow guard: a check whose payload is too
+        small for the work to show beside the fixed cost would pass a
+        quadratic too.
+        """
+        from tests.wallclock import assert_linear_growth
+
+        with pytest.raises(AssertionError, match="payload too small"):
             assert_linear_growth(
-                _quadratic, lambda n: "ab" * n, small=64, label="quadratic control"
+                _fixed_cost_only, lambda n: "ab" * n, small=1, label="refusal"
             )
+
+    def test_the_window_moves_up_until_the_work_shows(self):
+        """At 1-64 characters the fixed cost hides the loop; higher it does not.
+
+        This is what keeps a runner whose fixed cost is larger relative to
+        the work from being refused or misread: it escalates once more.
+        """
+        from tests.wallclock import assert_linear_growth
+
+        growth = assert_linear_growth(
+            _fixed_cost_then_linear, lambda n: "ab" * n, small=1, label="window"
+        )
+        # Moved up by whole steps of 8 from 1: the window is one of these.
+        assert growth.sizes[0] in {8, 64, 512}, growth.describe()
+
+    def test_the_fixed_cost_cancels_out_of_the_reading(self):
+        """Arithmetic, no clock: C appears in t1, t2 and t3 alike."""
+        from tests.wallclock import Growth
+
+        linear = Growth(sizes=(1, 8, 64), seconds=(51.0, 58.0, 114.0), step=8)
+        quadratic = Growth(sizes=(1, 8, 64), seconds=(2.0, 65.0, 4097.0), step=8)
+        assert linear.ratio == 8.0
+        assert quadratic.ratio == 64.0
+
+    def test_noise_is_spent_against_a_super_linear_verdict(self):
+        """The shape the discount exists for, measured on fixed code.
+
+        The sshd reader's ``slot-lookalikes`` line read ``t2/t1 = 1.12`` and
+        ``t3/t1 = 3.84``: a raw difference ratio of 22.7, over the bound,
+        from a denominator that was noise. After the allowance it reads 6.7.
+        A pure quadratic keeps a reading well above the bound.
+        """
+        from tests.wallclock import Growth, growth_bound
+
+        noisy_linear = Growth(sizes=(1, 8, 64), seconds=(1.0, 1.12, 3.84), step=8)
+        pure_quadratic = Growth(sizes=(1, 8, 64), seconds=(2.0, 65.0, 4097.0), step=8)
+        assert noisy_linear.ratio > growth_bound(8)
+        assert noisy_linear.evidence < growth_bound(8)
+        assert pure_quadratic.evidence > 2 * growth_bound(8)
 
     def test_the_bound_is_the_midpoint_of_linear_and_quadratic(self):
         from tests.wallclock import growth_bound
 
-        assert growth_bound(16) == 64.0
+        assert growth_bound(8) == 8**1.5
         assert growth_bound(4) == 8.0
 
 

@@ -964,8 +964,8 @@ def test_every_rule_needs_an_event_word(owner, rule, phrase):
 # runs past ``TIER1_TIMEOUT_SECONDS``.
 #
 # Each line is (prefix, repeated unit, suffix, repetitions at 64 KB), so a test
-# can build it at any size: the reader's growth check below needs two sizes of
-# the same shape, and ``tests/performance/test_extraction_speed.py`` times the
+# can build it at any size: the reader's growth check below needs three sizes
+# of the same shape, and ``tests/performance/test_extraction_speed.py`` times the
 # 64 KB form against that timeout. ``ADVERSARIAL_LINES`` is the 64 KB form,
 # byte for byte what this module used before #1579.
 _64K = 65536
@@ -1014,19 +1014,21 @@ ADVERSARIAL_LINES = {
 class TestAdversarialLines:
     @pytest.mark.parametrize("name", sorted(ADVERSARIAL_LINES))
     def test_the_reader_is_linear(self, name):
-        """The reader alone, as a growth SHAPE: ~256 B to ~4 KB of the unit.
+        """The reader alone, as a growth SHAPE, from ~128 B of the unit up.
 
         It used to time 64 KB against an absolute 250 ms, which in both
         required gates is a question about the runner (#1579). Small sizes on
-        purpose: a quadratic here fails in seconds at 4 KB, and at 64 KB it
-        would sit for minutes before failing. Mutation-checked — a host
-        pattern of ``\\S*\\S*[^\\s:]`` reads 190-242x on three of these
-        shapes against ~16x fixed.
+        purpose: a quadratic here fails in seconds at 8 KB, and at 64 KB it
+        would sit for minutes before failing. Several shapes cost the reader
+        almost nothing until they are long, and for those the helper moves the
+        window up until the work shows. Mutation-checked — a host pattern of
+        ``\\S*\\S*[^\\s:]`` reads 48-54 on the three shapes it makes
+        quadratic, against at most 7.6 for any shape fixed (bound ~22.6).
         """
         assert_linear_growth(
             read_sshd_auth_line,
             lambda repetitions: adversarial_line(name, repetitions),
-            small=max(1, ADVERSARIAL_SHAPES[name][3] // 256),
+            small=max(1, ADVERSARIAL_SHAPES[name][3] // 512),
             label=f"read_sshd_auth_line on {name}",
         )
 

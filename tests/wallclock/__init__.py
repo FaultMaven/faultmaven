@@ -20,8 +20,9 @@ Two instruments for timing questions a budget is the wrong tool for
 (#1579), both used OUTSIDE the two suites, in the required gates:
 
 * ``growth.py`` — ``assert_linear_growth``, for a guard whose question is a
-  SHAPE (is this regex linear?). A ratio between two input sizes cancels
-  machine speed on its own; this makes it cancel scheduler noise too.
+  SHAPE (is this regex linear?). Three sizes and the ratio of their cost
+  DIFFERENCES, so both machine speed and the fixed per-call cost cancel;
+  thread CPU time and a noise allowance keep scheduler noise out of it.
 * ``virtual_time.py`` — an event loop whose clock advances only when it is
   idle, for a test whose question is an ORDERING (did the ladder stop
   before the deadline?). Its elapsed figures are the same under any load.
@@ -49,7 +50,14 @@ from .calibration import (
     restore_calibration_state,
     scale_was_used,
 )
-from .growth import assert_linear_growth, growth_bound, growth_ratio
+from .growth import (
+    MIN_TOTAL_GROWTH,
+    NOISE_ALLOWANCE,
+    Growth,
+    assert_linear_growth,
+    growth_bound,
+    measure_growth,
+)
 from .record import (
     LATENCY_METRIC,
     RECORD_ENV,
@@ -68,10 +76,13 @@ __all__ = [
     "CALIBRATION_REFERENCE_SECONDS",
     "LATENCY_METRIC",
     "MAX_REGRESSION_MULTIPLE",
+    "MIN_TOTAL_GROWTH",
     "MIN_REGRESSION_MULTIPLE",
+    "NOISE_ALLOWANCE",
     "RECORD_ENV",
     "THROUGHPUT_METRIC",
     "Budget",
+    "Growth",
     "LatencyBudget",
     "ThroughputBudget",
     "VirtualTimeLoop",
@@ -86,7 +97,7 @@ __all__ = [
     "collect_budgets",
     "describe_calibration",
     "growth_bound",
-    "growth_ratio",
+    "measure_growth",
     "measured_calibration",
     "record_comparison",
     "reset_calibration_cache",

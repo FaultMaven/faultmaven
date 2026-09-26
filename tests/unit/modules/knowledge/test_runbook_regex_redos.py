@@ -31,19 +31,18 @@ Both shapes are asserted here; neither alone is sufficient.
 
 **Growth shape, not a stopwatch (#1579).** Every cost guard here asks one
 question — is this linear in what the caller sends? — and answers it with
-``tests.wallclock.assert_linear_growth``: CPU time at two sizes 16x apart,
-where linear reads ~16x, quadratic ~256x, and the bound sits at their
-midpoint, 64x. This file used to answer it with a one-second wall-clock
-budget per shape plus one 2x ratio, and under ``pytest-xdist`` the ratio
-went red on a required gate on a commit that touched no knowledge code:
-``doubling the body multiplied scoring work by 3.7x`` against a bound of 3.0,
-on a path whose honest ratio is ~2. At factor 2 linear and quadratic are 2x
-apart and noise bridges it; at factor 16 they are 16x apart, and thread CPU
-time does not see the descheduling that caused it.
+``tests.wallclock.assert_linear_growth``: CPU time at ``n``, ``8n`` and
+``64n``, judged on the ratio of the two cost DIFFERENCES, which cancels the
+fixed per-call cost exactly. Linear reads ~8, quadratic ~64, and the bound
+is their midpoint, ~22.6. This file used to answer it with a one-second
+wall-clock budget per shape plus one 2x ratio, and under ``pytest-xdist`` the
+ratio went red on a required gate on a commit that touched no knowledge
+code: ``doubling the body multiplied scoring work by 3.7x`` against a bound
+of 3.0, on a path whose honest ratio is ~2.
 
-The sizes are chosen per shape so a reintroduced quadratic fails in about a
-second, and every one was mutation-checked by restoring the pattern it
-guards: the growth ratio went from 10-17x to 176-269x.
+The sizes are chosen per shape so a restored quadratic fails in a few
+seconds at most, and every one was mutation-checked by restoring the
+pattern it guards (table below the Cost heading).
 """
 
 from __future__ import annotations
@@ -114,21 +113,29 @@ def _runbook_corpus() -> list[pathlib.Path]:
 # --------------------------------------------------------------------------
 
 
-#: Each size below is the SMALL side; the large side is 16x it. Chosen so the
-#: quadratic, when restored, costs well under a second at the large size —
-#: the check stops at the first pair that shows it — while the linear cost at
-#: the small size is far enough above the timer to measure. Measured
-#: (CPU time, development box) with the fixed patterns and with the quadratic
-#: ones restored, as the ratio the check computes:
+#: Each size below is the SMALLEST of the three; the others are 8x and 64x
+#: it. Chosen so the work shows beside the fixed per-call cost (the helper
+#: moves the window up if it does not) and a restored quadratic's largest
+#: payload costs a second or two. Measured on the development box: the
+#: reading the check judges (the difference ratio after its 10% noise
+#: allowance; bound ~22.6), for the fixed patterns under 2x CPU
+#: oversubscription, and for the quadratic patterns restored, with the
+#: check's early exit disabled so the number is the true reading:
 #:
-#: ===================  ============  ========  =========
-#: shape                small size    fixed     restored
-#: ===================  ============  ========  =========
-#: bare fences          128 fences    12.4x     239x
-#: bare brackets        512 bytes     17.3x     243x
-#: newline-space        512 units     13.9x     176x
-#: frontmatter          256 units     13.3x     269x
-#: ===================  ============  ========  =========
+#: ===================  ============  ===============  ==========
+#: shape                smallest      fixed, worst of  restored
+#:                                    32 contended
+#: ===================  ============  ===============  ==========
+#: bare fences          32 fences     6.4              52.4
+#: bare brackets        128 bytes     7.1              50.5
+#: newline-space        256 units     6.4              48.2
+#: frontmatter          64 units      6.4              51.4
+#: chunker, no headers  32 units      6.7              49.4
+#: newline-space, big   384 units     6.7              46.5
+#: ===================  ============  ===============  ==========
+#:
+#: A pure quadratic cannot read above ~52 after the allowance, so these sit
+#: near that ceiling: the quadratic term dominates both differences.
 
 
 def test_scoring_a_fence_heavy_body_grows_linearly():
@@ -136,7 +143,7 @@ def test_scoring_a_fence_heavy_body_grows_linearly():
     assert_linear_growth(
         _scorer().score_content,
         _repeated(FENCE_UNIT),
-        small=128,
+        small=32,
         label="QualityScorer.score_content on bare fences",
     )
 
@@ -160,7 +167,7 @@ def test_validation_of_bracket_heavy_content_grows_linearly():
     assert_linear_growth(
         RunbookValidator().validate_content,
         _repeated(LINK_UNIT),
-        small=512,
+        small=128,
         label="RunbookValidator.validate_content on bare brackets",
     )
 
@@ -259,7 +266,7 @@ def test_scoring_a_body_with_no_fences_grows_linearly():
     assert_linear_growth(
         _scorer().score_content,
         _repeated(NO_FENCE_UNIT),
-        small=512,
+        small=256,
         label="QualityScorer.score_content on newline-space",
     )
 
@@ -277,7 +284,7 @@ def test_validation_on_adversarial_frontmatter_grows_linearly():
     assert_linear_growth(
         RunbookValidator().validate_content,
         _repeated(NO_FENCE_UNIT, prefix="---\n"),
-        small=256,
+        small=64,
         label="RunbookValidator.validate_content on unterminated frontmatter",
     )
 
@@ -285,22 +292,23 @@ def test_validation_on_adversarial_frontmatter_grows_linearly():
 def test_scoring_grows_linearly_with_body_size():
     """Growth SHAPE at the sizes the original budgets measured.
 
-    The newline-space check above runs small (1-16 KB) so a regression fails
-    in a fraction of a second. This one runs the same shape at 3-48 KB, the
-    range the original budget tests timed, so the claim "linear" is also
-    checked where the payloads that used to cost seconds live.
+    The newline-space check above runs from 0.5 KB so a regression fails
+    fast. This one reaches 48 KB, the size the original budget tests timed,
+    so the claim "linear" is also checked where the payloads that used to
+    cost seconds live.
 
     #1579: this is the test that went red on a required gate as
     ``doubling the body multiplied scoring work by 3.7x`` — a 2x ratio
-    against a bound of 3.0, where linear reads 2 and quadratic 4. At 16x the
-    two answers are 16x apart, and it measures CPU time rather than wall
-    clock, so a neighbouring xdist worker cannot inflate one side of it.
+    against a bound of 3.0, where linear reads 2 and quadratic 4. Now the
+    sizes are 64x apart, the fixed cost cancels out of the reading, and it
+    measures CPU time rather than wall clock, so a neighbouring xdist worker
+    cannot inflate one side of it.
     """
     assert_linear_growth(
         _scorer().score_content,
         _repeated(NO_FENCE_UNIT),
-        small=1536,
-        label="QualityScorer.score_content, 3 KB -> 48 KB of newline-space",
+        small=384,
+        label="QualityScorer.score_content, 0.75 KB -> 48 KB of newline-space",
     )
 
 
@@ -436,14 +444,15 @@ def test_chunking_a_body_with_no_headers_grows_linearly():
         ContentChunker,
     )
 
-    # 64-1024 bytes, deliberately under ContentChunker's split threshold:
-    # the fixed chunker's cost steps up ~4x once a body needs splitting
-    # (measured between 2 KB and 4 KB), which is linear on both sides of the
-    # step but reads as super-linear across it. Both sizes on one side keeps
-    # the check about the regex. The restored `\s*` pattern reads ~200x
-    # here against ~10x fixed.
+    # MAX_CHUNK_CHARS is raised on THIS instance so every size takes the same
+    # path. Above it the chunker falls back to splitting by lines, a step up
+    # of ~4x in cost (measured between 2 KB and 4 KB) that is linear on both
+    # sides but read 18.6 across it against ~8 either side. The regex this
+    # test is about runs on both paths.
+    chunker = ContentChunker()
+    chunker.MAX_CHUNK_CHARS = 10**9
     assert_linear_growth(
-        ContentChunker().split,
+        chunker.split,
         _repeated(NO_FENCE_UNIT, prefix="x", suffix="x"),
         small=32,
         label="ContentChunker.split on newline-space",

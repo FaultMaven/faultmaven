@@ -119,9 +119,9 @@ def test_document_batch_sanitization_throughput():
     documents = _document_batch()
 
     seconds = _fastest_seconds(lambda: [sanitizer.sanitize(d) for d in documents])
-    documents_per_second = len(documents) / seconds
+    batch_rate = len(documents) / seconds
 
-    print(f"\nSanitize 50-document batch: {documents_per_second:.0f} documents/s")
+    print(f"\nSanitize 50-document batch: {batch_rate:.0f} documents/s")
     assert_throughput_at_least(
-        documents_per_second, SANITIZE_DOCUMENT_BATCH, "DataSanitizer documents/s"
+        batch_rate, SANITIZE_DOCUMENT_BATCH, "DataSanitizer documents/s"
     )

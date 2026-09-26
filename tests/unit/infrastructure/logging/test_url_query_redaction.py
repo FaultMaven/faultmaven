@@ -125,13 +125,14 @@ class TestRedactUrls:
         Checked as a growth SHAPE (#1579), not against a 250 ms budget: that
         was an absolute wall-clock bound in both required gates, and whether a
         runner under four xdist workers clears it says nothing about the
-        regex. 1 KB -> 16 KB of near-miss reads ~16x linear; the scheme-class
-        pattern, restored, reads ~250x.
+        regex. From 256 B to 16 KB of near-miss the reading is ~6 here (bound
+        ~22.6); the scheme-class pattern, restored, reads ~49 at the same
+        sizes.
         """
         assert_linear_growth(
             redact_urls,
             lambda count: "a" * count + "? ://x",
-            small=1024,
+            small=256,
             label="redact_urls on a long near-miss run",
         )
 

@@ -162,7 +162,7 @@ question. None of them is a raw threshold.
 | The question | Instrument | Example |
 |---|---|---|
 | Is this fast enough? (a latency or a rate, with a product target) | a row in `tests/performance/budgets.py` and `assert_latency_within` / `assert_throughput_at_least` in `tests/performance/` | `test_extraction_speed.py` |
-| Is this linear in its input? (ReDoS, an accidental rescan) | `assert_linear_growth` — CPU time at two sizes 16x apart; linear reads ~16x, quadratic ~256x, the bound is 64x | `test_runbook_regex_redos.py` |
+| Is this linear in its input? (ReDoS, an accidental rescan) | `assert_linear_growth` — CPU time at `n`, `8n`, `64n`, judged on the ratio of the cost differences so the fixed per-call cost cancels; linear reads ~8, quadratic ~64, the bound is ~22.6. It moves the window up until the work shows, and refuses a call where it never does | `test_runbook_regex_redos.py` |
 | Did this happen before that deadline? (retry ladders, turn budgets) | `VirtualTimeLoop` via the module's `event_loop_policy` fixture, elapsed read with `virtual_now()` | `test_llm_ladder_turn_budget.py` |
 | Did this run concurrently? | a count of calls in flight, or the order of start/end events | `test_observability_core.py` |
 | Did this wait? (a backoff, a rate-limit sleep) | record the sleeps the code asks for | `test_llm_providers.py` |
