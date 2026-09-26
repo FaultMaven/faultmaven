@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional
 
 from faultmaven.core.preprocessing.models import Chunk, UnifiedDataType
 from faultmaven.infrastructure.model_cache import model_cache
+from faultmaven.utils.token_estimation import _get_tiktoken_encoder
 
 logger = logging.getLogger(__name__)
 
@@ -39,23 +40,18 @@ logger = logging.getLogger(__name__)
 # but both are BPE-family; token counts agree within ±15% on typical mixed
 # content, which is far tighter than the prior heuristic's ±40%.
 #
-# Fallback to the heuristic if tiktoken is missing, or its encoding file cannot
-# be loaded (tiktoken downloads it on first use; the Docker image bakes it in),
-# so startup never breaks — the preprocessor must continue to work with
-# degraded precision.
+# The encoding comes from ``utils.token_estimation``'s loader, the one every
+# tiktoken count in the codebase shares, on first use rather than at import.
+# tiktoken downloads the encoding's file on first use (the Docker image bakes it
+# in), with no request timeout, so loading it at import could hold startup on
+# the network. The loader returns None when tiktoken is missing or the file
+# cannot be loaded, and this falls back to the heuristic: the preprocessor
+# keeps working with degraded precision.
 
-try:
-    import tiktoken
 
-    # Derived from the encoder, not asserted: `import tiktoken` succeeds
-    # against an empty leftover directory (PEP 420 namespace package), and a
-    # literal True there would survive the shadow. Building the encoder is the
-    # proof, and the broad handler below already covers the AttributeError.
-    _ENCODING = tiktoken.get_encoding("cl100k_base")
-    _TIKTOKEN_AVAILABLE = _ENCODING is not None
-except Exception:  # tiktoken missing, or encoding download failed offline
-    _ENCODING = None
-    _TIKTOKEN_AVAILABLE = False
+def _encoding():
+    """tiktoken's ``cl100k_base``, or None when it cannot be loaded."""
+    return _get_tiktoken_encoder("gpt-4")
 
 
 def _estimate_tokens(text: str) -> int:
@@ -64,10 +60,11 @@ def _estimate_tokens(text: str) -> int:
     Uses tiktoken cl100k_base when available, the ``len(text) // 4``
     heuristic otherwise. The heuristic is lossy (±40% on realistic
     content) — reached only when tiktoken is missing or its encoding file
-    could not be loaded at import.
+    cannot be loaded.
     """
-    if _ENCODING is not None:
-        return len(_ENCODING.encode(text))
+    encoding = _encoding()
+    if encoding is not None:
+        return len(encoding.encode(text))
     return len(text) // 4
 
 
@@ -78,11 +75,12 @@ def _get_last_n_tokens(text: str, n_tokens: int) -> str:
     ``n_tokens`` ids, decodes back. Approximation otherwise (``n × 4``
     characters from the tail).
     """
-    if _ENCODING is not None:
-        ids = _ENCODING.encode(text)
+    encoding = _encoding()
+    if encoding is not None:
+        ids = encoding.encode(text)
         if len(ids) <= n_tokens:
             return text
-        return _ENCODING.decode(ids[-n_tokens:])
+        return encoding.decode(ids[-n_tokens:])
 
     char_count = n_tokens * 4
     if len(text) <= char_count:

@@ -61,10 +61,9 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 # tiktoken's cl100k_base encoding, baked in for the same reason. Token counts
 # for OpenAI, OpenRouter, Anthropic and Fireworks go through it, as do chunk
 # sizing in vector_storage and the knowledge base's document preprocessor.
-# tiktoken downloads it on first use, with no request timeout, and
-# vector_storage loads it at import. Without it, an image with no network
-# counts those tokens at four characters a token, which undercounts CJK and log
-# text several times over, and the document preprocessor cannot count at all.
+# tiktoken downloads it on first use, with no request timeout. Without it, an
+# image with no network counts those tokens at four characters a token, which
+# undercounts CJK and log text several times over.
 # TIKTOKEN_CACHE_DIR is set before the prefetch and persists to runtime. The
 # second load goes through an unreachable proxy, so a cache tiktoken does not
 # read fails the build rather than the pod.
