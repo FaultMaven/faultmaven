@@ -33,6 +33,7 @@ from faultmaven.core.investigation.milestone_engine import (
     MilestoneEngineError,
 )
 from faultmaven.core.investigation.prompts import templates
+from faultmaven.core.investigation.prompts.fence import TERMINATOR_NOTE
 from faultmaven.core.investigation.prompts.templates import (
     _FALLBACK_FENCE_RULE_HEAD,
     get_fallback_prompt_for_case,
@@ -215,31 +216,34 @@ async def _turn(engine: MilestoneEngine, case: Case, message: str, **intent) -> 
 
 #: Every case-open deterministic branch, each with the gate turns that reach it
 #: from a case carrying the notice. Written out, not derived: see the module
-#: docstring.
+#: docstring. Each gate turn names the pending offer it must leave behind
+#: (``None``: withdrawn), which is what pins the BRANCH it took. A close that
+#: stopped pivoting to resolve would still be a deterministic turn, and would
+#: otherwise pass here while the pivot branch lost its coverage.
 _CASE_OPEN_BRANCHES = {
     "re-present of a pending close": (
         lambda: _pending_close(_investigating_case()),
-        [("hmm", {})],
+        [("hmm", {}, "closed")],
     ),
     "bare decline of a pending close": (
         lambda: _pending_close(_investigating_case()),
-        [("no", {})],
+        [("no", {}, None)],
     ),
     "dropdown close, then decline": (
         _investigating_case,
-        [("", DROPDOWN_CLOSE), ("no", {})],
+        [("", DROPDOWN_CLOSE, "closed"), ("no", {}, None)],
     ),
     "dropdown close pivoting to resolve, then decline": (
         _resolution_ready_case,
-        [("", DROPDOWN_CLOSE), ("no", {})],
+        [("", DROPDOWN_CLOSE, "resolved"), ("no", {}, None)],
     ),
     "confirmed close pivoting to resolve (INV-37), then decline": (
         lambda: _pending_close(_resolution_ready_case()),
-        [("yes", {}), ("no", {})],
+        [("yes", {}, "resolved"), ("no", {}, None)],
     ),
     "INQUIRY dropdown close, then decline": (
         _inquiry_case,
-        [("", DROPDOWN_CLOSE), ("no", {})],
+        [("", DROPDOWN_CLOSE, "closed"), ("no", {}, None)],
     ),
 }
 
@@ -260,9 +264,13 @@ class TestAPromptlessTurnPassesTheNoticeOn:
         engine = _engine()
         case = _with_notice(build())
 
-        for message, intent in gate_turns:
+        for message, intent, pending_after in gate_turns:
             # The scenario is only about deterministic turns if they are.
             assert not await _turn(engine, case, message, **intent), message
+            # The turn recorded its own entry. A gate turn that crashed would
+            # leave the seeded record last, still carrying the notice.
+            assert case.turn_history[-1].turn_number == case.current_turn, message
+            assert (case.pending_transition or {}).get("to_state") == pending_after
             assert case.turn_history[-1].system_feedback == NOTICE, message
         assert not case.is_terminal
         assert engine._generate_structured_output.call_count == 0
@@ -416,6 +424,16 @@ class TestTheFallbackRendersTheNotice:
         assert NOTICE in prompt
         # Directly above the user's message, as on the main prompt.
         assert prompt.index(NOTICE) < prompt.index("USER:")
+
+    def test_a_mid_tag_notice_is_terminated_before_the_user_line(self):
+        """The terminator closes the NOTICE, not the block around it, so
+        ``USER:`` still starts its own line after the block's blank line."""
+        case = _fallback_case(CaseState.INVESTIGATING)
+        case.turn_history[-1] = case.turn_history[-1].model_copy(
+            update={"system_feedback": 'Refused: see <evidence id="ev_1'}
+        )
+        prompt = get_fallback_prompt_for_case(case, SUBSTANTIVE)
+        assert f'ev_1">{TERMINATOR_NOTE}\n\nUSER:' in prompt
 
     def test_the_terminal_fallback_does_not(self):
         """Consistent with the main TERMINAL prompt, which has no slot."""

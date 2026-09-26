@@ -3267,19 +3267,13 @@ def _fallback_body(case: Case, user_message: str, fence: PromptFence) -> str:
     # on the main path, which does not reach here.
     problem_block = _fenced("problem_context", problem_summary[:200])
 
-    def _feedback_block() -> str:
-        """The previous turn's notice, through the main prompt's own reader.
-
-        So a turn that degrades to this fallback still delivers it (#1688).
-        Called from INQUIRY and INVESTIGATING only: the main TERMINAL prompt has
-        no feedback slot either.
-        """
-        feedback = system_feedback_block(case)
-        return _guarded(feedback) if feedback else ""
-
     if case.state == CaseState.INQUIRY:
         stub_block = _fallback_stub_block(case, fence, rendered)
-        feedback_block = _feedback_block()
+        # The previous turn's notice, through the main prompt's own reader, so
+        # a turn that degrades to this fallback still delivers it (#1688).
+        # INQUIRY and INVESTIGATING only: the main TERMINAL prompt has no
+        # feedback slot either.
+        feedback_block = system_feedback_block(case, guard=_guarded)
         user_block = _fenced("user_message", user_message[:500])
         return FALLBACK_INQUIRY_TEMPLATE.format(
             fence_preamble=_fallback_preamble(fence, rendered),
@@ -3332,7 +3326,7 @@ def _fallback_body(case: Case, user_message: str, fence: PromptFence) -> str:
             )
 
         stub_block = _fallback_stub_block(case, fence, rendered)
-        feedback_block = _feedback_block()
+        feedback_block = system_feedback_block(case, guard=_guarded)
         user_block = _fenced("user_message", user_message[:500])
 
         return FALLBACK_INVESTIGATION_TEMPLATE.format(

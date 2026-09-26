@@ -27,7 +27,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, time, timezone
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from faultmaven.core.investigation.causal_graph import (
     BLOCK_REASON_COUNT,
@@ -3727,7 +3727,9 @@ def _build_causal_graph_block(case: Case) -> str:
     return "\n".join(lines)
 
 
-def system_feedback_block(case: Case) -> str:
+def system_feedback_block(
+    case: Case, guard: Optional[Callable[[str], str]] = None
+) -> str:
     """The previous turn's ``system_feedback`` as a prompt block, or ``""``.
 
     The one reader of the channel, shared by the main prompt and the minimal
@@ -3736,13 +3738,19 @@ def system_feedback_block(case: Case) -> str:
     a turn that built no prompt forwards the notice onto its own record
     (``milestone_engine.record_promptless_turn``), so the last record is the
     one carrying whatever no prompt has rendered yet.
+
+    ``guard`` wraps the notice text alone; the fallback passes its
+    ``_guarded``. Wrapping the finished block instead would put a terminator
+    after the block's trailing blank line, on the same line as whatever the
+    template renders next.
     """
     if not case.turn_history:
         return ""
     feedback = case.turn_history[-1].system_feedback
     if not feedback:
         return ""
-    return f"IMPORTANT - SYSTEM FEEDBACK FROM PREVIOUS TURN:\n{feedback}\n\n"
+    body = guard(feedback) if guard else feedback
+    return f"IMPORTANT - SYSTEM FEEDBACK FROM PREVIOUS TURN:\n{body}\n\n"
 
 
 def build_investigation_context(

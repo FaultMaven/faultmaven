@@ -762,9 +762,10 @@ class TestTheCompactRuleStaysCompact:
         re-measured against the model ceiling, so its size has to be bounded
         by construction rather than by a check (#1254 review). Every input is
         capped — problem 200 chars, user 500, 3 stubs x 200, 12 journal
-        entries x 120, 3 hypotheses x 50 — so a worst case exists and this
-        pins it below ``MIN_PROMPT_BUDGET``, the floor of any ceiling
-        ``resolve_model_budget`` can return."""
+        entries x 120, 3 hypotheses x 50, and the previous turn's notice at
+        ``TurnProgress.system_feedback``'s 1000 (#1688) — so a worst case
+        exists and this pins it below ``MIN_PROMPT_BUDGET``, the floor of any
+        ceiling ``resolve_model_budget`` can return."""
         from faultmaven.utils.model_context import MIN_PROMPT_BUDGET
 
         case = _case(state=CaseState.INVESTIGATING, structural_index="X" * 8000)
@@ -775,7 +776,10 @@ class TestTheCompactRuleStaysCompact:
         ]
         h = _hypothesis("H" * 500)  # Hypothesis.statement max_length
         case.hypotheses = {h.hypothesis_id: h}
+        case.turn_history = [_feedback_record("F" * 1000)]  # its max_length
+        case.current_turn = 2
         prompt = get_fallback_prompt_for_case(case, "U" * 4000)
+        assert "F" * 1000 in prompt
         worst = estimate_tokens(prompt, provider="openai", model="gpt-4o")
         assert worst < MIN_PROMPT_BUDGET, (worst, MIN_PROMPT_BUDGET)
 
