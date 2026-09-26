@@ -445,6 +445,50 @@ def generate_investigation_session_id() -> str:
     return f"is_{uuid4().hex[:12]}"
 
 
+class CaseReadDouble:
+    """``ICaseRepository.get`` over real ``Case`` objects, and nothing else.
+
+    For suites that need knowledge extraction to find a case but are about
+    something else (the prompt, the gate, the store). Deliberately NOT a
+    ``MagicMock``: the double that stood here answered ``get_by_id`` and
+    ``get_evidence``, two methods no case repository has, so every suite passed
+    while production extraction read nothing (#1661). A plain class with only
+    the contract's read raises ``AttributeError`` the moment a caller reaches
+    for anything else. The read against a real repository is pinned in
+    ``tests/integration/modules/knowledge/test_extraction_reads_the_case_1661.py``.
+    """
+
+    def __init__(self, *cases: Any) -> None:
+        self._cases = {case.case_id: case for case in cases}
+
+    async def get(self, case_id: str) -> Any:
+        return self._cases.get(case_id)
+
+
+def case_repository_holding(
+    case_id: str,
+    *,
+    enterprise_id: str,
+    title: str = "Checkout API 500s during the evening peak",
+    description: str = "Pool exhausted at peak.",
+    message: str = "checkout is 500ing",
+) -> CaseReadDouble:
+    """A :class:`CaseReadDouble` holding one real ``Case`` with one user row."""
+    from faultmaven.modules.case.contracts import MessageRowKind, append_message_row
+    from faultmaven.modules.case.domain.models import Case, CaseState
+
+    case = Case(
+        case_id=case_id,
+        user_id="user_extractor",
+        enterprise_id=enterprise_id,
+        title=title,
+        description=description,
+        state=CaseState.INQUIRY,
+    )
+    append_message_row(case, MessageRowKind.USER_TURN, message, turn_number=1)
+    return CaseReadDouble(case)
+
+
 def make_org_knowledge_item(
     item_id: Optional[str] = None,
     enterprise_id: Optional[str] = None,

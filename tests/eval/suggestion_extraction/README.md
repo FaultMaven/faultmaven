@@ -31,6 +31,8 @@ python tests/eval/suggestion_extraction/run_extraction_eval.py before
 python tests/eval/suggestion_extraction/run_extraction_eval.py after
 python tests/eval/suggestion_extraction/run_extraction_eval.py both \
     --provider anthropic --json recorded-runs/<date>-<provider>.json
+python tests/eval/suggestion_extraction/run_extraction_eval.py after \
+    --provider anthropic --redact    # SANITIZE_PII=true + the real DataSanitizer
 ```
 
 It needs a **live provider key**, and that is the point: a fixture-only run
@@ -55,7 +57,7 @@ be re-scored against the same drafts instead of re-billing the model.
 | Arm | What runs |
 |---|---|
 | `before` | The pre-#1226 path replayed verbatim — the old prompt (copied from `d8b8378a` into the driver), the old 2000-token cap, one attempt, no repair, no frontmatter-id forcing. |
-| `after` | The **real** `SuggestionService.extract_knowledge_from_case`, over a stub case repository. Nothing about the prompt, the retry or the id minting is re-implemented in the driver — a driver that re-implements the path it measures measures itself. |
+| `after` | The **real** `SuggestionService.extract_knowledge_from_case`, over a **real** case repository holding each fixture as a `Case` — rows written through `append_message_row`, evidence as `Evidence` — and read back through `ICaseRepository.get`, the read production makes (#1661). Nothing about the read, the prompt, the retry or the id minting is re-implemented in the driver — a driver that re-implements the path it measures measures itself. |
 
 Both arms score with the same `RunbookValidator().validate_content` the approval
 path applies, so the number is literally "would approval have published this".
@@ -145,14 +147,15 @@ distinguish "the prompt is good" from "the repair turn is covering for it".
 
 ### What this measurement does NOT cover
 
-The `after` arm builds the service with **`sanitizer=None`**, because Presidio
-is a cloud dependency this driver cannot stand up. So it never runs the
-redaction branch of `_scan_for_pii` — and that gap hid a release blocker once
-already: the scan used to write the sanitized `title + content` buffer back
+Without `--redact`, the `after` arm builds the service with **`sanitizer=None`**,
+so it never runs the redaction branch of `_scan_for_pii` — and that gap hid a
+release blocker once already: the scan used to write the sanitized `title + content` buffer back
 into `suggested_content`, putting the title in front of the frontmatter, so
 every draft carrying PII failed on `No YAML frontmatter found`. The number
 above was 8/8 here and 0/8 anywhere Presidio was on — which is the population
-this lane exists to serve.
+this lane exists to serve. With `--redact` it runs the real `DataSanitizer`,
+but Presidio is a cloud dependency this driver cannot stand up, so only the
+regex half of detection runs.
 
 Redaction is covered instead by a rewriting-sanitizer double in
 `tests/unit/modules/knowledge/test_extraction_emits_v4_schema_1226.py`
@@ -165,6 +168,39 @@ The invariants they motivated are pinned in CI, at
 prompt carries the v4 template, the retry fires and feeds the structured errors
 back, a still-failing draft reaches the reviewer with its reasons attached, and
 the gate still refuses genuinely invalid content.
+
+### #1661: the first run on the read production makes
+
+Until #1661 the `after` arm ran over a stub that answered `get_by_id` and
+`get_evidence` — two reads no case repository has. Production extraction called
+the same two, swallowed the `AttributeError`, and asked the model for a runbook
+about `Case Title: Unknown Case` with no messages and no evidence. So the
+2026-08-29 numbers above measured a prompt production never sent. (The driver
+had also gone stale since: it passed `organization_id=`, the keyword ADR-017
+(#1353) renamed, so every case raised `TypeError` before reaching the model.)
+
+Re-run on the real read, same model and corpus, on 2026-09-26:
+
+| Run | Substantive cases passing the gate | Thin case | LLM calls | Passes by attempt |
+|---|---|---|---|---|
+| real read | **7 / 7** | 1 / 1 | 9 | 7 on the first draft, 1 after one repair |
+| real read, `--redact` | **7 / 7** | 1 / 1 | 9 | 7 on the first draft, 1 after one repair |
+
+`recorded-runs/2026-09-26-anthropic-claude-sonnet-4-5-real-read.json` and
+`…-real-read-redacted.json`. Evidence now renders by the fields `Evidence` has
+(`- [causal_evidence | configuration] <summary>`), so each fixture evidence
+entry carries a `category`; `name` is read by the `before` arm only. No draft in
+either run carries an incident identifier from `case_ev7_pii_noisy` (ticket,
+host, customer, contact, either IP).
+
+`--redact` passes the extraction prompt through the investigation path's
+redaction, as production now does under `SANITIZE_PII=true`. Presidio was not
+reachable, so that run is the regex half only: the private upstream IP became a
+placeholder before the model saw it, and the email address and public client IP
+did not — exactly what an investigation turn sends in the same environment.
+
+`MAX_EXTRACTION_ATTEMPTS = 2` still covers the corpus: every case cleared the
+gate within the budget, and none needed a third turn.
 
 ## Re-run it before changing the retry budget
 

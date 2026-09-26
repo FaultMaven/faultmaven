@@ -34,9 +34,10 @@ What each mode does
             lane, so the baseline is the code that shipped rather than a
             paraphrase of it.
 ``after``   Drives the REAL ``SuggestionService.extract_knowledge_from_case``
-            over a stub case repository. Nothing about the prompt, the retry, or
-            the id minting is re-implemented here — a driver that re-implements
-            the path it is measuring measures itself.
+            over a REAL case repository holding each fixture as a ``Case``
+            (#1661). Nothing about the read, the prompt, the retry, or the id
+            minting is re-implemented here — a driver that re-implements the
+            path it is measuring measures itself.
 ``both``    Runs both against the same fixtures in one process, so the two
             numbers come from the same model on the same day.
 ``replay``  Re-scores the runbooks recorded by an earlier ``--json`` run.
@@ -50,13 +51,13 @@ regression, so the summary reports it apart from the rest.
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import SimpleNamespace
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
@@ -114,23 +115,72 @@ def load_cases(path: Path) -> list[dict]:
     return json.loads(path.read_text())["cases"]
 
 
-class StubCaseRepository:
-    """The three reads ``extract_knowledge_from_case`` makes, and nothing else."""
+#: A fixture evidence entry's ``artifact_type`` -> ``Evidence.source_type``.
+SOURCE_TYPES = {"log": "logs", "metric": "metrics", "config": "configuration"}
 
-    def __init__(self, case: dict):
-        self._case = case
 
-    async def get_by_id(self, case_id: str):
-        return SimpleNamespace(
-            title=self._case["title"], description=self._case["description"]
+def real_case_id(fixture_id: str) -> str:
+    """A ``Case.case_id`` for a fixture (the model requires ``case_<12 hex>``),
+    stable across runs so recorded transcripts stay comparable."""
+    return "case_" + hashlib.sha256(fixture_id.encode()).hexdigest()[:12]
+
+
+async def seeded_case_repository(case: dict):
+    """A REAL case repository holding the fixture as a real ``Case`` (#1661).
+
+    This used to be a stub answering ``get_by_id`` / ``get_messages`` /
+    ``get_evidence`` — two of which no case repository has. Production
+    extraction therefore read nothing at all, while this driver measured 8/8
+    through the stub. Now the fixture is written the way the product writes it
+    (rows through ``append_message_row``, evidence as ``Evidence``) and read
+    back through ``ICaseRepository.get``, the read extraction actually makes.
+    """
+    from faultmaven.modules.case.contracts import MessageRowKind, append_message_row
+    from faultmaven.modules.case.domain.models import (
+        Case,
+        CaseState,
+        Evidence,
+        EvidenceCategory,
+        EvidenceSourceType,
+    )
+    from faultmaven.modules.case.infrastructure.case_repository import (
+        InMemoryCaseRepository,
+    )
+
+    real = Case(
+        case_id=real_case_id(case["case_id"]),
+        user_id="eval-driver",
+        enterprise_id="ent-eval",
+        title=case["title"],
+        description=case["description"],
+        state=CaseState.INQUIRY,
+    )
+    turn = 0
+    for message in case.get("messages", []):
+        if message["role"] == "user":
+            turn += 1
+            kind = MessageRowKind.USER_TURN
+        else:
+            kind = MessageRowKind.AGENT_ANSWER
+        append_message_row(real, kind, message["content"], turn_number=max(turn, 1))
+    start = datetime.now(timezone.utc)
+    for n, ev in enumerate(case.get("evidence", []), start=1):
+        # Collected in fixture order, so recency order is fixture order.
+        real.evidence.append(
+            Evidence(
+                category=EvidenceCategory(ev["category"]),
+                primary_purpose="diagnosis",
+                summary=ev["summary"],
+                source_type=EvidenceSourceType(SOURCE_TYPES[ev["artifact_type"]]),
+                source_file_id=f"file_{real.case_id[5:]}",
+                collected_by="eval-driver",
+                collected_at_turn=n,
+                collected_at=start + timedelta(seconds=n),
+            )
         )
-
-    async def get_messages(self, case_id: str):
-        # Dicts, the shape every repository's ``get_messages`` returns (#1660).
-        return [dict(m) for m in self._case.get("messages", [])]
-
-    async def get_evidence(self, case_id: str):
-        return [SimpleNamespace(**e) for e in self._case.get("evidence", [])]
+    repository = InMemoryCaseRepository()
+    await repository.save(real)
+    return repository, real.case_id
 
 
 class CountingProvider:
@@ -238,7 +288,7 @@ async def run_before(cases: list[dict], provider) -> list[dict]:
 
 
 async def run_after(
-    cases: list[dict], provider, attempts: int | None = None
+    cases: list[dict], provider, attempts: int | None = None, redact: bool = False
 ) -> list[dict]:
     from faultmaven.modules.knowledge.domain.services.suggestion_service import (
         SuggestionService,
@@ -247,13 +297,24 @@ async def run_after(
         InMemorySuggestionRepository,
     )
 
+    sanitizer = None
+    if redact:
+        # ``--redact``: the real ``DataSanitizer`` under ``SANITIZE_PII=true``
+        # (set in ``main`` before settings are read), so the extraction prompt
+        # passes the investigation path's redaction (#1661) and the draft
+        # passes the PII scan, as they do in cloud. Regex-only unless a
+        # Presidio analyzer answers at ``PRESIDIO_ANALYZER_URL``.
+        from faultmaven.infrastructure.security.redaction import DataSanitizer
+
+        sanitizer = DataSanitizer()
+
     rows = []
     for case in cases:
         counting = CountingProvider(provider)
-        # WARNING: ``sanitizer=None`` — the ONE thing this measurement does
-        # not cover, stated rather than left to be discovered. Presidio is a
-        # cloud dependency this driver cannot stand up, so the arm runs the
-        # ``else`` branch of ``_scan_for_pii`` and no redaction happens.
+        # WARNING: without ``--redact``, ``sanitizer=None`` — so the arm takes
+        # the ``else`` branch of ``_scan_for_pii`` and no redaction happens.
+        # Presidio is a cloud dependency this driver cannot stand up, so even
+        # ``--redact`` runs the regex half only unless one is reachable.
         #
         # That gap already hid one release blocker: the scan used to assign the
         # sanitized ``title + content`` buffer back to ``suggested_content``,
@@ -263,10 +324,11 @@ async def run_after(
         # covered instead by a rewriting-sanitizer double in
         # tests/unit/modules/knowledge/test_extraction_emits_v4_schema_1226.py
         # (TestRedactionKeepsTheDraftPublishable). Read the two together.
+        case_repository, case_id = await seeded_case_repository(case)
         service = SuggestionService(
-            case_repository=StubCaseRepository(case),
+            case_repository=case_repository,
             knowledge_service=None,
-            sanitizer=None,
+            sanitizer=sanitizer,
             llm_provider=counting,
             max_extraction_attempts=attempts,
             suggestion_repository=InMemorySuggestionRepository(),
@@ -274,9 +336,12 @@ async def run_after(
         started = time.time()
         error = None
         try:
+            # ``enterprise_id``: this said ``organization_id``, the keyword
+            # ADR-017 (#1353) renamed, so every case raised TypeError and was
+            # recorded as a provider error.
             suggestion = await service.extract_knowledge_from_case(
-                case_id=case["case_id"],
-                organization_id="org-eval",
+                case_id=case_id,
+                enterprise_id="ent-eval",
                 extracted_by="eval-driver",
             )
             content = suggestion.suggested_content
@@ -382,7 +447,9 @@ async def main_async(args) -> int:
         print_summary(summarise(arms["before"]))
     if args.mode in ("after", "both"):
         print(f"\n--- AFTER (shipped extraction path, {len(cases)} cases) ---")
-        arms["after"] = await run_after(cases, provider, args.attempts)
+        arms["after"] = await run_after(
+            cases, provider, args.attempts, redact=args.redact
+        )
         print_summary(summarise(arms["after"]))
 
     if args.json:
@@ -390,6 +457,7 @@ async def main_async(args) -> int:
             "recorded_at": datetime.now(timezone.utc).isoformat(),
             "model": _resolved_model(),
             "chat_provider": os.environ.get("CHAT_PROVIDER", "(unset)"),
+            "redact": bool(args.redact),
             # Relative to the repo root: an absolute path baked into a
             # committed artifact records the machine it ran on, not the run.
             "cases_file": _relative_to_repo(args.cases),
@@ -426,6 +494,16 @@ def main() -> int:
             "is told apart from model noise."
         ),
     )
+    ap.add_argument(
+        "--redact",
+        action="store_true",
+        help=(
+            "Run the `after` arm with SANITIZE_PII=true and the real "
+            "DataSanitizer: the extraction prompt is redacted as the "
+            "investigation path redacts its own (#1661), and the draft is "
+            "PII-scanned, as in cloud."
+        ),
+    )
     ap.add_argument("--json", help="write the full run (runbooks included) here")
     ap.add_argument("--from", dest="from_file", help="recorded run to replay")
     args = ap.parse_args()
@@ -436,6 +514,8 @@ def main() -> int:
         # environment, and an env var set after the first get_settings() call
         # is ignored by the cached instance.
         os.environ["CHAT_PROVIDER"] = args.provider
+    if args.redact:
+        os.environ["SANITIZE_PII"] = "true"  # before any settings read, as above
     return asyncio.run(main_async(args))
 
 

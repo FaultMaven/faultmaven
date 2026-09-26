@@ -35,6 +35,7 @@ divergence is ``ingest_runbook``'s business, not this file's.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -79,6 +80,7 @@ from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_reposito
     DatabaseSuggestionRepository,
 )
 from tests.runbook_samples import valid_runbook
+from tests.utils import CaseReadDouble, case_repository_holding
 
 pytestmark = pytest.mark.integration
 
@@ -186,7 +188,15 @@ def wired(session_factory, tmp_path, monkeypatch):
 
     knowledge_service = _knowledge_service(session_factory)
     suggestion_service = SuggestionService(
-        case_repository=None,
+        # The same case the route's case service authorises the caller for:
+        # extraction reads it through ``ICaseRepository.get`` and refuses a
+        # case it cannot read (#1661).
+        case_repository=case_repository_holding(
+            CASE_ID,
+            enterprise_id=DEFAULT_ENTERPRISE_ID,
+            title=_Case.title,
+            description=_Case.description,
+        ),
         knowledge_service=knowledge_service,
         sanitizer=None,  # no PII engine in this deployment shape → scan CLEAN
         llm_provider=None,  # extraction falls back to its template
@@ -597,6 +607,32 @@ class TestAFullReviewInboxRefusesHonestly:
                 DEFAULT_ENTERPRISE_ID
             )
             == 1
+        )
+
+
+class TestACaseExtractionCannotReadIsAnErrorNotADraft:
+    """#1661 through the route. The route authorises the caller with its case
+    service; the suggestion service then reads the case itself. When that read
+    misses — a case deleted in between, or a repository that disagrees with the
+    route's — extraction used to answer 201 with a runbook written about
+    "Unknown Case" and file it for review. It now fails the request, logs the
+    case, and stores nothing."""
+
+    async def test_the_request_fails_and_nothing_is_stored(self, wired, caplog):
+        client, _app, _knowledge, suggestion_service = wired
+        suggestion_service._case_repository = CaseReadDouble()  # holds no case
+
+        with caplog.at_level(logging.ERROR):
+            resp = client.post(f"/cases/{CASE_ID}/extract-knowledge", json={})
+
+        assert resp.status_code == 500, resp.text
+        assert resp.json()["detail"] == "Knowledge extraction failed"
+        assert f"Knowledge extraction failed for case {CASE_ID}" in caplog.text
+        assert (
+            await suggestion_service._repository.count_for_enterprise(
+                DEFAULT_ENTERPRISE_ID
+            )
+            == 0
         )
 
 

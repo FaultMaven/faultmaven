@@ -50,6 +50,7 @@ from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_reposito
     InMemorySuggestionRepository,
 )
 from tests.runbook_samples import valid_runbook
+from tests.utils import CaseReadDouble, case_repository_holding
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
@@ -118,24 +119,10 @@ def _without_id_line(content: str) -> str:
 
 def _case_repository(
     title: str = "Checkout API 500s during the evening peak",
-) -> MagicMock:
-    repo = MagicMock()
-
-    async def get_by_id(case_id):
-        return SimpleNamespace(title=title, description="Pool exhausted at peak.")
-
-    async def get_messages(case_id):
-        # Dicts, as every ``get_messages`` returns: an attribute object here is
-        # how the extraction prompt came to render whole rows unnoticed (#1660).
-        return [{"role": "user", "content": "checkout is 500ing", "metadata": {}}]
-
-    async def get_evidence(case_id):
-        return []
-
-    repo.get_by_id = get_by_id
-    repo.get_messages = get_messages
-    repo.get_evidence = get_evidence
-    return repo
+) -> CaseReadDouble:
+    # ``ICaseRepository.get`` over a real ``Case`` — see ``CaseReadDouble`` for
+    # why this is no longer a MagicMock (#1661).
+    return case_repository_holding(CASE_ID, enterprise_id=ORG, title=title)
 
 
 def _service(provider=None, **kwargs) -> SuggestionService:

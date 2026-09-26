@@ -12,9 +12,16 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from faultmaven.exceptions import ConflictError, ServiceUnavailableException
+from faultmaven.exceptions import (
+    ConfigurationException,
+    ConflictError,
+    NotFoundError,
+    ServiceUnavailableException,
+)
 from faultmaven.infrastructure.llm.truncation import generate_with_truncation_retry
+from faultmaven.infrastructure.security.case_redaction import CaseRedactionContext
 from faultmaven.modules.case.contracts import (
+    ICaseRepository,
     is_server_written_assistant_row,
     is_server_written_user_row,
 )
@@ -55,19 +62,73 @@ from faultmaven.utils.serialization import to_json_compatible
 #: runbook it produced — not queue depth.
 UNREVIEWED_STATUSES = (SuggestionStatus.PENDING_REVIEW, SuggestionStatus.DRAFT)
 
+#: How many of a case's message rows the extraction prompt carries — the LAST
+#: ones (#1661). The slice used to be taken over ``get_messages``, which pages
+#: from the START (``created_at ASC``, default ``limit=50``), so under a comment
+#: saying "last 50" a long case sent its first 50 rows. For a resolved case the
+#: end is the part a runbook is made of: the cause confirmed, the fix applied,
+#: the check that it held.
+EXTRACTION_MESSAGE_WINDOW = 50
+
+#: How many evidence rows it carries — the most RECENT ones, by the case's own
+#: clock (:func:`_evidence_recency`), never by list order.
+EXTRACTION_EVIDENCE_WINDOW = 20
+
+
+def _evidence_recency(ev: Any) -> tuple:
+    """How recent an ``Evidence`` row is, as a sort key: newer sorts higher.
+
+    Stated as a key rather than read off ``case.evidence`` order, because that
+    order is not one thing: both SQL repositories load evidence
+    ``ORDER BY created_at DESC`` (newest first), while the in-memory one and the
+    engine append new rows at the END (oldest first). So ``[:N]`` over the list
+    keeps the newest N on one backend and the oldest N on the other (#1609).
+
+    The same key as the investigation prompt's ``_evidence_recency_key``
+    (``core/investigation/prompts/context_builder.py``), not imported from it:
+    this module does not depend on the engine's prompt package, and a private
+    helper there is not an interface. Two copies, so a test pins them to the
+    same order.
+    """
+    collected_at = getattr(ev, "collected_at", None)
+    try:
+        stamp = collected_at.timestamp() if collected_at is not None else 0.0
+    except (AttributeError, OverflowError, OSError, ValueError):
+        stamp = 0.0
+    return (getattr(ev, "collected_at_turn", 0) or 0, stamp)
+
+
+def _extraction_evidence(evidence: List[Any]) -> str:
+    """The case's evidence as the extraction prompt shows it, or "".
+
+    Rendered from the fields ``Evidence`` has (#1661): its claim ``category``,
+    its ``source_type`` and its ``summary``. The loop this replaces read
+    ``artifact_type`` and ``name``, which ``Evidence`` does not have; it never
+    ran in production (the case read before it failed), and the doubles that
+    reached it were built with those two attributes, so the moment the read was
+    fixed every line would have become ``- [unknown] : <summary>``.
+
+    The summary (at most 500 characters), not ``extract``: the prompt promises
+    the model "evidence summaries", and ``extract`` is an unbounded verbatim
+    slice that only the investigation prompt's budgeted renderer is sized for.
+    """
+    lines = [
+        f"- [{ev.category.value} | {ev.source_type.value}] {ev.summary}"
+        for ev in evidence
+    ]
+    return "Evidence Summary:\n" + "\n".join(lines) if lines else ""
+
 
 def _extraction_transcript(messages: List[dict]) -> str:
     """The case conversation as the extraction prompt shows it, or "".
 
-    Rows are ``case_messages`` dicts, which is what ``get_messages`` returns.
-    This used to read them with ``getattr``, which on a dict finds neither
-    attribute, so every row rendered as ``[unknown]: {<the whole row>}`` —
-    ids, author, timestamps and metadata included — and the one thing that
-    would have kept a placeholder out, its flag, was never read. The doubles
-    returned attribute objects, so no test saw the production shape. (Nor does
-    production reach this yet: ``extract_knowledge_from_case`` reads the case
-    through two methods no case repository has, so it gets no rows at all —
-    #1661.)
+    Rows are ``case_messages`` dicts — what ``Case.messages`` holds and what
+    ``get_messages`` returns. This used to read them with ``getattr``, which on
+    a dict finds neither attribute, so every row rendered as
+    ``[unknown]: {<the whole row>}`` — ids, author, timestamps and metadata
+    included — and the one thing that would have kept a placeholder out, its
+    flag, was never read. The doubles returned attribute objects, so no test
+    saw the production shape.
 
     A row the SERVER wrote is not something either party said (#1434, #1451),
     and it is skipped on both sides (#1660):
@@ -242,7 +303,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
 
     def __init__(
         self,
-        case_repository: Optional[Any] = None,
+        case_repository: Optional[ICaseRepository] = None,
         knowledge_service: Optional[Any] = None,
         sanitizer: Optional[Any] = None,
         llm_provider: Optional[Any] = None,
@@ -253,9 +314,17 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         """Initialize the suggestion service.
 
         Args:
-            case_repository: Repository for case access
+            case_repository: The case store extraction reads through
+                (``ICaseRepository``). Optional here because only extraction
+                needs it — the review workflow does not — and extraction
+                refuses without one rather than writing a runbook from nothing
+                (#1661).
             knowledge_service: Service for creating knowledge items
-            sanitizer: ISanitizer for PII detection/redaction
+            sanitizer: ISanitizer for PII detection/redaction — the SAME
+                instance the investigation engine is handed, used for the
+                extraction prompt exactly as the engine uses it for its own
+                (:meth:`_model_boundary_redaction`) and for the PII scan of the
+                generated draft.
             llm_provider: LLM provider for extraction
             max_unreviewed_suggestions: Cap on how many UNREVIEWED suggestions one
                 enterprise may have queued; defaults to
@@ -338,6 +407,14 @@ corrected runbook, starting at the opening `---`, and output nothing else.
 
         Returns:
             Created KnowledgeSuggestion
+
+        Raises:
+            NotFoundError: the case does not exist.
+            ConfigurationException: this service has no case repository.
+            RedactionUnavailableError: redaction is required and could not run
+                (fail-closed, as on the investigation path).
+            Any error the case read raises, unchanged. None of these stores a
+            suggestion or spends a generation.
         """
         self.logger.info(f"Extracting knowledge from case {case_id}")
 
@@ -354,47 +431,33 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         # remains a real ceiling rather than a ceiling plus one.
         await self._refuse_if_review_queue_full(enterprise_id)
 
-        # Get case details
-        case_title = "Unknown Case"
-        case_description = ""
-        messages = []
-        evidence = []
+        # The case, through the contract's one read: ``get`` returns the case
+        # with its message rows and its evidence already loaded. This read used
+        # to go through ``get_by_id`` and ``get_evidence``, which no repository
+        # has; the AttributeError was swallowed and every production extraction
+        # ran on "Unknown Case" with no messages and no evidence (#1661). A case
+        # that cannot be read now fails the extraction — see ``_read_case``.
+        case = await self._read_case(case_id)
+        case_title = case.title
+        case_description = case.description or ""
 
-        if self._case_repository:
-            try:
-                case = await self._case_repository.get_by_id(case_id)
-                if case:
-                    case_title = getattr(case, "title", case_id)
-                    case_description = getattr(case, "description", "")
-
-                    if include_messages:
-                        case_messages = await self._case_repository.get_messages(
-                            case_id
-                        )
-                        messages = case_messages or []
-
-                    if include_evidence:
-                        case_evidence = await self._case_repository.get_evidence(
-                            case_id
-                        )
-                        evidence = case_evidence or []
-            except Exception as e:
-                self.logger.warning(f"Failed to fetch case details: {e}")
-
-        # Build extraction prompt
-        messages_section = ""
-        if include_messages and messages:
-            messages_section = _extraction_transcript(messages[:50])
-
-        evidence_section = ""
-        if include_evidence and evidence:
-            evidence_summaries = []
-            for ev in evidence[:20]:  # Limit to 20 pieces
-                ev_type = getattr(ev, "artifact_type", "unknown")
-                ev_name = getattr(ev, "name", "")
-                ev_summary = getattr(ev, "summary", "")
-                evidence_summaries.append(f"- [{ev_type}] {ev_name}: {ev_summary}")
-            evidence_section = "Evidence Summary:\n" + "\n".join(evidence_summaries)
+        # The LAST rows, in transcript order — the order every prompt reader of
+        # ``case.messages`` relies on: the SQL repositories load it
+        # ``created_at ASC, turn_number ASC`` (one clause, pinned by
+        # test_message_read_order_is_uniform), and the in-memory one holds rows
+        # in the order ``append_message_row`` wrote them. Evidence is the most
+        # RECENT by the case's own clock, because its list order is NOT uniform
+        # (see ``_evidence_recency``). Both windows used to keep the start.
+        messages = (
+            list(case.messages[-EXTRACTION_MESSAGE_WINDOW:]) if include_messages else []
+        )
+        evidence = (
+            sorted(case.evidence, key=_evidence_recency)[-EXTRACTION_EVIDENCE_WINDOW:]
+            if include_evidence
+            else []
+        )
+        messages_section = _extraction_transcript(messages)
+        evidence_section = _extraction_evidence(evidence)
 
         prompt = CONVERSION_SYSTEM_PROMPT + self.EXTRACTION_PROMPT.format(
             # The document path gets `domain` from its analysis pass and the
@@ -412,8 +475,11 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         )
 
         # Generate the runbook, re-prompting with the validator's own errors if
-        # the first draft is refused (#1226).
-        suggested_content = await self._generate_runbook_draft(prompt, case_id)
+        # the first draft is refused (#1226). Every prompt it sends passes the
+        # investigation path's redaction first (``_generate_once``).
+        suggested_content = await self._generate_runbook_draft(
+            prompt, case_id, self._model_boundary_redaction(case_id)
+        )
 
         # Title, in preference order: the caller's, then the DRAFT'S OWN
         # frontmatter title, then the case title with its severity prefixes
@@ -487,6 +553,73 @@ corrected runbook, starting at the opening `---`, and output nothing else.
 
         return suggestion
 
+    async def _read_case(self, case_id: str) -> Any:
+        """The case extraction is about, through ``ICaseRepository.get``.
+
+        **Raises; never degrades.** A case this cannot read fails the
+        extraction, loudly, with the case id in the error. It used to log a
+        warning and carry on with defaults, and "carry on" meant spending up to
+        four generations asking the model for a runbook about "Unknown Case"
+        with no messages and no evidence, then filing the result for review
+        beside real ones. That is not a degraded runbook; it is a fabricated
+        one, and it is why #1661 was invisible: every production extraction
+        took that path and still produced a plausible-looking draft. Nothing is
+        generated and nothing is stored when this raises. The extract route
+        already turns an unexpected error into a logged 500 that names the case.
+
+        ``None`` is refused as ``NotFoundError`` rather than read as "no
+        material": the route has just loaded the same case to authorise the
+        caller, so a miss here is a deleted case or a repository that disagrees
+        with the route's, and neither is something to write a runbook about.
+
+        Raises:
+            ConfigurationException: this service was composed without a case
+                repository.
+            NotFoundError: the repository has no such case.
+        """
+        if self._case_repository is None:
+            raise ConfigurationException(
+                f"Cannot extract knowledge from case {case_id}: this "
+                "SuggestionService has no case repository to read it from"
+            )
+        case = await self._case_repository.get(case_id)
+        if case is None:
+            raise NotFoundError("Case", case_id)
+        return case
+
+    def _model_boundary_redaction(self, case_id: str) -> CaseRedactionContext:
+        """The redaction the investigation path applies to what it sends a model.
+
+        The milestone engine builds a ``CaseRedactionContext`` over the injected
+        sanitizer for every turn, enabled by ``_should_redact`` — a sanitizer is
+        configured AND ``SANITIZE_PII`` is on — and passes the whole prompt
+        through ``asanitize`` before any provider call. This is that mechanism,
+        not a second one: the same class, over the same sanitizer instance (the
+        container hands both services one), decided by the same two conditions,
+        so the extraction prompt is never less protected than an investigation
+        turn. ``test_it_redacts_exactly_when_the_investigation_path_does`` pins
+        the decision to the engine's across the whole truth table.
+
+        It matters independently of the router. ``LLMRouter`` runs its own
+        sanitizer pass under the same flag, but that is a property of the
+        default router — a deployment may substitute its own
+        (``LLM_ROUTER_CLASS``) — and it is the engine's layer, not the
+        router's, that the investigation path relies on.
+
+        No Redis registry is loaded or saved. The engine persists its registry
+        so it can REVERSE placeholders in the reply it shows the user;
+        extraction never reverses — the runbook is meant to be de-identified —
+        and the placeholders themselves are a keyed function of the value
+        (#971), so they match the investigation's without the registry.
+        """
+        from faultmaven.config.settings import get_settings
+
+        return CaseRedactionContext(
+            case_id=case_id,
+            sanitizer=self._sanitizer,
+            enabled=bool(self._sanitizer) and get_settings().protection.sanitize_pii,
+        )
+
     async def _refuse_if_review_queue_full(self, enterprise_id: str) -> None:
         """Refuse a new extraction when ``enterprise_id``'s inbox is full.
 
@@ -552,7 +685,9 @@ corrected runbook, starting at the opening `---`, and output nothing else.
             f"for this enterprise"
         )
 
-    async def _generate_runbook_draft(self, base_prompt: str, case_id: str) -> str:
+    async def _generate_runbook_draft(
+        self, base_prompt: str, case_id: str, redaction: CaseRedactionContext
+    ) -> str:
         """Generate a v4 runbook draft, re-prompting with the gate's own errors.
 
         The extraction path publishes into a corpus fronted by
@@ -574,6 +709,9 @@ corrected runbook, starting at the opening `---`, and output nothing else.
             base_prompt: The full first-attempt prompt (shared v4 authoring
                 instructions + the case-specific block).
             case_id: Source case, used only as the last-resort id stem.
+            redaction: Applied to every prompt before it is sent — the repair
+                turns' included, since they carry the model's previous draft
+                (:meth:`_generate_once`).
 
         Returns:
             The best draft produced — the first one that passes, else the one
@@ -585,7 +723,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         best_validation: Optional[ValidationResult] = None
 
         for attempt in range(1, self._max_extraction_attempts + 1):
-            content = await self._generate_once(prompt)
+            content = await self._generate_once(prompt, redaction)
             if content is None:
                 # Provider absent, broken, or cut at the ceiling. Retrying the
                 # same call cannot fix any of those, and the repair turn has
@@ -711,19 +849,38 @@ corrected runbook, starting at the opening `---`, and output nothing else.
                 return minted
         return self._case_stem_id(case_id)
 
-    async def _generate_once(self, prompt: str) -> Optional[str]:
+    async def _generate_once(
+        self, prompt: str, redaction: CaseRedactionContext
+    ) -> Optional[str]:
         """One generation call. ``None`` means "no usable draft came back".
 
         Separated from the retry loop so the loop reads as policy and this reads
         as plumbing. Every ``None`` branch below is a reason a REPAIR turn would
         be pointless: there is no draft to repair.
+
+        This is the one place extraction sends anything to a model, so it is
+        where ``redaction`` is applied (#1661) — the engine applies its own at
+        the equivalent choke point, ``_generate_structured_output``. At the
+        call rather than where the case block is assembled, so that a repair
+        prompt, which carries the model's previous draft, is covered too, and
+        so is anything a later change adds to either prompt. ``redaction`` is a
+        required argument, so a new caller cannot send without deciding.
+
+        Raises:
+            RedactionUnavailableError: redaction is required and could not run.
+                Deliberately OUTSIDE the ``try`` below, which turns any failure
+                into ``None`` and so into the skeleton draft: a redaction that
+                cannot run must stop the extraction, as it stops an
+                investigation turn, not be filed for review as an empty draft.
         """
         if not self._llm_provider:
             return None
 
+        outbound = await redaction.asanitize(prompt)
+
         async def _call(cap: int):
             return await self._llm_provider.generate(
-                prompt=prompt,
+                prompt=outbound,
                 max_tokens=cap,
                 temperature=0.3,
             )
@@ -984,8 +1141,10 @@ level, and the tools needed.]
         Returns:
             Suggested title
         """
-        # Simple title extraction - in production, use LLM
-        if case_title and case_title != "Unknown Case":
+        # Simple title extraction - in production, use LLM. (It also tested for
+        # "Unknown Case", the default a failed case read used to leave behind;
+        # a failed read now stops the extraction instead, #1661.)
+        if case_title:
             # Clean up the case title for reuse
             title = case_title
             # Remove incident-specific prefixes

@@ -58,6 +58,7 @@ from faultmaven.modules.knowledge.domain.services.suggestion_service import (
 from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
     InMemorySuggestionRepository,
 )
+from tests.utils import CaseReadDouble, case_repository_holding
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
@@ -85,8 +86,15 @@ def _suggestion(
     return s
 
 
+def _cases() -> CaseReadDouble:
+    """The case every extraction here reads (#1661: it no longer extracts from
+    a case it cannot read)."""
+    return case_repository_holding("case_aabb11223344", enterprise_id=ORG)
+
+
 def _service(capacity: int = 3) -> SuggestionService:
     return SuggestionService(
+        case_repository=_cases(),
         knowledge_service=MagicMock(),
         max_unreviewed_suggestions=capacity,
         suggestion_repository=InMemorySuggestionRepository(),
@@ -296,6 +304,7 @@ class TestAFailedScanRecovers:
     async def test_the_first_scan_failing_leaves_scan_failed(self):
         sanitizer = _FlakySanitizer(failures=1)
         svc = SuggestionService(
+            case_repository=_cases(),
             knowledge_service=_knowledge_double(),
             sanitizer=sanitizer,
             suggestion_repository=InMemorySuggestionRepository(),
@@ -312,6 +321,7 @@ class TestAFailedScanRecovers:
         sanitizer = _FlakySanitizer(failures=1)
         knowledge = _knowledge_double()
         svc = SuggestionService(
+            case_repository=_cases(),
             knowledge_service=knowledge,
             sanitizer=sanitizer,
             suggestion_repository=InMemorySuggestionRepository(),
@@ -344,6 +354,7 @@ class TestAFailedScanRecovers:
         sanitizer = _FlakySanitizer(failures=5)
         knowledge = _knowledge_double()
         svc = SuggestionService(
+            case_repository=_cases(),
             knowledge_service=knowledge,
             sanitizer=sanitizer,
             suggestion_repository=InMemorySuggestionRepository(),
@@ -369,6 +380,7 @@ class TestAFailedScanRecovers:
         sanitizer.asanitize = AsyncMock(return_value="REDACTED")
         knowledge = _knowledge_double()
         svc = SuggestionService(
+            case_repository=_cases(),
             knowledge_service=knowledge,
             sanitizer=sanitizer,
             suggestion_repository=InMemorySuggestionRepository(),
