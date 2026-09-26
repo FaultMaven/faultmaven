@@ -46,22 +46,29 @@ declaration (the #1242 report's own payload) and a payload whose cap
 (``[:200]`` / ``[:500]``) lands INSIDE a tag.
 """
 
+import dataclasses
 import re
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import tiktoken
 
+from faultmaven.core.investigation.prompts import templates
 from faultmaven.core.investigation.prompts.fence import (
     FENCE_ATTR,
     TERMINATOR_NOTE,
     absorbed_delimiters,
 )
 from faultmaven.core.investigation.prompts.templates import (
+    _FALLBACK_FEEDBACK_MAX_TOKENS,
     _FALLBACK_FENCE_RULE_HEAD,
     _FALLBACK_FENCE_RULE_TEMPLATE,
+    _FALLBACK_MAX_TOKENS,
     _PROMPT_FENCE_RULE,
     DEGRADED_NO_TOOLS_NOTICE,
+    _cap_notice,
+    _fallback_tokens,
     get_fallback_prompt_for_case,
     get_prompt_for_case,
 )
@@ -85,6 +92,7 @@ from faultmaven.modules.case.domain.models import (
     TurnOutcome,
     TurnProgress,
 )
+from faultmaven.utils.model_context import resolve_model_budget
 from faultmaven.utils.token_estimation import estimate_tokens
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
@@ -710,6 +718,54 @@ class TestTheInvariantHoldsAcrossTheBudgetRange:
 # ---------------------------------------------------------------------------
 
 
+#: Text that tokenizes several times denser than prose at the same length.
+_LOG_DENSE = (
+    "2026-09-24T12:11:24.986Z ERROR pod/payments-7f9c4d-x2k8q node-7 "
+    "OOMKilled exit=137 req_id=9f3a1c7e-44b2 conn_pool=50/50 "
+)
+_CJK = "支付服务在部署后开始返回错误，节点上的容器因内存不足被终止，数据库连接池耗尽。"
+
+
+def _fill(unit: str, n: int) -> str:
+    return (unit * (n // len(unit) + 1))[:n]
+
+
+def _dense_case(unit: str, filename: str | None = None) -> Case:
+    """Every channel at every cap in ``unit``, a maximum-length notice, and
+    three current-turn uploads."""
+    case = _case(state=CaseState.INVESTIGATING, structural_index=_fill(unit, 8000))
+    case.description = _fill(unit, 2000)
+    case.investigation_journal = [
+        JournalEntry(turn=i, entry_type="finding", content=_fill(unit, 200))
+        for i in range(1, 40)
+    ]
+    hs = [
+        _hypothesis(_fill(unit, 500)).model_copy(
+            update={"hypothesis_id": f"hyp_0a0a0a0a0a0{i}"}
+        )
+        for i in range(3)
+    ]
+    case.hypotheses = {h.hypothesis_id: h for h in hs}
+    case.turn_history = [_feedback_record(_fill(unit, 1000))]
+    case.current_turn = 2
+    upload = case.uploaded_files[0]
+    update = {"uploaded_at_turn": 2}
+    if filename:
+        update["filename"] = filename
+    case.uploaded_files = [
+        upload.model_copy(update={**update, "file_id": f"file_0e0e0e0e0e1{i}"})
+        for i in range(3)
+    ]
+    return case
+
+
+def _journal_entry_lengths(prompt: str) -> list[int]:
+    """How many characters of each journal entry's content rendered."""
+    return [
+        len(content) for content in re.findall(r"\[T\d+\] FINDING: ([^\n<]*)", prompt)
+    ]
+
+
 class TestTheCompactRuleStaysCompact:
     """The fallback is chosen when ``variable_room < min_viable``, so what the
     rule costs is a design constraint, not a detail. If the compact rule ever
@@ -760,12 +816,17 @@ class TestTheCompactRuleStaysCompact:
     def test_the_worst_case_fallback_still_fits_the_smallest_ceiling(self):
         """The fallback is returned by the overflow branch WITHOUT being
         re-measured against the model ceiling, so its size has to be bounded
-        by construction rather than by a check (#1254 review). Every input is
-        capped — problem 200 chars, user 500, 3 stubs x 200, 12 journal
-        entries x 120, 3 hypotheses x 50, and the previous turn's notice at
-        ``TurnProgress.system_feedback``'s 1000 (#1688) — so a worst case
-        exists and this pins it below ``MIN_PROMPT_BUDGET``, the floor of any
-        ceiling ``resolve_model_budget`` can return."""
+        by the fallback itself (#1254 review). Every input is capped — problem
+        200 chars, user 500, 3 stubs x 200 and their labels, 12 journal entries
+        x 120, 3 hypotheses x 50, and the previous turn's notice at 100 tokens
+        (#1688) — and a render over budget is shrunk, so this pins the result
+        below ``MIN_PROMPT_BUDGET``, the floor of any ceiling
+        ``resolve_model_budget`` can return, with the degraded-mode notice the
+        runtime recovery appends.
+
+        The notice is capped in tokens, so it is given realistic engine prose
+        at its full length rather than a repeated character. Denser text in
+        every channel is the next test's."""
         from faultmaven.utils.model_context import MIN_PROMPT_BUDGET
 
         case = _case(state=CaseState.INVESTIGATING, structural_index="X" * 8000)
@@ -776,12 +837,140 @@ class TestTheCompactRuleStaysCompact:
         ]
         h = _hypothesis("H" * 500)  # Hypothesis.statement max_length
         case.hypotheses = {h.hypothesis_id: h}
-        case.turn_history = [_feedback_record("F" * 1000)]  # its max_length
+        notice = (
+            "SYSTEM: Your pending SOLUTION proposal was withdrawn because the "
+            "root cause it targeted is no longer established. Hypothesis "
+            "'checkout pods exhaust the connection pool after the deploy' "
+            "duplicates standing hypothesis hyp_0a0a0a0a0a0a. "
+        ) * 4
+        case.turn_history = [_feedback_record(notice[:1000])]  # its max_length
         case.current_turn = 2
+        # Still a current-turn upload, so the stub renders: it is one of the
+        # capped channels this worst case exists to include.
+        case.uploaded_files = [
+            f.model_copy(update={"uploaded_at_turn": 2}) for f in case.uploaded_files
+        ]
         prompt = get_fallback_prompt_for_case(case, "U" * 4000)
-        assert "F" * 1000 in prompt
-        worst = estimate_tokens(prompt, provider="openai", model="gpt-4o")
+        assert notice[:40] in prompt
+        assert "<uploaded_file" in prompt
+        worst = _fallback_tokens(prompt + DEGRADED_NO_TOOLS_NOTICE)
         assert worst < MIN_PROMPT_BUDGET, (worst, MIN_PROMPT_BUDGET)
+
+    def test_an_ordinary_case_is_rendered_at_full_caps(self):
+        """The shrink is for renders over budget only: an ordinary case keeps
+        every cap, so its user message arrives at the full 500 characters."""
+        message = (
+            "The payments service began returning 503s at 10:40 after the "
+            "deploy; pods on node-7 show OOMKilled with the heap near its limit. "
+        ) * 10
+        prompt = get_fallback_prompt_for_case(
+            _case(state=CaseState.INVESTIGATING), message
+        )
+        assert message[:500] in prompt
+
+    @pytest.mark.parametrize("unit", [_LOG_DENSE, _CJK], ids=["log-dense", "cjk"])
+    def test_dense_text_is_shrunk_to_fit_the_smallest_ceiling(self, unit):
+        """Log lines full of timestamps and ids, or CJK, take several times the
+        tokens of prose at the same length, so the character caps alone do not
+        bound them. The render is shrunk until it fits the smallest ceiling
+        with the degraded notice appended, and still names every upload."""
+        from faultmaven.utils.model_context import MIN_PROMPT_BUDGET
+
+        prompt = get_fallback_prompt_for_case(_dense_case(unit), _fill(unit, 4000))
+
+        size = _fallback_tokens(prompt + DEGRADED_NO_TOOLS_NOTICE)
+        assert size < MIN_PROMPT_BUDGET, (size, MIN_PROMPT_BUDGET)
+        for i in range(3):
+            assert f'file_id="file_0e0e0e0e0e1{i}"' in prompt, "INV-1 survives"
+        assert prompt.count('searchable="true"') == 3
+        # The user's message is shrunk last: here the context absorbs the cut.
+        assert _fill(unit, 500) in prompt
+        # Shortened, not emptied to the one-character minimum.
+        assert max(_journal_entry_lengths(prompt)) > 1
+        # The notice keeps its cap.
+        assert _cap_notice(_fill(unit, 1000), _FALLBACK_FEEDBACK_MAX_TOKENS) in prompt
+
+    def test_long_file_labels_shrink_with_the_context(self):
+        """A file's label is capped at a filename's own limit and shrinks with
+        the rest of the context. Left out, three 250-character CJK filenames
+        kept a dense case over budget after every shrink (review of #1693)."""
+        from faultmaven.utils.model_context import MIN_PROMPT_BUDGET
+
+        filename = "日志文件" * 60 + ".log"
+        prompt = get_fallback_prompt_for_case(
+            _dense_case(_CJK, filename=filename), _fill(_CJK, 4000)
+        )
+
+        size = _fallback_tokens(prompt + DEGRADED_NO_TOOLS_NOTICE)
+        assert size < MIN_PROMPT_BUDGET, (size, MIN_PROMPT_BUDGET)
+        assert filename not in prompt
+        assert 'label="日志' in prompt, "cut, not dropped"
+
+    def test_the_user_message_is_shrunk_last(self):
+        """An ordinary CJK case over the smallest budget gives up journal
+        detail before any of the user's message."""
+        case = _case(state=CaseState.INVESTIGATING)
+        case.description = _fill(_CJK, 150)
+        case.investigation_journal = [
+            JournalEntry(turn=i, entry_type="finding", content=_fill(_CJK, 100))
+            for i in range(1, 13)
+        ]
+        message = _fill("请检查连接池配置和节点内存。", 300)
+
+        prompt = get_fallback_prompt_for_case(case, message)
+
+        assert message in prompt
+        assert "cut short" not in prompt
+        assert max(_journal_entry_lengths(prompt)) < 100, "the context was cut"
+
+    @pytest.mark.parametrize("length,cut", [(100, False), (4000, True)])
+    def test_a_cut_user_message_says_so(self, length, cut):
+        prompt = get_fallback_prompt_for_case(
+            _case(state=CaseState.INVESTIGATING), "U" * length
+        )
+        assert ("The user's message is cut short" in prompt) is cut
+
+    def test_an_overflow_arm_passes_its_own_budget(self):
+        """The arms know the ceiling they overflowed. A fallback under a large
+        one is not shrunk to fit the smallest ceiling there is."""
+        resolved = dataclasses.replace(
+            resolve_model_budget(None, None), prompt_target=50_000, prompt_budget=20_000
+        )
+        prompt = templates._assemble_allocated(
+            _dense_case(_CJK),
+            lambda budget: {},
+            lambda ctx: "x" * 100_000,
+            resolved,
+            0,
+            10,
+            len,
+            _fill(_CJK, 4000),
+            None,
+            None,
+        )
+        assert prompt.startswith("You are FaultMaven investigating an issue.")
+        assert _fallback_tokens(prompt) > _FALLBACK_MAX_TOKENS
+        assert set(_journal_entry_lengths(prompt)) == {120}, "every cap in full"
+
+    def test_without_the_encoding_the_bound_counts_bytes(self, monkeypatch):
+        """With cl100k unloadable, ``estimate_tokens`` counts four characters a
+        token, which let a dense CJK fallback through at twice the floor. The
+        fallback counts UTF-8 bytes instead, which no token count exceeds."""
+        from faultmaven.utils import token_estimation
+        from faultmaven.utils.model_context import MIN_PROMPT_BUDGET
+
+        real = tiktoken.get_encoding("cl100k_base")
+        monkeypatch.setattr(
+            token_estimation, "_get_tiktoken_encoder", lambda model="gpt-4": None
+        )
+        _cap_notice.cache_clear()
+        try:
+            prompt = get_fallback_prompt_for_case(_dense_case(_CJK), _fill(_CJK, 4000))
+        finally:
+            _cap_notice.cache_clear()
+
+        size = len(real.encode(prompt + DEGRADED_NO_TOOLS_NOTICE))
+        assert size < MIN_PROMPT_BUDGET, (size, MIN_PROMPT_BUDGET)
 
     @pytest.mark.parametrize(
         "state,with_upload",

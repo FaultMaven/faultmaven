@@ -4340,6 +4340,14 @@ class TurnProgress(BaseModel):
         description="Instruction or error from system to agent (e.g., 'Invalid evidence ID')",
         max_length=1000,
     )
+    system_feedback_forwarded: bool = Field(
+        default=False,
+        description=(
+            "True when this turn built no prompt and carried the previous "
+            "record's system_feedback forward unread, so the notice belongs to "
+            "an earlier turn (#1688)"
+        ),
+    )
 
     # ============================================================
     # Progress Metrics (populated by WorkingConclusionGenerator)

@@ -1258,11 +1258,16 @@ def _attr(name: str, value) -> str:
     return f' {name}="{safe}"'
 
 
-def _label_attr(uf) -> str:
-    """``label="..."`` — the citable name of an ``<uploaded_file>``."""
+def _label_attr(uf, max_chars: Optional[int] = None) -> str:
+    """``label="..."`` — the citable name of an ``<uploaded_file>``.
+
+    ``max_chars`` cuts the name; only the fallback prompt passes it, to keep
+    its size bounded (#1688).
+    """
     if uf is None or not uf.filename:
         return ""
-    return _attr("label", uf.display_name)
+    name = uf.display_name
+    return _attr("label", name if max_chars is None else name[:max_chars])
 
 
 def _build_hash_first_seen(case) -> Dict[str, int]:
@@ -3739,18 +3744,39 @@ def system_feedback_block(
     (``milestone_engine.record_promptless_turn``), so the last record is the
     one carrying whatever no prompt has rendered yet.
 
+    The heading names where the notice came from. Normally that is the
+    previous turn. A forwarded copy belongs to an earlier one, and the
+    conversation history above ends on the exchanges that carried it, so
+    "previous turn" would point the model at the wrong exchange. The walk
+    back finds the nearest record that wrote it, stepping over forwarded copies
+    and over any record not carrying it, such as a SKIPPED placeholder that
+    ``Case.reconcile_turn_sequence`` backfilled for an interrupted turn.
+
     ``guard`` wraps the notice text alone; the fallback passes its
     ``_guarded``. Wrapping the finished block instead would put a terminator
     after the block's trailing blank line, on the same line as whatever the
     template renders next.
     """
-    if not case.turn_history:
+    last = case.turn_history[-1] if case.turn_history else None
+    if last is None or not last.system_feedback:
         return ""
-    feedback = case.turn_history[-1].system_feedback
-    if not feedback:
-        return ""
-    body = guard(feedback) if guard else feedback
-    return f"IMPORTANT - SYSTEM FEEDBACK FROM PREVIOUS TURN:\n{body}\n\n"
+    notice = last.system_feedback
+    body = guard(notice) if guard else notice
+    if not last.system_feedback_forwarded:
+        return f"IMPORTANT - SYSTEM FEEDBACK FROM PREVIOUS TURN:\n{body}\n\n"
+    origin = next(
+        (
+            record
+            for record in reversed(case.turn_history[:-1])
+            if record.system_feedback == notice and not record.system_feedback_forwarded
+        ),
+        None,
+    )
+    source = f"TURN {origin.turn_number}" if origin else "AN EARLIER TURN"
+    return (
+        f"IMPORTANT - SYSTEM FEEDBACK FROM {source} "
+        f"(not shown to you until now):\n{body}\n\n"
+    )
 
 
 def build_investigation_context(
