@@ -58,6 +58,20 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
          [ -e "$f" ] && { readlink -f "$f" | xargs -r rm -f; rm -f "$f"; }; \
        done \
     && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-m3'); print('offline model load OK')"
+# tiktoken's cl100k_base encoding, baked in for the same reason. Every token
+# count the engine makes goes through it: the prompt allocator, the fallback
+# prompt's size bound, chunk sizing in vector_storage and the knowledge base's
+# document preprocessor. tiktoken downloads it on first use, with no request
+# timeout, and vector_storage loads it at import. An
+# image without it and with no network counts four characters a token instead,
+# which undercounts CJK and log text several times over. TIKTOKEN_CACHE_DIR
+# persists to runtime. The second load goes through an unreachable proxy, so a
+# cache tiktoken does not read fails the build rather than the pod.
+ENV TIKTOKEN_CACHE_DIR=/home/faultmaven/.cache/tiktoken
+RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')" \
+    && HTTPS_PROXY=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9 \
+       https_proxy=http://127.0.0.1:9 http_proxy=http://127.0.0.1:9 \
+       python -c "import tiktoken; tiktoken.get_encoding('cl100k_base'); print('offline tiktoken load OK')"
 USER root
 
 # Note: spaCy model no longer needed - PII protection uses K8s Presidio microservice
