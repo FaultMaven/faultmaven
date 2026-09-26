@@ -3182,10 +3182,11 @@ _FALLBACK_FEEDBACK_MAX_TOKENS = 100
 #: What the fallback counts tokens with. ``estimate_tokens`` maps this pair to
 #: tiktoken's ``cl100k_base``, as it does every ``gpt-4*`` name; the model name
 #: selects the encoding and nothing else. cl100k is also what the allocator
-#: counts with for most providers, and the fallback's size bound is stated and
-#: tested in it (``fence.py``). The fallback is built without the live provider,
-#: and counting without one falls back to four characters a token, which lets a
-#: CJK notice through at several times the cap.
+#: counts with for OpenAI, OpenRouter, Anthropic and Fireworks (the other
+#: providers get four characters a token), and the fallback's size bound is
+#: stated and tested in it (``fence.py``). The fallback is built without the
+#: live provider, and counting without one falls back to four characters a
+#: token, which lets a CJK notice through at several times the cap.
 _FALLBACK_TOKENIZER = ("openai", "gpt-4o")
 
 #: The fallback's size budget, in ``_FALLBACK_TOKENIZER`` tokens. The overflow

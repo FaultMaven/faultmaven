@@ -172,9 +172,9 @@ timestamps and ids, or CJK, can take several times the budget. So
 ``templates.get_fallback_prompt_for_case`` measures the render and redoes one
 over ``_FALLBACK_MAX_TOKENS`` with every quoted channel's cap scaled down (the
 notice keeps its own); tests pin the result for a case at every cap and for
-dense text. The measure is tiktoken's
-``cl100k_base``, which the allocator also counts with for most providers, not
-the live model's own tokenizer.
+dense text. The measure is tiktoken's ``cl100k_base``, which the allocator
+also counts with for OpenAI, OpenRouter, Anthropic and Fireworks, not the live
+model's own tokenizer.
 
 **FORGERY and ABSORPTION are different questions, and only the first one is
 about authorship.** This distinction is the whole lesson of #1254 and it is
