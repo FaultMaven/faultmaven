@@ -39,6 +39,12 @@ What it holds down, and why each one:
   is the only reason calibrating it was a multi-file change. The scan
   carries a positive control, because a scan whose vocabulary has drifted
   reports a clean tree exactly like a clean tree does.
+* **The rest of `tests/` (#1579).** Both required gates run every other
+  directory too, where 50 raw wall-clock thresholds were found, two of them
+  red on unrelated commits once the gates went under `pytest-xdist`. A
+  third scan finds the code that MEASURES a duration anywhere outside the
+  two timing suites, and holds every test that reaches it to the same two
+  rules — no threshold, and a helper as the judge.
 * **Laziness.** The ordinary CI invocation collects this package and
   deselects every test in it. Nothing may pay the calibration's ~1s for
   that.
@@ -47,7 +53,9 @@ What it holds down, and why each one:
 from __future__ import annotations
 
 import ast
+import math
 import os
+import warnings
 from pathlib import Path
 from typing import List, Tuple
 
@@ -298,11 +306,20 @@ class TestTheWorkloadItself:
     def test_the_workload_is_deterministic(self):
         assert calibration._calibration_work() == calibration._calibration_work()
 
-    def test_a_measurement_is_a_plausible_positive_duration(self):
+    def test_a_measurement_is_a_positive_finite_duration(self):
         # A handful of repetitions, not the shipped counts — this test is
         # about the shape of the answer, not its stability.
+        #
+        # ‼ No upper bound (#1579). This read ``0 < observed < 1.0``: a raw
+        # wall-clock ceiling on a real measurement in both required gates,
+        # which the #1579 census missed because the clock is read inside
+        # ``tests/wallclock/``. What the ceiling was for — the right UNIT —
+        # is pinned exactly, on a stub clock, by the median-of-block-minima
+        # test below, which fails if the estimator stops returning
+        # ``perf_counter`` seconds.
         observed = calibration.measure_calibration(blocks=3, repetitions_per_block=3)
-        assert 0 < observed < 1.0
+        assert observed > 0
+        assert math.isfinite(observed)
 
     @pytest.mark.parametrize("kwargs", [{"blocks": 0}, {"repetitions_per_block": 0}])
     def test_the_sample_sizes_must_be_positive(self, kwargs):
@@ -417,7 +434,12 @@ class TestTheBudgetTable:
         # per-task one divided by a constant, so its anchor could never
         # fire first. The memory and object-count assertions are not among
         # them, for the same reason as above.
-        assert len(performance_table.ALL_BUDGETS) == 21
+        #
+        # +7 in #1579: timings moved here from unit and integration tests the
+        # required gates ran as raw wall clock — two sanitizer throughputs,
+        # two disabled-shim call costs, vocabulary and timestamp extraction,
+        # and extraction beside a hostile line against the Tier-1 timeout.
+        assert len(performance_table.ALL_BUDGETS) == 28
 
     @pytest.mark.parametrize("name", sorted(ALL_ANCHORS))
     def test_the_anchor_is_2_to_3x_its_measured_reference(self, name):
@@ -919,6 +941,15 @@ PLANTED_PER_SHAPE = {
     "operator_call": "assert operator.lt(elapsed, 0.2)",
     "if_fail": "if elapsed > 0.2:\n        pytest.fail('slow')",
     "if_raise": "if elapsed > 0.2:\n        raise AssertionError('slow')",
+    # #1579: four shapes the top-level check could not see. The first is
+    # live outside these directories (``assert all(t < 2.0 for t in ...)``
+    # in tests/infrastructure); none is live inside them, so covering all
+    # four cost nothing.
+    "inside_all": "assert all(t < 0.2 for t in times)",
+    "inside_a_boolean": "assert ok and elapsed < 0.2",
+    "assert_true": "self.assertTrue(elapsed < 0.2)",
+    "compared_to_true": "assert (elapsed < 0.2) is True",
+    "if_boolean_raise": "if ok and elapsed > 0.2:\n        raise AssertionError('slow')",
 }
 
 #: The same corpus #1555 planted, kept as a regression control: whatever
@@ -1011,11 +1042,14 @@ def _threshold_comparisons(source: str, filename: str) -> List[Tuple[str, str, i
         visit_AsyncFunctionDef = visit_FunctionDef  # noqa: N815 - ast API
 
         def visit_Assert(self, node):  # noqa: N802 - ast API
-            test = node.test
-            if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
-                test = test.operand
-            if isinstance(test, ast.Compare) and _is_threshold_comparison(test):
-                _record(node, ast.unparse(test))
+            # EVERY comparison inside the assertion, not only the one at its
+            # top (#1579): ``assert all(t < 0.2 for t in ts)``, ``assert ok
+            # and t < 0.2`` and ``assert (t < 0.2) is True`` were each
+            # invisible to the top-level check. Measured cost of looking
+            # inside, over both directories: zero new findings.
+            for child in ast.walk(node.test):
+                if isinstance(child, ast.Compare) and _is_threshold_comparison(child):
+                    _record(node, ast.unparse(child))
             self.generic_visit(node)
 
         def visit_Call(self, node):  # noqa: N802 - ast API
@@ -1023,6 +1057,15 @@ def _threshold_comparisons(source: str, filename: str) -> List[Tuple[str, str, i
             if isinstance(func, ast.Attribute):
                 if func.attr in COMPARISON_CALLS:
                     _record(node, ast.unparse(node))
+                elif func.attr.startswith("assert"):
+                    # ``self.assertTrue(t < 0.2)``: an assert with the
+                    # operator moved into an argument.
+                    for arg in node.args:
+                        for child in ast.walk(arg):
+                            if isinstance(
+                                child, ast.Compare
+                            ) and _is_threshold_comparison(child):
+                                _record(node, ast.unparse(child))
                 elif (
                     func.attr in OPERATOR_COMPARISONS
                     and ast.unparse(func).startswith("operator.")
@@ -1038,18 +1081,18 @@ def _threshold_comparisons(source: str, filename: str) -> List[Tuple[str, str, i
             # across `tests/`, one of them in `tests/benchmarks/conftest.py`
             # — so covering it costs exactly one allowlist entry, which is
             # cheaper than leaving the shape open.
-            if isinstance(node.test, ast.Compare) and _is_threshold_comparison(
-                node.test
+            compares = [
+                child
+                for child in ast.walk(node.test)
+                if isinstance(child, ast.Compare) and _is_threshold_comparison(child)
+            ]
+            if compares and any(
+                isinstance(child, ast.Raise)
+                or (isinstance(child, ast.Call) and "fail" in ast.unparse(child.func))
+                for child in ast.walk(node)
             ):
-                for child in ast.walk(node):
-                    if isinstance(child, ast.Raise):
-                        _record(node, ast.unparse(node.test))
-                        break
-                    if isinstance(child, ast.Call) and "fail" in ast.unparse(
-                        child.func
-                    ):
-                        _record(node, ast.unparse(node.test))
-                        break
+                for compare in compares:
+                    _record(node, ast.unparse(compare))
             self.generic_visit(node)
 
     _Walk().visit(tree)
@@ -1368,6 +1411,1064 @@ class TestEveryMeasurementIsJudged:
         }
         dead = sorted(key for key in UNJUDGED_TIMED_TESTS if key not in live)
         assert not dead, dead
+
+
+# ------------------------------------ the rest of tests/, in the gates (#1579)
+#
+# Everything above watches ``tests/benchmarks/`` and ``tests/performance/``.
+# Both required gates run ``pytest tests/`` and deselect only the
+# ``benchmark`` marker, so every OTHER directory under ``tests/`` runs there
+# too — and #1579 counted 50 hand-rolled wall-clock thresholds in 18 files of
+# it. After #1651 put both gates under ``pytest-xdist`` two of them went red
+# on unrelated commits within hours (``2.98 < 2.0``; ``3.7x`` against 3.0).
+#
+# The rule used above cannot simply be pointed at the rest of ``tests/``.
+# It flags every ordering comparison in a directory, which is right where
+# every test is a timing test and would flag thousands of ``len(x) > 0``
+# elsewhere. So this rule scopes itself to the code that MEASURES:
+#
+# * a function MEASURES when it subtracts two clock readings — or compares
+#   two, the ``deadline = monotonic() + 0.5 ... monotonic() < deadline``
+#   idiom — or calls ``timeit``. A clock reading is a ``time`` clock
+#   (aliased or not, imported by name or not), an event loop's ``.time()``,
+#   or a call to a function that returns one. A single reading used as a
+#   TIMESTAMP (``time.time() + 60``, ``now - 55.0``) is not a measurement,
+#   which is what keeps the 100-odd timestamp-only tests out of scope.
+# * a test is TIMED when it reaches a measuring function through the call
+#   graph, which resolves same-module names, ``from x import f``, module
+#   aliases and package re-exports across the whole of ``tests/``.
+#
+# and asks the two questions the rules above ask, of that scope:
+#
+# * **no threshold** — every ordering comparison inside a timed test or a
+#   measuring function, ANYWHERE in its body (not only at the top of an
+#   ``assert``: ``assert all(t < 0.2 ...)``, ``ok = e < 0.2``,
+#   ``assert a and e < 0.2`` are all live shapes), is a finding unless
+#   ``TREE_THRESHOLD_ALLOWLIST`` says why it is not a duration budget;
+# * **judged by a helper** — every timed test must reach
+#   ``assert_latency_within``, ``assert_throughput_at_least`` or
+#   ``assert_linear_growth``, or be named in ``TREE_UNJUDGED_TIMED_TESTS``.
+#
+# Measured, counted rather than tuned. This scanner, run over origin/main's
+# ``tests/`` as #1579 found it: 96 timed tests, 72 comparisons in 17 files
+# inside the timed scope, 64 timed tests reaching no judge. After the
+# conversions: 56 timed tests, and the only findings left are the nine
+# ``TREE_THRESHOLD_ALLOWLIST`` entries and fourteen
+# ``TREE_UNJUDGED_TIMED_TESTS`` below, each read and given its reason.
+
+TESTS_ROOT = REPO_ROOT / "tests"
+
+#: Directories the tree-wide rule does not scan for violations, each with the
+#: reason. Everything else under ``tests/`` is in scope, and
+#: ``test_the_three_scopes_partition_tests`` fails if a file falls through.
+TREE_EXCLUDED_DIRS = {
+    BENCHMARK_DIR: "stricter rule above: every comparison in the directory",
+    PERFORMANCE_DIR: "stricter rule above: every comparison in the directory",
+    WALLCLOCK_DIR: "the helpers themselves; scanned for the call graph only",
+}
+
+#: Attributes of the ``time`` module that read a clock.
+#:
+#: ‼ ``datetime.now()`` / ``utcnow()`` are deliberately NOT here, and that is
+#: a measured decision rather than an oversight. Counting them costs 38 new
+#: findings and 33 unjudged tests on the current tree, every one read: brackets
+#: (``before <= stamped <= after``), orderings of stored timestamps, and JWT
+#: expiry windows — none a budget on how long code took. A duration measured
+#: with ``datetime`` has 0 live sites. If one appears, it is the known miss.
+TIME_MODULE_CLOCKS = frozenset(
+    {
+        "perf_counter",
+        "perf_counter_ns",
+        "monotonic",
+        "monotonic_ns",
+        "time",
+        "time_ns",
+        "process_time",
+        "process_time_ns",
+        "thread_time",
+        "thread_time_ns",
+    }
+)
+#: The same, minus the two whose NAME is too common to trust on any receiver
+#: (``histogram.time()``, ``loop.time()`` — the second handled below).
+ANY_RECEIVER_CLOCKS = TIME_MODULE_CLOCKS - {"time", "time_ns"}
+#: Calls whose result is an event loop, whose ``.time()`` is a clock.
+LOOP_FACTORIES = frozenset({"get_event_loop", "get_running_loop", "new_event_loop"})
+#: ‼ Clocks that are NOT wall clocks: ``virtual_now`` reads a
+#: ``VirtualTimeLoop`` and raises on any other loop
+#: (``test_virtual_now_refuses_a_real_loop`` holds it to that), so an elapsed
+#: figure built from it is the same on every machine and is not a duration
+#: this rule is about. The call graph does not descend into it.
+VIRTUAL_CLOCKS = frozenset({"virtual_now"})
+#: The judges a timed test may reach.
+TREE_JUDGES = HELPER_FUNCTIONS | {"assert_linear_growth"}
+
+
+def _tree_scope_modules(root: Path = TESTS_ROOT) -> List[Path]:
+    """Every module the tree-wide rule scans: ``tests/`` minus the exclusions."""
+    return [
+        path
+        for path in sorted(root.rglob("*.py"))
+        if "__pycache__" not in path.parts
+        and not any(path.is_relative_to(d) for d in TREE_EXCLUDED_DIRS)
+    ]
+
+
+def _dotted(path: Path, root: Path) -> str:
+    parts = path.relative_to(root).with_suffix("").parts
+    return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
+
+
+class _Facts:
+    """One function body: its calls and its loop-bound names."""
+
+    __slots__ = ("node", "calls", "loop_names")
+
+    def __init__(self, node: ast.AST) -> None:
+        self.node = node
+        self.calls: List[ast.Call] = []
+        self.loop_names: set = set()
+
+
+def _one_pass(tree: ast.AST):
+    """Every import and every function's facts, in ONE walk of the module.
+
+    A call inside a nested function belongs to every function around it —
+    exactly what walking each function separately would say — so the walk
+    keeps the stack of enclosing functions and credits all of them. Walking
+    each function on its own re-walked every nested body once per level and
+    was two thirds of this scan's cost.
+    """
+    imports: List[ast.AST] = []
+    functions: List[_Facts] = []
+    enclosing: List[_Facts] = []
+    pending: list = [(tree, False)]
+    while pending:
+        node, leaving = pending.pop()
+        if leaving:
+            enclosing.pop()
+            continue
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            facts = _Facts(node)
+            functions.append(facts)
+            enclosing.append(facts)
+            pending.append((node, True))
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            imports.append(node)
+        elif isinstance(node, ast.Call):
+            for facts in enclosing:
+                facts.calls.append(node)
+        elif (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and _called_name(node.value) in LOOP_FACTORIES
+        ):
+            bound = {t.id for t in node.targets if isinstance(t, ast.Name)}
+            for facts in enclosing:
+                facts.loop_names.update(bound)
+        pending.extend((child, False) for child in ast.iter_child_nodes(node))
+    return imports, functions
+
+
+class _TreeIndex:
+    """Functions, calls and clock reads across a set of modules.
+
+    ``root`` is what dotted module names are computed against: the
+    repository for the real tree, a scratch directory for planted ones.
+    Every function body is walked once, in ``_Facts``; the taint pass runs
+    only on the few hundred functions that can reach a clock at all.
+    """
+
+    def __init__(self, paths: List[Path], root: Path) -> None:
+        self.root = root
+        self.by_dotted = {_dotted(p, root): _key(p) for p in paths}
+        self.functions: dict = {}
+        self.module_names: dict = {}
+        for path in paths:
+            key = _key(path)
+            with warnings.catch_warnings():
+                # A module with an invalid escape in a docstring warns on
+                # parse; that is its business, not this scan's.
+                warnings.simplefilter("ignore", (DeprecationWarning, SyntaxWarning))
+                tree = ast.parse(path.read_text(), filename=key)
+            imports, functions = _one_pass(tree)
+            self.module_names[key] = self._names(path, imports)
+            for facts in functions:
+                self.functions.setdefault((key, facts.node.name), []).append(facts)
+        self.conftests = {
+            key: self._conftest_ancestry(
+                Path(key) if Path(key).is_absolute() else root / key
+            )
+            for key in self.module_names
+        }
+        self.reads_clock = set()
+        self.calls: dict = {}
+        for fn, bodies in self.functions.items():
+            targets = set()
+            for facts in bodies:
+                # A parameter is how pytest hands a test its fixtures, so a
+                # parameter NAMED like a function is an edge to it: the test
+                # that takes ``stopwatch`` runs ``stopwatch`` before its body.
+                args = facts.node.args
+                for arg in [*args.posonlyargs, *args.args, *args.kwonlyargs]:
+                    targets.add((fn[0], arg.arg))
+                for call in facts.calls:
+                    if self._is_clock_call(call, fn[0], facts.loop_names):
+                        self.reads_clock.add(fn)
+                        continue
+                    target = self._target(call, fn[0])
+                    if target is not None:
+                        targets.add(target)
+            self.calls[fn] = targets
+        near_a_clock = {
+            fn
+            for fn, targets in self.calls.items()
+            if fn in self.reads_clock
+            or any(self.resolve(t) in self.reads_clock for t in targets)
+        }
+        self.measuring = {fn for fn in near_a_clock if self._measures(fn)}
+
+    # -- names ---------------------------------------------------------------
+
+    def _names(self, path: Path, imports: List[ast.AST]) -> dict:
+        """time/timeit aliases, clock names, imported functions, module aliases."""
+        names = {
+            "time": set(),
+            "clock": set(),
+            "timeit": set(),
+            "imported": {},
+            "modules": {},
+        }
+        package = _dotted(path, self.root).split(".")
+        if path.name != "__init__.py":
+            package = package[:-1]
+        for node in imports:
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    local = alias.asname or alias.name
+                    if alias.name == "time":
+                        names["time"].add(local)
+                    elif alias.name == "timeit":
+                        names["timeit"].add(local)
+                    elif alias.name in self.by_dotted and alias.asname:
+                        names["modules"][local] = self.by_dotted[alias.name]
+            elif isinstance(node, ast.ImportFrom):
+                base = node.module or ""
+                if node.level:
+                    anchor = package[: len(package) - (node.level - 1)]
+                    base = ".".join(anchor + ([base] if base else []))
+                for alias in node.names:
+                    local = alias.asname or alias.name
+                    if base == "time" and alias.name in TIME_MODULE_CLOCKS:
+                        names["clock"].add(local)
+                    elif base == "timeit":
+                        names["timeit"].add(local)
+                    elif f"{base}.{alias.name}" in self.by_dotted:
+                        names["modules"][local] = self.by_dotted[f"{base}.{alias.name}"]
+                    elif base in self.by_dotted:
+                        names["imported"][local] = (self.by_dotted[base], alias.name)
+        return names
+
+    def _is_clock_call(self, call: ast.Call, module: str, loop_names: set) -> bool:
+        names = self.module_names[module]
+        func = call.func
+        if isinstance(func, ast.Name):
+            return func.id in names["clock"] or func.id in names["timeit"]
+        if not isinstance(func, ast.Attribute):
+            return False
+        receiver = func.value
+        if isinstance(receiver, ast.Name):
+            if receiver.id in names["time"] and func.attr in TIME_MODULE_CLOCKS:
+                return True
+            if receiver.id in names["timeit"]:
+                return True
+        if func.attr in ANY_RECEIVER_CLOCKS:
+            return True
+        if func.attr == "time":
+            if isinstance(receiver, ast.Call) and _called_name(receiver) in (
+                LOOP_FACTORIES
+            ):
+                return True
+            if isinstance(receiver, ast.Name) and receiver.id in loop_names:
+                return True
+        return False
+
+    def _target(self, call: ast.Call, module: str):
+        """The (module, name) a call reaches, as far as syntax can say."""
+        names = self.module_names[module]
+        func = call.func
+        if isinstance(func, ast.Name):
+            if func.id in VIRTUAL_CLOCKS:
+                return None
+            return names["imported"].get(func.id, (module, func.id))
+        if isinstance(func, ast.Attribute):
+            if func.attr in VIRTUAL_CLOCKS:
+                return None
+            receiver = func.value
+            if isinstance(receiver, ast.Name) and receiver.id in names["modules"]:
+                return (names["modules"][receiver.id], func.attr)
+            return (module, func.attr)
+        return None
+
+    def _conftest_ancestry(self, path: Path) -> List[str]:
+        """The ``conftest.py`` modules pytest would look in for ``path``'s fixtures."""
+        found = []
+        directory = path.parent
+        while directory.is_relative_to(self.root):
+            conftest = directory / "conftest.py"
+            if _key(conftest) in self.module_names:
+                found.append(_key(conftest))
+            if directory == self.root:
+                break
+            directory = directory.parent
+        return found
+
+    def resolve(self, target, depth: int = 0):
+        """Follow a target to a defined function.
+
+        Through re-exports, and — the way pytest resolves a fixture — through
+        the ``conftest.py`` files above the calling module, nearest first.
+        """
+        if target in self.functions:
+            return target
+        module, name = target
+        imported = self.module_names.get(module, {}).get("imported", {})
+        if depth < 5 and name in imported:
+            return self.resolve(imported[name], depth + 1)
+        for conftest in self.conftests.get(module, ()):
+            if (conftest, name) in self.functions:
+                return (conftest, name)
+        return None
+
+    # -- measurement ---------------------------------------------------------
+
+    def _tainted(self, expr: ast.AST, tainted: set, module: str, facts) -> bool:
+        for node in ast.walk(expr):
+            if isinstance(node, ast.Name) and node.id in tainted:
+                return True
+            if isinstance(node, ast.Call):
+                if self._is_clock_call(node, module, facts.loop_names):
+                    return True
+                target = self._target(node, module)
+                if target is not None and self.resolve(target) in self.reads_clock:
+                    return True
+        return False
+
+    def _measures(self, fn) -> bool:
+        module = fn[0]
+        for facts in self.functions[fn]:
+            scope = facts.node
+            tainted: set = set()
+            bindings = list(_bindings(scope))
+            changed = True
+            while changed:
+                changed = False
+                for targets, value in bindings:
+                    if value is None or not self._tainted(
+                        value, tainted, module, facts
+                    ):
+                        continue
+                    for target in targets:
+                        for name in ast.walk(target):
+                            if isinstance(name, ast.Name) and name.id not in tainted:
+                                tainted.add(name.id)
+                                changed = True
+
+            def is_tainted(expr):
+                return self._tainted(expr, tainted, module, facts)
+
+            for node in ast.walk(scope):
+                if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Sub):
+                    if is_tainted(node.left) and is_tainted(node.right):
+                        return True
+                elif isinstance(node, ast.AugAssign) and isinstance(node.op, ast.Sub):
+                    if is_tainted(node.target) and is_tainted(node.value):
+                        return True
+                elif isinstance(node, ast.Compare) and any(
+                    isinstance(op, ORDERING_OPS) for op in node.ops
+                ):
+                    sides = [node.left, *node.comparators]
+                    if sum(1 for side in sides if is_tainted(side)) >= 2:
+                        return True
+            if any(
+                isinstance(getattr(c.func, "value", None), ast.Name)
+                and c.func.value.id in self.module_names[module]["timeit"]
+                for c in facts.calls
+            ):
+                return True
+        return False
+
+    def reaches(self, start, found) -> bool:
+        """Does ``start`` reach a function ``found`` accepts, following calls?"""
+        seen, stack = set(), [start]
+        while stack:
+            current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            if found(current):
+                return True
+            for target in self.calls.get(current, ()):
+                if found(target):
+                    return True
+                resolved = self.resolve(target)
+                if resolved is not None:
+                    stack.append(resolved)
+        return False
+
+
+def _called_name(call: ast.Call) -> str:
+    func = call.func
+    return getattr(func, "attr", None) or getattr(func, "id", "")
+
+
+def _bindings(scope: ast.AST):
+    """(targets, value) for every way ``scope`` binds a name."""
+    for node in ast.walk(scope):
+        if isinstance(node, ast.Assign):
+            yield node.targets, node.value
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
+            yield [node.target], node.value
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            yield [node.target], node.iter
+        elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+            yield [node.optional_vars], node.context_expr
+
+
+def _ordering_findings(node: ast.AST) -> List[str]:
+    """Every threshold-shaped comparison anywhere in ``node``'s body.
+
+    The same two carve-outs as the directory rule (equality is never a
+    budget; a comparison whose only literal is 0 is an existence check),
+    applied to EVERY ordering comparison rather than only the one at the top
+    of an ``assert``, plus the ``assertLess`` and ``operator.lt`` spellings.
+    """
+    found = []
+    for child in ast.walk(node):
+        if isinstance(child, ast.Compare) and _is_threshold_comparison(child):
+            found.append(ast.unparse(child))
+        elif isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute):
+            if child.func.attr in COMPARISON_CALLS or (
+                child.func.attr in OPERATOR_COMPARISONS
+                and ast.unparse(child.func).startswith("operator.")
+                and _numeric_literals(child)
+            ):
+                found.append(ast.unparse(child))
+    return found
+
+
+def _tree_scan(scope: List[Path], context: List[Path], root: Path = REPO_ROOT):
+    """(timed tests, findings, unjudged) for the modules in ``scope``.
+
+    ``context`` is indexed for the call graph as well — the helpers in
+    ``tests/wallclock/`` and anything the scope imports from the excluded
+    directories — but nothing in it is reported.
+    """
+    index = _TreeIndex(sorted(set(scope) | set(context)), root)
+    in_scope = {_key(p) for p in scope}
+    timed = sorted(
+        fn
+        for fn in index.functions
+        if fn[0] in in_scope
+        and fn[1].startswith("test_")
+        and index.reaches(fn, lambda f: f in index.measuring)
+    )
+    scanned = set(timed) | {fn for fn in index.measuring if fn[0] in in_scope}
+    findings = sorted(
+        {
+            (fn[0], fn[1], text)
+            for fn in scanned
+            for facts in index.functions[fn]
+            for text in _ordering_findings(facts.node)
+        }
+    )
+    unjudged = sorted(
+        fn for fn in timed if not index.reaches(fn, lambda f: f[1] in TREE_JUDGES)
+    )
+    return timed, findings, unjudged
+
+
+_TREE_RESULT = None
+
+
+def _tree_result():
+    """The real tree's scan, computed once per process: it parses ~900 files."""
+    global _TREE_RESULT
+    if _TREE_RESULT is None:
+        scope = _tree_scope_modules()
+        context = [
+            path for directory in TREE_EXCLUDED_DIRS for path in _modules_in(directory)
+        ]
+        _TREE_RESULT = _tree_scan(scope, context)
+    return _TREE_RESULT
+
+
+#: Comparisons inside the timed scope that are NOT a duration budget, each
+#: with the reason. Keyed by (file, the comparison as ``ast.unparse`` writes
+#: it), checked for being live, and counted below — widening this is a
+#: visible act. ‼ No entry is a budget on a measured duration. If one ever
+#: needs to be, the answer is a row in a ``budgets.py`` or a growth check.
+_INFRA = "tests/infrastructure"
+TREE_THRESHOLD_ALLOWLIST = {
+    (
+        f"{_INFRA}/test_observability_integration.py",
+        "completed_span.end_time > completed_span.start_time",
+    ): "ORDERS the span's two timestamps; no bound is involved",
+    (
+        f"{_INFRA}/test_observability_integration.py",
+        "execution_time >= 0.01",
+    ): "a FLOOR under an awaited asyncio.sleep(0.01): a slow runner can only "
+    "raise the figure, so this cannot go red for being slow",
+    (
+        f"{_INFRA}/test_observability_integration.py",
+        "len(logs) >= 6",
+    ): "a count of log records in a test that times its simulated steps",
+    (
+        f"{_INFRA}/test_observability_integration.py",
+        "len(session_logs) >= 6",
+    ): "a count of log records in a test that times its simulated steps",
+    (
+        f"{_INFRA}/test_observability_integration.py",
+        "start_log.created < completion_log.created",
+    ): "ORDERS two log records' creation stamps; no bound is involved",
+    (
+        f"{_INFRA}/test_infrastructure_utils.py",
+        "time.time() > self.expirations[key]",
+    ): "a test double's TTL expiry check (get/exists); the clock is compared "
+    "with a deadline it set itself, not a measured duration with a budget",
+    (
+        "tests/unit/core/investigation/test_turn_budget.py",
+        "60 - (after - before) <= remaining <= 60",
+    ): "BRACKETED by two readings of the same monotonic clock taken around "
+    "the computation: a slower runner widens the lower bound by exactly the "
+    "time it took, so no machine speed can put the value outside it",
+    (
+        "tests/unit/modules/knowledge/test_gate_stays_off_the_event_loop.py",
+        "hopped_ticks >= 3",
+    ): "a COUNT of event-loop turns, structural rather than temporal: zero "
+    "when the gate runs inline however fast the machine, never zero when it "
+    "hops to a thread; load raises it",
+    (
+        "tests/unit/modules/knowledge/test_gate_stays_off_the_event_loop.py",
+        "started < t < finished",
+    ): "window membership: which heartbeat ticks fell between two readings",
+}
+
+#: Timed tests that reach no judge, each with the reason. Checked for being
+#: live and counted below.
+_CALIBRATION_SELF_TEST = (
+    "a test OF the calibration instrument: the call graph reaches "
+    "measure_calibration, but the measurement is pinned (_pin_calibration), "
+    "stubbed, refused before it starts, or judged only for being a positive "
+    "finite number"
+)
+_SELF = "tests/unit/ci/test_benchmark_calibration.py"
+TREE_UNJUDGED_TIMED_TESTS = {
+    (
+        f"{_INFRA}/test_observability_integration.py",
+        "test_real_span_lifecycle",
+    ): "judges span ORDER and a floor under an awaited sleep (allowlisted)",
+    (
+        f"{_INFRA}/test_observability_integration.py",
+        "test_real_integrated_observability_workflow",
+    ): "records simulated step durations into a mock histogram and never "
+    "compares them",
+    (
+        "tests/unit/core/investigation/test_turn_budget.py",
+        "test_the_deadline_is_monotonic_not_wall_clock",
+    ): "a bracket, not a budget (allowlisted)",
+    (
+        "tests/unit/modules/knowledge/test_gate_stays_off_the_event_loop.py",
+        "test_the_gate_does_not_stall_the_event_loop",
+    ): "judges a count of event-loop turns (allowlisted)",
+    (_SELF, "test_a_faster_machine_is_never_held_to_a_tighter_budget"): (
+        _CALIBRATION_SELF_TEST
+    ),
+    (_SELF, "test_a_machine_at_reference_speed_gets_the_written_thresholds"): (
+        _CALIBRATION_SELF_TEST
+    ),
+    (_SELF, "test_a_measurement_is_a_positive_finite_duration"): (
+        _CALIBRATION_SELF_TEST
+    ),
+    (_SELF, "test_a_nan_measurement_still_floors_at_one"): _CALIBRATION_SELF_TEST,
+    (_SELF, "test_a_slower_machine_gets_a_proportionally_larger_budget"): (
+        _CALIBRATION_SELF_TEST
+    ),
+    (_SELF, "test_absolute_mode_pins_the_scale_and_measures_nothing"): (
+        _CALIBRATION_SELF_TEST
+    ),
+    (_SELF, "test_it_says_nothing_when_no_budget_was_asserted"): (
+        _CALIBRATION_SELF_TEST
+    ),
+    (_SELF, "test_the_estimate_is_the_median_of_block_minima"): (
+        _CALIBRATION_SELF_TEST
+    ),
+    (_SELF, "test_the_measurement_is_taken_once_per_process"): (_CALIBRATION_SELF_TEST),
+    (_SELF, "test_the_sample_sizes_must_be_positive"): _CALIBRATION_SELF_TEST,
+}
+
+#: One planted module per shape a wall-clock threshold is written in outside
+#: the timing suites. Each is a whole module, because the shapes that matter
+#: here span functions: a helper returning a duration, a judge the test
+#: calls, a clock imported under another name. Live-site counts across
+#: ``tests/`` on the tree #1579 started from are in the comments.
+TREE_PLANTED = {
+    # 23 sites: the dominant spelling.
+    "inline_perf_counter": (
+        "import time\n"
+        "def test_x():\n"
+        "    start = time.perf_counter()\n"
+        "    work()\n"
+        "    assert time.perf_counter() - start < 0.25\n"
+    ),
+    # 6: the ladder's shape — the clock is read in a helper and the
+    # comparison is on an attribute of what it returns, against a subscript.
+    "helper_returns_an_outcome": (
+        "import time\n"
+        "class Outcome:\n"
+        "    def __init__(self, elapsed):\n"
+        "        self.elapsed = elapsed\n"
+        "def _run():\n"
+        "    started = time.monotonic()\n"
+        "    work()\n"
+        "    return Outcome(time.monotonic() - started)\n"
+        "PARAMS = {'turn_seconds': 2.0}\n"
+        "def test_x():\n"
+        "    outcome = _run()\n"
+        "    assert outcome.elapsed < PARAMS['turn_seconds']\n"
+    ),
+    # 6: the ReDoS file's shape — a helper returns seconds, compared to a name.
+    "helper_returns_seconds": (
+        "import time\n"
+        "BUDGET = 1.0\n"
+        "def _once(fn):\n"
+        "    start = time.perf_counter()\n"
+        "    fn()\n"
+        "    return time.perf_counter() - start\n"
+        "def test_x():\n"
+        "    assert _once(work) < BUDGET\n"
+    ),
+    # 1 (``all(t < 2.0 ...)``, missed by #1579's own census).
+    "inside_all": (
+        "import time\n"
+        "def test_x():\n"
+        "    times = []\n"
+        "    for _ in range(3):\n"
+        "        s = time.time()\n"
+        "        work()\n"
+        "        times.append(time.time() - s)\n"
+        "    assert all(t < 2.0 for t in times)\n"
+    ),
+    "inside_a_boolean": (
+        "import time\n"
+        "def test_x():\n"
+        "    s = time.monotonic()\n"
+        "    ok = work()\n"
+        "    assert ok and time.monotonic() - s < 0.5\n"
+    ),
+    "bound_to_a_name_first": (
+        "import time\n"
+        "def test_x():\n"
+        "    s = time.monotonic()\n"
+        "    work()\n"
+        "    fast = time.monotonic() - s < 0.5\n"
+        "    assert fast\n"
+    ),
+    "deadline_idiom": (
+        "import time\n"
+        "def test_x():\n"
+        "    deadline = time.monotonic() + 0.5\n"
+        "    work()\n"
+        "    assert time.monotonic() < deadline\n"
+    ),
+    "aliased_module": (
+        "import time as std_time\n"
+        "def test_x():\n"
+        "    s = std_time.time()\n"
+        "    work()\n"
+        "    assert std_time.time() - s < 1.0\n"
+    ),
+    "imported_by_name": (
+        "from time import perf_counter as clock\n"
+        "def test_x():\n"
+        "    s = clock()\n"
+        "    work()\n"
+        "    assert clock() - s < 1.0\n"
+    ),
+    # 1 (``asyncio.get_event_loop().time()`` in the investigation lifecycle).
+    "event_loop_clock": (
+        "import asyncio\n"
+        "async def test_x():\n"
+        "    loop = asyncio.get_running_loop()\n"
+        "    s = loop.time()\n"
+        "    await work()\n"
+        "    assert loop.time() - s < 0.1\n"
+    ),
+    "event_loop_clock_inline": (
+        "import asyncio\n"
+        "async def test_x():\n"
+        "    a = asyncio.get_event_loop().time()\n"
+        "    b = asyncio.get_event_loop().time()\n"
+        "    assert abs(a - b) < 0.1\n"
+    ),
+    "timeit_call": (
+        "import timeit\n"
+        "def test_x():\n"
+        "    assert timeit.timeit(work, number=5) < 0.1\n"
+    ),
+    "unittest_spelling": (
+        "import time\n"
+        "class T:\n"
+        "    def test_x(self):\n"
+        "        s = time.perf_counter()\n"
+        "        work()\n"
+        "        self.assertLess(time.perf_counter() - s, 0.2)\n"
+    ),
+    "if_then_fail": (
+        "import time, pytest\n"
+        "def test_x():\n"
+        "    s = time.perf_counter()\n"
+        "    work()\n"
+        "    if time.perf_counter() - s > 0.2:\n"
+        "        pytest.fail('slow')\n"
+    ),
+    # The growth test's shape before #1579: a RATIO of two durations.
+    "ratio_of_durations": (
+        "import time\n"
+        "def _t(n):\n"
+        "    s = time.perf_counter()\n"
+        "    work(n)\n"
+        "    return time.perf_counter() - s\n"
+        "def test_x():\n"
+        "    ratio = _t(2) / _t(1)\n"
+        "    assert ratio < 3.0\n"
+    ),
+    # performance/'s shape: a context manager stores the duration on self.
+    "stored_on_self": (
+        "import time, contextlib\n"
+        "class T:\n"
+        "    @contextlib.contextmanager\n"
+        "    def measure(self):\n"
+        "        start = time.perf_counter()\n"
+        "        yield\n"
+        "        self.measured = time.perf_counter() - start\n"
+        "    def test_x(self):\n"
+        "        with self.measure():\n"
+        "            work()\n"
+        "        assert self.measured < 0.1\n"
+    ),
+}
+
+#: Shapes the NO-THRESHOLD rule cannot see, and which the JUDGE rule must
+#: catch instead: the comparison lives where the scan does not look, but the
+#: test still measures and never reaches a helper.
+TREE_PLANTED_JUDGE_ONLY = {
+    "judged_by_a_local_helper": (
+        "import time\n"
+        "def _check_fast(seconds):\n"
+        "    assert seconds < 0.2\n"
+        "def test_x():\n"
+        "    s = time.perf_counter()\n"
+        "    work()\n"
+        "    _check_fast(time.perf_counter() - s)\n"
+    ),
+    "judged_by_isclose": (
+        "import math, time\n"
+        "def test_x():\n"
+        "    s = time.perf_counter()\n"
+        "    work()\n"
+        "    assert math.isclose(time.perf_counter() - s, 0.0, abs_tol=0.2)\n"
+    ),
+}
+
+#: Modules the rule must leave alone: time used as a TIMESTAMP, virtual
+#: time, and a measurement judged by a helper.
+TREE_PLANTED_NEGATIVES = {
+    "expiry_timestamp": (
+        "import time\n"
+        "def test_x():\n"
+        "    token = make(exp=time.time() + 60)\n"
+        "    assert token.ttl > 30\n"
+    ),
+    "aged_window": (
+        "import time\n"
+        "def test_x():\n"
+        "    now = time.time()\n"
+        "    stamps = [now - 55.0] * 5\n"
+        "    assert 1 <= retry_after(stamps) <= 6\n"
+    ),
+    "virtual_clock": (
+        "import asyncio\n"
+        "from tests.wallclock import virtual_now\n"
+        "async def test_x():\n"
+        "    s = virtual_now()\n"
+        "    await asyncio.sleep(1)\n"
+        "    assert virtual_now() - s < 2\n"
+    ),
+    "judged_by_the_helper": (
+        "import time\n"
+        "from tests.wallclock import assert_latency_within\n"
+        "def test_x():\n"
+        "    s = time.perf_counter()\n"
+        "    work()\n"
+        "    assert_latency_within(time.perf_counter() - s, BUDGET, 'x')\n"
+    ),
+}
+
+
+def _plant(tmp_path: Path, source: str) -> List[Path]:
+    module = tmp_path / "test_planted.py"
+    module.write_text(source)
+    return [module]
+
+
+def _scan_planted(tmp_path: Path, source: str):
+    return _tree_scan(_plant(tmp_path, source), [], root=tmp_path)
+
+
+class TestTheRestOfTheTree:
+    @pytest.mark.parametrize("shape", sorted(TREE_PLANTED))
+    def test_every_planted_shape_is_a_finding(self, tmp_path, shape):
+        """Each shape, alone, in its own module: a miss cannot hide behind another."""
+        timed, findings, unjudged = _scan_planted(tmp_path, TREE_PLANTED[shape])
+        assert timed, f"{shape!r}: the test was not recognised as timed"
+        assert findings, f"{shape!r}: the threshold was not found"
+        assert unjudged, f"{shape!r}: the judge rule did not report it either"
+
+    @pytest.mark.parametrize("shape", sorted(TREE_PLANTED_JUDGE_ONLY))
+    def test_a_threshold_the_scan_cannot_see_is_still_unjudged(self, tmp_path, shape):
+        timed, _findings, unjudged = _scan_planted(
+            tmp_path, TREE_PLANTED_JUDGE_ONLY[shape]
+        )
+        assert timed and unjudged, f"{shape!r} escaped both rules"
+
+    @pytest.mark.parametrize("shape", sorted(TREE_PLANTED_NEGATIVES))
+    def test_what_is_not_a_measurement_is_left_alone(self, tmp_path, shape):
+        timed, findings, unjudged = _scan_planted(
+            tmp_path, TREE_PLANTED_NEGATIVES[shape]
+        )
+        assert not findings and not unjudged, (shape, findings, unjudged)
+
+    def test_a_measuring_helper_in_another_module_is_followed(self, tmp_path):
+        """``from x import f`` across modules — the ReDoS helpers' shape."""
+        (tmp_path / "timing.py").write_text(
+            "import time\n"
+            "def once(fn):\n"
+            "    s = time.perf_counter()\n"
+            "    fn()\n"
+            "    return time.perf_counter() - s\n"
+        )
+        (tmp_path / "test_uses_it.py").write_text(
+            "from timing import once\n"
+            "def test_x():\n"
+            "    assert once(work) < 1.0\n"
+        )
+        scope = [tmp_path / "timing.py", tmp_path / "test_uses_it.py"]
+        timed, findings, unjudged = _tree_scan(scope, [], root=tmp_path)
+        assert ("test_uses_it.py", "test_x") in [(Path(m).name, n) for m, n in timed]
+        assert any("once(work) < 1.0" in f[2] for f in findings)
+
+    def test_a_timing_fixture_in_a_parent_conftest_is_followed(self, tmp_path):
+        """A fixture is reached through a PARAMETER, from a conftest above.
+
+        That is pytest's own resolution, and the house idiom for shared
+        setup: ``tests/integration/conftest.py`` defines three measuring
+        fixtures. Without modelling it, a test that took ``stopwatch`` and
+        compared what it returned was neither timed nor scanned.
+        """
+        (tmp_path / "conftest.py").write_text(
+            "import time, pytest\n"
+            "@pytest.fixture\n"
+            "def stopwatch():\n"
+            "    def run(fn):\n"
+            "        s = time.perf_counter()\n"
+            "        fn()\n"
+            "        return time.perf_counter() - s\n"
+            "    return run\n"
+        )
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "test_uses_it.py").write_text(
+            "def test_x(stopwatch):\n    assert stopwatch(work) < 0.2\n"
+        )
+        scope = [tmp_path / "conftest.py", tmp_path / "sub" / "test_uses_it.py"]
+        timed, findings, unjudged = _tree_scan(scope, [], root=tmp_path)
+        assert [name for _module, name in timed] == ["test_x"]
+        assert [text for _m, _f, text in findings] == ["stopwatch(work) < 0.2"]
+        assert unjudged
+
+    def test_no_wall_clock_threshold_outside_the_timing_suites(self):
+        """‼ The #1579 defect itself, on the real tree."""
+        _timed, findings, _unjudged = _tree_result()
+        violations = [
+            f"{module}::{func}: {text}"
+            for module, func, text in findings
+            if (module, text) not in TREE_THRESHOLD_ALLOWLIST
+        ]
+        assert not violations, (
+            "wall-clock thresholds in modules both required gates run. Route "
+            "a latency through assert_latency_within against a budgets.py "
+            "row (tests/performance/), a growth question through "
+            "assert_linear_growth, a deadline question onto VirtualTimeLoop "
+            "— or measure something that is not a clock: " + "; ".join(violations)
+        )
+
+    def test_every_timed_test_outside_the_timing_suites_reaches_a_judge(self):
+        _timed, _findings, unjudged = _tree_result()
+        stray = [
+            f"{module}::{name}"
+            for module, name in unjudged
+            if (module, name) not in TREE_UNJUDGED_TIMED_TESTS
+        ]
+        assert not stray, (
+            "these tests measure a duration and judge it by some route other "
+            "than the helpers, or not at all: " + ", ".join(stray)
+        )
+
+    def test_every_tree_allowlist_entry_is_live(self):
+        _timed, findings, unjudged = _tree_result()
+        seen = {(module, text) for module, _func, text in findings}
+        dead = sorted(k for k in TREE_THRESHOLD_ALLOWLIST if k not in seen)
+        assert not dead, dead
+        dead = sorted(k for k in TREE_UNJUDGED_TIMED_TESTS if k not in set(unjudged))
+        assert not dead, dead
+
+    def test_the_tree_allowlist_cost_is_what_was_measured(self):
+        """Counted, not tuned: nine comparisons, fourteen tests.
+
+        The nine are orderings of timestamps, two counts of log records, a
+        floor under a sleep, a bracket, a tick count, a window membership and
+        a test double's TTL check. Ten of the fourteen tests are the
+        calibration instrument's own tests, which reach the real measurement
+        through the call graph and pin or stub it at run time.
+        """
+        assert len(TREE_THRESHOLD_ALLOWLIST) == 9
+        assert len(TREE_UNJUDGED_TIMED_TESTS) == 14
+
+    def test_the_three_scopes_partition_tests(self):
+        """Every module under tests/ is watched by exactly one rule."""
+        everything = {
+            p for p in TESTS_ROOT.rglob("*.py") if "__pycache__" not in p.parts
+        }
+        tree = set(_tree_scope_modules())
+        suites = {p for directory in TREE_EXCLUDED_DIRS for p in _modules_in(directory)}
+        assert tree | suites == everything
+        assert not tree & suites
+
+    def test_the_helpers_directory_holds_no_tests(self):
+        """``tests/wallclock/`` is scanned for the call graph ONLY.
+
+        Both required gates collect ``test_*`` there like anywhere else, so a
+        test placed in it would be watched by neither rule. It holds none,
+        and this is what keeps it that way.
+        """
+        assert not list(WALLCLOCK_DIR.rglob("test_*.py"))
+        tests_in_helpers = [
+            f"{_key(path)}::{node.name}"
+            for path in _modules_in(WALLCLOCK_DIR)
+            for node in ast.walk(ast.parse(path.read_text()))
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name.startswith("test_")
+        ]
+        assert not tests_in_helpers, tests_in_helpers
+
+    def test_the_rule_looks_where_the_defect_was(self):
+        """A rule scoped away from its violations is green forever.
+
+        #1579's census found the thresholds in tests/infrastructure,
+        tests/integration and tests/unit. Each must be in scope, and the scan
+        must still be resolving timed tests on the real tree — a detector
+        whose index silently came back empty would pass every check above
+        it. Reach over each SHAPE is what the planted modules prove; this is
+        reach over the directories.
+        """
+        scope = _tree_scope_modules()
+        for directory in ("tests/infrastructure", "tests/integration", "tests/unit"):
+            inside = [p for p in scope if p.is_relative_to(REPO_ROOT / directory)]
+            assert len(inside) >= 20, (directory, len(inside))
+        timed, _findings, _unjudged = _tree_result()
+        assert len(timed) >= 20, timed
+
+    def test_virtual_now_refuses_a_real_loop(self):
+        """The one exemption the rule makes is sound only if this holds."""
+        import asyncio
+
+        from tests.wallclock import virtual_now
+
+        async def read():
+            return virtual_now()
+
+        with pytest.raises(RuntimeError, match="VirtualTimeLoop"):
+            asyncio.run(read())
+
+    def test_the_virtual_loop_charges_nominal_time(self):
+        """A 5 s sleep costs 5 virtual seconds and no wall time to speak of."""
+        import asyncio
+
+        from tests.wallclock import VirtualTimeLoop, virtual_now
+
+        async def five_seconds():
+            started = virtual_now()
+            await asyncio.sleep(5)
+            return virtual_now() - started
+
+        loop = VirtualTimeLoop()
+        try:
+            assert loop.run_until_complete(five_seconds()) == 5
+        finally:
+            loop.close()
+
+    def test_a_cancelled_timer_does_not_move_virtual_time(self):
+        """``wait_for`` leaves a cancelled timeout handle in the heap."""
+        import asyncio
+
+        from tests.wallclock import VirtualTimeLoop, virtual_now
+
+        async def quick_inside_a_long_timeout():
+            await asyncio.wait_for(asyncio.sleep(1), timeout=60)
+            await asyncio.sleep(0)
+            return virtual_now()
+
+        loop = VirtualTimeLoop()
+        try:
+            assert loop.run_until_complete(quick_inside_a_long_timeout()) == 1
+        finally:
+            loop.close()
+
+
+# -------------------------------------------------------- the growth helper
+
+
+def _linear(text: str) -> int:
+    return sum(1 for _ in text)
+
+
+def _quadratic(text: str) -> int:
+    return sum(text.count(text[i]) for i in range(0, len(text), 8))
+
+
+class TestTheGrowthHelper:
+    """``assert_linear_growth`` is a judge; these hold it to both columns."""
+
+    def test_a_linear_cost_passes(self):
+        from tests.wallclock import assert_linear_growth
+
+        assert_linear_growth(
+            _linear, lambda n: "ab" * n, small=512, label="linear control"
+        )
+
+    def test_a_quadratic_cost_fails(self):
+        from tests.wallclock import assert_linear_growth
+
+        with pytest.raises(AssertionError, match="quadratic ~256x"):
+            assert_linear_growth(
+                _quadratic, lambda n: "ab" * n, small=64, label="quadratic control"
+            )
+
+    def test_the_bound_is_the_midpoint_of_linear_and_quadratic(self):
+        from tests.wallclock import growth_bound
+
+        assert growth_bound(16) == 64.0
+        assert growth_bound(4) == 8.0
 
 
 # ------------------------------------------------------------ the workflow

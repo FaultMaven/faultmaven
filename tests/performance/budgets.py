@@ -25,9 +25,11 @@ on the development box:
   "What was deleted", and two more that review caught in #1557's own
   first draft: see "Two budgets are one budget" below.
 
-The 21 rows below are what remains. After re-anchoring, median
+The first 21 rows below are what remains. After re-anchoring, median
 utilisation is **30.7%** and the highest **41.9%**, which is the same
-shape #1556 produced for the benchmark suite (2.5% to 34.6%).
+shape #1556 produced for the benchmark suite (2.5% to 34.6%). The last
+seven were moved here by #1579 from tests outside this directory; their
+provenance is in the comment above them.
 
 Provenance
 ----------
@@ -138,9 +140,17 @@ from __future__ import annotations
 
 from typing import Dict
 
-from tests.wallclock.budgets import Budget, LatencyBudget, collect_budgets
+from faultmaven.modules.preprocessing.preprocessing_service import (
+    TIER1_TIMEOUT_SECONDS,
+)
+from tests.wallclock.budgets import (
+    Budget,
+    LatencyBudget,
+    ThroughputBudget,
+    collect_budgets,
+)
 
-__all__ = ["Budget", "LatencyBudget", "ALL_BUDGETS"]
+__all__ = ["Budget", "LatencyBudget", "ThroughputBudget", "ALL_BUDGETS"]
 
 
 # --- tests/performance/test_context_overhead.py ------------------------------
@@ -286,6 +296,89 @@ API_REQUEST_LOGGING_OVERHEAD = LatencyBudget(
     regression=0.006,
     product_target=0.050,
     reference=0.0028241,
+)
+
+
+# --- moved here from the required-gate unit tests (#1579) --------------------
+#
+# Anchored 2026-09-26 from 20 runs of the three modules below on the same
+# development box as the rows above, under its usual load (load average 7-10
+# from other lanes' pytest processes). ``reference`` is the p95 of the
+# statistic across those runs — the p5 for the two throughput rows, where
+# the slow side is the low one — and the anchor is a round number in the
+# 2-3x band above it. Every anchor also clears the WORST of the 20 runs, by
+# 2.0x to 2.4x. Every ``product_target`` is the number the moved assertion
+# used, converted to this row's units:
+#
+# =============================  ====================================  =========
+# row                            asserted before, and where            product
+# =============================  ====================================  =========
+# SANITIZE_LARGE_DOCUMENT        ``lines_per_second > 100``            100/s
+#                                (and ``processing_time < 10.0`` for
+#                                1000 lines: the same constraint)
+# SANITIZE_DOCUMENT_BATCH        ``documents_per_second > 10``         10/s
+# NOOP_TRACK_CALL                1000 calls ``< 0.1`` s                100 us
+# PII_PASSTHROUGH_CALL           1000 calls ``< 0.05`` s               50 us
+# VOCABULARY_EXTRACTION          ``< 0.5`` s on ~1 MB                  0.5 s
+# TIMESTAMP_EXTRACTION           1000 calls ``< 1.0`` s                1 ms
+# ADVERSARIAL_LINE_EXTRACTION    ``elapsed < TIER1_TIMEOUT_SECONDS``   2.0 s
+# =============================  ====================================  =========
+#
+# ``ADVERSARIAL_LINE_EXTRACTION`` is the one row near its product target:
+# the worst shape, ``sshd-word-chain``, has a p95 of 0.93 s on this box
+# against a 2.0 s Tier-1 timeout, so its anchor sits AT the product target
+# (2.16x reference) rather than inside it. It is one row for eleven shapes,
+# anchored on the worst of each run as ``DEDUPLICATION_OP`` is on its worst
+# iteration, which means it is a loose anchor for the nine cheap shapes.
+# The two expensive ones are expensive because the extractor is
+# super-linear on them (#1700) — see ``tests/performance/test_extraction_speed.py``.
+
+# tests/performance/test_sanitization_throughput.py
+SANITIZE_LARGE_DOCUMENT = ThroughputBudget(
+    "test_large_document_sanitization_throughput",
+    regression=12000.0,
+    product_target=100.0,
+    reference=28514.0,
+)
+SANITIZE_DOCUMENT_BATCH = ThroughputBudget(
+    "test_document_batch_sanitization_throughput",
+    regression=2500.0,
+    product_target=10.0,
+    reference=5569.8,
+)
+
+# tests/performance/test_shim_overhead.py
+NOOP_TRACK_CALL = LatencyBudget(
+    "test_noop_decorator_minimal_overhead",
+    regression=8.0e-7,
+    product_target=1.0e-4,
+    reference=3.2035e-07,
+)
+PII_PASSTHROUGH_CALL = LatencyBudget(
+    "test_pii_redactor_passthrough_minimal_overhead",
+    regression=6.5e-7,
+    product_target=5.0e-5,
+    reference=2.6420e-07,
+)
+
+# tests/performance/test_extraction_speed.py
+VOCABULARY_EXTRACTION = LatencyBudget(
+    "test_vocabulary_extraction_on_a_megabyte_of_logs",
+    regression=0.045,
+    product_target=0.5,
+    reference=0.018410,
+)
+TIMESTAMP_EXTRACTION = LatencyBudget(
+    "test_timestamp_extraction_per_line",
+    regression=1.2e-5,
+    product_target=1.0e-3,
+    reference=5.2370e-06,
+)
+ADVERSARIAL_LINE_EXTRACTION = LatencyBudget(
+    "test_an_adversarial_line_extracts_inside_the_tier1_timeout",
+    regression=2.0,
+    product_target=TIER1_TIMEOUT_SECONDS,
+    reference=0.92524,
 )
 
 

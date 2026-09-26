@@ -29,12 +29,21 @@ a fix and tests built around that shape missed a second quadratic regex
 alternating newline and space — no fences whatsoever — cost 28s at 100 KB.
 Both shapes are asserted here; neither alone is sufficient.
 
-**Absolute budgets first, growth ratios second.** A ratio on a sub-10ms
-baseline is noise-dominated on a shared runner. The payloads here are large
-enough that the measurement dominates scheduling jitter, every timing is a
-median of several runs, and the load-bearing assertion is an absolute bound
-with an order of magnitude of headroom — a quadratic regression takes seconds,
-not percent.
+**Growth shape, not a stopwatch (#1579).** Every cost guard here asks one
+question — is this linear in what the caller sends? — and answers it with
+``tests.wallclock.assert_linear_growth``: CPU time at two sizes 16x apart,
+where linear reads ~16x, quadratic ~256x, and the bound sits at their
+midpoint, 64x. This file used to answer it with a one-second wall-clock
+budget per shape plus one 2x ratio, and under ``pytest-xdist`` the ratio
+went red on a required gate on a commit that touched no knowledge code:
+``doubling the body multiplied scoring work by 3.7x`` against a bound of 3.0,
+on a path whose honest ratio is ~2. At factor 2 linear and quadratic are 2x
+apart and noise bridges it; at factor 16 they are 16x apart, and thread CPU
+time does not see the descheduling that caused it.
+
+The sizes are chosen per shape so a reintroduced quadratic fails in about a
+second, and every one was mutation-checked by restoring the pattern it
+guards: the growth ratio went from 10-17x to 176-269x.
 """
 
 from __future__ import annotations
@@ -42,9 +51,10 @@ from __future__ import annotations
 import ast
 import pathlib
 import re
-import time
 
 import pytest
+
+from tests.wallclock import assert_linear_growth
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
@@ -73,61 +83,10 @@ NO_FENCE_UNIT = "\n "
 #: a bug that only bites on bare ones.
 LINK_UNIT = "["
 
-_REPS = 3
 
-
-def _kb(unit: str, kilobytes: int) -> str:
-    return unit * max(1, (kilobytes * 1024) // len(unit))
-
-
-def _once(fn, payload: str) -> float:
-    """One measurement, after a warm-up. For budget assertions only.
-
-    A budget with orders of magnitude of headroom does not need a median, and
-    repeating it multiplies how long a REGRESSION takes to report: the whole
-    point of the payload sizes below is that a reintroduced quadratic fails in
-    seconds rather than making CI sit through it five times.
-    """
-    fn(payload[:64])
-    start = time.perf_counter()
-    fn(payload)
-    return time.perf_counter() - start
-
-
-def _fastest_elapsed(fn, payload: str) -> float:
-    """Best wall-clock over ``_REPS`` runs, after a warm-up call.
-
-    MINIMUM, not mean or median. Every source of noise here is additive -- a
-    scheduling slice, a GC pause, another test on a neighbouring core -- so the
-    fastest sample is the one least contaminated by things that are not the
-    code under test, and it is the standard estimator for exactly that reason.
-
-    A median was tried first and still flaked: the ratio test passed 6/6 alone
-    and failed when run alongside a 117-test module, which is the condition CI
-    actually runs under. A median of three is only as good as its middle
-    sample, and under load two of three can be contended.
-    """
-    fn(payload[:64])
-    return min(_elapsed(fn, payload) for _ in range(_REPS))
-
-
-def _elapsed(fn, payload: str) -> float:
-    start = time.perf_counter()
-    fn(payload)
-    return time.perf_counter() - start
-
-
-def _growth_ratio(fn, small: str, large: str) -> float:
-    """Time ratio for a 2x input. ~2 is linear; ~4 is the quadratic signature.
-
-    ``small`` is measured FIRST and bound to a name. Written as a single
-    expression -- ``_median(large) / _median(small)`` -- Python evaluates the
-    numerator first, so ``large`` is timed on the colder caches and its cost is
-    overstated; that ordering alone put this ratio at 3.6 on correct code.
-    """
-    small_seconds = max(_fastest_elapsed(fn, small), 1e-6)
-    large_seconds = _fastest_elapsed(fn, large)
-    return large_seconds / small_seconds
+def _repeated(unit: str, prefix: str = "", suffix: str = ""):
+    """A payload builder for ``assert_linear_growth``: ``count`` hostile units."""
+    return lambda count: prefix + unit * count + suffix
 
 
 def _scorer():
@@ -136,11 +95,6 @@ def _scorer():
     )
 
     return QualityScorer()
-
-
-def _time_scoring(payload: str) -> float:
-    """Seconds to score ``payload`` — a duration, not a quality score."""
-    return _fastest_elapsed(_scorer().score_content, payload)
 
 
 def _runbook_corpus() -> list[pathlib.Path]:
@@ -160,20 +114,34 @@ def _runbook_corpus() -> list[pathlib.Path]:
 # --------------------------------------------------------------------------
 
 
-#: Sizes are chosen so a reintroduced quadratic fails FAST, not just fails.
-#: Measured with the quadratic patterns restored: bare fences 12.2s at 24 KB,
-#: no-fence 5.9s at 48 KB. Measured with them fixed: 0.005s and 0.035s. Every
-#: budget below therefore has at least a 28x margin over correct behaviour and
-#: reports a regression within seconds.
-_BUDGET_SECONDS = 1.0
+#: Each size below is the SMALL side; the large side is 16x it. Chosen so the
+#: quadratic, when restored, costs well under a second at the large size —
+#: the check stops at the first pair that shows it — while the linear cost at
+#: the small size is far enough above the timer to measure. Measured
+#: (CPU time, development box) with the fixed patterns and with the quadratic
+#: ones restored, as the ratio the check computes:
+#:
+#: ===================  ============  ========  =========
+#: shape                small size    fixed     restored
+#: ===================  ============  ========  =========
+#: bare fences          128 fences    12.4x     239x
+#: bare brackets        512 bytes     17.3x     243x
+#: newline-space        512 units     13.9x     176x
+#: frontmatter          256 units     13.3x     269x
+#: ===================  ============  ========  =========
 
 
-def test_scoring_a_fence_heavy_body_costs_a_time_a_request_can_afford():
+def test_scoring_a_fence_heavy_body_grows_linearly():
     """The originally reported shape. 12.2s at 24 KB with the lazy `.*?`."""
-    assert _once(_scorer().score_content, _kb(FENCE_UNIT, 24)) < _BUDGET_SECONDS
+    assert_linear_growth(
+        _scorer().score_content,
+        _repeated(FENCE_UNIT),
+        small=128,
+        label="QualityScorer.score_content on bare fences",
+    )
 
 
-def test_validation_of_bracket_heavy_content_costs_a_time_a_request_can_afford():
+def test_validation_of_bracket_heavy_content_grows_linearly():
     """The external-link matcher, on the shape that costs the most.
 
     ``\\[([^\\]]+)\\]\\(https?://[^\\)]+\\)`` is unbounded on both sides, so every
@@ -189,11 +157,11 @@ def test_validation_of_bracket_heavy_content_costs_a_time_a_request_can_afford()
         RunbookValidator,
     )
 
-    seconds = _fastest_elapsed(RunbookValidator().validate_content, _kb(LINK_UNIT, 192))
-
-    assert seconds < _BUDGET_SECONDS, (
-        f"{seconds:.3f}s to validate 192 KB of brackets — the unbounded "
-        "pattern took 257s on the same input"
+    assert_linear_growth(
+        RunbookValidator().validate_content,
+        _repeated(LINK_UNIT),
+        small=512,
+        label="RunbookValidator.validate_content on bare brackets",
     )
 
 
@@ -279,7 +247,7 @@ def test_the_link_caps_are_where_the_constants_say_they_are():
     assert not EXTERNAL_LINK_RE.findall(link(8, MAX_LINK_URL_AFTER_SCHEME_CHARS + 1))
 
 
-def test_scoring_a_body_with_no_fences_costs_a_time_a_request_can_afford():
+def test_scoring_a_body_with_no_fences_grows_linearly():
     """The shape the first fix missed entirely.
 
     ``has_fix`` used ``^\\s*`` under MULTILINE -- ``\\s`` matches ``\\n``, so it
@@ -288,10 +256,15 @@ def test_scoring_a_body_with_no_fences_costs_a_time_a_request_can_afford():
     at 100 KB. ``MAX_UPLOAD_SIZE_MB`` defaults to 10, so 100 KB is 1% of what a
     caller may send.
     """
-    assert _once(_scorer().score_content, _kb(NO_FENCE_UNIT, 48)) < _BUDGET_SECONDS
+    assert_linear_growth(
+        _scorer().score_content,
+        _repeated(NO_FENCE_UNIT),
+        small=512,
+        label="QualityScorer.score_content on newline-space",
+    )
 
 
-def test_validation_on_adversarial_frontmatter_costs_a_time_a_request_can_afford():
+def test_validation_on_adversarial_frontmatter_grows_linearly():
     """An unterminated frontmatter block is the worst case for the delimiter.
 
     This one IS in ``RunbookValidator``, so it is reached by the upload path
@@ -301,27 +274,33 @@ def test_validation_on_adversarial_frontmatter_costs_a_time_a_request_can_afford
         RunbookValidator,
     )
 
-    payload = "---\n" + _kb(NO_FENCE_UNIT, 48)
-
-    assert _once(RunbookValidator().validate_content, payload) < _BUDGET_SECONDS
+    assert_linear_growth(
+        RunbookValidator().validate_content,
+        _repeated(NO_FENCE_UNIT, prefix="---\n"),
+        small=256,
+        label="RunbookValidator.validate_content on unterminated frontmatter",
+    )
 
 
 def test_scoring_grows_linearly_with_body_size():
-    """Growth SHAPE, as a backstop to the budgets above.
+    """Growth SHAPE at the sizes the original budgets measured.
 
-    A budget catches a quadratic that is already expensive at the sizes tested;
-    a ratio also catches a milder one that is still on the wrong curve. Run on
-    the no-fence shape because its linear cost (18 ms at 24 KB) sits far enough
-    above scheduling noise for the ratio to mean something -- the fence shape's
-    linear cost is 5 ms, where a GC pause alone moves the ratio.
+    The newline-space check above runs small (1-16 KB) so a regression fails
+    in a fraction of a second. This one runs the same shape at 3-48 KB, the
+    range the original budget tests timed, so the claim "linear" is also
+    checked where the payloads that used to cost seconds live.
+
+    #1579: this is the test that went red on a required gate as
+    ``doubling the body multiplied scoring work by 3.7x`` — a 2x ratio
+    against a bound of 3.0, where linear reads 2 and quadratic 4. At 16x the
+    two answers are 16x apart, and it measures CPU time rather than wall
+    clock, so a neighbouring xdist worker cannot inflate one side of it.
     """
-    ratio = _growth_ratio(
-        _scorer().score_content, _kb(NO_FENCE_UNIT, 24), _kb(NO_FENCE_UNIT, 48)
-    )
-
-    assert ratio < 3.0, (
-        f"doubling the body multiplied scoring work by {ratio:.1f}x -- "
-        "the quadratic signature of a backtracking regex on caller content"
+    assert_linear_growth(
+        _scorer().score_content,
+        _repeated(NO_FENCE_UNIT),
+        small=1536,
+        label="QualityScorer.score_content, 3 KB -> 48 KB of newline-space",
     )
 
 
@@ -437,7 +416,7 @@ def test_a_bash_fence_containing_inline_backticks_still_counts():
 # --------------------------------------------------------------------------
 
 
-def test_chunking_a_body_with_no_headers_costs_a_time_a_request_can_afford():
+def test_chunking_a_body_with_no_headers_grows_linearly():
     """The horizontal-rule splitter carried the same defect as the frontmatter one.
 
     ``\\n\\s*(?:---+|\\*\\*\\*+|___+)\\s*\\n`` -- ``\\s`` matches ``\\n``, so a body of
@@ -457,9 +436,18 @@ def test_chunking_a_body_with_no_headers_costs_a_time_a_request_can_afford():
         ContentChunker,
     )
 
-    body = "x" + _kb(NO_FENCE_UNIT, 64) + "x"
-
-    assert _once(ContentChunker().split, body) < _BUDGET_SECONDS
+    # 64-1024 bytes, deliberately under ContentChunker's split threshold:
+    # the fixed chunker's cost steps up ~4x once a body needs splitting
+    # (measured between 2 KB and 4 KB), which is linear on both sides of the
+    # step but reads as super-linear across it. Both sizes on one side keeps
+    # the check about the regex. The restored `\s*` pattern reads ~200x
+    # here against ~10x fixed.
+    assert_linear_growth(
+        ContentChunker().split,
+        _repeated(NO_FENCE_UNIT, prefix="x", suffix="x"),
+        small=32,
+        label="ContentChunker.split on newline-space",
+    )
 
 
 # --------------------------------------------------------------------------

@@ -5,7 +5,6 @@ Core observability tests focusing on actual implementation.
 
 import asyncio
 import os
-import time
 from unittest.mock import patch
 
 import pytest
@@ -308,22 +307,32 @@ class TestObservabilityPerformance:
 
     @pytest.mark.asyncio
     async def test_async_trace_performance(self):
-        """Test async tracing performance."""
+        """Traced coroutines run concurrently, not one after another.
+
+        Measured as the PEAK number of calls in flight at once, not as elapsed
+        wall clock (#1579): ``elapsed < 0.1`` over ten 1 ms sleeps said the
+        same thing, but also failed whenever the runner stalled the loop for
+        100 ms, which under four xdist workers it does. A decorator that
+        serialised the calls — a lock, an awaited export per call — reads 1
+        here on any machine; one that does not reads 10.
+        """
+        in_flight = 0
+        peak = 0
 
         @trace("async_performance_test")
         async def traced_async_function(n):
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
             await asyncio.sleep(0.001)
+            in_flight -= 1
             return n * 2
 
-        # Should handle multiple concurrent calls efficiently
-        start = time.time()
         tasks = [traced_async_function(i) for i in range(10)]
         results = await asyncio.gather(*tasks)
-        elapsed = time.time() - start
 
         assert results == [i * 2 for i in range(10)]
-        # Should complete in reasonable time (concurrent, not sequential)
-        assert elapsed < 0.1  # Much less than 10 * 0.001 = 0.01 seconds
+        assert peak == 10, f"only {peak} of 10 traced calls ever ran at once"
 
 
 class TestObservabilityErrorResilience:

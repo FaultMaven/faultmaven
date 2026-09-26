@@ -796,25 +796,59 @@ class TestFloorOnProvidersWithoutATokenizer:
         )
         assert response.is_truncated
 
-    async def test_degenerate_long_run_is_bounded(self, router, mock_registry):
+    async def test_degenerate_long_run_is_bounded(
+        self, router, mock_registry, monkeypatch
+    ):
         """tiktoken's merge loop is super-linear on a long unbroken run of one
         character — the "model looped until MAX_TOKENS" body this branch
         selects for. Measured unbounded: 32k chars = ~1.3 s of BLOCKING CPU on
-        the event loop, against 1-4 ms for prose. Bounded by prefix-and-scale.
-        """
-        import time
+        the event loop, against 1-4 ms for prose. Bounded by never handing the
+        tokenizer more than ``_TOKENIZER_EXACT_MAX_CHARS``.
 
+        Asserted on what REACHES the tokenizer, not on how long the call took
+        (#1579). ``elapsed_ms < 250`` was a wall-clock bound in both required
+        gates; the length of the longest string tokenized is the bound itself,
+        the same on every machine, and it fails on the first oversized call
+        rather than on the one a slow runner happens to time.
+        """
+        import tiktoken
+
+        from faultmaven.infrastructure.llm.router import _TOKENIZER_EXACT_MAX_CHARS
+
+        tokenized: list[int] = []
+        real_encode = tiktoken.Encoding.encode
+
+        def recording_encode(self, text, *args, **kwargs):
+            tokenized.append(len(text))
+            return real_encode(self, text, *args, **kwargs)
+
+        monkeypatch.setattr(tiktoken.Encoding, "encode", recording_encode)
+
+        # Positive control: a body inside the bound IS tokenized, so the spy
+        # is on the path the floor check takes. Without this, a floor check
+        # that stopped tokenizing altogether would pass the assertion below.
+        prose = "word " * 200
+        mock_registry.route_request = AsyncMock(
+            return_value=_response(prose, StopReason.MAX_TOKENS)
+        )
+        await router.route(
+            prompt="test", max_tokens=40000, min_output_tokens=10, bypass_cache=True
+        )
+        assert len(prose) in tokenized, (
+            "the floor check did not tokenize a body inside the bound; this "
+            f"spy is not on its path (tokenized lengths: {tokenized})"
+        )
+
+        tokenized.clear()
         mock_registry.route_request = AsyncMock(
             return_value=_response("x" * 32000, StopReason.MAX_TOKENS)
         )
-        started = time.perf_counter()
         await router.route(
             prompt="test", max_tokens=40000, min_output_tokens=500, bypass_cache=True
         )
-        elapsed_ms = (time.perf_counter() - started) * 1000
-        assert elapsed_ms < 250, (
-            f"floor check took {elapsed_ms:.0f} ms on a degenerate body — the "
-            f"tokenizer input is meant to be bounded"
+        assert max(tokenized, default=0) <= _TOKENIZER_EXACT_MAX_CHARS, (
+            f"the floor check handed the tokenizer {max(tokenized)} characters "
+            "of a degenerate body — its input is meant to be bounded"
         )
         # …and the bound must not buy its speed with a wrong number. Asserting
         # only elapsed time let a mechanism that UNDER-states pass unnoticed.

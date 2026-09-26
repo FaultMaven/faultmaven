@@ -20,6 +20,43 @@ from faultmaven.infrastructure.llm.providers import LLMResponse
 from faultmaven.infrastructure.llm.router import LLMRouter
 
 
+@pytest.fixture
+def requested_waits(monkeypatch):
+    """Every wait the code under test asked for, in seconds, in order (#1579).
+
+    These tests used to assert ``execution_time < 2.0`` (or ``< 5.0``, or
+    ``avg_latency < 2.0``) around a router whose provider was a mock or a
+    local ``TestServer``. Against a mock the only thing that can make that
+    number large is a WAIT — a retry backoff, a rate-limit sleep — and the
+    number itself also moves with whatever else the runner is doing, which
+    in both required gates is three other xdist workers. So the waits are
+    recorded directly: the same on every machine, and a new one fails the
+    test the first time it is asked for rather than once it adds up to
+    seconds.
+
+    Pass-through, so a test's own simulated latency still happens and shows
+    up here. ``time.sleep`` is covered as well as ``asyncio.sleep``; a
+    blocking sleep on the event loop is the worse of the two.
+    """
+    waits: list[float] = []
+    real_async_sleep = asyncio.sleep
+    real_sleep = time.sleep
+
+    async def recording_async_sleep(delay, *args, **kwargs):
+        if delay > 0:
+            waits.append(delay)
+        return await real_async_sleep(delay, *args, **kwargs)
+
+    def recording_sleep(delay):
+        if delay > 0:
+            waits.append(delay)
+        real_sleep(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", recording_async_sleep)
+    monkeypatch.setattr(time, "sleep", recording_sleep)
+    return waits
+
+
 class TestLLMProviderRealBehavior:
     """Test real LLM provider behavior with controlled test endpoints."""
 
@@ -149,7 +186,7 @@ class TestLLMProviderRealBehavior:
             yield router, server, provider_state
 
     async def test_real_provider_success_first_provider(
-        self, llm_router_with_test_endpoints
+        self, llm_router_with_test_endpoints, requested_waits
     ):
         """Test successful routing to first provider with mocked HTTP."""
         router, server, provider_state = llm_router_with_test_endpoints
@@ -168,22 +205,20 @@ class TestLLMProviderRealBehavior:
                 cached=False,
             )
 
-            start_time = time.time()
             result = await router.route("Test prompt for real provider")
-            execution_time = time.time() - start_time
 
             # Validate mocked provider interaction
             assert isinstance(result, LLMResponse)
             assert "Test response from first provider" in result.content
             assert result.provider == "fireworks"
             assert result.confidence == 0.9
-            assert execution_time < 2.0  # Performance validation
+            assert requested_waits == [], "a first-provider success waited"
 
             # Validate mock was called
             mock_route.assert_called_once()
 
     async def test_real_provider_failover_with_actual_failures(
-        self, llm_router_with_test_endpoints
+        self, llm_router_with_test_endpoints, requested_waits
     ):
         """Test failover scenario with mocked provider failures."""
         router, server, provider_state = llm_router_with_test_endpoints
@@ -192,18 +227,19 @@ class TestLLMProviderRealBehavior:
         provider_state["fireworks_failures"] = 1
 
         # Test requires at least another provider to succeed if strictly false
-        start_time = time.time()
         result = await router.route("Test failover with failures")
-        execution_time = time.time() - start_time
 
         # Validate failover occurred
         assert isinstance(result, LLMResponse)
         # We expect it either fell back to openai (if strict was false)
         # or succeeded on retry (fireworks attempt 2, but fireworks hasn't built internal retry, so fallback)
         assert result.content is not None
-        assert execution_time < 5.0
+        # A 503 fails over to the next provider at once; it does not back off.
+        assert requested_waits == [], f"failover waited {requested_waits}s"
 
-    async def test_real_rate_limiting_behavior(self, llm_router_with_test_endpoints):
+    async def test_real_rate_limiting_behavior(
+        self, llm_router_with_test_endpoints, requested_waits
+    ):
         """Test rate limiting behavior with mocked HTTP 429 responses."""
         router, server, provider_state = llm_router_with_test_endpoints
 
@@ -219,15 +255,16 @@ class TestLLMProviderRealBehavior:
         _providers_mod.reset_registry()
         router = LLMRouter()
 
-        start_time = time.time()
         result = await router.route("Test rate limiting behavior")
-        execution_time = time.time() - start_time
 
         assert isinstance(result, LLMResponse)
         assert result.content is not None
-        assert execution_time < 5.0
+        # A 429 with no Retry-After is failed over, not slept on.
+        assert requested_waits == [], f"a 429 was waited out: {requested_waits}s"
 
-    async def test_real_concurrent_requests_load(self, llm_router_with_test_endpoints):
+    async def test_real_concurrent_requests_load(
+        self, llm_router_with_test_endpoints, requested_waits
+    ):
         """Test concurrent request handling with mocked load balancing."""
         router, server, provider_state = llm_router_with_test_endpoints
 
@@ -254,21 +291,21 @@ class TestLLMProviderRealBehavior:
             async def make_concurrent_request(request_id):
                 return await router.route(f"Concurrent request {request_id}")
 
-            start_time = time.time()
             tasks = [make_concurrent_request(i) for i in range(10)]
             results = await asyncio.gather(*tasks)
-            execution_time = time.time() - start_time
 
             # Validate concurrent execution performance
             assert len(results) == 10
             assert all(isinstance(r, LLMResponse) for r in results)
             assert all(r.content is not None for r in results)
-            assert execution_time < 5.0  # Reasonable concurrent performance
+            assert requested_waits == [], "concurrent routing waited"
 
             # Validate all requests were handled
             assert mock_route.call_count == 10  # All requests processed
 
-    async def test_real_network_latency_handling(self, llm_router_with_test_endpoints):
+    async def test_real_network_latency_handling(
+        self, llm_router_with_test_endpoints, requested_waits
+    ):
         """Test network latency handling with mocked delays."""
         router, server, provider_state = llm_router_with_test_endpoints
 
@@ -291,15 +328,14 @@ class TestLLMProviderRealBehavior:
 
             mock_route.side_effect = delayed_response
 
-            start_time = time.time()
             result = await router.route("Test with network latency")
-            execution_time = time.time() - start_time
 
             # Validate latency was handled properly
             assert isinstance(result, LLMResponse)
             assert result.content is not None
-            assert execution_time >= 0.1  # Simulated delay was applied
-            assert execution_time < 2.0  # But didn't timeout
+            # The simulated delay was awaited, and it was the only wait: the
+            # router neither skipped it nor added a timeout or retry of its own.
+            assert requested_waits == [0.1]
             assert "simulated latency" in result.content
 
     async def test_real_caching_behavior(self, llm_router_with_test_endpoints):
@@ -338,17 +374,13 @@ class TestLLMProviderRealBehavior:
             mock_route.side_effect = [first_response, cached_response]
 
             # First request - should hit provider
-            start_time = time.time()
             result1 = await router.route(prompt, model=model)
-            first_request_time = time.time() - start_time
 
             assert isinstance(result1, LLMResponse)
             assert not result1.cached
 
             # Second identical request - should use cache
-            start_time = time.time()
             result2 = await router.route(prompt, model=model)
-            second_request_time = time.time() - start_time
 
             # Validate caching occurred
             assert isinstance(result2, LLMResponse)
@@ -689,7 +721,9 @@ class TestRealProviderIntegration:
                 assert "streaming response" in result.content
                 mock_route.assert_called_once()
 
-    async def test_real_performance_under_load(self, provider_integration_server):
+    async def test_real_performance_under_load(
+        self, provider_integration_server, requested_waits
+    ):
         """Test performance characteristics under concurrent load with mocking."""
         server, integration_state = provider_integration_server
 
@@ -728,28 +762,17 @@ class TestRealProviderIntegration:
                 router = LLMRouter()
 
                 # Execute concurrent load test
-                async def load_test_request(i):
-                    start = time.time()
-                    result = await router.route(f"Load test request {i}")
-                    latency = time.time() - start
-                    return result, latency
-
-                load_start = time.time()
-                tasks = [load_test_request(i) for i in range(20)]
-                results = await asyncio.gather(*tasks)
-                total_time = time.time() - load_start
+                tasks = [router.route(f"Load test request {i}") for i in range(20)]
+                responses = await asyncio.gather(*tasks)
 
                 # Validate load performance
-                assert len(results) == 20
-                responses, latencies = zip(*results)
-
+                assert len(responses) == 20
                 assert all(isinstance(r, LLMResponse) for r in responses)
                 assert all(r.content is not None for r in responses)
 
-                # Performance validation (with mocking should be fast)
-                avg_latency = sum(latencies) / len(latencies)
-                assert avg_latency < 2.0  # Fast with mocking (relaxed for CI)
-                assert total_time < 10.0  # Good concurrent throughput with mocking
+                # With a mocked registry, a latency budget can only be failed
+                # by a wait, so the waits are what is asserted (#1579).
+                assert requested_waits == [], "routing under load waited"
 
                 # All requests should have been processed
                 assert mock_route.call_count == 20

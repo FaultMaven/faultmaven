@@ -266,53 +266,10 @@ class TestShimStatusDiagnostics:
                 assert result is False
 
 
-class TestShimPerformance:
-    """Tests for shim performance characteristics."""
-
-    def test_noop_decorator_minimal_overhead(self):
-        """Test that no-op decorator has minimal overhead."""
-        import time
-
-        with patch.dict(os.environ, {"ENABLE_TRACING": "false"}):
-            from faultmaven.infrastructure.shims import track
-
-            @track("fast_operation")
-            def fast_function():
-                return 42
-
-            # Warm up
-            fast_function()
-
-            # Measure overhead
-            start = time.perf_counter()
-            for _ in range(1000):
-                fast_function()
-            elapsed = time.perf_counter() - start
-
-            # Should complete 1000 iterations in under 100ms
-            assert elapsed < 0.1, f"No-op decorator too slow: {elapsed}s for 1000 calls"
-
-    def test_pii_redactor_passthrough_minimal_overhead(self):
-        """Test that PIIRedactor passthrough has minimal overhead."""
-        import time
-
-        with patch.dict(os.environ, {"ENABLE_PII_REDACTION": "false"}):
-            from faultmaven.infrastructure.shims import PIIRedactor
-
-            redactor = PIIRedactor()
-            text = "Some text to process"
-
-            # Warm up
-            redactor.redact(text)
-
-            # Measure overhead
-            start = time.perf_counter()
-            for _ in range(1000):
-                redactor.redact(text)
-            elapsed = time.perf_counter() - start
-
-            # Should complete 1000 iterations in under 50ms
-            assert elapsed < 0.05, f"Passthrough too slow: {elapsed}s for 1000 calls"
+# The two shim-overhead timings that lived here — the no-op ``@track``
+# decorator and the ``PIIRedactor`` passthrough, 1000 calls each against a raw
+# wall-clock total — are ``tests/performance/test_shim_overhead.py`` now,
+# behind calibrated budgets (#1579). They were the only timings in this module.
 
 
 class TestShimGracefulDegradation:

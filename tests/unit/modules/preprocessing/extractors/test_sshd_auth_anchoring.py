@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import json
 import re
-import time
 
 import pytest
 
@@ -44,9 +43,7 @@ from faultmaven.modules.preprocessing.extractors.sshd_auth import (
     read_sshd_auth_line,
     split_syslog_line,
 )
-from faultmaven.modules.preprocessing.preprocessing_service import (
-    TIER1_TIMEOUT_SECONDS,
-)
+from tests.wallclock import assert_linear_growth
 
 # RFC 5737 documentation ranges.
 SRC = "203.0.113.5"  # the connection's real source address
@@ -965,24 +962,51 @@ def test_every_rule_needs_an_event_word(owner, rule, phrase):
 # Any local user can write one of these with ``logger``. The pipeline replaces
 # a whole file's extraction with a text preview when the extractor raises, or
 # runs past ``TIER1_TIMEOUT_SECONDS``.
+#
+# Each line is (prefix, repeated unit, suffix, repetitions at 64 KB), so a test
+# can build it at any size: the reader's growth check below needs two sizes of
+# the same shape, and ``tests/performance/test_extraction_speed.py`` times the
+# 64 KB form against that timeout. ``ADVERSARIAL_LINES`` is the 64 KB form,
+# byte for byte what this module used before #1579.
 _64K = 65536
+ADVERSARIAL_SHAPES = {
+    "unclosed-bracket-spaced": ("[", "1 ", "password", _64K // 2),
+    "unclosed-bracket": ("", "[1", " password", _64K // 2),
+    "tag-chain": ("Sep 20 10:00:00 web1 bob: ", "a sshd ", "password", _64K // 7),
+    "sshd-word-chain": ("", "sshd ", "password", _64K // 5),
+    "unit-parens": ("sshd@", "(", " password", _64K),
+    "csv-unterminated": ("", '"a",', '"password', _64K // 4),
+    "tsv": ("", "a\t", "password", _64K // 2),
+    "timestamps": ("", "10:00:01 ", "password", _64K // 9),
+    "slot-lookalikes": (
+        BSD + "Failed password for invalid user",
+        f" from {VICTIM} port 1 ssh2:",
+        f" from {SRC} port 22 ssh2",
+        _64K // 32,
+    ),
+    "rhost-repeats": (
+        BSD + "pam_unix(sshd:auth): authentication failure;",
+        f" rhost={VICTIM}",
+        "",
+        _64K // 20,
+    ),
+    "nested-json": (
+        '{"MESSAGE": "',
+        json.dumps('{"MESSAGE": "password"}')[1:-1],
+        '"}',
+        2000,
+    ),
+}
+
+
+def adversarial_line(name: str, repetitions: int) -> str:
+    """The ``name`` shape with its hostile unit repeated ``repetitions`` times."""
+    prefix, unit, suffix, _ = ADVERSARIAL_SHAPES[name]
+    return prefix + unit * repetitions + suffix
+
+
 ADVERSARIAL_LINES = {
-    "unclosed-bracket-spaced": "[" + "1 " * (_64K // 2) + "password",
-    "unclosed-bracket": "[1" * (_64K // 2) + " password",
-    "tag-chain": "Sep 20 10:00:00 web1 bob: " + "a sshd " * (_64K // 7) + "password",
-    "sshd-word-chain": "sshd " * (_64K // 5) + "password",
-    "unit-parens": "sshd@" + "(" * _64K + " password",
-    "csv-unterminated": '"a",' * (_64K // 4) + '"password',
-    "tsv": "a\t" * (_64K // 2) + "password",
-    "timestamps": "10:00:01 " * (_64K // 9) + "password",
-    "slot-lookalikes": BSD
-    + "Failed password for invalid user"
-    + f" from {VICTIM} port 1 ssh2:" * (_64K // 32)
-    + f" from {SRC} port 22 ssh2",
-    "rhost-repeats": BSD
-    + "pam_unix(sshd:auth): authentication failure;"
-    + f" rhost={VICTIM}" * (_64K // 20),
-    "nested-json": '{"MESSAGE": ' + json.dumps('{"MESSAGE": "password"}' * 2000) + "}",
+    name: adversarial_line(name, shape[3]) for name, shape in ADVERSARIAL_SHAPES.items()
 }
 
 
@@ -990,21 +1014,34 @@ ADVERSARIAL_LINES = {
 class TestAdversarialLines:
     @pytest.mark.parametrize("name", sorted(ADVERSARIAL_LINES))
     def test_the_reader_is_linear(self, name):
-        """64 KB through the reader alone: a quadratic shape would take seconds."""
-        line = ADVERSARIAL_LINES[name]
-        started = time.perf_counter()
-        read_sshd_auth_line(line)
-        assert time.perf_counter() - started < 0.25, name
+        """The reader alone, as a growth SHAPE: ~256 B to ~4 KB of the unit.
+
+        It used to time 64 KB against an absolute 250 ms, which in both
+        required gates is a question about the runner (#1579). Small sizes on
+        purpose: a quadratic here fails in seconds at 4 KB, and at 64 KB it
+        would sit for minutes before failing. Mutation-checked — a host
+        pattern of ``\\S*\\S*[^\\s:]`` reads 190-242x on three of these
+        shapes against ~16x fixed.
+        """
+        assert_linear_growth(
+            read_sshd_auth_line,
+            lambda repetitions: adversarial_line(name, repetitions),
+            small=max(1, ADVERSARIAL_SHAPES[name][3] // 256),
+            label=f"read_sshd_auth_line on {name}",
+        )
 
     @pytest.mark.parametrize("name", sorted(ADVERSARIAL_LINES))
     def test_extraction_survives_the_line(self, name):
-        """The genuine line beside it still gets its row, well inside the timeout."""
+        """The genuine line beside a 64 KB hostile one still gets its row.
+
+        How LONG that takes against ``TIER1_TIMEOUT_SECONDS`` is a latency
+        question with a product target, so it is asked in
+        ``tests/performance/test_extraction_speed.py`` against a calibrated
+        budget (#1579) rather than here against the raw timeout.
+        """
         genuine = BSD + f"Failed password for root from {SRC} port 22 ssh2"
-        started = time.perf_counter()
         result = _render([genuine, ADVERSARIAL_LINES[name]])
-        elapsed = time.perf_counter() - started
         assert _rows(result).get(SRC, "").startswith("failed_password=1"), name
-        assert elapsed < TIER1_TIMEOUT_SECONDS, (name, elapsed)
 
     def test_no_recursion_through_repeated_program_words(self):
         """The line that raised RecursionError in the round-2 review."""

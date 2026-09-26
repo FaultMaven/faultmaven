@@ -234,14 +234,29 @@ class TestRealTracingBehavior:
         assert "Critical system error" in unhandled_error_span.status_description
 
     async def test_real_concurrent_tracing_performance(self, mock_opik_tracer):
-        """Test real concurrent tracing performance and isolation."""
+        """Concurrent traced operations overlap, and each span keeps its own data.
+
+        Two wall-clock assertions used to stand in for those claims (#1579):
+        ``total_time < 2.0`` for "concurrent", and ``abs(recorded - measured)
+        < 50`` ms for "accurate". The first is replaced by the PEAK number of
+        operations in flight at once — 20 when the spans do not serialise
+        them, 1 when they do, on any machine. The second compared two
+        ``time.time()`` readings the TEST took on either side of a span exit,
+        so it measured the scheduler rather than the tracer; what it was
+        reaching for is that each span stores exactly the value its own
+        operation set, under concurrency, and that is asserted exactly.
+        """
         tracer, spans_collected = mock_opik_tracer
+        in_flight = 0
+        peak = 0
 
         async def traced_concurrent_operation(operation_id):
             """Simulate concurrent traced operation."""
-            start_time = time.time()
+            nonlocal in_flight, peak
 
             with tracer.trace(f"concurrent_op_{operation_id}") as span:
+                in_flight += 1
+                peak = max(peak, in_flight)
                 span.set_attribute("operation.id", operation_id)
                 span.set_attribute("operation.type", "concurrent_processing")
                 span.add_event("operation_start")
@@ -251,26 +266,23 @@ class TestRealTracingBehavior:
                 await asyncio.sleep(work_time)
 
                 span.add_event("work_completed", {"work_duration_ms": work_time * 1000})
-                span.set_attribute(
-                    "operation.actual_duration_ms", (time.time() - start_time) * 1000
-                )
+                span.set_attribute("operation.work_duration_ms", work_time * 1000)
                 span.set_status("ok")
+                in_flight -= 1
 
-            return operation_id, time.time() - start_time
+            return operation_id, work_time
 
         # Execute concurrent traced operations
-        start_time = time.time()
         concurrent_tasks = [traced_concurrent_operation(i) for i in range(20)]
         results = await asyncio.gather(*concurrent_tasks)
-        total_time = time.time() - start_time
 
-        # Validate concurrent tracing performance
+        # Validate concurrent tracing
         assert len(results) == 20
         assert len(spans_collected) == 20
-        assert total_time < 2.0  # Good concurrent performance
+        assert peak == 20, f"only {peak} of 20 traced operations ever overlapped"
 
         # Validate tracing isolation and correctness
-        for operation_id, duration in results:
+        for operation_id, work_time in results:
             matching_span = next(
                 s for s in spans_collected if s.name == f"concurrent_op_{operation_id}"
             )
@@ -278,10 +290,10 @@ class TestRealTracingBehavior:
             assert matching_span.attributes["operation.type"] == "concurrent_processing"
             assert len(matching_span.events) == 2
             assert matching_span.status == "ok"
-
-            # Validate timing accuracy
-            recorded_duration = matching_span.attributes["operation.actual_duration_ms"]
-            assert abs(recorded_duration - duration * 1000) < 50  # Within 50ms accuracy
+            # Each span holds the value ITS operation set, not a neighbour's.
+            assert matching_span.attributes["operation.work_duration_ms"] == (
+                work_time * 1000
+            )
 
     async def test_real_trace_decorator_integration(self, mock_opik_tracer):
         """Test real trace decorator functionality."""
@@ -682,8 +694,6 @@ class TestRealMetricsCollection:
 
         async def generate_metrics_load(operation_id):
             """Generate metrics for load testing using actual Prometheus metrics."""
-            start_time = time.time()
-
             # Mock the Prometheus metrics for this load test
             with (
                 patch.object(REQUEST_COUNTER, "labels") as mock_counter_labels,
@@ -723,21 +733,11 @@ class TestRealMetricsCollection:
                     # Test gauge updates (gauges overwrite)
                     ACTIVE_SESSIONS.set(i + operation_id * 50)
 
-            return time.time() - start_time
-
         # Execute concurrent metrics generation
-        start_time = time.time()
         load_tasks = [
             generate_metrics_load(i) for i in range(5)
         ]  # Reduced to 5 operations for faster testing
-        processing_times = await asyncio.gather(*load_tasks)
-        total_time = time.time() - start_time
-
-        # Validate metrics performance under load
-        assert total_time < 3.0  # Should handle metrics load within reasonable time
-        assert all(
-            t < 2.0 for t in processing_times
-        )  # Individual operations should be fast
+        await asyncio.gather(*load_tasks)
 
         # Validate metrics were collected correctly
         counters = metrics_data["counters"]
@@ -761,8 +761,16 @@ class TestRealMetricsCollection:
         assert callable(REQUEST_DURATION.labels)
         assert callable(ACTIVE_SESSIONS.set)
 
-        # Validate load test completed within performance bounds
-        assert max(processing_times) < 2.0  # No single operation should take too long
+        # Every update under load reached the collector exactly once — none
+        # dropped, none doubled. This replaces three wall-clock bounds (#1579):
+        # with the Prometheus objects patched to mocks, ``total_time < 3.0``
+        # and ``max(processing_times) < 2.0`` timed MagicMock calls, not this
+        # codebase, and moved with whatever else the runner was doing.
+        for operation_id in range(5):
+            tags = json.dumps({"operation_id": operation_id}, sort_keys=True)
+            assert counters[f"load_test.operations:{tags}"] == 50
+            assert len(histograms[f"load_test.processing_time_ms:{tags}"]) == 50
+            assert gauges[f"load_test.current_value:{tags}"] == 49 + operation_id * 50
 
 
 class TestRealLogCorrelationIntegration:

@@ -67,8 +67,12 @@ megabytes do not move with machine throughput.
 
 ## The other timed suite: `tests/performance/`
 
-`tests/performance/` measures logging and context-variable overhead, and
-the thing to know about it is **where it runs**:
+`tests/performance/` measures logging and context-variable overhead, and —
+since #1579 — the timings that used to sit in unit and integration tests
+as raw wall clock: sanitizer throughput, the cost of the tracing and
+redaction shims when they are off, vocabulary and timestamp extraction, and
+extraction beside a hostile 64 KB line against the Tier-1 timeout. The
+thing to know about it is **where it runs**:
 
 | | `tests/benchmarks/` | `tests/performance/` |
 |---|---|---|
@@ -78,16 +82,19 @@ the thing to know about it is **where it runs**:
 
 So a wall-clock threshold there reds a **required** check on a diff that
 changed nothing — #908's failure with the merge blocked (#1557). It
-carries its own `tests/performance/budgets.py` — 21 rows on the same
-two-number shape, anchored 2-3x above 29 measured runs (median
-utilisation 0.29% before, 30.7% after) — and the shared machinery both
-suites use lives in **`tests/wallclock/`**:
+carries its own `tests/performance/budgets.py` — 28 rows on the same
+two-number shape: 21 anchored by #1557 2-3x above 29 measured runs
+(median utilisation 0.29% before, 30.7% after), and 7 moved in by #1579,
+anchored the same way above 20 — and the shared machinery both suites use
+lives in **`tests/wallclock/`**:
 
 | module | what it holds |
 |---|---|
 | `tests/wallclock/calibration.py` | the machine-throughput measurement (#908/#1555) |
 | `tests/wallclock/budgets.py` | the `Budget` dataclasses, the 2-3x band, `asserted_target` |
 | `tests/wallclock/assertions.py` | `assert_latency_within`, `assert_throughput_at_least` |
+| `tests/wallclock/growth.py` | `assert_linear_growth`: is a cost linear in its input (#1579) |
+| `tests/wallclock/virtual_time.py` | `VirtualTimeLoop`, `virtual_now`: deadlines without a wall clock (#1579) |
 
 Four of the 27 comparisons that used to be in `tests/performance/` were
 **deleted** rather than re-anchored: each subtracted a nominal
@@ -128,9 +135,38 @@ directories to the helpers, and they fail on different things:
    walk past, and `UNJUDGED_TIMED_TESTS` names the three deliberate
    exceptions with their measurements.
 
-Known limit, measured: both watch two directories. **59 timed tests in 18
-other files under `tests/` carry 50 threshold comparisons** that neither
-reaches, and they run in the same two required gates.
+Both of those watch the two timing directories. #1579 found **50 more
+thresholds in 18 other files** — the census missed more, because it only
+looked for a clock read inside the test itself — running in the same two
+required gates, where since `pytest-xdist` (#1651) two of them went red on
+unrelated commits within hours. So a third check covers the rest of
+`tests/`:
+
+3. **The rest of the tree.** Every module outside the two timing suites
+   and `tests/wallclock/` is scanned for code that *measures* — subtracts
+   two clock readings, compares two, or calls `timeit`, where a clock is a
+   `time` clock under any alias or import, an event loop's `.time()`, or a
+   helper that returns one. A single reading used as a timestamp is not a
+   measurement. Any test that reaches a measurement through the call graph
+   is **timed**, and then both questions above are asked of it: no
+   ordering comparison anywhere in its body or in the measuring code
+   (`TREE_THRESHOLD_ALLOWLIST`, nine entries, none a budget), and it must
+   reach a helper (`TREE_UNJUDGED_TIMED_TESTS`, fourteen, ten of them the
+   calibration instrument's own tests).
+
+### Writing a timing assertion outside the timing suites
+
+Decide what the test is actually asking, and use the instrument for that
+question. None of them is a raw threshold.
+
+| The question | Instrument | Example |
+|---|---|---|
+| Is this fast enough? (a latency or a rate, with a product target) | a row in `tests/performance/budgets.py` and `assert_latency_within` / `assert_throughput_at_least` in `tests/performance/` | `test_extraction_speed.py` |
+| Is this linear in its input? (ReDoS, an accidental rescan) | `assert_linear_growth` — CPU time at two sizes 16x apart; linear reads ~16x, quadratic ~256x, the bound is 64x | `test_runbook_regex_redos.py` |
+| Did this happen before that deadline? (retry ladders, turn budgets) | `VirtualTimeLoop` via the module's `event_loop_policy` fixture, elapsed read with `virtual_now()` | `test_llm_ladder_turn_budget.py` |
+| Did this run concurrently? | a count of calls in flight, or the order of start/end events | `test_observability_core.py` |
+| Did this wait? (a backoff, a rate-limit sleep) | record the sleeps the code asks for | `test_llm_providers.py` |
+| Is the expensive step bounded? | measure what reaches it — the size of its input, the number of calls | `test_output_floor.py` |
 
 ## Load Testing
 

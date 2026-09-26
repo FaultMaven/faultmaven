@@ -14,7 +14,6 @@ they are the reason the design changed rather than growing a type list.
 
 import io
 import logging
-import time
 
 import pytest
 import structlog
@@ -31,6 +30,7 @@ from faultmaven.infrastructure.logging.url_redaction import (
     redact_urls_bytes,
     redacting_renderer,
 )
+from tests.wallclock import assert_linear_growth
 
 # Two constants on purpose.
 #
@@ -120,16 +120,20 @@ class TestRedactUrls:
         this runs on every emitted record.
 
         Leading with the literal "://" makes it linear: the same 64 KB line
-        measures 0.26 ms. The 250 ms budget below is ~1000x the fixed cost and
-        ~30x under the broken one, so it is neither flaky nor vacuous.
+        measures 0.26 ms.
+
+        Checked as a growth SHAPE (#1579), not against a 250 ms budget: that
+        was an absolute wall-clock bound in both required gates, and whether a
+        runner under four xdist workers clears it says nothing about the
+        regex. 1 KB -> 16 KB of near-miss reads ~16x linear; the scheme-class
+        pattern, restored, reads ~250x.
         """
-        haystack = "a" * 64_000 + "? ://x"
-
-        start = time.perf_counter()
-        redact_urls(haystack)
-        elapsed = time.perf_counter() - start
-
-        assert elapsed < 0.25, f"redaction took {elapsed:.3f}s -- quadratic again?"
+        assert_linear_growth(
+            redact_urls,
+            lambda count: "a" * count + "? ://x",
+            small=1024,
+            label="redact_urls on a long near-miss run",
+        )
 
     def test_the_bytes_form_matches_the_str_form(self):
         text = "GET https://g.com/s?key=K and https://h/i"
