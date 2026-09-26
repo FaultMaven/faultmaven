@@ -11455,6 +11455,15 @@ class MilestoneEngine:
                 # does not read as a silent no-op.
                 hypothesis.likelihood = 1.0
                 hypothesis.last_updated_turn = case.current_turn
+                # The user's explicit validation restarts the stagnation clock,
+                # even when belief was already near 1.0: stagnation flags lines
+                # the investigation is not moving, and the user has just named
+                # this one as the line to pursue. Left unrecorded, a positive
+                # counter from earlier turns made this a stagnant turn, so
+                # housekeeping decayed the user's belief on the spot — or
+                # anti-anchoring retired the hypothesis the user just affirmed.
+                hypothesis.last_progress_at_turn = case.current_turn
+                hypothesis.iterations_without_progress = 0
                 current_fb = metadata.get("system_feedback", "") or ""
                 metadata["system_feedback"] = "\n".join(
                     [
@@ -14207,21 +14216,44 @@ class MilestoneEngine:
 
         # 1. Apply confidence decay to stagnant hypotheses
         for h in active_hypotheses:
-            # Age-based stagnation sweep (#713): a hypothesis no turn ever touches
+            # Age-based stagnation sweep (#713): a prior no turn ever touches
             # keeps iterations_without_progress=0, so decay/anchoring would never
             # act on it. Advance the stagnation counter for one that has gone
-            # stagnant-by-age (origin-blind) so an IGNORED hypothesis decays and
+            # stagnant-by-age (provenance-blind) so an IGNORED prior decays and
             # can trip anchoring the same as a repeatedly-tested one — never
-            # validating or concluding, only lowering belief over time.
-            self.hypothesis_manager.advance_stagnation_if_ignored(h, case.current_turn)
-            # We decay if NO progress was made this turn for this specific hypothesis
-            # (Note: link_evidence resets iterations_without_progress to 0)
+            # validating or concluding, only lowering belief over time. A
+            # hypothesis that causal evidence supports is not aged (#1678).
+            self.hypothesis_manager.advance_stagnation_if_ignored(
+                h, case.current_turn, case
+            )
+            # One decay step if THIS turn left the hypothesis stagnant (touched
+            # without progress); an untouched turn does not decay it.
             self.hypothesis_manager.apply_likelihood_decay(h, case.current_turn)
 
         # 2. Detect anchoring and add system feedback if necessary
         is_anchored, reason, hypothesis_ids = self.hypothesis_manager.detect_anchoring(
             active_hypotheses, case.current_turn
         )
+
+        # 3. Age-out: an ignored prior past the stagnation horizon and below the
+        # retirement threshold soft-retires. Anti-anchoring retires only on
+        # fixation, which a lone stalled prior beside a healthy leader is not, so
+        # without this it sat ACTIVE at the decay floor. Whatever anchoring
+        # flagged is left to the intervention below, which also tells the LLM to
+        # broaden the differential. Same stand-down and root protections as the
+        # intervention; runs here, ahead of the intervention's early returns.
+        if not self._awaiting_recent_evidence(case, _ANTI_ANCHORING_COOLDOWN_TURNS):
+            flagged = set(hypothesis_ids) if is_anchored else set()
+            count_held = support_count_held_root_ids(case)
+            for h in active_hypotheses:
+                if (
+                    h.hypothesis_id not in flagged
+                    and not is_chain_root_validated(h, case.causal_nodes)
+                    and h.root_node_id not in count_held
+                ):
+                    self.hypothesis_manager.retire_if_aged_out(
+                        h, case, case.current_turn
+                    )
 
         if is_anchored:
             logger.warning(f"Anchoring detected for case {case.case_id}: {reason}")

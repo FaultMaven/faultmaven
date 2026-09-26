@@ -342,7 +342,9 @@ validation (§7.1.1) fall out of the arithmetic rather than needing to be bolted
 on as special cases.
 
 **Decay counts investigation turns, not wall-clock turns.** Stagnation decay
-(`belief × 0.85^iterations_without_progress`) and anchoring detection key on
+multiplies belief by 0.85 once per stagnant turn — a turn that touched the
+hypothesis without progress — and never on a turn that did not touch it.
+Decay and anchoring detection key on
 `iterations_without_progress`, which must advance **only on investigation turns**
 — a turn where a node was *eligible* to progress and didn't (new evidence
 analyzed, a proposed test's result returned, or a node-state transition
@@ -353,17 +355,52 @@ decays on user latency alone — a three-turn network-capture detour would penal
 the very chain it is testing. The counter is per-node and resets at
 `last_progress_at_turn`.
 
+What advances the counter is judged **forwards**: an event counts only if, after
+it, it is more evident that the line of inquiry is not advancing. New evidence
+analysed that leaves belief where it was (a NEUTRAL finding, say) counts — the
+line had a chance and did not move. A **restatement** does not: the model
+re-sending a likelihood within 0.05 of the current one (an echo of the value it
+was shown, or a small self-correction), or re-emitting a link it already made
+with the stance unchanged. It adds nothing about where the line is going, so it
+is neither progress nor stagnation, and it does not mark the hypothesis touched
+(which would shield an ignored prior from the age sweep below). A test that left
+belief unmoved is counted once, by its evidence link — never again by the
+likelihood the model re-sends alongside it.
+
 One exception, at the flat-hypothesis layer: an ACTIVE hypothesis that *no* turn
 ever touches gets no investigation-turn increment (nothing engages it), so it
 would otherwise sit at its prior forever — never decaying, never tripping
-anchoring. The housekeeping loop closes that gap with an origin-blind, age-based
-stagnation sweep (`advance_stagnation_if_ignored`): once such a hypothesis has
-gone `IGNORED_STAGNATION_TURN_THRESHOLD` turns since its last progress, its
-counter advances one per turn so decay and anchoring act on it (#713). This is
-conservative and reversible — decay only lowers belief, and the moment evidence
-touches the hypothesis its likelihood recomputes from `initial_likelihood` (the
-age-decay is erased) — so an ignored candidate stalls/soft-retires rather than
-lingering, and never reaches a conclusion on age alone.
+anchoring. The housekeeping loop closes that gap with a provenance-blind,
+age-based stagnation sweep (`advance_stagnation_if_ignored`): once such a
+hypothesis has gone `IGNORED_STAGNATION_TURN_THRESHOLD` turns since its last
+progress, its counter advances one per turn so decay and anchoring act on it
+(#713). This is conservative and reversible — decay only lowers belief, and the
+moment new evidence touches the hypothesis (a new link, or a changed stance)
+its likelihood recomputes from
+`initial_likelihood` (the age-decay is erased) — so an ignored candidate
+stalls/soft-retires rather than lingering, and never reaches a conclusion on age
+alone. The soft-retirement comes from anti-anchoring when the ignored candidate
+is part of a fixation (the top hypothesis stalled, or two or more stalled), and
+otherwise from the age-out: stagnant for the full 3-iteration horizon and below
+0.30, an ignored candidate without standing causal support is retired, under the
+same stand-down and root protections. Retired, not refuted — the cause can be
+reopened as a new hypothesis (INV-36).
+
+The exception does not cover a hypothesis whose **causal support stands**: a
+SUPPORTS link at `CAUSAL_STANCE_CONFIDENCE_MIN` to a `CAUSAL_EVIDENCE` row, on the
+hypothesis or on its chain head, with no confident REFUTES link on either and a
+head the graph has not derived REFUTED. Support from symptom evidence does not
+count — a symptom log supports every sibling that would explain the symptom, and
+one such link already lifts a 0.5 prior above the cause-identification bar. The
+test looks forwards, at whether any work is left on the hypothesis. One whose
+causal support stands goes untouched because the investigation is done with it,
+typically because the user is applying its fix and nothing is left to ask of it.
+A contradicted one still has open work — the contradiction — and if nobody is
+working on it, it is stagnating like any other. Those turns wait on the user, which the
+rule above says must not advance the counter, so the sweep leaves it alone. Aging
+it anyway took the leading cause from 0.95 to 0.36 in three turns, below the
+cause-identification bar, while its fix was being verified (#1678). A supported
+hypothesis still stagnates when a turn engages it without progress.
 
 ---
 

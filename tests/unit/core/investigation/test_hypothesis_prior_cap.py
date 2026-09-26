@@ -119,13 +119,14 @@ def test_refuting_only_links_do_not_lift_the_cap():
 def test_capped_rerequest_does_not_reset_stagnation():
     """Progress is judged on the APPLIED value: re-asserting the same over-cap
     number on a capped hypothesis is a no-op and must not reset the
-    stagnation/decay counters."""
+    stagnation/decay counters. Nor does it advance them: a restatement adds
+    nothing that makes stagnation more evident."""
     m = HypothesisManager()
     h = _mk(NEW_HYPOTHESIS_MAX_PRIOR)
     before = h.iterations_without_progress
     m.update_hypothesis_likelihood(h, 0.95, current_turn=3, reason="LLM update")
     assert h.likelihood == NEW_HYPOTHESIS_MAX_PRIOR
-    assert h.iterations_without_progress == before + 1
+    assert h.iterations_without_progress == before
     assert h.last_progress_at_turn != 3
 
 
@@ -204,7 +205,9 @@ def test_cap_never_demotes_below_earned_value():
     m.update_hypothesis_likelihood(h, 0.99, current_turn=3, reason="LLM update")
     # Raise above current refused (no confident link), but never demoted:
     assert h.likelihood == 0.95
-    assert h.iterations_without_progress == before_iters + 1  # no fake progress
+    # No fake progress (the counter is not reset) and no fake stagnation (a
+    # refused re-assertion is a restatement, not a test that failed).
+    assert h.iterations_without_progress == before_iters
 
 
 def test_cap_allows_honest_downward_update_from_earned_value():
