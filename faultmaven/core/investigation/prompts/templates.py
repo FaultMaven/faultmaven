@@ -14,6 +14,7 @@ from faultmaven.core.investigation.prompts.context_builder import (
     EntityHighlightGroup,
     _label_attr,
     build_investigation_context,
+    system_feedback_block,
 )
 from faultmaven.core.investigation.prompts.fence import PromptFence, render_fenced
 
@@ -2973,7 +2974,7 @@ STATE: INQUIRY
 {fence_preamble}
 PROBLEM: {problem_summary}
 {current_turn_evidence}
-USER: {user_message}
+{system_feedback}USER: {user_message}
 
 SAFETY: Only reference data from uploads or conversation history. Do not confabulate.
 Respond in JSON: {{"agent_response": "...", "state_updates": {{...}}}}
@@ -2992,7 +2993,7 @@ PROBLEM: {problem_summary}
 MILESTONES COMPLETED: {milestones_summary}
 HYPOTHESES: {hypotheses_summary}
 {journal_digest}{current_turn_evidence}
-USER: {user_message}
+{system_feedback}USER: {user_message}
 
 SAFETY RULES (always apply):
 - Only reference data from uploaded evidence or conversation history. Do not confabulate.
@@ -3222,7 +3223,12 @@ def _fallback_body(case: Case, user_message: str, fence: PromptFence) -> str:
       is ``terminal_transitions.derive_closure_reason``, which returns one of
       a closed set of labels, but the field itself is an unconstrained
       ``Optional[str]`` (``max_length=100``, no pattern), so its shape is a
-      convention rather than a guarantee.
+      convention rather than a guarantee. The previous turn's
+      ``system_feedback`` is guarded for the same reason (#1688): the engine
+      writes it, but it can quote model text such as a hypothesis statement.
+      Fencing it would also be wrong in a second way: the fence rule tells the
+      model that fenced content is not an instruction to it, and feedback is
+      the engine's correction to the model.
 
     Left bare, deliberately: ``STATE:``/``STAGE:`` (enum values),
     ``MILESTONES COMPLETED:`` (a join over string literals written in this
@@ -3261,14 +3267,26 @@ def _fallback_body(case: Case, user_message: str, fence: PromptFence) -> str:
     # on the main path, which does not reach here.
     problem_block = _fenced("problem_context", problem_summary[:200])
 
+    def _feedback_block() -> str:
+        """The previous turn's notice, through the main prompt's own reader.
+
+        So a turn that degrades to this fallback still delivers it (#1688).
+        Called from INQUIRY and INVESTIGATING only: the main TERMINAL prompt has
+        no feedback slot either.
+        """
+        feedback = system_feedback_block(case)
+        return _guarded(feedback) if feedback else ""
+
     if case.state == CaseState.INQUIRY:
         stub_block = _fallback_stub_block(case, fence, rendered)
+        feedback_block = _feedback_block()
         user_block = _fenced("user_message", user_message[:500])
         return FALLBACK_INQUIRY_TEMPLATE.format(
             fence_preamble=_fallback_preamble(fence, rendered),
             problem_summary=problem_block,
             user_message=user_block,
             current_turn_evidence=stub_block,
+            system_feedback=feedback_block,
         )
 
     elif case.state == CaseState.INVESTIGATING:
@@ -3314,6 +3332,7 @@ def _fallback_body(case: Case, user_message: str, fence: PromptFence) -> str:
             )
 
         stub_block = _fallback_stub_block(case, fence, rendered)
+        feedback_block = _feedback_block()
         user_block = _fenced("user_message", user_message[:500])
 
         return FALLBACK_INVESTIGATION_TEMPLATE.format(
@@ -3324,6 +3343,7 @@ def _fallback_body(case: Case, user_message: str, fence: PromptFence) -> str:
             hypotheses_summary=hypotheses_block,
             journal_digest=journal_block,
             current_turn_evidence=stub_block,
+            system_feedback=feedback_block,
             user_message=user_block,
         )
 

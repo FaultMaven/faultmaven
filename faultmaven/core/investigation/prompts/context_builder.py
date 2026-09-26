@@ -3727,6 +3727,24 @@ def _build_causal_graph_block(case: Case) -> str:
     return "\n".join(lines)
 
 
+def system_feedback_block(case: Case) -> str:
+    """The previous turn's ``system_feedback`` as a prompt block, or ``""``.
+
+    The one reader of the channel, shared by the main prompt and the minimal
+    fallback (``templates._fallback_body``), so a turn that degrades to the
+    fallback still delivers the notice (#1688). It reads the LAST record only:
+    a turn that built no prompt forwards the notice onto its own record
+    (``milestone_engine.record_promptless_turn``), so the last record is the
+    one carrying whatever no prompt has rendered yet.
+    """
+    if not case.turn_history:
+        return ""
+    feedback = case.turn_history[-1].system_feedback
+    if not feedback:
+        return ""
+    return f"IMPORTANT - SYSTEM FEEDBACK FROM PREVIOUS TURN:\n{feedback}\n\n"
+
+
 def build_investigation_context(
     case: Case,
     user_message: str,
@@ -4110,11 +4128,7 @@ def build_investigation_context(
         kb_str += "</knowledge_context>"
 
     # 8. System Feedback (Validation errors from previous turn)
-    feedback_str = ""
-    if case.turn_history:
-        last_turn = case.turn_history[-1]
-        if last_turn.system_feedback:
-            feedback_str = f"IMPORTANT - SYSTEM FEEDBACK FROM PREVIOUS TURN:\n{last_turn.system_feedback}\n\n"
+    feedback_str = system_feedback_block(case)
 
     # 9. Stage-Specific Context Loading (Gap #10: Section 11.4)
     # Optimize context by condensing hypothesis details during stages where

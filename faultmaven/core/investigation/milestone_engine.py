@@ -4882,6 +4882,77 @@ def score_progress(metadata: dict[str, Any]) -> bool:
     return scored
 
 
+def summarize_for_turn_record(text: Optional[str], max_length: int) -> str:
+    """Bound a message for a ``TurnProgress`` summary field."""
+    text = text or ""
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 3] + "..."
+
+
+def record_promptless_turn(
+    case: Case,
+    *,
+    user_message: Optional[str],
+    agent_response: Optional[str],
+    progress_made: bool,
+    milestones_completed: Optional[list[str]] = None,
+    outcome: TurnOutcome = TurnOutcome.CONVERSATION,
+    agent_response_synthesized: bool = False,
+) -> None:
+    """Record the ``TurnProgress`` of a turn that built no prompt (#1688).
+
+    The one builder for both writers of such a record: the engine's
+    deterministic branches (``_finish_deterministic_turn``) and the service's
+    consumed-turn backstop (``_backfill_consumed_turn``, #1264). They were two
+    near-identical constructions, and #1267 gave only the service's copy the
+    rule below, so a pending-gate click buried the notice a greeting would have
+    carried.
+
+    **``system_feedback`` is FORWARDED from the previous turn.** It is addressed
+    to the next prompt, and the prompt reads it positionally, from
+    ``turn_history[-1]`` (``context_builder.system_feedback_block``). A turn
+    that built no prompt has not consumed it, so a record written here with no
+    feedback would hide the notice from the next prompt that is built.
+    Forwarding cannot deliver twice: the generation path records only the
+    feedback its own turn produced.
+
+    **Except on a terminal case.** No prompt renders feedback once a case is
+    closed or resolved (``TERMINAL_TEMPLATE`` has no slot, and terminal states
+    have no outgoing transitions), so forwarding there would only copy a dead
+    notice onto every later record. Read from the case state rather than taken
+    from the caller, so a new call site cannot get it wrong.
+
+    The stall accounting is one-directional: progress RESETS
+    ``turns_without_progress`` and nothing here ever increments it (see
+    ``_finish_deterministic_turn``).
+    """
+    previous = case.turn_history[-1] if case.turn_history else None
+    case.turn_history.append(
+        TurnProgress(
+            turn_number=case.current_turn,
+            timestamp=datetime.now(UTC),
+            milestones_completed=list(milestones_completed or []),
+            evidence_added=[],
+            hypotheses_generated=[],
+            hypotheses_validated=[],
+            solutions_proposed=[],
+            progress_made=progress_made,
+            outcome=outcome,
+            user_message_summary=summarize_for_turn_record(user_message, 200),
+            agent_response_summary=summarize_for_turn_record(agent_response, 500),
+            agent_response_synthesized=agent_response_synthesized,
+            system_feedback=(
+                previous.system_feedback
+                if previous is not None and not case.is_terminal
+                else None
+            ),
+        )
+    )
+    if progress_made:
+        case.turns_without_progress = 0
+
+
 class MilestoneEngine:
     """
     Data-Driven and Opportunistic Investigation Engine.
@@ -14145,23 +14216,16 @@ class MilestoneEngine:
         # this work exists to close.
         self._score_progress(metadata)
 
-        case.turn_history.append(
-            TurnProgress(
-                turn_number=case.current_turn,
-                timestamp=datetime.now(UTC),
-                milestones_completed=metadata["milestones_completed"],
-                evidence_added=[],
-                hypotheses_generated=[],
-                hypotheses_validated=[],
-                solutions_proposed=[],
-                progress_made=metadata["progress_made"],
-                outcome=TurnOutcome.CONVERSATION,
-                user_message_summary=self._summarize_text(user_message, 200),
-                agent_response_summary=self._summarize_text(agent_response, 500),
-            )
+        # The shared prompt-less record, which also forwards the previous
+        # turn's ``system_feedback``: none of these branches builds a prompt
+        # (#1688).
+        record_promptless_turn(
+            case,
+            user_message=user_message,
+            agent_response=agent_response,
+            progress_made=metadata["progress_made"],
+            milestones_completed=metadata["milestones_completed"],
         )
-        if metadata["progress_made"]:
-            case.turns_without_progress = 0
         # #1142: the same handoff the generation path builds, so a deterministic
         # turn is a ROW in the stream rather than a gap. A gap is worse than an
         # uninteresting row: streaks computed over the stream silently shorten,
@@ -14200,10 +14264,8 @@ class MilestoneEngine:
         return check_if_progress_made(metadata)
 
     def _summarize_text(self, text: str, max_length: int = 200) -> str:
-        """Summarize long text for storage."""
-        if len(text) <= max_length:
-            return text
-        return text[: max_length - 3] + "..."
+        """Thin delegate to :func:`summarize_for_turn_record`."""
+        return summarize_for_turn_record(text, max_length)
 
     # =============================================================================
     # Phase 4 Housekeeping & Helpers
