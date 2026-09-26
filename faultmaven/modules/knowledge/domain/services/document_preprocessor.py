@@ -20,8 +20,6 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-import tiktoken
-
 from faultmaven.infrastructure.llm.json_response import loads_llm_json
 from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionErrorCode,
@@ -33,6 +31,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
 from faultmaven.modules.knowledge.domain.services.document_parser import DocumentParser
 from faultmaven.modules.knowledge.domain.services.runbook_grammar import code_spans
 from faultmaven.utils.frontmatter import match_frontmatter
+from faultmaven.utils.token_estimation import _get_tiktoken_encoder
 
 logger = logging.getLogger(__name__)
 
@@ -40,20 +39,26 @@ MAX_TOKEN_LIMIT = 30_000
 MIN_TEXT_LENGTH = 200
 TRIAGE_SAMPLE_TOKENS = 2000
 
-# tiktoken encoder for token counting (cl100k_base covers GPT-4 / Claude approximation)
-_ENCODER = None
-
 
 def _get_encoder():
-    global _ENCODER
-    if _ENCODER is None:
-        _ENCODER = tiktoken.get_encoding("cl100k_base")
-    return _ENCODER
+    """tiktoken's ``cl100k_base`` (a GPT-4 / Claude approximation), from the
+    loader every tiktoken count shares, or None when it cannot be loaded."""
+    return _get_tiktoken_encoder("gpt-4")
 
 
 def count_tokens(text: str) -> int:
-    """Count tokens using tiktoken (universal approximation)."""
-    return len(_get_encoder().encode(text))
+    """Count tokens with tiktoken, or four characters a token without it.
+
+    Without the encoding the size gate runs on the same heuristic as every
+    other count in that state, rather than failing the upload. It understates
+    dense text, so a CJK document over the limit can pass the gate; rejecting
+    ordinary English documents by an overstated count would be the worse
+    failure for a gate whose limit the conversion enforces again.
+    """
+    encoder = _get_encoder()
+    if encoder is None:
+        return len(text) // 4
+    return len(encoder.encode(text))
 
 
 # =============================================================================
@@ -701,11 +706,14 @@ class DocumentPreprocessor:
         try:
             # Only send the first 2K tokens
             encoder = _get_encoder()
-            tokens = encoder.encode(text)
-            if len(tokens) > TRIAGE_SAMPLE_TOKENS:
-                sample_text = encoder.decode(tokens[:TRIAGE_SAMPLE_TOKENS])
+            if encoder is None:
+                sample_text = text[: TRIAGE_SAMPLE_TOKENS * 4]
             else:
-                sample_text = text
+                tokens = encoder.encode(text)
+                if len(tokens) > TRIAGE_SAMPLE_TOKENS:
+                    sample_text = encoder.decode(tokens[:TRIAGE_SAMPLE_TOKENS])
+                else:
+                    sample_text = text
 
             classifier_model = self._settings.llm.get_classifier_model()
 
