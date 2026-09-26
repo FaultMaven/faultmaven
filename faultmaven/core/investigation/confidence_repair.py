@@ -85,6 +85,10 @@ class ConfidenceAction(str, Enum):
     COERCED = "coerced"  # bool -> 1.0 / 0.0
     DROPPED = "dropped"  # field removed; the stored value stands
     PRUNED = "pruned"  # the record carrying it was removed
+    # Treated as absent, so the field's default applies. No engine schema uses
+    # it — the ruling above rejects a default there. Document triage does
+    # (fm#1672): its default takes the advisory path, never the hard reject.
+    DEFAULTED = "defaulted"
     # A link's value set aside for ingest to decide. Internal to validation: it
     # never reaches the field counter, because ingest counts what it decided.
     SET_ASIDE = "set_aside"
@@ -124,6 +128,12 @@ class ConfidenceRepair:
         if self.action is ConfidenceAction.PRUNED:
             at = f" at {self.where}" if self.where else ""
             return f"{head} unrepairable{at}; the record carrying it was pruned"
+        if self.action is ConfidenceAction.DEFAULTED:
+            default = "" if self.value is None else f" {self.value:.4g}"
+            return (
+                f"{head} is not a confidence in [0, 1]; treated as absent, "
+                f"default{default} applies"
+            )
         return f"{head} set aside for ingest"
 
 

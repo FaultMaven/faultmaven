@@ -138,7 +138,10 @@ class AnalysisResult(BaseModel):
 
 class TriageResult(BaseModel):
     is_actionable: bool
-    confidence: float
+    # Bounded so an out-of-range value cannot reach the hard-reject threshold
+    # from any construction site. The one parse site repairs first
+    # (``document_preprocessor._triage_confidence``, fm#1672).
+    confidence: float = Field(ge=0.0, le=1.0)
     reason: str
 
 
