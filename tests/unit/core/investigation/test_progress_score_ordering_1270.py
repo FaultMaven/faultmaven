@@ -586,3 +586,38 @@ def test_every_scored_arm_on_its_own_means_progress(arm):
         f"{arm} is carried by the telemetry row but does not score as progress; "
         "a turn firing only this arm would emit a self-contradictory row"
     )
+
+
+@pytest.mark.asyncio
+async def test_housekeeping_reads_the_final_progress_verdict_of_its_turn(
+    engine_and_llm,
+):
+    """Housekeeping decides whether the turn ages ignored priors from the turn's
+    ``progress_made``, so it must receive the FINAL verdict — the one the turn
+    record carries — and the stall counter as of the previous turn (Step 5.8
+    runs after it). The transition turn is the sharp case: its only arm,
+    ``status_transitioned``, is written late, so a verdict read early says the
+    turn did not advance."""
+    engine, llm = engine_and_llm
+    seen: list[tuple[bool, int]] = []
+    real = engine._perform_hypothesis_housekeeping
+
+    def spy(case, metadata, *, investigation_advanced):
+        seen.append((investigation_advanced, case.turns_without_progress))
+        return real(case, metadata, investigation_advanced=investigation_advanced)
+
+    engine._perform_hypothesis_housekeeping = spy
+
+    llm.payload = _TURN1
+    first = await engine.process_turn(_inquiry_case(), "Our checkout API is 503ing")
+    stall_before_turn_2 = first["case_updated"].turns_without_progress
+    llm.payload = _TURN2_CONFIRM
+    second = await engine.process_turn(first["case_updated"], "yes, that is it")
+    assert second["case_updated"].state == CaseState.INVESTIGATING
+
+    assert seen, "housekeeping never ran on the turn path"
+    advanced, stall_seen = seen[-1]
+    assert advanced is True
+    assert advanced is second["metadata"]["progress_made"]
+    assert advanced is second["case_updated"].turn_history[-1].progress_made
+    assert stall_seen == stall_before_turn_2

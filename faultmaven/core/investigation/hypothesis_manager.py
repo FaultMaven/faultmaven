@@ -722,6 +722,7 @@ class HypothesisManager:
         hypothesis: Hypothesis,
         current_turn: int,
         case: "Case",
+        *,
         turn_counts: bool,
     ) -> Hypothesis:
         """Age an ignored hypothesis that causal evidence does not support.

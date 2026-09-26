@@ -54,11 +54,6 @@ from faultmaven.modules.case.contracts import (
 
 pytestmark = pytest.mark.unit
 
-# Housekeeping ages ignored priors only on a turn that counts toward stagnation
-# (the investigation advanced, or the case has stalled). These tests model
-# advancing turns, so the sweep runs alongside anchoring as it does in a case.
-_ADVANCED = {"progress_made": True}
-
 
 def _engine() -> MilestoneEngine:
     eng = MilestoneEngine.__new__(MilestoneEngine)
@@ -139,9 +134,9 @@ def _pending_need(case: Case, *, created_at_turn: int) -> EvidenceNeed:
 
 def test_anchoring_retires_flagged_stalled_hypotheses_and_marks_the_turn():
     eng, case = _engine(), _flooded_case()
-    meta: dict = dict(_ADVANCED)
+    meta: dict = {}
 
-    eng._perform_hypothesis_housekeeping(case, meta)
+    eng._perform_hypothesis_housekeeping(case, meta, investigation_advanced=True)
 
     retired = {
         h.hypothesis_id
@@ -162,9 +157,9 @@ def test_recent_outstanding_need_suppresses():
     fixated → anti-anchoring stands down."""
     eng, case = _engine(), _flooded_case()
     case.evidence_needs = [_pending_need(case, created_at_turn=case.current_turn)]
-    meta: dict = dict(_ADVANCED)
+    meta: dict = {}
 
-    eng._perform_hypothesis_housekeeping(case, meta)
+    eng._perform_hypothesis_housekeeping(case, meta, investigation_advanced=True)
 
     assert all(h.state == HypothesisState.ACTIVE for h in case.hypotheses.values())
     assert case.progress.last_anti_anchoring_turn == 0  # never fired
@@ -178,9 +173,9 @@ def test_stale_outstanding_need_does_not_permanently_suppress():
     case.evidence_needs = [
         _pending_need(case, created_at_turn=2)  # stale (8 turns old)
     ]
-    meta: dict = dict(_ADVANCED)
+    meta: dict = {}
 
-    eng._perform_hypothesis_housekeeping(case, meta)
+    eng._perform_hypothesis_housekeeping(case, meta, investigation_advanced=True)
 
     retired = {
         h.hypothesis_id
@@ -195,8 +190,8 @@ def test_cooldown_marker_suppresses_then_expires():
     # Fired last turn → on cooldown → no action.
     eng, case = _engine(), _flooded_case(current_turn=10)
     case.progress.last_anti_anchoring_turn = case.current_turn - 1
-    meta: dict = dict(_ADVANCED)
-    eng._perform_hypothesis_housekeeping(case, meta)
+    meta: dict = {}
+    eng._perform_hypothesis_housekeeping(case, meta, investigation_advanced=True)
     assert all(h.state == HypothesisState.ACTIVE for h in case.hypotheses.values())
     assert not meta.get("system_feedback")
 
@@ -206,7 +201,7 @@ def test_cooldown_marker_suppresses_then_expires():
         case2.current_turn - _ANTI_ANCHORING_COOLDOWN_TURNS
     )
     meta2: dict = {}
-    eng2._perform_hypothesis_housekeeping(case2, meta2)
+    eng2._perform_hypothesis_housekeeping(case2, meta2, investigation_advanced=True)
     assert any(h.state == HypothesisState.RETIRED for h in case2.hypotheses.values())
 
 
@@ -220,9 +215,9 @@ def test_retire_zero_still_marks_the_turn_so_it_does_not_renag_every_turn():
         h.hypothesis_id: h
         for h in [_hyp(f"hyp_00000000000{i}", iters=0) for i in range(4)]
     }
-    meta: dict = dict(_ADVANCED)
+    meta: dict = {}
 
-    eng._perform_hypothesis_housekeeping(case, meta)
+    eng._perform_hypothesis_housekeeping(case, meta, investigation_advanced=True)
 
     assert all(h.state == HypothesisState.ACTIVE for h in case.hypotheses.values())
     # Nothing retired, but the turn is marked and the message claims no retirement.
@@ -250,9 +245,9 @@ def test_grounding_validated_root_hypothesis_is_not_retired():
     grounded = _hyp("hyp_0000000000f0", iters=3, root_node_id=root.node_id)
     others = [_hyp(f"hyp_0000000000a{i}", iters=3) for i in range(3)]
     case.hypotheses = {h.hypothesis_id: h for h in [grounded, *others]}
-    meta: dict = dict(_ADVANCED)
+    meta: dict = {}
 
-    eng._perform_hypothesis_housekeeping(case, meta)
+    eng._perform_hypothesis_housekeeping(case, meta, investigation_advanced=True)
 
     # The grounded (validated-root) hypothesis survives; the others are retired.
     assert case.hypotheses["hyp_0000000000f0"].state == HypothesisState.ACTIVE
@@ -312,9 +307,9 @@ def test_count_held_root_hypothesis_is_not_retired():
     held = _hyp("hyp_0000000000f1", iters=3, root_node_id=root.node_id)
     others = [_hyp(f"hyp_0000000000b{i}", iters=3) for i in range(3)]
     case.hypotheses = {h.hypothesis_id: h for h in [held, *others]}
-    meta: dict = dict(_ADVANCED)
+    meta: dict = {}
 
-    eng._perform_hypothesis_housekeeping(case, meta)
+    eng._perform_hypothesis_housekeeping(case, meta, investigation_advanced=True)
 
     assert case.hypotheses["hyp_0000000000f1"].state == HypothesisState.ACTIVE
     assert all(
@@ -376,7 +371,7 @@ def test_retirement_reason_distinguishes_grounded_from_never_tested():
     others = [_hyp(f"hyp_0000000000a{i}", iters=3) for i in range(2)]
     case.hypotheses = {h.hypothesis_id: h for h in [grounded, untested, *others]}
 
-    eng._perform_hypothesis_housekeeping(case, dict(_ADVANCED))
+    eng._perform_hypothesis_housekeeping(case, {}, investigation_advanced=True)
 
     # The retirement DECISION is unchanged: every stalled flagged id is retired.
     assert all(h.state == HypothesisState.RETIRED for h in case.hypotheses.values())
@@ -399,7 +394,7 @@ def test_chain_only_grounded_hypothesis_is_not_labelled_never_tested():
     others = [_hyp(f"hyp_0000000000a{i}", iters=3) for i in range(3)]
     case.hypotheses = {h.hypothesis_id: h for h in [chain_only, *others]}
 
-    eng._perform_hypothesis_housekeeping(case, dict(_ADVANCED))
+    eng._perform_hypothesis_housekeeping(case, {}, investigation_advanced=True)
 
     assert case.hypotheses["hyp_0000000000c1"].state == HypothesisState.RETIRED
     assert (
@@ -441,7 +436,7 @@ def test_undetermined_grounding_is_recorded_as_undetermined():
     others = [_hyp(f"hyp_0000000000a{i}", iters=3) for i in range(3)]
     case.hypotheses = {h.hypothesis_id: h for h in [unknown, *others]}
 
-    eng._perform_hypothesis_housekeeping(case, dict(_ADVANCED))
+    eng._perform_hypothesis_housekeeping(case, {}, investigation_advanced=True)
 
     assert case.hypotheses["hyp_0000000000d3"].state == HypothesisState.RETIRED
     assert (

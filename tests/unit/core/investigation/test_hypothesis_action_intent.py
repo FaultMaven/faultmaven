@@ -244,7 +244,7 @@ def test_validate_records_progress_so_the_same_turn_does_not_decay_it():
     case.hypotheses = {h.hypothesis_id: h}
 
     _apply(eng, case, h.hypothesis_id, "validate")
-    eng._perform_hypothesis_housekeeping(case, {})
+    eng._perform_hypothesis_housekeeping(case, {}, investigation_advanced=True)
 
     assert h.likelihood == 1.0
     assert h.iterations_without_progress == 0
