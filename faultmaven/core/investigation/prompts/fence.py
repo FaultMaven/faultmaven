@@ -160,18 +160,19 @@ RE-verified for #1242 because the mint moved — a budget sweep from 1,000 to
 with exactly one live token, no unclosed fenced delimiter and no absorbed one
 (``tests/unit/core/investigation/test_fallback_fence_1242.py``).
 
-The fallback's SIZE is bounded by construction rather than by a check, which
-matters because ``_assemble_allocated``'s overflow branch returns it without
-re-measuring it against the model ceiling. Every input is capped (problem 200
-chars, user message 500, three stubs x 200, twelve journal entries x 120,
-three hypotheses x 50, and the previous turn's notice at 100 tokens), so a
-worst case exists, and a test pins it under
-``model_context.MIN_PROMPT_BUDGET`` (2,000), the floor of any ceiling
-``resolve_model_budget`` can return. The margin is thin enough that it is
-pinned rather than left to inspection. Most caps are in characters, so the
-bound holds for text that tokenizes like prose, which is what the test
-measures. Text that tokenizes denser at the same length, such as log lines
-full of timestamps and ids, or CJK, can exceed the floor.
+The fallback's SIZE has to fit ``model_context.MIN_PROMPT_BUDGET`` (2,000),
+the floor of any ceiling ``resolve_model_budget`` can return, because
+``_assemble_allocated``'s overflow branch returns it without re-measuring it
+against the model ceiling. Every input is capped (problem 200 chars, user
+message 500, three stubs x 200, twelve journal entries x 120, three
+hypotheses x 50, and the previous turn's notice at 100 tokens). An ordinary
+case fits well inside the budget at those caps. A case at every cap need not,
+and text that tokenizes denser at the same length, such as log lines full of
+timestamps and ids, or CJK, can take several times the budget. So
+``templates.get_fallback_prompt_for_case`` measures the render and redoes one
+over ``_FALLBACK_MAX_TOKENS`` with every cap scaled down; tests pin the result
+for a case at every cap and for dense text. The measure is the reference
+tokenizer the bound is stated in, not the live model's.
 
 **FORGERY and ABSORPTION are different questions, and only the first one is
 about authorship.** This distinction is the whole lesson of #1254 and it is

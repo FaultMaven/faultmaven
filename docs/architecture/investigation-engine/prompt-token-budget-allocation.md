@@ -416,6 +416,16 @@ degraded by nature. (The "frees the room" phrasing means the smaller skeleton is
 what lets the fixed slots fit — not that freed budget is re-poured into the full
 section set.)
 
+The fallback's size must fit `MIN_PROMPT_BUDGET`, the floor of any ceiling,
+because the overflow arms return it without measuring it against the model
+ceiling. Its channels are capped (mostly in characters), which keeps an
+ordinary case well inside that. A case at every cap need not fit, and dense text
+such as log lines full of timestamps and ids, or CJK, takes several times the
+tokens at the same length. So `get_fallback_prompt_for_case` measures the render
+and redoes one over `_FALLBACK_MAX_TOKENS` (`MIN_PROMPT_BUDGET` less room for the
+degraded-mode notice the runtime recovery appends) with every cap scaled down.
+The quoted content gets shorter; the stubs, ids and fence structure stay.
+
 When the window is unknown (local/uncurated), there is no hard limit to check;
 the section budgeter still bounds to the resolved budget, and the starvation
 trigger still applies.

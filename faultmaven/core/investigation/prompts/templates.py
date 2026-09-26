@@ -18,6 +18,7 @@ from faultmaven.core.investigation.prompts.context_builder import (
     system_feedback_block,
 )
 from faultmaven.core.investigation.prompts.fence import PromptFence, render_fenced
+from faultmaven.utils.model_context import MIN_PROMPT_BUDGET
 
 logger = logging.getLogger(__name__)
 from faultmaven.modules.case.contracts import (
@@ -3040,7 +3041,10 @@ what little remains — name what you would need to confirm it instead.
 
 
 def _fallback_stub_block(
-    case: Case, fence: PromptFence, rendered: Optional[list] = None
+    case: Case,
+    fence: PromptFence,
+    rendered: Optional[list] = None,
+    head_chars: int = 200,
 ) -> str:
     """Compact addressable stub(s) for files uploaded THIS turn (INV-1).
 
@@ -3096,7 +3100,7 @@ def _fallback_stub_block(
             seen_file_ids.add(row.file_id)
             # Canonical row for this id, so the name matches <evidence>.
             uf = (find(row.file_id) if find is not None else None) or row
-            head = (uf.structural_index or "")[:200].replace("\n", " ")
+            head = (uf.structural_index or "")[:head_chars].replace("\n", " ")
             stubs.append(
                 fence.element(
                     "uploaded_file",
@@ -3119,7 +3123,9 @@ def _fallback_stub_block(
     )
 
 
-def _fallback_journal_digest(case: Case, max_entries: int = 12) -> str:
+def _fallback_journal_digest(
+    case: Case, max_entries: int = 12, entry_chars: int = 120
+) -> str:
     """Compact journal digest for the fallback — anti-amnesia memory.
 
     Keeps high-signal entry types (decision/finding/ruled_out/blocker) plus the
@@ -3151,7 +3157,8 @@ def _fallback_journal_digest(case: Case, max_entries: int = 12) -> str:
     # Display chronologically.
     kept = sorted(kept, key=lambda e: e.turn)
     lines = [
-        f"[T{e.turn}] {(e.entry_type or '').upper()}: {e.content[:120]}" for e in kept
+        f"[T{e.turn}] {(e.entry_type or '').upper()}: {e.content[:entry_chars]}"
+        for e in kept
     ]
     # The lines only. The "JOURNAL:" heading is renderer-owned prose and is
     # emitted by ``_fallback_body`` ABOVE the fenced opening delimiter, never
@@ -3163,8 +3170,8 @@ def _fallback_journal_digest(case: Case, max_entries: int = 12) -> str:
 
 
 #: Cap on the previous turn's notice in the fallback, in tokens (#1688). Every
-#: fallback channel is capped so the prompt's size is bounded by construction
-#: (see ``fence.py``); the notice is the one capped in tokens rather than
+#: fallback channel is capped so the prompt's size stays bounded (see
+#: ``fence.py``); the notice is the one capped in tokens rather than
 #: characters, because it is engine prose that can quote text in any script.
 #: Half ``PROMPT_SYSTEM_FEEDBACK_MAX_TOKENS``'s floor (200), so the fallback
 #: shows less of a notice than the main prompt would, with room for a live
@@ -3177,6 +3184,40 @@ _FALLBACK_FEEDBACK_MAX_TOKENS = 100
 #: provider, and counting without one falls back to four characters a token,
 #: which lets a CJK notice through at several times the cap.
 _FALLBACK_TOKENIZER = ("openai", "gpt-4o")
+
+#: The fallback's size budget, in ``_FALLBACK_TOKENIZER`` tokens. The overflow
+#: arms return the fallback without measuring it against the model ceiling, so
+#: it has to fit the smallest ceiling there is, ``MIN_PROMPT_BUDGET``, with
+#: room left for ``DEGRADED_NO_TOOLS_NOTICE``, which the runtime recovery
+#: appends after the fallback is built.
+_FALLBACK_MAX_TOKENS = MIN_PROMPT_BUDGET - 150
+
+#: How many times a render over budget is redone with smaller caps.
+_FALLBACK_SHRINK_ATTEMPTS = 4
+
+
+@dataclasses.dataclass(frozen=True)
+class _FallbackCaps:
+    """The fallback's per-channel caps: characters, except the notice's tokens."""
+
+    problem: int = 200
+    user_message: int = 500
+    stub_head: int = 200
+    journal_entry: int = 120
+    hypothesis: int = 50
+    notice_tokens: int = _FALLBACK_FEEDBACK_MAX_TOKENS
+
+    def scaled(self, factor: float) -> "_FallbackCaps":
+        return _FallbackCaps(
+            *(max(1, int(cap * factor)) for cap in dataclasses.astuple(self))
+        )
+
+
+def _fallback_tokens(prompt: str) -> int:
+    from faultmaven.utils.token_estimation import estimate_tokens
+
+    provider, model = _FALLBACK_TOKENIZER
+    return estimate_tokens(prompt, provider=provider, model=model)
 
 
 def get_fallback_prompt_for_case(
@@ -3198,11 +3239,49 @@ def get_fallback_prompt_for_case(
     within the fallback ``<problem_context>``, ``<user_message>`` and the
     ``<uploaded_file>`` stubs now share a single ``render_fenced`` render
     instead of the stubs minting one of their own.
+
+    **Measured, and re-rendered smaller when over budget.** Every channel is
+    capped, and an ordinary case fits ``_FALLBACK_MAX_TOKENS`` at those caps.
+    A case at every cap need not, and denser text is further off: log lines
+    full of timestamps and ids, or CJK, take several times the tokens at the
+    same length. So the render is measured, and one over budget is redone with
+    every cap scaled down by the overshoot. Shrinking the caps shortens the quoted
+    content only; the stubs, ids and fence structure stay, so a current-turn
+    upload is still addressable (INV-1).
     """
-    return render_fenced(lambda fence: _fallback_body(case, user_message, fence))
+    caps = _FallbackCaps()
+    prompt = render_fenced(
+        lambda fence: _fallback_body(case, user_message, fence, caps)
+    )
+    for _ in range(_FALLBACK_SHRINK_ATTEMPTS):
+        size = _fallback_tokens(prompt)
+        if size <= _FALLBACK_MAX_TOKENS:
+            return prompt
+        # 0.9: the skeleton does not shrink with the caps, so a proportional
+        # cut alone undershoots.
+        caps = caps.scaled(0.9 * _FALLBACK_MAX_TOKENS / size)
+        prompt = render_fenced(
+            lambda fence: _fallback_body(case, user_message, fence, caps)
+        )
+    size = _fallback_tokens(prompt)
+    if size > _FALLBACK_MAX_TOKENS:
+        logger.warning(
+            "fallback_prompt_over_budget",
+            extra={
+                "case_id": getattr(case, "case_id", None),
+                "tokens": size,
+                "budget": _FALLBACK_MAX_TOKENS,
+            },
+        )
+    return prompt
 
 
-def _fallback_body(case: Case, user_message: str, fence: PromptFence) -> str:
+def _fallback_body(
+    case: Case,
+    user_message: str,
+    fence: PromptFence,
+    caps: "_FallbackCaps" = _FallbackCaps(),
+) -> str:
     """One fence's worth of fallback prompt — see :func:`get_fallback_prompt_for_case`.
 
     **Every channel carrying text the renderer did not author is either fenced
@@ -3285,7 +3364,7 @@ def _fallback_body(case: Case, user_message: str, fence: PromptFence) -> str:
     # visible to it; a cut applied to the rendered element would instead strip
     # the closing delimiter — the truncation hole ``fence.reseal`` exists for
     # on the main path, which does not reach here.
-    problem_block = _fenced("problem_context", problem_summary[:200])
+    problem_block = _fenced("problem_context", problem_summary[: caps.problem])
 
     def _notice(text: str) -> str:
         """The previous turn's notice, capped and then guarded (#1688).
@@ -3294,17 +3373,19 @@ def _fallback_body(case: Case, user_message: str, fence: PromptFence) -> str:
         terminator has to see the bytes that actually render.
         """
         return _guarded(
-            _cap_text_tokens(text, _FALLBACK_FEEDBACK_MAX_TOKENS, *_FALLBACK_TOKENIZER)
+            _cap_text_tokens(text, caps.notice_tokens, *_FALLBACK_TOKENIZER)
         )
 
     if case.state == CaseState.INQUIRY:
-        stub_block = _fallback_stub_block(case, fence, rendered)
+        stub_block = _fallback_stub_block(
+            case, fence, rendered, head_chars=caps.stub_head
+        )
         # The previous turn's notice, through the main prompt's own reader, so
         # a turn that degrades to this fallback still delivers it (#1688).
         # INQUIRY and INVESTIGATING only: the main TERMINAL prompt has no
         # feedback slot either.
         feedback_block = system_feedback_block(case, guard=_notice)
-        user_block = _fenced("user_message", user_message[:500])
+        user_block = _fenced("user_message", user_message[: caps.user_message])
         return FALLBACK_INQUIRY_TEMPLATE.format(
             fence_preamble=_fallback_preamble(fence, rendered),
             problem_summary=problem_block,
@@ -3336,7 +3417,8 @@ def _fallback_body(case: Case, user_message: str, fence: PromptFence) -> str:
         # exactly the long cases that have standing hypotheses.
         for h in list(case.hypotheses.values())[:3]:
             hypotheses.append(
-                f"[{h.hypothesis_id}] {h.statement[:50]} ({h.state.value})"
+                f"[{h.hypothesis_id}] {h.statement[: caps.hypothesis]} "
+                f"({h.state.value})"
             )
         hypotheses_block = (
             _fenced("working_hypotheses", "; ".join(hypotheses))
@@ -3344,7 +3426,7 @@ def _fallback_body(case: Case, user_message: str, fence: PromptFence) -> str:
             else "None yet"
         )
 
-        journal_lines = _fallback_journal_digest(case)
+        journal_lines = _fallback_journal_digest(case, entry_chars=caps.journal_entry)
         journal_block = ""
         if journal_lines:
             # Heading outside the element, body inside it, and multi-line so a
@@ -3355,9 +3437,11 @@ def _fallback_body(case: Case, user_message: str, fence: PromptFence) -> str:
                 + "\n"
             )
 
-        stub_block = _fallback_stub_block(case, fence, rendered)
+        stub_block = _fallback_stub_block(
+            case, fence, rendered, head_chars=caps.stub_head
+        )
         feedback_block = system_feedback_block(case, guard=_notice)
-        user_block = _fenced("user_message", user_message[:500])
+        user_block = _fenced("user_message", user_message[: caps.user_message])
 
         return FALLBACK_INVESTIGATION_TEMPLATE.format(
             fence_preamble=_fallback_preamble(fence, rendered),
@@ -3377,7 +3461,7 @@ def _fallback_body(case: Case, user_message: str, fence: PromptFence) -> str:
             if case.progress.solution_verified
             else case.closure_reason or "Closed"
         )
-        user_block = _fenced("user_message", user_message[:500])
+        user_block = _fenced("user_message", user_message[: caps.user_message])
         return FALLBACK_TERMINAL_TEMPLATE.format(
             fence_preamble=_fallback_preamble(fence, rendered),
             state=case.state.value,

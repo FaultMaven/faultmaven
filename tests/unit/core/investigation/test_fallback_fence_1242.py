@@ -763,14 +763,13 @@ class TestTheCompactRuleStaysCompact:
         by construction rather than by a check (#1254 review). Every input is
         capped — problem 200 chars, user 500, 3 stubs x 200, 12 journal
         entries x 120, 3 hypotheses x 50, and the previous turn's notice at
-        100 tokens (#1688) — so a worst case exists and this pins it below
-        ``MIN_PROMPT_BUDGET``, the floor of any ceiling ``resolve_model_budget``
-        can return.
+        100 tokens (#1688) — and a render over budget is redone with smaller
+        caps, so this pins the result below ``MIN_PROMPT_BUDGET``, the floor of
+        any ceiling ``resolve_model_budget`` can return.
 
-        What it measures is text that tokenizes like prose: most caps are in
-        characters, and ``fence.py`` says which text they do not bound. The
-        notice is the exception, capped in tokens, so it is given realistic
-        engine prose at its full length rather than a repeated character."""
+        The notice is capped in tokens, so it is given realistic engine prose
+        at its full length rather than a repeated character. Denser text in
+        every channel is the next test's."""
         from faultmaven.utils.model_context import MIN_PROMPT_BUDGET
 
         case = _case(state=CaseState.INVESTIGATING, structural_index="X" * 8000)
@@ -799,6 +798,72 @@ class TestTheCompactRuleStaysCompact:
         assert "<uploaded_file" in prompt
         worst = estimate_tokens(prompt, provider="openai", model="gpt-4o")
         assert worst < MIN_PROMPT_BUDGET, (worst, MIN_PROMPT_BUDGET)
+
+    def test_an_ordinary_case_is_rendered_at_full_caps(self):
+        """The shrink is for renders over budget only: an ordinary case keeps
+        every cap, so its user message arrives at the full 500 characters."""
+        message = (
+            "The payments service began returning 503s at 10:40 after the "
+            "deploy; pods on node-7 show OOMKilled with the heap near its limit. "
+        ) * 10
+        prompt = get_fallback_prompt_for_case(
+            _case(state=CaseState.INVESTIGATING), message
+        )
+        assert message[:500] in prompt
+
+    @pytest.mark.parametrize(
+        "unit",
+        [
+            "2026-09-24T12:11:24.986Z ERROR pod/payments-7f9c4d-x2k8q node-7 "
+            "OOMKilled exit=137 req_id=9f3a1c7e-44b2 conn_pool=50/50 ",
+            "支付服务在部署后开始返回错误，节点上的容器因内存不足被终止，数据库连接池耗尽。",
+        ],
+        ids=["log-dense", "cjk"],
+    )
+    def test_dense_text_is_shrunk_to_fit_the_smallest_ceiling(self, unit):
+        """Log lines full of timestamps and ids, or CJK, take several times the
+        tokens of prose at the same length, so the character caps alone do not
+        bound them. The render is measured and redone with smaller caps; it
+        must then fit the smallest ceiling even with the degraded notice the
+        runtime recovery appends, and still name every current-turn upload."""
+        from faultmaven.utils.model_context import MIN_PROMPT_BUDGET
+
+        def fill(n: int) -> str:
+            return (unit * (n // len(unit) + 1))[:n]
+
+        case = _case(state=CaseState.INVESTIGATING, structural_index=fill(8000))
+        case.description = fill(2000)
+        case.investigation_journal = [
+            JournalEntry(turn=i, entry_type="finding", content=fill(200))
+            for i in range(1, 40)
+        ]
+        hs = [
+            _hypothesis(fill(500)).model_copy(
+                update={"hypothesis_id": f"hyp_0a0a0a0a0a0{i}"}
+            )
+            for i in range(3)
+        ]
+        case.hypotheses = {h.hypothesis_id: h for h in hs}
+        case.turn_history = [_feedback_record(fill(1000))]
+        case.current_turn = 2
+        upload = case.uploaded_files[0]
+        case.uploaded_files = [
+            upload.model_copy(
+                update={"file_id": f"file_0e0e0e0e0e1{i}", "uploaded_at_turn": 2}
+            )
+            for i in range(3)
+        ]
+
+        prompt = get_fallback_prompt_for_case(case, fill(4000))
+
+        size = estimate_tokens(
+            prompt + DEGRADED_NO_TOOLS_NOTICE, provider="openai", model="gpt-4o"
+        )
+        assert size < MIN_PROMPT_BUDGET, (size, MIN_PROMPT_BUDGET)
+        for i in range(3):
+            assert f'file_id="file_0e0e0e0e0e1{i}"' in prompt, "INV-1 survives"
+        assert prompt.count('searchable="true"') == 3
+        assert fill(20) in prompt, "shortened, not emptied"
 
     @pytest.mark.parametrize(
         "state,with_upload",
