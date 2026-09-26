@@ -39,8 +39,10 @@ logger = logging.getLogger(__name__)
 # but both are BPE-family; token counts agree within ±15% on typical mixed
 # content, which is far tighter than the prior heuristic's ±40%.
 #
-# Fallback to the heuristic if tiktoken is unavailable so startup never
-# breaks — the preprocessor must continue to work with degraded precision.
+# Fallback to the heuristic if tiktoken is missing, or its encoding file cannot
+# be loaded (tiktoken downloads it on first use; the Docker image bakes it in),
+# so startup never breaks — the preprocessor must continue to work with
+# degraded precision.
 
 try:
     import tiktoken
@@ -61,7 +63,8 @@ def _estimate_tokens(text: str) -> int:
 
     Uses tiktoken cl100k_base when available, the ``len(text) // 4``
     heuristic otherwise. The heuristic is lossy (±40% on realistic
-    content) — only reached when tiktoken is missing entirely.
+    content) — reached only when tiktoken is missing or its encoding file
+    could not be loaded at import.
     """
     if _ENCODING is not None:
         return len(_ENCODING.encode(text))

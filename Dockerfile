@@ -58,15 +58,16 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
          [ -e "$f" ] && { readlink -f "$f" | xargs -r rm -f; rm -f "$f"; }; \
        done \
     && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-m3'); print('offline model load OK')"
-# tiktoken's cl100k_base encoding, baked in for the same reason. Every token
-# count the engine makes goes through it: the prompt allocator, the fallback
-# prompt's size bound, chunk sizing in vector_storage and the knowledge base's
-# document preprocessor. tiktoken downloads it on first use, with no request
-# timeout, and vector_storage loads it at import. An
-# image without it and with no network counts four characters a token instead,
-# which undercounts CJK and log text several times over. TIKTOKEN_CACHE_DIR
-# persists to runtime. The second load goes through an unreachable proxy, so a
-# cache tiktoken does not read fails the build rather than the pod.
+# tiktoken's cl100k_base encoding, baked in for the same reason. Token counts
+# for OpenAI, OpenRouter, Anthropic and Fireworks go through it, as do chunk
+# sizing in vector_storage and the knowledge base's document preprocessor.
+# tiktoken downloads it on first use, with no request timeout, and
+# vector_storage loads it at import. Without it, an image with no network
+# counts those tokens at four characters a token, which undercounts CJK and log
+# text several times over, and the document preprocessor cannot count at all.
+# TIKTOKEN_CACHE_DIR is set before the prefetch and persists to runtime. The
+# second load goes through an unreachable proxy, so a cache tiktoken does not
+# read fails the build rather than the pod.
 ENV TIKTOKEN_CACHE_DIR=/home/faultmaven/.cache/tiktoken
 RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')" \
     && HTTPS_PROXY=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9 \
