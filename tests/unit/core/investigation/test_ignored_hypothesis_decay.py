@@ -118,12 +118,16 @@ def test_ignored_active_hypothesis_ages_after_threshold_turns():
         h,
         IGNORED_STAGNATION_TURN_THRESHOLD - 1,
         _case(IGNORED_STAGNATION_TURN_THRESHOLD - 1),
+        True,
     )
     assert h.iterations_without_progress == 0
 
     # At the threshold: the counter advances by one.
     hm.advance_stagnation_if_ignored(
-        h, IGNORED_STAGNATION_TURN_THRESHOLD, _case(IGNORED_STAGNATION_TURN_THRESHOLD)
+        h,
+        IGNORED_STAGNATION_TURN_THRESHOLD,
+        _case(IGNORED_STAGNATION_TURN_THRESHOLD),
+        True,
     )
     assert h.iterations_without_progress == 1
     assert h.last_updated_turn == IGNORED_STAGNATION_TURN_THRESHOLD
@@ -138,7 +142,7 @@ def test_recently_touched_hypothesis_is_not_swept_this_turn():
     h = _hyp(created_turn=0)
     h.last_progress_at_turn = 0  # stale progress (age well past threshold)
     h.last_updated_turn = current
-    hm.advance_stagnation_if_ignored(h, current, _case(current))
+    hm.advance_stagnation_if_ignored(h, current, _case(current), True)
     assert h.iterations_without_progress == 0
 
 
@@ -150,7 +154,7 @@ def test_sweep_does_not_touch_non_active_hypotheses():
         HypothesisState.INCONCLUSIVE,
     ):
         h = _hyp(created_turn=0, state=state)
-        hm.advance_stagnation_if_ignored(h, 50, _case(50))
+        hm.advance_stagnation_if_ignored(h, 50, _case(50), True)
         assert h.iterations_without_progress == 0
 
 
@@ -159,7 +163,7 @@ def test_sweep_never_raises_likelihood():
     hm = HypothesisManager()
     h = _hyp(likelihood=0.3, created_turn=0)
     before = h.likelihood
-    hm.advance_stagnation_if_ignored(h, 20, _case(20))
+    hm.advance_stagnation_if_ignored(h, 20, _case(20), True)
     assert h.likelihood == before  # counter-only; decay is a separate step
 
 

@@ -21,10 +21,11 @@ Four rules close that, all asserted here on engine state (no LLM output):
   not advancing. A likelihood re-sent within 0.05, or a link re-emitted with its
   stance unchanged, adds nothing, so it neither counts nor marks the hypothesis
   touched. New evidence that leaves belief unmoved still counts.
-- The age sweep counts only turns where the investigation advanced
-  (``progress_made``). A turn that only waited on the user says nothing new
-  about an ignored prior; a case that stops advancing altogether is caught by
-  the case-level stall counter.
+- The age sweep counts a turn only if it makes an ignored prior's stagnation
+  more evident: the investigation advanced (``progress_made``) and passed the
+  prior over, or the case has stalled. One turn that only waited on the user
+  says nothing new; a stall does, and the priors must keep aging so the
+  exhaustion handoff (which needs spent hypotheses) stays reachable.
 
 #713's protection against an ignored prior lingering is intact, and completed:
 beside a leader that is no longer aged, anti-anchoring (which acts on fixation)
@@ -246,9 +247,9 @@ def test_a_hypothesis_without_causal_support_ages(
     h = _hyp(likelihood=0.4, progress_turn=0, links=links)
     case = _case([h], [ev] if ev and on_case else [])
 
-    hm.advance_stagnation_if_ignored(h, 2, case)
+    hm.advance_stagnation_if_ignored(h, 2, case, True)
     assert h.iterations_without_progress == 0  # inside the grace window
-    hm.advance_stagnation_if_ignored(h, 3, case)
+    hm.advance_stagnation_if_ignored(h, 3, case, True)
     assert h.iterations_without_progress == 1
 
 
@@ -399,7 +400,7 @@ def _head(
 
 def _ages_at_threshold(h: Hypothesis, case: Case) -> bool:
     """Whether the sweep advances ``h`` once it is past the grace window."""
-    HypothesisManager().advance_stagnation_if_ignored(h, 3, case)
+    HypothesisManager().advance_stagnation_if_ignored(h, 3, case, True)
     return h.iterations_without_progress == 1
 
 
@@ -669,19 +670,18 @@ def test_a_confidence_revision_across_the_bar_is_not_stagnation():
 
 
 def test_turns_that_only_wait_on_the_user_do_not_age_an_ignored_prior():
-    """The #1678 wait: the user is applying a fix and nothing advances. Passing
-    over the prior on those turns says nothing new about it."""
+    """The #1678 wait: the user is applying a fix and nothing advances, but the
+    case has not stalled. Passing over the prior says nothing new about it."""
     eng = _engine()
-    leader, evidence = _supported_leader()
-    sibling = _hyp(likelihood=0.35, progress_turn=5)
-    case = _case([leader, sibling], evidence)
+    prior = _hyp(likelihood=0.35, progress_turn=5)
+    case = _case([prior])
 
     for turn in range(6, 21):
         _housekeep(eng, case, turn, advanced=False)
 
-    assert sibling.iterations_without_progress == 0
-    assert sibling.likelihood == 0.35
-    assert sibling.state == HypothesisState.ACTIVE
+    assert prior.iterations_without_progress == 0
+    assert prior.likelihood == 0.35
+    assert prior.state == HypothesisState.ACTIVE
 
 
 def test_only_turns_where_the_investigation_advanced_age_an_ignored_prior():
@@ -718,3 +718,55 @@ def test_housekeeping_without_a_progress_reading_does_not_age():
 
     assert prior.iterations_without_progress == 0
     assert prior.likelihood == 0.4
+
+
+def test_a_stalled_case_ages_an_ignored_prior_on_turns_that_did_not_advance():
+    """Once the case has stalled (the EXHAUSTED time thresholds), the wait is
+    itself the evidence: priors keep aging so they can become spent and the
+    exhaustion handoff can fire."""
+    eng = _engine()
+    prior = _hyp(likelihood=0.4, progress_turn=0)
+    case = _case([prior])
+    case.turns_without_progress = 5  # stalled as of the previous turn
+
+    for turn in range(8, 12):
+        _housekeep(eng, case, turn, advanced=False)
+
+    # Spent, which is what the exhaustion handoff counts. As the only
+    # hypothesis it is also the top one stalled, so anti-anchoring is the path
+    # that retires it (and nudges the LLM to broaden the differential).
+    assert prior.iterations_without_progress == 3
+    assert prior.state == HypothesisState.RETIRED
+    assert prior.refutation_reason is None
+
+
+def test_housekeeping_reads_progress_after_it_is_scored_on_the_turn_path():
+    """The gate reads ``metadata["progress_made"]``; on the turn path it must be
+    scored first, or every turn reads as not advanced and ignored priors stop
+    aging without any test noticing."""
+    import ast
+    import inspect
+
+    from faultmaven.core.investigation import milestone_engine
+
+    tree = ast.parse(inspect.getsource(milestone_engine))
+    turn_body = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_process_turn_impl"
+    )
+
+    def first_call_line(attr: str) -> int:
+        lines = [
+            node.lineno
+            for node in ast.walk(turn_body)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == attr
+        ]
+        assert lines, f"_process_turn_impl no longer calls {attr}"
+        return min(lines)
+
+    assert first_call_line("_score_progress") < first_call_line(
+        "_perform_hypothesis_housekeeping"
+    )

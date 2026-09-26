@@ -722,6 +722,7 @@ class HypothesisManager:
         hypothesis: Hypothesis,
         current_turn: int,
         case: "Case",
+        turn_counts: bool,
     ) -> Hypothesis:
         """Age an ignored hypothesis that causal evidence does not support.
 
@@ -733,9 +734,16 @@ class HypothesisManager:
         fires on it: it lingers at its prior as a permanent unrefuted sibling
         (#713). This sweep closes that gap with an age signal: once a hypothesis
         has gone ``IGNORED_STAGNATION_TURN_THRESHOLD`` turns since its last
-        progress, its stagnation counter advances by one per housekeeping turn,
+        progress, its stagnation counter advances by one per turn that COUNTS,
         feeding the SAME decay/anchoring machinery a repeatedly-tested hypothesis
         already drives.
+
+        A turn counts (``turn_counts``, decided by the caller for the whole turn)
+        when it makes the prior's stagnation more evident: the investigation
+        advanced on something else and passed it over, or the case has stalled,
+        so the wait itself has become the evidence. A turn that only waited on
+        the user, inside a case that has not stalled, says nothing new about the
+        prior and does not age it.
 
         A hypothesis whose causal support stands (``_causal_support_stands``) is
         not aged: belief that evidence earned is not lowered by time. One whose
@@ -760,8 +768,11 @@ class HypothesisManager:
             current_turn: current conversation turn
             case: the case — its evidence categories and causal graph decide
                 whether the hypothesis is causally supported.
+            turn_counts: whether this turn counts toward stagnation (above).
+                Required, so no caller can age a prior on a turn it has not
+                judged.
         """
-        if hypothesis.state != HypothesisState.ACTIVE:
+        if hypothesis.state != HypothesisState.ACTIVE or not turn_counts:
             return hypothesis
         # Already touched/created/advanced this turn — don't double-count.
         if hypothesis.last_updated_turn >= current_turn:

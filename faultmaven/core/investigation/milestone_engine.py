@@ -6959,10 +6959,12 @@ class MilestoneEngine:
             # local. ``_check_automatic_transitions`` never reads
             # ``progress_made``, so scoring after it is not circular, and
             # ``_perform_hypothesis_housekeeping`` (the only other thing between
-            # here and Step 5.8) reads ``metadata["system_feedback"]`` plus the
+            # here and Step 5.8) reads ``metadata["system_feedback"]``, the
             # ``case.turns_without_progress`` ATTRIBUTE, which Step 5.8 updates
             # afterwards either way — so anti-anchoring sees the same value it
-            # saw before.
+            # saw before — and ``metadata["progress_made"]``, which decides
+            # whether the turn ages ignored priors. That last read is why
+            # housekeeping must stay AFTER this call.
             #
             # The invariant this restores is the one the deterministic path
             # already states: every arm is written before the read. See
@@ -14209,8 +14211,9 @@ class MilestoneEngine:
         """Apply confidence decay and anchoring detection.
 
         Reads ``metadata["progress_made"]``, so it runs after ``_score_progress``
-        on the turn path; absent, the turn is treated as not having advanced —
-        the age sweep then skips it, which errs toward not counting.
+        on the turn path; absent, the turn is treated as not having advanced,
+        which errs toward not counting. Reads ``case.turns_without_progress``
+        before Step 5.8 updates it, i.e. as of the previous turn.
         """
         active_hypotheses = [
             h for h in case.hypotheses.values() if h.state == HypothesisState.ACTIVE
@@ -14219,14 +14222,16 @@ class MilestoneEngine:
         if not active_hypotheses:
             return
 
-        # The age sweep advances only on a turn where the investigation
-        # advanced. Stagnation is judged forwards: when the case moved on
-        # something else, passing over an ignored prior makes its stagnation
-        # more evident; when nothing advanced — the turn only waited on the
-        # user, or restated what the case holds — it says nothing new about the
-        # prior. A case that stops advancing altogether is caught by the
-        # case-level stall counter, which reads the same ``progress_made``.
-        investigation_advanced = bool(metadata.get("progress_made"))
+        # Whether this turn counts toward an ignored prior's stagnation. It is
+        # judged forwards — does the turn make that stagnation more evident?
+        # When the investigation advanced on something else and passed the
+        # prior over, yes. When nothing advanced — the turn only waited on the
+        # user, or restated what the case holds — one such turn says nothing
+        # new. A run of them does: once the case has stalled (``is_stalled``,
+        # the EXHAUSTED time thresholds) the wait is itself the evidence, and
+        # the priors must go on aging so the exhaustion handoff, which needs
+        # spent hypotheses, can still be reached.
+        turn_counts = bool(metadata.get("progress_made")) or is_stalled(case)
 
         # 1. Apply confidence decay to stagnant hypotheses
         for h in active_hypotheses:
@@ -14237,10 +14242,9 @@ class MilestoneEngine:
             # can trip anchoring the same as a repeatedly-tested one — never
             # validating or concluding, only lowering belief over time. A
             # hypothesis that causal evidence supports is not aged (#1678).
-            if investigation_advanced:
-                self.hypothesis_manager.advance_stagnation_if_ignored(
-                    h, case.current_turn, case
-                )
+            self.hypothesis_manager.advance_stagnation_if_ignored(
+                h, case.current_turn, case, turn_counts
+            )
             # One decay step if THIS turn left the hypothesis stagnant (touched
             # without progress); an untouched turn does not decay it.
             self.hypothesis_manager.apply_likelihood_decay(h, case.current_turn)
