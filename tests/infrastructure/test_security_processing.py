@@ -2,12 +2,18 @@
 Rebuilt security processing tests using minimal mocking architecture.
 
 This module tests security and PII redaction with actual sensitive data patterns,
-real sanitization workflows, and performance validation. Follows the proven
-minimal mocking patterns from successful Phases 1-3.
+and real sanitization workflows. Follows the proven minimal mocking patterns from
+successful Phases 1-3.
+
+How FAST the sanitizer is is measured in
+``tests/performance/test_sanitization_throughput.py``, against calibrated
+budgets (#1579). This module used to time individual calls against raw
+0.5-2 s bounds in both required gates; the sanitizer does a whole 1000-line
+document in ~20 ms, so those bounds could not see a 100x regression and
+could still go red on a stalled runner.
 """
 
 import re
-import time
 from typing import Any, Dict, List
 from unittest.mock import patch
 
@@ -50,14 +56,7 @@ class TestRealPIIRedactionBehavior:
         ]
 
         for case in email_test_cases:
-            start_time = time.time()
             result = data_sanitizer.sanitize(case["input"])
-            processing_time = time.time() - start_time
-
-            # Validate processing performance
-            assert (
-                processing_time < 1.0
-            ), f"Processing took too long for {case['description']}"
 
             # Validate result structure
             assert isinstance(result, str)
@@ -162,12 +161,8 @@ class TestRealPIIRedactionBehavior:
         ]
 
         for ip_case in ip_test_cases:
-            start_time = time.time()
             result = data_sanitizer.sanitize(ip_case)
-            processing_time = time.time() - start_time
 
-            # Validate IP processing performance
-            assert processing_time < 0.5
             assert isinstance(result, str)
 
             # IP addresses should be redacted for privacy (indexed pseudonyms)
@@ -245,12 +240,8 @@ class TestRealDataSanitizationWorkflows:
 2025-01-15 10:30:51 [ERROR] AWS S3 access denied with key AKIAEXAMPLE123456789
         """
 
-        start_time = time.time()
         sanitized_log = data_sanitizer.sanitize(log_content)
-        processing_time = time.time() - start_time
 
-        # Validate sanitization performance
-        assert processing_time < 2.0  # Should process log quickly
         assert isinstance(sanitized_log, str)
         assert len(sanitized_log) > 0
 
@@ -291,12 +282,8 @@ class TestRealDataSanitizationWorkflows:
         # Convert to string for sanitization
         report_text = str(error_report)
 
-        start_time = time.time()
         sanitized_report = data_sanitizer.sanitize(report_text)
-        processing_time = time.time() - start_time
 
-        # Validate processing performance
-        assert processing_time < 1.0
         assert isinstance(sanitized_report, str)
         assert len(sanitized_report) > 0
 
@@ -339,12 +326,8 @@ class TestRealDataSanitizationWorkflows:
         - Emergency contact: spouse-email@personal.net, (555) 123-4567
         """
 
-        start_time = time.time()
         sanitized_content = data_sanitizer.sanitize(mixed_content)
-        processing_time = time.time() - start_time
 
-        # Validate comprehensive sanitization performance
-        assert processing_time < 2.0  # Should handle complex content efficiently
         assert isinstance(sanitized_content, str)
         assert len(sanitized_content) > 0
 
@@ -422,7 +405,12 @@ class TestRealSecurityPerformanceValidation:
         return mock_sanitizer
 
     def test_real_large_document_sanitization(self, data_sanitizer):
-        """Test sanitization performance with large documents."""
+        """A 1000-line document keeps its structure through sanitization.
+
+        Its throughput — ``lines_per_second > 100`` here before #1579 — is
+        ``test_large_document_sanitization_throughput`` in
+        ``tests/performance/``.
+        """
         # Generate large document with mixed sensitive content
         sensitive_patterns = [
             "user{i}@company.com",
@@ -449,15 +437,8 @@ class TestRealSecurityPerformanceValidation:
 
         large_document = "\n".join(large_document_lines)
 
-        # Test sanitization performance
-        start_time = time.time()
         sanitized_document = data_sanitizer.sanitize(large_document)
-        processing_time = time.time() - start_time
 
-        # Validate performance with large document
-        assert (
-            processing_time < 10.0
-        )  # Should process 1000-line document in reasonable time
         assert isinstance(sanitized_document, str)
         assert len(sanitized_document) > 0
 
@@ -465,12 +446,13 @@ class TestRealSecurityPerformanceValidation:
         sanitized_lines = sanitized_document.split("\n")
         assert len(sanitized_lines) >= 900  # Most lines should be preserved
 
-        # Performance per line validation
-        lines_per_second = len(large_document_lines) / processing_time
-        assert lines_per_second > 100  # Should process at least 100 lines/second
-
     def test_real_concurrent_sanitization_load(self, data_sanitizer):
-        """Test concurrent sanitization performance."""
+        """Fifty documents sanitized from gathered coroutines all come back.
+
+        Its throughput — ``documents_per_second > 10`` here before #1579 — is
+        ``test_document_batch_sanitization_throughput`` in
+        ``tests/performance/``.
+        """
         import asyncio
 
         # Create test documents with various sensitive content
@@ -488,38 +470,21 @@ class TestRealSecurityPerformanceValidation:
 
         async def sanitize_document(doc_content):
             """Async wrapper for sanitization (simulate async processing)."""
-            start = time.time()
             # Since sanitizer is sync, we simulate async with small delay
             result = data_sanitizer.sanitize(doc_content)
             await asyncio.sleep(0.001)  # Minimal async yield
-            return result, time.time() - start
+            return result
 
         # Execute concurrent sanitization
         async def run_concurrent_test():
-            start_time = time.time()
             tasks = [sanitize_document(doc) for doc in test_documents]
-            results = await asyncio.gather(*tasks)
-            total_time = time.time() - start_time
-            return results, total_time
+            return await asyncio.gather(*tasks)
 
-        results, total_time = asyncio.run(run_concurrent_test())
-
-        # Validate concurrent performance
-        assert len(results) == 50
-        assert total_time < 5.0  # Should complete concurrent processing quickly
-
-        sanitized_docs, individual_times = zip(*results)
+        sanitized_docs = asyncio.run(run_concurrent_test())
 
         # All documents should be sanitized
+        assert len(sanitized_docs) == 50
         assert all(isinstance(doc, str) and len(doc) > 0 for doc in sanitized_docs)
-
-        # Individual processing times should be reasonable
-        avg_processing_time = sum(individual_times) / len(individual_times)
-        assert avg_processing_time < 1.0  # Each document processed quickly
-
-        # Validate throughput
-        documents_per_second = len(test_documents) / total_time
-        assert documents_per_second > 10  # Good throughput under concurrent load
 
     def test_real_memory_efficiency_during_sanitization(self, data_sanitizer):
         """Test memory efficiency during sanitization operations."""
@@ -584,27 +549,17 @@ class TestRealSecurityPerformanceValidation:
         """
 
         # Sanitize the same content multiple times
-        sanitization_results = []
-        processing_times = []
-
-        for run in range(10):
-            start_time = time.time()
-            result = data_sanitizer.sanitize(test_content)
-            processing_time = time.time() - start_time
-
-            sanitization_results.append(result)
-            processing_times.append(processing_time)
+        sanitization_results = [
+            data_sanitizer.sanitize(test_content) for _ in range(10)
+        ]
 
         # Validate consistency
         assert len(set(sanitization_results)) == 1  # All results should be identical
 
-        # Validate consistent performance
-        avg_processing_time = sum(processing_times) / len(processing_times)
-        max_processing_time = max(processing_times)
-        min_processing_time = min(processing_times)
-
-        assert avg_processing_time < 1.0  # Reasonable average performance
-        assert (max_processing_time - min_processing_time) < 0.5  # Consistent timing
+        # No timing here (#1579). ``max - min < 0.5`` bounded the spread
+        # between the fastest and slowest of ten calls, which is scheduler
+        # noise rather than a property of the sanitizer; its cost is in
+        # ``tests/performance/test_sanitization_throughput.py``.
 
         # Validate redaction occurred consistently
         consistent_result = sanitization_results[0]

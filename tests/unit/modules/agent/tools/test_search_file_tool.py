@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -452,8 +451,14 @@ class TestVocabularyExtraction:
         assert result.data["results_count"] > 0
         assert "vocabulary" not in result.data
 
-    def test_vocabulary_performance_on_large_content(self, tool):
-        """Vocabulary extraction completes in < 500ms on ~1MB content."""
+    def test_vocabulary_on_large_content(self, tool):
+        """Vocabulary extraction on ~1MB of content still finds patterns.
+
+        How long it takes — "< 500ms" here before #1579, as a raw wall-clock
+        bound in both required gates — is
+        ``test_vocabulary_extraction_on_a_megabyte_of_logs`` in
+        ``tests/performance/``, against a calibrated budget.
+        """
         # Generate ~1MB of log-like content with varied tokens
         # so some fall in the 2-10 frequency range
         services = [
@@ -483,13 +488,8 @@ class TestVocabularyExtraction:
         content = "\n".join(lines)
         assert len(content) > 500_000  # Confirm substantial size
 
-        start = time.perf_counter()
         vocab = tool._extract_file_vocabulary(content)
-        elapsed = time.perf_counter() - start
 
-        assert (
-            elapsed < 0.5
-        ), f"Vocabulary extraction took {elapsed:.3f}s (> 500ms budget)"
         assert len(vocab["patterns"]) > 0
 
 

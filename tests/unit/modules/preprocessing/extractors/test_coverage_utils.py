@@ -1,7 +1,5 @@
 """Tests for coverage metadata utilities in extractors/utils.py."""
 
-import time
-
 import pytest
 
 from faultmaven.modules.preprocessing.extractors.utils import (
@@ -172,13 +170,9 @@ class TestExtractTimestamp:
     def test_empty_string(self):
         assert extract_timestamp("") is None
 
-    def test_performance_under_1ms(self):
-        line = "2024-03-15T14:30:45.123Z ERROR something broke"
-        start = time.perf_counter()
-        for _ in range(1000):
-            extract_timestamp(line)
-        elapsed = time.perf_counter() - start
-        assert elapsed < 1.0, f"1000 calls took {elapsed:.3f}s, expected <1s"
+    # Per-call cost ("under 1 ms", 1000 calls against a raw 1 s here before
+    # #1579) is ``test_timestamp_extraction_per_line`` in
+    # ``tests/performance/test_extraction_speed.py``.
 
 
 @pytest.mark.unit

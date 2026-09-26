@@ -14,14 +14,27 @@ afford the shapes, so it takes the shapes and leaves generous margins. The
 reserve is scaled with everything else — leaving it at its production 1.0s
 against a 2s turn would make the budget zero, the ladder refuse every attempt,
 and the whole file pass for the wrong reason.
+
+**Time is virtual (#1579).** Every async test here runs on
+``tests.wallclock.VirtualTimeLoop``: the loop's clock stands still while there
+is work to do and jumps to the next timer when there is none, and the two
+production modules that read ``time.monotonic()`` on this path —
+``turn_budget`` and ``llm_error_handler`` — are pointed at that same clock.
+Every sleep, backoff and ``wait_for`` then costs exactly its nominal duration
+and CPU costs nothing, so ``outcome.elapsed`` is the schedule the code chose,
+not the schedule a runner managed. On wall clock this file measured
+``2.98 < 2.0`` on a required gate under four xdist workers while the
+classification it exists to check was correct; the number was the
+scheduler's. It also used to spend ~25s of wall time sleeping; it now spends
+none.
 """
 
 import asyncio
-import time
+import inspect
 
 import pytest
 
-from faultmaven.core.investigation import turn_budget
+from faultmaven.core.investigation import llm_error_handler, turn_budget
 from faultmaven.core.investigation.llm_error_handler import LLMErrorHandler, RetryConfig
 from faultmaven.core.investigation.turn_budget import (
     bind_turn_deadline,
@@ -29,6 +42,7 @@ from faultmaven.core.investigation.turn_budget import (
 )
 from faultmaven.exceptions import TURN_BUDGET_EXHAUSTED, ExternalCallTimeout
 from faultmaven.infrastructure.base_client import BaseExternalClient
+from tests.wallclock import VirtualTimePolicy, virtual_now, virtual_time_module
 
 # Scaled reserve: big enough that the ladder's early stop is unambiguously
 # earlier than the cancellation even on a loaded runner (every assertion below
@@ -42,6 +56,28 @@ CANCELLED = "cancelled"
 @pytest.fixture(autouse=True)
 def scaled_reserve(monkeypatch):
     monkeypatch.setattr(turn_budget, "TURN_BUDGET_RESERVE_SECONDS", SCALED_RESERVE)
+
+
+@pytest.fixture
+def event_loop_policy():
+    """Every async test in this module runs on a ``VirtualTimeLoop``."""
+    return VirtualTimePolicy()
+
+
+@pytest.fixture(autouse=True)
+def virtual_deadline_clock(request, monkeypatch):
+    """The deadline arithmetic reads the loop's clock, for async tests only.
+
+    ``turn_budget`` computes the deadline and ``llm_error_handler`` measures
+    what an attempt cost; both read ``time.monotonic()``. On a virtual loop
+    they must read the same clock ``asyncio.wait_for`` schedules by, or the
+    budget and the cancellation disagree about what time it is. The sync
+    tests (the router's clamp) have no loop to read, so they keep the real
+    clock — and ``virtual_now()`` raises rather than let one leak across.
+    """
+    if inspect.iscoroutinefunction(request.function):
+        for module in (turn_budget, llm_error_handler):
+            monkeypatch.setattr(module, "time", virtual_time_module())
 
 
 class _Outcome:
@@ -89,7 +125,7 @@ async def _run_turn(
             _, last = await handler.with_retry(operation=hanging_provider)
         return last
 
-    started = time.monotonic()
+    started = virtual_now()
     try:
         if bind:
             with bind_turn_deadline(turn_seconds):
@@ -99,7 +135,7 @@ async def _run_turn(
         code = error.error_code if error is not None else None
     except asyncio.TimeoutError:
         code = CANCELLED
-    return _Outcome(time.monotonic() - started, attempts["n"], code)
+    return _Outcome(virtual_now() - started, attempts["n"], code)
 
 
 @pytest.mark.integration
@@ -303,7 +339,9 @@ class TestLaterLaddersInTheSameTurn:
         with the ladders until the turn cap fired.
 
         Measured against a hung provider (0.5s hang, 1.5s turn): 2 ladders and 50
-        ladders both cost 3 provider calls and 1.20s.
+        ladders both cost 3 provider calls and 1.20s of wall clock. On the virtual
+        clock this module now runs on (#1579) both cost 2 calls and exactly
+        1.00s — the ideal schedule, with no CPU time between the steps.
         """
         params = dict(hang_seconds=0.5, turn_seconds=1.5, base_delay=0.05, bind=True)
         few = await _run_turn(**params, ladders=2)
@@ -391,11 +429,13 @@ class _HangingProvider(BaseExternalClient):
             circuit_breaker_timeout=30,
         )
         self.hang_seconds = hang_seconds
+        self.calls_reaching_the_provider = 0
 
     async def health_check(self):
         return {"status": "ok"}
 
     async def _hang(self):
+        self.calls_reaching_the_provider += 1
         await asyncio.sleep(self.hang_seconds)
         return "never reached"
 
@@ -484,10 +524,14 @@ class TestTheCutShortCallStillReachesTheBreaker:
         assert provider.circuit_breaker.failure_count >= 3
         assert provider.circuit_breaker.state == "open"
 
-        started = time.monotonic()
+        reached = provider.calls_reaching_the_provider
+        started = virtual_now()
         with pytest.raises(Exception):
             await provider.generate(5.0, clamp=True)
-        assert time.monotonic() - started < 0.5, "an open breaker must fast-fail"
+        assert (
+            provider.calls_reaching_the_provider == reached
+        ), "an open breaker let the call through to the provider"
+        assert virtual_now() - started < 0.5, "an open breaker must fast-fail"
 
 
 @pytest.mark.integration

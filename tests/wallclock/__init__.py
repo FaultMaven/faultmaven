@@ -15,6 +15,17 @@ a JSONL file, which is what the benchmark workflow's A/B job (#1567)
 compares between the base and the head. Unset, it does nothing. Both
 suites write; only ``tests/benchmarks/`` is compared, because that is the
 tree the A/B job runs.
+
+Two instruments for timing questions a budget is the wrong tool for
+(#1579), both used OUTSIDE the two suites, in the required gates:
+
+* ``growth.py`` — ``assert_linear_growth``, for a guard whose question is a
+  SHAPE (is this regex linear?). Three sizes and the ratio of their cost
+  DIFFERENCES, so both machine speed and the fixed per-call cost cancel;
+  thread CPU time and a noise allowance keep scheduler noise out of it.
+* ``virtual_time.py`` — an event loop whose clock advances only when it is
+  idle, for a test whose question is an ORDERING (did the ladder stop
+  before the deadline?). Its elapsed figures are the same under any load.
 """
 
 from .assertions import assert_latency_within, assert_throughput_at_least
@@ -39,11 +50,25 @@ from .calibration import (
     restore_calibration_state,
     scale_was_used,
 )
+from .growth import (
+    MIN_TOTAL_GROWTH,
+    NOISE_ALLOWANCE,
+    Growth,
+    assert_linear_growth,
+    growth_bound,
+    measure_growth,
+)
 from .record import (
     LATENCY_METRIC,
     RECORD_ENV,
     THROUGHPUT_METRIC,
     record_comparison,
+)
+from .virtual_time import (
+    VirtualTimeLoop,
+    VirtualTimePolicy,
+    virtual_now,
+    virtual_time_module,
 )
 
 __all__ = [
@@ -51,23 +76,33 @@ __all__ = [
     "CALIBRATION_REFERENCE_SECONDS",
     "LATENCY_METRIC",
     "MAX_REGRESSION_MULTIPLE",
+    "MIN_TOTAL_GROWTH",
     "MIN_REGRESSION_MULTIPLE",
+    "NOISE_ALLOWANCE",
     "RECORD_ENV",
     "THROUGHPUT_METRIC",
     "Budget",
+    "Growth",
     "LatencyBudget",
     "ThroughputBudget",
+    "VirtualTimeLoop",
+    "VirtualTimePolicy",
     "absolute_mode",
     "assert_latency_within",
+    "assert_linear_growth",
     "assert_throughput_at_least",
     "asserted_target",
     "calibration_scale",
     "calibration_state",
     "collect_budgets",
     "describe_calibration",
+    "growth_bound",
+    "measure_growth",
     "measured_calibration",
     "record_comparison",
     "reset_calibration_cache",
     "restore_calibration_state",
     "scale_was_used",
+    "virtual_now",
+    "virtual_time_module",
 ]

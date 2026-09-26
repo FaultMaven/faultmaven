@@ -883,19 +883,29 @@ class TestConcurrentTurnLocking:
     async def test_concurrent_turns_on_different_cases_are_parallel(
         self, engine, case_repo
     ):
-        """Two concurrent process_turn calls on different cases run in parallel."""
+        """Two concurrent process_turn calls on different cases run in parallel.
+
+        Asserted as an ORDER, the same instrument the serialised test above
+        uses (#1579). It used to require the two starts to land within 100 ms
+        of each other on the loop clock, which a runner under four xdist
+        workers can miss while the turns still overlap. Parallel means both
+        turns start before either ends; a per-case lock that had become global
+        would give start, end, start, end on any machine.
+        """
         case_a = _make_inquiry_case(current_turn=1)
         case_b = _make_inquiry_case(current_turn=1)
         await case_repo.save(case_a)
         await case_repo.save(case_b)
 
-        start_times = {}
+        execution_order = []
         original_impl = engine._process_turn_impl
 
         async def tracking_impl(case, user_message, *args, **kwargs):
-            start_times[case.case_id] = asyncio.get_event_loop().time()
+            execution_order.append(f"start:{case.case_id}")
             await asyncio.sleep(0.05)
-            return await original_impl(case, user_message, *args, **kwargs)
+            result = await original_impl(case, user_message, *args, **kwargs)
+            execution_order.append(f"end:{case.case_id}")
+            return result
 
         engine._process_turn_impl = tracking_impl
 
@@ -908,9 +918,11 @@ class TestConcurrentTurnLocking:
             task2 = asyncio.create_task(engine.process_turn(case_b, "Turn for case B"))
             await asyncio.gather(task1, task2, return_exceptions=True)
 
-        assert len(start_times) == 2
-        times = list(start_times.values())
-        assert abs(times[0] - times[1]) < 0.1  # Started within 100ms of each other
+        assert len(execution_order) == 4, execution_order
+        assert [event.split(":")[0] for event in execution_order[:2]] == [
+            "start",
+            "start",
+        ], f"one turn finished before the other started: {execution_order}"
 
 
 # ============================================================
