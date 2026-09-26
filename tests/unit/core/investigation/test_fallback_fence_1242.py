@@ -80,7 +80,11 @@ from faultmaven.modules.case.contracts import (
     ProblemVerification,
     UploadedFile,
 )
-from faultmaven.modules.case.domain.models import JournalEntry
+from faultmaven.modules.case.domain.models import (
+    JournalEntry,
+    TurnOutcome,
+    TurnProgress,
+)
 from faultmaven.utils.token_estimation import estimate_tokens
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
@@ -186,6 +190,9 @@ CHANNELS = (
     "stub_head",
     "journal",
     "hypothesis",
+    # Guarded, not fenced (#1688), and rendered directly above the fenced
+    # ``<user_message>`` delimiter — the adjacency #1256 measured absorbing.
+    "system_feedback",
 )
 
 
@@ -294,7 +301,26 @@ def _render(channel: str, payload: str, state: CaseState = CaseState.INVESTIGATI
         h = _hypothesis(payload)
         case.hypotheses = {h.hypothesis_id: h}
         return get_fallback_prompt_for_case(case, "what should I check?")
+    if channel == "system_feedback":
+        # The previous turn's notice, which the fallback renders on INQUIRY and
+        # INVESTIGATING (#1688).
+        case = _case(state=state)
+        case.turn_history = [_feedback_record(payload)]
+        case.current_turn = 2
+        return get_fallback_prompt_for_case(case, "what should I check?")
     raise AssertionError(f"unknown channel {channel}")  # pragma: no cover
+
+
+def _feedback_record(feedback: str) -> TurnProgress:
+    return TurnProgress(
+        turn_number=1,
+        timestamp=datetime.now(timezone.utc),
+        progress_made=False,
+        outcome=TurnOutcome.CONVERSATION,
+        user_message_summary="u1",
+        agent_response_summary="a1",
+        system_feedback=feedback,
+    )
 
 
 def _hypothesis(statement: str) -> Hypothesis:
@@ -479,6 +505,8 @@ class TestNoForgeryCarriesTheLiveToken:
             # (hypothesis 50, journal 120).
             ("cut_mid_tag", "hypothesis"),
             ("cut_mid_tag", "journal"),
+            ("unterminated", "system_feedback"),
+            ("dangling_quote", "system_feedback"),
         ],
     )
     def test_the_mid_tag_shapes_earn_a_terminator(self, shape, channel):
@@ -734,9 +762,10 @@ class TestTheCompactRuleStaysCompact:
         re-measured against the model ceiling, so its size has to be bounded
         by construction rather than by a check (#1254 review). Every input is
         capped — problem 200 chars, user 500, 3 stubs x 200, 12 journal
-        entries x 120, 3 hypotheses x 50 — so a worst case exists and this
-        pins it below ``MIN_PROMPT_BUDGET``, the floor of any ceiling
-        ``resolve_model_budget`` can return."""
+        entries x 120, 3 hypotheses x 50, and the previous turn's notice at
+        ``TurnProgress.system_feedback``'s 1000 (#1688) — so a worst case
+        exists and this pins it below ``MIN_PROMPT_BUDGET``, the floor of any
+        ceiling ``resolve_model_budget`` can return."""
         from faultmaven.utils.model_context import MIN_PROMPT_BUDGET
 
         case = _case(state=CaseState.INVESTIGATING, structural_index="X" * 8000)
@@ -747,7 +776,10 @@ class TestTheCompactRuleStaysCompact:
         ]
         h = _hypothesis("H" * 500)  # Hypothesis.statement max_length
         case.hypotheses = {h.hypothesis_id: h}
+        case.turn_history = [_feedback_record("F" * 1000)]  # its max_length
+        case.current_turn = 2
         prompt = get_fallback_prompt_for_case(case, "U" * 4000)
+        assert "F" * 1000 in prompt
         worst = estimate_tokens(prompt, provider="openai", model="gpt-4o")
         assert worst < MIN_PROMPT_BUDGET, (worst, MIN_PROMPT_BUDGET)
 

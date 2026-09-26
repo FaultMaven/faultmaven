@@ -43,6 +43,7 @@ EXPECTED_KEYS: dict[str, set[str]] = {
         "current_turn_evidence",
         "fence_preamble",
         "problem_summary",
+        "system_feedback",
         "user_message",
     },
     "FALLBACK_INVESTIGATION_TEMPLATE": {
@@ -53,6 +54,7 @@ EXPECTED_KEYS: dict[str, set[str]] = {
         "milestones_summary",
         "problem_summary",
         "stage",
+        "system_feedback",
         "user_message",
     },
     "FALLBACK_TERMINAL_TEMPLATE": {

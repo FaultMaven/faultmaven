@@ -31,7 +31,9 @@ from faultmaven.core.investigation.milestone_engine import (
     MilestoneEngine,
     _evidence_coverage,
     gate1_statement_is_confirmable,
+    record_promptless_turn,
     score_progress,
+    summarize_for_turn_record,
 )
 from faultmaven.core.investigation.prompts.context_builder import (
     structural_index_is_searchable,
@@ -106,7 +108,6 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     MessageRowKind,
     TurnOutcome,
-    TurnProgress,
     VerificationStatus,
     append_message_row,
 )
@@ -197,41 +198,29 @@ def _backfill_consumed_turn(
       ``turn_history[-1]`` and is meant for the next prompt; these routes build
       no prompt, so they have not consumed it. Dropping it would silently
       swallow a reasoning-validation error whenever a greeting landed between
-      two engine turns.
+      two engine turns. The rule lives in :func:`record_promptless_turn`, the
+      builder this shares with the engine's deterministic branches, so it
+      cannot hold in one copy and not the other (#1688).
     """
     if case.turn_history and case.turn_history[-1].turn_number == case.current_turn:
         return
 
-    previous = case.turn_history[-1] if case.turn_history else None
-    progress_made = score_progress(metadata)
-    case.turn_history.append(
-        TurnProgress(
-            turn_number=case.current_turn,
-            timestamp=datetime.now(timezone.utc),
-            milestones_completed=list(metadata.get("milestones_completed") or []),
-            evidence_added=[],
-            hypotheses_generated=[],
-            hypotheses_validated=[],
-            solutions_proposed=[],
-            progress_made=progress_made,
-            outcome=metadata.get("outcome") or TurnOutcome.CONVERSATION,
-            user_message_summary=_summarize_for_history(user_message, 200),
-            agent_response_summary=_summarize_for_history(agent_response, 500),
-            # #1451: the engine's terminal short-circuit reports a placeholder
-            # it synthesized on the metadata; a blank answer is about to be
-            # replaced by this service's own backstop marker. Either way the
-            # summary is not something the agent said.
-            agent_response_synthesized=(
-                bool(metadata.get(MESSAGE_METADATA_AGENT_SYNTHESIZED))
-                or not (agent_response or "").strip()
-            ),
-            system_feedback=(previous.system_feedback if previous else None),
-        )
+    record_promptless_turn(
+        case,
+        user_message=user_message,
+        agent_response=agent_response,
+        progress_made=score_progress(metadata),
+        milestones_completed=metadata.get("milestones_completed"),
+        outcome=metadata.get("outcome") or TurnOutcome.CONVERSATION,
+        # #1451: the engine's terminal short-circuit reports a placeholder it
+        # synthesized on the metadata; a blank answer is about to be replaced
+        # by this service's own backstop marker. Either way the summary is not
+        # something the agent said.
+        agent_response_synthesized=(
+            bool(metadata.get(MESSAGE_METADATA_AGENT_SYNTHESIZED))
+            or not (agent_response or "").strip()
+        ),
     )
-    # One-directional, matching ``_finish_deterministic_turn``: progress RESETS
-    # the stall counter and nothing here ever increments it.
-    if progress_made:
-        case.turns_without_progress = 0
 
 
 def _record_composed_reply(case: "Case", agent_response: str) -> None:
@@ -261,20 +250,12 @@ def _record_composed_reply(case: "Case", agent_response: str) -> None:
     # ``TurnProgress`` is frozen: replace the record, never mutate it.
     case.turn_history[-1] = case.turn_history[-1].model_copy(
         update={
-            "agent_response_summary": _summarize_for_history(
+            "agent_response_summary": summarize_for_turn_record(
                 agent_response.strip(), 500
             ),
             "agent_response_synthesized": not agent_response.strip(),
         }
     )
-
-
-def _summarize_for_history(text: str, max_length: int) -> str:
-    """Bound a message for the turn record, as the engine's own recorder does."""
-    text = text or ""
-    if len(text) <= max_length:
-        return text
-    return text[: max_length - 3] + "..."
 
 
 _DATA_TYPE_TO_SOURCE_TYPE: dict[DataType, EvidenceSourceType] = {
