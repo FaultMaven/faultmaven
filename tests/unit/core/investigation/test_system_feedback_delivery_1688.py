@@ -33,6 +33,9 @@ from faultmaven.core.investigation.milestone_engine import (
     MilestoneEngineError,
 )
 from faultmaven.core.investigation.prompts import templates
+from faultmaven.core.investigation.prompts.context_builder import (
+    system_feedback_block,
+)
 from faultmaven.core.investigation.prompts.fence import TERMINATOR_NOTE
 from faultmaven.core.investigation.prompts.templates import (
     _FALLBACK_FEEDBACK_MAX_TOKENS,
@@ -322,6 +325,37 @@ class TestAPromptlessTurnPassesTheNoticeOn:
         assert closed.turn_history[-1].system_feedback is None
 
 
+class TestTheHeadingNamesTheTurnThatWroteTheNotice:
+    """The walk back from a forwarded copy to the record that wrote it."""
+
+    @staticmethod
+    def _heading(history: list[TurnProgress]) -> str:
+        case = _investigating_case()
+        case.turn_history = history
+        case.current_turn = history[-1].turn_number
+        return system_feedback_block(case).split("\n", 1)[0]
+
+    def test_it_steps_over_a_backfilled_placeholder(self):
+        """Turn 4 was interrupted and never recorded; reconcile backfills a
+        SKIPPED placeholder between the notice and its forwarded copy."""
+        skipped = _record(4).model_copy(update={"outcome": TurnOutcome.SKIPPED})
+        forwarded = _record(5, NOTICE).model_copy(
+            update={"system_feedback_forwarded": True}
+        )
+        heading = self._heading([_record(2), _record(3, NOTICE), skipped, forwarded])
+        assert heading == FROM_TURN_3
+
+    def test_without_a_recorded_origin_it_names_no_turn(self):
+        forwarded = _record(3, NOTICE).model_copy(
+            update={"system_feedback_forwarded": True}
+        )
+        heading = self._heading([_record(2), forwarded])
+        assert heading == (
+            "IMPORTANT - SYSTEM FEEDBACK FROM AN EARLIER TURN "
+            "(not shown to you until now):"
+        )
+
+
 # ---------------------------------------------------------------------------
 # End to end: a real notice, a gate turn, the next LLM turn, consumption
 # ---------------------------------------------------------------------------
@@ -483,8 +517,11 @@ class TestTheFallbackRendersTheNotice:
             return estimate_tokens(prompt, provider="openai", model="gpt-4o")
 
         with_notice = get_fallback_prompt_for_case(noticed, SUBSTANTIVE)
-        assert notice[:40] in with_notice, "the head is what survives"
-        assert "truncated" in with_notice, "a cut notice says so"
+        block = with_notice[
+            with_notice.index("SYSTEM FEEDBACK FROM") : with_notice.index("USER:")
+        ]
+        assert notice[:40] in block, "the head is what survives"
+        assert "truncated" in block, "a cut notice says so"
         assert size(noticed) - size(bare) <= _FALLBACK_FEEDBACK_MAX_TOKENS + 40
 
     def test_the_terminal_fallback_does_not(self):

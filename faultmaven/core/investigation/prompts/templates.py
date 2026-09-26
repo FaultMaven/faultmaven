@@ -3166,9 +3166,10 @@ def _fallback_journal_digest(case: Case, max_entries: int = 12) -> str:
 #: fallback channel is capped so the prompt's size is bounded by construction
 #: (see ``fence.py``); the notice is the one capped in tokens rather than
 #: characters, because it is engine prose that can quote text in any script.
-#: Below ``PROMPT_SYSTEM_FEEDBACK_MAX_TOKENS``'s floor (200), so the fallback
-#: never shows more of a notice than the main prompt would. The head is kept:
-#: the notice that must survive is the one written first.
+#: Half ``PROMPT_SYSTEM_FEEDBACK_MAX_TOKENS``'s floor (200), so the fallback
+#: shows less of a notice than the main prompt would, with room for a live
+#: tokenizer denser than the one this counts in. The head is kept: the notice
+#: that must survive is the one written first.
 _FALLBACK_FEEDBACK_MAX_TOKENS = 100
 
 #: The tokenizer the cap counts in: the one the fallback's size bound is stated

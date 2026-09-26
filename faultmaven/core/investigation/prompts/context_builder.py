@@ -3743,24 +3743,33 @@ def system_feedback_block(
     previous turn. A forwarded copy belongs to an earlier one, and the
     conversation history above ends on the exchanges that carried it, so
     "previous turn" would point the model at the wrong exchange. The walk
-    back over forwarded copies finds the turn that wrote it.
+    back finds the nearest record that wrote it, stepping over forwarded copies
+    and over any record not carrying it, such as a SKIPPED placeholder that
+    ``Case.reconcile_turn_sequence`` backfilled for an interrupted turn.
 
     ``guard`` wraps the notice text alone; the fallback passes its
     ``_guarded``. Wrapping the finished block instead would put a terminator
     after the block's trailing blank line, on the same line as whatever the
     template renders next.
     """
-    history = case.turn_history
-    if not history or not history[-1].system_feedback:
+    last = case.turn_history[-1] if case.turn_history else None
+    if last is None or not last.system_feedback:
         return ""
-    body = guard(history[-1].system_feedback) if guard else history[-1].system_feedback
-    if not history[-1].system_feedback_forwarded:
+    notice = last.system_feedback
+    body = guard(notice) if guard else notice
+    if not last.system_feedback_forwarded:
         return f"IMPORTANT - SYSTEM FEEDBACK FROM PREVIOUS TURN:\n{body}\n\n"
-    origin = len(history) - 1
-    while origin > 0 and history[origin].system_feedback_forwarded:
-        origin -= 1
+    origin = next(
+        (
+            record
+            for record in reversed(case.turn_history[:-1])
+            if record.system_feedback == notice and not record.system_feedback_forwarded
+        ),
+        None,
+    )
+    source = f"TURN {origin.turn_number}" if origin else "AN EARLIER TURN"
     return (
-        f"IMPORTANT - SYSTEM FEEDBACK FROM TURN {history[origin].turn_number} "
+        f"IMPORTANT - SYSTEM FEEDBACK FROM {source} "
         f"(not shown to you until now):\n{body}\n\n"
     )
 
