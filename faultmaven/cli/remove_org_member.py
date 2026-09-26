@@ -87,6 +87,7 @@ import asyncio
 import sys
 
 from faultmaven.cli._confirmation import require_confirmation
+from faultmaven.cli._database_gate import require_persistent_database_or_exit
 
 #: argparse's ``description``. A literal, not derived from ``__doc__``: ``python
 #: -OO`` strips docstrings, and that expression would raise before argparse ran.
@@ -520,6 +521,8 @@ def main() -> None:
         "This removes the user's membership and signs them out of every "
         "active session.",
     )
+
+    require_persistent_database_or_exit()
 
     sys.exit(
         asyncio.run(

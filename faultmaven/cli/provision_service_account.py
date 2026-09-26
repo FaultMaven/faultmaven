@@ -37,6 +37,7 @@ import argparse
 import asyncio
 import sys
 
+from faultmaven.cli._database_gate import require_persistent_database_or_exit
 from faultmaven.config.settings import AuthMode, get_settings
 from faultmaven.container import container
 from faultmaven.modules.auth.domain.services.service_account_provisioning import (
@@ -203,6 +204,8 @@ def main():
         help="Print only the token on stdout (progress goes to stderr)",
     )
     args = parser.parse_args()
+
+    require_persistent_database_or_exit()
 
     success = asyncio.run(
         provision(

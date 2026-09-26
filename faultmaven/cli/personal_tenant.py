@@ -111,6 +111,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from faultmaven.cli._database_gate import require_persistent_database_or_exit
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
 from faultmaven.config.tenant_context import usable_tenant_id
 from faultmaven.infrastructure.persistence import account_anchor, tenant_retirement
@@ -989,12 +990,16 @@ def main() -> None:
             "leaving it off is already a dry run."
         )
 
+    if args.operation == "retire" and not args.subject and not args.enterprise_id:
+        retire_parser.error(
+            "pass --subject, --enterprise-id, or both (naming both is a "
+            "cross-check: the command refuses if they disagree)."
+        )
+
+    # Once, ahead of all three operations: each one reads the database.
+    require_persistent_database_or_exit()
+
     if args.operation == "retire":
-        if not args.subject and not args.enterprise_id:
-            retire_parser.error(
-                "pass --subject, --enterprise-id, or both (naming both is a "
-                "cross-check: the command refuses if they disagree)."
-            )
         sys.exit(
             asyncio.run(
                 retire(

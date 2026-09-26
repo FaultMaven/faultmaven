@@ -27,6 +27,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+from faultmaven.cli._database_gate import require_persistent_database_or_exit
 from faultmaven.container import container
 from faultmaven.modules.auth.contracts import (
     PLATFORM_ADMIN_ROLE,
@@ -185,6 +186,8 @@ def main():
     )
 
     args = parser.parse_args()
+
+    require_persistent_database_or_exit()
 
     # Interactive mode
     if args.interactive or not args.username:

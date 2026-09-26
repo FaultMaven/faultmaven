@@ -84,6 +84,7 @@ import asyncio
 import sys
 
 from faultmaven.cli._confirmation import require_confirmation
+from faultmaven.cli._database_gate import require_persistent_database_or_exit
 from faultmaven.infrastructure.protection.tenant_turn_cap import (
     CAP_POLICY_SOURCES,
     SOURCE_COMPANY_UNCAPPED,
@@ -400,6 +401,8 @@ def main() -> None:
         require_confirmation(
             parser, args, "This changes what a tenant is allowed to spend."
         )
+
+    require_persistent_database_or_exit()
 
     sys.exit(
         asyncio.run(

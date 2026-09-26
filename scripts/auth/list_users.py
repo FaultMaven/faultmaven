@@ -17,6 +17,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+from faultmaven.cli._database_gate import require_persistent_database_or_exit
 from faultmaven.container import container
 from faultmaven.modules.auth.contracts import PLATFORM_ADMIN_ROLE
 from datetime import datetime
@@ -93,6 +94,7 @@ async def main():
 
 
 if __name__ == "__main__":
+    require_persistent_database_or_exit()
     try:
         success = asyncio.run(main())
         # Force immediate exit to avoid hanging on background tasks

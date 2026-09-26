@@ -12,6 +12,12 @@ pod; locally after `pip install -e .`).
 kubectl exec -it deploy/faultmaven-api -- fm-provision-sso-org --name ...
 ```
 
+Every command acts on the deployment's database, so every command refuses to
+run without a persistent one (#1659). An empty `DATABASE_URL`, `:memory:`, an
+in-memory SQLite URL or a value that does not parse as a database URL makes it
+exit 1 before it reads or writes anything. It prints the API's boot refusal on
+stderr and nothing on stdout.
+
 | Command | What it does | Detail |
 |---------|--------------|--------|
 | `fm-promote-platform-admin <username>` | Promote a user to platform admin (deployment operator) | [Account provisioning](./account-provisioning.md) |

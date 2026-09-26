@@ -104,6 +104,7 @@ from collections import Counter
 from pathlib import Path
 
 from faultmaven.cli._confirmation import require_confirmation
+from faultmaven.cli._database_gate import require_persistent_database_or_exit
 
 #: argparse's ``description``. A literal, not derived from ``__doc__``: ``python
 #: -OO`` strips docstrings, and that expression would raise before argparse ran.
@@ -728,6 +729,8 @@ def main() -> None:
         args,
         "This changes who owns these cases and who can see them.",
     )
+
+    require_persistent_database_or_exit()
 
     sys.exit(
         asyncio.run(

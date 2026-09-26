@@ -102,6 +102,8 @@ from dataclasses import dataclass, field
 
 from sqlalchemy import text
 
+from faultmaven.cli._database_gate import require_persistent_database_or_exit
+
 #: argparse's ``description``. A literal, not derived from ``__doc__``: ``python
 #: -OO`` strips docstrings, and that expression would raise before argparse ran.
 _SUMMARY = (
@@ -1367,6 +1369,8 @@ def main() -> None:
             "process is connected to, exactly. Run with no flags to see it."
         )
         sys.exit(1)
+
+    require_persistent_database_or_exit()
 
     mode = "wipe" if args.wipe else "verify" if args.verify else "inventory"
 

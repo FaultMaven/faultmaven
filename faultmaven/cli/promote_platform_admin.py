@@ -21,6 +21,7 @@ import asyncio
 import sys
 
 from faultmaven.bootstrap.data_init import assign_operator_roles
+from faultmaven.cli._database_gate import require_persistent_database_or_exit
 from faultmaven.container import container
 from faultmaven.exceptions import UserLookupFailed
 
@@ -138,6 +139,8 @@ def main() -> None:
     )
     parser.add_argument("username", help="Username of the account to promote")
     args = parser.parse_args()
+
+    require_persistent_database_or_exit()
 
     success = asyncio.run(promote_to_platform_admin(args.username))
     sys.exit(0 if success else 1)

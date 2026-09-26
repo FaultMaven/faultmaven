@@ -840,6 +840,83 @@ class LLMSettings(BaseSettings):
     }
 
 
+def _parse_database_url(database_url: Optional[str]) -> Any:
+    """``make_url`` on the stripped value, or ``None`` when it does not parse.
+
+    ``make_url`` is the parser the engine itself uses, so a value it refuses is
+    one no engine can open. It raises ``ArgumentError`` for a value that is not
+    a URL and ``ValueError`` for a non-numeric port.
+    """
+    from sqlalchemy.engine import make_url
+    from sqlalchemy.exc import ArgumentError
+
+    text = (database_url or "").strip()
+    if not text:
+        return None
+    try:
+        return make_url(text)
+    except (ArgumentError, ValueError):
+        return None
+
+
+def _sqlite_url_is_ephemeral(url: Any) -> bool:
+    """Whether SQLite would open this URL's database somewhere that dies with it.
+
+    Modelled on what SQLite is actually handed. Under ``uri=true`` SQLAlchemy
+    passes ``database`` followed by the query as ``k=v`` pairs joined with
+    ``&``, using the values ``make_url`` has ALREADY percent-decoded and without
+    re-encoding them. SQLite then splits that string on ``?``, ``&`` and ``#``
+    and percent-decodes each piece again. So a decoded ``&`` or ``#`` smuggles a
+    parameter in (``cache=shared%26mode%3Dmemory``), and a double-encoded one
+    arrives decoded (``mode=memor%2579``). Reading the parsed query as a dict
+    misses both.
+
+    Ephemeral: an empty database (SQLAlchemy opens ``:memory:``); ``:memory:``
+    anywhere in the decoded path (``file::memory:``); a ``file:`` URI with an
+    empty path (a private temporary database); and a ``mode=memory`` or
+    ``vfs=memdb`` parameter. The check is deliberately wider than SQLite in three
+    ways, and each costs only a refusal of a spelling no deployment writes:
+    it applies the ``file:`` rules without ``uri=true``, it reads parameter names
+    case-insensitively, and it reads a parameter after a ``#``. A decoded NUL
+    anywhere is refused outright.
+    """
+    import re
+    from urllib.parse import unquote
+
+    database = url.database or ""
+    pairs = [
+        f"{key}={value}"
+        for key, values in url.query.items()
+        for value in (values if isinstance(values, tuple) else (values,))
+    ]
+    uri = database + ("?" + "&".join(pairs) if pairs else "")
+    raw_path, *raw_params = re.split(r"[?&#]", uri)
+    path = unquote(raw_path).strip().lower()
+
+    # A decoded NUL: SQLite reads C strings, so it silently truncates the piece
+    # (``file:%2500junk`` is an empty path, ``mode%2500zz=memory`` is ``mode``).
+    # No real database URL carries one, so refuse outright rather than model it.
+    if "\x00" in path or any("\x00" in unquote(raw) for raw in raw_params):
+        return True
+    if not path or ":memory:" in path:
+        return True
+    if path.startswith("file:"):
+        rest = path[len("file:") :]
+        if rest.startswith("//"):  # file://authority/path — keep only the path
+            slash = rest.find("/", 2)
+            rest = "" if slash == -1 else rest[slash:]
+        if not rest:
+            return True
+    for raw in raw_params:
+        param = unquote(raw).strip().lower()
+        # By prefix, not equality: after the split above the two differ only on
+        # values SQLite itself rejects ("no such access mode: memoryx"), so the
+        # prefix refuses those with this message instead of SQLite's.
+        if param.startswith("mode=memory") or param.startswith("vfs=memdb"):
+            return True
+    return False
+
+
 def persistent_database_configured(database_url: Optional[str]) -> bool:
     """One rule for "is a persistent database configured?" (fm#1128).
 
@@ -851,13 +928,24 @@ def persistent_database_configured(database_url: Optional[str]) -> bool:
     login wrote accounts to one store while ``GET /auth/me`` read an
     always-empty other, silently reproducing #1120 with green tests.
 
-    The rule: persistent iff ``database_url`` is non-empty (after stripping),
-    not the ``:memory:`` sentinel, and not a SQLite in-memory spelling
-    (``sqlite+aiosqlite:///:memory:``, ``sqlite://`` with an empty path, or a
-    ``mode=memory`` URI). Those are ephemeral by construction — worse, the
-    engine pools SQLite with ``NullPool``, so each per-operation session of a
-    sessionless repository would open a brand-new empty in-memory database
-    and every write would vanish before the next read. An *unsupported*
+    The rule (#1659): persistent iff ``database_url`` parses as a SQLAlchemy
+    URL (``make_url``, the parser the engine itself uses) and, for SQLite,
+    names a database that is not ephemeral (:func:`_sqlite_url_is_ephemeral`).
+    So these are not persistent:
+
+    - empty or blank, and anything ``make_url`` cannot parse — the bare
+      ``:memory:`` sentinel, ``file::memory:?cache=shared``, a typo. No engine
+      can open such a URL, so it configures no database at all;
+    - a SQLite URL with an empty database (``sqlite://``,
+      ``sqlite+aiosqlite:///?timeout=30``, ``sqlite://?check_same_thread=false``);
+    - a SQLite database SQLite keeps in memory or in a temporary file:
+      ``:memory:`` in the decoded path, an empty ``file:`` path, ``mode=memory``
+      or ``vfs=memdb`` — however encoded (``mode=memor%79``).
+
+    Those are ephemeral by construction — worse, the engine pools SQLite with
+    ``NullPool``, so each per-operation session of a sessionless repository
+    would open a brand-new empty in-memory database and every write would
+    vanish before the next read. A parseable URL for an *unsupported*
     dialect, by contrast, still counts as configured — both sides then point
     at the same database and fail loudly together at first use, instead of
     one of them quietly falling back to a store the other never reads.
@@ -866,19 +954,77 @@ def persistent_database_configured(database_url: Optional[str]) -> bool:
     factories are exercised with duck-typed settings stubs, and the rule
     should be callable on any URL string without constructing settings.
     """
-    url = (database_url or "").strip()
-    if not url or url == ":memory:":
+    url = _parse_database_url(database_url)
+    if url is None:
         return False
-    lower = url.lower()
-    if lower.startswith("sqlite"):
-        # SQLAlchemy's real in-memory spellings, not just the bare sentinel.
-        if ":memory:" in lower or "mode=memory" in lower:
-            return False
-        _, _, path = lower.partition("://")
-        if path.strip("/") == "":
-            # sqlite:// / sqlite+aiosqlite:/// — empty path means in-memory.
-            return False
-    return True
+    if url.get_backend_name().lower() != "sqlite":
+        return True
+    return not _sqlite_url_is_ephemeral(url)
+
+
+#: Query parameters whose value may be shown when a database URL is printed:
+#: SQLite's URI parameters and the pysqlite connect arguments, which name how
+#: the database is opened and never carry a secret. Every other value is
+#: masked. An allowlist, because a list of secret-looking names misses the one
+#: nobody thought of (``pwd``, ``sig``, ``odbc_connect``).
+_SHOWABLE_QUERY_KEYS = frozenset(
+    {
+        "cache",
+        "check_same_thread",
+        "detect_types",
+        "immutable",
+        "isolation_level",
+        "mode",
+        "modeof",
+        "nolock",
+        "psow",
+        "timeout",
+        "uri",
+        "vfs",
+    }
+)
+
+
+def describe_database_url(database_url: Optional[str]) -> str:
+    """``DATABASE_URL`` as it may be printed or logged: never with a credential.
+
+    Everything the persistent-database refusal and its log lines show goes
+    through here. Before #1659 a PostgreSQL URL never reached them, because
+    any non-SQLite URL counted as persistent. Now one that fails to parse does,
+    and ``postgresql://app:<password>@db:5432x/fm`` printed whole would put the
+    password in pod logs.
+
+    Only what can be shown safely is shown. An empty value and the bare
+    ``:memory:`` sentinel are shown as given. For a URL ``make_url`` parses,
+    the dialect, port, database path and SQLite's own URI parameters
+    (``_SHOWABLE_QUERY_KEYS``) are shown, because they are what the operator
+    got wrong. The whole authority (user, password and host) is shown as
+    ``***``, because an unescaped ``@`` in a password pushes its tail into the
+    host. Every other query parameter is shown as ``***``, key and value.
+    Anything else is not shown at all, because a value that does not parse
+    cannot be masked: a libpq ``password=...`` DSN has no ``@`` to find.
+    """
+    text = database_url or ""
+    if not text.strip() or text.strip() == ":memory:":
+        return repr(text)
+    url = _parse_database_url(text)
+    if url is None:
+        return (
+            "(not shown: the value does not parse as a database URL, so a "
+            "password in it could not be masked)"
+        )
+    has_authority = any(
+        part is not None for part in (url.username, url.password, url.host)
+    )
+    authority = "***" if has_authority else ""
+    port = f":{url.port}" if url.port is not None else ""
+    pairs = []
+    for key, values in url.query.items():
+        for value in values if isinstance(values, tuple) else (values,):
+            shown = key.lower() in _SHOWABLE_QUERY_KEYS
+            pairs.append(f"{key}={value}" if shown else "***")
+    query = "?" + "&".join(pairs) if pairs else ""
+    return repr(f"{url.drivername}://{authority}{port}/{url.database or ''}{query}")
 
 
 class DatabaseSettings(BaseSettings):
