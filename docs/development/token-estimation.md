@@ -304,6 +304,17 @@ def truncate_conversation_history(
    pip install tiktoken>=0.5.0 anthropic>=0.25.0
    ```
 
+4. Check that the encoding file loads. tiktoken downloads `cl100k_base` on
+   first use and caches it in `TIKTOKEN_CACHE_DIR` (the system temp directory
+   when unset). With no network and no cached file, the load fails, and every
+   count falls back to four characters a token:
+   ```
+   WARNING: Failed to get tiktoken encoder for gpt-4: ...
+   ```
+   The Docker image bakes the file into `TIKTOKEN_CACHE_DIR`, so containers
+   need no network for it. A process run outside the image needs network on
+   first use, or a `TIKTOKEN_CACHE_DIR` holding the file.
+
 ### Problem: High Token Usage
 
 **Diagnosis**:
