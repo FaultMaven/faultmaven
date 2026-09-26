@@ -58,6 +58,7 @@ from faultmaven.core.investigation.prompts.fence import (
     absorbed_delimiters,
 )
 from faultmaven.core.investigation.prompts.templates import (
+    _FALLBACK_FEEDBACK_MAX_TOKENS,
     _FALLBACK_FENCE_RULE_HEAD,
     _FALLBACK_FENCE_RULE_TEMPLATE,
     _PROMPT_FENCE_RULE,
@@ -864,6 +865,11 @@ class TestTheCompactRuleStaysCompact:
             assert f'file_id="file_0e0e0e0e0e1{i}"' in prompt, "INV-1 survives"
         assert prompt.count('searchable="true"') == 3
         assert fill(20) in prompt, "shortened, not emptied"
+        # The notice is the engine's correction, not quoted content: the shrink
+        # leaves its cap alone.
+        notice = prompt[prompt.index("SYSTEM FEEDBACK FROM") : prompt.index("USER:")]
+        notice_tokens = estimate_tokens(notice, provider="openai", model="gpt-4o")
+        assert notice_tokens >= _FALLBACK_FEEDBACK_MAX_TOKENS, notice_tokens
 
     @pytest.mark.parametrize(
         "state,with_upload",

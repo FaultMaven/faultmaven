@@ -3179,10 +3179,13 @@ def _fallback_journal_digest(
 #: that must survive is the one written first.
 _FALLBACK_FEEDBACK_MAX_TOKENS = 100
 
-#: The tokenizer the cap counts in: the one the fallback's size bound is stated
-#: and tested in (``fence.py``). The fallback is built without the live
-#: provider, and counting without one falls back to four characters a token,
-#: which lets a CJK notice through at several times the cap.
+#: What the fallback counts tokens with. ``estimate_tokens`` maps this pair to
+#: tiktoken's ``cl100k_base``, as it does every ``gpt-4*`` name; the model name
+#: selects the encoding and nothing else. cl100k is also what the allocator
+#: counts with for most providers, and the fallback's size bound is stated and
+#: tested in it (``fence.py``). The fallback is built without the live provider,
+#: and counting without one falls back to four characters a token, which lets a
+#: CJK notice through at several times the cap.
 _FALLBACK_TOKENIZER = ("openai", "gpt-4o")
 
 #: The fallback's size budget, in ``_FALLBACK_TOKENIZER`` tokens. The overflow
@@ -3208,8 +3211,19 @@ class _FallbackCaps:
     notice_tokens: int = _FALLBACK_FEEDBACK_MAX_TOKENS
 
     def scaled(self, factor: float) -> "_FallbackCaps":
-        return _FallbackCaps(
-            *(max(1, int(cap * factor)) for cap in dataclasses.astuple(self))
+        """Every quoted channel's cap times ``factor``.
+
+        The notice keeps its cap. It is the engine's correction, reserved on
+        the main prompt too, and a cap scaled to a handful of tokens leaves its
+        heading over an empty body.
+        """
+        return dataclasses.replace(
+            self,
+            **{
+                field.name: max(1, int(getattr(self, field.name) * factor))
+                for field in dataclasses.fields(self)
+                if field.name != "notice_tokens"
+            },
         )
 
 
@@ -3245,34 +3259,31 @@ def get_fallback_prompt_for_case(
     A case at every cap need not, and denser text is further off: log lines
     full of timestamps and ids, or CJK, take several times the tokens at the
     same length. So the render is measured, and one over budget is redone with
-    every cap scaled down by the overshoot. Shrinking the caps shortens the quoted
-    content only; the stubs, ids and fence structure stay, so a current-turn
-    upload is still addressable (INV-1).
+    every quoted channel's cap scaled down by the overshoot; the notice keeps
+    its own. Shrinking the caps shortens the quoted content only; the stubs,
+    ids and fence structure stay, so a current-turn upload is still
+    addressable (INV-1).
     """
     caps = _FallbackCaps()
-    prompt = render_fenced(
-        lambda fence: _fallback_body(case, user_message, fence, caps)
-    )
-    for _ in range(_FALLBACK_SHRINK_ATTEMPTS):
-        size = _fallback_tokens(prompt)
-        if size <= _FALLBACK_MAX_TOKENS:
-            return prompt
-        # 0.9: the skeleton does not shrink with the caps, so a proportional
-        # cut alone undershoots.
-        caps = caps.scaled(0.9 * _FALLBACK_MAX_TOKENS / size)
+    for attempt in range(_FALLBACK_SHRINK_ATTEMPTS + 1):
         prompt = render_fenced(
             lambda fence: _fallback_body(case, user_message, fence, caps)
         )
-    size = _fallback_tokens(prompt)
-    if size > _FALLBACK_MAX_TOKENS:
-        logger.warning(
-            "fallback_prompt_over_budget",
-            extra={
-                "case_id": getattr(case, "case_id", None),
-                "tokens": size,
-                "budget": _FALLBACK_MAX_TOKENS,
-            },
-        )
+        size = _fallback_tokens(prompt)
+        if size <= _FALLBACK_MAX_TOKENS:
+            return prompt
+        # 0.9: the skeleton and the notice do not shrink with the caps, so a
+        # proportional cut alone undershoots.
+        caps = caps.scaled(0.9 * _FALLBACK_MAX_TOKENS / size)
+    logger.warning(
+        "fallback_prompt_over_budget",
+        extra={
+            "case_id": getattr(case, "case_id", None),
+            "tokens": size,
+            "budget": _FALLBACK_MAX_TOKENS,
+            "attempts": attempt + 1,
+        },
+    )
     return prompt
 
 
@@ -3280,7 +3291,7 @@ def _fallback_body(
     case: Case,
     user_message: str,
     fence: PromptFence,
-    caps: "_FallbackCaps" = _FallbackCaps(),
+    caps: _FallbackCaps,
 ) -> str:
     """One fence's worth of fallback prompt — see :func:`get_fallback_prompt_for_case`.
 

@@ -356,9 +356,9 @@ They also carry the previous turn's `system_feedback` (#1688). On the main
 prompt the notice is part of the reserve, and dropping it in the fallback would
 lose the engine's correction on exactly the turn that degraded. It renders
 guarded above the user's message, capped head-first at 100 tokens
-(`_FALLBACK_FEEDBACK_MAX_TOKENS`, counted in the same reference tokenizer the
-fallback's size bound is stated in), so it adds a bounded amount to the worst
-case.
+(`_FALLBACK_FEEDBACK_MAX_TOKENS`, counted in tiktoken's `cl100k_base`, the
+tokenizer the fallback's size bound is stated in), so it adds a bounded amount
+to the worst case.
 
 The fallback is reachable by **two** triggers, not just hard-limit overflow:
 
@@ -423,8 +423,9 @@ ordinary case well inside that. A case at every cap need not fit, and dense text
 such as log lines full of timestamps and ids, or CJK, takes several times the
 tokens at the same length. So `get_fallback_prompt_for_case` measures the render
 and redoes one over `_FALLBACK_MAX_TOKENS` (`MIN_PROMPT_BUDGET` less room for the
-degraded-mode notice the runtime recovery appends) with every cap scaled down.
-The quoted content gets shorter; the stubs, ids and fence structure stay.
+degraded-mode notice the runtime recovery appends) with every quoted channel's
+cap scaled down. The quoted content gets shorter; the stubs, ids, fence
+structure and the notice's own cap stay.
 
 When the window is unknown (local/uncurated), there is no hard limit to check;
 the section budgeter still bounds to the resolved budget, and the starvation
