@@ -2438,13 +2438,15 @@ class TestTheRestOfTheTree:
 
 # -------------------------------------------------------- the growth helper
 #
-# The first version of this helper compared t(16n)/t(n) with 64x, and this
-# class's quadratic control went GREEN on the CI runners while reading
-# 121-124x here: a two-size ratio carries the fixed per-call cost on both
-# sides, so it reads anything from 1 to 256 depending on a machine property.
-# The controls below are therefore held to a margin, not just to the verdict:
-# each quadratic reads ~50 against a bound of ~22.6 here and would still fail
-# if a runner read it at half, and each linear one reads ~6.
+# Two earlier versions of this helper were hollow in ways their own controls
+# did not show. The first compared t(16n)/t(n) with 64x, and its quadratic
+# control went GREEN on the CI runners while reading 121-124x here: a
+# two-size ratio carries the fixed per-call cost on both sides. The second
+# took the ratio of differences, but passed whatever a one-sided noise
+# allowance could not call super-linear, so a pure quadratic with a moderate
+# fixed cost passed (review of #1701, reproduced: F=2000 and F=3000 below,
+# 3/3 green). So the rule's invariant is pinned here in arithmetic, over
+# every fixed cost, and each measured control is held to both columns.
 
 
 _BACKTRACKING = re.compile(r"\s+y").search  # every start rescans to the end
@@ -2471,6 +2473,251 @@ def _fixed_cost_then_linear(text: str) -> tuple:
     for i in range(300):
         total += i
     return total, sum(1 for _ in text)
+
+
+def _fixed_then_quadratic(fixed: int):
+    """The review's reproduction: ``fixed`` iterations, then an n**2 loop."""
+
+    def fn(n: int) -> int:
+        total = 0
+        for _ in range(fixed):
+            total += 1
+        for _ in range(n):
+            for _ in range(n):
+                total += 1
+        return total
+
+    return fn
+
+
+def _fixed_then_linear(fixed: int):
+    """The same fixed cost, then linear work of the same unit."""
+
+    def fn(n: int) -> int:
+        total = 0
+        for _ in range(fixed):
+            total += 1
+        for _ in range(n):
+            total += 1
+        return total
+
+    return fn
+
+
+# ---- arithmetic: the rule, fed exact costs (no clock)
+
+#: Fixed cost relative to the work at the window's smallest size, 0 and
+#: 0.1 .. 1e7 in quarter decades.
+_FIXED_COSTS = (0.0,) + tuple(10 ** (k / 4) for k in range(-4, 29))
+_STEP = 8
+
+
+def _costs(fixed: float, linear: float, quadratic: float, escalation: int = 0):
+    """Exact per-call costs ``C + a*s + q*s**2`` at s = 1, 8, 64, escalated."""
+    a = linear * _STEP**escalation
+    q = quadratic * _STEP ** (2 * escalation)
+    return tuple(fixed + a * s + q * s * s for s in (1, _STEP, _STEP * _STEP))
+
+
+def _growth(seconds):
+    from tests.wallclock.growth import Growth
+
+    return Growth(sizes=(1, _STEP, _STEP * _STEP), seconds=tuple(seconds), step=_STEP)
+
+
+def _procedure(fixed: float, linear: float, quadratic: float) -> str:
+    """What ``measure_growth`` + ``assert_linear_growth`` conclude, noise-free."""
+    from tests.wallclock.growth import MAX_ESCALATIONS, UNDECIDED
+
+    for escalation in range(MAX_ESCALATIONS + 1):
+        verdict = _growth(_costs(fixed, linear, quadratic, escalation)).verdict
+        if verdict != UNDECIDED:
+            return verdict
+    return "refused"
+
+
+def _noisy(seconds, errors):
+    """Minima each within ``NOISE_ALLOWANCE`` of the truth: |t - m| <= e*m."""
+    return [t / (1 + d) for t, d in zip(seconds, errors)]
+
+
+def _error_grid(eta: float, points: int):
+    import itertools
+
+    values = [-eta + 2 * eta * i / (points - 1) for i in range(points)]
+    return list(itertools.product(values, repeat=3))
+
+
+def _adversary_reaches(fixed, linear, quadratic, eta, wanted, points=9):
+    """Can per-size errors up to ``eta`` steer the procedure to ``wanted``?
+
+    Each window's error is chosen independently. The adversary wins if some
+    window can be made to say ``wanted`` while every window before it can be
+    made undecided (so the procedure escalates past it).
+    """
+    from tests.wallclock.growth import MAX_ESCALATIONS, UNDECIDED
+
+    grid = _error_grid(eta, points)
+    for escalation in range(MAX_ESCALATIONS + 1):
+        exact = _costs(fixed, linear, quadratic, escalation)
+        reachable = {
+            _growth([t * (1 + d) for t, d in zip(exact, errors)]).verdict
+            for errors in grid
+        }
+        if wanted in reachable:
+            return True
+        if UNDECIDED not in reachable:
+            return False
+    return False
+
+
+class TestTheGrowthRule:
+    """The invariant in ``tests/wallclock/growth.py``, checked over every C."""
+
+    def test_the_true_ratio_does_not_depend_on_the_fixed_cost(self):
+        for fixed in _FIXED_COSTS:
+            assert _growth(_costs(fixed, 1, 0)).ratio == pytest.approx(8)
+            assert _growth(_costs(fixed, 0, 1)).ratio == pytest.approx(64)
+
+    def test_no_fixed_cost_passes_a_quadratic_or_fails_a_linear(self):
+        """Noise-free, every window and every C: the wrong verdict never."""
+        from tests.wallclock.growth import LINEAR, MAX_ESCALATIONS, SUPER_LINEAR
+
+        for fixed in _FIXED_COSTS:
+            for escalation in range(MAX_ESCALATIONS + 1):
+                linear = _growth(_costs(fixed, 1, 0, escalation))
+                quadratic = _growth(_costs(fixed, 0, 1, escalation))
+                assert linear.verdict != SUPER_LINEAR, (fixed, escalation)
+                assert quadratic.verdict != LINEAR, (fixed, escalation)
+
+    def test_the_hole_the_review_found_is_closed(self):
+        """C/q from 433 to 1364 passed a pure quadratic; now it escalates."""
+        from tests.wallclock.growth import SUPER_LINEAR, UNDECIDED
+
+        for fixed in range(434, 1370, 5):
+            assert _growth(_costs(fixed, 0, 1)).verdict == UNDECIDED, fixed
+            assert _procedure(fixed, 0, 1) == SUPER_LINEAR, fixed
+
+    def test_what_the_procedure_concludes_for_every_fixed_cost(self):
+        """Quadratic: failed at every C tried. Linear: passed, or refused.
+
+        A linear cost passes once C is under ~16x the work at the smallest
+        size; three escalations reach C up to ~8000x. Beyond that it is
+        refused as miscalibrated — never failed, never passed unseen.
+        """
+        from tests.wallclock.growth import LINEAR, SUPER_LINEAR
+
+        for fixed in _FIXED_COSTS:
+            assert _procedure(fixed, 0, 1) == SUPER_LINEAR, fixed
+            expected = LINEAR if fixed <= 8000 else "refused"
+            assert _procedure(fixed, 1, 0) == expected, fixed
+
+    def test_inside_the_allowance_no_error_produces_a_wrong_verdict(self):
+        """The invariant itself: minima within the allowance, every C."""
+        from tests.wallclock.growth import (
+            LINEAR,
+            MAX_ESCALATIONS,
+            NOISE_ALLOWANCE,
+            SUPER_LINEAR,
+        )
+
+        grid = _error_grid(NOISE_ALLOWANCE, 5)
+        for fixed in _FIXED_COSTS[::2]:
+            for escalation in range(MAX_ESCALATIONS + 1):
+                for errors in grid:
+                    linear = _growth(_noisy(_costs(fixed, 1, 0, escalation), errors))
+                    quad = _growth(_noisy(_costs(fixed, 0, 1, escalation), errors))
+                    assert linear.verdict != SUPER_LINEAR, (fixed, errors)
+                    assert quad.verdict != LINEAR, (fixed, errors)
+
+    def test_a_mixture_is_judged_by_its_true_ratio_over_the_window(self):
+        """``C + a*n + q*n**2``: never failed below the bound, never passed above.
+
+        Its true ratio is ``(56a + 4032q) / (7a + 63q)``, which crosses the
+        bound where the quadratic term at the largest size is ~2.5x the
+        linear term. Checked inside the allowance, at every C and q/a.
+        """
+        from tests.wallclock.growth import (
+            LINEAR,
+            NOISE_ALLOWANCE,
+            SUPER_LINEAR,
+            growth_bound,
+        )
+
+        grid = _error_grid(NOISE_ALLOWANCE, 5)
+        for fixed in _FIXED_COSTS[::4]:
+            for share in (0.001, 0.01, 0.03, 0.039, 0.04, 0.06, 0.1, 1.0):
+                exact = _costs(fixed, 1, share)
+                true_ratio = _growth(exact).ratio
+                for errors in grid:
+                    verdict = _growth(_noisy(exact, errors)).verdict
+                    if true_ratio < growth_bound(_STEP):
+                        assert verdict != SUPER_LINEAR, (fixed, share, errors)
+                    else:
+                        assert verdict != LINEAR, (fixed, share, errors)
+
+    def test_a_mixture_only_ever_moves_toward_failing(self):
+        """More quadratic never reads more linear, at any fixed cost."""
+        from tests.wallclock.growth import LINEAR, SUPER_LINEAR, UNDECIDED
+
+        rank = {LINEAR: 0, UNDECIDED: 1, SUPER_LINEAR: 2}
+        shares = [i / 10000 for i in range(1, 3000, 7)]
+        for fixed in (0.0, 1.0, 5.0, 15.0, 100.0, 1000.0):
+            ranks = [rank[_growth(_costs(fixed, 1, s)).verdict] for s in shares]
+            assert ranks == sorted(ranks), fixed
+
+    def test_where_a_mixture_is_decided(self):
+        """At any C a linear cost alone passes at (C <= 15): measured bounds.
+
+        Linear while the quadratic term at the largest size is at most 1/20
+        of the linear term; super-linear once it is 8x. In between the window
+        escalates, which multiplies that share by 8.
+        """
+        from tests.wallclock.growth import LINEAR, SUPER_LINEAR
+
+        for fixed in (0.0, 1.0, 5.0, 15.0):
+            assert _growth(_costs(fixed, 1, 0.05 / 64)).verdict == LINEAR, fixed
+            assert _growth(_costs(fixed, 1, 8 / 64)).verdict == SUPER_LINEAR, fixed
+
+    def test_beyond_the_allowance_a_wrong_verdict_needs_a_large_error(self):
+        """The margin, as a per-size error an adversary must reach, any C.
+
+        Computed with this class: a quadratic can be passed only with an
+        error over 13.8% per size, a linear failed only over 18.3%. The
+        positive halves show the search is able to find a win at all.
+        """
+        from tests.wallclock.growth import LINEAR, SUPER_LINEAR
+
+        costs = _FIXED_COSTS
+        assert not any(_adversary_reaches(c, 0, 1, 0.13, LINEAR) for c in costs)
+        assert any(_adversary_reaches(c, 0, 1, 0.15, LINEAR) for c in costs)
+        assert not any(_adversary_reaches(c, 1, 0, 0.18, SUPER_LINEAR) for c in costs)
+        assert any(_adversary_reaches(c, 1, 0, 0.19, SUPER_LINEAR) for c in costs)
+
+    def test_a_reading_the_noise_explains_is_escalated_not_judged(self):
+        """The sshd reader's ``slot-lookalikes`` shape, measured on fixed code.
+
+        ``t2/t1 = 1.12`` and ``t3/t1 = 3.84``: a raw ratio of 22.7, over the
+        bound, from a denominator that was noise. Neither verdict: the window
+        moves up. A pure quadratic's reading keeps a floor twice the bound.
+        """
+        from tests.wallclock.growth import SUPER_LINEAR, UNDECIDED, growth_bound
+
+        noisy_linear = _growth((1.0, 1.12, 3.84))
+        pure_quadratic = _growth(_costs(0, 0, 1))
+        assert noisy_linear.ratio > growth_bound(_STEP)
+        assert noisy_linear.verdict == UNDECIDED
+        assert pure_quadratic.verdict == SUPER_LINEAR
+        assert pure_quadratic.ratio_floor > 2 * growth_bound(_STEP)
+
+    def test_the_bound_is_the_midpoint_of_linear_and_quadratic(self):
+        from tests.wallclock import growth_bound
+
+        assert growth_bound(8) == 8**1.5
+        assert growth_bound(4) == 8.0
+
+
+# ---- behaviour: the helper, measured
 
 
 class TestTheGrowthHelper:
@@ -2500,8 +2747,35 @@ class TestTheGrowthHelper:
     def test_a_quadratic_cost_fails(self, fn, payload_at, small):
         from tests.wallclock import assert_linear_growth
 
-        with pytest.raises(AssertionError, match="quadratic ~64x"):
+        with pytest.raises(AssertionError, match="is the usual cause"):
             assert_linear_growth(fn, payload_at, small=small, label="quadratic control")
+
+    @pytest.mark.parametrize("fixed", [1000, 2000, 3000])
+    def test_a_fixed_cost_does_not_hide_a_quadratic(self, fixed):
+        """The review's reproduction. 2000 and 3000 passed 3/3 before."""
+        from tests.wallclock import assert_linear_growth
+
+        with pytest.raises(AssertionError, match="is the usual cause"):
+            assert_linear_growth(
+                _fixed_then_quadratic(fixed),
+                lambda n: n,
+                small=2,
+                label=f"quadratic after {fixed} fixed iterations",
+            )
+
+    @pytest.mark.parametrize("fixed", [1000, 2000, 3000])
+    def test_the_same_fixed_cost_on_a_linear_passes(self, fixed):
+        """The other column: it escalates until the work shows, then passes."""
+        from tests.wallclock import assert_linear_growth
+
+        growth = assert_linear_growth(
+            _fixed_then_linear(fixed),
+            lambda n: n,
+            small=2,
+            label=f"linear after {fixed} fixed iterations",
+        )
+        # Moved up by whole steps of 8 from 2: escalated at least once.
+        assert growth.sizes[0] in {16, 128, 1024}, growth.describe()
 
     def test_a_call_that_never_shows_its_work_is_refused(self):
         """Miscalibrated, not linear: nothing grew across a 32768x input.
@@ -2512,7 +2786,7 @@ class TestTheGrowthHelper:
         """
         from tests.wallclock import assert_linear_growth
 
-        with pytest.raises(AssertionError, match="payload too small"):
+        with pytest.raises(AssertionError, match="could not decide"):
             assert_linear_growth(
                 _fixed_cost_only, lambda n: "ab" * n, small=1, label="refusal"
             )
@@ -2530,37 +2804,6 @@ class TestTheGrowthHelper:
         )
         # Moved up by whole steps of 8 from 1: the window is one of these.
         assert growth.sizes[0] in {8, 64, 512}, growth.describe()
-
-    def test_the_fixed_cost_cancels_out_of_the_reading(self):
-        """Arithmetic, no clock: C appears in t1, t2 and t3 alike."""
-        from tests.wallclock import Growth
-
-        linear = Growth(sizes=(1, 8, 64), seconds=(51.0, 58.0, 114.0), step=8)
-        quadratic = Growth(sizes=(1, 8, 64), seconds=(2.0, 65.0, 4097.0), step=8)
-        assert linear.ratio == 8.0
-        assert quadratic.ratio == 64.0
-
-    def test_noise_is_spent_against_a_super_linear_verdict(self):
-        """The shape the discount exists for, measured on fixed code.
-
-        The sshd reader's ``slot-lookalikes`` line read ``t2/t1 = 1.12`` and
-        ``t3/t1 = 3.84``: a raw difference ratio of 22.7, over the bound,
-        from a denominator that was noise. After the allowance it reads 6.7.
-        A pure quadratic keeps a reading well above the bound.
-        """
-        from tests.wallclock import Growth, growth_bound
-
-        noisy_linear = Growth(sizes=(1, 8, 64), seconds=(1.0, 1.12, 3.84), step=8)
-        pure_quadratic = Growth(sizes=(1, 8, 64), seconds=(2.0, 65.0, 4097.0), step=8)
-        assert noisy_linear.ratio > growth_bound(8)
-        assert noisy_linear.evidence < growth_bound(8)
-        assert pure_quadratic.evidence > 2 * growth_bound(8)
-
-    def test_the_bound_is_the_midpoint_of_linear_and_quadratic(self):
-        from tests.wallclock import growth_bound
-
-        assert growth_bound(8) == 8**1.5
-        assert growth_bound(4) == 8.0
 
 
 # ------------------------------------------------------------ the workflow

@@ -125,8 +125,9 @@ class TestRedactUrls:
         Checked as a growth SHAPE (#1579), not against a 250 ms budget: that
         was an absolute wall-clock bound in both required gates, and whether a
         runner under four xdist workers clears it says nothing about the
-        regex. From 256 B to 16 KB of near-miss the reading is ~6 here (bound
-        ~22.6); the scheme-class pattern, restored, reads ~49 at the same
+        regex. From 256 B to 16 KB of near-miss the highest reading the noise
+        allows is under 13 here, even on an oversubscribed box (bound ~22.6);
+        the scheme-class pattern, restored, reads at least 51 at the same
         sizes.
         """
         assert_linear_growth(

@@ -116,26 +116,24 @@ def _runbook_corpus() -> list[pathlib.Path]:
 #: Each size below is the SMALLEST of the three; the others are 8x and 64x
 #: it. Chosen so the work shows beside the fixed per-call cost (the helper
 #: moves the window up if it does not) and a restored quadratic's largest
-#: payload costs a second or two. Measured on the development box: the
-#: reading the check judges (the difference ratio after its 10% noise
-#: allowance; bound ~22.6), for the fixed patterns under 2x CPU
-#: oversubscription, and for the quadratic patterns restored, with the
-#: check's early exit disabled so the number is the true reading:
+#: payload costs a few seconds. The check passes only when the CEILING of
+#: the readings its noise allowance permits is under the bound (~22.6) and
+#: fails only when the FLOOR is over it. Measured on the development box:
+#: the fixed patterns under 2x CPU oversubscription (worst ceiling of 32,
+#: every one decided in the first window), and the quadratic patterns
+#: restored, with the check's early exit disabled so the floor is the full
+#: reading (lowest of 2):
 #:
-#: ===================  ============  ===============  ==========
-#: shape                smallest      fixed, worst of  restored
-#:                                    32 contended
-#: ===================  ============  ===============  ==========
-#: bare fences          32 fences     6.4              52.4
-#: bare brackets        128 bytes     7.1              50.5
-#: newline-space        256 units     6.4              48.2
-#: frontmatter          64 units      6.4              51.4
-#: chunker, no headers  32 units      6.7              49.4
-#: newline-space, big   384 units     6.7              46.5
-#: ===================  ============  ===============  ==========
-#:
-#: A pure quadratic cannot read above ~52 after the allowance, so these sit
-#: near that ceiling: the quadratic term dominates both differences.
+#: ===================  ============  ===============  ===============
+#: shape                smallest      fixed: ceiling   restored: floor
+#: ===================  ============  ===============  ===============
+#: bare fences          32 fences     12.0             53.0
+#: bare brackets        128 bytes     11.5             51.8
+#: newline-space        256 units     10.9             47.4
+#: frontmatter          64 units      12.5             50.5
+#: chunker, no headers  32 units      11.4             48.2
+#: newline-space, big   384 units     11.1             49.5
+#: ===================  ============  ===============  ===============
 
 
 def test_scoring_a_fence_heavy_body_grows_linearly():

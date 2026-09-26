@@ -17,45 +17,74 @@ and its own quadratic control went green on the CI runners while reading
     t(16n) / t(n)  =  (C + 256q) / (C + q)
 
 which lands anywhere between 1 and 256 depending on ``C/q`` — and ``C/q``
-is a property of the machine. Nothing checked that ``C`` was small, so the
-bound meant something different on hardware nobody here can see.
+is a property of the machine.
 
-What this does instead
-----------------------
+The reading: three sizes and the ratio of the DIFFERENCES
+---------------------------------------------------------
 
-**Three sizes, and the ratio of the DIFFERENCES.** ``n``, ``8n``, ``64n``::
+``n``, ``8n``, ``64n``, and ``R = (t(64n) - t(8n)) / (t(8n) - t(n))``. ``C``
+cancels exactly, so the TRUE ``R`` of a cost does not depend on it: a linear
+cost has ``R = 8`` and a quadratic one ``R = 64`` whatever its fixed cost. The
+bound is their geometric midpoint, ``8 ** 1.5`` ~ 22.6. Step 8 rather than 4
+so a quadratic read at half still clears it.
 
-    (t(64n) - t(8n)) / (t(8n) - t(n))
+The verdict: an interval, and a third answer
+--------------------------------------------
 
-``C`` cancels exactly. A linear cost reads 8, a quadratic one 64, and the
-bound is their geometric midpoint, ``8 ** 1.5`` ~ 22.6. Step 8 rather than
-4 on purpose — at step 4 a pure quadratic reads 16 against a bound of 8, so
-a runner that read it at half would sit on the bound; at step 8 half is 32.
+``R`` cancels ``C`` but noise does not, and when ``C`` dominates,
+``t(8n) - t(n)`` is a small difference of two large numbers. The second
+version of this module spent a noise allowance against one side only and
+passed whatever that could not call super-linear — so a pure quadratic with a
+moderate fixed cost passed (``fixed + n**2`` loop, ``C/q`` from ~430 to
+~1360: 3/3 green). The rule is now two-sided. With every per-size minimum
+allowed to be off by ``NOISE_ALLOWANCE`` of itself, ``[ratio_floor,
+ratio_ceiling]`` is every ``R`` consistent with the measurement, and:
 
-**Noise is discounted, not ignored.** The difference cancels ``C`` but not
-noise, and when the work at ``8n`` is small beside ``C``, ``t(8n) - t(n)``
-is a small difference of two large numbers. Measured on fixed code: the
-sshd reader's ``slot-lookalikes`` shape read 23.6 — over the bound — with
-``t(8n)`` only 12% above ``t(n)``. So the verdict is taken on the reading
-that survives every per-size minimum being off by ``NOISE_ALLOWANCE`` of
-itself in the direction that favours linear::
+* **super-linear** only if ``ratio_floor >= bound`` — even the most linear
+  reading of the numbers is over it;
+* **linear** only if ``ratio_ceiling < bound`` — even the most quadratic
+  reading is under it;
+* otherwise **undecided**. So is any window whose largest size costs under
+  ``MIN_TOTAL_GROWTH`` times its smallest: the work does not show there, and
+  deciding either way on it is deciding on noise.
 
-    (D2 - e*(t2 + t3)) / (D1 + e*(t1 + t2))
+An undecided window moves up by ``step`` — the work grows, ``C`` does not —
+at most ``MAX_ESCALATIONS`` times, and a call still undecided is REFUSED as
+miscalibrated. It is never passed.
 
-That shape read 6.6. A restored quadratic loses a fifth of its reading
-(~60 to ~50) and still clears the bound twice over.
+The invariant
+-------------
 
-**The window finds the work.** A check whose payload is too small for the
-work to show beside ``C`` would pass anything — the hollow guard this
-replaces became on CI. So unless the largest size costs at least
-``MIN_TOTAL_GROWTH`` times the smallest, the whole window moves up by
-``step`` and is measured again, at most ``MAX_ESCALATIONS`` times, and a
-window that still shows nothing is refused as miscalibrated rather than
-passed. A runner whose fixed cost is larger relative to the work simply
-escalates once more; a quadratic shows its growth in the first window and
-fails there, at the smallest sizes, fast.
+If every per-size minimum ``m`` is within ``NOISE_ALLOWANCE * m`` of the true
+per-call cost, the true ``R`` lies in ``[ratio_floor, ratio_ceiling]``. So a
+cost whose true ``R`` is under the bound can never be failed, and one at or
+over it can never be passed — **for every fixed cost C**, because ``C`` is
+not in ``R``. ``C`` only decides whether a window can decide. In particular:
 
-The rest is the measurement, each choice against a measured failure:
+* ``C + a*n`` (``R = 8``) never fails. It passes once ``C`` is under ~16x
+  the work at the smallest size; three escalations reach that from ~8000x,
+  and above that it is refused;
+* ``C + q*n**2`` (``R = 64``) never passes. It fails once ``C`` is under
+  ~430x the work at the smallest size — one escalation divides that by 64;
+* ``C + a*n + q*n**2`` has ``R = (56a + 4032q) / (7a + 63q)``, increasing
+  in ``q/a``: it crosses the bound where the quadratic term at the window's
+  LARGEST size is ~2.5x the linear term. With no fixed cost the window says
+  linear while that share is at most ~1.5x and super-linear from ~4x; in
+  between it escalates, which multiplies ``q/a`` by 8, so a window only ever
+  moves a mixture toward failing. The check answers for the sizes it
+  measured; a call site picks sizes that reach the payloads it guards.
+
+``tests/unit/ci/test_benchmark_calibration.py`` pins all of this over fixed
+costs from 0 to 1e7 times the work, and outside the model it searches for an
+adversarial per-size error: a wrong verdict needs one over 13% (a quadratic
+passed) or over 18% (a linear failed). The measured spread of the minima
+here is a few percent.
+
+A cost exactly at the bound (``n ** 1.5``) is undecidable by construction and
+is refused, which is the honest answer.
+
+The measurement, each choice against a measured failure
+-------------------------------------------------------
 
 * **Thread CPU time, not wall clock.** ``time.thread_time`` does not
   advance while this thread is descheduled, which is most of what xdist
@@ -68,8 +97,8 @@ The rest is the measurement, each choice against a measured failure:
   costs ``MIN_SAMPLE_SECONDS``, the per-call figure is what is compared,
   and the sample that settled the count is the first observation — so the
   large side of a restored quadratic runs once per round, not twice.
-* **Stop at the unmistakable.** A round whose discounted reading is
-  already twice the bound ends the measurement.
+* **Stop at the unmistakable.** A round whose ``ratio_floor`` is already
+  twice the bound ends the measurement.
 
 What it does NOT do, stated so nobody reads it in: it says nothing about
 absolute cost. A linear path that got 50x slower passes. That is a latency
@@ -84,6 +113,7 @@ thread, so a function that does that would read as free.
 from __future__ import annotations
 
 import gc
+import math
 import time
 from dataclasses import dataclass
 from typing import Callable, List, Tuple, TypeVar
@@ -105,21 +135,27 @@ MIN_SAMPLE_SECONDS = 0.002
 #: cannot spin the check forever.
 MAX_CALLS_PER_SAMPLE = 1 << 16
 
-#: How far each per-size minimum is assumed to be off, as a fraction of
-#: itself, when the verdict is taken. Measured spread of the minima on a
-#: loaded box is a few percent; ten is the margin.
+#: How far each per-size minimum may be off, as a fraction of itself. The
+#: measured spread of the minima on a loaded box is a few percent.
 NOISE_ALLOWANCE = 0.10
 
-#: The largest size must cost at least this many times the smallest for the
-#: window to count as showing the work; otherwise it moves up by ``step``.
+#: A window whose largest size costs less than this many times its smallest
+#: decides nothing. A linear window can only pass above ~4.75 anyway, so this
+#: never delays a correct pass; what it removes is a verdict taken where the
+#: fixed cost swamps the work, which is where error beyond the allowance
+#: could flip one (the sweep in ``test_benchmark_calibration.py``).
 MIN_TOTAL_GROWTH = 4.0
 
-#: How many times the window may move up before the call is refused.
+#: How many times an undecided window may move up before the call is refused.
 MAX_ESCALATIONS = 3
+
+SUPER_LINEAR = "super-linear"
+LINEAR = "linear"
+UNDECIDED = "undecided"
 
 
 def growth_bound(step: int) -> float:
-    """The largest difference ratio a linear cost may show at ``step``.
+    """The difference ratio that separates linear from super-linear at ``step``.
 
     The geometric midpoint of linear (``step``) and quadratic
     (``step ** 2``), so the margin is the same multiple on both sides.
@@ -142,23 +178,47 @@ class Growth:
 
     @property
     def ratio(self) -> float:
-        """The raw difference ratio ``(t3 - t2) / (t2 - t1)``."""
+        """The difference ratio as measured, ``(t3 - t2) / (t2 - t1)``."""
         t1, t2, t3 = self.seconds
         lower = t2 - t1
-        return float("inf") if lower <= 0 else (t3 - t2) / lower
+        return math.inf if lower <= 0 else (t3 - t2) / lower
 
     @property
-    def evidence(self) -> float:
-        """The difference ratio after ``NOISE_ALLOWANCE`` is spent against it.
+    def ratio_floor(self) -> float:
+        """The least true ratio consistent with the minima.
 
-        Every minimum is moved by ``NOISE_ALLOWANCE`` of itself in the
-        direction that makes the cost look MORE linear, so noise alone
-        cannot produce a super-linear verdict.
+        Numerator as small and denominator as large as ``NOISE_ALLOWANCE``
+        permits. ``-inf`` when the minima are consistent with ``t(8n)`` not
+        exceeding ``t(n)``, where no ratio is defined.
         """
         t1, t2, t3 = self.seconds
         upper = (t3 - t2) - NOISE_ALLOWANCE * (t2 + t3)
         lower = (t2 - t1) + NOISE_ALLOWANCE * (t1 + t2)
-        return upper / lower
+        return upper / lower if lower > 0 else -math.inf
+
+    @property
+    def ratio_ceiling(self) -> float:
+        """The greatest true ratio consistent with the minima.
+
+        ``inf`` when the noise could make ``t(8n) - t(n)`` zero: nothing then
+        bounds the ratio from above.
+        """
+        t1, t2, t3 = self.seconds
+        upper = (t3 - t2) + NOISE_ALLOWANCE * (t2 + t3)
+        lower = (t2 - t1) - NOISE_ALLOWANCE * (t1 + t2)
+        return upper / lower if lower > 0 else math.inf
+
+    @property
+    def verdict(self) -> str:
+        """``SUPER_LINEAR``, ``LINEAR``, or ``UNDECIDED`` — see the module."""
+        if self.total_growth < MIN_TOTAL_GROWTH:
+            return UNDECIDED
+        bound = growth_bound(self.step)
+        if self.ratio_floor >= bound:
+            return SUPER_LINEAR
+        if self.ratio_ceiling < bound:
+            return LINEAR
+        return UNDECIDED
 
     def describe(self) -> str:
         return ", ".join(
@@ -226,9 +286,8 @@ def _measure_window(
                 per_call = _cpu_seconds(fn, payload, calls[index]) / calls[index]
                 best[index] = min(best[index], per_call)
             growth = Growth(sizes=sizes, seconds=tuple(best), step=step)
-        if (
-            growth.total_growth >= MIN_TOTAL_GROWTH
-            and growth.evidence >= 2 * growth_bound(step)
+        if growth.verdict == SUPER_LINEAR and growth.ratio_floor >= 2 * growth_bound(
+            step
         ):
             break
     return growth
@@ -243,12 +302,12 @@ def measure_growth(
     repetitions: int = DEFAULT_REPETITIONS,
     max_escalations: int = MAX_ESCALATIONS,
 ) -> Growth:
-    """The first window from ``small`` upwards in which the work shows.
+    """The first window from ``small`` upwards that decides.
 
     Each window is ``small``, ``step*small``, ``step**2*small`` times
-    ``step ** k`` for the smallest ``k <= max_escalations`` whose largest
-    size costs ``MIN_TOTAL_GROWTH`` times its smallest. If none does, the
-    last window is returned and the caller refuses it.
+    ``step ** k`` for the smallest ``k <= max_escalations`` whose
+    ``verdict`` is not ``UNDECIDED``. If none decides, the last window is
+    returned and ``assert_linear_growth`` refuses it.
     """
     if step < 2:
         raise ValueError(f"step must be at least 2, got {step}")
@@ -259,7 +318,7 @@ def measure_growth(
         growth = _measure_window(
             fn, payload_at, small * step**escalation, step, repetitions
         )
-        if growth.total_growth >= MIN_TOTAL_GROWTH:
+        if growth.verdict != UNDECIDED:
             break
     return growth
 
@@ -274,7 +333,7 @@ def assert_linear_growth(
     repetitions: int = DEFAULT_REPETITIONS,
     max_escalations: int = MAX_ESCALATIONS,
 ) -> Growth:
-    """Fail if ``fn``'s cost grows faster than linearly in its input.
+    """Fail unless ``fn``'s cost is shown to grow linearly in its input.
 
     ‼ The single site where a growth reading meets its bound, in the same
     sense that ``assertions.py`` is for latencies:
@@ -282,9 +341,8 @@ def assert_linear_growth(
     test that measures a duration and judges it anywhere else.
 
     Fails in one of two ways, and says which: no window up to
-    ``step ** max_escalations`` times ``small`` showed the work at all (the
-    call is miscalibrated — raise ``small``), or the growth is
-    super-linear.
+    ``step ** max_escalations`` times ``small`` could decide (the call is
+    miscalibrated — raise ``small``), or the growth is super-linear.
 
     Args:
         fn: The synchronous, CPU-bound function under test.
@@ -305,21 +363,23 @@ def assert_linear_growth(
         repetitions=repetitions,
         max_escalations=max_escalations,
     )
-    assert growth.total_growth >= MIN_TOTAL_GROWTH, (
-        f"{label}: payload too small to show its growth — even at "
-        f"{growth.sizes[2]} the cost is only {growth.total_growth:.2f}x the "
-        f"cost at {growth.sizes[0]}, below {MIN_TOTAL_GROWTH}, so the fixed "
-        f"per-call cost hides whatever grows ({growth.describe()}). Raise "
-        "`small`."
-    )
     bound = growth_bound(step)
-    assert growth.evidence < bound, (
-        f"{label}: the cost added from {growth.sizes[1]} to {growth.sizes[2]} "
-        f"is {growth.evidence:.1f}x the cost added from {growth.sizes[0]} to "
-        f"{growth.sizes[1]} (raw {growth.ratio:.1f}x, after allowing "
-        f"{NOISE_ALLOWANCE:.0%} noise per size). Linear reads ~{step}x and "
-        f"quadratic ~{step ** 2}x; the bound is the midpoint, {bound:.1f}x — "
-        "a backtracking pattern or a rescan per element is the usual cause "
-        f"({growth.describe()})"
+    reading = (
+        f"the cost added from {growth.sizes[1]} to {growth.sizes[2]} is "
+        f"{growth.ratio_floor:.1f}x to {growth.ratio_ceiling:.1f}x the cost "
+        f"added from {growth.sizes[0]} to {growth.sizes[1]} (as measured "
+        f"{growth.ratio:.1f}x; the range allows {NOISE_ALLOWANCE:.0%} error "
+        f"per size). Linear reads ~{step}x and quadratic ~{step ** 2}x; the "
+        f"bound is the midpoint, {bound:.1f}x"
+    )
+    assert growth.verdict != UNDECIDED, (
+        f"{label}: could not decide — even at {growth.sizes[2]} the cost is "
+        f"{growth.total_growth:.2f}x the cost at {growth.sizes[0]}, and "
+        f"{reading}. The fixed per-call cost hides whatever grows "
+        f"({growth.describe()}). Raise `small`."
+    )
+    assert growth.verdict == LINEAR, (
+        f"{label}: {reading} — a backtracking pattern or a rescan per element "
+        f"is the usual cause ({growth.describe()})"
     )
     return growth
