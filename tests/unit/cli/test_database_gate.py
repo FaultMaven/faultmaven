@@ -10,12 +10,15 @@ now applies the same rule to them, and this file pins two things:
 1. **The census.** ``pyproject.toml`` ``[project.scripts]`` is the authority on
    which commands exist, so it is read here, not copied. Each declared
    command's ``main()`` must call the shared gate as a top-level statement,
-   ahead of every ``asyncio.run``, and must call the shared function rather
-   than a local one of the same name. A top-level call ahead of every
-   ``asyncio.run`` runs on every path through ``main()``. A call inside one
-   subcommand's branch would not, and a behavioural run of one argv per command
-   cannot see that. The dev scripts that compose the container or open the
-   database are found by scanning ``scripts/``, and are held to the same rule.
+   and must call the shared function rather than a local one of the same name.
+   Everything ``main()`` calls before the gate must be on
+   ``_ARGUMENT_ONLY_CALLS``, the calls that only parse and validate arguments.
+   That makes the region before the gate fail closed. A branch that runs a
+   helper, ``asyncio.run`` or ``run_until_complete`` before the gate fails
+   here, whichever mode it hides behind. A behavioural run can only see the
+   modes it drives. The dev scripts that reach the database are found by
+   scanning ``scripts/`` for the calls and imports that reach it, and are held
+   to the gate too.
 2. **The helper's exit contract.** Exit 1 with the boot gate's message on
    stderr and nothing on stdout. Stdout stays empty so
    ``--token-only > token.txt`` captures nothing.
@@ -53,13 +56,62 @@ with (REPO_ROOT / "pyproject.toml").open("rb") as _handle:
 #: to quiet this test.
 NEEDS_NO_DATABASE: dict[str, str] = {}
 
+#: What a command's ``main()`` may call BEFORE the gate: parsing and validating
+#: its own arguments, nothing that reads settings or the database. Measured on
+#: the ten commands shipped with #1659. A name added here must be one that
+#: cannot reach the database, and adding it is what a reviewer reads.
+_ARGUMENT_ONLY_CALLS = frozenset(
+    {
+        # argparse
+        "ArgumentParser",
+        "add_argument",
+        "add_argument_group",
+        "add_mutually_exclusive_group",
+        "add_parser",
+        "add_subparsers",
+        "error",
+        "parse_args",
+        "set_defaults",
+        # the shared --dry-run/--yes check (faultmaven/cli/_confirmation.py)
+        "require_confirmation",
+        # command-local argument helpers
+        "_add_apply_flags",  # fm-personal-tenant: adds --dry-run/--apply
+        "normalize_domain",  # fm-provision-sso-org: folds --domain
+        # builtins and str methods used on argument values, and the usage exit
+        "any",
+        "exit",
+        "isspace",
+        "print",
+        "sorted",
+        "strip",
+    }
+)
+
 #: The calls that reach the database, directly or through the container. A dev
 #: script that makes any of them is held to the gate.
 _DATABASE_REACHING_CALLS = {
     "initialize",
     "get_db_session",
     "get_engine",
+    "get_session_factory",
     "create_async_engine",
+}
+
+#: Modules whose import puts the database in reach. The container composes
+#: stores lazily on first access (``_container_impl`` runs ``asyncio.run`` from
+#: its getters), so importing it is enough, however the instance is then
+#: spelled. Models alone are not: ``generate_er_diagram.py`` reads metadata.
+_DATABASE_REACHING_IMPORTS = (
+    "faultmaven.container",
+    "faultmaven._container_impl",
+    "faultmaven.infrastructure.persistence.database",
+    "faultmaven.infrastructure.persistence.sessionless_",
+)
+
+#: Scripts the scan finds that cannot run at all, each with the fact that makes
+#: it dead. The test re-checks the fact, so the exemption lapses when it does.
+_DEAD_SCRIPTS = {
+    "scripts/migration_backfill_scopes.py": "faultmaven.container.app_container",
 }
 
 #: The dev scripts that reach the database on ``main`` today. The scan below
@@ -80,11 +132,15 @@ def _call_name(call: ast.Call) -> str | None:
     return None
 
 
-def _is_asyncio_run(call: ast.Call) -> bool:
+def _starts_an_event_loop(call: ast.Call) -> bool:
+    """``asyncio.run(...)`` or any ``....run_until_complete(...)``."""
     func = call.func
+    if not isinstance(func, ast.Attribute):
+        return False
+    if func.attr == "run_until_complete":
+        return True
     return (
-        isinstance(func, ast.Attribute)
-        and func.attr == "run"
+        func.attr == "run"
         and isinstance(func.value, ast.Name)
         and func.value.id == "asyncio"
     )
@@ -107,11 +163,11 @@ def _top_level_gate_lines(body: list[ast.stmt]) -> list[int]:
     ]
 
 
-def _asyncio_run_lines(node: ast.AST) -> list[int]:
+def _event_loop_lines(node: ast.AST) -> list[int]:
     return [
         n.lineno
         for n in ast.walk(node)
-        if isinstance(n, ast.Call) and _is_asyncio_run(n)
+        if isinstance(n, ast.Call) and _starts_an_event_loop(n)
     ]
 
 
@@ -148,15 +204,26 @@ def test_every_declared_command_gates_before_it_runs_anything(command):
         "acting on a store that dies with the process (#1659)."
     )
     first_gate = min(gate_lines)
-    runs = _asyncio_run_lines(entry)
-    assert runs, (
-        f"{command}: {attr}() calls no asyncio.run, so this check cannot tell "
-        "whether the gate runs first. Teach the census the new shape."
+    early_loops = [line for line in _event_loop_lines(entry) if line < first_gate]
+    assert not early_loops, (
+        f"{command}: an event loop starts at line(s) {early_loops}, before "
+        f"{GATE}() at line {first_gate}"
     )
-    early = [line for line in runs if line < first_gate]
-    assert not early, (
-        f"{command}: asyncio.run at line(s) {early} runs before {GATE}() at "
-        f"line {first_gate}"
+    before_gate = sorted(
+        {
+            (node.lineno, _call_name(node) or type(node.func).__name__)
+            for node in ast.walk(entry)
+            if isinstance(node, ast.Call) and node.lineno < first_gate
+        }
+    )
+    unknown = [
+        (line, name) for line, name in before_gate if name not in _ARGUMENT_ONLY_CALLS
+    ]
+    assert not unknown, (
+        f"{command}: {attr}() calls {unknown} before {GATE}() at line "
+        f"{first_gate}. Only argument parsing and validation may run first. "
+        "Move the gate above the call, or, if it truly cannot reach settings or "
+        "the database, add it to _ARGUMENT_ONLY_CALLS with a reason."
     )
 
     # The name must be the shared gate, not a local function of the same name.
@@ -180,6 +247,14 @@ def _database_scripts() -> dict[str, ast.Module]:
         except SyntaxError:  # pragma: no cover - a broken script is not ours
             continue
         for node in ast.walk(tree):
+            modules = []
+            if isinstance(node, ast.ImportFrom) and node.module:
+                modules = [node.module]
+            elif isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            if any(m.startswith(_DATABASE_REACHING_IMPORTS) for m in modules):
+                found[str(path.relative_to(REPO_ROOT))] = tree
+                break
             if not isinstance(node, ast.Call):
                 continue
             name = _call_name(node)
@@ -199,6 +274,26 @@ def _database_scripts() -> dict[str, ast.Module]:
 
 
 DATABASE_SCRIPTS = _database_scripts()
+LIVE_DATABASE_SCRIPTS = {
+    script: tree
+    for script, tree in DATABASE_SCRIPTS.items()
+    if script not in _DEAD_SCRIPTS
+}
+
+
+@pytest.mark.parametrize("script", sorted(_DEAD_SCRIPTS), ids=str)
+def test_a_dead_script_exemption_holds_only_while_the_script_is_dead(script):
+    """The exempted script imports a module that does not exist, so it dies
+    on import before it could reach anything. Once that module exists, the
+    exemption no longer holds and the script is held to the gate."""
+    import importlib.util
+
+    missing_module = _DEAD_SCRIPTS[script]
+    assert script in DATABASE_SCRIPTS, f"{script} is no longer found by the scan"
+    assert importlib.util.find_spec(missing_module) is None, (
+        f"{missing_module} exists now, so {script} can run: drop it from "
+        "_DEAD_SCRIPTS and gate it"
+    )
 
 
 def test_the_script_scan_finds_the_known_database_scripts():
@@ -210,19 +305,19 @@ def test_the_script_scan_finds_the_known_database_scripts():
     )
 
 
-@pytest.mark.parametrize("script", sorted(DATABASE_SCRIPTS), ids=str)
+@pytest.mark.parametrize("script", sorted(LIVE_DATABASE_SCRIPTS), ids=str)
 def test_every_database_script_gates_before_it_runs_anything(script):
-    tree = DATABASE_SCRIPTS[script]
+    tree = LIVE_DATABASE_SCRIPTS[script]
     gate_calls = [
         n.lineno
         for n in ast.walk(tree)
         if isinstance(n, ast.Call) and _call_name(n) == GATE
     ]
     assert gate_calls, f"{script} reaches the database and never calls {GATE}()"
-    runs = _asyncio_run_lines(tree)
+    runs = _event_loop_lines(tree)
     early = [line for line in runs if line < min(gate_calls)]
     assert not early, (
-        f"{script}: asyncio.run at line(s) {early} precedes {GATE}() at "
+        f"{script}: an event loop starts at line(s) {early}, before {GATE}() at "
         f"line {min(gate_calls)}"
     )
     imports = [

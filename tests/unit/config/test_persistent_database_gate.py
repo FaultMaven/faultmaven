@@ -42,6 +42,13 @@ NON_PERSISTENT = [
     "sqlite+aiosqlite://?check_same_thread=false",
     "sqlite+aiosqlite:///file:x?uri=true&mode=memor%79",
     "file::memory:?cache=shared",
+    "sqlite:///file:d?uri=true&cache=shared%26mode%3Dmemory",
+    "sqlite:///file:x?uri=true&vfs=memdb",
+    "sqlite:///file:?uri=true",
+    # Values that do not parse, some carrying a password: refused, and the
+    # message must not print them (test below).
+    "postgresql+asyncpg://fm:Pa55wordValue@db:5432x/faultmaven",
+    "host=db user=fm password=Pa55wordValue dbname=faultmaven",
 ]
 
 PERSISTENT = [
@@ -81,3 +88,59 @@ def test_settings_without_a_database_section_are_refused():
 def test_is_a_runtime_error():
     """The lifespan and the container treat RuntimeError as a deliberate refusal."""
     assert issubclass(NonPersistentDatabaseError, RuntimeError)
+
+
+#: A credential that must never appear in a refusal or its log line (#1659).
+_PASSWORD = "Pa55wordValue"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "url",
+    [
+        # Unparseable: shown not at all, because it cannot be masked.
+        "postgresql+asyncpg://fm:Pa55wordValue@db:5432x/faultmaven",
+        "postgresql+asyncpg://fm:Pa55wordValue@db:port/faultmaven",
+        "host=db user=fm password=Pa55wordValue dbname=faultmaven",
+        # Parseable and in memory: shown with the password masked.
+        "sqlite+aiosqlite://fm:Pa55wordValue@/",
+        "sqlite+aiosqlite:///:memory:?password=Pa55wordValue",
+    ],
+)
+def test_the_refusal_never_prints_a_password(url):
+    """Before #1659 no PostgreSQL URL reached this message: every non-SQLite
+    URL counted as persistent. One that fails to parse now does, and the
+    message is raised at boot, so it lands in pod logs."""
+    assert persistent_database_configured(url) is False
+    with pytest.raises(NonPersistentDatabaseError) as exc:
+        require_persistent_database(_settings(url))
+    assert _PASSWORD not in str(exc.value)
+    assert "configures no persistent database" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_a_parseable_url_is_still_named_in_the_refusal():
+    """Masking must not cost the operator the value they got wrong."""
+    with pytest.raises(NonPersistentDatabaseError) as exc:
+        require_persistent_database(_settings("sqlite+aiosqlite:///?timeout=30"))
+    assert "sqlite+aiosqlite:///?timeout=30" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_the_migration_skip_log_never_prints_a_password(caplog):
+    """The startup-migration skip logs the URL on the same False arm."""
+    from unittest.mock import patch
+
+    from faultmaven.bootstrap import data_init
+
+    url = "postgresql+asyncpg://fm:Pa55wordValue@db:5432x/faultmaven"
+    with (
+        patch("faultmaven.config.settings.get_settings", return_value=_settings(url)),
+        patch("subprocess.run") as run,
+        caplog.at_level("INFO"),
+    ):
+        assert data_init.run_alembic_migrations() is False
+    run.assert_not_called()
+    logged = " ".join(r.getMessage() for r in caplog.records)
+    assert "Skipping startup Alembic migrations" in logged
+    assert _PASSWORD not in logged

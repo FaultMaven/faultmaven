@@ -36,7 +36,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from faultmaven.config.settings import persistent_database_configured
+from faultmaven.config.settings import (
+    describe_database_url,
+    persistent_database_configured,
+)
 
 #: The shipped ``DATABASE_URL`` default, named in the refusal so the operator
 #: is told the one-line fix rather than only what is wrong. Kept equal to the
@@ -60,7 +63,8 @@ def require_persistent_database(settings: Any) -> None:
     if persistent_database_configured(database_url):
         return
     raise NonPersistentDatabaseError(
-        f"DATABASE_URL={database_url!r} configures no persistent database. "
+        f"DATABASE_URL={describe_database_url(database_url)} configures no "
+        "persistent database. "
         "FaultMaven needs a database — standalone included: an empty value, "
         "':memory:', an in-memory SQLite URL and a value that does not parse "
         "as a database URL are not supported. Unset "

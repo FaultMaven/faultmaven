@@ -356,7 +356,11 @@ def run_alembic_migrations() -> bool:
     import subprocess
     import sys
 
-    from faultmaven.config.settings import get_settings, persistent_database_configured
+    from faultmaven.config.settings import (
+        describe_database_url,
+        get_settings,
+        persistent_database_configured,
+    )
 
     # An empty DATABASE_URL, ``:memory:`` or an in-memory SQLite spelling selects
     # the ephemeral stores: there is no database for a migration to target.
@@ -367,10 +371,10 @@ def run_alembic_migrations() -> bool:
     database_url = get_settings().database.database_url
     if not persistent_database_configured(database_url):
         logger.info(
-            "Skipping startup Alembic migrations: DATABASE_URL (%r) configures "
+            "Skipping startup Alembic migrations: DATABASE_URL (%s) configures "
             "no persistent database, so the in-memory stores are in use and "
             "there is no schema to migrate.",
-            database_url,
+            describe_database_url(database_url),
         )
         return False
 

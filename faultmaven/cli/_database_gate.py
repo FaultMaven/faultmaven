@@ -25,7 +25,7 @@ compose the container: ``fm-set-turn-cap``, ``fm-provision-sso-org`` and
 ``fm-wipe-deployment`` open sessions or the engine directly, and
 ``fm-reset-kb`` deletes its rows before it composes anything. And the container
 composes over an in-memory URL on purpose in the unit suite.
-``tests/unit/cli/test_database_gate_census.py`` pins that every declared
+``tests/unit/cli/test_database_gate.py`` pins that every declared
 command calls it.
 """
 

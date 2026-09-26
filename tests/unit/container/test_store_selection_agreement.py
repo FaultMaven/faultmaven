@@ -68,9 +68,26 @@ REPRESENTATIVE_DSNS = [
     ("sqlite:///file:%3Amemory%3A?uri=true", False),
     ("file::memory:?cache=shared", False),
     ("postgresql+asyncpg://fm:pw@db:notaport/faultmaven", False),
+    # What SQLite is handed under uri=true is the DECODED query re-joined with
+    # '&' and split again by SQLite, so encoded separators smuggle a parameter
+    # in and a double-encoded value arrives decoded. Each row was opened for
+    # real: the table is gone in a new process and no file is written.
+    ("sqlite:///file:a?uri=true&mode=memory#frag", False),
+    ("sqlite:///file:b?uri=true&mode=memory%23", False),
+    ("sqlite:///file:c?uri=true&mode=memory%26x", False),
+    ("sqlite:///file:d?uri=true&cache=shared%26mode%3Dmemory", False),
+    ("sqlite:///file:e?uri=true&mode=memor%2579", False),
+    # SQLite compares C strings: a decoded NUL ends the value, so this is
+    # exactly mode=memory. Pins that the mode is read by prefix.
+    ("sqlite:///file:n?uri=true&mode=memory%2500", False),
+    ("sqlite:///file:/x?uri=true&vfs=memdb", False),
+    ("sqlite:///file:x?uri=true&vfs=memdb", False),
+    ("sqlite:///file:?uri=true", False),  # empty path: a private temp database
+    ("sqlite:///file://localhost?uri=true", False),
     ("sqlite+aiosqlite:///./data/faultmaven.db", True),
     ("sqlite:///relative.db", True),
     ("sqlite:///file:case.db?uri=true", True),
+    ("sqlite:///file://localhost/var/lib/fm.db?uri=true", True),
     # ``mode=memory`` inside a file PATH is part of a file name, not a query.
     ("sqlite:///data/mode=memory.db", True),
     ("postgresql+asyncpg://fm:pw@db:5432/faultmaven", True),
