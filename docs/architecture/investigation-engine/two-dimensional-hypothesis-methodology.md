@@ -355,6 +355,18 @@ decays on user latency alone — a three-turn network-capture detour would penal
 the very chain it is testing. The counter is per-node and resets at
 `last_progress_at_turn`.
 
+What advances the counter is judged **forwards**: an event counts only if, after
+it, it is more evident that the line of inquiry is not advancing. New evidence
+analysed that leaves belief where it was (a NEUTRAL finding, say) counts — the
+line had a chance and did not move. A **restatement** does not: the model
+re-sending a likelihood within 0.05 of the current one (an echo of the value it
+was shown, or a small self-correction), or re-emitting a link it already made
+with the stance unchanged. It adds nothing about where the line is going, so it
+is neither progress nor stagnation, and it does not mark the hypothesis touched
+(which would shield an ignored prior from the age sweep below). A test that left
+belief unmoved is counted once, by its evidence link — never again by the
+likelihood the model re-sends alongside it.
+
 One exception, at the flat-hypothesis layer: an ACTIVE hypothesis that *no* turn
 ever touches gets no investigation-turn increment (nothing engages it), so it
 would otherwise sit at its prior forever — never decaying, never tripping
@@ -363,7 +375,8 @@ age-based stagnation sweep (`advance_stagnation_if_ignored`): once such a
 hypothesis has gone `IGNORED_STAGNATION_TURN_THRESHOLD` turns since its last
 progress, its counter advances one per turn so decay and anchoring act on it
 (#713). This is conservative and reversible — decay only lowers belief, and the
-moment evidence touches the hypothesis its likelihood recomputes from
+moment new evidence touches the hypothesis (a new link, or a changed stance)
+its likelihood recomputes from
 `initial_likelihood` (the age-decay is erased) — so an ignored candidate
 stalls/soft-retires rather than lingering, and never reaches a conclusion on age
 alone. The soft-retirement comes from anti-anchoring when the ignored candidate

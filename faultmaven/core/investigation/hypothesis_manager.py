@@ -388,10 +388,12 @@ class HypothesisManager:
             reasoning=reasoning,
             stance_confidence=stance_confidence,
         )
+        stance_changed = True
         if existing_idx is not None:
             prior = hypothesis.evidence_links[existing_idx]
             # Compare BEFORE the overwrite, or the old assertion is gone.
-            material = prior.stance != stance or (
+            stance_changed = prior.stance != stance
+            material = stance_changed or (
                 (prior.stance_confidence or 0.0) >= CAUSAL_STANCE_CONFIDENCE_MIN
             ) != (stance_confidence >= CAUSAL_STANCE_CONFIDENCE_MIN)
             hypothesis.evidence_links[existing_idx] = link
@@ -418,9 +420,16 @@ class HypothesisManager:
                 },
             )
 
-        # Update likelihood after linking evidence
-        # NEUTRAL links are stored for audit trail but do not affect confidence
-        self.update_likelihood_from_evidence(hypothesis, turn)
+        # Recompute belief only when the stance tally changed: a new link, or a
+        # revised stance. A re-emitted link — same evidence, same stance,
+        # whatever its confidence or wording — leaves the evidence formula
+        # where it was, so recomputing would count a restatement as a stagnant
+        # iteration, or reset belief the model had raised above the formula and
+        # record that as progress. A new link that leaves belief unmoved (a
+        # NEUTRAL finding) still counts: it is a test the line did not pass.
+        # NEUTRAL links are stored for audit trail but do not affect confidence.
+        if stance_changed:
+            self.update_likelihood_from_evidence(hypothesis, turn)
         return material
 
     def update_likelihood_from_evidence(
@@ -530,12 +539,12 @@ class HypothesisManager:
             )
             hypothesis_likelihood_capped_no_evidence_total.inc()
         hypothesis.likelihood = capped
-        hypothesis.last_updated_turn = current_turn
         # Progress is judged on the APPLIED value (consistent with
         # update_likelihood_from_evidence): a capped re-request of the same
         # over-cap number is a no-op, not progress — it must not reset the
         # stagnation/decay counters.
         if abs(capped - old_likelihood) >= 0.05:  # 5% threshold
+            hypothesis.last_updated_turn = current_turn
             hypothesis.last_progress_at_turn = current_turn
             hypothesis.iterations_without_progress = 0
             logger.info(
@@ -543,10 +552,18 @@ class HypothesisManager:
                 f"{old_likelihood:.2f} → {capped:.2f} ({reason})"
             )
         else:
-            hypothesis.iterations_without_progress += 1
+            # A restatement: the model re-sent (or nudged by < 0.05) a number
+            # it was shown. Stagnation is judged forwards — an event counts only
+            # if it makes it more evident the line is not advancing — and a
+            # restatement adds nothing: an echo says nothing about the line, a
+            # small self-correction fixes an estimate, and a test that left
+            # belief unmoved is already counted by its evidence link. So it is
+            # neither progress nor stagnation, and it does not mark the
+            # hypothesis touched either — touched would shield an ignored prior
+            # from the age sweep, and make the turn a stagnant one for decay.
             logger.debug(
-                f"Hypothesis {hypothesis.hypothesis_id}: minimal change, "
-                f"iterations_without_progress={hypothesis.iterations_without_progress}"
+                f"Hypothesis {hypothesis.hypothesis_id}: restated at "
+                f"{capped:.2f} — neither progress nor stagnation"
             )
 
         # Check state transition

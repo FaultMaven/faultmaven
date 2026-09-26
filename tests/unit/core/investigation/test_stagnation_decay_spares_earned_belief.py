@@ -6,7 +6,7 @@ touched it — there was nothing left to test — so the age-based sweep aged it
 and the decay compounded: 0.95 -> 0.81 -> 0.58 -> 0.36 in three turns, below
 the cause-identification bar.
 
-Two rules close that, both asserted here on engine state (no LLM output):
+Three rules close that, all asserted here on engine state (no LLM output):
 
 - The age sweep (``advance_stagnation_if_ignored``) does not age a hypothesis
   whose causal support stands: confident support from causal evidence, with no
@@ -16,6 +16,11 @@ Two rules close that, both asserted here on engine state (no LLM output):
 - Decay (``apply_likelihood_decay``) is one step (x0.85) per stagnant turn — a
   turn that touched the hypothesis without progress — and none on a turn that
   did not touch it. It never raises belief.
+- A restatement is neither progress nor stagnation. Stagnation is judged
+  forwards: an event counts only if it makes it more evident that the line is
+  not advancing. A likelihood re-sent within 0.05, or a link re-emitted with its
+  stance unchanged, adds nothing, so it neither counts nor marks the hypothesis
+  touched. New evidence that leaves belief unmoved still counts.
 
 #713's protection against an ignored prior lingering is intact, and completed:
 beside a leader that is no longer aged, anti-anchoring (which acts on fixation)
@@ -295,24 +300,31 @@ def test_an_unsupported_sibling_still_ages_beside_a_supported_leader():
 
 
 def test_one_stagnant_turn_costs_one_decay_step():
-    """A restatement that moves belief < 0.05 is a stagnant turn for the
-    hypothesis: one step. The untouched turns after it are not, even though the
-    counter stays positive."""
+    """New evidence that leaves belief where it was is a stagnant turn: one step.
+    The untouched turns after it are not, even though the counter stays
+    positive."""
     eng = _engine()
-    leader, evidence = _supported_leader()
-    case = _case([leader], evidence)
+    a, b, finding = _ev(CAUSAL), _ev(CAUSAL), _ev(SYMPTOM)
+    # At its evidence-formula value (0.5 + 0.15 x 2), so a NEUTRAL finding
+    # leaves belief unmoved.
+    h = _hyp(
+        likelihood=0.8,
+        progress_turn=5,
+        links=((a, SUPPORTS, 1.0), (b, SUPPORTS, 1.0)),
+    )
+    case = _case([h], [a, b, finding])
 
     case.current_turn = 8
-    eng.hypothesis_manager.update_hypothesis_likelihood(
-        leader, 0.95, 8, "restated unchanged", case
+    eng.hypothesis_manager.link_evidence(
+        h, finding.evidence_id, EvidenceStance.NEUTRAL, turn=8
     )
-    assert leader.iterations_without_progress == 1
+    assert h.iterations_without_progress == 1
     _housekeep(eng, case, 8)
-    assert leader.likelihood == pytest.approx(0.8075)
+    assert h.likelihood == pytest.approx(0.68)
 
     for turn in range(9, 16):
         _housekeep(eng, case, turn)
-        assert leader.likelihood == pytest.approx(0.8075), f"decayed on turn {turn}"
+        assert h.likelihood == pytest.approx(0.68), f"decayed on turn {turn}"
 
 
 def test_an_ignored_prior_decays_by_one_factor_per_turn():
@@ -546,3 +558,97 @@ def test_a_reverted_hypothesis_is_not_retired_as_stalled_on_the_turn_it_reverts(
     for h, _ in reverted:
         assert h.state == HypothesisState.ACTIVE
         assert h.iterations_without_progress == 0
+
+
+# ---------------------------------------------------------------------------
+# A restatement is neither progress nor stagnation
+# ---------------------------------------------------------------------------
+
+
+def test_a_restated_likelihood_is_neither_progress_nor_stagnation():
+    """Re-sent within 0.05: the value lands, but the counter, the progress
+    clock and the touched marker are all left where they were."""
+    hm = HypothesisManager()
+    leader, evidence = _supported_leader()
+    leader.iterations_without_progress = 2
+    case = _case([leader], evidence)
+
+    hm.update_hypothesis_likelihood(leader, 0.93, 8, "restated", case)
+
+    assert leader.likelihood == pytest.approx(0.93)
+    assert leader.iterations_without_progress == 2
+    assert leader.last_progress_at_turn == 5
+    assert leader.last_updated_turn == 5
+
+
+def test_a_supported_leader_restated_every_turn_keeps_its_belief():
+    """The model re-sends the value it is shown on every turn of the wait."""
+    eng = _engine()
+    leader, evidence = _supported_leader()
+    case = _case([leader], evidence)
+
+    for turn in range(6, 16):
+        case.current_turn = turn
+        eng.hypothesis_manager.update_hypothesis_likelihood(
+            leader, leader.likelihood, turn, "restated", case
+        )
+        _housekeep(eng, case, turn)
+        assert leader.likelihood == 0.95, f"eroded on turn {turn}"
+
+
+def test_restating_an_ignored_prior_does_not_shield_it_from_aging():
+    """Re-listing a prior every turn is not working on it: it ages exactly as if
+    it were not restated."""
+    eng = _engine()
+    prior = _hyp(likelihood=0.4, progress_turn=0)
+    case = _case([prior])
+
+    observed = []
+    for turn in range(1, 5):
+        case.current_turn = turn
+        eng.hypothesis_manager.update_hypothesis_likelihood(
+            prior, prior.likelihood, turn, "restated", case
+        )
+        _housekeep(eng, case, turn)
+        observed.append(prior.likelihood)
+
+    assert observed == pytest.approx([0.4, 0.4, 0.34, 0.289])
+
+
+def test_a_re_emitted_link_neither_counts_nor_resets_belief():
+    """Same evidence, same stance: the formula gives 0.65 against the model's
+    0.95, so recomputing reset belief and recorded the drop as progress."""
+    hm = HypothesisManager()
+    ev = _ev(CAUSAL)
+    h = _hyp(likelihood=0.95, progress_turn=5, links=((ev, SUPPORTS, 1.0),))
+
+    material = hm.link_evidence(
+        h,
+        ev.evidence_id,
+        SUPPORTS,
+        turn=8,
+        reasoning="reworded",
+        stance_confidence=0.9,
+    )
+
+    assert material is False
+    assert h.likelihood == 0.95
+    assert h.iterations_without_progress == 0
+    assert h.last_progress_at_turn == 5
+    assert h.last_updated_turn == 5
+
+
+def test_a_confidence_revision_across_the_bar_is_not_stagnation():
+    """Crossing the hedge bar at an unchanged stance changes what the case
+    knows (a material link), but it is no sign the line has stalled."""
+    hm = HypothesisManager()
+    ev = _ev(CAUSAL)
+    h = _hyp(likelihood=0.65, progress_turn=5, links=((ev, SUPPORTS, 0.4),))
+
+    material = hm.link_evidence(
+        h, ev.evidence_id, SUPPORTS, turn=8, stance_confidence=0.9
+    )
+
+    assert material is True
+    assert h.iterations_without_progress == 0
+    assert h.likelihood == 0.65
