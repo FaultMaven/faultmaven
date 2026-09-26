@@ -6,7 +6,7 @@ touched it — there was nothing left to test — so the age-based sweep aged it
 and the decay compounded: 0.95 -> 0.81 -> 0.58 -> 0.36 in three turns, below
 the cause-identification bar.
 
-Three rules close that, all asserted here on engine state (no LLM output):
+Four rules close that, all asserted here on engine state (no LLM output):
 
 - The age sweep (``advance_stagnation_if_ignored``) does not age a hypothesis
   whose causal support stands: confident support from causal evidence, with no
@@ -21,6 +21,11 @@ Three rules close that, all asserted here on engine state (no LLM output):
   not advancing. A likelihood re-sent within 0.05, or a link re-emitted with its
   stance unchanged, adds nothing, so it neither counts nor marks the hypothesis
   touched. New evidence that leaves belief unmoved still counts.
+- The age sweep counts a turn only if it makes an ignored prior's stagnation
+  more evident: the investigation advanced (``progress_made``) and passed the
+  prior over, or the case has stalled. One turn that only waited on the user
+  says nothing new; a stall does, and the priors must keep aging so the
+  exhaustion handoff (which needs spent hypotheses) stays reachable.
 
 #713's protection against an ignored prior lingering is intact, and completed:
 beside a leader that is no longer aged, anti-anchoring (which acts on fixation)
@@ -167,9 +172,17 @@ def _supported_leader(progress_turn: int = 5) -> tuple[Hypothesis, list[Evidence
     return leader, [causal, symptom]
 
 
-def _housekeep(eng: MilestoneEngine, case: Case, turn: int) -> None:
+def _housekeep(
+    eng: MilestoneEngine, case: Case, turn: int, *, advanced: bool = True
+) -> None:
+    """One turn's housekeeping. ``advanced`` is the turn's ``progress_made``:
+    the default models a turn where the investigation moved on something, the
+    harder case for every exemption below. Afterwards the stall counter moves
+    as Step 5.8 moves it, so a run of turns that did not advance stalls the
+    case here exactly as it would on the turn path."""
     case.current_turn = turn
-    eng._perform_hypothesis_housekeeping(case, {})
+    eng._perform_hypothesis_housekeeping(case, {}, investigation_advanced=advanced)
+    case.turns_without_progress = 0 if advanced else case.turns_without_progress + 1
 
 
 # ---------------------------------------------------------------------------
@@ -237,9 +250,9 @@ def test_a_hypothesis_without_causal_support_ages(
     h = _hyp(likelihood=0.4, progress_turn=0, links=links)
     case = _case([h], [ev] if ev and on_case else [])
 
-    hm.advance_stagnation_if_ignored(h, 2, case)
+    hm.advance_stagnation_if_ignored(h, 2, case, turn_counts=True)
     assert h.iterations_without_progress == 0  # inside the grace window
-    hm.advance_stagnation_if_ignored(h, 3, case)
+    hm.advance_stagnation_if_ignored(h, 3, case, turn_counts=True)
     assert h.iterations_without_progress == 1
 
 
@@ -390,7 +403,7 @@ def _head(
 
 def _ages_at_threshold(h: Hypothesis, case: Case) -> bool:
     """Whether the sweep advances ``h`` once it is past the grace window."""
-    HypothesisManager().advance_stagnation_if_ignored(h, 3, case)
+    HypothesisManager().advance_stagnation_if_ignored(h, 3, case, turn_counts=True)
     return h.iterations_without_progress == 1
 
 
@@ -652,3 +665,118 @@ def test_a_confidence_revision_across_the_bar_is_not_stagnation():
     assert material is True
     assert h.iterations_without_progress == 0
     assert h.likelihood == 0.65
+
+
+# ---------------------------------------------------------------------------
+# The age sweep counts only turns where the investigation advanced
+# ---------------------------------------------------------------------------
+
+
+def test_waiting_turns_do_not_age_a_prior_until_the_case_stalls():
+    """The #1678 wait: the user is applying a fix and nothing advances. One such
+    turn says nothing new about an ignored prior; five in a row stall the case
+    (the EXHAUSTED time thresholds), and from then on the wait is itself the
+    evidence, so the prior ages until it is spent."""
+    eng = _engine()
+    prior = _hyp(likelihood=0.4, progress_turn=5)
+    case = _case([prior])
+
+    for turn in range(6, 11):  # stall counter reaches 5 after turn 10
+        _housekeep(eng, case, turn, advanced=False)
+    assert prior.iterations_without_progress == 0
+    assert prior.likelihood == 0.4
+
+    for turn in range(11, 14):  # stalled: each waiting turn now counts
+        _housekeep(eng, case, turn, advanced=False)
+    assert prior.iterations_without_progress == 3
+    # Spent, which is what the exhaustion handoff counts. As the only
+    # hypothesis it is also the top one stalled, so anti-anchoring is the path
+    # that retires it (and nudges the LLM to broaden the differential).
+    assert prior.state == HypothesisState.RETIRED
+    assert prior.refutation_reason is None
+
+
+def test_only_turns_where_the_investigation_advanced_age_an_ignored_prior():
+    eng = _engine()
+    prior = _hyp(likelihood=0.4, progress_turn=0)
+    case = _case([prior])
+
+    for turn in range(1, 7):  # before turn 8 the case cannot stall
+        _housekeep(eng, case, turn, advanced=False)
+    assert prior.iterations_without_progress == 0
+
+    _housekeep(eng, case, 7, advanced=True)
+    assert prior.iterations_without_progress == 1
+    assert prior.likelihood == pytest.approx(0.34)
+
+    _housekeep(eng, case, 8, advanced=False)
+    assert prior.iterations_without_progress == 1
+    assert prior.likelihood == pytest.approx(0.34)
+
+    _housekeep(eng, case, 9, advanced=True)
+    assert prior.iterations_without_progress == 2
+    assert prior.likelihood == pytest.approx(0.289)
+
+
+def _need(case: Case, *, created_at_turn: int, motivated_by: list[str]) -> EvidenceNeed:
+    return EvidenceNeed(
+        case_id=case.case_id,
+        purpose=NeedPurpose.CAUSAL_VERIFICATION,
+        request_text="please run the check that would confirm or rule it out",
+        rationale="discriminates this candidate",
+        priority=NeedPriority.MEDIUM,
+        state=NeedState.PENDING,
+        created_at_turn=created_at_turn,
+        motivating_hypothesis_ids=motivated_by,
+    )
+
+
+def test_a_prior_is_not_aged_on_the_turn_its_test_is_requested():
+    """Asking for the data that would test a prior is turning TO it, not passing
+    it over — even on a turn that advanced (the new request is itself progress).
+    Once the request is no longer recent, advancing turns age it again."""
+    eng = _engine()
+    leader, evidence = _supported_leader()
+    prior = _hyp(likelihood=0.4, progress_turn=5)
+    case = _case([leader, prior], evidence)
+    case.evidence_needs = [
+        _need(case, created_at_turn=8, motivated_by=[prior.hypothesis_id])
+    ]
+
+    for turn in (8, 9):
+        _housekeep(eng, case, turn)
+    assert prior.iterations_without_progress == 0
+
+    _housekeep(eng, case, 10)  # the request is two turns old: no longer recent
+    assert prior.iterations_without_progress == 1
+
+
+def test_a_request_to_test_another_hypothesis_does_not_shield_a_prior():
+    eng = _engine()
+    leader, evidence = _supported_leader()
+    prior = _hyp(likelihood=0.4, progress_turn=5)
+    case = _case([leader, prior], evidence)
+    case.evidence_needs = [
+        _need(case, created_at_turn=8, motivated_by=[leader.hypothesis_id])
+    ]
+
+    _housekeep(eng, case, 8)
+
+    assert prior.iterations_without_progress == 1
+
+
+def test_a_waiting_turn_does_not_retire_a_prior_that_aged_out_earlier():
+    """A prior already past the horizon and below the threshold is retired on a
+    turn that counts, not on one that says nothing new about it."""
+    eng = _engine()
+    leader, evidence = _supported_leader()
+    prior = _hyp(likelihood=0.25, progress_turn=2)
+    prior.iterations_without_progress = 3
+    case = _case([leader, prior], evidence)
+
+    _housekeep(eng, case, 9, advanced=False)
+    assert prior.state == HypothesisState.ACTIVE
+
+    _housekeep(eng, case, 10, advanced=True)
+    assert prior.state == HypothesisState.RETIRED
+    assert prior.retirement_reason.startswith("Aged out")

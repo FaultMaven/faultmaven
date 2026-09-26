@@ -350,8 +350,9 @@ Decay and anchoring detection key on
 analyzed, a proposed test's result returned, or a node-state transition
 attempted). Turns spent waiting on the user, answering clarifying questions, or
 coaching how to run a command (`TurnOutcome.CONVERSATION`) are **not** progress
-opportunities and must not increment the counter. Otherwise a correct hypothesis
-decays on user latency alone — a three-turn network-capture detour would penalize
+opportunities and must not increment the counter — until they stall the case,
+at which point the waiting is itself the evidence (the age sweep below).
+Otherwise a correct hypothesis decays on user latency alone — a three-turn network-capture detour would penalize
 the very chain it is testing. The counter is per-node and resets at
 `last_progress_at_turn`.
 
@@ -373,8 +374,18 @@ would otherwise sit at its prior forever — never decaying, never tripping
 anchoring. The housekeeping loop closes that gap with a provenance-blind,
 age-based stagnation sweep (`advance_stagnation_if_ignored`): once such a
 hypothesis has gone `IGNORED_STAGNATION_TURN_THRESHOLD` turns since its last
-progress, its counter advances one per turn so decay and anchoring act on it
-(#713). This is conservative and reversible — decay only lowers belief, and the
+progress, its counter advances one per turn that counts, so decay and
+anchoring act on it (#713). A turn counts when it makes the prior's stagnation
+more evident: the investigation advanced (`progress_made`) and passed the prior
+over, or the case has stalled (`is_stalled`, the EXHAUSTED time thresholds, read
+as of the previous turn — one turn after the exhaustion detector sees it). A
+prior the investigation has just asked to test — it motivates a recent,
+still-outstanding request for data — is not passed over, so the turn does not
+count against it. A single turn that only waited on the user, or restated what
+the case holds, says nothing new about an ignored prior and does not age it; a
+run of them that stalls the case does, and the priors must go on aging then so
+they can become spent — the exhaustion handoff requires spent hypotheses. This
+is conservative and reversible — decay only lowers belief, and the
 moment new evidence touches the hypothesis (a new link, or a changed stance)
 its likelihood recomputes from
 `initial_likelihood` (the age-decay is erased) — so an ignored candidate

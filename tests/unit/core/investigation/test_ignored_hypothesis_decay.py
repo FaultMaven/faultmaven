@@ -113,12 +113,16 @@ def test_ignored_active_hypothesis_ages_after_threshold_turns():
         h,
         IGNORED_STAGNATION_TURN_THRESHOLD - 1,
         _case(IGNORED_STAGNATION_TURN_THRESHOLD - 1),
+        turn_counts=True,
     )
     assert h.iterations_without_progress == 0
 
     # At the threshold: the counter advances by one.
     hm.advance_stagnation_if_ignored(
-        h, IGNORED_STAGNATION_TURN_THRESHOLD, _case(IGNORED_STAGNATION_TURN_THRESHOLD)
+        h,
+        IGNORED_STAGNATION_TURN_THRESHOLD,
+        _case(IGNORED_STAGNATION_TURN_THRESHOLD),
+        turn_counts=True,
     )
     assert h.iterations_without_progress == 1
     assert h.last_updated_turn == IGNORED_STAGNATION_TURN_THRESHOLD
@@ -133,7 +137,7 @@ def test_recently_touched_hypothesis_is_not_swept_this_turn():
     h = _hyp(created_turn=0)
     h.last_progress_at_turn = 0  # stale progress (age well past threshold)
     h.last_updated_turn = current
-    hm.advance_stagnation_if_ignored(h, current, _case(current))
+    hm.advance_stagnation_if_ignored(h, current, _case(current), turn_counts=True)
     assert h.iterations_without_progress == 0
 
 
@@ -145,7 +149,7 @@ def test_sweep_does_not_touch_non_active_hypotheses():
         HypothesisState.INCONCLUSIVE,
     ):
         h = _hyp(created_turn=0, state=state)
-        hm.advance_stagnation_if_ignored(h, 50, _case(50))
+        hm.advance_stagnation_if_ignored(h, 50, _case(50), turn_counts=True)
         assert h.iterations_without_progress == 0
 
 
@@ -154,7 +158,7 @@ def test_sweep_never_raises_likelihood():
     hm = HypothesisManager()
     h = _hyp(likelihood=0.3, created_turn=0)
     before = h.likelihood
-    hm.advance_stagnation_if_ignored(h, 20, _case(20))
+    hm.advance_stagnation_if_ignored(h, 20, _case(20), turn_counts=True)
     assert h.likelihood == before  # counter-only; decay is a separate step
 
 
@@ -174,7 +178,7 @@ def test_ignored_hypothesis_decays_through_housekeeping():
     for turn in range(1, IGNORED_STAGNATION_TURN_THRESHOLD):
         case = _case(turn)
         case.hypotheses = {h.hypothesis_id: h}
-        eng._perform_hypothesis_housekeeping(case, {})
+        eng._perform_hypothesis_housekeeping(case, {}, investigation_advanced=True)
         assert h.likelihood == prior
         assert h.iterations_without_progress == 0
 
@@ -186,7 +190,7 @@ def test_ignored_hypothesis_decays_through_housekeeping():
     ):
         case = _case(turn)
         case.hypotheses = {h.hypothesis_id: h}
-        eng._perform_hypothesis_housekeeping(case, {})
+        eng._perform_hypothesis_housekeeping(case, {}, investigation_advanced=True)
         assert h.likelihood < last
         assert h.likelihood <= prior
         last = h.likelihood
@@ -204,7 +208,7 @@ def test_recently_touched_hypothesis_does_not_decay():
     before = h.likelihood
     case = _case(turn)
     case.hypotheses = {h.hypothesis_id: h}
-    eng._perform_hypothesis_housekeeping(case, {})
+    eng._perform_hypothesis_housekeeping(case, {}, investigation_advanced=True)
     assert h.likelihood == before
     assert h.iterations_without_progress == 0
 
@@ -218,7 +222,7 @@ def test_age_decay_never_validates_refutes_or_concludes():
     for turn in range(1, 30):
         case = _case(turn)
         case.hypotheses = {h.hypothesis_id: h}
-        eng._perform_hypothesis_housekeeping(case, {})
+        eng._perform_hypothesis_housekeeping(case, {}, investigation_advanced=True)
         # NO INCORRECT CONCLUSION: age alone never validates or refutes.
         assert h.state not in (HypothesisState.VALIDATED, HypothesisState.REFUTED)
         assert h.refutation_reason is None
@@ -239,7 +243,7 @@ def test_ignored_hypothesis_eventually_trips_stagnation_anchoring():
         case = _case(turn)
         case.hypotheses = {h.hypothesis_id: h}
         meta: dict = {}
-        eng._perform_hypothesis_housekeeping(case, meta)
+        eng._perform_hypothesis_housekeeping(case, meta, investigation_advanced=True)
         if h.state == HypothesisState.RETIRED:
             retired = True
             # Retirement is an anti-anchoring soft-retire, never a refutation.
@@ -274,7 +278,7 @@ def test_captured_promotion_starts_a_fresh_stagnation_clock():
     prior = h.likelihood
     # First ACTIVE housekeeping turn (same turn as promotion): no aging yet — the
     # age since (re)start is 0, well under the threshold.
-    eng._perform_hypothesis_housekeeping(case, {})
+    eng._perform_hypothesis_housekeeping(case, {}, investigation_advanced=True)
     assert h.iterations_without_progress == 0
     assert h.likelihood == prior
 
@@ -282,7 +286,7 @@ def test_captured_promotion_starts_a_fresh_stagnation_clock():
     grace_turn = promote_turn + IGNORED_STAGNATION_TURN_THRESHOLD - 1
     case2 = _case(grace_turn)
     case2.hypotheses = {h.hypothesis_id: h}
-    eng._perform_hypothesis_housekeeping(case2, {})
+    eng._perform_hypothesis_housekeeping(case2, {}, investigation_advanced=True)
     assert h.iterations_without_progress == 0
     assert h.likelihood == prior
 
@@ -306,7 +310,7 @@ def test_ignored_seed_and_self_generated_decay_identically():
         for h in (seeded, self_gen):
             case = _case(turn)
             case.hypotheses = {h.hypothesis_id: h}
-            eng._perform_hypothesis_housekeeping(case, {})
+            eng._perform_hypothesis_housekeeping(case, {}, investigation_advanced=True)
 
         assert (
             seeded.iterations_without_progress == self_gen.iterations_without_progress

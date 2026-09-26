@@ -6959,10 +6959,12 @@ class MilestoneEngine:
             # local. ``_check_automatic_transitions`` never reads
             # ``progress_made``, so scoring after it is not circular, and
             # ``_perform_hypothesis_housekeeping`` (the only other thing between
-            # here and Step 5.8) reads ``metadata["system_feedback"]`` plus the
+            # here and Step 5.8) reads ``metadata["system_feedback"]``, the
             # ``case.turns_without_progress`` ATTRIBUTE, which Step 5.8 updates
             # afterwards either way — so anti-anchoring sees the same value it
-            # saw before.
+            # saw before — and ``metadata["progress_made"]``, which decides
+            # whether the turn ages ignored priors. That last read is why
+            # housekeeping must stay AFTER this call.
             #
             # The invariant this restores is the one the deterministic path
             # already states: every arm is written before the read. See
@@ -6982,7 +6984,11 @@ class MilestoneEngine:
 
             # 5. Phase 4: Hypothesis Housekeeping (Decay & Anchoring)
             # This happens after transitions but before recording the turn
-            self._perform_hypothesis_housekeeping(case_updated, metadata)
+            self._perform_hypothesis_housekeeping(
+                case_updated,
+                metadata,
+                investigation_advanced=metadata["progress_made"],
+            )
 
             # Step 5.5: Calculate progress metrics
             progress_metrics = calculate_progress_metrics(
@@ -14204,15 +14210,45 @@ class MilestoneEngine:
     # =============================================================================
 
     def _perform_hypothesis_housekeeping(
-        self, case: Case, metadata: dict[str, Any]
+        self,
+        case: Case,
+        metadata: dict[str, Any],
+        *,
+        investigation_advanced: bool,
     ) -> None:
-        """Apply confidence decay and anchoring detection."""
+        """Apply confidence decay and anchoring detection.
+
+        ``investigation_advanced`` is the turn's final ``progress_made``, so the
+        turn path calls this after ``_score_progress``; it is required, so no
+        caller can run the age sweep on a turn it has not judged.
+        ``case.turns_without_progress`` is read before Step 5.8 updates it — as
+        of the previous turn — so the stall arm below engages one turn after the
+        exhaustion detector sees the stall, the direction that errs toward not
+        counting.
+        """
         active_hypotheses = [
             h for h in case.hypotheses.values() if h.state == HypothesisState.ACTIVE
         ]
 
         if not active_hypotheses:
             return
+
+        # Whether this turn counts toward an ignored prior's stagnation. It is
+        # judged forwards — does the turn make that stagnation more evident?
+        # When the investigation advanced on something else and passed the
+        # prior over, yes. When nothing advanced — the turn only waited on the
+        # user, or restated what the case holds — one such turn says nothing
+        # new. A run of them does: once the case has stalled (``is_stalled``,
+        # the EXHAUSTED time thresholds) the wait is itself the evidence, and
+        # the priors must go on aging so the exhaustion handoff, which needs
+        # spent hypotheses, can still be reached.
+        turn_counts = investigation_advanced or is_stalled(case)
+        # A prior the investigation has just asked to test is not being passed
+        # over: while a recent, model-authored request it motivated is still
+        # outstanding, the turn does not count against it.
+        awaited = self._hypotheses_awaiting_recent_evidence(
+            case, _ANTI_ANCHORING_COOLDOWN_TURNS
+        )
 
         # 1. Apply confidence decay to stagnant hypotheses
         for h in active_hypotheses:
@@ -14224,7 +14260,10 @@ class MilestoneEngine:
             # validating or concluding, only lowering belief over time. A
             # hypothesis that causal evidence supports is not aged (#1678).
             self.hypothesis_manager.advance_stagnation_if_ignored(
-                h, case.current_turn, case
+                h,
+                case.current_turn,
+                case,
+                turn_counts=turn_counts and h.hypothesis_id not in awaited,
             )
             # One decay step if THIS turn left the hypothesis stagnant (touched
             # without progress); an untouched turn does not decay it.
@@ -14242,7 +14281,11 @@ class MilestoneEngine:
         # flagged is left to the intervention below, which also tells the LLM to
         # broaden the differential. Same stand-down and root protections as the
         # intervention; runs here, ahead of the intervention's early returns.
-        if not self._awaiting_recent_evidence(case, _ANTI_ANCHORING_COOLDOWN_TURNS):
+        # Only on a turn that counts: a turn that says nothing new about a
+        # prior does not end it either.
+        if turn_counts and not self._awaiting_recent_evidence(
+            case, _ANTI_ANCHORING_COOLDOWN_TURNS
+        ):
             flagged = set(hypothesis_ids) if is_anchored else set()
             count_held = support_count_held_root_ids(case)
             for h in active_hypotheses:
@@ -14339,6 +14382,20 @@ class MilestoneEngine:
             and case.current_turn - n.created_at_turn < within_turns
             for n in (case.evidence_needs or [])
         )
+
+    @staticmethod
+    def _hypotheses_awaiting_recent_evidence(case: Case, within_turns: int) -> set:
+        """Ids of hypotheses that motivate a recent, still-outstanding request
+        for data — the per-hypothesis form of ``_awaiting_recent_evidence``, with
+        the same bound and the same exclusion of engine-inferred needs."""
+        return {
+            hypothesis_id
+            for n in (case.evidence_needs or [])
+            if n.is_outstanding
+            and not n.engine_inferred
+            and case.current_turn - n.created_at_turn < within_turns
+            for hypothesis_id in n.motivating_hypothesis_ids
+        }
 
     def _resolve_id_ref(self, ref: str, created_ids: list[str], prefix: str) -> str:
         """Resolve ``new_index_N`` to the actual ID from ``created_ids``,
