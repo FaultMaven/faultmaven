@@ -106,7 +106,22 @@ _DATABASE_REACHING_IMPORTS = (
     "faultmaven._container_impl",
     "faultmaven.infrastructure.persistence.database",
     "faultmaven.infrastructure.persistence.sessionless_",
+    "faultmaven.infrastructure.persistence.user_repository",
+    "faultmaven.infrastructure.auth.database_user_store",
+    # A command's async core (``provision``, ``reset_kb``, ...) carries no gate
+    # of its own: the gate is in ``main()``. A script that imports one reaches
+    # the database without it.
+    "faultmaven.cli",
 )
+
+
+def _reaches_the_database(module: str) -> bool:
+    """A module whose import puts the database in reach, including any module's
+    repositories (``faultmaven.modules.<m>.infrastructure...``)."""
+    return module.startswith(_DATABASE_REACHING_IMPORTS) or (
+        module.startswith("faultmaven.modules.") and ".infrastructure" in module
+    )
+
 
 #: Scripts the scan finds that cannot run at all, each with the fact that makes
 #: it dead. The test re-checks the fact, so the exemption lapses when it does.
@@ -252,7 +267,7 @@ def _database_scripts() -> dict[str, ast.Module]:
                 modules = [node.module]
             elif isinstance(node, ast.Import):
                 modules = [alias.name for alias in node.names]
-            if any(m.startswith(_DATABASE_REACHING_IMPORTS) for m in modules):
+            if any(_reaches_the_database(m) for m in modules):
                 found[str(path.relative_to(REPO_ROOT))] = tree
                 break
             if not isinstance(node, ast.Call):
@@ -305,15 +320,41 @@ def test_the_script_scan_finds_the_known_database_scripts():
     )
 
 
+def _is_main_guard(node: ast.stmt) -> bool:
+    """``if __name__ == "__main__":``"""
+    test = getattr(node, "test", None)
+    return (
+        isinstance(node, ast.If)
+        and isinstance(test, ast.Compare)
+        and isinstance(test.left, ast.Name)
+        and test.left.id == "__name__"
+        and len(test.comparators) == 1
+        and isinstance(test.comparators[0], ast.Constant)
+        and test.comparators[0].value == "__main__"
+    )
+
+
+def _unconditional_gate_lines(tree: ast.Module) -> list[int]:
+    """Gate calls that run whenever their block runs: statements directly in the
+    module body, in a top-level function's body, or in the ``__main__`` guard.
+    A gate inside any other ``if``, loop or ``try`` covers only some paths."""
+    blocks: list[list[ast.stmt]] = [tree.body]
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            blocks.append(node.body)
+        elif _is_main_guard(node):
+            blocks.append(node.body)
+    return [line for body in blocks for line in _top_level_gate_lines(body)]
+
+
 @pytest.mark.parametrize("script", sorted(LIVE_DATABASE_SCRIPTS), ids=str)
 def test_every_database_script_gates_before_it_runs_anything(script):
     tree = LIVE_DATABASE_SCRIPTS[script]
-    gate_calls = [
-        n.lineno
-        for n in ast.walk(tree)
-        if isinstance(n, ast.Call) and _call_name(n) == GATE
-    ]
-    assert gate_calls, f"{script} reaches the database and never calls {GATE}()"
+    gate_calls = _unconditional_gate_lines(tree)
+    assert gate_calls, (
+        f"{script} reaches the database and never calls {GATE}() unconditionally "
+        "(in the module body, a top-level function's body, or the __main__ guard)"
+    )
     runs = _event_loop_lines(tree)
     early = [line for line in runs if line < min(gate_calls)]
     assert not early, (

@@ -78,8 +78,13 @@ REPRESENTATIVE_DSNS = [
     ("sqlite:///file:d?uri=true&cache=shared%26mode%3Dmemory", False),
     ("sqlite:///file:e?uri=true&mode=memor%2579", False),
     # SQLite compares C strings: a decoded NUL ends the value, so this is
-    # exactly mode=memory. Pins that the mode is read by prefix.
+    # exactly mode=memory.
     ("sqlite:///file:n?uri=true&mode=memory%2500", False),
+    # A decoded NUL: SQLite truncates the piece there, so these are an empty
+    # (temporary) path and bare mode/vfs keys. Refused outright.
+    ("sqlite:///file:%00junk?uri=true", False),
+    ("sqlite:///file:x?uri=true&mode%2500zz=memory", False),
+    ("sqlite:///file:x?uri=true&vfs%2500=memdb", False),
     ("sqlite:///file:/x?uri=true&vfs=memdb", False),
     ("sqlite:///file:x?uri=true&vfs=memdb", False),
     ("sqlite:///file:?uri=true", False),  # empty path: a private temp database

@@ -877,7 +877,8 @@ def _sqlite_url_is_ephemeral(url: Any) -> bool:
     ``vfs=memdb`` parameter. The check is deliberately wider than SQLite in three
     ways, and each costs only a refusal of a spelling no deployment writes:
     it applies the ``file:`` rules without ``uri=true``, it reads parameter names
-    case-insensitively, and it reads a parameter after a ``#``.
+    case-insensitively, and it reads a parameter after a ``#``. A decoded NUL
+    anywhere is refused outright.
     """
     import re
     from urllib.parse import unquote
@@ -892,6 +893,11 @@ def _sqlite_url_is_ephemeral(url: Any) -> bool:
     raw_path, *raw_params = re.split(r"[?&#]", uri)
     path = unquote(raw_path).strip().lower()
 
+    # A decoded NUL: SQLite reads C strings, so it silently truncates the piece
+    # (``file:%2500junk`` is an empty path, ``mode%2500zz=memory`` is ``mode``).
+    # No real database URL carries one, so refuse outright rather than model it.
+    if "\x00" in path or any("\x00" in unquote(raw) for raw in raw_params):
+        return True
     if not path or ":memory:" in path:
         return True
     if path.startswith("file:"):
@@ -903,6 +909,9 @@ def _sqlite_url_is_ephemeral(url: Any) -> bool:
             return True
     for raw in raw_params:
         param = unquote(raw).strip().lower()
+        # By prefix, not equality: after the split above the two differ only on
+        # values SQLite itself rejects ("no such access mode: memoryx"), so the
+        # prefix refuses those with this message instead of SQLite's.
         if param.startswith("mode=memory") or param.startswith("vfs=memdb"):
             return True
     return False
@@ -953,12 +962,31 @@ def persistent_database_configured(database_url: Optional[str]) -> bool:
     return not _sqlite_url_is_ephemeral(url)
 
 
-#: Query parameters whose value is masked when a database URL is shown.
-_SECRET_QUERY_KEY = ("pass", "secret", "key", "token", "cred")
+#: Query parameters whose value may be shown when a database URL is printed:
+#: SQLite's URI parameters and the pysqlite connect arguments, which name how
+#: the database is opened and never carry a secret. Every other value is
+#: masked. An allowlist, because a list of secret-looking names misses the one
+#: nobody thought of (``pwd``, ``sig``, ``odbc_connect``).
+_SHOWABLE_QUERY_KEYS = frozenset(
+    {
+        "cache",
+        "check_same_thread",
+        "detect_types",
+        "immutable",
+        "isolation_level",
+        "mode",
+        "modeof",
+        "nolock",
+        "psow",
+        "timeout",
+        "uri",
+        "vfs",
+    }
+)
 
 
 def describe_database_url(database_url: Optional[str]) -> str:
-    """``DATABASE_URL`` as it may be printed or logged: never with a password.
+    """``DATABASE_URL`` as it may be printed or logged: never with a credential.
 
     Everything the persistent-database refusal and its log lines show goes
     through here. Before #1659 a PostgreSQL URL never reached them, because
@@ -967,11 +995,14 @@ def describe_database_url(database_url: Optional[str]) -> str:
     password in pod logs.
 
     Only what can be shown safely is shown. An empty value and the bare
-    ``:memory:`` sentinel are shown as given. A URL ``make_url`` parses is
-    rendered with its password masked, and with the value of any query
-    parameter whose name suggests a secret masked too. Anything else is not
-    shown at all, because a value that does not parse cannot be masked: a
-    libpq ``password=...`` DSN has no ``@`` to find.
+    ``:memory:`` sentinel are shown as given. For a URL ``make_url`` parses,
+    the dialect, port, database path and SQLite's own URI parameters
+    (``_SHOWABLE_QUERY_KEYS``) are shown, because they are what the operator
+    got wrong. The whole authority (user, password and host) is shown as
+    ``***``, because an unescaped ``@`` in a password pushes its tail into the
+    host. Every other query parameter is shown as ``***``, key and value.
+    Anything else is not shown at all, because a value that does not parse
+    cannot be masked: a libpq ``password=...`` DSN has no ``@`` to find.
     """
     text = database_url or ""
     if not text.strip() or text.strip() == ":memory:":
@@ -982,15 +1013,18 @@ def describe_database_url(database_url: Optional[str]) -> str:
             "(not shown: the value does not parse as a database URL, so a "
             "password in it could not be masked)"
         )
-    masked = {
-        key: (
-            "***"
-            if any(marker in key.lower() for marker in _SECRET_QUERY_KEY)
-            else value
-        )
-        for key, value in url.query.items()
-    }
-    return repr(url.set(query=masked).render_as_string(hide_password=True))
+    has_authority = any(
+        part is not None for part in (url.username, url.password, url.host)
+    )
+    authority = "***" if has_authority else ""
+    port = f":{url.port}" if url.port is not None else ""
+    pairs = []
+    for key, values in url.query.items():
+        for value in values if isinstance(values, tuple) else (values,):
+            shown = key.lower() in _SHOWABLE_QUERY_KEYS
+            pairs.append(f"{key}={value}" if shown else "***")
+    query = "?" + "&".join(pairs) if pairs else ""
+    return repr(f"{url.drivername}://{authority}{port}/{url.database or ''}{query}")
 
 
 class DatabaseSettings(BaseSettings):

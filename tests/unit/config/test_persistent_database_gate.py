@@ -102,9 +102,16 @@ _PASSWORD = "Pa55wordValue"
         "postgresql+asyncpg://fm:Pa55wordValue@db:5432x/faultmaven",
         "postgresql+asyncpg://fm:Pa55wordValue@db:port/faultmaven",
         "host=db user=fm password=Pa55wordValue dbname=faultmaven",
-        # Parseable and in memory: shown with the password masked.
+        # Parseable and in memory: the whole authority and every query value
+        # outside SQLite's own parameters are masked. An unescaped '@' pushes
+        # a password's tail into the host, and a name list misses pwd/sig.
         "sqlite+aiosqlite://fm:Pa55wordValue@/",
+        "sqlite+aiosqlite://Pa55wordValue@/:memory:",
+        "sqlite+aiosqlite://fm:x@Pa55wordValue@/:memory:",
         "sqlite+aiosqlite:///:memory:?password=Pa55wordValue",
+        "sqlite+aiosqlite:///:memory:?pwd=Pa55wordValue",
+        "sqlite+aiosqlite:///:memory:?odbc_connect=Pa55wordValue",
+        "sqlite+aiosqlite:///:memory:?Pa55wordValue=1",
     ],
 )
 def test_the_refusal_never_prints_a_password(url):
@@ -119,11 +126,20 @@ def test_the_refusal_never_prints_a_password(url):
 
 
 @pytest.mark.unit
-def test_a_parseable_url_is_still_named_in_the_refusal():
-    """Masking must not cost the operator the value they got wrong."""
+@pytest.mark.parametrize(
+    "url",
+    [
+        "sqlite+aiosqlite:///?timeout=30",
+        "sqlite+aiosqlite:///:memory:",
+        "sqlite:///file:x?mode=memory&uri=true",
+    ],
+)
+def test_a_parseable_url_is_still_named_in_the_refusal(url):
+    """Masking must not cost the operator the value they got wrong: SQLite's
+    own parameters (mode, uri, timeout) and the path are shown as given."""
     with pytest.raises(NonPersistentDatabaseError) as exc:
-        require_persistent_database(_settings("sqlite+aiosqlite:///?timeout=30"))
-    assert "sqlite+aiosqlite:///?timeout=30" in str(exc.value)
+        require_persistent_database(_settings(url))
+    assert url in str(exc.value)
 
 
 @pytest.mark.unit
