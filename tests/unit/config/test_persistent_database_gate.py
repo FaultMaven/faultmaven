@@ -37,6 +37,11 @@ NON_PERSISTENT = [
     "sqlite://",
     "sqlite+aiosqlite:///",
     "sqlite:///file:db?mode=memory&cache=shared&uri=true",
+    # #1659: a substring rule called these persistent.
+    "sqlite+aiosqlite:///?timeout=30",
+    "sqlite+aiosqlite://?check_same_thread=false",
+    "sqlite+aiosqlite:///file:x?uri=true&mode=memor%79",
+    "file::memory:?cache=shared",
 ]
 
 PERSISTENT = [

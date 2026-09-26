@@ -270,9 +270,9 @@ corrected runbook, starting at the opening `---`, and output nothing else.
                 passes a ``DatabaseSuggestionRepository`` over
                 ``knowledge_suggestions``; tests pass
                 ``InMemorySuggestionRepository`` (so does the composition root
-                when no persistent database is configured, which the API and
-                jobs runner refuse at boot, fm#1647; the ``fm-*`` CLIs do not
-                yet, #1659).
+                when no persistent database is configured, which the API, the
+                jobs runner and the ``fm-*`` CLIs refuse at boot, fm#1647 and
+                #1659).
 
                 There is deliberately no default. A default would make the one
                 mistake that matters — composing a service whose store nobody

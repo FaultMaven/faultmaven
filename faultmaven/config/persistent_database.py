@@ -14,8 +14,7 @@ compose services without a database. What this module refuses is BOOTING a
 process on that arm, so the refusal lives here, at boot, rather than in
 settings validation, which tests construct freely.
 
-Called from two boot paths, before either writes anything. The ``fm-*`` operator
-CLIs initialise the container too and do NOT call it yet (#1659):
+Called from these entrypoints, before any of them writes anything:
 
 - the web lifespan (``faultmaven/main.py``), straight after the deployment
   coherence gate and before ``resolve_pseudonym_key`` (which creates the data
@@ -23,7 +22,10 @@ CLIs initialise the container too and do NOT call it yet (#1659):
   test-environment skip, because no test boots the app without a database;
 - the CronJob runner (``faultmaven/jobs/run.py``), which mirrors the coherence
   gate — without it a job fails in the container's bootstrap exactly the way
-  the API used to.
+  the API used to;
+- every ``fm-*`` operator command and the dev scripts that reach the database,
+  through ``faultmaven/cli/_database_gate.py`` (#1659), which turns the
+  refusal into exit 1 and the message on stderr rather than a traceback.
 
 Cloud never reaches the refusal in practice: deployment coherence already
 requires PostgreSQL there. It is not special-cased, because the rule does not
@@ -60,7 +62,8 @@ def require_persistent_database(settings: Any) -> None:
     raise NonPersistentDatabaseError(
         f"DATABASE_URL={database_url!r} configures no persistent database. "
         "FaultMaven needs a database — standalone included: an empty value, "
-        "':memory:' and in-memory SQLite URLs are not supported. Unset "
+        "':memory:', an in-memory SQLite URL and a value that does not parse "
+        "as a database URL are not supported. Unset "
         f"DATABASE_URL to use the default local SQLite file ({DEFAULT_DATABASE_URL}), "
         "which needs no setup, or point it at a PostgreSQL database."
     )

@@ -58,8 +58,21 @@ REPRESENTATIVE_DSNS = [
     ("sqlite:///:memory:", False),
     ("sqlite://", False),
     ("sqlite:///file:case.db?mode=memory&cache=shared&uri=true", False),
+    # #1659: spellings a substring rule missed. The predicate parses the URL
+    # with make_url, as the engine does, and reads the parsed parts: an empty
+    # database behind a query string, a percent-encoded ``mode=memory``, and
+    # a SQLite URI (not a SQLAlchemy URL) that no engine can open.
+    ("sqlite+aiosqlite:///?timeout=30", False),
+    ("sqlite+aiosqlite://?check_same_thread=false", False),
+    ("sqlite+aiosqlite:///file:x?uri=true&mode=memor%79", False),
+    ("sqlite:///file:%3Amemory%3A?uri=true", False),
+    ("file::memory:?cache=shared", False),
+    ("postgresql+asyncpg://fm:pw@db:notaport/faultmaven", False),
     ("sqlite+aiosqlite:///./data/faultmaven.db", True),
     ("sqlite:///relative.db", True),
+    ("sqlite:///file:case.db?uri=true", True),
+    # ``mode=memory`` inside a file PATH is part of a file name, not a query.
+    ("sqlite:///data/mode=memory.db", True),
     ("postgresql+asyncpg://fm:pw@db:5432/faultmaven", True),
     ("mysql+aiomysql://fm:pw@db:3306/faultmaven", True),
 ]

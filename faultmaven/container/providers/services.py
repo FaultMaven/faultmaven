@@ -417,9 +417,9 @@ def create_suggestion_service(
     suggestion's ``case_id`` foreign key would have no case row to point at, so
     extract would 500 where the old dict store worked.
 
-    The API lifespan and the jobs runner refuse a non-persistent
-    ``DATABASE_URL`` at boot (fm#1647); the ``fm-*`` operator CLIs do not yet
-    (#1659). Outside those, the in-memory arm is a test seam.
+    The API lifespan, the jobs runner and the ``fm-*`` operator CLIs refuse a
+    non-persistent ``DATABASE_URL`` before composing (fm#1647, #1659), so the
+    in-memory arm is a test seam.
     """
     from faultmaven.config.settings import persistent_database_configured
     from faultmaven.modules.knowledge.domain.services.suggestion_service import (
@@ -801,8 +801,8 @@ def create_user_service(
         from faultmaven.modules.auth.domain.services.user_service import UserService
 
         # Use the persistent database when one is configured, else InMemory.
-        # The API and jobs runner refuse the latter at boot (fm#1647); the
-        # fm-* CLIs do not yet (#1659). Keyed off the ONE shared predicate
+        # The API, the jobs runner and the fm-* CLIs refuse the latter before
+        # composing (fm#1647, #1659). Keyed off the ONE shared predicate
         # (fm#1128) — the user store selects with the same call, so the store
         # login writes to and the store this service reads for /auth/me cannot
         # disagree about whether a database is in play. NOT a shared session

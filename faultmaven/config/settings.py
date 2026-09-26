@@ -851,13 +851,27 @@ def persistent_database_configured(database_url: Optional[str]) -> bool:
     login wrote accounts to one store while ``GET /auth/me`` read an
     always-empty other, silently reproducing #1120 with green tests.
 
-    The rule: persistent iff ``database_url`` is non-empty (after stripping),
-    not the ``:memory:`` sentinel, and not a SQLite in-memory spelling
-    (``sqlite+aiosqlite:///:memory:``, ``sqlite://`` with an empty path, or a
-    ``mode=memory`` URI). Those are ephemeral by construction — worse, the
-    engine pools SQLite with ``NullPool``, so each per-operation session of a
-    sessionless repository would open a brand-new empty in-memory database
-    and every write would vanish before the next read. An *unsupported*
+    The rule: persistent iff ``database_url`` parses as a SQLAlchemy URL
+    (``make_url``, the parser the engine itself uses) and, for SQLite, names
+    a database that is not in memory. Everything else is not persistent:
+
+    - empty or blank, and anything ``make_url`` cannot parse — the bare
+      ``:memory:`` sentinel, ``file::memory:?cache=shared``, a typo. No engine
+      can open such a URL, so it configures no database at all;
+    - a SQLite URL whose database component is empty (``sqlite://``,
+      ``sqlite+aiosqlite:///?timeout=30``, ``sqlite://?check_same_thread=false``):
+      SQLAlchemy opens ``:memory:`` for an empty database;
+    - a SQLite database that is ``:memory:`` or contains it, percent-decoded
+      because SQLite decodes a ``uri=true`` path (``file::memory:``,
+      ``file:%3Amemory%3A``). Decoded without ``uri=true`` too, which refuses a
+      file literally named ``%3Amemory%3A`` — an over-approximation nobody pays;
+    - a SQLite ``mode=memory`` query parameter, read from the parsed query so
+      ``mode=memor%79`` counts too.
+
+    Those are ephemeral by construction — worse, the engine pools SQLite with
+    ``NullPool``, so each per-operation session of a sessionless repository
+    would open a brand-new empty in-memory database and every write would
+    vanish before the next read. A parseable URL for an *unsupported*
     dialect, by contrast, still counts as configured — both sides then point
     at the same database and fail loudly together at first use, instead of
     one of them quietly falling back to a store the other never reads.
@@ -866,17 +880,28 @@ def persistent_database_configured(database_url: Optional[str]) -> bool:
     factories are exercised with duck-typed settings stubs, and the rule
     should be callable on any URL string without constructing settings.
     """
-    url = (database_url or "").strip()
-    if not url or url == ":memory:":
+    from urllib.parse import unquote
+
+    from sqlalchemy.engine import make_url
+    from sqlalchemy.exc import ArgumentError
+
+    text = (database_url or "").strip()
+    if not text:
         return False
-    lower = url.lower()
-    if lower.startswith("sqlite"):
-        # SQLAlchemy's real in-memory spellings, not just the bare sentinel.
-        if ":memory:" in lower or "mode=memory" in lower:
-            return False
-        _, _, path = lower.partition("://")
-        if path.strip("/") == "":
-            # sqlite:// / sqlite+aiosqlite:/// — empty path means in-memory.
+    try:
+        url = make_url(text)
+    except (ArgumentError, ValueError):  # ValueError: a non-numeric port
+        return False
+    if url.get_backend_name().lower() != "sqlite":
+        return True
+    database = url.database or ""
+    if not database:
+        return False
+    if ":memory:" in unquote(database).lower():
+        return False
+    for key, value in url.query.items():
+        values = value if isinstance(value, tuple) else (value,)
+        if key.lower() == "mode" and any(v.lower() == "memory" for v in values):
             return False
     return True
 

@@ -93,6 +93,7 @@ import argparse
 import asyncio
 import sys
 
+from faultmaven.cli._database_gate import require_persistent_database_or_exit
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.infrastructure.persistence.rls_role_guard import (
@@ -533,6 +534,8 @@ def main() -> None:
             "--domain takes a bare domain (acme.com), not an email address or a "
             f"phrase: {args.domain!r}"
         )
+
+    require_persistent_database_or_exit()
 
     success = asyncio.run(
         provision(

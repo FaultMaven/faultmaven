@@ -122,6 +122,7 @@ from pathlib import Path
 from sqlalchemy import delete, func, select
 
 from faultmaven.bootstrap.data_init import resolve_kb_chroma_dir
+from faultmaven.cli._database_gate import require_persistent_database_or_exit
 
 #: argparse's ``description``. A literal, not ``__doc__.splitlines()[0]``:
 #: ``python -OO`` strips docstrings, and that expression would raise
@@ -559,6 +560,8 @@ def main() -> None:
     if not args.dry_run and not args.yes:
         print("Refusing to run without --yes (or use --dry-run to preview).")
         sys.exit(1)
+
+    require_persistent_database_or_exit()
 
     # sys.exit inside main() keeps the five CLI modules uniform: every one of
     # them exits from main() rather than returning a code for a caller to
