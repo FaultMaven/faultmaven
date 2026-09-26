@@ -41,6 +41,11 @@ from faultmaven.modules.case.contracts import (
 
 pytestmark = pytest.mark.unit
 
+# Housekeeping ages an ignored prior only on a turn where the investigation
+# advanced (``progress_made``, scored before housekeeping on the turn path).
+# These tests model advancing turns, so they say so.
+_ADVANCED = {"progress_made": True}
+
 
 # A seeded hypothesis's rationale carries this literal prefix; a self-generated
 # one does not. The sweep must behave identically for both — asserting on the
@@ -174,7 +179,7 @@ def test_ignored_hypothesis_decays_through_housekeeping():
     for turn in range(1, IGNORED_STAGNATION_TURN_THRESHOLD):
         case = _case(turn)
         case.hypotheses = {h.hypothesis_id: h}
-        eng._perform_hypothesis_housekeeping(case, {})
+        eng._perform_hypothesis_housekeeping(case, dict(_ADVANCED))
         assert h.likelihood == prior
         assert h.iterations_without_progress == 0
 
@@ -186,7 +191,7 @@ def test_ignored_hypothesis_decays_through_housekeeping():
     ):
         case = _case(turn)
         case.hypotheses = {h.hypothesis_id: h}
-        eng._perform_hypothesis_housekeeping(case, {})
+        eng._perform_hypothesis_housekeeping(case, dict(_ADVANCED))
         assert h.likelihood < last
         assert h.likelihood <= prior
         last = h.likelihood
@@ -204,7 +209,7 @@ def test_recently_touched_hypothesis_does_not_decay():
     before = h.likelihood
     case = _case(turn)
     case.hypotheses = {h.hypothesis_id: h}
-    eng._perform_hypothesis_housekeeping(case, {})
+    eng._perform_hypothesis_housekeeping(case, dict(_ADVANCED))
     assert h.likelihood == before
     assert h.iterations_without_progress == 0
 
@@ -218,7 +223,7 @@ def test_age_decay_never_validates_refutes_or_concludes():
     for turn in range(1, 30):
         case = _case(turn)
         case.hypotheses = {h.hypothesis_id: h}
-        eng._perform_hypothesis_housekeeping(case, {})
+        eng._perform_hypothesis_housekeeping(case, dict(_ADVANCED))
         # NO INCORRECT CONCLUSION: age alone never validates or refutes.
         assert h.state not in (HypothesisState.VALIDATED, HypothesisState.REFUTED)
         assert h.refutation_reason is None
@@ -238,7 +243,7 @@ def test_ignored_hypothesis_eventually_trips_stagnation_anchoring():
     for turn in range(1, 30):
         case = _case(turn)
         case.hypotheses = {h.hypothesis_id: h}
-        meta: dict = {}
+        meta: dict = dict(_ADVANCED)
         eng._perform_hypothesis_housekeeping(case, meta)
         if h.state == HypothesisState.RETIRED:
             retired = True
@@ -274,7 +279,7 @@ def test_captured_promotion_starts_a_fresh_stagnation_clock():
     prior = h.likelihood
     # First ACTIVE housekeeping turn (same turn as promotion): no aging yet — the
     # age since (re)start is 0, well under the threshold.
-    eng._perform_hypothesis_housekeeping(case, {})
+    eng._perform_hypothesis_housekeeping(case, dict(_ADVANCED))
     assert h.iterations_without_progress == 0
     assert h.likelihood == prior
 
@@ -282,7 +287,7 @@ def test_captured_promotion_starts_a_fresh_stagnation_clock():
     grace_turn = promote_turn + IGNORED_STAGNATION_TURN_THRESHOLD - 1
     case2 = _case(grace_turn)
     case2.hypotheses = {h.hypothesis_id: h}
-    eng._perform_hypothesis_housekeeping(case2, {})
+    eng._perform_hypothesis_housekeeping(case2, dict(_ADVANCED))
     assert h.iterations_without_progress == 0
     assert h.likelihood == prior
 
@@ -306,7 +311,7 @@ def test_ignored_seed_and_self_generated_decay_identically():
         for h in (seeded, self_gen):
             case = _case(turn)
             case.hypotheses = {h.hypothesis_id: h}
-            eng._perform_hypothesis_housekeeping(case, {})
+            eng._perform_hypothesis_housekeeping(case, dict(_ADVANCED))
 
         assert (
             seeded.iterations_without_progress == self_gen.iterations_without_progress

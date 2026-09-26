@@ -6,7 +6,7 @@ touched it — there was nothing left to test — so the age-based sweep aged it
 and the decay compounded: 0.95 -> 0.81 -> 0.58 -> 0.36 in three turns, below
 the cause-identification bar.
 
-Three rules close that, all asserted here on engine state (no LLM output):
+Four rules close that, all asserted here on engine state (no LLM output):
 
 - The age sweep (``advance_stagnation_if_ignored``) does not age a hypothesis
   whose causal support stands: confident support from causal evidence, with no
@@ -21,6 +21,10 @@ Three rules close that, all asserted here on engine state (no LLM output):
   not advancing. A likelihood re-sent within 0.05, or a link re-emitted with its
   stance unchanged, adds nothing, so it neither counts nor marks the hypothesis
   touched. New evidence that leaves belief unmoved still counts.
+- The age sweep counts only turns where the investigation advanced
+  (``progress_made``). A turn that only waited on the user says nothing new
+  about an ignored prior; a case that stops advancing altogether is caught by
+  the case-level stall counter.
 
 #713's protection against an ignored prior lingering is intact, and completed:
 beside a leader that is no longer aged, anti-anchoring (which acts on fixation)
@@ -167,9 +171,14 @@ def _supported_leader(progress_turn: int = 5) -> tuple[Hypothesis, list[Evidence
     return leader, [causal, symptom]
 
 
-def _housekeep(eng: MilestoneEngine, case: Case, turn: int) -> None:
+def _housekeep(
+    eng: MilestoneEngine, case: Case, turn: int, *, advanced: bool = True
+) -> None:
+    """One turn's housekeeping. ``advanced`` is the turn's ``progress_made``:
+    the default models a turn where the investigation moved on something, the
+    harder case for every exemption below."""
     case.current_turn = turn
-    eng._perform_hypothesis_housekeeping(case, {})
+    eng._perform_hypothesis_housekeeping(case, {"progress_made": advanced})
 
 
 # ---------------------------------------------------------------------------
@@ -652,3 +661,60 @@ def test_a_confidence_revision_across_the_bar_is_not_stagnation():
     assert material is True
     assert h.iterations_without_progress == 0
     assert h.likelihood == 0.65
+
+
+# ---------------------------------------------------------------------------
+# The age sweep counts only turns where the investigation advanced
+# ---------------------------------------------------------------------------
+
+
+def test_turns_that_only_wait_on_the_user_do_not_age_an_ignored_prior():
+    """The #1678 wait: the user is applying a fix and nothing advances. Passing
+    over the prior on those turns says nothing new about it."""
+    eng = _engine()
+    leader, evidence = _supported_leader()
+    sibling = _hyp(likelihood=0.35, progress_turn=5)
+    case = _case([leader, sibling], evidence)
+
+    for turn in range(6, 21):
+        _housekeep(eng, case, turn, advanced=False)
+
+    assert sibling.iterations_without_progress == 0
+    assert sibling.likelihood == 0.35
+    assert sibling.state == HypothesisState.ACTIVE
+
+
+def test_only_turns_where_the_investigation_advanced_age_an_ignored_prior():
+    eng = _engine()
+    prior = _hyp(likelihood=0.4, progress_turn=0)
+    case = _case([prior])
+
+    for turn in range(1, 7):
+        _housekeep(eng, case, turn, advanced=False)
+    assert prior.iterations_without_progress == 0
+
+    _housekeep(eng, case, 7, advanced=True)
+    assert prior.iterations_without_progress == 1
+    assert prior.likelihood == pytest.approx(0.34)
+
+    _housekeep(eng, case, 8, advanced=False)
+    assert prior.iterations_without_progress == 1
+    assert prior.likelihood == pytest.approx(0.34)
+
+    _housekeep(eng, case, 9, advanced=True)
+    assert prior.iterations_without_progress == 2
+    assert prior.likelihood == pytest.approx(0.289)
+
+
+def test_housekeeping_without_a_progress_reading_does_not_age():
+    """Absent ``progress_made`` the turn is read as not advanced: the sweep
+    errs toward not counting."""
+    eng = _engine()
+    prior = _hyp(likelihood=0.4, progress_turn=0)
+    case = _case([prior])
+    case.current_turn = 5
+
+    eng._perform_hypothesis_housekeeping(case, {})
+
+    assert prior.iterations_without_progress == 0
+    assert prior.likelihood == 0.4

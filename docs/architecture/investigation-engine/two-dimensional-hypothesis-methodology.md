@@ -373,8 +373,12 @@ would otherwise sit at its prior forever — never decaying, never tripping
 anchoring. The housekeeping loop closes that gap with a provenance-blind,
 age-based stagnation sweep (`advance_stagnation_if_ignored`): once such a
 hypothesis has gone `IGNORED_STAGNATION_TURN_THRESHOLD` turns since its last
-progress, its counter advances one per turn so decay and anchoring act on it
-(#713). This is conservative and reversible — decay only lowers belief, and the
+progress, its counter advances one per turn on which the investigation advanced
+(`progress_made`) so decay and anchoring act on it (#713). A turn where nothing
+advanced — it only waited on the user, or restated what the case holds — says
+nothing new about an ignored prior, so it does not age it; a case that stops
+advancing altogether is caught by the case-level stall counter, which reads the
+same signal. This is conservative and reversible — decay only lowers belief, and the
 moment new evidence touches the hypothesis (a new link, or a changed stance)
 its likelihood recomputes from
 `initial_likelihood` (the age-decay is erased) — so an ignored candidate

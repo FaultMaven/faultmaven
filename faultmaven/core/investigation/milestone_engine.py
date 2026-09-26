@@ -14206,13 +14206,27 @@ class MilestoneEngine:
     def _perform_hypothesis_housekeeping(
         self, case: Case, metadata: dict[str, Any]
     ) -> None:
-        """Apply confidence decay and anchoring detection."""
+        """Apply confidence decay and anchoring detection.
+
+        Reads ``metadata["progress_made"]``, so it runs after ``_score_progress``
+        on the turn path; absent, the turn is treated as not having advanced —
+        the age sweep then skips it, which errs toward not counting.
+        """
         active_hypotheses = [
             h for h in case.hypotheses.values() if h.state == HypothesisState.ACTIVE
         ]
 
         if not active_hypotheses:
             return
+
+        # The age sweep advances only on a turn where the investigation
+        # advanced. Stagnation is judged forwards: when the case moved on
+        # something else, passing over an ignored prior makes its stagnation
+        # more evident; when nothing advanced — the turn only waited on the
+        # user, or restated what the case holds — it says nothing new about the
+        # prior. A case that stops advancing altogether is caught by the
+        # case-level stall counter, which reads the same ``progress_made``.
+        investigation_advanced = bool(metadata.get("progress_made"))
 
         # 1. Apply confidence decay to stagnant hypotheses
         for h in active_hypotheses:
@@ -14223,9 +14237,10 @@ class MilestoneEngine:
             # can trip anchoring the same as a repeatedly-tested one — never
             # validating or concluding, only lowering belief over time. A
             # hypothesis that causal evidence supports is not aged (#1678).
-            self.hypothesis_manager.advance_stagnation_if_ignored(
-                h, case.current_turn, case
-            )
+            if investigation_advanced:
+                self.hypothesis_manager.advance_stagnation_if_ignored(
+                    h, case.current_turn, case
+                )
             # One decay step if THIS turn left the hypothesis stagnant (touched
             # without progress); an untouched turn does not decay it.
             self.hypothesis_manager.apply_likelihood_decay(h, case.current_turn)
