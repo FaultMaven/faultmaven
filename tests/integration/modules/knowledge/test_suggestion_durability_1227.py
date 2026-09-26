@@ -66,6 +66,7 @@ from faultmaven.modules.knowledge.domain.services.suggestion_service import (
 from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
     DatabaseSuggestionRepository,
 )
+from tests.utils import case_repository_holding
 
 pytestmark = pytest.mark.integration
 
@@ -181,10 +182,21 @@ async def db(tmp_path):
     await engine.dispose()
 
 
+def _case_reads():
+    """The case extraction reads. Extraction refuses a case it cannot read
+    (#1661); what it reads is not what this file is about, so a contract-shaped
+    double over a real ``Case`` stands in for the case store. The suggestion
+    store stays the real database."""
+    return case_repository_holding(
+        CASE_ID, enterprise_id=ENTERPRISE_ALPHA, title="Connection pool exhaustion"
+    )
+
+
 def _service(session_factory, *, capacity: Optional[int] = None) -> SuggestionService:
     """One worker's service — no LLM (extraction falls back to its template),
     no sanitizer (the scan marks CLEAN), a real database store."""
     return SuggestionService(
+        case_repository=_case_reads(),
         knowledge_service=None,
         sanitizer=None,
         llm_provider=None,
@@ -800,6 +812,7 @@ class TestConcurrentApprovalPublishesOnce:
     @staticmethod
     def _pod(factory, knowledge):
         return SuggestionService(
+            case_repository=_case_reads(),
             knowledge_service=knowledge,
             sanitizer=None,
             llm_provider=None,

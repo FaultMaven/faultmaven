@@ -58,6 +58,7 @@ from faultmaven.modules.knowledge.domain.services.suggestion_service import (
 from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
     InMemorySuggestionRepository,
 )
+from tests.utils import CaseReadDouble, SanitizerDouble, case_repository_holding
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
@@ -85,8 +86,15 @@ def _suggestion(
     return s
 
 
+def _cases() -> CaseReadDouble:
+    """The case every extraction here reads (#1661: it no longer extracts from
+    a case it cannot read)."""
+    return case_repository_holding("case_aabb11223344", enterprise_id=ORG)
+
+
 def _service(capacity: int = 3) -> SuggestionService:
     return SuggestionService(
+        case_repository=_cases(),
         knowledge_service=MagicMock(),
         max_unreviewed_suggestions=capacity,
         suggestion_repository=InMemorySuggestionRepository(),
@@ -271,8 +279,13 @@ class TestTheUnreviewedQueueIsWhatIsCapped:
 # ---------------------------------------------------------------------------
 
 
-class _FlakySanitizer:
-    """Fails the first N scans, then succeeds — a PII engine coming back up."""
+class _FlakySanitizer(SanitizerDouble):
+    """Fails the first N scans, then succeeds — a PII engine coming back up.
+
+    The extraction-prompt redaction (``sanitize_text_with_registry``, reached
+    only under ``SANITIZE_PII`` and only with a provider wired, #1661) finds
+    nothing; these tests wire no provider, so it is never reached here, and
+    ``SanitizerDouble`` makes sure it exists the day one is."""
 
     def __init__(self, failures: int):
         self.remaining_failures = failures
@@ -285,6 +298,9 @@ class _FlakySanitizer:
             raise RuntimeError("presidio unavailable")
         return content  # unchanged => CLEAN
 
+    def sanitize_text_with_registry(self, text, entity_registry):
+        return text
+
 
 def _knowledge_double():
     ks = MagicMock()
@@ -296,6 +312,7 @@ class TestAFailedScanRecovers:
     async def test_the_first_scan_failing_leaves_scan_failed(self):
         sanitizer = _FlakySanitizer(failures=1)
         svc = SuggestionService(
+            case_repository=_cases(),
             knowledge_service=_knowledge_double(),
             sanitizer=sanitizer,
             suggestion_repository=InMemorySuggestionRepository(),
@@ -312,6 +329,7 @@ class TestAFailedScanRecovers:
         sanitizer = _FlakySanitizer(failures=1)
         knowledge = _knowledge_double()
         svc = SuggestionService(
+            case_repository=_cases(),
             knowledge_service=knowledge,
             sanitizer=sanitizer,
             suggestion_repository=InMemorySuggestionRepository(),
@@ -344,6 +362,7 @@ class TestAFailedScanRecovers:
         sanitizer = _FlakySanitizer(failures=5)
         knowledge = _knowledge_double()
         svc = SuggestionService(
+            case_repository=_cases(),
             knowledge_service=knowledge,
             sanitizer=sanitizer,
             suggestion_repository=InMemorySuggestionRepository(),
@@ -369,6 +388,7 @@ class TestAFailedScanRecovers:
         sanitizer.asanitize = AsyncMock(return_value="REDACTED")
         knowledge = _knowledge_double()
         svc = SuggestionService(
+            case_repository=_cases(),
             knowledge_service=knowledge,
             sanitizer=sanitizer,
             suggestion_repository=InMemorySuggestionRepository(),

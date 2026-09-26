@@ -8,14 +8,12 @@ every row went out as ``[unknown]: {<the whole row>}``. The doubles returned
 attribute objects, so no test ever saw that.
 
 Driven through ``extract_knowledge_from_case`` and read back from the prompt the
-provider received. The rows come from a REAL repository's ``get_messages``, so
-the shape under test is the production one and cannot drift the way the old
-doubles did.
+provider received. The rows come from a REAL repository, so the shape under
+test is the production one and cannot drift the way the old doubles did.
 
-The repository is wrapped, not used bare: the service fetches the case with
-``get_by_id`` and ``get_evidence``, which no case repository has (#1661), so
-against a bare one extraction never reaches the transcript at all. The wrapper
-supplies only those two.
+The repository is used bare. It used to be wrapped, because the service fetched
+the case through ``get_by_id`` and ``get_evidence``, which no case repository
+has; since #1661 it reads through the contract's ``get``.
 """
 
 from __future__ import annotations
@@ -77,23 +75,6 @@ class _Provider:
         return SimpleNamespace(content=valid_runbook(), is_truncated=False)
 
 
-class _Repository:
-    """A real repository's rows, plus the two reads the service makes that no
-    repository implements (#1661)."""
-
-    def __init__(self, real: InMemoryCaseRepository) -> None:
-        self._real = real
-
-    async def get_by_id(self, case_id: str):
-        return await self._real.get(case_id)
-
-    async def get_messages(self, case_id: str):
-        return await self._real.get_messages(case_id)
-
-    async def get_evidence(self, case_id: str):
-        return []
-
-
 def _row(turn: int, role: str, content: str, **metadata) -> dict:
     return {
         "message_id": f"msg_{role[0]}{turn:02d}{len(content):04d}",
@@ -120,7 +101,7 @@ async def _source_material(extra_rows: list[dict]) -> str:
 
     provider = _Provider()
     service = SuggestionService(
-        case_repository=_Repository(real),
+        case_repository=real,
         knowledge_service=None,
         sanitizer=None,
         llm_provider=provider,

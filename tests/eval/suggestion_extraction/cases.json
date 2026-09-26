@@ -1,5 +1,5 @@
 {
-  "_readme": "Case fixtures for run_extraction_eval.py. Each entry is the shape SuggestionService.extract_knowledge_from_case reads off a Case: title, description, an ordered message transcript, and evidence summaries. Written as an engineer would actually type them (partial sentences, pasted log lines, a wrong turn before the right one), NOT as a clean statement of the answer, because a prompt that only works on tidy input has not been tested. Every case is de-identified already except where noted: three carry deliberate incident-specific detail (hostnames, an email, absolute timestamps, a ticket id) so the de-identification instruction has something to remove.",
+  "_readme": "Case fixtures for run_extraction_eval.py. Each entry is seeded into a real case repository as a Case: title, description, an ordered message transcript, and evidence rows (category is Evidence.category; artifact_type maps to Evidence.source_type; name is read only by the `before` arm, since Evidence has no such field). Written as an engineer would actually type them (partial sentences, pasted log lines, a wrong turn before the right one), NOT as a clean statement of the answer, because a prompt that only works on tidy input has not been tested. Every case is de-identified already except where noted: three carry deliberate incident-specific detail (hostnames, an email, absolute timestamps, a ticket id) so the de-identification instruction has something to remove.",
   "cases": [
     {
       "case_id": "case_ev1_pg_pool",
@@ -16,9 +16,9 @@
         {"role": "user", "content": "confirmed. added a finally that rolls back, deployed, idle-in-transaction count is back to single digits and 500s stopped. also set idle_in_transaction_session_timeout to 60s as a backstop."}
       ],
       "evidence": [
-        {"artifact_type": "log", "name": "checkout-api.log", "summary": "Repeated 'FATAL: remaining connection slots are reserved' entries, clustered from the start of the peak window; interleaved with HTTP 500 responses on POST /checkout."},
-        {"artifact_type": "metric", "name": "pg_stat_activity snapshot", "summary": "187 backends in state 'idle in transaction', 11 active, 2 idle, against max_connections=200. Oldest idle-in-transaction session 41 minutes."},
-        {"artifact_type": "config", "name": "postgresql.conf excerpt", "summary": "max_connections=200; idle_in_transaction_session_timeout=0 (disabled)."}
+        {"category": "symptom_evidence", "artifact_type": "log", "name": "checkout-api.log", "summary": "Repeated 'FATAL: remaining connection slots are reserved' entries, clustered from the start of the peak window; interleaved with HTTP 500 responses on POST /checkout."},
+        {"category": "causal_evidence", "artifact_type": "metric", "name": "pg_stat_activity snapshot", "summary": "187 backends in state 'idle in transaction', 11 active, 2 idle, against max_connections=200. Oldest idle-in-transaction session 41 minutes."},
+        {"category": "causal_evidence", "artifact_type": "config", "name": "postgresql.conf excerpt", "summary": "max_connections=200; idle_in_transaction_session_timeout=0 (disabled)."}
       ]
     },
     {
@@ -36,8 +36,8 @@
         {"role": "user", "content": "switched the reader to a streaming parser and raised limits.memory to 1Gi with requests 512Mi. no restarts in 6 hours."}
       ],
       "evidence": [
-        {"artifact_type": "log", "name": "kubectl describe pod ingest-worker", "summary": "Last State Terminated, Reason OOMKilled, Exit Code 137, Restart Count 43. Container memory limit 512Mi, request 256Mi."},
-        {"artifact_type": "metric", "name": "container_memory_working_set_bytes", "summary": "Sawtooth pattern: smooth climb from ~90Mi to the 512Mi limit over roughly four minutes, then a vertical drop at each restart."}
+        {"category": "symptom_evidence", "artifact_type": "log", "name": "kubectl describe pod ingest-worker", "summary": "Last State Terminated, Reason OOMKilled, Exit Code 137, Restart Count 43. Container memory limit 512Mi, request 256Mi."},
+        {"category": "causal_evidence", "artifact_type": "metric", "name": "container_memory_working_set_bytes", "summary": "Sawtooth pattern: smooth climb from ~90Mi to the 512Mi limit over roughly four minutes, then a vertical drop at each restart."}
       ]
     },
     {
@@ -54,8 +54,8 @@
         {"role": "user", "content": "rebuilt the image with current ca-certificates, calls succeed. added a check to the image build that fails if ca-certificates is older than 12 months."}
       ],
       "evidence": [
-        {"artifact_type": "log", "name": "billing-service stderr", "summary": "ssl.SSLCertVerificationError: certificate verify failed: certificate has expired, on every outbound POST to the settlement endpoint."},
-        {"artifact_type": "config", "name": "Dockerfile excerpt", "summary": "Base image pins ca-certificates to a 2021 release; no refresh step in the build."}
+        {"category": "symptom_evidence", "artifact_type": "log", "name": "billing-service stderr", "summary": "ssl.SSLCertVerificationError: certificate verify failed: certificate has expired, on every outbound POST to the settlement endpoint."},
+        {"category": "causal_evidence", "artifact_type": "config", "name": "Dockerfile excerpt", "summary": "Base image pins ca-certificates to a 2021 release; no refresh step in the build."}
       ]
     },
     {
@@ -73,9 +73,9 @@
         {"role": "user", "content": "set an 8h TTL on session writes, backfilled EXPIRE over existing session keys. memory dropped to 40% of maxmemory, hit rate back to 93%, p99 back to 185ms."}
       ],
       "evidence": [
-        {"artifact_type": "metric", "name": "redis INFO stats", "summary": "keyspace_hits/keyspace_misses ratio falls from 0.94 to 0.38 over about one hour; evicted_keys rises by 2.1M in the same window."},
-        {"artifact_type": "metric", "name": "redis INFO memory", "summary": "used_memory pinned at maxmemory; maxmemory-policy allkeys-lru."},
-        {"artifact_type": "log", "name": "keyspace sample", "summary": "session:* prefix accounts for roughly 70% of sampled key memory, up from roughly 10% a week earlier; sampled session keys report TTL -1."}
+        {"category": "symptom_evidence", "artifact_type": "metric", "name": "redis INFO stats", "summary": "keyspace_hits/keyspace_misses ratio falls from 0.94 to 0.38 over about one hour; evicted_keys rises by 2.1M in the same window."},
+        {"category": "causal_evidence", "artifact_type": "metric", "name": "redis INFO memory", "summary": "used_memory pinned at maxmemory; maxmemory-policy allkeys-lru."},
+        {"category": "causal_evidence", "artifact_type": "log", "name": "keyspace sample", "summary": "session:* prefix accounts for roughly 70% of sampled key memory, up from roughly 10% a week earlier; sampled session keys report TTL -1."}
       ]
     },
     {
@@ -92,8 +92,8 @@
         {"role": "user", "content": "confirmed against the coredns metrics - request count is ~6x the number of actual lookups. set ndots:2 in the pod dnsConfig and appended a trailing dot to the external hostnames. the 5s outliers are gone."}
       ],
       "evidence": [
-        {"artifact_type": "metric", "name": "coredns request rate", "summary": "DNS query volume roughly six times the number of distinct upstream lookups the services make, consistent with search-domain expansion."},
-        {"artifact_type": "config", "name": "/etc/resolv.conf in pod", "summary": "Five search domains; options ndots:5 timeout:5 attempts:2."}
+        {"category": "symptom_evidence", "artifact_type": "metric", "name": "coredns request rate", "summary": "DNS query volume roughly six times the number of distinct upstream lookups the services make, consistent with search-domain expansion."},
+        {"category": "causal_evidence", "artifact_type": "config", "name": "/etc/resolv.conf in pod", "summary": "Five search domains; options ndots:5 timeout:5 attempts:2."}
       ]
     },
     {
@@ -110,8 +110,8 @@
         {"role": "user", "content": "dropped the orphaned slot, pg_wal collapsed to 4GB within a couple of checkpoints, writes resumed. added an alert on inactive slots older than 1h and set max_slot_wal_keep_size."}
       ],
       "evidence": [
-        {"artifact_type": "log", "name": "postgresql.log", "summary": "PANIC: could not write to file pg_wal/xlogtemp: No space left on device, followed by the server refusing writes."},
-        {"artifact_type": "metric", "name": "pg_replication_slots", "summary": "One slot with active=false whose restart_lsn has not advanced in nine days; pg_wal directory 340GB against a 60GB database."}
+        {"category": "symptom_evidence", "artifact_type": "log", "name": "postgresql.log", "summary": "PANIC: could not write to file pg_wal/xlogtemp: No space left on device, followed by the server refusing writes."},
+        {"category": "causal_evidence", "artifact_type": "metric", "name": "pg_replication_slots", "summary": "One slot with active=false whose restart_lsn has not advanced in nine days; pg_wal directory 340GB against a 60GB database."}
       ]
     },
     {
@@ -128,8 +128,8 @@
         {"role": "user", "content": "moved the report to a background job and returned 202 with a poll URL. raised gunicorn timeout to 60s as a stopgap first, which stopped the 502s immediately. priya.raman@example-corp.com confirmed at 03:05 UTC."}
       ],
       "evidence": [
-        {"artifact_type": "log", "name": "nginx error.log on prod-web-07.eu-west-1.internal", "summary": "upstream prematurely closed connection while reading response header from upstream, upstream: http://10.42.7.19:8080, client 203.0.113.44, repeated from 2026-03-14T02:11:44Z."},
-        {"artifact_type": "config", "name": "gunicorn.conf.py", "summary": "workers=4, timeout=30. The report endpoint measured at 45s for the Contoso dataset."}
+        {"category": "symptom_evidence", "artifact_type": "log", "name": "nginx error.log on prod-web-07.eu-west-1.internal", "summary": "upstream prematurely closed connection while reading response header from upstream, upstream: http://10.42.7.19:8080, client 203.0.113.44, repeated from 2026-03-14T02:11:44Z."},
+        {"category": "causal_evidence", "artifact_type": "config", "name": "gunicorn.conf.py", "summary": "workers=4, timeout=30. The report endpoint measured at 45s for the Contoso dataset."}
       ]
     },
     {
