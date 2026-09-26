@@ -304,6 +304,23 @@ def truncate_conversation_history(
    pip install tiktoken>=0.5.0 anthropic>=0.25.0
    ```
 
+4. Check that the encoding file loads. tiktoken downloads `cl100k_base` on
+   first use and caches it in `TIKTOKEN_CACHE_DIR` (the system temp directory
+   when unset). With no network and no cached file the load fails, or, where
+   outbound traffic is dropped rather than refused, waits with no timeout. When
+   it fails, OpenAI, OpenRouter, Anthropic and Fireworks counts, chunk sizing and
+   the knowledge base's document size gate all fall back to four characters a
+   token. Every count loads the encoding through one loader,
+   `_get_tiktoken_encoder`, on first use, and it keeps a failure for the life of
+   the process rather than retrying a download with no timeout. Restart once the
+   file is reachable:
+   ```
+   WARNING: Failed to get tiktoken encoder for gpt-4: ...
+   ```
+   The Docker image bakes the file into `TIKTOKEN_CACHE_DIR`, so containers
+   need no network for it. A process run outside the image needs network on
+   first use, or a `TIKTOKEN_CACHE_DIR` holding the file.
+
 ### Problem: High Token Usage
 
 **Diagnosis**:

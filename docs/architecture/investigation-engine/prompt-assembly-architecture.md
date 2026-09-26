@@ -268,7 +268,11 @@ Fallback templates carry only the load-bearing safety constraints (no
 confabulation, hypothesis-evidence ordering for INVESTIGATING, closed-case
 boundary for TERMINAL). They produce shorter prompts at the cost of richer
 behavioral guidance — a degraded but safe mode, reserved for genuine last
-resort after step 3's trimming.
+resort after step 3's trimming. The INQUIRY and INVESTIGATING fallbacks also
+render the previous turn's `system_feedback`, read through the same
+`system_feedback_block()` as the main prompt, guarded above `USER:` and capped
+at 100 tokens (#1688); the TERMINAL fallback does not, matching
+`TERMINAL_TEMPLATE`.
 
 > The backstop only fires when a `provider_name` is supplied (so the budget can
 > be resolved). All engine call sites — the main turn path and the terminal-Q&A
