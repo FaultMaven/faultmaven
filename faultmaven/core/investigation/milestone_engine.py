@@ -4915,7 +4915,9 @@ def record_promptless_turn(
     that built no prompt has not consumed it, so a record written here with no
     feedback would hide the notice from the next prompt that is built.
     Forwarding cannot deliver twice: the generation path records only the
-    feedback its own turn produced.
+    feedback its own turn produced. A forwarded copy is marked
+    ``system_feedback_forwarded``, so the prompt can say which turn the notice
+    came from instead of calling it the previous turn's.
 
     **Except on a terminal case.** No prompt renders feedback once a case is
     closed or resolved (``TERMINAL_TEMPLATE`` has no slot, and terminal states
@@ -4928,6 +4930,11 @@ def record_promptless_turn(
     ``_finish_deterministic_turn``).
     """
     previous = case.turn_history[-1] if case.turn_history else None
+    forwarded = (
+        previous.system_feedback
+        if previous is not None and not case.is_terminal
+        else None
+    )
     case.turn_history.append(
         TurnProgress(
             turn_number=case.current_turn,
@@ -4942,11 +4949,8 @@ def record_promptless_turn(
             user_message_summary=summarize_for_turn_record(user_message, 200),
             agent_response_summary=summarize_for_turn_record(agent_response, 500),
             agent_response_synthesized=agent_response_synthesized,
-            system_feedback=(
-                previous.system_feedback
-                if previous is not None and not case.is_terminal
-                else None
-            ),
+            system_feedback=forwarded,
+            system_feedback_forwarded=bool(forwarded),
         )
     )
     if progress_made:

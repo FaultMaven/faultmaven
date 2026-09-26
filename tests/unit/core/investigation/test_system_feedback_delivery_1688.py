@@ -35,6 +35,7 @@ from faultmaven.core.investigation.milestone_engine import (
 from faultmaven.core.investigation.prompts import templates
 from faultmaven.core.investigation.prompts.fence import TERMINATOR_NOTE
 from faultmaven.core.investigation.prompts.templates import (
+    _FALLBACK_FEEDBACK_MAX_TOKENS,
     _FALLBACK_FENCE_RULE_HEAD,
     get_fallback_prompt_for_case,
     get_prompt_for_case,
@@ -66,11 +67,15 @@ from faultmaven.modules.case.domain.models import (
     TurnProgress,
 )
 from faultmaven.utils.model_context import resolve_model_budget
+from faultmaven.utils.token_estimation import estimate_tokens
 
 pytestmark = pytest.mark.unit
 
 NOTICE = "REASONING VALIDATION: probe-1688 — root_cause_identified was NOT recorded"
 SUBSTANTIVE = "what does the etcd member log show around the time of the alerts?"
+FROM_PREVIOUS_TURN = "IMPORTANT - SYSTEM FEEDBACK FROM PREVIOUS TURN:"
+#: The seeded notice is written on turn 3 (``_with_notice``).
+FROM_TURN_3 = "IMPORTANT - SYSTEM FEEDBACK FROM TURN 3 (not shown to you until now):"
 DROPDOWN_CLOSE = {
     "intent_type": "status_transition",
     "intent_data": {"to_state": "closed"},
@@ -255,7 +260,8 @@ class TestAPromptlessTurnPassesTheNoticeOn:
         engine = _engine()
         case = _with_notice(_investigating_case())
         assert await _turn(engine, case, SUBSTANTIVE)
-        assert NOTICE in engine._generate_structured_output.call_args[0][0]
+        prompt = engine._generate_structured_output.call_args[0][0]
+        assert f"{FROM_PREVIOUS_TURN}\n{NOTICE}" in prompt
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("branch", sorted(_CASE_OPEN_BRANCHES))
@@ -272,11 +278,16 @@ class TestAPromptlessTurnPassesTheNoticeOn:
             assert case.turn_history[-1].turn_number == case.current_turn, message
             assert (case.pending_transition or {}).get("to_state") == pending_after
             assert case.turn_history[-1].system_feedback == NOTICE, message
+            assert case.turn_history[-1].system_feedback_forwarded, message
         assert not case.is_terminal
         assert engine._generate_structured_output.call_count == 0
 
         assert await _turn(engine, case, SUBSTANTIVE)
-        assert NOTICE in engine._generate_structured_output.call_args[0][0]
+        prompt = engine._generate_structured_output.call_args[0][0]
+        # Named by the turn that wrote it: the history above ends on the gate
+        # exchange, so "previous turn" would point at the wrong one.
+        assert f"{FROM_TURN_3}\n{NOTICE}" in prompt
+        assert FROM_PREVIOUS_TURN not in prompt
 
     @pytest.mark.asyncio
     async def test_a_terminal_case_does_not_carry_the_notice(self):
@@ -290,6 +301,7 @@ class TestAPromptlessTurnPassesTheNoticeOn:
         assert not await _turn(engine, case, "yes")
         assert case.state == CaseState.CLOSED
         assert case.turn_history[-1].system_feedback is None
+        assert not case.turn_history[-1].system_feedback_forwarded
 
     def test_the_service_backstop_follows_the_same_rule(self):
         """The service's record for a turn that never reached the engine is
@@ -300,6 +312,7 @@ class TestAPromptlessTurnPassesTheNoticeOn:
             open_case, user_message="hi", agent_response="Hello!", metadata={}
         )
         assert open_case.turn_history[-1].system_feedback == NOTICE
+        assert open_case.turn_history[-1].system_feedback_forwarded
 
         closed = _closed(_with_notice(_investigating_case()))
         closed.current_turn += 1
@@ -399,6 +412,10 @@ class TestTheNoticeIsDeliveredOnceAcrossAGate:
         ]
         prompts = [c.kwargs["prompt"] for c in llm.generate.call_args_list]
         assert prompts and any(_STRIPPED in p for p in prompts)
+        assert any(
+            "SYSTEM FEEDBACK FROM TURN 1 (not shown to you until now)" in p
+            for p in prompts
+        )
 
         # Delivered, therefore consumed: turn 3's record carries only what
         # turn 3 produced, so turn 4's prompt does not repeat the notice.
@@ -434,6 +451,41 @@ class TestTheFallbackRendersTheNotice:
         )
         prompt = get_fallback_prompt_for_case(case, SUBSTANTIVE)
         assert f'ev_1">{TERMINATOR_NOTE}\n\nUSER:' in prompt
+
+    @pytest.mark.parametrize(
+        "notice",
+        [
+            # Log-dense English, and CJK: the scripts that tokenize densest.
+            "REASONING VALIDATION: rejected claim citing "
+            "2026-09-24T12:11:24.986Z pod/payments-7f9c4d-x2k8q req=9f3a1c7e-44b2; "
+            * 12,
+            "支付服务在部署后开始返回错误，节点上的容器因内存不足被终止。" * 30,
+        ],
+        ids=["log-dense", "cjk"],
+    )
+    def test_the_notice_adds_at_most_its_cap(self, notice):
+        """The fallback is returned without being re-measured against the
+        model ceiling, so its size is bounded by construction, channel by
+        channel. A maximum-length notice may add only its cap, plus the heading
+        and the truncation marker, whatever its script."""
+        notice = notice[:1000]  # TurnProgress.system_feedback's max_length
+        bare = _fallback_case(CaseState.INVESTIGATING)
+        bare.turn_history[-1] = bare.turn_history[-1].model_copy(
+            update={"system_feedback": None}
+        )
+        noticed = _fallback_case(CaseState.INVESTIGATING)
+        noticed.turn_history[-1] = noticed.turn_history[-1].model_copy(
+            update={"system_feedback": notice}
+        )
+
+        def size(case: Case) -> int:
+            prompt = get_fallback_prompt_for_case(case, SUBSTANTIVE)
+            return estimate_tokens(prompt, provider="openai", model="gpt-4o")
+
+        with_notice = get_fallback_prompt_for_case(noticed, SUBSTANTIVE)
+        assert notice[:40] in with_notice, "the head is what survives"
+        assert "truncated" in with_notice, "a cut notice says so"
+        assert size(noticed) - size(bare) <= _FALLBACK_FEEDBACK_MAX_TOKENS + 40
 
     def test_the_terminal_fallback_does_not(self):
         """Consistent with the main TERMINAL prompt, which has no slot."""

@@ -574,7 +574,7 @@ class ResponseParser:
 
 ### 3.2 System Feedback Loop
 
-Validation errors from multiple sources are merged into `system_feedback` on the turn record, which `build_investigation_context()` includes in the next turn's prompt:
+Validation errors from multiple sources are merged into `system_feedback` on the turn record. The next prompt reads it from the last record, `turn_history[-1]`, through `context_builder.system_feedback_block()`, which the main prompt and the minimal fallback both use:
 
 | Source | Feedback Key | Content |
 |--------|-------------|---------|
@@ -582,6 +582,15 @@ Validation errors from multiple sources are merged into `system_feedback` on the
 | Progress monitor | `breakout_action` (turn metadata; the monitor result also carries a `prompt_injection` field) | Transparency guidance + repair-pattern injection (e.g., "try different category" on anchoring) |
 
 This ensures the LLM receives corrective instructions for the next turn even when the current turn's issues are non-fatal.
+
+**Delivery across turns that build no prompt (#1688).** A notice is addressed to the next prompt that is built, which is not always the next turn. Some turns build no prompt:
+
+- the pending-transition gate branches, recorded by `_finish_deterministic_turn`;
+- the routes the service answers itself (greetings, file reclassification, the terminal short-circuit), recorded by `_backfill_consumed_turn`.
+
+Both record their turn through `milestone_engine.record_promptless_turn`. It copies the previous record's notice onto the new record and marks the copy `system_feedback_forwarded`. The prompt then names the turn that wrote the notice ("SYSTEM FEEDBACK FROM TURN N (not shown to you until now)") instead of "PREVIOUS TURN", because the conversation history above it ends on the exchanges that carried it. A turn that builds a prompt records only the feedback it produced itself, so each notice is delivered once. On a closed or resolved case nothing is forwarded, because no prompt renders feedback there. A new route that records a turn without building a prompt must go through `record_promptless_turn`, or it hides the pending notice from the next prompt.
+
+The minimal fallback prompt renders the notice too, guarded above the user's message and capped at 100 tokens; see [prompt-token-budget-allocation.md §7](./prompt-token-budget-allocation.md#7-overflow--starvation-backstop).
 
 The reasoning-first validator judges only milestones the model is newly claiming. A milestone the case already records is a restatement: it is not validated, not stripped, and produces no feedback. The prompt asks for a justification only for a milestone the model changes, and models routinely restate standing booleans; rejecting the restatement would tell the model an achieved milestone was rejected.
 
@@ -1184,7 +1193,8 @@ This error handling framework provides:
 - `MilestoneEngine.process_turn()` - Per-case lock, calls StateValidator, ProgressMonitor, and stage-gate side effects
 - `LLMProvider.generate()` - Uses LLMErrorHandler for retry logic
 - `ResponseParser.parse()` - Handles parsing failures gracefully
-- `build_investigation_context()` - Consumes system_feedback from previous turn for LLM context
+- `system_feedback_block()` - Reads the pending system_feedback for the main and the fallback prompt
+- `record_promptless_turn()` - Forwards it across turns that build no prompt
 
 ---
 

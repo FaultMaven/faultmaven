@@ -763,9 +763,14 @@ class TestTheCompactRuleStaysCompact:
         by construction rather than by a check (#1254 review). Every input is
         capped — problem 200 chars, user 500, 3 stubs x 200, 12 journal
         entries x 120, 3 hypotheses x 50, and the previous turn's notice at
-        ``TurnProgress.system_feedback``'s 1000 (#1688) — so a worst case
-        exists and this pins it below ``MIN_PROMPT_BUDGET``, the floor of any
-        ceiling ``resolve_model_budget`` can return."""
+        100 tokens (#1688) — so a worst case exists and this pins it below
+        ``MIN_PROMPT_BUDGET``, the floor of any ceiling ``resolve_model_budget``
+        can return.
+
+        What it measures is text that tokenizes like prose: most caps are in
+        characters, and ``fence.py`` says which text they do not bound. The
+        notice is the exception, capped in tokens, so it is given realistic
+        engine prose at its full length rather than a repeated character."""
         from faultmaven.utils.model_context import MIN_PROMPT_BUDGET
 
         case = _case(state=CaseState.INVESTIGATING, structural_index="X" * 8000)
@@ -776,10 +781,22 @@ class TestTheCompactRuleStaysCompact:
         ]
         h = _hypothesis("H" * 500)  # Hypothesis.statement max_length
         case.hypotheses = {h.hypothesis_id: h}
-        case.turn_history = [_feedback_record("F" * 1000)]  # its max_length
+        notice = (
+            "SYSTEM: Your pending SOLUTION proposal was withdrawn because the "
+            "root cause it targeted is no longer established. Hypothesis "
+            "'checkout pods exhaust the connection pool after the deploy' "
+            "duplicates standing hypothesis hyp_0a0a0a0a0a0a. "
+        ) * 4
+        case.turn_history = [_feedback_record(notice[:1000])]  # its max_length
         case.current_turn = 2
+        # Still a current-turn upload, so the stub renders: it is one of the
+        # capped channels this worst case exists to include.
+        case.uploaded_files = [
+            f.model_copy(update={"uploaded_at_turn": 2}) for f in case.uploaded_files
+        ]
         prompt = get_fallback_prompt_for_case(case, "U" * 4000)
-        assert "F" * 1000 in prompt
+        assert notice[:40] in prompt
+        assert "<uploaded_file" in prompt
         worst = estimate_tokens(prompt, provider="openai", model="gpt-4o")
         assert worst < MIN_PROMPT_BUDGET, (worst, MIN_PROMPT_BUDGET)
 

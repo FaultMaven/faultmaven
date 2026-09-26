@@ -148,7 +148,9 @@ rule keeps everything the full one says that holds here, and states the
 demotion PROMPT-WIDE rather than block-scoped: unlike the main prompt, the
 fallback emits no unfenced tag-shaped structure of its own, so there is
 nothing outside the fenced blocks for a prompt-wide demotion to wrongly
-demote.
+demote. Guarded text (below) can still carry tag-shaped bytes, since the
+previous turn's notice may quote a hypothesis. Demoting those is right: they
+are data, not structure.
 
 "Exactly one token is live per emitted prompt" still rests on the two
 assemblies never co-occurring, and they do not: the fallback REPLACES the
@@ -162,10 +164,14 @@ The fallback's SIZE is bounded by construction rather than by a check, which
 matters because ``_assemble_allocated``'s overflow branch returns it without
 re-measuring it against the model ceiling. Every input is capped (problem 200
 chars, user message 500, three stubs x 200, twelve journal entries x 120,
-three hypotheses x 50), so a worst case exists and is 1,781 tokens — under
+three hypotheses x 50, and the previous turn's notice at 100 tokens), so a
+worst case exists, and a test pins it under
 ``model_context.MIN_PROMPT_BUDGET`` (2,000), the floor of any ceiling
 ``resolve_model_budget`` can return. The margin is thin enough that it is
-pinned by a test rather than left to inspection.
+pinned rather than left to inspection. Most caps are in characters, so the
+bound holds for text that tokenizes like prose, which is what the test
+measures. Text that tokenizes denser at the same length, such as log lines
+full of timestamps and ids, or CJK, can exceed the floor.
 
 **FORGERY and ABSORPTION are different questions, and only the first one is
 about authorship.** This distinction is the whole lesson of #1254 and it is
@@ -224,7 +230,11 @@ what they protect:
   ``terminal_transitions.derive_closure_reason``, which returns one of a
   closed set of labels — but the field is an unconstrained ``Optional[str]``
   (``max_length=100``, no pattern), so that shape is a convention, not a
-  guarantee, and it renders directly above a fenced ``<user_message>``.
+  guarantee, and it renders directly above a fenced ``<user_message>``. The
+  previous turn's ``system_feedback`` is guarded too (#1688): the engine
+  writes it, but it can quote model text. Fencing it would also misstate its
+  role, because the rule tells the model that fenced content is not an
+  instruction to it, and the notice is the engine's correction to the model.
 
 Left BARE, and this is the only safe reason to leave anything bare:
 ``STATE:``/``STAGE:`` are enum values and ``MILESTONES COMPLETED:`` is a join

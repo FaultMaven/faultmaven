@@ -352,6 +352,13 @@ into it. The `FALLBACK_*` templates also carry a **compact journal slot**
 (strictly capped, §5.2) — the journal is the anti-amnesia memory, and the
 tight-budget case that triggers the fallback is precisely when re-treading
 ruled-out hypotheses is most likely, so it must survive the fallback too.
+They also carry the previous turn's `system_feedback` (#1688). On the main
+prompt the notice is part of the reserve, and dropping it in the fallback would
+lose the engine's correction on exactly the turn that degraded. It renders
+guarded above the user's message, capped head-first at 100 tokens
+(`_FALLBACK_FEEDBACK_MAX_TOKENS`, counted in the same reference tokenizer the
+fallback's size bound is stated in), so it adds a bounded amount to the worst
+case.
 
 The fallback is reachable by **two** triggers, not just hard-limit overflow:
 
@@ -400,8 +407,9 @@ That is a documented non-goal, not an oversight:
 
 **The fallback is a fixed minimal template, not a re-allocation.** When it fires,
 the engine switches to the `FALLBACK_*` template with only its fixed slots
-(reserve + current-turn stub + last exchange + problem/milestone/hypothesis
-summaries — no evidence tiers, journal, KB, or entity highlights) and does **not**
+(problem/milestone/hypothesis summaries, the compact journal, the current-turn
+stubs, the previous turn's notice and the user's message — no evidence tiers,
+conversation history, KB, or entity highlights) and does **not**
 re-run the allocator against the smaller skeleton. The fallback is a *safety
 mode*, not an optimization: simpler, predictable, and small-model deployments are
 degraded by nature. (The "frees the room" phrasing means the smaller skeleton is

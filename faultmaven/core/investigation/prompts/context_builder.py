@@ -3739,18 +3739,30 @@ def system_feedback_block(
     (``milestone_engine.record_promptless_turn``), so the last record is the
     one carrying whatever no prompt has rendered yet.
 
+    The heading names where the notice came from. Normally that is the
+    previous turn. A forwarded copy belongs to an earlier one, and the
+    conversation history above ends on the exchanges that carried it, so
+    "previous turn" would point the model at the wrong exchange. The walk
+    back over forwarded copies finds the turn that wrote it.
+
     ``guard`` wraps the notice text alone; the fallback passes its
     ``_guarded``. Wrapping the finished block instead would put a terminator
     after the block's trailing blank line, on the same line as whatever the
     template renders next.
     """
-    if not case.turn_history:
+    history = case.turn_history
+    if not history or not history[-1].system_feedback:
         return ""
-    feedback = case.turn_history[-1].system_feedback
-    if not feedback:
-        return ""
-    body = guard(feedback) if guard else feedback
-    return f"IMPORTANT - SYSTEM FEEDBACK FROM PREVIOUS TURN:\n{body}\n\n"
+    body = guard(history[-1].system_feedback) if guard else history[-1].system_feedback
+    if not history[-1].system_feedback_forwarded:
+        return f"IMPORTANT - SYSTEM FEEDBACK FROM PREVIOUS TURN:\n{body}\n\n"
+    origin = len(history) - 1
+    while origin > 0 and history[origin].system_feedback_forwarded:
+        origin -= 1
+    return (
+        f"IMPORTANT - SYSTEM FEEDBACK FROM TURN {history[origin].turn_number} "
+        f"(not shown to you until now):\n{body}\n\n"
+    )
 
 
 def build_investigation_context(
