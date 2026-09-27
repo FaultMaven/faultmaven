@@ -131,3 +131,220 @@ def _admit_diverse(ranked: list) -> list:
 # simply thinner than it should be — and on this path that starves the
 # symptom-verification context.
 KB_PREFETCH_RELEVANCE_THRESHOLD = 0.5
+
+import logging
+import re
+
+from faultmaven.modules.case.contracts import (
+    Case,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class KbPrefetcher:
+    """Pre-fetches KB context for the current turn — the deterministic push half of retrieval, run ahead of generation so the prompt carries relevant runbook matches even when the model never calls kb_qa."""
+
+    def __init__(self, *, deps) -> None:
+        self.deps = deps
+
+    async def prefetch_kb_context(
+        self,
+        case: "Case",
+        query: str,
+        trigger: str,
+    ) -> None:
+        """Search KB for runbooks matching the query, store on case.
+
+        Args:
+            case: Case to update
+            query: Search query (problem statement or root cause)
+            trigger: What triggered this search ("symptom" or "root_cause")
+
+        Side effect only: writes the top ``KB_CONTEXT_MAX_ENTRIES`` admitted
+        hits to ``case.kb_context`` (or clears it on a miss) for the prompt
+        builder. Nothing consumes a return value since the KB cause seeder
+        was removed (fm#1295).
+        """
+        if not self.deps.knowledge_service:
+            return None
+
+        # Policy gate on the PUSH channel (fm#1360, Option B). Off means the
+        # search does not run AT ALL — the cost this gate exists to control is
+        # the hybrid retrieval as much as the prompt surface it produces.
+        #
+        # Clearing rather than merely returning: ``case.kb_context`` is
+        # persisted (it must be, or the push can never reach a prompt — see the
+        # repository metadata blob), so a case that accumulated context while
+        # the push was enabled would otherwise keep standing runbooks in its
+        # turn response and telemetry after the operator turned the push off.
+        # "Off" has to mean off for the case, not only for new searches.
+        #
+        # The prompt is guarded independently in ``context_builder`` — that is
+        # the seam that decides what the model actually sees, and it must hold
+        # for a case reloaded with context already on it.
+        from faultmaven.config.settings import get_settings
+
+        if not get_settings().knowledge.kb_prefetch_enabled:
+            case.kb_context = None
+            return None
+
+        try:
+            # Owner-aware scope. The pre-fetch may
+            # read only what the case OWNER can read: global (platform-curated)
+            # plus the owner's own personal KB. This completes the flywheel
+            # loop — a user's resolved cases, converted to personal runbooks,
+            # seed that user's own future investigations — while preserving
+            # strict cross-user isolation: the personal condition is keyed on
+            # the owner's user_id, so user B's case can never surface user A's
+            # personal runbooks. Without this filter search_knowledge defaults
+            # to global-only, so personal (case-generated) runbooks never seed.
+            #
+            # The team arm resolves the case OWNER's shared-kb-id allowlist —
+            # keyed on case.user_id, NOT the session user, so user B's case can
+            # never surface user A's runbooks — via the same share table → id
+            # allowlist the QA path uses (resolve_shared_kb_ids, ADR-013 §D4),
+            # passed as the second arg to build_kb_scope_filter. It is inert in
+            # practice until case→runbook conversion emits team-shared runbooks
+            # (there are none to seed yet), and in standalone: team_service is
+            # None, so the owner resolves an empty shared set and the scope
+            # collapses to global ∪ owner-personal.
+            from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+                build_kb_scope_filter,
+                resolve_shared_kb_ids,
+            )
+
+            owner_id = getattr(case, "user_id", None)
+            # team_service/share_repository are wired post-construction; use
+            # None in standalone: the team arm then resolves empty.
+            team_service = self.deps.team_service
+            share_repository = self.deps.share_repository
+            shared_kb_ids: list[str] = []
+            if owner_id and team_service and share_repository:
+                try:
+                    owner_team_ids = await team_service.list_all_user_team_ids(owner_id)
+                    shared_kb_ids = await resolve_shared_kb_ids(
+                        share_repository,
+                        owner_team_ids,
+                        getattr(case, "enterprise_id", None),
+                    )
+                except Exception:  # noqa: BLE001
+                    # Graceful degradation — global ∪ owner-personal still apply.
+                    shared_kb_ids = []
+            scope_filter = build_kb_scope_filter(owner_id, shared_kb_ids)
+            # Fetch KB_PREFETCH_FETCH_LIMIT chunks — the reranker's candidate
+            # pool, see the constant — and render only the top
+            # KB_CONTEXT_MAX_ENTRIES into the prompt.
+            #
+            # HYBRID, not pure vector (#1272). An operator writes what they
+            # SAW — "cannot write its PID file", "qemu failed to start" — and
+            # those words are precisely what an embedding smooths into the
+            # neighbourhood of every other "process won't start" runbook. On
+            # the shipped pack that put the runbook covering the failure at
+            # rank 70 of 91 while the top ten were all Kubernetes. Adding the
+            # keyword-constrained arm and the IDF-weighted reranker moves it to
+            # rank 1 for the same query, and pure vector search cannot: the
+            # fetch limit is applied to CHUNKS before any floor, so no
+            # threshold value can admit a chunk ranked 369th.
+            results = await self.deps.knowledge_service.search_knowledge(
+                query=query,
+                limit=KB_PREFETCH_FETCH_LIMIT,
+                filters=scope_filter,
+                use_hybrid=True,
+                # The floor goes in at ADMISSION, not after ranking. Hybrid
+                # results are ordered by the reranker's blend, so the filter
+                # below would thin this window from the middle: on a measured
+                # query it left 2 hits where 10 were asked for. The filter
+                # below stays as the
+                # authority (and still governs the pure-vector fallback).
+                min_score=KB_PREFETCH_RELEVANCE_THRESHOLD,
+            )
+            relevant = [
+                r for r in results or [] if r.score >= KB_PREFETCH_RELEVANCE_THRESHOLD
+            ]
+            if relevant:
+                # `results` is ordered by the reranker's blend; the floor below
+                # is applied to `score`, which stays the raw cosine on every
+                # path. Two quantities on purpose — an absolute one to admit
+                # with, a relative one to order by — so this slice is the top of
+                # the RANKING and the filter is a statement about ABSOLUTE
+                # similarity. Ordering by cosine instead would discard the
+                # keyword and term-overlap evidence that produced the ranking.
+                case.kb_context = [
+                    {
+                        "title": r.title,
+                        # Which SECTION of the runbook matched. Two chunks of one
+                        # runbook are two entries with the same title, so without
+                        # this the prompt cannot tell them apart (#1379 review).
+                        "section": _chunk_label(r.snippet),
+                        "summary": r.snippet,
+                        "score": r.score,
+                        "type": getattr(r, "document_type", "runbook"),
+                        "parent_document_id": getattr(r, "parent_document_id", None),
+                        "trigger": trigger,
+                    }
+                    for r in _admit_diverse(relevant)
+                ]
+                # Identity, not just a count (fm#1361). "3 matches" cannot
+                # answer "which runbook informed this answer?" or "was
+                # retrieval any good?" — both need to know WHICH documents were
+                # admitted and at what score, and reconstructing that meant
+                # re-running the case. Emitted twice on purpose: in the message
+                # for a human reading a log, and under ``extra`` as separate
+                # fields for a structured consumer (the root handler is
+                # structlog's ProcessorFormatter with ExtraAdder, so these land
+                # as top-level keys on the JSON line).
+                _kb_ids = [
+                    str(r.get("parent_document_id") or "") for r in case.kb_context
+                ]
+                _kb_scores = [float(r.get("score") or 0.0) for r in case.kb_context]
+                logger.info(
+                    "KB pre-fetch (%s): %d matches for case %s: %s",
+                    trigger,
+                    len(case.kb_context),
+                    case.case_id,
+                    "; ".join(
+                        f"{r.get('title') or '(untitled)'}"
+                        f" [{r.get('parent_document_id') or 'no-id'}]"
+                        f" score={float(r.get('score') or 0.0):.3f}"
+                        for r in case.kb_context
+                    ),
+                    extra={
+                        "kb_prefetch_trigger": trigger,
+                        "kb_prefetch_hits": len(case.kb_context),
+                        "kb_prefetch_top_score": max(_kb_scores),
+                        "kb_runbook_ids": _kb_ids,
+                        "kb_runbook_titles": [
+                            str(r.get("title") or "") for r in case.kb_context
+                        ],
+                    },
+                )
+            else:
+                # Nothing usable this trigger → clear stale context, so a later
+                # trigger's miss cannot leave an earlier trigger's runbooks
+                # standing in the prompt as if they still matched.
+                #
+                # This used to read ``elif results:``, distinguishing "searched
+                # and found only weak matches" (clear) from "searched and found
+                # nothing at all" (leave alone, in case the search itself had
+                # failed). Moving the floor to admission collapsed that
+                # distinction — `results` is already floored, so `relevant` is
+                # empty exactly when `results` is — which left the branch
+                # unreachable and the stale context never cleared.
+                #
+                # `else` is the right resolution rather than a way to restore
+                # the old shape: the hazard the old guard existed for is
+                # already handled above. A search that genuinely FAILS raises
+                # (the embedder guard turns an unavailable model into an
+                # exception rather than an empty list), and the handler below
+                # returns without touching `kb_context`. So reaching here means
+                # the search ran and produced nothing worth showing, which is
+                # precisely when stale context should go.
+                case.kb_context = None
+            return None
+        except Exception:
+            logger.warning(
+                f"KB pre-fetch ({trigger}) failed for case {case.case_id}",
+                exc_info=True,
+            )
+            return None
