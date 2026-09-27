@@ -30,7 +30,10 @@ from faultmaven.core.investigation.terminal_transitions import (
     is_substantive_reply,
 )
 from faultmaven.models.api_models import IntentType, QueryIntent
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.intent_gates import (
+    _minted_intent_swallows_gate_consent,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
 )
 from faultmaven.modules.case.domain.models.case import Case
@@ -147,7 +150,7 @@ def _pending_resolve(case: Case) -> None:
 
 
 class TestMintedIntentTerminalConsentGuard:
-    GUARD = staticmethod(InvestigationService._minted_intent_swallows_gate_consent)
+    GUARD = staticmethod(_minted_intent_swallows_gate_consent)
 
     def test_substantive_confirmation_mint_is_rejected(self):
         """The #721 reproducer: typed contrastive text classifier-matched
@@ -231,7 +234,7 @@ class TestMintedIntentGateOneConsentGuard:
     problem statement started the investigation off it.
     """
 
-    GUARD = staticmethod(InvestigationService._minted_intent_swallows_gate_consent)
+    GUARD = staticmethod(_minted_intent_swallows_gate_consent)
 
     @staticmethod
     def _inquiry_awaiting_gate_one() -> Case:

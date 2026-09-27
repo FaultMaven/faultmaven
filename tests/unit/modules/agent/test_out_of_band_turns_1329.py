@@ -37,6 +37,9 @@ from faultmaven.infrastructure.protection.tenant_turn_cap import (
     utc_day,
 )
 from faultmaven.modules.agent.domain.services.investigation_service import (
+    service as _service_module,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
 )
 from faultmaven.modules.agent.domain.services.out_of_band import (
@@ -328,18 +331,22 @@ class TestControls:
         assert resp.investigation_turn == resp.turn_number
 
     async def test_an_attachment_is_never_triaged(
-        self, engine, recording_case_repository, case
+        self, engine, recording_case_repository, case, monkeypatch
     ):
         ledger = InMemoryTurnLedger()
         service = _service(engine, recording_case_repository, ledger, verdict="2")
         service.preprocessing_service = None
-        service._preprocess_attachment = AsyncMock(
-            return_value=SimpleNamespace(
-                uploaded_file=None,
-                classification_failed=True,
-                suggested_types=None,
-                attachment_filename="x.log",
-            )
+        monkeypatch.setattr(
+            _service_module,
+            "_preprocess_attachment",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    uploaded_file=None,
+                    classification_failed=True,
+                    suggested_types=None,
+                    attachment_filename="x.log",
+                )
+            ),
         )
         try:
             await _turn(

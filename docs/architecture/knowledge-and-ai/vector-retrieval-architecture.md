@@ -549,7 +549,7 @@ Neither path degrades to a second embedding space when BGE-M3 is unavailable (e.
 | ChromaDB store (chunk add/delete, vector search) | `faultmaven/infrastructure/persistence/chromadb_store.py` |
 | Content chunker (structure-aware splitting) | `faultmaven/modules/knowledge/domain/services/content_chunker.py` |
 | Knowledge service (document CRUD, ingestion) | `faultmaven/modules/knowledge/domain/services/knowledge_service.py` |
-| Conversion service (scan, verify, batch) | `faultmaven/modules/knowledge/domain/services/conversion_service.py` |
+| Conversion service (scan, verify, batch) | `faultmaven/modules/knowledge/domain/services/conversion_service/` |
 | KB-neutral Q&A tool (strategy pattern) | `faultmaven/modules/agent/tools/document_qa_tool.py` |
 | KBConfig interface | `faultmaven/modules/agent/tools/kb_config.py` |
 | Unified KB config (hybrid mode, staleness) | `faultmaven/modules/agent/tools/kb_configs/unified_kb_config.py` |

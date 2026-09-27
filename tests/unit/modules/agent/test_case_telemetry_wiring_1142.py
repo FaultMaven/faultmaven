@@ -37,7 +37,10 @@ from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngin
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import IntentType, QueryIntent
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.reclassification import (
+    _handle_file_reclassification,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
 )
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
@@ -310,12 +313,12 @@ class TestTheErrorPathIsARowNotAGap:
         documented (case_id, turn) dedup key — and on turn 1 invents a row for
         turn 0, which never existed.
         """
-        import faultmaven.modules.agent.domain.services.investigation_service as mod
+        import faultmaven.modules.agent.domain.services.investigation_service.service as mod
 
         async def explode(*_args, **_kwargs):
             raise RuntimeError("extractor died on the raw bytes")
 
-        monkeypatch.setattr(mod.InvestigationService, "_preprocess_attachment", explode)
+        monkeypatch.setattr(mod, "_preprocess_attachment", explode)
 
         with caplog.at_level(logging.INFO, logger=TELEMETRY_LOGGER_NAME):
             with pytest.raises(Exception):
@@ -376,7 +379,7 @@ class TestTheErrorPathIsARowNotAGap:
     ):
         """The success row is emitted before ``TurnResponse`` is assembled, so a
         failure in between would otherwise produce two rows for one turn."""
-        import faultmaven.modules.agent.domain.services.investigation_service as mod
+        import faultmaven.modules.agent.domain.services.investigation_service.service as mod
 
         def explode(*_args, **_kwargs):
             raise RuntimeError("response assembly failed")
@@ -463,7 +466,7 @@ class TestPathCoverageIsExhaustive:
         """
         import inspect
 
-        from faultmaven.modules.agent.domain.services.investigation_service import (
+        from faultmaven.modules.agent.domain.services.investigation_service.service import (
             _INTENT_DISPATCH,
             _IntentDispatchKind,
         )
@@ -473,7 +476,7 @@ class TestPathCoverageIsExhaustive:
             IntentType.CONFIRMATION: InvestigationService._handle_confirmation,
             IntentType.HYPOTHESIS_ACTION: InvestigationService._handle_hypothesis_action,
             IntentType.GREETING: InvestigationService._handle_greeting,
-            IntentType.FILE_RECLASSIFICATION: InvestigationService._handle_file_reclassification,
+            IntentType.FILE_RECLASSIFICATION: _handle_file_reclassification,
         }
         service_routed = {
             intent

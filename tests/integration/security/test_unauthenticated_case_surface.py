@@ -38,12 +38,12 @@ from faultmaven.api.v1.dependencies import (
     get_case_repository,
     get_investigation_service,
 )
-from faultmaven.modules.case.api.routes import (
+from faultmaven.modules.case.api.routes.dependencies import (
     _di_get_case_service_dependency,
     _di_get_runbook_kb_dependency,
     _di_get_session_service_dependency,
 )
-from faultmaven.modules.case.api.routes import router as case_router
+from faultmaven.modules.case.api.routes.router import router as case_router
 
 pytestmark = [pytest.mark.integration, pytest.mark.security]
 
@@ -64,7 +64,9 @@ _GATE = "faultmaven.api.v1.auth_dependencies.require_authentication"
 
 #: The provider whose twenty-two routes #1494 was split on, and the seam this
 #: module is about.
-_CASE_SERVICE = "faultmaven.modules.case.api.routes._di_get_case_service_dependency"
+_CASE_SERVICE = (
+    "faultmaven.modules.case.api.routes.dependencies._di_get_case_service_dependency"
+)
 
 #: One concrete request per operation, because a route cannot be driven through
 #: its template. Hand-written, and then checked against the router below — a new

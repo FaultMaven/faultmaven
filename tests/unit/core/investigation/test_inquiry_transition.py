@@ -33,6 +33,9 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputStrategy,
 )
 from faultmaven.models.interfaces import ILLMProvider
+from faultmaven.modules.agent.domain.services.investigation_service.intent_gates import (
+    _minted_intent_swallows_gate_consent,
+)
 from faultmaven.modules.case.contracts import Case, CaseState, InquiryData
 
 
@@ -1435,7 +1438,7 @@ class TestGate1ConsentPredicate:
         from faultmaven.core.investigation.milestone_engine.engine import (
             MilestoneEngine,
         )
-        from faultmaven.modules.agent.domain.services.investigation_service import (
+        from faultmaven.modules.agent.domain.services.investigation_service.service import (
             InvestigationService,
         )
 
@@ -1455,5 +1458,5 @@ class TestGate1ConsentPredicate:
             MilestoneEngine._process_turn_impl
         ), "the DECIDE click path (section 0c) no longer routes through it"
         assert calls_predicate(
-            InvestigationService._minted_intent_swallows_gate_consent
+            _minted_intent_swallows_gate_consent
         ), "the resolver-minted path no longer routes through it"

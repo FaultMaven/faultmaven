@@ -35,14 +35,14 @@ from faultmaven.infrastructure.protection.tenant_turn_cap import (
     InMemoryTurnLedger,
     TurnCapService,
 )
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
 )
 from faultmaven.modules.case.contracts import EMPTY_TURN_TEXT
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.problem import InquiryData
-from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     SQLiteCaseRepository,
 )
 from tests.utils import seed_enterprises, seed_users

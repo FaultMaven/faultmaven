@@ -4,7 +4,7 @@ paths:
   - "faultmaven/modules/case/**"
   - "faultmaven/infrastructure/persistence/**"
   - "faultmaven/cli/**"
-  - "faultmaven/modules/agent/domain/services/investigation_service.py"
+  - "faultmaven/modules/agent/domain/services/investigation_service/**"
   - "faultmaven/infrastructure/protection/tenant_turn_cap.py"
   - "faultmaven/config/constants.py"
   - "faultmaven/bootstrap/data_init.py"
@@ -79,8 +79,8 @@ modules/auth/
 ```
 modules/case/infrastructure/
 ├── case_repository.py                    # Abstract base repository
-├── sqlite_case_repository.py             # SQLite implementation (default)
-├── postgresql_hybrid_case_repository.py  # PostgreSQL implementation
+├── sqlite_case_repository/               # SQLite implementation (default): repository.py, rows.py, loading.py, saving.py
+├── postgresql_hybrid_case_repository/    # PostgreSQL implementation: repository.py (class), rows.py, loading.py, saving.py
 ├── sessionless_case_repository.py        # Sessionless repository variant
 ├── case_scope.py                         # Read-scope SQL: the owned ∪ shared-to-my-teams visible-id allowlist
 └── created_bounds.py                     # Creation-date window bounds, normalized to UTC, one place for every repository

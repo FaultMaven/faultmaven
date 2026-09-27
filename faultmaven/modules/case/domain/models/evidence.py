@@ -244,7 +244,7 @@ class EvidenceStance(str, Enum):
 
 # Pasted text and captured pages arrive with no filename, so the turns route
 # mints one at ingestion (``resolve_paste_source_meta`` +
-# ``f"{prefix}{ts}.txt"`` in modules/case/api/routes.py). That name is a
+# ``f"{prefix}{ts}.txt"`` in modules/case/api/routes/dependencies.py). That name is a
 # storage/transport artifact: the user never typed it and it says nothing
 # about the content. It is still a real ``filename`` — dedup, the storage
 # backend, extension sniffing and the classifier all consume it — so the fix

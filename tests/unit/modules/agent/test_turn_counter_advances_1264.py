@@ -27,8 +27,10 @@ import pytest
 from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.models.api_models import IntentType, QueryIntent
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
     _backfill_consumed_turn,
 )
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
@@ -309,7 +311,6 @@ class TestTheRecordDoesNotDestroyWhatTurnHistoryFeeds:
             check_if_progress_made,
             score_progress,
         )
-        from faultmaven.modules.agent.domain.services import investigation_service
 
         def _body(fn) -> str:
             src = inspect.getsource(fn)
@@ -318,7 +319,7 @@ class TestTheRecordDoesNotDestroyWhatTurnHistoryFeeds:
                 src = src.replace(line, "")
             return src
 
-        backfill_body = _body(investigation_service._backfill_consumed_turn)
+        backfill_body = _body(_backfill_consumed_turn)
         score_body = _body(score_progress)
         assert "score_progress" in backfill_body, backfill_body
         assert "check_if_progress_made" in score_body, score_body

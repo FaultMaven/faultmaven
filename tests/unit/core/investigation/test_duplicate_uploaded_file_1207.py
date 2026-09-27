@@ -35,6 +35,9 @@ from faultmaven.core.investigation.milestone_engine.response_application import 
 )
 from faultmaven.core.investigation.schemas import InquiryResponse
 from faultmaven.modules.case.contracts import Case, CaseState, UploadedFile
+from faultmaven.modules.case.infrastructure.sqlite_case_repository.saving import (
+    _upsert_uploaded_files,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -313,7 +316,7 @@ class TestThePersistedConsequence:
         )
 
         from faultmaven.infrastructure.persistence.models import Base
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -327,8 +330,8 @@ class TestThePersistedConsequence:
         try:
             async with factory() as session:
                 repo = SQLiteCaseRepository(session)
-                await repo._upsert_uploaded_files(
-                    case.case_id, case.uploaded_files, "ent_123", None
+                await _upsert_uploaded_files(
+                    repo.db, case.case_id, case.uploaded_files, "ent_123", None
                 )
                 row = (
                     await session.execute(

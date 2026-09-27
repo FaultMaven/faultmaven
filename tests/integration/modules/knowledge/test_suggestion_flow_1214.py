@@ -67,7 +67,7 @@ from faultmaven.infrastructure.persistence.models import (
     OrganizationModel,
 )
 from faultmaven.modules.auth.contracts import DevUser
-from faultmaven.modules.case.api.routes import router as case_router
+from faultmaven.modules.case.api.routes.router import router as case_router
 from faultmaven.modules.knowledge.api.routes import router as knowledge_router
 from faultmaven.modules.knowledge.domain.models.suggestion import KnowledgeSuggestion
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (

@@ -125,7 +125,7 @@ FaultMaven Core must remain **agnostic to where it runs** (local dev, Docker, Ku
 ### Fail-Fast Configuration
 
 ```python
-# main.py lifespan
+# bootstrap/lifespan.py's lifespan (called from main.py's app = FastAPI(lifespan=lifespan))
 async def startup():
     settings = Settings()  # Pydantic validates types
 
@@ -516,7 +516,7 @@ a route that 500s on first use, or a gate that never runs, behind a `/health`
 that still answers `healthy`. The composition root therefore separates *doing
 the wiring* from *deciding whether a failure is survivable*:
 
-| Function (`faultmaven/main.py`) | Responsibility |
+| Function (`faultmaven/bootstrap/composition.py`) | Responsibility |
 |---|---|
 | `_wire_composition_root(app, settings)` | Container init, bootstrap, the RLS role gate, and the whole `app.state` cascade. Raises on failure; decides nothing. |
 | `compose_application(app, settings)` | The one decision: refuse the boot, or continue with a warning. |

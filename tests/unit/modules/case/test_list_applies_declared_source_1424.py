@@ -53,7 +53,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from faultmaven.api.routes.admin_cases import list_all_cases
 from faultmaven.models.api_models import CaseListFilter
-from faultmaven.modules.case.api.routes import list_cases
+from faultmaven.modules.case.api.routes.cases import list_cases
 from faultmaven.modules.case.contracts import ICaseRepository
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
@@ -63,13 +63,13 @@ from faultmaven.modules.case.infrastructure.case_repository import (
     CaseRepository,
     InMemoryCaseRepository,
 )
-from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
+from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
     PostgreSQLHybridCaseRepository,
 )
 from faultmaven.modules.case.infrastructure.sessionless_case_repository import (
     SessionlessCaseRepository,
 )
-from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     SQLiteCaseRepository,
 )
 

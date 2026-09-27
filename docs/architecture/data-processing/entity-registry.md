@@ -220,12 +220,12 @@ Extractor failures are logged and degraded to an empty list — entity extractio
 
 ## Write path
 
-Producer: `PreprocessingService._build_result` (for each extraction) + `InvestigationService._preprocess_attachment` (for persistence).
+Producer: `PreprocessingService._build_result` (for each extraction) + `attachments._preprocess_attachment` (for persistence).
 
 1. After `_build_result` assembles `PreprocessingResult`, if `entity_registry_enabled` is True and the result isn't a placeholder, call `extract_entities_for_data_type` against the raw content.
 2. Bucket observations by `entity_type` and apply the per-(evidence, type) hard cap. The default cap is **500** rows per `(evidence, type)` pair, tunable via `FAULTMAVEN_ENTITY_REGISTRY_CAP`. Overflow is not dropped randomly — buckets are sorted by `mention_count` DESC before truncation so the retained rows are the most mentioned.
 3. Each overflow event (one per `(evidence, type)` pair that overflowed) increments the `faultmaven_case_entities_overflow_total` counter labelled by `entity_type` and appends the type to `PreprocessingResult.entity_overflow_types`. The type list also lands on `evidence.metadata.entities.overflow_types` so the agent can see "the registry is incomplete for IP on this evidence."
-4. `InvestigationService._preprocess_attachment` converts the observations to `CaseEntity` rows (clipping `entity_value` to 255 chars, enforcing `mention_count >= 1`, pulling `first_seen_ts` from Phase 3a's `coverage_start_ts`), and calls `CaseRepository.upsert_case_entities(case_id, evidence_id, entities)`.
+4. `attachments._preprocess_attachment` converts the observations to `CaseEntity` rows (clipping `entity_value` to 255 chars, enforcing `mention_count >= 1`, pulling `first_seen_ts` from Phase 3a's `coverage_start_ts`), and calls `CaseRepository.upsert_case_entities(case_id, evidence_id, entities)`.
 5. `upsert_case_entities` is **replace-per-evidence**: it deletes all existing rows scoped to `(case_id, evidence_id)`, then inserts the new batch. An empty list clears without inserting — correct for timeless evidence or evidence whose re-extraction produced nothing.
 
 Repositories that don't implement `upsert_case_entities` (legacy test doubles, partial mocks) are tolerated — the upload path does not fail.

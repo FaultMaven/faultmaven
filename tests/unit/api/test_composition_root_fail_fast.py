@@ -32,8 +32,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import FastAPI
 
+from faultmaven.bootstrap.composition import compose_application
 from faultmaven.config.settings import FaultMavenSettings
-from faultmaven.main import compose_application
 
 # The deployments that must refuse a partial start, and those that may serve
 # one. Cloud refuses whatever ENVIRONMENT says (the rehearsal ran staging);
@@ -69,7 +69,8 @@ def _settings_for(
 
 def _failing_wiring(exc: Exception):
     return patch(
-        "faultmaven.main._wire_composition_root", new=AsyncMock(side_effect=exc)
+        "faultmaven.bootstrap.composition._wire_composition_root",
+        new=AsyncMock(side_effect=exc),
     )
 
 
@@ -107,7 +108,9 @@ async def test_healthy_composition_starts_in_every_deployment(
     settings = _settings_for(monkeypatch, deployment_mode, environment)
 
     app = FastAPI()
-    with patch("faultmaven.main._wire_composition_root", new=AsyncMock()) as wired:
+    with patch(
+        "faultmaven.bootstrap.composition._wire_composition_root", new=AsyncMock()
+    ) as wired:
         await compose_application(app, settings)
 
     wired.assert_awaited_once()
@@ -152,7 +155,7 @@ async def test_a_missing_service_propagates_out_of_the_wiring(monkeypatch):
     absent, and the pod reports healthy. The decision belongs to
     ``compose_application``, so the failure has to reach it.
     """
-    from faultmaven.main import _wire_composition_root
+    from faultmaven.bootstrap.composition import _wire_composition_root
 
     settings = _settings_for(monkeypatch, "standalone", "development")
 
@@ -193,7 +196,7 @@ async def test_container_runtime_error_aborts_the_web_lifespan(monkeypatch):
     monkeypatch.setenv("DEPLOYMENT_MODE", "standalone")
     monkeypatch.setenv("ENVIRONMENT", "development")
 
-    from faultmaven.main import lifespan
+    from faultmaven.bootstrap.lifespan import lifespan
 
     app = FastAPI()
     boom = RuntimeError("DI Container initialization failed")

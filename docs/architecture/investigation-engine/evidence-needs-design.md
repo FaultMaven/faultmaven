@@ -62,7 +62,7 @@ class InvestigationStateUpdate(BaseModel):
 ```
 
 **Dispatch** (in
-[`investigation_service.py`](../../../faultmaven/modules/agent/domain/services/investigation_service.py)):
+[`investigation_service.py`](../../../faultmaven/modules/agent/domain/services/investigation_service/service.py)):
 
 ```python
 IntentType.EVIDENCE_REQUEST: _IntentDispatchKind.NOT_IMPLEMENTED,
@@ -1282,7 +1282,7 @@ Copilot is already live.
 | Wire-flattening seam (`new_index_N` → real ID) | `milestone_engine/turn_records.py` `_flatten_follow_ups` |
 | Context block `<evidence_needs>` | `context_builder/evidence_needs.py` `_build_evidence_needs_block` (line render `_render_need_line`) |
 | Prompt directives | `prompts/templates/diagnosis.py:_EVIDENCE_NEEDS_LIFECYCLE_BLOCK`, `_..._RCA_POOL_EVAL_BLOCK`, `_..._REVERIFICATION_ADDENDUM`. The symptom-only addendum (`_EVIDENCE_NEEDS_SYMPTOM_ONLY_ADDENDUM`) was **removed in the flow redesign** (#410), together with the path backstop and path-dispatch blocks it served (§7.3). |
-| Persistence (save/load) | `sqlite_case_repository.py:_upsert_evidence_needs` ~`:2320`, `_load_evidence_needs_for_case` ~`:633` |
+| Persistence (save/load) | `sqlite_case_repository/saving.py:_upsert_evidence_needs`, `sqlite_case_repository/loading.py:_load_evidence_needs_for_case` |
 | Migration | `alembic/versions/20260526_1000_014_evidence_needs.py` |
 | Metrics | `faultmaven/core/investigation/lifecycle_metrics.py:137`–`194` |
 

@@ -333,8 +333,8 @@ def test_the_remaining_writers_read_the_actors_organization():
 
     from faultmaven.modules.case.domain.services import investigation_session_service
     from faultmaven.modules.case.domain.services.case_service import CaseService
-    from faultmaven.modules.knowledge.domain.services.conversion_service import (
-        ConversionService,
+    from faultmaven.modules.knowledge.domain.services.conversion_service.job_persistence import (
+        _persist_job_rows,
     )
 
     for label, source in (
@@ -350,7 +350,7 @@ def test_the_remaining_writers_read_the_actors_organization():
         ),
         (
             "conversion_jobs",
-            inspect.getsource(ConversionService._persist_job_rows),
+            inspect.getsource(_persist_job_rows),
         ),
     ):
         assert (

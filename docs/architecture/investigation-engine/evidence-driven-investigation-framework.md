@@ -556,7 +556,7 @@ invariant).
                                   │
                                   ▼
                 ┌──────────────────────────────────────┐
-                │   Intake (case.api.routes):          │
+                │   Intake (case.api.routes.conversation): │
                 │   1. Store raw bytes                 │
                 │   2. Insert UploadedFile row         │
                 │   3. Preprocessing populates         │

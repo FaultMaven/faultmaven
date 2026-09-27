@@ -39,8 +39,8 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | ✅ Design | Approved | This document |
 | ✅ ORM Models | Complete | `faultmaven/infrastructure/persistence/models.py` |
 | ✅ Migration | Complete | `alembic/versions/` — single baseline `a1e0c17bd001` (`001_enterprise_baseline`), current head |
-| ✅ PostgreSQL Repository | Complete | `postgresql_hybrid_case_repository.py` |
-| ✅ SQLite Repository | Complete | `sqlite_case_repository.py` |
+| ✅ PostgreSQL Repository | Complete | `postgresql_hybrid_case_repository/repository.py` |
+| ✅ SQLite Repository | Complete | `sqlite_case_repository/` |
 | ✅ SQLite Integration Tests | Complete | Tests passing with real SQLite database |
 | ⏳ PostgreSQL Tests | Pending | Not yet run against real PostgreSQL |
 | ⏳ Performance Validation | Pending | Benchmarks needed |
@@ -174,7 +174,7 @@ class InMemoryCaseRepository(CaseRepository):
 
 ### 2.3 SQLite Implementation (Local Deployment)
 
-**File**: `faultmaven/modules/case/infrastructure/sqlite_case_repository.py`
+**File**: `faultmaven/modules/case/infrastructure/sqlite_case_repository/repository.py`
 
 ```python
 class SQLiteCaseRepository(CaseRepository):
@@ -216,7 +216,7 @@ class SQLiteCaseRepository(CaseRepository):
 
 ### 2.4 PostgreSQL Implementation (Production)
 
-**File**: `faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository.py`
+**File**: `faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository/repository.py`
 
 ```python
 class PostgreSQLHybridCaseRepository(CaseRepository):
@@ -1230,7 +1230,7 @@ CREATE INDEX idx_case_entities_by_evidence
 - Overflow is recorded on `evidence.metadata.entities.overflow_types` (list of type values) and increments the `faultmaven_case_entities_overflow_total{entity_type}` counter. Exit-criteria dashboard triggers a cap review if any type overflows on >20% of evidence.
 - **Shipped dark** behind `FAULTMAVEN_ENTITY_REGISTRY` (default False). Flag controls both the producer (preprocessor writes) and the consumer (agent tools + context-builder highlights). The table stays in schema regardless of flag state.
 
-**Write path**: `PreprocessingService._build_result` → `InvestigationService._preprocess_attachment` → `CaseRepository.upsert_case_entities(case_id, evidence_id, entities)`. Semantics: delete-then-insert scoped to `(case_id, evidence_id)`. Empty list clears without inserting.
+**Write path**: `PreprocessingService._build_result` → `attachments._preprocess_attachment` → `CaseRepository.upsert_case_entities(case_id, evidence_id, entities)`. Semantics: delete-then-insert scoped to `(case_id, evidence_id)`. Empty list clears without inserting.
 
 **Read path**: `CaseRepository.find_entity(case_id, entity_value, entity_type?)` and `list_top_entities(case_id, entity_type, limit)`. Exposed to the agent via `find_entity` and `list_top_entities` tools; also pre-fetched by the milestone engine and injected as an `<entity_highlights>` block in the INVESTIGATING template.
 
@@ -1881,7 +1881,7 @@ psql -U faultmaven -d faultmaven_cases -c "SELECT * FROM evidence WHERE case_id 
 - [x] Design approved (this document)
 - [x] ORM models (`faultmaven/infrastructure/persistence/models.py`)
 - [x] Single baseline migration `a1e0c17bd001` (`001_enterprise_baseline`) — the enterprise isolates, RLS keyed on `enterprise_id`
-- [x] Repository implementation (`postgresql_hybrid_case_repository.py`, `sqlite_case_repository.py`)
+- [x] Repository implementation (`postgresql_hybrid_case_repository/repository.py`, `sqlite_case_repository/`)
 - [x] Container.py wiring (`CASE_STORAGE_TYPE=database`)
 - [x] Enterprise tier bootstrap (default enterprise seed; NOT NULL `enterprise_id` on users/orgs)
 - [x] `case_actions.triggered_by` column + read path wired (migration 008)

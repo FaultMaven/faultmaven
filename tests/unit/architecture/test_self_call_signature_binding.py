@@ -49,7 +49,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.architecture]
 #: real time to re-derive a mostly-empty answer, and the modules that matter are
 #: the ones with wide, positional, tenancy-carrying helper calls.
 _MODULES_UNDER_GUARD = {
-    "faultmaven.modules.knowledge.domain.services.conversion_service": (
+    "faultmaven.modules.knowledge.domain.services.conversion_service.service": (
         "ConversionService"
     ),
     # Every module this campaign gave a required ``enterprise_id`` to, and whose
@@ -78,10 +78,10 @@ _MODULES_UNDER_GUARD = {
         "ResponseApplier"
     ),
     "faultmaven.core.investigation.milestone_engine.transitions": ("TransitionManager"),
-    "faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository": (
+    "faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository": (
         "PostgreSQLHybridCaseRepository"
     ),
-    "faultmaven.modules.case.infrastructure.sqlite_case_repository": (
+    "faultmaven.modules.case.infrastructure.sqlite_case_repository.repository": (
         "SQLiteCaseRepository"
     ),
     "faultmaven.modules.knowledge.domain.services.knowledge_service": (
@@ -196,7 +196,9 @@ def test_the_detector_finds_the_calls_it_is_supposed_to_check() -> None:
     # module's, and the list is now long enough that alphabetical order picks a
     # different one — which would leave this control checking a module whose
     # helpers it cannot name.
-    module_path = "faultmaven.modules.knowledge.domain.services.conversion_service"
+    module_path = (
+        "faultmaven.modules.knowledge.domain.services.conversion_service.service"
+    )
     class_name = _MODULES_UNDER_GUARD[module_path]
     module = __import__(module_path, fromlist=[class_name])
     source = Path(inspect.getsourcefile(module)).read_text(encoding="utf-8")

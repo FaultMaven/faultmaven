@@ -55,7 +55,7 @@ from faultmaven.core.investigation.turn_pipeline import (
     submitted_name,
 )
 from faultmaven.models.interfaces import ToolResult
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.clarification import (
     _clarification_subject,
     _upload_subject,
 )
@@ -68,6 +68,9 @@ from faultmaven.modules.case.contracts import (
     UploadedFile,
 )
 from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.infrastructure.sqlite_case_repository.saving import (
+    _upsert_uploaded_files,
+)
 from faultmaven.modules.report.domain.services.report_generation_service import (
     ReportGenerationService,
 )
@@ -645,7 +648,7 @@ class TestClarificationSeedsStayPasteOnly:
     for a captured web page. It stays paste-only while the copy covers both."""
 
     def test_capture_is_not_treated_as_a_paste_for_seeding(self):
-        from faultmaven.modules.agent.domain.services.investigation_service import (
+        from faultmaven.modules.agent.domain.services.investigation_service.attachments import (
             _is_paste_upload,
         )
 
@@ -805,12 +808,12 @@ def test_the_tripwire_still_drives_something_real():
     from faultmaven.core.investigation.milestone_engine.response_application import (
         ResponseApplier,
     )
-    from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-        SQLiteCaseRepository,
+    from faultmaven.modules.case.infrastructure.sqlite_case_repository.saving import (
+        _upsert_uploaded_files,
     )
 
-    assert callable(getattr(SQLiteCaseRepository, "_upsert_uploaded_files", None)), (
-        "SQLiteCaseRepository._upsert_uploaded_files is gone -- "
+    assert callable(_upsert_uploaded_files), (
+        "sqlite_case_repository.saving._upsert_uploaded_files is gone -- "
         "test_uploaded_at_turn_is_immutable_across_a_deduped_reupload can no "
         "longer detect a #1207 regression; re-point it before deleting this"
     )
@@ -852,7 +855,7 @@ async def test_uploaded_at_turn_is_immutable_across_a_deduped_reupload():
     from faultmaven.core.investigation.schemas import InquiryResponse
     from faultmaven.infrastructure.persistence.models import Base
     from faultmaven.modules.case.contracts import Case, CaseState
-    from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+    from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
         SQLiteCaseRepository,
     )
 
@@ -899,8 +902,8 @@ async def test_uploaded_at_turn_is_immutable_across_a_deduped_reupload():
     try:
         async with factory() as session:
             repo = SQLiteCaseRepository(session)
-            await repo._upsert_uploaded_files(
-                case.case_id, case.uploaded_files, "ent_123", None
+            await _upsert_uploaded_files(
+                repo.db, case.case_id, case.uploaded_files, "ent_123", None
             )
             persisted = (
                 await session.execute(

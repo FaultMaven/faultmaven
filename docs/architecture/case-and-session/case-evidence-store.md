@@ -84,7 +84,7 @@ CHROMADB_URL=http://chromadb.faultmaven.local:30080
 self.case_vector_store = CaseVectorStore()
 ```
 
-**Cleanup Scheduler Interval** (in [main.py](../../../faultmaven/main.py)):
+**Cleanup Scheduler Interval** (in [bootstrap/lifespan.py](../../../faultmaven/bootstrap/lifespan.py)):
 ```python
 case_cleanup_scheduler = start_case_cleanup_scheduler(
     case_vector_store=case_vector_store,
@@ -514,4 +514,4 @@ curl http://localhost:8090/api/v1/case/abc123/documents/count
 - [AnswerFromCaseEvidence Implementation](../../../faultmaven/modules/agent/tools/case_evidence_qa.py)
 - [Background Cleanup Job](../../../faultmaven/jobs/case_cleanup.py)
 - [Container Integration](../../../faultmaven/container/)
-- [Main App Lifecycle](../../../faultmaven/main.py)
+- [Main App Lifecycle](../../../faultmaven/bootstrap/lifespan.py)

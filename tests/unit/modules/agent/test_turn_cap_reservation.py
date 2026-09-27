@@ -98,8 +98,11 @@ def _case(**overrides):
     return Case(**defaults)
 
 
-def _service(ledger, *, case=None, default=30):
+def _service(ledger, monkeypatch, *, case=None, default=30):
     from faultmaven.modules.agent.domain.services.investigation_service import (
+        service as _service_module,
+    )
+    from faultmaven.modules.agent.domain.services.investigation_service.service import (
         InvestigationService,
     )
 
@@ -119,17 +122,21 @@ def _service(ledger, *, case=None, default=30):
         turn_cap=_cap_service(ledger, default=default),
     )
     # Everything past the reservation is out of scope here; the cases below all
-    # end at or before it.
-    service._preprocess_attachment = AsyncMock(
-        side_effect=AssertionError("preprocessing ran for a capped turn")
+    # end at or before it. Patched on service.py's own module namespace --
+    # the one reader, since process_turn calls _preprocess_attachment as a
+    # bare module-global name.
+    monkeypatch.setattr(
+        _service_module,
+        "_preprocess_attachment",
+        AsyncMock(side_effect=AssertionError("preprocessing ran for a capped turn")),
     )
     return service
 
 
-async def test_a_missing_case_costs_the_tenant_nothing():
+async def test_a_missing_case_costs_the_tenant_nothing(monkeypatch):
     """404 before the ledger. A route-level guard charged a unit for this."""
     ledger = InMemoryTurnLedger()
-    service = _service(ledger, case=None)
+    service = _service(ledger, monkeypatch, case=None)
 
     with pytest.raises(NotFoundError):
         await service.process_turn(CASE_ID, OWNER, TurnPayload(query="hello"))
@@ -137,7 +144,7 @@ async def test_a_missing_case_costs_the_tenant_nothing():
     assert await ledger.usage(OWNER_SUBJECT, utc_day()) == 0
 
 
-async def test_a_case_the_caller_may_not_touch_costs_the_prober_nothing():
+async def test_a_case_the_caller_may_not_touch_costs_the_prober_nothing(monkeypatch):
     """The two-tenant probe's B→A turn attempt must leave no row for B.
 
     Before the move this was a real defect and not a hypothetical: the guard ran
@@ -147,7 +154,7 @@ async def test_a_case_the_caller_may_not_touch_costs_the_prober_nothing():
     other way.
     """
     ledger = InMemoryTurnLedger()
-    service = _service(ledger, case=_case(user_id=OWNER))
+    service = _service(ledger, monkeypatch, case=_case(user_id=OWNER))
 
     with pytest.raises(PermissionDeniedException):
         await service.process_turn(CASE_ID, STRANGER, TurnPayload(query="hello"))
@@ -155,14 +162,16 @@ async def test_a_case_the_caller_may_not_touch_costs_the_prober_nothing():
     assert await ledger.usage(OWNER_SUBJECT, utc_day()) == 0
 
 
-async def test_a_capped_tenant_is_refused_before_any_attachment_is_processed():
+async def test_a_capped_tenant_is_refused_before_any_attachment_is_processed(
+    monkeypatch,
+):
     """Charged before STEP 1, so a refused turn writes no files and no evidence."""
     ledger = InMemoryTurnLedger()
     # Capped at the DEPLOYMENT DEFAULT, because the subject here is an ACCOUNT:
     # neither party is in an organization, so nobody is paying and the
     # self-service allowance applies (ADR-017 D5). An organization override is a
     # different subject's cap and would not bite this turn.
-    service = _service(ledger, case=_case(), default=1)
+    service = _service(ledger, monkeypatch, case=_case(), default=1)
 
     await ledger.reserve(OWNER_SUBJECT, utc_day(), None)  # the day's turn, spent
 
@@ -174,9 +183,9 @@ async def test_a_capped_tenant_is_refused_before_any_attachment_is_processed():
     assert await ledger.usage(OWNER_SUBJECT, utc_day()) == 1
 
 
-async def test_the_refusal_carries_the_message_and_the_reset_instant():
+async def test_the_refusal_carries_the_message_and_the_reset_instant(monkeypatch):
     ledger = InMemoryTurnLedger()
-    service = _service(ledger, case=_case(), default=2)
+    service = _service(ledger, monkeypatch, case=_case(), default=2)
     await ledger.reserve(OWNER_SUBJECT, utc_day(), None)
     await ledger.reserve(OWNER_SUBJECT, utc_day(), None)
 
@@ -190,7 +199,7 @@ async def test_the_refusal_carries_the_message_and_the_reset_instant():
 
 
 def _unconfigured_service():
-    from faultmaven.modules.agent.domain.services.investigation_service import (
+    from faultmaven.modules.agent.domain.services.investigation_service.service import (
         InvestigationService,
     )
 

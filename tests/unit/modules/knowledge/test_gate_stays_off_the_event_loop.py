@@ -511,7 +511,7 @@ def test_the_draft_edit_gate_runs_outside_its_transaction():
 
     source = (
         _repo_root()
-        / "faultmaven/modules/knowledge/domain/services/conversion_service.py"
+        / "faultmaven/modules/knowledge/domain/services/conversion_service/service.py"
     ).read_text(encoding="utf-8")
 
     target = next(

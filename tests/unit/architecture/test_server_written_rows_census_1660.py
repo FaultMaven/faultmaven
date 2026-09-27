@@ -78,7 +78,9 @@ _FLAG = frozenset({"agent_response_synthesized"})
 
 _CTX = "faultmaven/core/investigation/prompts/context_builder/history.py"
 _CASE_SERVICE = "faultmaven/modules/case/domain/services/case_service.py"
-_INVESTIGATION = "faultmaven/modules/agent/domain/services/investigation_service.py"
+_INVESTIGATION_RECLASSIFICATION = (
+    "faultmaven/modules/agent/domain/services/investigation_service/reclassification.py"
+)
 
 #: (file, function) -> (read count, {guarding function: names it must use}).
 PROMPT_READERS: dict[tuple[str, str], tuple[int, dict[str, frozenset[str]]]] = {
@@ -120,7 +122,7 @@ _WIRE = "the LLM request payload's own `messages`, not a case's rows"
 
 #: (file, function) -> (read count, why it puts nothing in front of a model).
 OTHER_READERS: dict[tuple[str, str], tuple[int, str]] = {
-    (_INVESTIGATION, "InvestigationService._handle_file_reclassification"): (
+    (_INVESTIGATION_RECLASSIFICATION, "_handle_file_reclassification"): (
         1,
         "copies the list onto a shallow case copy",
     ),
@@ -137,7 +139,7 @@ OTHER_READERS: dict[tuple[str, str], tuple[int, str]] = {
         "InMemoryCaseRepository.save",
     ): (1, _PERSISTENCE),
     (
-        "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository.py",
+        "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository/repository.py",
         "PostgreSQLHybridCaseRepository.save",
     ): (1, _PERSISTENCE),
     (
@@ -146,18 +148,20 @@ OTHER_READERS: dict[tuple[str, str], tuple[int, str]] = {
     ): (1, _PERSISTENCE),
     # The rows it writes, and the whole-case re-validation before the write.
     (
-        "faultmaven/modules/case/infrastructure/sqlite_case_repository.py",
+        "faultmaven/modules/case/infrastructure/sqlite_case_repository/repository.py",
         "SQLiteCaseRepository.save",
     ): (2, _PERSISTENCE),
     # Whole-record dumps into storage: the turn records a case row carries,
     # and the checkpoint snapshot (a hash and a stored copy, never a prompt).
+    # ``_case_record_params`` reads no instance state, so the #1707 SQLite
+    # split moved it to a module function in ``rows.py``.
     (
-        "faultmaven/modules/case/infrastructure/sqlite_case_repository.py",
-        "SQLiteCaseRepository._case_record_params",
+        "faultmaven/modules/case/infrastructure/sqlite_case_repository/rows.py",
+        "_case_record_params",
     ): (1, _PERSISTENCE),
     (
-        "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository.py",
-        "PostgreSQLHybridCaseRepository._case_record_params",
+        "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository/rows.py",
+        "_case_record_params",
     ): (1, _PERSISTENCE),
     (
         "faultmaven/core/investigation/checkpoint_service.py",

@@ -33,7 +33,7 @@ FaultMaven is a delivery mechanism and a growing framework for troubleshooting k
 
 - [knowledge-base-architecture.md](./knowledge-base-architecture.md) — Storage systems, vector stores, KB-neutral tool design
 - `faultmaven/modules/knowledge/domain/models/knowledge_item.py` — Domain model
-- `faultmaven/modules/knowledge/domain/services/conversion_service.py` — Scan, verify, and ingestion workflow
+- `faultmaven/modules/knowledge/domain/services/conversion_service/` — Scan, verify, and ingestion workflow
 - `faultmaven/modules/knowledge/domain/services/ingestion.py` — Chunking and embedding (structure-aware chunking in `content_chunker.py`)
 
 ---
@@ -336,7 +336,7 @@ Validates YAML frontmatter completeness and correctness.
 - `domain` and `symptom_class` values are from the controlled vocabulary
 - `last_updated` is a valid ISO 8601 date
 
-**Implementation:** Validated during the scan → verify workflow in `conversion_service.py`
+**Implementation:** Validated during the scan → verify workflow in `conversion_service/service.py`
 
 ### Gate 2: Structural Linting
 

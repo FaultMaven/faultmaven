@@ -1179,7 +1179,9 @@ class TestINV09_TerminalCasesImmutable:
         """
         from fastapi import HTTPException
 
-        from faultmaven.modules.case.api.routes import require_case_not_terminal
+        from faultmaven.modules.case.api.routes.dependencies import (
+            require_case_not_terminal,
+        )
 
         case = _make_investigating_case()
         object.__setattr__(case, "state", CaseState.RESOLVED)
@@ -1194,7 +1196,9 @@ class TestINV09_TerminalCasesImmutable:
         """Same guard, CLOSED variant."""
         from fastapi import HTTPException
 
-        from faultmaven.modules.case.api.routes import require_case_not_terminal
+        from faultmaven.modules.case.api.routes.dependencies import (
+            require_case_not_terminal,
+        )
 
         case = _make_investigating_case()
         object.__setattr__(case, "state", CaseState.CLOSED)
@@ -1208,7 +1212,9 @@ class TestINV09_TerminalCasesImmutable:
         """``require_case_not_terminal(case)`` returns silently for INQUIRY
         and INVESTIGATING cases — only terminal cases are rejected.
         """
-        from faultmaven.modules.case.api.routes import require_case_not_terminal
+        from faultmaven.modules.case.api.routes.dependencies import (
+            require_case_not_terminal,
+        )
 
         case = _make_investigating_case()
 
@@ -1269,9 +1275,9 @@ class TestINV10_SubmitTurnRejectionRules:
     def test_inv10_submit_turn_rejects_files_on_terminal_case(self):
         """Static check: ``submit_turn`` source contains the files /
         pasted_content rejection block on terminal cases."""
-        from faultmaven.modules.case.api import routes
+        from faultmaven.modules.case.api.routes import conversation
 
-        source = inspect.getsource(routes.submit_turn)
+        source = inspect.getsource(conversation.submit_turn)
 
         # The terminal-case guard
         assert (
@@ -1292,9 +1298,9 @@ class TestINV10_SubmitTurnRejectionRules:
     def test_inv10_submit_turn_rejects_status_transition_on_terminal_case(self):
         """Static check: state-transition intents are rejected on
         terminal cases."""
-        from faultmaven.modules.case.api import routes
+        from faultmaven.modules.case.api.routes import conversation
 
-        source = inspect.getsource(routes.submit_turn)
+        source = inspect.getsource(conversation.submit_turn)
 
         # Must have the intent_type == "status_transition" rejection inside
         # the is_terminal block. We confirm the literal is present at all
@@ -1314,9 +1320,9 @@ class TestINV10_SubmitTurnRejectionRules:
         and ``intent_type == "status_transition"`` — neither of which
         applies to a pure text query.
         """
-        from faultmaven.modules.case.api import routes
+        from faultmaven.modules.case.api.routes import conversation
 
-        source = inspect.getsource(routes.submit_turn)
+        source = inspect.getsource(conversation.submit_turn)
 
         # The terminal-case guard is followed by conditional rejection
         # branches gated on files / pasted_content / status_transition.

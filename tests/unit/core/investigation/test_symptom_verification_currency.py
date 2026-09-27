@@ -661,7 +661,9 @@ class TestReviewFindingsResidual:
         there would let a pasted excerpt be typed by whatever page someone copied
         it out of, so the field stays scoped to page captures."""
 
-        from faultmaven.modules.case.api.routes import resolve_paste_source_meta
+        from faultmaven.modules.case.api.routes.dependencies import (
+            resolve_paste_source_meta,
+        )
 
         meta, _ = resolve_paste_source_meta("paste", "https://slack/archives/C1/p1")
         assert "source_url" not in meta
