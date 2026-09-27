@@ -492,6 +492,16 @@ python scripts/tests.py --unit             # Test runner (also --integration, --
 
 # Local LLM
 ./scripts/local_llm_service.sh             # Manage local LLM service (Ollama/vLLM)
+
+# Module decomposition (plan/move/verify/merge a no-backward-compat split;
+# see docs/development/module-decomposition.md)
+python scripts/refactor/plan_split.py      # Check a proposed split for cycles before moving code
+python scripts/refactor/verify_move.py     # Prove a move is byte-for-byte identical
+python scripts/refactor/clean_refs.py      # Find/rewrite stale imports to a moved symbol's new home
+python scripts/refactor/check_globals.py   # Prove moved code still resolves globals to the same objects
+python scripts/refactor/audit_patches.py   # Find test patches a move would make inert
+./scripts/refactor/train_step.sh           # One merge-train step across interlocking decomposition branches
+./scripts/refactor/ci_required.sh          # Latest conclusion of every required CI context for a SHA
 ```
 
 ## Getting Help
