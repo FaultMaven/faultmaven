@@ -180,6 +180,41 @@ TRAIN_MODULE_MAP=module-map.json TRAIN_BASE=<commit the wave branched from> \
   while reading an empty `__init__.py`. Before merging the last PR, build the
   whole sequence in a scratch worktree and run the full suite on it.
 
+## 9. Decomposing a class (extracting its methods)
+
+Sections 1–8 move whole top-level statements. A class whose size is its own methods needs a different move: its methods leave the class. Choose each method's new home by what it depends on:
+
+- **Module function.** Use this when the method reads no instance state, or reads dependencies the owner can pass as values **at call time**: `self._fn(a)` becomes `_fn(self.dep, a)`. The function receives the owner's one binding on every call, so a test that replaces `owner.dep` still reaches it. Dependency parameters drop leading underscores. An owner **property**, such as a data directory that tests patch on the class, is a dependency too: the owner evaluates it at each call.
+- **Collaborator class.** Use this only when the group holds mutable state, or is called from more than one module (a patched function would then have several reader namespaces), or is a natural object seam. The owner builds it in `__init__` and holds it as a public attribute. A collaborator method called from outside the collaborator loses its leading underscore.
+- **Never a mixin.** It splits the file, not the class.
+
+A collaborator must never snapshot a value that its owner or a sibling also reads. If it did, `owner.x = stub` would reach half the code. When several objects read the same dependencies, give them one **shared holder**: `holderize.py` moves the owner's `self.X` attributes into a dataclass the owner builds as `self.deps`, and every reader uses `self.deps.X`. The owner must also receive every dependency through its constructor: a dependency assigned after construction never reaches a collaborator that was already built (#1722).
+
+The tools, in order:
+
+```bash
+python scripts/refactor/holderize.py --repo WT --source path/engine.py --class Engine \
+    --module path/dependencies.py --state _locks --apply           # only if a holder is needed
+python scripts/refactor/extract_members.py --repo WT --spec spec.json            # dry run: homes, deps, ERRORS
+python scripts/refactor/extract_members.py --repo WT --spec spec.json --apply --report r.json
+python scripts/refactor/verify_extract.py --base BASE_WT --head WT --spec spec.json
+python scripts/refactor/audit_seams.py --repo WT --spec spec.json --report r.json [--rewrite]
+```
+
+- **`extract_members.py`** rewrites the owner and writes the new modules. Its dry run refuses a boundary that is wrong: a moved member that calls back into the owner, a dependency that would shadow a local, a module-level name with no home, a collaborator cycle, or a collaborator reading an owner property. Fix the spec, not the output. It copies the owner's whole import block into each new module; the project's lint gate does not enforce F401, so prune with `ruff check --fix --select F401 <written files>`.
+- **`verify_extract.py`** is independent of the codemod. It canonicalises the base and head bodies (member calls, dependency reads, constants) and requires an equal AST for every method. It checks the dependency arguments at each rewritten call site, the public-name rule, the owner's collaborator construction, and the owned-state initialisers.
+- **`audit_seams.py`** finds the references a move leaves stale or vacuous:
+  - `obj._moved(...)`;
+  - `patch.object(obj, "_moved")`;
+  - `obj._moved = stub`, which silently creates an attribute nothing reads;
+  - a dependency swap the owner no longer honours;
+  - a `__new__`-built owner that now lacks its collaborators.
+
+  `--rewrite` fixes the mechanical cases. A name that another class still defines (a sibling repository, say) is reported AMBIGUOUS and never rewritten.
+- **`route_table.py`,** for moves of route handlers, proves the served route table is unchanged, in order.
+
+**Delete a delegate shim rather than moving it.** A method whose body only calls a module function, kept "because callers and tests target it", is a compatibility shim. Point its callers at the function.
+
 ## Checking CI before building on a SHA
 
 ```bash
