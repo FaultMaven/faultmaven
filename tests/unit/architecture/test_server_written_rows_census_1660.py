@@ -146,14 +146,16 @@ OTHER_READERS: dict[tuple[str, str], tuple[int, str]] = {
     ): (1, _PERSISTENCE),
     # The rows it writes, and the whole-case re-validation before the write.
     (
-        "faultmaven/modules/case/infrastructure/sqlite_case_repository.py",
+        "faultmaven/modules/case/infrastructure/sqlite_case_repository/repository.py",
         "SQLiteCaseRepository.save",
     ): (2, _PERSISTENCE),
     # Whole-record dumps into storage: the turn records a case row carries,
     # and the checkpoint snapshot (a hash and a stored copy, never a prompt).
+    # ``_case_record_params`` reads no instance state, so the #1707 SQLite
+    # split moved it to a module function in ``rows.py``.
     (
-        "faultmaven/modules/case/infrastructure/sqlite_case_repository.py",
-        "SQLiteCaseRepository._case_record_params",
+        "faultmaven/modules/case/infrastructure/sqlite_case_repository/rows.py",
+        "_case_record_params",
     ): (1, _PERSISTENCE),
     (
         "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository.py",

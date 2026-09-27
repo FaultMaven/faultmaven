@@ -41,6 +41,9 @@ from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository im
 from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     SQLiteCaseRepository,
 )
+from faultmaven.modules.case.infrastructure.sqlite_case_repository.rows import (
+    _case_record_params,
+)
 
 #: One admitted hit in exactly the shape ``_prefetch_kb_context`` writes.
 KB_CONTEXT = [
@@ -226,9 +229,7 @@ class TestBothBackendsAgree:
         case.kb_context = list(KB_CONTEXT)
         stamp = datetime.now(timezone.utc)
 
-        sqlite_meta = json.loads(
-            repository._case_record_params(case, stamp)["metadata"]
-        )
+        sqlite_meta = json.loads(_case_record_params(case, stamp)["metadata"])
         pg_meta = json.loads(_pg_repo()._case_record_params(case, stamp)["metadata"])
 
         assert sqlite_meta.get("kb_context") == KB_CONTEXT

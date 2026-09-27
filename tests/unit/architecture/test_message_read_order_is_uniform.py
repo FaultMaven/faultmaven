@@ -26,7 +26,11 @@ CANONICAL = "created_at ASC, turn_number ASC"
 _REPOS = Path(__file__).resolve().parents[3] / "faultmaven/modules/case/infrastructure"
 
 #: Files that issue SQL against ``case_messages``.
-_FILES = ("sqlite_case_repository.py", "postgresql_hybrid_case_repository.py")
+_FILES = (
+    "sqlite_case_repository/repository.py",
+    "sqlite_case_repository/loading.py",
+    "postgresql_hybrid_case_repository.py",
+)
 
 #: How many SELECT-from-case_messages readers we expect. A positive control:
 #: if a refactor moves them, this test must fail loudly rather than silently

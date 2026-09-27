@@ -121,25 +121,29 @@ _ALLOWED = {
         _CONSTRUCTOR: "the constructor's own row",
         # The persistence layer turns rows it READ back into this shape, and
         # binds rows it was HANDED into SQL parameters. Neither builds a row.
+        # #1707 split SQLite's ``_load_*`` helpers into module functions in
+        # ``loading.py`` (they read no instance state but ``db``) and its
+        # ``_upsert_*`` helpers into ``saving.py``; ``get_messages`` and
+        # ``add_message`` stayed on the owner in ``repository.py``.
         (
-            "faultmaven/modules/case/infrastructure/sqlite_case_repository.py",
-            "SQLiteCaseRepository._load_messages",
+            "faultmaven/modules/case/infrastructure/sqlite_case_repository/loading.py",
+            "_load_messages",
         ): "hydrates rows read from case_messages",
         (
-            "faultmaven/modules/case/infrastructure/sqlite_case_repository.py",
-            "SQLiteCaseRepository._load_messages_bulk",
+            "faultmaven/modules/case/infrastructure/sqlite_case_repository/loading.py",
+            "_load_messages_bulk",
         ): "hydrates rows read from case_messages",
         (
-            "faultmaven/modules/case/infrastructure/sqlite_case_repository.py",
+            "faultmaven/modules/case/infrastructure/sqlite_case_repository/repository.py",
             "SQLiteCaseRepository.get_messages",
         ): "hydrates rows read from case_messages",
         (
-            "faultmaven/modules/case/infrastructure/sqlite_case_repository.py",
+            "faultmaven/modules/case/infrastructure/sqlite_case_repository/repository.py",
             "SQLiteCaseRepository.add_message",
         ): "binds the caller's row into the INSERT's parameters",
         (
-            "faultmaven/modules/case/infrastructure/sqlite_case_repository.py",
-            "SQLiteCaseRepository._upsert_messages",
+            "faultmaven/modules/case/infrastructure/sqlite_case_repository/saving.py",
+            "_upsert_messages",
         ): "binds the case's rows into the upsert's parameters",
         (
             "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository.py",
@@ -183,12 +187,12 @@ _ALLOWED = {
     },
     "sql_insert": {
         (
-            "faultmaven/modules/case/infrastructure/sqlite_case_repository.py",
+            "faultmaven/modules/case/infrastructure/sqlite_case_repository/repository.py",
             "SQLiteCaseRepository.add_message",
         ): "the repository's row-at-a-time write",
         (
-            "faultmaven/modules/case/infrastructure/sqlite_case_repository.py",
-            "SQLiteCaseRepository._upsert_messages",
+            "faultmaven/modules/case/infrastructure/sqlite_case_repository/saving.py",
+            "_upsert_messages",
         ): "the aggregate save",
         (
             "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository.py",

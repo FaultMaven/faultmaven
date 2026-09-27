@@ -457,7 +457,14 @@ _PARSES = _ONE_VOCABULARY_PARSERS | {"get", "[]", "==literal"}
 
 _SVC = "modules/agent/domain/services/investigation_service.py"
 _INGEST = "modules/case/domain/services/case_data_ingestion_service.py"
-_SQLITE = "modules/case/infrastructure/sqlite_case_repository.py"
+#: #1707 split SQLite's repository into a package: ``find_uploaded_file_by_content_hash``
+#: stayed on the owner in ``repository.py``; ``_load_*`` moved to module functions
+#: in ``loading.py``; ``_upsert_*`` and ``_row_to_case`` moved to ``saving.py`` /
+#: ``rows.py`` respectively (they read no instance state but ``db``).
+_SQLITE = "modules/case/infrastructure/sqlite_case_repository/repository.py"
+_SQLITE_LOADING = "modules/case/infrastructure/sqlite_case_repository/loading.py"
+_SQLITE_SAVING = "modules/case/infrastructure/sqlite_case_repository/saving.py"
+_SQLITE_ROWS = "modules/case/infrastructure/sqlite_case_repository/rows.py"
 _PG = "modules/case/infrastructure/postgresql_hybrid_case_repository.py"
 
 #: ``(module, scope, shape, receiver) -> (category, count)``. Categories:
@@ -521,21 +528,21 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
     # (``turn_uploads`` reads ``file_id`` / ``is_novel``).
     (_SVC, "_engine_attachment_metadata", "attr", "uf"): ("opaque", 1),
     # --- repositories: the string between row and model (9 functions) ------
-    (_SQLITE, "SQLiteCaseRepository._load_uploaded_files", "sql", "<sql>"): (
+    (_SQLITE_LOADING, "_load_uploaded_files", "sql", "<sql>"): (
         "passthrough",
         1,
     ),
-    (_SQLITE, "SQLiteCaseRepository._load_uploaded_files", "get", "row_dict"): (
+    (_SQLITE_LOADING, "_load_uploaded_files", "get", "row_dict"): (
         "passthrough",
         1,
     ),
-    (_SQLITE, "SQLiteCaseRepository._load_uploaded_files_bulk", "sql", "<sql>"): (
+    (_SQLITE_LOADING, "_load_uploaded_files_bulk", "sql", "<sql>"): (
         "passthrough",
         1,
     ),
     (
-        _SQLITE,
-        "SQLiteCaseRepository._load_uploaded_files_bulk",
+        _SQLITE_LOADING,
+        "_load_uploaded_files_bulk",
         "row_index",
         "row[13]",
     ): ("passthrough", 1),
@@ -551,15 +558,15 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
         "construct_kw",
         "row[15]",
     ): ("passthrough", 1),
-    (_SQLITE, "SQLiteCaseRepository._upsert_uploaded_files", "sql", "<sql>"): (
+    (_SQLITE_SAVING, "_upsert_uploaded_files", "sql", "<sql>"): (
         "passthrough",
         1,
     ),
-    (_SQLITE, "SQLiteCaseRepository._upsert_uploaded_files", "attr", "file"): (
+    (_SQLITE_SAVING, "_upsert_uploaded_files", "attr", "file"): (
         "passthrough",
         1,
     ),
-    (_SQLITE, "SQLiteCaseRepository._row_to_case", "construct_spread", "f"): (
+    (_SQLITE_ROWS, "_row_to_case", "construct_spread", "f"): (
         "passthrough",
         1,
     ),
@@ -816,6 +823,9 @@ def test_every_reader_of_uploaded_file_data_type_is_classified():
         "modules/agent/tools/deep_analysis_tool.py",
         _SVC,
         _SQLITE,
+        _SQLITE_LOADING,
+        _SQLITE_SAVING,
+        _SQLITE_ROWS,
         _PG,
     } <= parsed, f"the token filter excluded a module holding a known reader: {parsed}"
 

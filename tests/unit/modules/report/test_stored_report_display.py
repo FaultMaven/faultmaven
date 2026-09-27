@@ -112,7 +112,7 @@ class _Row:
 @pytest.mark.parametrize(
     "repo_module",
     [
-        "faultmaven.modules.case.infrastructure.sqlite_case_repository",
+        "faultmaven.modules.case.infrastructure.sqlite_case_repository.repository",
         "faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository",
     ],
 )
@@ -124,6 +124,10 @@ def test_every_repository_normalizes_where_a_row_becomes_a_report(repo_module):
     in a different module, served the raw column while the Report tab was clean.
     Applied here it is a property of any report loaded from storage, which is
     what makes the download path correct without knowing about it.
+
+    ``_row_to_report`` is a module function of SQLite's package (it reads no
+    instance state) but still a method of PostgreSQL's class, so this resolves
+    either shape rather than assuming one.
     """
     import importlib
 
@@ -131,10 +135,18 @@ def test_every_repository_normalizes_where_a_row_becomes_a_report(repo_module):
     repo_cls = next(
         obj
         for name, obj in vars(module).items()
-        if name.endswith("CaseRepository") and hasattr(obj, "_row_to_report")
+        if isinstance(obj, type)
+        and name.endswith("CaseRepository")
+        and obj.__module__ == module.__name__
     )
 
-    report = repo_cls._row_to_report(repo_cls.__new__(repo_cls), _Row())
+    if hasattr(repo_cls, "_row_to_report"):
+        report = repo_cls._row_to_report(repo_cls.__new__(repo_cls), _Row())
+    else:
+        rows_module = importlib.import_module(
+            module.__name__.rsplit(".", 1)[0] + ".rows"
+        )
+        report = rows_module._row_to_report(_Row())
 
     assert "ev_a9f662e1c86f" not in report.content
     assert "gone⇒gone" not in report.content
@@ -156,13 +168,11 @@ async def test_the_download_endpoint_serves_normalized_bytes():
     from unittest.mock import AsyncMock
 
     from faultmaven.modules.case.api.routes import download_case_report
-    from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
-        SQLiteCaseRepository,
+    from faultmaven.modules.case.infrastructure.sqlite_case_repository.rows import (
+        _row_to_report,
     )
 
-    report = SQLiteCaseRepository._row_to_report(
-        SQLiteCaseRepository.__new__(SQLiteCaseRepository), _Row()
-    )
+    report = _row_to_report(_Row())
 
     case_service = AsyncMock()
     case_service.get_case = AsyncMock(return_value=object())
