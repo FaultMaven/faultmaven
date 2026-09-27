@@ -9,21 +9,31 @@ per-attachment dict handed to ``engine.process_turn``, and the processing-mode
 reroute a turn carrying evidence forces.
 """
 
+import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import List, Optional
 
+from faultmaven.core.investigation.coverage_trust import CALLER_DECLARED_COVERAGE_SOURCE
 from faultmaven.core.investigation.prompts.context_builder.budget import (
     structural_index_is_searchable,
 )
+from faultmaven.core.investigation.schemas import Attachment
+from faultmaven.core.investigation.turn_pipeline import generate_implicit_query
+from faultmaven.infrastructure.observability.evidence_metrics import (
+    EVIDENCE_DEDUP_HITS_TOTAL,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
+    _record_mark_linked_failure,
+)
 from faultmaven.modules.agent.domain.services.query_classifier import (
     ProcessingMode,
+    QueryClassification,
 )
-from faultmaven.modules.case.contracts import (
-    CaseState,
-)
-from faultmaven.modules.case.domain.models.evidence import (
-    UploadedFile,
-)
+from faultmaven.modules.case.contracts import Case, CaseState
+from faultmaven.modules.case.domain.models.evidence import UploadedFile
+
+logger = logging.getLogger(__name__)
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 
@@ -322,29 +332,6 @@ def _turn_delivers_evidence_bearing_attachment(
         if structural_index_is_searchable(r.uploaded_file.structural_index):
             return True
     return False
-
-
-import logging
-from datetime import UTC, datetime
-from typing import List, Optional
-
-from faultmaven.core.investigation.coverage_trust import CALLER_DECLARED_COVERAGE_SOURCE
-from faultmaven.core.investigation.schemas import Attachment
-from faultmaven.infrastructure.observability.evidence_metrics import (
-    EVIDENCE_DEDUP_HITS_TOTAL,
-)
-from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
-    _record_mark_linked_failure,
-)
-from faultmaven.modules.case.contracts import (
-    Case,
-    CaseState,
-)
-from faultmaven.modules.case.domain.models.evidence import (
-    UploadedFile,
-)
-
-logger = logging.getLogger(__name__)
 
 
 async def _preprocess_attachment(
@@ -729,23 +716,6 @@ async def _preprocess_attachment(
         suggested_types=suggested_types,
         attachment_filename=attachment.filename,
     )
-
-
-import logging
-from typing import (
-    List,
-    Optional,
-)
-
-from faultmaven.core.investigation.turn_pipeline import (
-    generate_implicit_query,
-)
-from faultmaven.modules.agent.domain.services.query_classifier import (
-    QueryClassification,
-)
-from faultmaven.modules.case.domain.models.evidence import (
-    UploadedFile,
-)
 
 
 async def _preprocess_turn_uploads(

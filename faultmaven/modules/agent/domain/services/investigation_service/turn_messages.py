@@ -1,21 +1,15 @@
 """Per-turn message-row bookkeeping: appending the user's turn and the agent's reply to the case, and the completion side effects (save + #1142 telemetry emission) that go with the agent one."""
 
 import logging
-from typing import (
-    Optional,
-)
+from typing import Optional
 
 from faultmaven.core.investigation.case_telemetry import (
     TurnPath,
     collect_progress_arms,
     emit_case_turn,
 )
-from faultmaven.models.api_models import (
-    IntentType,
-)
-from faultmaven.modules.agent.domain.services.orientation import (
-    OrientationKind,
-)
+from faultmaven.models.api_models import IntentType
+from faultmaven.modules.agent.domain.services.orientation import OrientationKind
 from faultmaven.modules.case.contracts import (
     MessageRowKind,
     append_message_row,

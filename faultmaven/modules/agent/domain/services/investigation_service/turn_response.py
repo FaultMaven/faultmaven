@@ -8,9 +8,7 @@ from typing import (
     Optional,
 )
 
-from faultmaven.core.investigation.turn_pipeline import (
-    submitted_name,
-)
+from faultmaven.core.investigation.turn_pipeline import submitted_name
 from faultmaven.models.api_models import (
     AttachmentResult,
     ProgressTransparencyInfo,

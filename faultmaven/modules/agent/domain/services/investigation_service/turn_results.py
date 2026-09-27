@@ -1,15 +1,9 @@
 """Unpacking a turn handler's result dict: turn-history backfill (#1264), reverse-redaction, and rebuilding the case's stored suggestions from this turn's clarification and follow-up choices."""
 
-from typing import (
-    Any,
-)
+from typing import Any
 
-from faultmaven.core.investigation.case_telemetry import (
-    TELEMETRY_HANDOFF_KEY,
-)
-from faultmaven.core.investigation.suggestion_liveness import (
-    entry_file_id,
-)
+from faultmaven.core.investigation.case_telemetry import TELEMETRY_HANDOFF_KEY
+from faultmaven.core.investigation.suggestion_liveness import entry_file_id
 from faultmaven.modules.agent.domain.services.investigation_service.clarification import (
     _build_classification_clarification,
     _carry_forward_unresolved_clarifications,
@@ -19,9 +13,7 @@ from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkee
     _backfill_consumed_turn,
     _record_composed_reply,
 )
-from faultmaven.modules.case.contracts import (
-    MESSAGE_METADATA_AGENT_SYNTHESIZED,
-)
+from faultmaven.modules.case.contracts import MESSAGE_METADATA_AGENT_SYNTHESIZED
 
 
 def _absorb_engine_result(*, preprocess_results, query, result):
