@@ -441,6 +441,7 @@ class MilestoneEngine:
         team_service: Any | None = None,
         share_repository: Any | None = None,
         runbook_kb: Any | None = None,
+        conversion_service: Any | None = None,
     ):
         """Initialize milestone engine.
 
@@ -480,6 +481,10 @@ class MilestoneEngine:
                 ChromaDB reaches the dedup site, and
                 ``evaluate_runbook_suggestion`` then takes its honest "did not
                 run" caveat.
+            conversion_service: Optional ``ConversionService`` that turns a
+                resolved case into a runbook draft. None when the service is
+                unavailable; the runbook paths then report that no draft can
+                be created.
         """
         self.llm_provider = llm_provider
         self.repository = repository
@@ -495,6 +500,7 @@ class MilestoneEngine:
         self.team_service = team_service
         self.share_repository = share_repository
         self.runbook_kb = runbook_kb
+        self.conversion_service = conversion_service
         self.hypothesis_manager = create_hypothesis_manager()
         self.state_validator = StateValidator()
         self.progress_monitor = ProgressMonitor()
@@ -564,7 +570,7 @@ class MilestoneEngine:
         behaviour of always offering the affordance when state is unknown,
         which is the safer default for a forward action.
         """
-        conversion_service = getattr(self, "conversion_service", None)
+        conversion_service = self.conversion_service
         if conversion_service is None:
             return False
         try:
@@ -931,7 +937,7 @@ class MilestoneEngine:
             }
 
         # Step 3: Create the draft
-        conversion_service = getattr(self, "conversion_service", None)
+        conversion_service = self.conversion_service
         if not conversion_service:
             logger.warning(
                 f"Runbook creation requested for case {case.case_id} but "
@@ -1115,8 +1121,8 @@ class MilestoneEngine:
         async def _resolve() -> dict:
             owner_id = getattr(case, "user_id", None)
             shared_kb_ids: list[str] = []
-            team_service = getattr(self, "team_service", None)
-            share_repository = getattr(self, "share_repository", None)
+            team_service = self.team_service
+            share_repository = self.share_repository
             if owner_id and team_service and share_repository:
                 owner_team_ids = await team_service.list_all_user_team_ids(owner_id)
                 shared_kb_ids = await resolve_shared_kb_ids(
@@ -5033,8 +5039,8 @@ class MilestoneEngine:
         if not user_id or user_id == "system":
             return []
 
-        team_service = getattr(self, "team_service", None)
-        share_repository = getattr(self, "share_repository", None)
+        team_service = self.team_service
+        share_repository = self.share_repository
         if not team_service or not share_repository:
             return []
 
@@ -8113,9 +8119,7 @@ class MilestoneEngine:
             exclusion_survivors=metadata.get("deductive_survivor_ids", frozenset()),
             rcc_authored_this_turn=metadata.get("rcc_authored_this_turn", False),
             metadata=metadata,
-            provider_name=_resolve_chat_provider_name(
-                getattr(self, "llm_provider", None)
-            ),
+            provider_name=_resolve_chat_provider_name(self.llm_provider),
         )
 
         # KB-remediation pre-fetch on the cause_state→IDENTIFIED edge (INV-35):
@@ -8874,10 +8878,9 @@ class MilestoneEngine:
 
             owner_id = getattr(case, "user_id", None)
             # team_service/share_repository are wired post-construction; use
-            # getattr so a partially-built engine (or standalone) safely skips
-            # the team arm rather than raising.
-            team_service = getattr(self, "team_service", None)
-            share_repository = getattr(self, "share_repository", None)
+            # None in standalone: the team arm then resolves empty.
+            team_service = self.team_service
+            share_repository = self.share_repository
             shared_kb_ids: list[str] = []
             if owner_id and team_service and share_repository:
                 try:
