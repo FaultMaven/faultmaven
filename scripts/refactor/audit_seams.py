@@ -86,6 +86,9 @@ def main():
     collab_attr = rep.get("collab_attr", {})  # member -> attr
     rename = rep.get("rename", {})
     moved = {m for m, h in homes.items() if h is not None}
+    spec_collab_classes = {
+        g["class"] for g in spec["groups"] if g["kind"] == "collaborator"
+    }
     collab_attrs = set(collab_attr.values())
     collab_deps = {d for ds in rep.get("collab_deps", {}).values() for d in ds}
     dropped = {x for x in a.dropped.split(",") if x}
@@ -108,7 +111,11 @@ def main():
             except (SyntaxError, UnicodeDecodeError):
                 continue
             for c_ in ast.walk(t_):
-                if isinstance(c_, ast.ClassDef) and c_.name != owner:
+                if (
+                    isinstance(c_, ast.ClassDef)
+                    and c_.name != owner
+                    and c_.name not in spec_collab_classes
+                ):
                     for m_ in c_.body:
                         if (
                             isinstance(m_, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -162,6 +169,8 @@ def main():
 
     def receiver_is_collab(recv: ast.AST) -> bool:
         u = ast.unparse(recv)
+        if u.split(".")[-1] in spec_collab_classes:
+            return True  # CollabClass._m: already the member's new home
         return any(u == c or u.endswith("." + c) for c in collab_attrs)
 
     for root in a.paths:
@@ -243,7 +252,7 @@ def main():
                     if receiver_is_collab(n.value):
                         continue
                     if isinstance(n.value, ast.Name) and n.attr in module_defines(
-                        module_alias.get(n.value.id)
+                        module_alias.get(n.value.id), include_imports=True
                     ):
                         continue  # mod._name where mod really defines _name (its new home, or a sibling's)
                     if ambiguous(n.attr, n.value):
