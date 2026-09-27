@@ -373,7 +373,7 @@ def test_llm_rules_state_the_output_floor_correctly() -> None:
     )
     assert int(quoted.group(1)) == floor, (
         f"llm-providers.md says TOOLLESS_INFERENCE_OUTPUT_FLOOR is "
-        f"{quoted.group(1)}; milestone_engine.py says {floor}."
+        f"{quoted.group(1)}; milestone_engine/engine.py says {floor}."
     )
     assert floor < cap, (
         f"llm-providers.md says the floor sits 'well under' "

@@ -624,7 +624,7 @@ class TestINV06_KBResolutionUsesPendingTransition:
         This is a code-shape pin: future refactors that add an
         auto-resolve shortcut inside the knowledge_resolution block would
         break this test. The pin is on the structural property documented
-        at milestone_engine.py:4673-4697 ("Standard ProposedTransition
+        in milestone_engine/engine.py ("Standard ProposedTransition
         handshake handles disposition").
         """
         source = inspect.getsource(MilestoneEngine._apply_investigation_updates)
@@ -815,14 +815,14 @@ class TestINV06_KBResolutionUsesPendingTransition:
 #      format ("[User requested to change case state to X]") sent to
 #      ``/queries`` as plain text. The current implementation uses
 #      ``intent_type="status_transition"`` + structured ``intent_data``,
-#      added by the 2026-02-09 bug fix (milestone_engine.py:1714).
+#      added by the 2026-02-09 bug fix (milestone_engine/engine.py).
 #      The text-based mechanism the design describes is no longer how
 #      the dropdown flows — §1.5.2 should be updated to describe the
 #      structured-intent route.
 #
 #   b. The RESOLVED dropdown is *path-dependent*: if a matching
 #      pending_transition already exists, the click confirms it
-#      (milestone_engine.py:1801-1816); otherwise the click runs
+#      (milestone_engine/engine.py); otherwise the click runs
 #      ``assess_resolution_readiness`` and may propose RESOLVED, pivot
 #      to propose CLOSED, or ask for needs_info. The §1.5.2 narrative
 #      doesn't surface this branching; readers won't know the dropdown
@@ -1348,7 +1348,7 @@ class TestINV10_SubmitTurnRejectionRules:
 #   _RUNBOOK_CREATION_PATTERNS use exact-match (msg_lower in patterns).
 #
 # No drift surfaced; the matrix description matches the code at
-# milestone_engine.py:1055 and 1064 exactly.
+# milestone_engine/engine.py exactly.
 
 
 class TestINV12_FreeTextRoutesToQA:
@@ -1471,7 +1471,7 @@ class TestINV12_FreeTextRoutesToQA:
     def test_inv12_patterns_match_cooperative_suggestion_payloads(self):
         """The dispatcher's exact-match tuples must equal the precomposed
         payloads of the DECIDE suggestions. If a payload string changes
-        (in milestone_engine.py module-level constants) the dispatcher
+        (in milestone_engine/terminal_replies.py module-level constants) the dispatcher
         constants must change in lockstep, or clicking the suggestion would
         stop triggering its action.
         """

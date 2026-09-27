@@ -2636,7 +2636,7 @@ class MilestoneEngine:
             #   - hypothesis_manager.py (anchoring-prevention retirement)
             #   - hypothesis_manager.py (``refute_hypothesis``)
             #   - progress_monitor.py (INCONCLUSIVE → RETIRED)
-            #   - milestone_engine.py (LLM-emitted refutation / retirement)
+            #   - milestone_engine/engine.py (LLM-emitted refutation / retirement)
             #
             # The FULL terminal set is swept, not a newly-terminal diff. The
             # helper is idempotent — it removes the id from every motivating

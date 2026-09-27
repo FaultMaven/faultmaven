@@ -57,7 +57,7 @@ def _case(
     ``hyp_statements`` are UNATTACHED standing hypotheses (no ``root_node_id``).
     ``chains`` are ``(root_statement, [hypothesis_statement, ...])`` pairs: each
     mints a ROOT node and anchors those hypotheses to it, which is the shape a
-    live case actually has — ``templates.py`` mandates ``root_node_ref`` on
+    live case actually has — ``templates/diagnosis.py`` mandates ``root_node_ref`` on
     every hypothesis, so an unattached one only survives the fm#1091 refusal.
     """
     case = Case(
@@ -404,7 +404,7 @@ def test_656_disjunction_root_blocked_when_disjuncts_are_anchored():
     """REGRESSION PIN — the #656 TP in the shape a LIVE case actually has.
 
     Every pre-existing #656 fixture builds its siblings UNATTACHED, but
-    ``templates.py`` mandates ``root_node_ref`` on every hypothesis, so in a real
+    ``templates/diagnosis.py`` mandates ``root_node_ref`` on every hypothesis, so in a real
     case the disjuncts carry roots of their own. A fix that keyed on attachment
     (excluding attached-elsewhere siblings from the frame) would pass every
     shipped pin and gut the guard here — fm#1140 attempt 2, in a shape no

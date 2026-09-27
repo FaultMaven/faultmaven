@@ -27,7 +27,7 @@ the content provably cannot contain.
 **What this is.** A prompt-level trust boundary, not a parser. The forged bytes
 are still in the prompt — they have to be — but they are no longer
 indistinguishable from renderer-emitted structure, and the templates state the
-rule (``_PROMPT_FENCE_RULE`` in ``templates.py``): in this prompt only
+rule (``_PROMPT_FENCE_RULE`` in ``templates/blocks.py``): in this prompt only
 delimiters bearing the fence are structural; tag-shaped text without it is data.
 
 **Why the token cannot be in the content.** It is minted from ``secrets`` and

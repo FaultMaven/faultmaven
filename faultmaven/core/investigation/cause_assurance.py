@@ -157,7 +157,7 @@ def absence_row_link_refused(
 
     Why REFUTES is refused, not just SUPPORTS (the pre-#987 boundary): the
     prompt contract emits ``causal_absence_evidence`` ONLY for a CONFIRMED fix
-    (templates.py, TREATMENT "EVIDENCE TYPES FOR THIS STAGE"), and its FAILURE
+    (templates/treatment.py, TREATMENT "EVIDENCE TYPES FOR THIS STAGE"), and its FAILURE
     PATH explicitly forbids an absence row for a failed fix — "a failure is not
     an 'absence' (the cause persists)" — recording that outcome by REFUTING the
     hypothesis instead. So an absence-REFUTES link is never a sanctioned

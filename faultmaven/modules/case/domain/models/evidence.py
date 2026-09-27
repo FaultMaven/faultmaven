@@ -429,7 +429,7 @@ class UploadedFile(BaseModel):
             "evidence.source_type, which classifies the data shape. "
             "page_capture is the marker the rerank-page-sections pass uses "
             "to detect Copilot extension page submissions; see "
-            "context_builder.py."
+            "context_builder/text_shaping.py."
         ),
         max_length=50,
     )
