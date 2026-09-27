@@ -477,16 +477,22 @@ class TestEngineWiring:
     before ``_flatten_follow_ups`` (or the wire response ships the nulls this
     whole change exists to stop). A reorder breaks the fix while every
     unit test above still passes, so the order is pinned here.
+
+    #1707 wave 3 split ``_process_turn_impl`` into phase methods
+    (``_apply_turn_response`` now holds the terminal sweep and the linker;
+    ``_persist_turn`` holds the save and the flattening). The order these
+    tests pin spans both, so they read it from
+    ``reinlined_process_turn_impl_source()`` — an AST inline of the phases
+    back into the owner's body, not a concatenation of the two methods'
+    sources, which would not reflect how they actually interleave.
     """
 
     def _source(self):
-        import inspect
-
-        from faultmaven.core.investigation.milestone_engine.engine import (
-            MilestoneEngine,
+        from tests.unit.core.investigation.turn_path_reinline import (
+            reinlined_process_turn_impl_source,
         )
 
-        return inspect.getsource(MilestoneEngine._process_turn_impl)
+        return reinlined_process_turn_impl_source()
 
     def test_turn_path_calls_the_linker(self):
         assert "link_evidence_suggestions_to_needs(" in self._source(), (
@@ -889,7 +895,9 @@ class TestAsksTheUserNeverSeesAreNotRecorded:
             MilestoneEngine,
         )
 
-        src = inspect.getsource(MilestoneEngine._process_turn_impl)
+        # #1707 wave 3: every flag below is read in the reply-composing
+        # phase ``_compose_turn_reply``, not in the owner method itself.
+        src = inspect.getsource(MilestoneEngine._compose_turn_reply)
         for flag in _REPLACEMENT_METADATA_FLAGS:
             assert f'"{flag}"' in src, (
                 f"{flag} is no longer read in _process_turn_impl — the "
@@ -1079,7 +1087,9 @@ class TestSweepIsWiredBeforeLinking:
             MilestoneEngine,
         )
 
-        return inspect.getsource(MilestoneEngine._process_turn_impl)
+        # #1707 wave 3: the sweep and the linker both live in the phase
+        # ``_apply_turn_response`` split off ``_process_turn_impl``.
+        return inspect.getsource(MilestoneEngine._apply_turn_response)
 
     def test_turn_path_sweeps_inferred_needs(self):
         assert "sweep_silent_inferred_needs(" in self._source()
@@ -1093,7 +1103,15 @@ class TestSweepIsWiredBeforeLinking:
         )
 
     def test_sweep_runs_before_the_save(self):
-        src = self._source()
+        # #1707 wave 3: the save now lives in the phase ``_persist_turn``,
+        # split off after ``_apply_turn_response`` (which holds the sweep) —
+        # an order question spanning two phases, answered from the AST
+        # re-inline rather than either phase's own source.
+        from tests.unit.core.investigation.turn_path_reinline import (
+            reinlined_process_turn_impl_source,
+        )
+
+        src = reinlined_process_turn_impl_source()
         assert src.index("sweep_silent_inferred_needs(") < src.index(
             "await self.deps.repository.save(case_updated)"
         )
@@ -1113,7 +1131,9 @@ class TestGuardCallIsPinned:
             MilestoneEngine,
         )
 
-        src = inspect.getsource(MilestoneEngine._process_turn_impl)
+        # #1707 wave 3: the guard is consulted in the phase
+        # ``_apply_turn_response``, not in the owner method itself.
+        src = inspect.getsource(MilestoneEngine._apply_turn_response)
         assert "suggestions_are_engine_replaced(" in src, (
             "the replacement guard is no longer consulted — EVIDENCE asks on "
             "gate and resolution turns are being recorded despite never being "
@@ -1127,7 +1147,7 @@ class TestGuardCallIsPinned:
             MilestoneEngine,
         )
 
-        src = inspect.getsource(MilestoneEngine._process_turn_impl)
+        src = inspect.getsource(MilestoneEngine._apply_turn_response)
         assert src.index("suggestions_are_engine_replaced(") < src.index(
             "link_evidence_suggestions_to_needs("
         )

@@ -340,7 +340,10 @@ class TestBothCallSitesUseFlattener:
         )
 
         src_terminal = inspect.getsource(TerminalTurnHandler._process_terminal_qa)
-        src_turn = inspect.getsource(MilestoneEngine._process_turn_impl)
+        # #1707 wave 3: the turn-path call now lives in ``_persist_turn``,
+        # the phase ``_process_turn_impl`` split off to record and save the
+        # turn — not in the owner method itself.
+        src_turn = inspect.getsource(MilestoneEngine._persist_turn)
         # #1707: _flatten_follow_ups moved out of the engine into a module
         # function (turn_records.py), called directly rather than through
         # self, from both seams.

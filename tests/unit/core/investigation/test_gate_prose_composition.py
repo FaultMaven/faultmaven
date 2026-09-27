@@ -63,7 +63,10 @@ class TestOverrideBranchesUseComposer:
     """
 
     def _impl_source(self):
-        return inspect.getsource(milestone_engine.MilestoneEngine._process_turn_impl)
+        # #1707 wave 3: the gate override branches live in
+        # ``_compose_turn_reply``, the phase ``_process_turn_impl`` split
+        # off to build the final reply — not in the owner method itself.
+        return inspect.getsource(milestone_engine.MilestoneEngine._compose_turn_reply)
 
     def test_all_gate_branches_route_prose_through_composer(self):
         src = self._impl_source()
