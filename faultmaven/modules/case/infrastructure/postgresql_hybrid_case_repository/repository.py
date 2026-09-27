@@ -17,70 +17,24 @@ Architecture:
     ├── case_tags (M:N normalized table)
 """
 
-import builtins
 import json
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
-from sqlalchemy import bindparam, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.modules.case.domain.models.case import Case
-from faultmaven.modules.case.domain.models.causal import (
-    CausalEdge,
-    CausalNode,
-    NodeEvidenceLink,
-    NodeState,
-    NodeType,
-    ValidationMethod,
-)
-from faultmaven.modules.case.domain.models.conclusion import (
-    RootCauseConclusion,
-    WorkingConclusion,
-    normalize_stored_report_content,
-)
-from faultmaven.modules.case.domain.models.documentation import (
-    DocumentationData,
-    EscalationState,
-)
 from faultmaven.modules.case.domain.models.evidence import (
     CaseEntity,
     EntityType,
     Evidence,
-    EvidenceCategory,
-    EvidenceSourceType,
-    EvidenceStance,
     UploadedFile,
 )
-from faultmaven.modules.case.domain.models.evidence_needs import (
-    EvidenceNeed,
-    NeedObtainability,
-    NeedPriority,
-    NeedPurpose,
-    NeedState,
-)
-from faultmaven.modules.case.domain.models.hypothesis import (
-    Hypothesis,
-    HypothesisCategory,
-    HypothesisEvidenceLink,
-)
 from faultmaven.modules.case.domain.models.lifecycle import (
-    CaseAction,
     CaseState,
-    InvestigationStrategy,
 )
-from faultmaven.modules.case.domain.models.problem import (
-    InquiryData,
-    ProblemVerification,
-)
-from faultmaven.modules.case.domain.models.progress import InvestigationProgress
-from faultmaven.modules.case.domain.models.solution import (
-    ActionAttempt,
-    ProposedAction,
-    Solution,
-)
-from faultmaven.modules.case.domain.models.turn import TurnProgress
 from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
 
 # Case-owned models (per module-organization-design.md)
@@ -89,57 +43,37 @@ from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.modules.case.infrastructure.case_scope import case_scope_where
 from faultmaven.modules.case.infrastructure.created_bounds import created_bounds_where
-from faultmaven.utils.datetime import parse_utc_timestamp
+from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.loading import (
+    _load_causal_graph_for_case,
+    _load_evidence_for_case,
+    _load_evidence_needs_for_case,
+    _load_hypothesis_evidence_links,
+    _row_to_case,
+)
+from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.rows import (
+    _as_datetime,
+    _cast,
+    _row_to_case_checkpoint,
+    _row_to_evidence,
+    _row_to_report,
+)
+from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.saving import (
+    _append_case_actions,
+    _reconcile_causal_graph,
+    _upsert_case_record,
+    _upsert_causal_edges,
+    _upsert_causal_nodes,
+    _upsert_evidence,
+    _upsert_evidence_needs,
+    _upsert_hypotheses,
+    _upsert_messages,
+    _upsert_solutions,
+    _upsert_uploaded_files,
+)
 
 # TYPE_CHECKING imports not needed - models imported directly above
 
 logger = logging.getLogger(__name__)
-
-
-def _serialize_tags(tags: Optional[List[str]]) -> Optional[List[str]]:
-    """Serialize Evidence.tags for the PG ``tags`` column.
-
-    PostgreSQL stores tags as ``TEXT[]`` (see ``TagsArray`` in
-    infrastructure/persistence/models.py). asyncpg / psycopg bind a
-    Python list directly to that array, so the serializer is just an
-    ``[] → None`` normalization. Pydantic's ``_no_commas_in_tags``
-    validator already rejects values containing commas — same rule
-    SQLite needs for its TEXT round-trip.
-    """
-    if not tags:
-        return None
-    return list(tags)
-
-
-def _deserialize_tags(value: Any) -> List[str]:
-    """Inverse of ``_serialize_tags``.
-
-    On PG, asyncpg returns the column as ``list[str]``. Older rows
-    written before the schema rewrite may surface as a comma-separated
-    TEXT (the SQLite shape) — accept both for robustness.
-    """
-    if not value:
-        return []
-    if isinstance(value, list):
-        return [str(t) for t in value if t]
-    if isinstance(value, str):
-        return [t for t in value.split(",") if t]
-    return []
-
-
-_STANCE_TO_RELATIONSHIP: Dict[EvidenceStance, str] = {
-    EvidenceStance.SUPPORTS: "supports",
-    EvidenceStance.REFUTES: "refutes",
-    # The hypothesis_evidence CHECK allows ('supports', 'refutes', 'related').
-    # Domain NEUTRAL maps to 'related' (closest neutral-not-irrelevant slot).
-    EvidenceStance.NEUTRAL: "related",
-}
-
-_RELATIONSHIP_TO_STANCE: Dict[str, EvidenceStance] = {
-    "supports": EvidenceStance.SUPPORTS,
-    "refutes": EvidenceStance.REFUTES,
-    "related": EvidenceStance.NEUTRAL,
-}
 
 
 def _pg_row_to_case_entity(row: Any) -> CaseEntity:
@@ -216,53 +150,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             # Mirror the factory's safe default: unknown bind -> not PG.
             return False
 
-    def _cast(self, name: str, pg_type: str = "JSONB") -> str:
-        """Render a bound-parameter type cast safe on both backends.
-
-        Returns ``CAST(:name AS <pg_type>)`` on PostgreSQL and a bare
-        ``:name`` on SQLite (which stores these columns as TEXT and needs no
-        cast). Reads the dialect resolved once at construction
-        (``self._is_pg``) — it cannot change for the session's lifetime.
-
-        Why never ``:name::pg_type``: SQLAlchemy 2.0's ``text()`` bind parser
-        reads a ``::`` immediately following a placeholder as the start of a
-        PostgreSQL cast and silently DROPS the preceding ``:name`` bind. The
-        value then reaches asyncpg as the literal string ``:name::jsonb``
-        while sibling columns compile to ``$N`` params — the
-        ``syntax error at or near ":"`` that broke every JSONB/timestamptz
-        write on the first real-PostgreSQL deployment. ``CAST(:name AS ...)``
-        keeps the placeholder bound. See
-        ``test_postgresql_cast_binds_survive.py`` for the regression guard.
-        """
-        if self._is_pg:
-            return f"CAST(:{name} AS {pg_type})"
-        return f":{name}"
-
-    @staticmethod
-    def _as_datetime(value: Any, default: datetime) -> datetime:
-        """Coerce a timestamp value to a tz-aware ``datetime`` for asyncpg.
-
-        Message rows reach the repository as plain dicts (``message_dict`` /
-        ``case.messages`` entries), NOT Pydantic models, so a ``created_at``
-        can arrive as an ISO STRING. asyncpg binds a ``timestamptz`` parameter
-        only from a Python ``datetime`` — a ``str`` raises ``DataError``
-        ("invalid input for query argument"), and (unlike a JSONB cast) it
-        fails even inside ``CAST(:ts AS TIMESTAMPTZ)`` because asyncpg encodes
-        the bind as timestamptz BEFORE the cast applies. Pydantic-backed rows
-        (cases / evidence / hypotheses / solutions / reports / checkpoints)
-        are already datetimes via field validation, so only the dict-sourced
-        message timestamps need this coercion. SQLite's repository already
-        does the same via its own ``_parse_dt`` — this restores parity.
-        """
-        if isinstance(value, datetime):
-            return value
-        if isinstance(value, str):
-            try:
-                return parse_utc_timestamp(value)
-            except ValueError:
-                return default
-        return default
-
     def _org_lookup_case_id(self) -> str:
         """``:case_id`` cast to VARCHAR, for the tenancy-derivation subqueries.
 
@@ -280,7 +167,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         bare ``:case_id``. Covered by
         ``tests/integration/test_postgresql_repository_roundtrip.py``.
         """
-        return self._cast("case_id", "VARCHAR")
+        return _cast(self._is_pg, "case_id", "VARCHAR")
 
     # ========================================================================
     # Core CRUD Operations
@@ -330,19 +217,31 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             enterprise_id = case.enterprise_id
             organization_id = case.organization_id
 
-            await self._upsert_case_record(case)
+            await _upsert_case_record(self._is_pg, self.db, case)
             # Post-010: evidence.source_file_id is a real FK to
             # uploaded_files.file_id, so files must exist before any
             # evidence row that references them gets inserted.
-            await self._upsert_uploaded_files(
-                case.case_id, case.uploaded_files, enterprise_id, organization_id
+            await _upsert_uploaded_files(
+                self._is_pg,
+                self.db,
+                case.case_id,
+                case.uploaded_files,
+                enterprise_id,
+                organization_id,
             )
-            await self._upsert_evidence(
-                case.case_id, case.evidence, enterprise_id, organization_id
+            await _upsert_evidence(
+                self._is_pg,
+                self.db,
+                case.case_id,
+                case.evidence,
+                enterprise_id,
+                organization_id,
             )
             # Needs and the fulfillment junction must run AFTER evidence
             # so the junction FK to evidence.evidence_id is satisfied.
-            await self._upsert_evidence_needs(
+            await _upsert_evidence_needs(
+                self._is_pg,
+                self.db,
                 case.case_id,
                 case.evidence_needs,
                 enterprise_id,
@@ -353,29 +252,56 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             # and solutions.node_id FK causal_nodes; causal_node_evidence FKs
             # evidence (already upserted above). Nodes before edges (edges FK
             # nodes).
-            await self._upsert_causal_nodes(
-                case.case_id, case.causal_nodes, enterprise_id, organization_id
+            await _upsert_causal_nodes(
+                self._is_pg,
+                self.db,
+                case.case_id,
+                case.causal_nodes,
+                enterprise_id,
+                organization_id,
             )
-            await self._upsert_causal_edges(
-                case.case_id, case.causal_edges, enterprise_id, organization_id
+            await _upsert_causal_edges(
+                self.db, case.case_id, case.causal_edges, enterprise_id, organization_id
             )
-            await self._reconcile_causal_graph(
+            await _reconcile_causal_graph(
+                self.db,
                 case.case_id,
                 set(case.causal_nodes.keys()),
                 {e.edge_id for e in case.causal_edges},
             )
-            await self._upsert_hypotheses(
-                case.case_id, case.hypotheses, enterprise_id, organization_id
+            await _upsert_hypotheses(
+                self._is_pg,
+                self.db,
+                case.case_id,
+                case.hypotheses,
+                enterprise_id,
+                organization_id,
             )
-            await self._upsert_solutions(
-                case.case_id, case.solutions, enterprise_id, organization_id
+            await _upsert_solutions(
+                self._is_pg,
+                self.db,
+                case.case_id,
+                case.solutions,
+                enterprise_id,
+                organization_id,
             )
-            await self._upsert_messages(
-                case.case_id, case.messages, enterprise_id, organization_id
+            await _upsert_messages(
+                self._is_pg,
+                self.db,
+                self.normalise_message_row,
+                case.case_id,
+                case.messages,
+                enterprise_id,
+                organization_id,
             )
             if case.action_history:
-                await self._append_case_actions(
-                    case.case_id, case.action_history, enterprise_id, organization_id
+                await _append_case_actions(
+                    self._is_pg,
+                    self.db,
+                    case.case_id,
+                    case.action_history,
+                    enterprise_id,
+                    organization_id,
                 )
 
             await self.db.commit()
@@ -552,17 +478,19 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             hypothesis_ids = [
                 h["hypothesis_id"] for h in hypotheses_payload if h.get("hypothesis_id")
             ]
-            links_by_hyp = await self._load_hypothesis_evidence_links(hypothesis_ids)
+            links_by_hyp = await _load_hypothesis_evidence_links(
+                self.db, hypothesis_ids
+            )
 
-            case = await self._row_to_case(row, links_by_hyp)
+            case = await _row_to_case(self.db, row, links_by_hyp)
 
             # Load evidence separately — the Pydantic reconstruction needs
             # column-by-column conversion that doesn't fit cleanly in a
             # JSONB aggregate.
             if case:
-                await self._load_evidence_for_case(case)
-                await self._load_evidence_needs_for_case(case)
-                await self._load_causal_graph_for_case(case)
+                await _load_evidence_for_case(self.db, case)
+                await _load_evidence_needs_for_case(self.db, case)
+                await _load_causal_graph_for_case(self.db, case)
                 # Self-heal any persisted turn-sequence anomaly (e.g. a case
                 # wedged before this fix) on load, before the engine uses it.
                 case.reconcile_turn_sequence()
@@ -571,441 +499,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
         except Exception as e:
             raise RepositoryException(f"Failed to get case {case_id}: {e}") from e
-
-    async def _load_evidence_for_case(self, case: Case) -> None:
-        """Load investigation evidence from the evidence table.
-
-        Post-010 columns (in this fixed order, consumed positionally by
-        ``_row_to_evidence``): ``evidence_id``, ``category``,
-        ``source_type``, ``summary``, ``extract``, ``is_primary``,
-        ``reliability_score``, ``tags``, ``collected_at_turn``,
-        ``source_file_id``, ``vectorized``, ``coverage_start_ts``,
-        ``coverage_end_ts``, ``metadata``, ``created_at``,
-        ``primary_purpose``, ``analysis``, ``processing_mode``,
-        ``advances_milestones``, ``collected_by``, ``coverage_source``.
-
-        File-level metadata (filename, content_hash, content_type, size,
-        storage_ref) lives on ``uploaded_files``, reachable via
-        ``source_file_id``.
-        """
-        try:
-            query = text("""
-                SELECT
-                    evidence_id, category, source_type,
-                    summary, extract,
-                    is_primary, reliability_score, tags,
-                    collected_at_turn, source_file_id, vectorized,
-                    coverage_start_ts, coverage_end_ts,
-                    metadata, created_at,
-                    primary_purpose, analysis, processing_mode,
-                    advances_milestones, collected_by,
-                    coverage_source
-                FROM evidence
-                WHERE case_id = :case_id
-                ORDER BY created_at DESC
-                LIMIT 1000
-                """)
-            result = await self.db.execute(query, {"case_id": case.case_id})
-            rows = result.fetchall()
-
-            evidence_list = [self._row_to_evidence(row) for row in rows if row]
-            case.evidence = [ev for ev in evidence_list if ev is not None]
-        except Exception as e:
-            logger.warning(
-                "Failed to load evidence for case %s: %s",
-                case.case_id,
-                e,
-            )
-
-    def _row_to_evidence(self, row: Any) -> Optional[Evidence]:
-        """Reconstruct a domain ``Evidence`` from a SELECT row.
-
-        Column order: ``evidence_id, category, source_type, summary,
-        extract, is_primary, reliability_score, tags, collected_at_turn,
-        source_file_id, vectorized, coverage_start_ts, coverage_end_ts,
-        metadata, created_at, primary_purpose, analysis, processing_mode,
-        advances_milestones, collected_by``.
-
-        Returns ``None`` and logs a warning when reconstruction fails so
-        one bad row doesn't blank an entire result set.
-        """
-        try:
-            # Strict category validation — every row is born with a valid
-            # 4-category classification.
-            category = EvidenceCategory(row[1])
-
-            source_type = EvidenceSourceType(row[2]) if row[2] else None
-
-            metadata_raw = row[13]
-            parsed_metadata: Optional[Dict[str, Any]] = None
-            if metadata_raw:
-                # Postgres JSONB returns a dict directly; legacy TEXT
-                # rows arrive as JSON-serialized strings.
-                if isinstance(metadata_raw, dict):
-                    parsed_metadata = metadata_raw or None
-                else:
-                    try:
-                        parsed = json.loads(metadata_raw)
-                        if isinstance(parsed, dict) and parsed:
-                            parsed_metadata = parsed
-                    except (json.JSONDecodeError, TypeError):
-                        parsed_metadata = None
-
-            collected_at = row[14]
-            if isinstance(collected_at, str):
-                try:
-                    collected_at = datetime.fromisoformat(
-                        collected_at.replace(" ", "T")
-                    )
-                except ValueError:
-                    collected_at = datetime.now(timezone.utc)
-            elif collected_at is None:
-                collected_at = datetime.now(timezone.utc)
-
-            # Postgres ARRAY(String) returns a list; the SQLite repo uses
-            # comma-encoded TEXT and _deserialize_tags. Handle both shapes.
-            advances_raw = row[18] if len(row) > 18 else None
-            if isinstance(advances_raw, list):
-                advances_milestones = list(advances_raw)
-            else:
-                advances_milestones = _deserialize_tags(advances_raw)
-
-            tags_raw = row[7]
-            if isinstance(tags_raw, list):
-                tags = list(tags_raw)
-            else:
-                tags = _deserialize_tags(tags_raw)
-
-            return Evidence(
-                evidence_id=str(row[0]),
-                category=category,
-                primary_purpose=row[15],
-                summary=row[3] if row[3] else "Evidence",
-                extract=row[4],
-                analysis=row[16],
-                processing_mode=row[17],
-                source_type=source_type,
-                source_file_id=row[9],
-                is_primary=bool(row[5]),
-                reliability_score=(float(row[6]) if row[6] is not None else None),
-                tags=tags,
-                advances_milestones=advances_milestones,
-                collected_by=row[19] or "system",
-                collected_at=collected_at,
-                collected_at_turn=row[8] if row[8] else 0,
-                vectorized=bool(row[10]),
-                metadata=parsed_metadata,
-                coverage_start_ts=row[11],
-                coverage_end_ts=row[12],
-                # Length-guarded for the same reason as the SQLite path: an
-                # absent provenance IS the NULL this column means.
-                coverage_source=row[20] if len(row) > 20 else None,
-            )
-        except Exception as ev_err:  # noqa: BLE001
-            logger.warning("Failed to load evidence %s: %s", row[0], ev_err)
-            return None
-
-    async def _load_evidence_needs_for_case(self, case: Case) -> None:
-        """Load evidence-need rows + their fulfillment junctions.
-
-        Mirrors the SQLite repo's ``_load_evidence_needs_for_case`` —
-        same column shape, JSON parsing for ``motivating_hypothesis_ids``,
-        and one-shot junction query for fulfillment.
-        """
-        try:
-            need_query = text("""
-                SELECT
-                    need_id, purpose, request_text, rationale,
-                    priority, state,
-                    motivating_hypothesis_ids,
-                    superseded_reason,
-                    created_at_turn, created_at, updated_at,
-                    obtainability, surfaced_turns, engine_inferred
-                FROM evidence_needs
-                WHERE case_id = :case_id
-                ORDER BY created_at ASC, need_id ASC
-            """)
-            need_rows = (
-                await self.db.execute(need_query, {"case_id": case.case_id})
-            ).fetchall()
-
-            if not need_rows:
-                case.evidence_needs = []
-                return
-
-            need_ids = [row[0] for row in need_rows]
-            params: Dict[str, Any] = {}
-            placeholders = self._bind_ids(params, need_ids)
-            junction_query = text(f"""
-                SELECT need_id, evidence_id
-                FROM evidence_need_fulfillment
-                WHERE need_id IN ({placeholders})
-            """)
-            junction_rows = (await self.db.execute(junction_query, params)).fetchall()
-
-            fulfillments_by_need: Dict[str, builtins.list[str]] = {}
-            for nid, eid in junction_rows:
-                fulfillments_by_need.setdefault(nid, []).append(eid)
-
-            needs: builtins.list[EvidenceNeed] = []
-            for row in need_rows:
-                need = self._row_to_evidence_need(
-                    row,
-                    case_id=case.case_id,
-                    fulfilling_evidence_ids=fulfillments_by_need.get(row[0], []),
-                )
-                if need is not None:
-                    needs.append(need)
-            case.evidence_needs = needs
-        except Exception as e:
-            logger.warning(
-                "Failed to load evidence_needs for case %s: %s", case.case_id, e
-            )
-
-    def _row_to_evidence_need(
-        self,
-        row: Any,
-        *,
-        case_id: str,
-        fulfilling_evidence_ids: builtins.list[str],
-    ) -> Optional[EvidenceNeed]:
-        """Reconstruct an ``EvidenceNeed`` from a SELECT row.
-
-        Column order: ``need_id, purpose, request_text, rationale,
-        priority, state, motivating_hypothesis_ids (JSONB),
-        superseded_reason, created_at_turn, created_at, updated_at,
-        obtainability, surfaced_turns (JSONB), engine_inferred``.
-        On PG, JSONB is returned as a Python list directly (asyncpg);
-        on dialect-compatibility paths a JSON string is also tolerated.
-        """
-        try:
-            motivating_raw = row[6]
-            if isinstance(motivating_raw, list):
-                motivating = list(motivating_raw)
-            elif motivating_raw is None:
-                motivating = []
-            else:
-                try:
-                    motivating = json.loads(motivating_raw)
-                except (json.JSONDecodeError, TypeError):
-                    motivating = []
-
-            # Ask history (#1079). Absent/corrupt reads as "never surfaced" —
-            # understating the count is the fail-safe direction (it keeps a live
-            # ask visible rather than silencing it on a bad blob).
-            surfaced_raw = row[12] if len(row) > 12 else None
-            if isinstance(surfaced_raw, list):
-                surfaced = list(surfaced_raw)
-            elif surfaced_raw is None:
-                surfaced = []
-            else:
-                try:
-                    surfaced = json.loads(surfaced_raw)
-                except (json.JSONDecodeError, TypeError):
-                    surfaced = []
-
-            return EvidenceNeed(
-                need_id=str(row[0]),
-                case_id=case_id,
-                purpose=NeedPurpose(row[1]),
-                request_text=row[2],
-                rationale=row[3],
-                priority=NeedPriority(row[4]),
-                state=NeedState(row[5]),
-                motivating_hypothesis_ids=motivating,
-                fulfilling_evidence_ids=fulfilling_evidence_ids,
-                superseded_reason=row[7],
-                created_at_turn=row[8],
-                created_at=row[9] if row[9] else datetime.now(timezone.utc),
-                updated_at=row[10] if row[10] else datetime.now(timezone.utc),
-                obtainability=(
-                    NeedObtainability(row[11])
-                    if len(row) > 11 and row[11]
-                    else NeedObtainability.UNKNOWN
-                ),
-                surfaced_turns=surfaced,
-                engine_inferred=bool(row[13]) if len(row) > 13 else False,
-            )
-        except Exception as need_err:  # noqa: BLE001
-            logger.warning("Failed to load evidence_need %s: %s", row[0], need_err)
-            return None
-
-    async def _load_hypothesis_evidence_links(
-        self, hypothesis_ids: builtins.list[str]
-    ) -> Dict[str, builtins.list[HypothesisEvidenceLink]]:
-        """Load junction-table rows and return them as
-        ``{hypothesis_id: [HypothesisEvidenceLink, ...]}``.
-
-        Empty input returns ``{}``. Hypotheses with no links are absent
-        from the result (callers default to an empty list per hypothesis).
-        The junction table doesn't carry the LLM's free-text rationale —
-        that lives on ``case_messages`` / agent reasoning logs — so we
-        persist an empty marker on the reconstructed link.
-        """
-        if not hypothesis_ids:
-            return {}
-        params: Dict[str, Any] = {}
-        placeholders = self._bind_ids(params, hypothesis_ids)
-        query = text(f"""
-            SELECT hypothesis_id, evidence_id, relationship_type, confidence,
-                   linked_at_turn, created_at
-            FROM hypothesis_evidence
-            WHERE hypothesis_id IN ({placeholders})
-        """)
-        result = await self.db.execute(query, params)
-        rows = result.fetchall()
-
-        by_hyp: Dict[str, builtins.list[HypothesisEvidenceLink]] = {}
-        for row in rows:
-            hyp_id = row[0]
-            relationship = row[2] or "related"
-            stance = _RELATIONSHIP_TO_STANCE.get(relationship, EvidenceStance.NEUTRAL)
-            confidence = float(row[3]) if row[3] is not None else 0.0
-            analyzed_at = row[5]
-            if isinstance(analyzed_at, str):
-                try:
-                    analyzed_at = datetime.fromisoformat(analyzed_at.replace(" ", "T"))
-                except ValueError:
-                    analyzed_at = datetime.now(timezone.utc)
-            elif analyzed_at is None:
-                analyzed_at = datetime.now(timezone.utc)
-            link = HypothesisEvidenceLink(
-                hypothesis_id=str(hyp_id),
-                evidence_id=str(row[1]),
-                stance=stance,
-                # Junction has no reasoning column; required-by-Pydantic
-                # field is satisfied with empty marker.
-                reasoning="",
-                stance_confidence=max(0.0, min(1.0, confidence)),
-                analyzed_at=analyzed_at,
-            )
-            by_hyp.setdefault(str(hyp_id), []).append(link)
-        return by_hyp
-
-    async def _load_node_evidence_links(
-        self, node_ids: List[str]
-    ) -> Dict[str, List[NodeEvidenceLink]]:
-        """Load causal_node_evidence rows as ``{node_id: [NodeEvidenceLink]}``.
-        Stance is stored verbatim (supports/refutes/neutral)."""
-        if not node_ids:
-            return {}
-        params: Dict[str, Any] = {}
-        placeholders = self._bind_ids(params, node_ids)
-        query = text(f"""
-            SELECT node_id, evidence_id, stance, stance_confidence,
-                   reasoning, linked_at_turn, created_at
-            FROM causal_node_evidence
-            WHERE node_id IN ({placeholders})
-        """)
-        result = await self.db.execute(query, params)
-        by_node: Dict[str, List[NodeEvidenceLink]] = {}
-        for row in result.fetchall():
-            nid = str(row[0])
-            # Reuse the canonical timestamptz coercion (handles str/None/datetime)
-            # rather than a weaker inline parser — same helper the message path uses.
-            analyzed_at = self._as_datetime(row[6], datetime.now(timezone.utc))
-            conf = float(row[3]) if row[3] is not None else 1.0
-            by_node.setdefault(nid, []).append(
-                NodeEvidenceLink(
-                    evidence_id=str(row[1]),
-                    stance=EvidenceStance(row[2]),
-                    reasoning=row[4] or "",
-                    stance_confidence=max(0.0, min(1.0, conf)),
-                    linked_at_turn=row[5] or 0,
-                    analyzed_at=analyzed_at,
-                )
-            )
-        return by_node
-
-    async def _load_causal_graph_for_case(self, case: Case) -> None:
-        """Load the case's causal graph (nodes + edges) + node-scoped evidence.
-        Loaded separately from the parent aggregate to avoid a cartesian
-        blow-up in the multi-LEFT-JOIN fetch (same rationale as evidence)."""
-        node_rows = (
-            await self.db.execute(
-                text("""
-                    SELECT node_id, statement, node_type, node_state,
-                           validation_method, belief, signature_consistent,
-                           actionable, category, state_epoch, generated_at_turn,
-                           last_updated_turn, last_progress_at_turn,
-                           iterations_without_progress, refutation_reason,
-                           rationale, proposed_at, updated_at, metadata
-                    FROM causal_nodes
-                    WHERE case_id = :case_id
-                """),
-                {"case_id": case.case_id},
-            )
-        ).fetchall()
-        node_ids = [str(r[0]) for r in node_rows]
-        links_by_node = await self._load_node_evidence_links(node_ids)
-
-        nodes: Dict[str, CausalNode] = {}
-        for r in node_rows:
-            nid = str(r[0])
-            nodes[nid] = CausalNode(
-                node_id=nid,
-                statement=r[1],
-                node_type=NodeType(r[2]),
-                node_state=NodeState(r[3]),
-                validation_method=ValidationMethod(r[4]),
-                belief=float(r[5]) if r[5] is not None else 0.5,
-                signature_consistent=bool(r[6]),
-                actionable=bool(r[7]),
-                category=HypothesisCategory(r[8]) if r[8] else None,
-                state_epoch=r[9] or 0,
-                generated_at_turn=r[10] or 0,
-                last_updated_turn=r[11] or 0,
-                last_progress_at_turn=r[12] or 0,
-                iterations_without_progress=r[13] or 0,
-                refutation_reason=r[14],
-                rationale=r[15],
-                evidence_links=links_by_node.get(nid, []),
-                proposed_at=r[16] or datetime.now(timezone.utc),
-                updated_at=r[17] or datetime.now(timezone.utc),
-                metadata=(
-                    json.loads(r[18]) if isinstance(r[18], str) else (r[18] or {})
-                ),
-            )
-        case.causal_nodes = nodes
-
-        edge_rows = (
-            await self.db.execute(
-                text("""
-                    SELECT edge_id, cause_node_id, effect_node_id, and_group,
-                           reasoning, created_at_turn, created_at
-                    FROM causal_edges
-                    WHERE case_id = :case_id
-                """),
-                {"case_id": case.case_id},
-            )
-        ).fetchall()
-        case.causal_edges = [
-            CausalEdge(
-                edge_id=str(r[0]),
-                cause_node_id=str(r[1]),
-                effect_node_id=str(r[2]),
-                and_group=r[3],
-                reasoning=r[4],
-                created_at_turn=r[5] or 0,
-                created_at=r[6] or datetime.now(timezone.utc),
-            )
-            for r in edge_rows
-        ]
-
-    def _bind_ids(self, params: Dict[str, Any], ids: builtins.list[str]) -> str:
-        """Expand a list of identifiers into named bind parameters.
-
-        Returns the SQL placeholder clause (``:cid_0, :cid_1, ...``) and
-        mutates ``params`` with the values. Used to splice into an
-        ``IN (...)`` filter without resorting to f-string interpolation
-        of values.
-        """
-        names = []
-        for i, cid in enumerate(ids):
-            key = f"cid_{i}"
-            params[key] = cid
-            names.append(f":{key}")
-        return ", ".join(names)
 
     async def list(
         self,
@@ -1336,7 +829,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
             evidence_list: List[Evidence] = []
             for row in rows:
-                ev = self._row_to_evidence(row)
+                ev = _row_to_evidence(row)
                 if ev is not None:
                     evidence_list.append(ev)
 
@@ -1650,9 +1143,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             # ``row`` already carries a created_at (supplied, aliased, or
             # minted by the normaliser); coerce it because the normaliser mints
             # an ISO STRING and asyncpg rejects a str for timestamptz.
-            created_at = self._as_datetime(
-                row["created_at"], datetime.now(timezone.utc)
-            )
+            created_at = _as_datetime(row["created_at"], datetime.now(timezone.utc))
 
             query = text(f"""
                 INSERT INTO case_messages (
@@ -1665,7 +1156,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     (SELECT organization_id FROM cases
                      WHERE case_id = {self._org_lookup_case_id()}),
                     :turn_number, :role, :content,
-                    :author_id, :created_at, :token_count, {self._cast('metadata')}
+                    :author_id, :created_at, :token_count, {_cast(self._is_pg, 'metadata')}
                 )
             """)
 
@@ -1904,8 +1395,13 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         applies the scope, as for every other sessionless method).
         """
         try:
-            await self._upsert_uploaded_files(
-                case_id, [uploaded_file], enterprise_id, organization_id
+            await _upsert_uploaded_files(
+                self._is_pg,
+                self.db,
+                case_id,
+                [uploaded_file],
+                enterprise_id,
+                organization_id,
             )
             await self.db.commit()
         except Exception as e:
@@ -2022,1336 +1518,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     # Private Helper Methods
     # ========================================================================
 
-    async def _upsert_case_record(self, case: Case) -> None:
-        """Upsert main cases table with optimistic concurrency control.
-
-        OCC: attempts UPDATE with a version predicate first; raises
-        StaleCaseException on version mismatch; falls back to INSERT
-        when no row exists. On success mutates `case.version` in place.
-
-        Post-redesign (storage redesign 2026-04): persists ``description``,
-        ``investigation_strategy``, ``current_turn``,
-        ``turns_without_progress``, ``closure_reason``,
-        ``last_activity_at``, ``resolved_at`` and ``closed_at`` to
-        first-class columns instead of the ``metadata`` JSON blob.
-        ``last_activity_at`` is bumped to the current UTC time on every
-        save so staleness queries work without scanning JSON.
-
-        Deployment-Agnostic Implementation:
-        - Detects database dialect (PostgreSQL vs SQLite) via ``_cast()``
-        - Casts JSONB columns with ``CAST(:name AS JSONB)`` on PostgreSQL
-          (never ``:name::jsonb`` — see ``_cast`` for why)
-        - Uses plain ``:name`` placeholders for SQLite compatibility
-        """
-        last_activity_at = datetime.now(timezone.utc)
-        params = self._case_record_params(case, last_activity_at)
-        expected_version = case.version
-        new_version = expected_version + 1
-        update_params = {
-            **params,
-            "expected_version": expected_version,
-            "new_version": new_version,
-        }
-
-        # Step 1: UPDATE with version check.
-        update_query = text(f"""
-            UPDATE cases SET
-                user_id = :user_id,
-                enterprise_id = :enterprise_id,
-                organization_id = :organization_id,
-                title = :title,
-                description = :description,
-                investigation_strategy = :investigation_strategy,
-                state = :state,
-                source = :source,
-                closure_reason = :closure_reason,
-                current_turn = :current_turn,
-                turns_without_progress = :turns_without_progress,
-                updated_at = :updated_at,
-                last_activity_at = :last_activity_at,
-                resolved_at = :resolved_at,
-                closed_at = :closed_at,
-                disposition_eligibility = :disposition_eligibility,
-                inquiry = {self._cast('inquiry')},
-                problem_verification = {self._cast('problem_verification')},
-                working_conclusion = {self._cast('working_conclusion')},
-                root_cause_conclusion = {self._cast('root_cause_conclusion')},
-                escalation_state = {self._cast('escalation_state')},
-                documentation = {self._cast('documentation')},
-                progress = {self._cast('progress')},
-                metadata = {self._cast('metadata')},
-                version = :new_version
-            WHERE case_id = :case_id AND version = :expected_version
-        """)
-        result = await self.db.execute(update_query, update_params)
-
-        if result.rowcount > 0:
-            case.version = new_version
-            return
-
-        # Step 2: no UPDATE — either case is new, or version mismatched.
-        probe = await self.db.execute(
-            text("SELECT version FROM cases WHERE case_id = :case_id"),
-            {"case_id": case.case_id},
-        )
-        row = probe.fetchone()
-        if row is None:
-            # New case — plain INSERT with version = 1.
-            insert_query = text(f"""
-                INSERT INTO cases (
-                    case_id, user_id, enterprise_id, organization_id, title, description, investigation_strategy,
-                    state, source, closure_reason, current_turn, turns_without_progress,
-                    created_at, updated_at, last_activity_at, resolved_at, closed_at,
-                    disposition_eligibility,
-                    inquiry, problem_verification, working_conclusion,
-                    root_cause_conclusion,
-                    escalation_state, documentation, progress, metadata,
-                    version
-                ) VALUES (
-                    :case_id, :user_id, :enterprise_id, :organization_id, :title, :description, :investigation_strategy,
-                    :state, :source, :closure_reason, :current_turn, :turns_without_progress,
-                    :created_at, :updated_at, :last_activity_at, :resolved_at, :closed_at,
-                    :disposition_eligibility,
-                    {self._cast('inquiry')}, {self._cast('problem_verification')}, {self._cast('working_conclusion')},
-                    {self._cast('root_cause_conclusion')},
-                    {self._cast('escalation_state')}, {self._cast('documentation')}, {self._cast('progress')}, {self._cast('metadata')},
-                    1
-                )
-            """)
-            await self.db.execute(insert_query, params)
-            case.version = 1
-            return
-
-        # Row exists but version mismatched — caller holds stale state.
-        raise StaleCaseException(
-            case_id=case.case_id,
-            expected_version=expected_version,
-            actual_version=row[0],
-        )
-
-    def _case_record_params(
-        self, case: Case, last_activity_at: datetime
-    ) -> Dict[str, Any]:
-        """Parameter dict for the cases-row INSERT/UPDATE.
-
-        Shared between the UPDATE and fallback INSERT paths in
-        _upsert_case_record — keeps column serialization in one place.
-
-        Post-redesign: ``description``, ``investigation_strategy``,
-        ``current_turn``, ``turns_without_progress`` are first-class
-        columns (the PG hybrid had been writing them as phantom columns
-        before the schema baseline; now they're real). The ``metadata``
-        JSON blob still holds the transient runtime state (proposed_actions /
-        action_attempts / turn_history / pending_transition /
-        message_count / last_suggestions) — those have no first-class
-        column yet.
-        """
-        from faultmaven.utils.serialization import to_json_compatible
-
-        return {
-            "case_id": case.case_id,
-            "user_id": case.user_id,
-            "enterprise_id": case.enterprise_id,
-            "organization_id": case.organization_id,
-            "title": case.title,
-            "description": case.description or "",
-            "investigation_strategy": case.investigation_strategy.value,
-            "state": case.state.value,
-            "source": case.source,
-            "closure_reason": case.closure_reason,
-            # Prevention: persist the DERIVED counter so it can never be saved
-            # ahead of turn_history (the drift that wedged cases). See
-            # Case.effective_current_turn — single source so the two repos can't
-            # drift. The in-memory case.current_turn is untouched.
-            "current_turn": case.effective_current_turn,
-            "turns_without_progress": case.turns_without_progress,
-            "created_at": case.created_at,
-            "updated_at": case.updated_at,
-            "last_activity_at": last_activity_at,
-            "resolved_at": case.resolved_at,
-            "closed_at": case.closed_at,
-            "disposition_eligibility": (
-                json.dumps(case.disposition_eligibility)
-                if case.disposition_eligibility
-                else None
-            ),
-            "inquiry": json.dumps(case.inquiry.model_dump(mode="json")),
-            "problem_verification": (
-                json.dumps(case.problem_verification.model_dump(mode="json"))
-                if case.problem_verification
-                else None
-            ),
-            "working_conclusion": (
-                json.dumps(case.working_conclusion.model_dump(mode="json"))
-                if case.working_conclusion
-                else None
-            ),
-            "root_cause_conclusion": (
-                json.dumps(case.root_cause_conclusion.model_dump(mode="json"))
-                if case.root_cause_conclusion
-                else None
-            ),
-            "escalation_state": (
-                json.dumps(case.escalation_state.model_dump(mode="json"))
-                if case.escalation_state
-                else None
-            ),
-            "documentation": json.dumps(case.documentation.model_dump(mode="json")),
-            "progress": json.dumps(case.progress.model_dump(mode="json")),
-            "metadata": json.dumps(
-                {
-                    k: v
-                    for k, v in {
-                        # _row_to_case reads message_count from this bag
-                        # (same as SQLite) but PG never wrote it, so every
-                        # reload reset the counter to 0 — the same
-                        # write/read asymmetry class as #914. A count of 0
-                        # is dropped by the falsy filter below; the read
-                        # side's default already covers that.
-                        "message_count": case.message_count,
-                        "pending_transition": case.pending_transition,
-                        "proposed_actions": (
-                            [a.model_dump(mode="json") for a in case.proposed_actions]
-                            if case.proposed_actions
-                            else []
-                        ),
-                        "action_attempts": (
-                            [a.model_dump(mode="json") for a in case.action_attempts]
-                            if case.action_attempts
-                            else []
-                        ),
-                        "turn_history": (
-                            [t.model_dump(mode="json") for t in case.turn_history]
-                            if case.turn_history
-                            else []
-                        ),
-                        # Intent-bearing DECIDE suggestions from the last
-                        # agent turn — the resolver matches typed replies
-                        # against them on the NEXT request, so they must
-                        # survive the reload (#914). Normalized like every
-                        # sibling so a non-primitive value can never turn
-                        # into the json.dumps TypeError that loses the
-                        # atomically-committed turn; the falsy filter
-                        # below drops None/empty.
-                        "last_suggestions": (
-                            to_json_compatible(case.last_suggestions)
-                            if case.last_suggestions
-                            else None
-                        ),
-                        # The KB PUSH channel's payload (fm#1360) — see the
-                        # SQLite repository's writer for why it must round
-                        # trip. The falsy filter below drops it when empty,
-                        # which is the same "no context" the reader's
-                        # ``.get`` produces.
-                        "kb_context": (
-                            to_json_compatible(case.kb_context)
-                            if case.kb_context
-                            else None
-                        ),
-                    }.items()
-                    if v
-                }
-            ),
-        }
-
-    async def _upsert_evidence(
-        self,
-        case_id: str,
-        evidence_list: List[Evidence],
-        enterprise_id: str,
-        organization_id: Optional[str],
-    ) -> None:
-        """Upsert evidence records.
-
-        Purely additive: inserts new rows and updates existing ones keyed by
-        evidence_id. Does NOT remove rows absent from `evidence_list`. The
-        in-memory case is a working snapshot, not the canonical truth for
-        which rows should exist — callers holding a stale snapshot (e.g.
-        background tasks) must not be able to silently delete rows that
-        other concurrent writers have added. For intentional removal, use
-        `delete_evidence(case_id, evidence_id)` explicitly.
-
-        File-level metadata (filename, content_type, content_hash, size,
-        storage_ref) lives on ``uploaded_files`` and is reached via
-        ``source_file_id``. Chat-extracted evidence
-        (``source_type=USER_DESCRIPTION``) has ``source_file_id IS NULL``
-        and persists no file metadata.
-        """
-        for evidence in evidence_list:
-            query = text(f"""
-                INSERT INTO evidence (
-                    evidence_id, case_id, enterprise_id, organization_id, source_file_id,
-                    category, source_type,
-                    summary, extract,
-                    primary_purpose, analysis, processing_mode, advances_milestones,
-                    is_primary, reliability_score, tags,
-                    collected_at_turn, collected_by, vectorized,
-                    coverage_start_ts, coverage_end_ts, coverage_source,
-                    metadata, created_at, updated_at
-                ) VALUES (
-                    :evidence_id, :case_id, :enterprise_id, :organization_id, :source_file_id,
-                    :category, :source_type,
-                    :summary, :extract,
-                    :primary_purpose, :analysis, :processing_mode, :advances_milestones,
-                    :is_primary, :reliability_score, :tags,
-                    :collected_at_turn, :collected_by, :vectorized,
-                    :coverage_start_ts, :coverage_end_ts, :coverage_source,
-                    {self._cast('metadata')}, :created_at, :updated_at
-                )
-                ON CONFLICT (evidence_id) DO UPDATE SET
-                    source_file_id = EXCLUDED.source_file_id,
-                    category = EXCLUDED.category,
-                    source_type = EXCLUDED.source_type,
-                    summary = EXCLUDED.summary,
-                    extract = EXCLUDED.extract,
-                    primary_purpose = EXCLUDED.primary_purpose,
-                    analysis = EXCLUDED.analysis,
-                    processing_mode = EXCLUDED.processing_mode,
-                    advances_milestones = EXCLUDED.advances_milestones,
-                    is_primary = EXCLUDED.is_primary,
-                    reliability_score = EXCLUDED.reliability_score,
-                    tags = EXCLUDED.tags,
-                    collected_at_turn = EXCLUDED.collected_at_turn,
-                    collected_by = EXCLUDED.collected_by,
-                    vectorized = EXCLUDED.vectorized,
-                    coverage_start_ts = EXCLUDED.coverage_start_ts,
-                    coverage_end_ts = EXCLUDED.coverage_end_ts,
-                    coverage_source = EXCLUDED.coverage_source,
-                    metadata = EXCLUDED.metadata,
-                    updated_at = EXCLUDED.updated_at
-            """)
-
-            now = datetime.now(timezone.utc)
-            await self.db.execute(
-                query,
-                {
-                    "evidence_id": evidence.evidence_id,
-                    "case_id": case_id,
-                    "enterprise_id": enterprise_id,
-                    "organization_id": organization_id,
-                    "source_file_id": evidence.source_file_id,
-                    "category": evidence.category.value,
-                    "source_type": evidence.source_type.value,
-                    "summary": evidence.summary,
-                    "extract": evidence.extract,
-                    "primary_purpose": evidence.primary_purpose,
-                    "analysis": evidence.analysis,
-                    "processing_mode": evidence.processing_mode,
-                    "advances_milestones": _serialize_tags(
-                        list(evidence.advances_milestones)
-                    ),
-                    "is_primary": evidence.is_primary,
-                    "reliability_score": evidence.reliability_score,
-                    "tags": _serialize_tags(evidence.tags),
-                    "collected_at_turn": evidence.collected_at_turn,
-                    "collected_by": evidence.collected_by,
-                    "vectorized": evidence.vectorized,
-                    "coverage_start_ts": evidence.coverage_start_ts,
-                    "coverage_end_ts": evidence.coverage_end_ts,
-                    "coverage_source": evidence.coverage_source,
-                    "metadata": json.dumps(evidence.metadata or {}),
-                    "created_at": evidence.collected_at or now,
-                    "updated_at": now,
-                },
-            )
-
-    async def _upsert_evidence_needs(
-        self,
-        case_id: str,
-        needs_list: builtins.list[EvidenceNeed],
-        enterprise_id: str,
-        organization_id: Optional[str],
-        current_turn: int,
-    ) -> None:
-        """Upsert evidence-need records + fulfillment junction rows.
-
-        Purely additive — see ``_upsert_evidence`` for rationale. The
-        junction's ``ON CONFLICT (need_id, evidence_id) DO NOTHING``
-        preserves the original ``linked_at_turn`` if the same pair is
-        seen again on a re-save.
-
-        Must run AFTER ``_upsert_evidence`` so the junction's FK to
-        ``evidence.evidence_id`` is satisfied.
-        """
-        for need in needs_list:
-            query = text(f"""
-                INSERT INTO evidence_needs (
-                    need_id, case_id, enterprise_id, organization_id,
-                    purpose, request_text, rationale,
-                    priority, state,
-                    motivating_hypothesis_ids,
-                    superseded_reason,
-                    created_at_turn, created_at, updated_at,
-                    obtainability, surfaced_turns, engine_inferred
-                ) VALUES (
-                    :need_id, :case_id, :enterprise_id, :organization_id,
-                    :purpose, :request_text, :rationale,
-                    :priority, :state,
-                    {self._cast('motivating_hypothesis_ids')},
-                    :superseded_reason,
-                    :created_at_turn, :created_at, :updated_at,
-                    :obtainability, {self._cast('surfaced_turns')},
-                    :engine_inferred
-                )
-                ON CONFLICT (need_id) DO UPDATE SET
-                    purpose = EXCLUDED.purpose,
-                    request_text = EXCLUDED.request_text,
-                    rationale = EXCLUDED.rationale,
-                    priority = EXCLUDED.priority,
-                    state = EXCLUDED.state,
-                    motivating_hypothesis_ids = EXCLUDED.motivating_hypothesis_ids,
-                    superseded_reason = EXCLUDED.superseded_reason,
-                    updated_at = EXCLUDED.updated_at,
-                    obtainability = EXCLUDED.obtainability,
-                    surfaced_turns = EXCLUDED.surfaced_turns,
-                    engine_inferred = EXCLUDED.engine_inferred
-            """)
-
-            now = datetime.now(timezone.utc)
-            await self.db.execute(
-                query,
-                {
-                    "need_id": need.need_id,
-                    "case_id": case_id,
-                    "enterprise_id": enterprise_id,
-                    "organization_id": organization_id,
-                    "purpose": need.purpose.value,
-                    "request_text": need.request_text,
-                    "rationale": need.rationale,
-                    "priority": need.priority.value,
-                    "state": need.state.value,
-                    "motivating_hypothesis_ids": json.dumps(
-                        need.motivating_hypothesis_ids
-                    ),
-                    "superseded_reason": need.superseded_reason,
-                    "created_at_turn": need.created_at_turn,
-                    "created_at": need.created_at or now,
-                    "updated_at": now,
-                    "obtainability": need.obtainability.value,
-                    "surfaced_turns": json.dumps(need.surfaced_turns),
-                    "engine_inferred": need.engine_inferred,
-                },
-            )
-
-            if need.fulfilling_evidence_ids:
-                junction_query = text("""
-                    INSERT INTO evidence_need_fulfillment (
-                        need_id, evidence_id, enterprise_id, organization_id, linked_at_turn
-                    ) VALUES (
-                        :need_id, :evidence_id, :enterprise_id, :organization_id, :linked_at_turn
-                    )
-                    ON CONFLICT (need_id, evidence_id) DO NOTHING
-                """)
-                for evidence_id in need.fulfilling_evidence_ids:
-                    await self.db.execute(
-                        junction_query,
-                        {
-                            "need_id": need.need_id,
-                            "evidence_id": evidence_id,
-                            "enterprise_id": enterprise_id,
-                            "organization_id": organization_id,
-                            "linked_at_turn": current_turn,
-                        },
-                    )
-
-    async def _upsert_hypotheses(
-        self,
-        case_id: str,
-        hypotheses_dict: Dict[str, Hypothesis],
-        enterprise_id: str,
-        organization_id: Optional[str],
-    ) -> None:
-        """Upsert hypotheses records.
-
-        Purely additive — see `_upsert_evidence` for rationale. There is
-        no concrete delete-hypothesis API on the case repo today; if a
-        single-hypothesis remove path is needed, add it explicitly.
-
-        The dropped ``hypotheses.evidence_links`` JSON blob has been
-        replaced by the ``hypothesis_evidence`` junction table; that
-        upsert runs after the parent row is in place so FK constraints
-        are satisfied.
-        """
-        for hypothesis_id, hypothesis in hypotheses_dict.items():
-            query = text(f"""
-                INSERT INTO hypotheses (
-                    hypothesis_id, case_id, enterprise_id, organization_id, statement, state,
-                    likelihood, initial_likelihood,
-                    root_node_id, path,
-                    generated_at_turn, last_updated_turn, last_progress_at_turn,
-                    iterations_without_progress,
-                    category, generation_mode, rationale, retirement_reason,
-                    refutation_reason,
-                    tested_at, concluded_at, proposed_at, updated_at, metadata,
-                    created_by, updated_by
-                ) VALUES (
-                    :hypothesis_id, :case_id, :enterprise_id, :organization_id, :statement, :state,
-                    :likelihood, :initial_likelihood,
-                    :root_node_id, {self._cast('path')},
-                    :generated_at_turn, :last_updated_turn, :last_progress_at_turn,
-                    :iterations_without_progress,
-                    :category, :generation_mode, :rationale, :retirement_reason,
-                    :refutation_reason,
-                    :tested_at, :concluded_at, :proposed_at, :updated_at, {self._cast('metadata')},
-                    :created_by, :updated_by
-                )
-                ON CONFLICT (hypothesis_id) DO UPDATE SET
-                    statement = EXCLUDED.statement,
-                    state = EXCLUDED.state,
-                    likelihood = EXCLUDED.likelihood,
-                    root_node_id = EXCLUDED.root_node_id,
-                    path = EXCLUDED.path,
-                    generated_at_turn = EXCLUDED.generated_at_turn,
-                    last_updated_turn = EXCLUDED.last_updated_turn,
-                    last_progress_at_turn = EXCLUDED.last_progress_at_turn,
-                    iterations_without_progress = EXCLUDED.iterations_without_progress,
-                    retirement_reason = EXCLUDED.retirement_reason,
-                    refutation_reason = EXCLUDED.refutation_reason,
-                    concluded_at = EXCLUDED.concluded_at,
-                    updated_at = EXCLUDED.updated_at,
-                    metadata = EXCLUDED.metadata
-            """)
-
-            await self.db.execute(
-                query,
-                {
-                    "hypothesis_id": hypothesis_id,
-                    "case_id": case_id,
-                    "enterprise_id": enterprise_id,
-                    "organization_id": organization_id,
-                    "statement": hypothesis.statement,
-                    "state": hypothesis.state.value,
-                    "likelihood": hypothesis.likelihood,
-                    "initial_likelihood": hypothesis.initial_likelihood,
-                    "root_node_id": hypothesis.root_node_id,
-                    "path": json.dumps(list(hypothesis.path)),
-                    "generated_at_turn": hypothesis.generated_at_turn,
-                    "last_updated_turn": hypothesis.last_updated_turn,
-                    "last_progress_at_turn": hypothesis.last_progress_at_turn,
-                    "iterations_without_progress": hypothesis.iterations_without_progress,
-                    "category": hypothesis.category.value,
-                    "generation_mode": hypothesis.generation_mode.value,
-                    "rationale": hypothesis.rationale,
-                    "retirement_reason": hypothesis.retirement_reason,
-                    "refutation_reason": hypothesis.refutation_reason,
-                    "tested_at": hypothesis.tested_at,
-                    "concluded_at": hypothesis.concluded_at,
-                    "proposed_at": getattr(hypothesis, "proposed_at", None)
-                    or datetime.now(timezone.utc),
-                    "updated_at": datetime.now(timezone.utc),
-                    "metadata": json.dumps({}),
-                    "created_by": None,
-                    "updated_by": None,
-                },
-            )
-
-            await self._upsert_hypothesis_evidence(
-                hypothesis_id,
-                hypothesis.evidence_links,
-                enterprise_id,
-                organization_id,
-            )
-
-    async def _upsert_hypothesis_evidence(
-        self,
-        hypothesis_id: str,
-        links: builtins.list[HypothesisEvidenceLink],
-        enterprise_id: str,
-        organization_id: Optional[str],
-    ) -> None:
-        """Upsert rows on the ``hypothesis_evidence`` junction table.
-
-        Purely additive — never deletes rows. Composite PK
-        ``(hypothesis_id, evidence_id)`` makes the upsert idempotent.
-        Stance → relationship_type mapping is in
-        ``_STANCE_TO_RELATIONSHIP``; NEUTRAL maps to ``related`` because
-        the junction CHECK constraint only allows
-        ``('supports', 'refutes', 'related')``.
-        """
-        if not links:
-            return
-        query = text("""
-            INSERT INTO hypothesis_evidence (
-                hypothesis_id, evidence_id, enterprise_id, organization_id,
-                relationship_type, confidence, linked_at_turn,
-                linked_by, created_at
-            ) VALUES (
-                :hypothesis_id, :evidence_id, :enterprise_id, :organization_id,
-                :relationship_type, :confidence, :linked_at_turn,
-                :linked_by, :created_at
-            )
-            ON CONFLICT (hypothesis_id, evidence_id) DO UPDATE SET
-                relationship_type = EXCLUDED.relationship_type,
-                confidence = EXCLUDED.confidence,
-                linked_at_turn = EXCLUDED.linked_at_turn,
-                linked_by = EXCLUDED.linked_by
-        """)
-
-        for link in links:
-            relationship = _STANCE_TO_RELATIONSHIP.get(link.stance, "related")
-            await self.db.execute(
-                query,
-                {
-                    "hypothesis_id": hypothesis_id,
-                    "evidence_id": link.evidence_id,
-                    "enterprise_id": enterprise_id,
-                    "organization_id": organization_id,
-                    "relationship_type": relationship,
-                    "confidence": link.stance_confidence,
-                    # Domain HypothesisEvidenceLink doesn't carry a turn
-                    # number; the junction column is nullable.
-                    "linked_at_turn": None,
-                    # Linker user_id isn't tracked on the link object —
-                    # nullable column, FK SET NULL on user delete.
-                    "linked_by": None,
-                    "created_at": link.analyzed_at,
-                },
-            )
-
-    async def _upsert_causal_nodes(
-        self,
-        case_id: str,
-        nodes_dict: Dict[str, CausalNode],
-        enterprise_id: str,
-        organization_id: Optional[str],
-    ) -> None:
-        """Upsert causal-graph nodes; node-scoped evidence follows into the
-        causal_node_evidence junction. Additive + idempotent on node_id."""
-        for node_id, node in nodes_dict.items():
-            query = text(f"""
-                INSERT INTO causal_nodes (
-                    node_id, case_id, enterprise_id, organization_id, statement,
-                    node_type, node_state, validation_method, belief,
-                    signature_consistent, actionable, category, state_epoch,
-                    generated_at_turn, last_updated_turn, last_progress_at_turn,
-                    iterations_without_progress, refutation_reason, rationale,
-                    metadata, proposed_at, updated_at
-                ) VALUES (
-                    :node_id, :case_id, :enterprise_id, :organization_id, :statement,
-                    :node_type, :node_state, :validation_method, :belief,
-                    :signature_consistent, :actionable, :category, :state_epoch,
-                    :generated_at_turn, :last_updated_turn, :last_progress_at_turn,
-                    :iterations_without_progress, :refutation_reason, :rationale,
-                    {self._cast('metadata')}, :proposed_at, :updated_at
-                )
-                ON CONFLICT (node_id) DO UPDATE SET
-                    statement = EXCLUDED.statement,
-                    node_type = EXCLUDED.node_type,
-                    node_state = EXCLUDED.node_state,
-                    validation_method = EXCLUDED.validation_method,
-                    belief = EXCLUDED.belief,
-                    signature_consistent = EXCLUDED.signature_consistent,
-                    actionable = EXCLUDED.actionable,
-                    category = EXCLUDED.category,
-                    state_epoch = EXCLUDED.state_epoch,
-                    last_updated_turn = EXCLUDED.last_updated_turn,
-                    last_progress_at_turn = EXCLUDED.last_progress_at_turn,
-                    iterations_without_progress = EXCLUDED.iterations_without_progress,
-                    refutation_reason = EXCLUDED.refutation_reason,
-                    rationale = EXCLUDED.rationale,
-                    metadata = EXCLUDED.metadata,
-                    updated_at = EXCLUDED.updated_at
-            """)
-            await self.db.execute(
-                query,
-                {
-                    "node_id": node_id,
-                    "case_id": case_id,
-                    "enterprise_id": enterprise_id,
-                    "organization_id": organization_id,
-                    "statement": node.statement,
-                    "node_type": node.node_type.value,
-                    "node_state": node.node_state.value,
-                    "validation_method": node.validation_method.value,
-                    "belief": node.belief,
-                    "signature_consistent": node.signature_consistent,
-                    "actionable": node.actionable,
-                    "category": node.category.value if node.category else None,
-                    "state_epoch": node.state_epoch,
-                    "generated_at_turn": node.generated_at_turn,
-                    "last_updated_turn": node.last_updated_turn,
-                    "last_progress_at_turn": node.last_progress_at_turn,
-                    "iterations_without_progress": node.iterations_without_progress,
-                    "refutation_reason": node.refutation_reason,
-                    "rationale": node.rationale,
-                    "metadata": json.dumps(node.metadata or {}),
-                    "proposed_at": node.proposed_at,
-                    "updated_at": datetime.now(timezone.utc),
-                },
-            )
-            await self._upsert_node_evidence(
-                node_id, node.evidence_links, enterprise_id, organization_id
-            )
-
-    async def _upsert_node_evidence(
-        self,
-        node_id: str,
-        links: List[NodeEvidenceLink],
-        enterprise_id: str,
-        organization_id: Optional[str],
-    ) -> None:
-        """Upsert rows on the causal_node_evidence junction. Composite PK
-        (node_id, evidence_id) makes it idempotent; stance is stored verbatim
-        (supports/refutes/neutral — matches the CHECK and EvidenceStance)."""
-        if not links:
-            return
-        query = text("""
-            INSERT INTO causal_node_evidence (
-                node_id, evidence_id, enterprise_id, organization_id, stance,
-                stance_confidence, reasoning, linked_at_turn,
-                created_at
-            ) VALUES (
-                :node_id, :evidence_id, :enterprise_id, :organization_id, :stance,
-                :stance_confidence, :reasoning, :linked_at_turn,
-                :created_at
-            )
-            ON CONFLICT (node_id, evidence_id) DO UPDATE SET
-                stance = EXCLUDED.stance,
-                stance_confidence = EXCLUDED.stance_confidence,
-                reasoning = EXCLUDED.reasoning,
-                linked_at_turn = EXCLUDED.linked_at_turn
-        """)
-        for link in links:
-            await self.db.execute(
-                query,
-                {
-                    "node_id": node_id,
-                    "evidence_id": link.evidence_id,
-                    "enterprise_id": enterprise_id,
-                    "organization_id": organization_id,
-                    "stance": link.stance.value,
-                    "stance_confidence": link.stance_confidence,
-                    "reasoning": link.reasoning,
-                    "linked_at_turn": link.linked_at_turn,
-                    "created_at": link.analyzed_at,
-                },
-            )
-
-    async def _reconcile_causal_graph(
-        self, case_id: str, node_ids: set[str], edge_ids: set[str]
-    ) -> None:
-        """Delete persisted causal nodes/edges no longer in the in-memory graph.
-
-        The upserts are additive, so a node/edge removed in memory (e.g. an
-        abandoned bridge stub GC'd by a hypothesis re-root, or any orphan-chain
-        resolution) would otherwise survive in the DB and RESURRECT on the next
-        load. This reconciles the persisted rows to the authoritative in-memory
-        set: stale edges are deleted explicitly (a pruned edge whose endpoints
-        both survive is not caught by the node-delete FK cascade), then stale
-        nodes (their causal_node_evidence + endpoint edges cascade away, and
-        solutions.node_id is SET NULL).
-
-        Guarded on a non-empty node set: ``save`` persists the FULL graph and
-        ``get`` loads it whole, so an empty set means a brand-new case with no
-        graph yet — never a partial load — and must not wipe a populated graph.
-        """
-        if not node_ids:
-            return
-        await self.db.execute(
-            text(
-                "DELETE FROM causal_edges WHERE case_id = :cid AND edge_id NOT IN :ids"
-            ).bindparams(bindparam("ids", expanding=True)),
-            {"cid": case_id, "ids": list(edge_ids) or [""]},
-        )
-        await self.db.execute(
-            text(
-                "DELETE FROM causal_nodes WHERE case_id = :cid AND node_id NOT IN :ids"
-            ).bindparams(bindparam("ids", expanding=True)),
-            {"cid": case_id, "ids": list(node_ids)},
-        )
-
-    async def _upsert_causal_edges(
-        self,
-        case_id: str,
-        edges: List[CausalEdge],
-        enterprise_id: str,
-        organization_id: Optional[str],
-    ) -> None:
-        """Upsert causal-graph edges. Additive + idempotent on edge_id."""
-        if not edges:
-            return
-        query = text("""
-            INSERT INTO causal_edges (
-                edge_id, case_id, enterprise_id, organization_id,
-                cause_node_id, effect_node_id, and_group, reasoning,
-                created_at_turn, created_at
-            ) VALUES (
-                :edge_id, :case_id, :enterprise_id, :organization_id,
-                :cause_node_id, :effect_node_id, :and_group, :reasoning,
-                :created_at_turn, :created_at
-            )
-            ON CONFLICT (edge_id) DO UPDATE SET
-                and_group = EXCLUDED.and_group,
-                reasoning = EXCLUDED.reasoning
-        """)
-        for edge in edges:
-            await self.db.execute(
-                query,
-                {
-                    "edge_id": edge.edge_id,
-                    "case_id": case_id,
-                    "enterprise_id": enterprise_id,
-                    "organization_id": organization_id,
-                    "cause_node_id": edge.cause_node_id,
-                    "effect_node_id": edge.effect_node_id,
-                    "and_group": edge.and_group,
-                    "reasoning": edge.reasoning,
-                    "created_at_turn": edge.created_at_turn,
-                    "created_at": edge.created_at,
-                },
-            )
-
-    async def _upsert_solutions(
-        self,
-        case_id: str,
-        solutions_list: List[Solution],
-        enterprise_id: str,
-        organization_id: Optional[str],
-    ) -> None:
-        """Upsert solutions records (normalized table).
-
-        Purely additive — see `_upsert_evidence` for rationale. There is
-        no concrete delete-solution API on the case repo today; if a
-        single-solution remove path is needed, add it explicitly.
-
-        Post-009 schema: writes the full Solution audit trail
-        (proposed_by, applied_at/by, verified_at, verification_method,
-        verification_evidence_id, effectiveness). Status is derived
-        from the lifecycle fields and included in ON CONFLICT UPDATE.
-        """
-        for solution in solutions_list:
-            applied_at = solution.applied_at
-            verified_at = solution.verified_at
-            state = self._derive_solution_state(solution)
-
-            query = text(f"""
-                INSERT INTO solutions (
-                    solution_id, case_id, enterprise_id, organization_id, solution_type, title,
-                    node_id, quadrant,
-                    immediate_action, longterm_fix, implementation_steps, commands, risks,
-                    description, state,
-                    proposed_by, applied_by,
-                    verification_method, verification_evidence_id, effectiveness,
-                    verification_result, verified_at,
-                    proposed_at, applied_at, updated_at, metadata
-                ) VALUES (
-                    :solution_id, :case_id, :enterprise_id, :organization_id, :solution_type, :title,
-                    :node_id, :quadrant,
-                    :immediate_action, :longterm_fix, {self._cast('implementation_steps')},
-                    {self._cast('commands')}, {self._cast('risks')},
-                    :description, :state,
-                    :proposed_by, :applied_by,
-                    :verification_method, :verification_evidence_id, :effectiveness,
-                    :verification_result, :verified_at,
-                    :proposed_at, :applied_at, :updated_at, {self._cast('metadata')}
-                )
-                ON CONFLICT (solution_id) DO UPDATE SET
-                    solution_type = EXCLUDED.solution_type,
-                    title = EXCLUDED.title,
-                    node_id = EXCLUDED.node_id,
-                    quadrant = EXCLUDED.quadrant,
-                    immediate_action = EXCLUDED.immediate_action,
-                    longterm_fix = EXCLUDED.longterm_fix,
-                    implementation_steps = EXCLUDED.implementation_steps,
-                    commands = EXCLUDED.commands,
-                    risks = EXCLUDED.risks,
-                    description = EXCLUDED.description,
-                    state = EXCLUDED.state,
-                    proposed_by = EXCLUDED.proposed_by,
-                    applied_by = EXCLUDED.applied_by,
-                    verification_method = EXCLUDED.verification_method,
-                    verification_evidence_id = EXCLUDED.verification_evidence_id,
-                    effectiveness = EXCLUDED.effectiveness,
-                    verification_result = EXCLUDED.verification_result,
-                    verified_at = EXCLUDED.verified_at,
-                    applied_at = EXCLUDED.applied_at,
-                    updated_at = EXCLUDED.updated_at,
-                    metadata = EXCLUDED.metadata
-            """)
-
-            await self.db.execute(
-                query,
-                {
-                    "solution_id": solution.solution_id,
-                    "case_id": case_id,
-                    "enterprise_id": enterprise_id,
-                    "organization_id": organization_id,
-                    "solution_type": solution.solution_type.value,
-                    "title": solution.title,
-                    "node_id": solution.node_id,
-                    "quadrant": solution.quadrant.value if solution.quadrant else None,
-                    "immediate_action": solution.immediate_action,
-                    "longterm_fix": solution.longterm_fix,
-                    "implementation_steps": json.dumps(
-                        list(solution.implementation_steps)
-                    ),
-                    "commands": json.dumps(list(solution.commands)),
-                    "risks": json.dumps(list(solution.risks)),
-                    "description": (
-                        solution.immediate_action
-                        or solution.longterm_fix
-                        or solution.title
-                    ),
-                    "state": state,
-                    "proposed_by": solution.proposed_by,
-                    "applied_by": solution.applied_by,
-                    "verification_method": solution.verification_method,
-                    "verification_evidence_id": solution.verification_evidence_id,
-                    "effectiveness": solution.effectiveness,
-                    "verification_result": None,
-                    "verified_at": verified_at,
-                    "proposed_at": solution.proposed_at,
-                    "applied_at": applied_at,
-                    "updated_at": datetime.now(timezone.utc),
-                    "metadata": json.dumps({}),
-                },
-            )
-
-    @staticmethod
-    def _derive_solution_state(solution: Solution) -> str:
-        """Map Pydantic Solution lifecycle fields to the schema's
-        state CHECK vocabulary. Mirrors the SQLite repo logic.
-        """
-        if solution.verified_at is not None:
-            return "verified"
-        if solution.applied_at is not None:
-            return "implemented"
-        return "proposed"
-
-    async def _upsert_uploaded_files(
-        self,
-        case_id: str,
-        files_list: List[UploadedFile],
-        enterprise_id: str,
-        organization_id: Optional[str],
-    ) -> None:
-        """Upsert uploaded_files records.
-
-        Purely additive — see `_upsert_evidence` for rationale. For
-        intentional removal, use `delete_uploaded_file(case_id, file_id)`.
-
-        Renamed columns: ``content_ref`` → ``storage_ref``,
-        ``source_type`` → ``upload_source``. Dropped: ``data_type``.
-        Added: ``content_hash``, ``content_type`` (MIME), ``uploaded_by``.
-        ``case_id`` is now nullable on the table (KB conversion uploads),
-        but case-evidence uploads always carry one — passed through
-        verbatim from the call site.
-        """
-        for file in files_list:
-            query = text(f"""
-                INSERT INTO uploaded_files (
-                    file_id, case_id, enterprise_id, organization_id, uploaded_by,
-                    filename, size_bytes, content_type, content_hash,
-                    storage_ref, upload_source,
-                    uploaded_at_turn, uploaded_at,
-                    metadata,
-                    summary, structural_index, data_type,
-                    coverage_start_ts, coverage_end_ts, coverage_source
-                ) VALUES (
-                    :file_id, :case_id, :enterprise_id, :organization_id, :uploaded_by,
-                    :filename, :size_bytes, :content_type, :content_hash,
-                    :storage_ref, :upload_source,
-                    :uploaded_at_turn, :uploaded_at,
-                    {self._cast('metadata')},
-                    :summary, :structural_index, :data_type,
-                    :coverage_start_ts, :coverage_end_ts, :coverage_source
-                )
-                ON CONFLICT (file_id) DO UPDATE SET
-                    uploaded_by = EXCLUDED.uploaded_by,
-                    filename = EXCLUDED.filename,
-                    size_bytes = EXCLUDED.size_bytes,
-                    content_type = EXCLUDED.content_type,
-                    content_hash = EXCLUDED.content_hash,
-                    storage_ref = EXCLUDED.storage_ref,
-                    upload_source = EXCLUDED.upload_source,
-                    uploaded_at_turn = EXCLUDED.uploaded_at_turn,
-                    metadata = EXCLUDED.metadata,
-                    -- Preprocessing artifacts use COALESCE so a failed re-run
-                    -- (NULL incoming) cannot clobber a prior good extraction.
-                    -- Intentional clearing must go through a dedicated path.
-                    summary = COALESCE(EXCLUDED.summary, uploaded_files.summary),
-                    structural_index = COALESCE(EXCLUDED.structural_index, uploaded_files.structural_index),
-                    data_type = COALESCE(EXCLUDED.data_type, uploaded_files.data_type),
-                    coverage_start_ts = COALESCE(EXCLUDED.coverage_start_ts, uploaded_files.coverage_start_ts),
-                    coverage_end_ts = COALESCE(EXCLUDED.coverage_end_ts, uploaded_files.coverage_end_ts),
-                    coverage_source = COALESCE(EXCLUDED.coverage_source, uploaded_files.coverage_source)
-            """)
-
-            await self.db.execute(
-                query,
-                {
-                    "file_id": file.file_id,
-                    "case_id": case_id,
-                    "enterprise_id": enterprise_id,
-                    "organization_id": organization_id,
-                    "uploaded_by": file.uploaded_by,
-                    "filename": file.filename,
-                    "size_bytes": file.size_bytes,
-                    "content_type": file.content_type,
-                    "content_hash": file.content_hash,
-                    "storage_ref": file.storage_ref,
-                    "upload_source": file.upload_source,
-                    "uploaded_at_turn": file.uploaded_at_turn,
-                    "uploaded_at": file.uploaded_at,
-                    "metadata": json.dumps({}),
-                    "summary": file.summary,
-                    "structural_index": file.structural_index,
-                    "data_type": file.data_type,
-                    "coverage_start_ts": file.coverage_start_ts,
-                    "coverage_end_ts": file.coverage_end_ts,
-                    "coverage_source": file.coverage_source,
-                },
-            )
-
-    async def _upsert_messages(
-        self,
-        case_id: str,
-        messages_list: List[Dict[str, Any]],
-        enterprise_id: str,
-        organization_id: Optional[str],
-    ) -> None:
-        """Upsert case messages (PostgreSQL-optimized).
-
-        Purely additive — messages are an append-only log at the domain
-        level; nothing intentionally deletes them. A stale in-memory
-        ``case.messages`` MUST NOT silently truncate rows other concurrent
-        writers have persisted.
-
-        Schema per design spec (case-schema.md §4.7):
-        - message_id, turn_number, role, content, created_at, token_count,
-          metadata, author_id
-
-        Authorship is never overwritten with a blank — see the COALESCE on
-        ``author_id`` in the conflict clause below.
-        """
-        # Validate and complete the WHOLE list before any SQL runs. A row with
-        # no ``message_id`` used to be SKIPPED here, silently: the save
-        # reported success and the transcript line was gone (#1418). It is
-        # completed in place now — the id is the conflict target, so the
-        # caller's list must carry what the row carries — and a row the
-        # repository cannot complete honestly is REFUSED by name here rather
-        # than part-written and then aborted by a constraint.
-        for idx, msg in enumerate(messages_list):
-            self.normalise_message_row(msg, index=idx)
-
-        for idx, msg in enumerate(messages_list):
-
-            query = text(f"""
-                INSERT INTO case_messages (
-                    message_id, case_id, enterprise_id, organization_id, turn_number, role, content, author_id, created_at, token_count, metadata
-                ) VALUES (
-                    :message_id, :case_id, :enterprise_id, :organization_id, :turn_number, :role, :content, :author_id, :created_at, :token_count, {self._cast('metadata')}
-                )
-                ON CONFLICT (message_id) DO UPDATE SET
-                    turn_number = EXCLUDED.turn_number,
-                    role = EXCLUDED.role,
-                    content = EXCLUDED.content,
-                    created_at = EXCLUDED.created_at,
-                    token_count = EXCLUDED.token_count,
-                    metadata = EXCLUDED.metadata,
-                    author_id = COALESCE(case_messages.author_id, EXCLUDED.author_id)
-            """)
-            # Authorship is write-once but still fillable. COALESCE keeps an
-            # author already on the row (a re-save whose in-memory dict lacked
-            # the field cannot NULL it out — the unrecoverable loss this column
-            # exists to prevent) while still letting a later save supply one for
-            # a row that has none. A bare `EXCLUDED.author_id` would erase;
-            # omitting the column entirely would make a NULL permanent.
-
-            await self.db.execute(
-                query,
-                {
-                    "message_id": msg.get("message_id"),
-                    "case_id": case_id,
-                    "enterprise_id": enterprise_id,
-                    "organization_id": organization_id,
-                    "turn_number": msg["turn_number"],
-                    "role": msg.get("role", "user"),
-                    "content": msg.get("content", ""),
-                    "author_id": msg.get("author_id"),
-                    # Direct subscript: the normaliser above guaranteed it.
-                    # Coerced because it produces an ISO STRING and asyncpg
-                    # rejects a str for timestamptz.
-                    "created_at": self._as_datetime(
-                        msg["created_at"], datetime.now(timezone.utc)
-                    ),
-                    "token_count": msg.get("token_count"),
-                    "metadata": json.dumps(msg.get("metadata", {})),
-                },
-            )
-
-    async def _append_case_actions(
-        self,
-        case_id: str,
-        transitions: List[CaseAction],
-        enterprise_id: str,
-        organization_id: Optional[str],
-    ) -> None:
-        """Append only newly-added case actions (append-only audit trail).
-
-        ``action_history`` is hydrated oldest-first by ``_load_case_actions``
-        and new actions are appended to the tail, so the in-memory list is
-        always ``[persisted_prefix..., new_tail...]``. Only the unpersisted
-        tail is inserted.
-
-        Re-inserting the full list every ``save()`` previously caused
-        *geometric* row growth: ``transition_id`` is an autoincrement PK with
-        no natural-key conflict target, so the ``ON CONFLICT DO NOTHING``
-        clause could never fire and every save duplicated the entire history
-        (R rows → 2R + new). Counting already-persisted rows and inserting
-        only ``transitions[already_persisted:]`` makes each save O(new), not
-        O(history).
-        """
-        count_result = await self.db.execute(
-            text("SELECT COUNT(*) FROM case_actions WHERE case_id = :case_id"),
-            {"case_id": case_id},
-        )
-        already_persisted = count_result.scalar() or 0
-        new_transitions = transitions[already_persisted:]
-        for transition in new_transitions:
-            query = text(f"""
-                INSERT INTO case_actions (
-                    case_id, enterprise_id, organization_id, from_state, to_state, reason,
-                    triggered_by, transitioned_at, metadata
-                ) VALUES (
-                    :case_id, :enterprise_id, :organization_id, :from_state, :to_state, :reason,
-                    :triggered_by, :transitioned_at, {self._cast('metadata')}
-                )
-            """)
-
-            await self.db.execute(
-                query,
-                {
-                    "case_id": case_id,
-                    "enterprise_id": enterprise_id,
-                    "organization_id": organization_id,
-                    "from_state": (
-                        transition.from_state.value if transition.from_state else None
-                    ),
-                    "to_state": transition.to_state.value,
-                    "reason": (
-                        transition.reason if hasattr(transition, "reason") else None
-                    ),
-                    "triggered_by": transition.triggered_by,
-                    "transitioned_at": self._as_datetime(
-                        transition.triggered_at, datetime.now(timezone.utc)
-                    ),
-                    "metadata": json.dumps({}),
-                },
-            )
-
-    async def _load_case_actions(self, case_id: str) -> List[CaseAction]:
-        """Hydrate the audit trail for a case from ``case_actions``.
-
-        Replaces the prior write-only pattern (``action_history=[]`` hardcoded
-        in ``_to_domain``). Rows are returned ordered oldest-first.
-        """
-        query = text("""
-            SELECT from_state, to_state, reason, triggered_by, transitioned_at
-            FROM case_actions
-            WHERE case_id = :case_id
-            ORDER BY transitioned_at ASC, transition_id ASC
-        """)
-        result = await self.db.execute(query, {"case_id": case_id})
-        rows = result.fetchall()
-        actions: List[CaseAction] = []
-        for row in rows:
-            actions.append(
-                CaseAction(
-                    from_state=(CaseState(row.from_state) if row.from_state else None),
-                    to_state=CaseState(row.to_state),
-                    triggered_at=row.transitioned_at,
-                    triggered_by=row.triggered_by,
-                    reason=row.reason or "",
-                )
-            )
-        return actions
-
-    async def _row_to_case(
-        self,
-        row,
-        links_by_hyp: Optional[Dict[str, builtins.list[HypothesisEvidenceLink]]] = None,
-    ) -> Case:
-        """Reconstruct Case domain object from a SELECT row.
-
-        Post-redesign: ``description``, ``investigation_strategy``,
-        ``current_turn``, ``turns_without_progress``, ``closure_reason``,
-        ``last_activity_at``, ``resolved_at``, ``closed_at`` all come
-        directly from first-class columns. ``is_archived`` /
-        ``archived_at`` are gone. Hypothesis evidence_links come from the
-        ``hypothesis_evidence`` junction table (the JSON blob is gone),
-        loaded by the caller and passed in via ``links_by_hyp``.
-
-        Evidence is NOT populated here — the caller (``get`` /
-        ``list``) loads it separately via ``_load_evidence_for_case`` /
-        bulk equivalent.
-        """
-        if links_by_hyp is None:
-            links_by_hyp = {}
-
-        def _maybe_load(value: Any) -> Any:
-            """JSONB columns arrive as Python objects on PG; legacy
-            TEXT rows arrive as JSON-serialized strings. Accept both."""
-            if value is None:
-                return None
-            if isinstance(value, (dict, list)):
-                return value
-            return json.loads(value)
-
-        inquiry_data = _maybe_load(row.inquiry) or {}
-        inquiry = InquiryData(**inquiry_data) if inquiry_data else InquiryData()
-        problem_verification = (
-            ProblemVerification(**_maybe_load(row.problem_verification))
-            if row.problem_verification
-            else None
-        )
-        working_conclusion = (
-            WorkingConclusion(**_maybe_load(row.working_conclusion))
-            if row.working_conclusion
-            else None
-        )
-        root_cause_conclusion = (
-            RootCauseConclusion(**_maybe_load(row.root_cause_conclusion))
-            if row.root_cause_conclusion
-            else None
-        )
-        escalation_state = (
-            EscalationState(**_maybe_load(row.escalation_state))
-            if row.escalation_state
-            else None
-        )
-        documentation = (
-            DocumentationData(**_maybe_load(row.documentation))
-            if row.documentation
-            else DocumentationData()
-        )
-        progress = (
-            InvestigationProgress(**_maybe_load(row.progress))
-            if row.progress
-            else InvestigationProgress()
-        )
-
-        # Parse aggregated JSON sub-collections.
-        hypotheses_payload = _maybe_load(row.hypotheses_data) or []
-        solutions_payload = _maybe_load(row.solutions_data) or []
-        uploaded_files_payload = _maybe_load(row.uploaded_files_data) or []
-        messages_payload = _maybe_load(row.messages_data) or []
-
-        # Hydrate hypothesis_evidence links onto each hypothesis.
-        hypotheses_dict: Dict[str, Hypothesis] = {}
-        for h in hypotheses_payload:
-            hyp_id = h["hypothesis_id"]
-            h["evidence_links"] = links_by_hyp.get(hyp_id, [])
-            hypotheses_dict[hyp_id] = Hypothesis(**h)
-
-        solutions_list = [Solution(**s) for s in solutions_payload]
-        uploaded_files = [UploadedFile(**f) for f in uploaded_files_payload]
-
-        # Promoted columns: read directly from the row.
-        metadata = _maybe_load(getattr(row, "metadata", None)) or {}
-
-        # ``description`` is now a first-class column. Auto-heal the
-        # legacy case where an INVESTIGATING row lost its description
-        # (rare; pre-redesign rows that fell through the migration).
-        description = row.description or ""
-        if (
-            CaseState(row.state) == CaseState.INVESTIGATING
-            and (not description or not description.strip())
-            and inquiry.proposed_problem_statement
-        ):
-            description = inquiry.proposed_problem_statement
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    f"Auto-healed missing description for case {row.case_id} "
-                    f"from proposed_problem_statement"
-                )
-
-        # Hydrate the audit trail. PG's _row_to_case is async and is used
-        # by both get() and list() (list calls get() per case_id), so the
-        # extra round-trip is acceptable at list granularity.
-        actions_data = await self._load_case_actions(row.case_id)
-
-        case_data: Dict[str, Any] = {
-            "case_id": row.case_id,
-            "user_id": row.user_id,
-            "enterprise_id": row.enterprise_id,
-            "organization_id": row.organization_id,
-            "source": getattr(row, "source", "copilot"),
-            "title": row.title,
-            "state": CaseState(row.state),
-            "action_history": actions_data,
-            "closure_reason": row.closure_reason,
-            "disposition_eligibility": (
-                (
-                    json.loads(row.disposition_eligibility)
-                    if isinstance(row.disposition_eligibility, str)
-                    else row.disposition_eligibility
-                )
-                if getattr(row, "disposition_eligibility", None)
-                else None
-            ),
-            "pending_transition": metadata.get("pending_transition"),
-            "last_suggestions": metadata.get("last_suggestions"),
-            # Pre-fetched runbooks (the KB push channel, fm#1360).
-            "kb_context": metadata.get("kb_context"),
-            "progress": progress,
-            "current_turn": int(row.current_turn or 0),
-            "turns_without_progress": int(row.turns_without_progress or 0),
-            "message_count": metadata.get("message_count", 0),
-            "turn_history": (
-                [TurnProgress(**t) for t in metadata.get("turn_history", [])]
-                if metadata.get("turn_history")
-                else []
-            ),
-            "proposed_actions": (
-                [ProposedAction(**a) for a in metadata.get("proposed_actions", [])]
-                if metadata.get("proposed_actions")
-                else []
-            ),
-            "action_attempts": (
-                [ActionAttempt(**a) for a in metadata.get("action_attempts", [])]
-                if metadata.get("action_attempts")
-                else []
-            ),
-            "inquiry": inquiry,
-            "problem_verification": problem_verification,
-            "uploaded_files": uploaded_files,
-            "evidence": [],  # Loaded separately
-            "hypotheses": hypotheses_dict,
-            "solutions": solutions_list,
-            "messages": messages_payload,
-            "working_conclusion": working_conclusion,
-            "root_cause_conclusion": root_cause_conclusion,
-            "escalation_state": escalation_state,
-            "documentation": documentation,
-            "created_at": row.created_at,
-            "updated_at": row.updated_at,
-            "version": (
-                int(row.version)
-                if hasattr(row, "version") and row.version is not None
-                else 1
-            ),
-        }
-
-        if description:
-            case_data["description"] = description
-
-        if row.investigation_strategy:
-            case_data["investigation_strategy"] = InvestigationStrategy(
-                row.investigation_strategy
-            )
-
-        if row.last_activity_at:
-            case_data["last_activity_at"] = row.last_activity_at
-
-        if row.resolved_at:
-            case_data["resolved_at"] = row.resolved_at
-
-        if row.closed_at:
-            case_data["closed_at"] = row.closed_at
-
-        return Case(**case_data)
-
     # ========================================================================
     # Report Operations (TD-001: migrated from IReportStore)
     # ========================================================================
@@ -3407,8 +1573,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                  WHERE case_id = {self._org_lookup_case_id()}),
                 :report_type, :version, :is_current,
                 :linked_to_closure, :title, :content, :format,
-                :generation_status, :generation_time_ms, {self._cast('metadata')},
-                {self._cast('generated_at', 'TIMESTAMPTZ')}, {self._cast('updated_at', 'TIMESTAMPTZ')}, :generated_by
+                :generation_status, :generation_time_ms, {_cast(self._is_pg, 'metadata')},
+                {_cast(self._is_pg, 'generated_at', 'TIMESTAMPTZ')}, {_cast(self._is_pg, 'updated_at', 'TIMESTAMPTZ')}, :generated_by
             )
             ON CONFLICT (report_id) DO UPDATE SET
                 version = EXCLUDED.version,
@@ -3493,7 +1659,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         if not row:
             return None
 
-        return self._row_to_report(row)
+        return _row_to_report(row)
 
     async def get_reports(
         self,
@@ -3537,7 +1703,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         result = await self.db.execute(query, params)
         rows = result.fetchall()
 
-        return [self._row_to_report(row) for row in rows]
+        return [_row_to_report(row) for row in rows]
 
     async def count_reports(
         self,
@@ -3612,8 +1778,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 format = :format,
                 generation_status = :generation_status,
                 generation_time_ms = :generation_time_ms,
-                metadata = {self._cast('metadata')},
-                updated_at = {self._cast('updated_at', 'TIMESTAMPTZ')}
+                metadata = {_cast(self._is_pg, 'metadata')},
+                updated_at = {_cast(self._is_pg, 'updated_at', 'TIMESTAMPTZ')}
             WHERE report_id = :report_id
         """)
 
@@ -3653,81 +1819,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
         return result.rowcount > 0
 
-    def _row_to_report(self, row) -> "CaseReport":
-        """Convert database row to CaseReport domain object."""
-        from faultmaven.modules.case.domain.owned_models.report import (
-            CaseReport,
-            ReportStatus,
-            ReportType,
-            RunbookMetadata,
-        )
-        from faultmaven.utils.serialization import to_json_compatible
-
-        # Parse metadata if present
-        metadata = None
-        if row.metadata and row.metadata != "{}":
-            try:
-                metadata_dict = (
-                    json.loads(row.metadata)
-                    if isinstance(row.metadata, str)
-                    else row.metadata
-                )
-                if metadata_dict:
-                    metadata = RunbookMetadata(**metadata_dict)
-            except Exception:
-                pass
-
-        # Convert timestamps to ISO 8601 strings (ensuring UTC consistency)
-        # PostgreSQL TIMESTAMP WITH TIME ZONE is stored in UTC but may return in session timezone
-        # Normalize to UTC explicitly to avoid timezone jitter between implementations
-        if row.generated_at:
-            # Ensure UTC: if timezone-aware, convert to UTC; if naive, assume UTC
-            gen_dt = row.generated_at
-            if gen_dt.tzinfo is None:
-                gen_dt = gen_dt.replace(tzinfo=timezone.utc)
-            elif gen_dt.tzinfo != timezone.utc:
-                gen_dt = gen_dt.astimezone(timezone.utc)
-            generated_at = to_json_compatible(gen_dt)
-        else:
-            generated_at = to_json_compatible(datetime.now(timezone.utc))
-
-        if row.updated_at:
-            # Ensure UTC: if timezone-aware, convert to UTC; if naive, assume UTC
-            upd_dt = row.updated_at
-            if upd_dt.tzinfo is None:
-                upd_dt = upd_dt.replace(tzinfo=timezone.utc)
-            elif upd_dt.tzinfo != timezone.utc:
-                upd_dt = upd_dt.astimezone(timezone.utc)
-            updated_at = to_json_compatible(upd_dt)
-        else:
-            updated_at = generated_at  # Fallback to generated_at if NULL
-
-        return CaseReport(
-            report_id=row.report_id,
-            case_id=row.case_id,
-            report_type=ReportType(row.report_type),
-            version=row.version,
-            is_current=row.is_current,
-            linked_to_closure=row.linked_to_closure,
-            title=row.title,
-            # Normalized where a stored report BECOMES a CaseReport
-            # (#1097): a summary is generated once at the terminal
-            # transition and never re-rendered, so rows written before
-            # the audit/prose split still carry the engine notation.
-            # Here rather than at each presentation site — applied
-            # per-reader it is a discipline every future consumer must
-            # opt into, and the download endpoint had already been
-            # missed that way; here it is a property of any report
-            # loaded from storage.
-            content=normalize_stored_report_content(row.content),
-            format=row.format,
-            generation_status=ReportStatus(row.generation_status),
-            generation_time_ms=row.generation_time_ms,
-            generated_at=generated_at,
-            updated_at=updated_at,
-            metadata=metadata,
-        )
-
     # ============================================================
     # Agent Execution & Tool Call Persistence (PostgreSQL)
     # Schema reference: docs/architecture/data-and-storage/schemas/case-schema.md §4.11
@@ -3748,8 +1839,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                      WHERE case_id = {self._org_lookup_case_id()}),
                     (SELECT organization_id FROM cases
                      WHERE case_id = {self._org_lookup_case_id()}),
-                    :turn_number, {self._cast('case_snapshot')},
-                    :snapshot_hash, :trigger, {self._cast('created_at', 'TIMESTAMPTZ')}, {self._cast('metadata')}
+                    :turn_number, {_cast(self._is_pg, 'case_snapshot')},
+                    :snapshot_hash, :trigger, {_cast(self._is_pg, 'created_at', 'TIMESTAMPTZ')}, {_cast(self._is_pg, 'metadata')}
                 )
             """)
 
@@ -3793,7 +1884,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             if not row:
                 return None
 
-            return self._row_to_case_checkpoint(row)
+            return _row_to_case_checkpoint(row)
 
         except Exception as e:
             raise RepositoryException(
@@ -3814,37 +1905,12 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             result = await self.db.execute(query, {"case_id": case_id})
             rows = result.fetchall()
 
-            return [self._row_to_case_checkpoint(row) for row in rows]
+            return [_row_to_case_checkpoint(row) for row in rows]
 
         except Exception as e:
             raise RepositoryException(
                 f"Failed to get checkpoints for case {case_id}: {e}"
             ) from e
-
-    def _row_to_case_checkpoint(self, row: Any) -> CaseCheckpoint:
-        """Convert DB row to CaseCheckpoint domain model."""
-        snapshot_data = row.case_snapshot
-        if isinstance(snapshot_data, str):
-            snapshot_data = json.loads(snapshot_data)
-
-        metadata = row.metadata
-        if isinstance(metadata, str):
-            metadata = json.loads(metadata)
-
-        created_at = row.created_at
-        if created_at and created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
-
-        return CaseCheckpoint(
-            checkpoint_id=row.checkpoint_id,
-            case_id=row.case_id,
-            turn_number=row.turn_number,
-            case_snapshot=snapshot_data or {},
-            snapshot_hash=row.snapshot_hash,
-            trigger=row.trigger,
-            created_at=created_at,
-            metadata=metadata or {},
-        )
 
 
 class RepositoryException(Exception):
