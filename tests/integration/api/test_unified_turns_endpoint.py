@@ -175,7 +175,7 @@ class TestTurnPayloadConstruction:
 # ============================================================
 #
 # These tests cover the input-origin discrimination in the unified turns
-# endpoint (``submit_turn`` in modules/case/api/routes/__init__.py). The route distinguishes
+# endpoint (``submit_turn`` in modules/case/api/routes.py). The route distinguishes
 # three submission origins so the classifier can apply the correct
 # confidence boost downstream:
 #
@@ -332,7 +332,7 @@ class TestEndpointValidation:
         """No query, no files, no paste is accepted: the service answers it with
         a state-aware orientation (a bare @mention in Slack). The route's former
         400 guard is gone; the service derives the EMPTY kind from the absence."""
-        import pathlib
+        import inspect
 
         from faultmaven.modules.agent.domain.services.orientation import (
             OrientationKind,
@@ -340,12 +340,9 @@ class TestEndpointValidation:
         )
         from faultmaven.modules.case.api import routes
 
-        # `inspect.getsource(routes)` alone would see only `__init__.py`: since
-        # fm#1707 converted `routes.py` into a package, its source is spread
-        # across every file in the package directory.
-        pkg_dir = pathlib.Path(routes.__file__).parent
-        package_source = "\n".join(p.read_text() for p in sorted(pkg_dir.glob("*.py")))
-        assert "At least one of query, files, or pasted_content" not in package_source
+        assert "At least one of query, files, or pasted_content" not in (
+            inspect.getsource(routes)
+        )
         assert detect_orientation(None) == OrientationKind.EMPTY
 
     def test_invalid_case_id_rejected(self):

@@ -40,12 +40,14 @@ from faultmaven.exceptions import ValidationException
 from faultmaven.models.api_models import TurnResponse
 from faultmaven.modules.auth.contracts import UserDTO
 from faultmaven.modules.case.api.routes import (
-    _auto_title_case_if_default,
     _di_get_case_service_dependency,
     _is_default_case_title,
-    _TitleSubstanceTooThin,
     router,
     submit_turn,
+)
+from faultmaven.modules.case.api.title_generation import (
+    _auto_title_case_if_default,
+    _TitleSubstanceTooThin,
 )
 from faultmaven.modules.case.contracts import CaseState
 from faultmaven.modules.case.domain.models import Case
@@ -192,7 +194,7 @@ class TestAutoTitleTask:
         service = _service_for(case)
 
         with patch(
-            "faultmaven.modules.case.api.routes.title_generation._generate_title_with_llm",
+            "faultmaven.modules.case.api.title_generation._generate_title_with_llm",
             new=AsyncMock(),
         ) as llm:
             await _auto_title_case_if_default(
@@ -224,11 +226,11 @@ class TestAutoTitleTask:
 
         with (
             patch(
-                "faultmaven.modules.case.api.routes.title_generation._generate_and_persist_title",
+                "faultmaven.modules.case.api.title_generation._generate_and_persist_title",
                 new=AsyncMock(side_effect=_never_returns),
             ),
             patch(
-                "faultmaven.modules.case.api.routes.title_generation.AUTO_TITLE_TIMEOUT_SECONDS",
+                "faultmaven.modules.case.api.title_generation.AUTO_TITLE_TIMEOUT_SECONDS",
                 0.05,
             ),
         ):
@@ -285,7 +287,7 @@ class TestAutoTitleTask:
         service = _service_for(case)
 
         with patch(
-            "faultmaven.modules.case.api.routes.title_generation._generate_and_persist_title",
+            "faultmaven.modules.case.api.title_generation._generate_and_persist_title",
             new=AsyncMock(side_effect=_TitleSubstanceTooThin("too thin")),
         ):
             await _auto_title_case_if_default(
@@ -310,7 +312,7 @@ class TestAutoTitleTask:
 
         # The gate refusing: quiet.
         with patch(
-            "faultmaven.modules.case.api.routes.title_generation._generate_and_persist_title",
+            "faultmaven.modules.case.api.title_generation._generate_and_persist_title",
             new=AsyncMock(side_effect=_TitleSubstanceTooThin("too thin")),
         ):
             with caplog.at_level(logging.WARNING):
@@ -325,7 +327,7 @@ class TestAutoTitleTask:
         # Generation failing (LLM *and* extractive fallback): visible. This is a
         # bare ValidationException — the same type the gate used to raise.
         with patch(
-            "faultmaven.modules.case.api.routes.title_generation._generate_and_persist_title",
+            "faultmaven.modules.case.api.title_generation._generate_and_persist_title",
             new=AsyncMock(
                 side_effect=ValidationException(
                     "Cannot generate meaningful title from available context"

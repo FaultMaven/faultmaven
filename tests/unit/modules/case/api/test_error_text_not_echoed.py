@@ -108,14 +108,15 @@ async def test_500_body_does_not_echo_the_exception(build_app, call_api):
 def _routes_source() -> list[pathlib.Path]:
     """The guarded files, with a floor so an empty parse cannot pass vacuously.
 
-    ``routes_module.__file__`` alone would silently see only ``__init__.py``
-    once fm#1707 converted the router into a package: ``title_generation.py``
-    carries its own bound ``except`` handlers (and its own ``HTTPException``
-    construction — ``_generate_and_persist_title``'s persistence-failure arms)
-    and must stay on the guarded surface.
+    ``routes_module.__file__`` alone would miss ``title_generation.py``, its
+    sibling in ``case/api/``: that module carries its own bound ``except``
+    handlers (and its own ``HTTPException`` construction —
+    ``_generate_and_persist_title``'s persistence-failure arms) and must stay
+    on the guarded surface. Named explicitly, not globbed, so a new unrelated
+    module later added to ``case/api/`` does not silently join the surface.
     """
-    pkg_dir = pathlib.Path(routes_module.__file__).parent
-    paths = sorted(p for p in pkg_dir.glob("*.py") if p.name != "__pycache__")
+    routes_path = pathlib.Path(routes_module.__file__)
+    paths = sorted([routes_path, routes_path.parent / "title_generation.py"])
     handlers = sum(
         isinstance(node, ast.ExceptHandler) and bool(node.name)
         for path in paths

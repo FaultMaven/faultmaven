@@ -555,6 +555,8 @@ def mock_services_for_integration_tests(
     from faultmaven.api.dependencies import get_api_case_service
     from faultmaven.api.v1.auth_dependencies import require_authentication
     from faultmaven.api.v1.dependencies import (
+        get_case_repository,
+        get_case_service,
         get_case_vector_store,
         get_data_service,
         get_investigation_service,
@@ -563,8 +565,6 @@ def mock_services_for_integration_tests(
     from faultmaven.modules.case.api.routes import (
         _di_get_case_service_dependency,
         _di_get_session_service_dependency,
-        get_case_repository,
-        get_case_service,
     )
 
     # Mock authentication
