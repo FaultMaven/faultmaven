@@ -1972,7 +1972,7 @@ def test_every_reader_of_a_stored_entry_tolerates_any_shape():
     liveness = "core/investigation/suggestion_liveness.py"
     resolver = "core/investigation/intent_resolver.py"
     service = "modules/agent/domain/services/investigation_service.py"
-    engine = "core/investigation/milestone_engine.py"
+    engine = "core/investigation/milestone_engine/__init__.py"
 
     assert set(readers) == {
         # ---- stored-entry readers. Shape-tolerant via the leaves. ----------
@@ -3269,15 +3269,29 @@ class TestATerminalCaseAnswersNothingStored:
 
             _Walk(rel).visit(tree)
 
-        engine = "core/investigation/milestone_engine.py"
+        # fm#1707: split across submodules of the milestone_engine package.
+        engine_cause_state = "core/investigation/milestone_engine/cause_state.py"
+        engine_terminal_replies = (
+            "core/investigation/milestone_engine/terminal_replies.py"
+        )
+        engine_stage_gates = "core/investigation/milestone_engine/stage_gates.py"
         service = "modules/agent/domain/services/investigation_service.py"
         assert builders == {
             # The three engine GATE builders. Each is emitted beside a
             # ``propose_transition`` or an open Gate 1, so never on a terminal
             # case — which is what makes the terminal guard free.
-            (engine, "_investigation_confirmation_suggestions"),  # Gate 1, INQUIRY
-            (engine, "_resolution_confirmation_suggestions"),  # pending -> RESOLVED
-            (engine, "_close_confirmation_suggestions"),  # pending -> CLOSED
+            (
+                engine_cause_state,
+                "_investigation_confirmation_suggestions",
+            ),  # Gate 1, INQUIRY
+            (
+                engine_terminal_replies,
+                "_resolution_confirmation_suggestions",
+            ),  # pending -> RESOLVED
+            (
+                engine_stage_gates,
+                "_close_confirmation_suggestions",
+            ),  # pending -> CLOSED
             # Not producers. ``_stored_suggestions`` re-materialises this
             # turn's clarification choices as stored entries, and
             # ``_clarification_suggestions_for_failed`` mints those choices —

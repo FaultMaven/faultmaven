@@ -527,7 +527,7 @@ def test_the_fence_reserve_costs_nothing_when_repair_cannot_fire():
     assert "```" not in answer, "this test needs fence-free content"
 
     with_reserve, dropped_with = _elide_answer_middle(answer, _answer_budget())
-    with patch.object(me, "FENCE_REPAIR_RESERVE", 0):
+    with patch.object(me.text_budget, "FENCE_REPAIR_RESERVE", 0):
         without_reserve, dropped_without = _elide_answer_middle(
             answer, _answer_budget()
         )

@@ -282,7 +282,7 @@ The core feature. Model change, schema change, context builder change, and promp
 | `investigation_journal` field on Case | `modules/case/domain/models.py` | Done |
 | Export from contracts | `modules/case/contracts.py` | Done |
 | `JournalEntryOutput` in LLM schema | `core/investigation/schemas.py` | Done |
-| Journal extraction in milestone engine | `core/investigation/milestone_engine.py` | Done |
+| Journal extraction in milestone engine | `core/investigation/milestone_engine/` | Done |
 | Journal section in context builder | `core/investigation/prompts/context_builder.py` | Done |
 | Journal prompt instructions | `core/investigation/prompts/templates.py` | Done |
 | Persistence (metadata blob) | `infrastructure/persistence/database_case_repository.py` | Done |

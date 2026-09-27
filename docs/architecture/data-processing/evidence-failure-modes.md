@@ -76,7 +76,7 @@ async def process_turn_with_attachment(case_id, user_message, file):
 
 ### Scenario 2: LLM Call Timeout
 
-> **Current implementation (2026-04-19):** This scenario's "LLM timeout at ingest" framing is obsolete — Tier 0+1 is zero-LLM, so file upload no longer depends on an LLM call. The real remaining failure surface is **LLM calls during turn processing** in `milestone_engine.py`. Current handling:
+> **Current implementation (2026-04-19):** This scenario's "LLM timeout at ingest" framing is obsolete — Tier 0+1 is zero-LLM, so file upload no longer depends on an LLM call. The real remaining failure surface is **LLM calls during turn processing** in `milestone_engine/__init__.py`. Current handling:
 >
 > - `BaseExternalClient.call_external` retries `retryable=True` errors synchronously within the request.
 > - On terminal failure, `modules/case/api/routes.py:2234-2269` returns specific error codes (`LLM_OVER_CAPACITY` / `RATE_LIMIT_EXCEEDED` / `LLM_TIMEOUT` / `SERVICE_ERROR`) with appropriate `Retry-After` headers and actionable user-facing messages.

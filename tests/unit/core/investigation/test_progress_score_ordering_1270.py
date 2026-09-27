@@ -352,7 +352,7 @@ async def test_the_guard_survives_a_short_circuited_decision():
 
     engine = _terminal_confirm_engine()
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(me, "check_if_progress_made", counting_pred)
+        mp.setattr(me.progress, "check_if_progress_made", counting_pred)
         mp.setattr(me, "score_progress", recording_score)
         result = await engine.process_turn(
             case=_case_awaiting_confirmation("resolved"),

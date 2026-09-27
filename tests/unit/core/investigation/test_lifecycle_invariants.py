@@ -1532,7 +1532,7 @@ class TestINV13_AckTurnVsQATurnSuggestions:
         )
 
         monkeypatch.setattr(
-            "faultmaven.core.investigation.milestone_engine.runbook_conversion_ready",
+            "faultmaven.core.investigation.milestone_engine.terminal_replies.runbook_conversion_ready",
             lambda case: True,
         )
         suggestions = _resolved_ack_suggestions(object())
@@ -1560,7 +1560,7 @@ class TestINV13_AckTurnVsQATurnSuggestions:
         from faultmaven.core.investigation.milestone_engine import _resolved_suggestions
 
         monkeypatch.setattr(
-            "faultmaven.core.investigation.milestone_engine.runbook_conversion_ready",
+            "faultmaven.core.investigation.milestone_engine.terminal_replies.runbook_conversion_ready",
             lambda case: True,
         )
         suggestions = _resolved_suggestions(object(), remaining=5)
@@ -1619,7 +1619,7 @@ class TestINV13_AckTurnVsQATurnSuggestions:
         )
 
         monkeypatch.setattr(
-            "faultmaven.core.investigation.milestone_engine.runbook_conversion_ready",
+            "faultmaven.core.investigation.milestone_engine.terminal_replies.runbook_conversion_ready",
             lambda case: True,
         )
         ack = _resolved_ack_suggestions(object())

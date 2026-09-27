@@ -214,7 +214,7 @@ def test_hold_counter_and_warning_are_edge_triggered(caplog):
     case = _specimen_case()
     with (
         patch(
-            "faultmaven.core.investigation.milestone_engine."
+            "faultmaven.core.investigation.milestone_engine.cause_state."
             "cause_identification_held_mece_total"
         ) as counter,
         caplog.at_level(
@@ -242,7 +242,7 @@ def test_flag_records_contest_existence_independent_of_symptom_anchor():
     case = _specimen_case()
     case.progress.symptom_verified = False
     with patch(
-        "faultmaven.core.investigation.milestone_engine."
+        "faultmaven.core.investigation.milestone_engine.cause_state."
         "cause_identification_held_mece_total"
     ) as counter:
         _recompute_cause_state_from_chain(case)

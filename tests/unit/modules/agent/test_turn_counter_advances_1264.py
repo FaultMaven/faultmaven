@@ -329,7 +329,7 @@ class TestTheRecordDoesNotDestroyWhatTurnHistoryFeeds:
             calls.append(dict(metadata))
             return original(metadata)
 
-        monkeypatch.setattr(engine_module, "check_if_progress_made", _spy)
+        monkeypatch.setattr(engine_module.progress, "check_if_progress_made", _spy)
         _backfill_consumed_turn(
             case,
             user_message="here",

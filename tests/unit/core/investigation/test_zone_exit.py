@@ -212,7 +212,7 @@ class TestPendingActionHygiene:
         _diagnostic(case, turn=3, desc="b")
         case.root_cause_conclusion = None
         with patch(
-            "faultmaven.core.investigation.milestone_engine."
+            "faultmaven.core.investigation.milestone_engine.stage_gates."
             "pending_action_superseded_stale_total"
         ) as counter:
             _recompute_assessment_state(case, metadata={})

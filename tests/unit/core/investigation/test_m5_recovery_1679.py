@@ -337,7 +337,9 @@ class TestLicenseReadsTheSettledTurn:
             return validated
 
         monkeypatch.setattr(
-            milestone_engine, "_recompute_cause_state_from_chain", _recompute_with_m6
+            milestone_engine.cause_state,
+            "_recompute_cause_state_from_chain",
+            _recompute_with_m6,
         )
 
         await _make_engine()._apply_investigation_updates(case, _Updates(), _meta())

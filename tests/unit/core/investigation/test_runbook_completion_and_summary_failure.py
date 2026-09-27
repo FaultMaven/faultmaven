@@ -30,6 +30,7 @@ import inspect
 import re
 from contextlib import nullcontext
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -308,7 +309,7 @@ class TestAckTurnFollowUpsOnFailure:
         # Runbook affordance is grade-gated (#695 Defect A); pin CONFIRMED so the
         # MagicMock case yields a deterministic grade for both sides.
         monkeypatch.setattr(
-            "faultmaven.core.investigation.milestone_engine.grade_cause_assurance",
+            "faultmaven.core.investigation.milestone_engine.cause_state.grade_cause_assurance",
             lambda case: CauseAssuranceGrade.CONFIRMED,
         )
         case = MagicMock()
@@ -337,7 +338,7 @@ class TestAckTurnFollowUpsOnFailure:
         )
 
         monkeypatch.setattr(
-            "faultmaven.core.investigation.milestone_engine.grade_cause_assurance",
+            "faultmaven.core.investigation.milestone_engine.cause_state.grade_cause_assurance",
             lambda case: CauseAssuranceGrade.CONFIRMED,
         )
         case = MagicMock()
@@ -598,7 +599,15 @@ def _known_affordance_labels() -> set[str]:
     """
     import faultmaven.core.investigation.milestone_engine as engine_module
 
-    labels = set(_LABEL_LITERAL_RE.findall(inspect.getsource(engine_module)))
+    # fm#1707: ``milestone_engine`` is a package, so ``inspect.getsource`` on
+    # the module object alone would only see ``__init__.py``. Read every
+    # submodule too, or a label added to a moved suggestion builder (e.g. the
+    # runbook affordance, now in ``terminal_replies.py``) goes unscraped.
+    engine_dir = Path(engine_module.__file__).parent
+    engine_source = "\n".join(
+        p.read_text(encoding="utf-8") for p in sorted(engine_dir.glob("*.py"))
+    )
+    labels = set(_LABEL_LITERAL_RE.findall(engine_source))
     assert "Generate runbook from this case" in labels, (
         "affordance-label scrape found no runbook label — the pattern has "
         "drifted and this property would pass vacuously"

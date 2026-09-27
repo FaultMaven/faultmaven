@@ -716,7 +716,7 @@ Evidence needs map to the (now expanded) evidence taxonomy:
 
 `CATEGORY_MILESTONE_MAP` extension. The map values are `List[str]`
 (matching the existing engine consumer at
-`milestone_engine.py:_infer_milestones`), not scalars:
+`milestone_engine/milestone_inference.py` `_infer_milestones`), not scalars:
 
 ```python
 CATEGORY_MILESTONE_MAP = {
@@ -1276,10 +1276,10 @@ Copilot is already live.
 | `EvidenceCategory` enum | `faultmaven/modules/case/domain/models.py:1221` |
 | LLM schema `EvidenceNeedUpdate` + stage hooks | `faultmaven/core/investigation/schemas.py:501`; `evidence_need_updates` on Diagnosis/Mitigation/Treatment/General state-updates (~`:1044`–`:1194`); **absent from `InquiryStateUpdate` by design (INV-07)** |
 | `SuggestedFollowUp.evidence_need_id` + validators | `faultmaven/core/investigation/schemas.py:897`–`929` |
-| Engine apply-layer `_apply_evidence_need_updates` | `faultmaven/core/investigation/milestone_engine.py:6310`–`6637` (invoked ~`:6137`) |
+| Engine apply-layer `_apply_evidence_need_updates` | `faultmaven/core/investigation/milestone_engine/__init__.py` `MilestoneEngine._apply_evidence_need_updates` |
 | ~~Engine backstop (path-conditional rejection)~~ | **Removed in the flow redesign** — `_path_conditional_emission_restriction` / `_RESTRICTED_STATE_BLOCK_NAMES` deleted; causal-need gating is now prompt-guided by `cause_state` (§7.3). |
-| Terminal-hypothesis supersession | `milestone_engine.py:_supersede_needs_on_terminal_hypothesis` (+ `_TERMINAL_HYPOTHESIS_STATES`) |
-| Wire-flattening seam (`new_index_N` → real ID) | `milestone_engine.py:_flatten_follow_ups` ~`:7476`–`7530` |
+| Terminal-hypothesis supersession | `milestone_engine/terminal_proposals.py` `_supersede_needs_on_terminal_hypothesis` (+ `_TERMINAL_HYPOTHESIS_STATES`) |
+| Wire-flattening seam (`new_index_N` → real ID) | `milestone_engine/__init__.py` `MilestoneEngine._flatten_follow_ups` |
 | Context block `<evidence_needs>` | `context_builder.py:_build_evidence_needs_block` ~`:1753`–`1892` (line render ~`:1737`) |
 | Prompt directives | `prompts/templates.py:_EVIDENCE_NEEDS_LIFECYCLE_BLOCK` ~`:1170`, `_..._SYMPTOM_ONLY_ADDENDUM` ~`:1206`, `_..._RCA_POOL_EVAL_BLOCK` ~`:1222`, `_..._REVERIFICATION_ADDENDUM` ~`:1253` |
 | Persistence (save/load) | `sqlite_case_repository.py:_upsert_evidence_needs` ~`:2320`, `_load_evidence_needs_for_case` ~`:633` |
@@ -1363,8 +1363,8 @@ authoritative**.
   complete. Post-fix absence rows are **stand-alone audit rows**
   (`source_file_id` + extract) — not linked to a need *or* a hypothesis
   (a fix confirms the root-cause hypothesis; a confidence-bearing link
-  would erode it, and the apply-layer at `milestone_engine.py:6118`
-  coerces any non-SUPPORTS stance to a likelihood penalty). Before/after
+  would erode it, and the apply-layer (`milestone_engine/__init__.py`
+  `MilestoneEngine._apply_evidence_need_updates`) coerces any non-SUPPORTS stance to a likelihood penalty). Before/after
   presence↔absence pairing is deferred to a later step (no
   evidence↔evidence link in the model yet).
   `context_builder._build_evidence_needs_block` (re-verification

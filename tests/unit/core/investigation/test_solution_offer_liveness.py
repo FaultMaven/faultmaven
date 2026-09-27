@@ -295,7 +295,7 @@ class TestLicenseLostWithdrawal:
         case = await self._case_with_offer()
         case.root_cause_conclusion = None
         with patch(
-            "faultmaven.core.investigation.milestone_engine."
+            "faultmaven.core.investigation.milestone_engine.stage_gates."
             "solution_offer_superseded_total"
         ) as counter:
             _recompute_assessment_state(case, metadata={})
@@ -392,7 +392,7 @@ class TestHelpers:
         diag = self._offer(action_type=InvestigationActionType.DIAGNOSTIC)
         case.proposed_actions.extend([pending, accepted, diag])
         with patch(
-            "faultmaven.core.investigation.milestone_engine."
+            "faultmaven.core.investigation.milestone_engine.stage_gates."
             "solution_offer_superseded_total"
         ) as counter:
             count, newest_turn = _supersede_pending_solution_offers(

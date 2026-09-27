@@ -680,7 +680,9 @@ class TestRestatementHeldHandoff:
             calls["n"] += 1
             return real(c, **kw)
 
-        with patch.object(milestone_engine, "assess_verification_status", counting):
+        with patch.object(
+            milestone_engine.affordances, "assess_verification_status", counting
+        ):
             result = engine_owned_affordances(case)
         return result, calls["n"]
 

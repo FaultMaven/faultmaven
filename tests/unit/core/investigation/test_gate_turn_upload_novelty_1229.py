@@ -580,7 +580,9 @@ class TestTheStoredTurnAgreesWithTheReportedTurn:
             scored.append(dict(metadata))
             return original(metadata)
 
-        monkeypatch.setattr(milestone_engine_module, "check_if_progress_made", _spy)
+        monkeypatch.setattr(
+            milestone_engine_module.progress, "check_if_progress_made", _spy
+        )
 
         await _gate_turn(engine, case, [_novel()])
 

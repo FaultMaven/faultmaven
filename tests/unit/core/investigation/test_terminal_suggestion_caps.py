@@ -92,7 +92,7 @@ class TestRunbookCap:
         # one predicate). These cap/label tests exercise the cap, so pin the
         # predicate True (a ready, convertible case).
         monkeypatch.setattr(
-            "faultmaven.core.investigation.milestone_engine.runbook_conversion_ready",
+            "faultmaven.core.investigation.milestone_engine.terminal_replies.runbook_conversion_ready",
             lambda case: True,
         )
 
@@ -119,7 +119,7 @@ class TestRunbookCap:
         # never offered-then-denied (the regen affordance, which is
         # readiness-independent, still is).
         monkeypatch.setattr(
-            "faultmaven.core.investigation.milestone_engine.runbook_conversion_ready",
+            "faultmaven.core.investigation.milestone_engine.terminal_replies.runbook_conversion_ready",
             lambda case: False,
         )
         suggestions = _resolved_suggestions(object(), remaining=2)

@@ -506,7 +506,7 @@ class TestLLMContract:
             "schema must not expose `intent` — intent is engine-owned and "
             "attached at the response-builder layer onto "
             "SuggestedActionResponse. See engine_owned_affordances() in "
-            "milestone_engine.py."
+            "milestone_engine/affordances.py."
         )
 
     def test_suggested_follow_up_schema_does_not_mention_intent(self):
