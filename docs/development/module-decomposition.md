@@ -141,36 +141,44 @@ tree, not on each PR's own base.
 
 ## 8. Merging interlocking PRs in order
 
-Several decomposition branches that touch the same shared files (each fixing
-up imports for its own moved symbol) conflict on nearly every merge, almost
-always on import lines only. `train_resolve.py` (and `train_step.sh`, which
-wraps it with the re-check below) resolve a hunk only when the outcome is
-mechanically re-derivable afterward, per this rule:
+Without re-exports, each decomposition PR rewrites the callers of its own
+module, and those callers live in the other PRs' files. So the PRs overlap in
+import statements, and they merge **in a fixed order**. Put the modules others
+import first and the module that imports all the others last. After each
+merge, **sync the next PR with `main` before merging it, even when GitHub
+reports no conflict.** Files a PR *adds* were never seen by the codemods of
+the PRs merged before it, so a textually clean merge can still import a
+removed path.
 
-- one side changed *only* import lines relative to the merge base → take the
-  other side (its import rewrites are re-derived by re-running `clean_refs.py
-  --rewrite` on every merged module afterward);
-- both sides changed only import lines → union-merge (keep everything either
-  side added, drop everything either side removed — a module-alias import is
-  not something the codemod can re-derive on its own, so neither addition may
-  be dropped);
-- a `.md` hunk → take each line from whichever side changed it, or merge
-  character-by-character when the edits don't overlap;
-- anything else, on either side → left with conflict markers in place, for a
-  human. Never guessed at.
+A sync is one `train_step.sh` run in the PR's worktree:
 
 ```bash
-TRAIN_MODULE_MAP=module-map.json TRAIN_VENV=.venv/bin \
-    scripts/refactor/train_step.sh <branch> <key> [<already-merged key> ...]
+TRAIN_MODULE_MAP=module-map.json TRAIN_BASE=<commit the wave branched from> \
+    scripts/refactor/train_step.sh origin/main <this key> <merged key> ...
 ```
 
-`module-map.json` maps each module key to the CLI arguments `clean_refs.py`
-takes after `--old` (see the script's own docstring for the exact shape). A
-step re-runs the import codemod and `clean_refs.py`'s check for every module
-merged so far — not just the one this step is merging — because a later
-merge can reintroduce a stale import an earlier step already fixed. It
-refuses to commit unless `clean_refs.py` reports `RESULT: PASS` for every one
-of them, plus `ruff`, `black --check` and test collection all pass.
+- **`.py` conflicts are resolved per file.** Diff each side against the merge
+  base. Keep the side whose edits go beyond imports. The other side's import
+  rewrites are re-derived when the step re-runs `clean_refs.py --rewrite` for
+  every merged module. If both sides made non-import edits, the step stops for
+  a human. Do not resolve `.py` hunks line by line: a line union broke the
+  syntax of a parenthesized import, and taking one side's hunk whole dropped a
+  module-alias import the codemods cannot re-derive.
+- **Docs conflicts** go to `train_resolve.py`. It takes each line from
+  whichever side changed it, or merges per character when the edits don't
+  overlap.
+- **Pin `--base` / `TRAIN_BASE`** to the commit the wave branched from. After
+  the first merge, `origin/main` no longer holds the original module file that
+  `clean_refs.py` reads.
+- The step refuses to commit unless `clean_refs.py` passes for every merged
+  module, and `ruff` (read its exit code; `ruff ... | tail` reports tail's),
+  `black --check` and test collection all pass. After it, run the PR's own
+  tests, re-run `verify_move.py --clean`, push, and wait for every required
+  check (`ci_required.sh`) before merging.
+- A resolution can drop a hand edit that no import gate sees. On #1707, taking
+  one side of a test file removed a guard widening, and the guard kept passing
+  while reading an empty `__init__.py`. Before merging the last PR, build the
+  whole sequence in a scratch worktree and run the full suite on it.
 
 ## Checking CI before building on a SHA
 

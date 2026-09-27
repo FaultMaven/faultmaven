@@ -21,7 +21,7 @@
 # invariant it might have just undone, not just resolve the text.
 #
 # USAGE:
-#   train_step.sh [--module-map FILE] [--venv DIR] <branch> <key> [<already-merged key> ...]
+#   train_step.sh [--module-map FILE] [--base REV] [--venv DIR] <branch> <key> [<already-merged key> ...]
 #
 #   <key>            this step's module key (see --module-map)
 #   <already-merged key> ...  keys merged by earlier steps in this train, so
@@ -39,6 +39,12 @@
 #                    Defaults to $TRAIN_MODULE_MAP if set; one of the two is
 #                    required — there is no built-in module list, because it
 #                    is specific to the decomposition in flight.
+#   --base REV       the revision the ORIGINAL (pre-decomposition) modules are
+#                    read from; passed to clean_refs.py. Defaults to
+#                    $TRAIN_BASE, then origin/main. Pin it to the commit the
+#                    wave branched from once any wave PR has merged: after the
+#                    first merge, origin/main no longer holds the old module
+#                    file and clean_refs.py cannot read it.
 #   --venv DIR       directory holding python/ruff/black (a venv's bin/).
 #                    Defaults to $TRAIN_VENV, then <repo-root>/.venv/bin if it
 #                    exists, then bare `python3`/`ruff`/`black` off PATH.
@@ -52,16 +58,18 @@ set -uo pipefail
 T="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
 usage() {
-  echo "Usage: $0 [--module-map FILE] [--venv DIR] <branch> <key> [<already-merged key> ...]" >&2
+  echo "Usage: $0 [--module-map FILE] [--base REV] [--venv DIR] <branch> <key> [<already-merged key> ...]" >&2
   exit 1
 }
 
 MODULE_MAP="${TRAIN_MODULE_MAP:-}"
 VENV_DIR="${TRAIN_VENV:-}"
+BASE_REV="${TRAIN_BASE:-origin/main}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --module-map) MODULE_MAP=$2; shift 2 ;;
     --venv) VENV_DIR=$2; shift 2 ;;
+    --base) BASE_REV=$2; shift 2 ;;
     --) shift; break ;;
     -*) usage ;;
     *) break ;;
@@ -135,7 +143,7 @@ fi
 # re-derive import rewrites of every merged module (paths are absolute via
 # --repo, so this does not depend on the caller's cwd)
 for k in "${merged[@]}"; do
-  "$PY" "$T/clean_refs.py" --repo "$repo" --old ${OLD[$k]} --rewrite >/dev/null 2>&1
+  "$PY" "$T/clean_refs.py" --repo "$repo" --old ${OLD[$k]} --base "$BASE_REV" --rewrite >/dev/null 2>&1
 done
 mapfile -t C < <(git diff --name-only -- '*.py'; git diff --cached --name-only -- '*.py')
 if [ ${#C[@]} -gt 0 ]; then
@@ -143,7 +151,7 @@ if [ ${#C[@]} -gt 0 ]; then
 fi
 fail=0
 for k in "${merged[@]}"; do
-  r=$("$PY" "$T/clean_refs.py" --repo "$repo" --old ${OLD[$k]} 2>&1 | grep -E "^# clean|RESULT")
+  r=$("$PY" "$T/clean_refs.py" --repo "$repo" --old ${OLD[$k]} --base "$BASE_REV" 2>&1 | grep -E "^# clean|RESULT")
   echo "  [$k] $(echo "$r" | tr '\n' ' ')"
   echo "$r" | grep -q "RESULT: PASS" || fail=1
   echo "$r" | grep -q "warnings=0" || echo "  [$k] has warnings"

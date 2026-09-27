@@ -19,10 +19,10 @@ For each conflict hunk:
   * if one side changed ONLY import lines relative to base, take the OTHER
     side (import rewrites are re-derived afterwards by re-running the import
     codemod of every merged module — they are deterministic);
-  * if both sides changed only import lines, union-merge: keep every base
-    line neither side removed, plus every line either side added (module-
-    alias imports are not spelling the codemods can re-derive on their own,
-    so neither side's addition may be dropped);
+  * if both sides changed only import lines -> left UNRESOLVED. A
+    line-level union is not safe: a hunk can cut through a parenthesized
+    multi-line import and the union breaks the syntax (it did on the #1707
+    train). train_step.sh resolves .py conflicts per FILE instead;
   * .md hunks: take each line from whichever side changed it when the three
     versions are line-aligned, else merge per character when edits do not
     overlap;
@@ -140,15 +140,14 @@ def main():
             else:
                 oi, ti = only_imports_changed(b, o), only_imports_changed(b, t)
                 if oi and ti:
-                    # Union merge: drop every line either side removed, keep every
-                    # line either side added (module-alias imports cannot be
-                    # re-derived by the codemods, so neither side may be dropped).
-                    removed = (set(b) - set(o)) | (set(b) - set(t))
-                    kept = [ln for ln in b if ln not in removed]
-                    added = [ln for ln in o if ln not in b] + [
-                        ln for ln in t if ln not in b and ln not in o
-                    ]
-                    pick = kept + added
+                    # Both sides rewrote imports in the same hunk. A line-level
+                    # union is NOT safe: a hunk can cut through a parenthesized
+                    # multi-line import, and the union then breaks the syntax
+                    # (it did on the #1707 train). Leave it for train_step.sh,
+                    # which resolves .py conflicts per FILE (keep the side
+                    # whose edits go beyond imports, re-derive the other
+                    # side's imports with the codemods), or for a human.
+                    pick = None
                 elif oi:
                     pick = t
                 elif ti:

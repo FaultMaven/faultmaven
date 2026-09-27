@@ -34,6 +34,36 @@ def _call(mod, paths):
 
 
 class TestImportOnlyHunk:
+    def test_both_sides_import_only_is_left_for_the_per_file_rule(
+        self, tmp_path: Path, mod
+    ):
+        # Both sides re-pointed imports in one hunk, and the hunk cuts through
+        # a parenthesized import. A line-level union produced invalid syntax on
+        # the #1707 train, so the tool must leave this to train_step.sh's
+        # per-file rule (or a human), markers intact.
+        f = tmp_path / "user.py"
+        body = (
+            "<<<<<<< HEAD\n"
+            "from pkg.a import (\n"
+            "    x,\n"
+            "||||||| BASE\n"
+            "from pkg import (\n"
+            "    x,\n"
+            "=======\n"
+            "from pkg import (\n"
+            "    x,\n"
+            "    y,\n"
+            ">>>>>>> theirs\n"
+            ")\n"
+        )
+        f.write_text(body)
+
+        code = _call(mod, [str(f)])
+
+        assert code == 1
+        text = f.read_text()
+        assert "<<<<<<< HEAD" in text and ">>>>>>> theirs" in text
+
     def test_an_import_only_hunk_on_one_side_takes_the_other_side(
         self, tmp_path: Path, mod
     ):
