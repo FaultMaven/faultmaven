@@ -113,7 +113,7 @@ class _Row:
     "repo_module",
     [
         "faultmaven.modules.case.infrastructure.sqlite_case_repository",
-        "faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository",
+        "faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.rows",
     ],
 )
 def test_every_repository_normalizes_where_a_row_becomes_a_report(repo_module):
@@ -124,17 +124,26 @@ def test_every_repository_normalizes_where_a_row_becomes_a_report(repo_module):
     in a different module, served the raw column while the Report tab was clean.
     Applied here it is a property of any report loaded from storage, which is
     what makes the download path correct without knowing about it.
+
+    ``_row_to_report`` reads no instance state, so the PostgreSQL repository
+    holds it as a bare module-level function (in ``rows.py``) rather than a
+    method; the SQLite repository still holds it as a method. Both shapes
+    are checked: a module-level function is called directly, a class's is
+    called unbound with a freshly-``__new__``-built instance.
     """
     import importlib
 
     module = importlib.import_module(repo_module)
-    repo_cls = next(
-        obj
-        for name, obj in vars(module).items()
-        if name.endswith("CaseRepository") and hasattr(obj, "_row_to_report")
-    )
-
-    report = repo_cls._row_to_report(repo_cls.__new__(repo_cls), _Row())
+    row_to_report = getattr(module, "_row_to_report", None)
+    if row_to_report is not None:
+        report = row_to_report(_Row())
+    else:
+        repo_cls = next(
+            obj
+            for name, obj in vars(module).items()
+            if name.endswith("CaseRepository") and hasattr(obj, "_row_to_report")
+        )
+        report = repo_cls._row_to_report(repo_cls.__new__(repo_cls), _Row())
 
     assert "ev_a9f662e1c86f" not in report.content
     assert "gone⇒gone" not in report.content

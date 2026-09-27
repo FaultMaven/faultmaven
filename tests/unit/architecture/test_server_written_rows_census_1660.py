@@ -156,8 +156,8 @@ OTHER_READERS: dict[tuple[str, str], tuple[int, str]] = {
         "SQLiteCaseRepository._case_record_params",
     ): (1, _PERSISTENCE),
     (
-        "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository/repository.py",
-        "PostgreSQLHybridCaseRepository._case_record_params",
+        "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository/rows.py",
+        "_case_record_params",
     ): (1, _PERSISTENCE),
     (
         "faultmaven/core/investigation/checkpoint_service.py",

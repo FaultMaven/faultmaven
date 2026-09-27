@@ -12,28 +12,27 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
 from faultmaven.modules.case.domain.models.evidence_needs import NeedObtainability
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
-    repository as _repo_module,
+    loading as _loading_module,
 )
-from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
-    PostgreSQLHybridCaseRepository,
+from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
+    saving as _saving_module,
+)
+from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.rows import (
+    _row_to_evidence_need,
 )
 
-_REPO_SOURCE = Path(_repo_module.__file__).read_text()
-
-
-def _repo() -> PostgreSQLHybridCaseRepository:
-    session = MagicMock()
-    dialect = MagicMock()
-    dialect.name = "postgresql"
-    session.bind = MagicMock()
-    session.bind.dialect = dialect
-    return PostgreSQLHybridCaseRepository(session)
+# The evidence_needs SELECT lives in loading.py and the INSERT in saving.py
+# (split from the single class this suite once scanned), so the structural
+# guard below reads both.
+_REPO_SOURCE = (
+    Path(_loading_module.__file__).read_text()
+    + Path(_saving_module.__file__).read_text()
+)
 
 
 def _row(obtainability: str | None):
@@ -60,7 +59,7 @@ def _row(obtainability: str | None):
 @pytest.mark.unit
 class TestPgObtainabilityReconstruction:
     def test_row_index_11_maps_to_obtainability(self):
-        need = _repo()._row_to_evidence_need(
+        need = _row_to_evidence_need(
             _row("unobtainable"),
             case_id="case_ce0000000001",
             fulfilling_evidence_ids=[],
@@ -69,7 +68,7 @@ class TestPgObtainabilityReconstruction:
         assert need.obtainability == NeedObtainability.UNOBTAINABLE
 
     def test_none_obtainability_defaults_unknown(self):
-        need = _repo()._row_to_evidence_need(
+        need = _row_to_evidence_need(
             _row(None),
             case_id="case_ce0000000001",
             fulfilling_evidence_ids=[],
@@ -116,7 +115,7 @@ class TestPgSurfacedTurnsReconstruction:
     """
 
     def test_jsonb_list_maps_to_surfaced_turns(self):
-        need = _repo()._row_to_evidence_need(
+        need = _row_to_evidence_need(
             _row_with_surfaced([3, 7, 11]),
             case_id="case_ce0000000001",
             fulfilling_evidence_ids=[],
@@ -128,7 +127,7 @@ class TestPgSurfacedTurnsReconstruction:
 
     def test_json_string_is_tolerated(self):
         """Dialect-compatibility paths hand back a JSON string, not a list."""
-        need = _repo()._row_to_evidence_need(
+        need = _row_to_evidence_need(
             _row_with_surfaced("[4, 9]"),
             case_id="case_ce0000000001",
             fulfilling_evidence_ids=[],
@@ -140,7 +139,7 @@ class TestPgSurfacedTurnsReconstruction:
     def test_absent_or_corrupt_reads_as_never_surfaced(self, bad):
         """Fail-safe direction: understating the count keeps a live ask
         visible rather than silencing it on a bad blob."""
-        need = _repo()._row_to_evidence_need(
+        need = _row_to_evidence_need(
             _row_with_surfaced(bad),
             case_id="case_ce0000000001",
             fulfilling_evidence_ids=[],
@@ -150,7 +149,7 @@ class TestPgSurfacedTurnsReconstruction:
 
     def test_pre_migration_row_length_is_tolerated(self):
         """A short row (no surfaced_turns column) must not raise."""
-        need = _repo()._row_to_evidence_need(
+        need = _row_to_evidence_need(
             _row("unknown"),
             case_id="case_ce0000000001",
             fulfilling_evidence_ids=[],
@@ -164,7 +163,7 @@ class TestPgSurfacedTurnsSql:
     def test_engine_inferred_reconstructs(self):
         """Provenance drives the anti-anchoring exclusion; losing it on the
         Postgres path re-arms the stand-down every turn in Cloud only."""
-        need = _repo()._row_to_evidence_need(
+        need = _row_to_evidence_need(
             _row_with_surfaced([3], engine_inferred=True),
             case_id="case_ce0000000001",
             fulfilling_evidence_ids=[],
@@ -173,7 +172,7 @@ class TestPgSurfacedTurnsSql:
         assert need.engine_inferred is True
 
     def test_engine_inferred_defaults_false_on_short_row(self):
-        need = _repo()._row_to_evidence_need(
+        need = _row_to_evidence_need(
             _row("unknown"),
             case_id="case_ce0000000001",
             fulfilling_evidence_ids=[],

@@ -31,7 +31,7 @@ import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import AsyncGenerator
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -42,8 +42,14 @@ from faultmaven.core.investigation.suggestion_liveness import live_suggestions
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.evidence import UploadedFile
+from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.loading import (
+    _row_to_case,
+)
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
     PostgreSQLHybridCaseRepository,
+)
+from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.rows import (
+    _case_record_params,
 )
 from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
     SQLiteCaseRepository,
@@ -253,7 +259,7 @@ class TestPostgresLastSuggestionsPersistence:
         case = _make_case()
         case.last_suggestions = _clarification_suggestions()
 
-        params = repo._case_record_params(case, datetime.now(timezone.utc))
+        params = _case_record_params(case, datetime.now(timezone.utc))
         metadata = json.loads(params["metadata"])
 
         assert metadata.get("last_suggestions") == _clarification_suggestions()
@@ -263,7 +269,7 @@ class TestPostgresLastSuggestionsPersistence:
         repo = _pg_repo()
         case = _make_case()
 
-        params = repo._case_record_params(case, datetime.now(timezone.utc))
+        params = _case_record_params(case, datetime.now(timezone.utc))
         metadata = json.loads(params["metadata"])
 
         assert "last_suggestions" not in metadata
@@ -273,11 +279,14 @@ class TestPostgresLastSuggestionsPersistence:
         """Execute the real PG rehydration (the live SELECT needs Postgres,
         but _row_to_case itself is pure once _load_case_actions is patched)."""
         repo = _pg_repo()
-        repo._load_case_actions = AsyncMock(return_value=[])
-
-        case = await repo._row_to_case(
-            _pg_row({"last_suggestions": _clarification_suggestions()})
-        )
+        with patch(
+            "faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository"
+            ".loading._load_case_actions",
+            AsyncMock(return_value=[]),
+        ):
+            case = await _row_to_case(
+                repo.db, _pg_row({"last_suggestions": _clarification_suggestions()})
+            )
 
         assert case.last_suggestions == _clarification_suggestions()
 
@@ -285,9 +294,12 @@ class TestPostgresLastSuggestionsPersistence:
     async def test_row_to_case_without_key_reads_none(self):
         """Rows written before #914 (or with no suggestions) load as None."""
         repo = _pg_repo()
-        repo._load_case_actions = AsyncMock(return_value=[])
-
-        case = await repo._row_to_case(_pg_row({}))
+        with patch(
+            "faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository"
+            ".loading._load_case_actions",
+            AsyncMock(return_value=[]),
+        ):
+            case = await _row_to_case(repo.db, _pg_row({}))
 
         assert case.last_suggestions is None
 
@@ -342,12 +354,18 @@ class TestTurnStampSurvivesBothBackends:
     @pytest.mark.asyncio
     async def test_postgres_reloads_a_live_offer(self):
         repo = _pg_repo()
-        repo._load_case_actions = AsyncMock(return_value=[])
         case = self._case_with_the_file(_make_case(current_turn=3))
         case.last_suggestions = _clarification_suggestions()
 
-        params = repo._case_record_params(case, datetime.now(timezone.utc))
-        reloaded = await repo._row_to_case(_pg_row(json.loads(params["metadata"])))
+        params = _case_record_params(case, datetime.now(timezone.utc))
+        with patch(
+            "faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository"
+            ".loading._load_case_actions",
+            AsyncMock(return_value=[]),
+        ):
+            reloaded = await _row_to_case(
+                repo.db, _pg_row(json.loads(params["metadata"]))
+            )
         # ``uploaded_files`` ride a separate column the stub row nulls out;
         # the point under test is the metadata bag, so restore the row the
         # referent check reads.
@@ -371,7 +389,7 @@ class TestPostgresMessageCountPersistence:
         case = _make_case()
         case.message_count = 12
 
-        params = repo._case_record_params(case, datetime.now(timezone.utc))
+        params = _case_record_params(case, datetime.now(timezone.utc))
         metadata = json.loads(params["metadata"])
 
         assert metadata.get("message_count") == 12
@@ -379,11 +397,17 @@ class TestPostgresMessageCountPersistence:
     @pytest.mark.asyncio
     async def test_row_to_case_round_trips_message_count(self):
         repo = _pg_repo()
-        repo._load_case_actions = AsyncMock(return_value=[])
         case = _make_case()
         case.message_count = 12
 
-        params = repo._case_record_params(case, datetime.now(timezone.utc))
-        reloaded = await repo._row_to_case(_pg_row(json.loads(params["metadata"])))
+        params = _case_record_params(case, datetime.now(timezone.utc))
+        with patch(
+            "faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository"
+            ".loading._load_case_actions",
+            AsyncMock(return_value=[]),
+        ):
+            reloaded = await _row_to_case(
+                repo.db, _pg_row(json.loads(params["metadata"]))
+            )
 
         assert reloaded.message_count == 12

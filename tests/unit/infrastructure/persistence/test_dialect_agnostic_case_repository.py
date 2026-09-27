@@ -19,6 +19,9 @@ from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
     PostgreSQLHybridCaseRepository,
 )
+from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.saving import (
+    _upsert_case_record,
+)
 
 
 def _make_mock_session_with_dialect(dialect_name: str | None) -> AsyncMock:
@@ -82,7 +85,7 @@ async def test_upsert_case_detects_sqlite_dialect():
     mock_session = _make_mock_session_with_dialect("sqlite")
     repository = PostgreSQLHybridCaseRepository(mock_session)
 
-    await repository._upsert_case_record(_make_test_case())
+    await _upsert_case_record(repository._is_pg, repository.db, _make_test_case())
 
     mock_session.execute.assert_called_once()
     sql_text = str(mock_session.execute.call_args[0][0])
@@ -113,7 +116,7 @@ async def test_upsert_case_detects_postgresql_dialect():
     mock_session = _make_mock_session_with_dialect("postgresql")
     repository = PostgreSQLHybridCaseRepository(mock_session)
 
-    await repository._upsert_case_record(_make_test_case())
+    await _upsert_case_record(repository._is_pg, repository.db, _make_test_case())
 
     mock_session.execute.assert_called_once()
     sql_text = str(mock_session.execute.call_args[0][0])
@@ -132,7 +135,7 @@ async def test_upsert_case_defaults_to_sqlite_when_no_bind():
     mock_session = _make_mock_session_with_dialect(None)
     repository = PostgreSQLHybridCaseRepository(mock_session)
 
-    await repository._upsert_case_record(_make_test_case())
+    await _upsert_case_record(repository._is_pg, repository.db, _make_test_case())
 
     mock_session.execute.assert_called_once()
     sql_text = str(mock_session.execute.call_args[0][0])
