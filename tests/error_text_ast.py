@@ -12,7 +12,7 @@ Two things this deliberately does **not** do the obvious way:
   output. A substring check for ``str(e)``/``{e}`` sees ``f"...: {str(e)}"`` but
   misses ``repr(e)``, ``f"{e!s}"``, ``"%s" % e`` and ``e.args[0]`` — all of
   which leak exactly as much.
-* It follows local aliases. ``modules/case/api/routes.py`` builds its detail one
+* It follows local aliases. ``modules/case/api/routes/`` builds its detail one
   statement earlier::
 
       error_response = ErrorResponse(error=ErrorDetail(message=f"...{e}"))
@@ -309,7 +309,7 @@ def _parse(path: pathlib.Path) -> ast.AST:
     avoid attributing one site to two of them, and ``id()`` is only comparable
     across nodes from the SAME parse. Re-parsing per pass made every
     ``in_handler`` lookup miss, which reported two static-message 500 arms in
-    ``modules/case/api/routes.py`` as leaks — a false positive produced by the
+    ``modules/case/api/routes/`` as leaks — a false positive produced by the
     guard's plumbing rather than by its rule.
     """
     return ast.parse(path.read_text(encoding="utf-8"))

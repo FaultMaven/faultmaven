@@ -24,10 +24,8 @@ from faultmaven.core.investigation.turn_budget import (
 )
 from faultmaven.models.api_models import TurnResponse
 from faultmaven.modules.auth.contracts import UserDTO
-from faultmaven.modules.case.api.routes import (
-    _resolve_agent_timeout,
-    submit_turn,
-)
+from faultmaven.modules.case.api.routes.conversation import submit_turn
+from faultmaven.modules.case.api.routes.dependencies import _resolve_agent_timeout
 from faultmaven.modules.case.contracts import CaseState
 from faultmaven.modules.case.domain.models.case import Case
 

@@ -38,7 +38,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     PreprocessingResult,
     SourceAssessment,
 )
-from faultmaven.modules.knowledge.domain.services.conversion_service import (
+from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
 
@@ -163,9 +163,8 @@ async def _convert(service, tmp_path, titles):
     service._llm_router.route = AsyncMock(
         return_value=SimpleNamespace(content=RUNBOOK, is_truncated=False)
     )
-    with patch.object(
-        ConversionService,
-        "_analyze_document",
+    with patch(
+        "faultmaven.modules.knowledge.domain.services.conversion_service.service._analyze_document",
         AsyncMock(
             return_value=AnalysisResult(
                 is_actionable=True,

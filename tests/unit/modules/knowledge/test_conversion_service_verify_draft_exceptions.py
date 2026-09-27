@@ -28,7 +28,7 @@ from faultmaven.exceptions import (
     ValidationException,
 )
 from faultmaven.modules.knowledge.domain.models.conversion import DraftStatus
-from faultmaven.modules.knowledge.domain.services.conversion_service import (
+from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
 

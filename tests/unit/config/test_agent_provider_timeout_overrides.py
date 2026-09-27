@@ -1,7 +1,7 @@
 """AgentSettings.timeout_for_provider — per-provider agent-level overrides.
 
 The agent-level (turn-wide) timeout wraps the entire process_turn call in
-``modules/case/api/routes.py``; provider speed varies enough that a single
+``modules/case/api/routes/conversation.py``; provider speed varies enough that a single
 global ceiling either fails slow providers (Fireworks DeepSeek V4 Pro on
 log-heavy cases, local Ollama on CPU) or wastes headroom on faster ones.
 

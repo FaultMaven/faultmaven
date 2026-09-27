@@ -20,11 +20,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import HTTPException
 
-from faultmaven.modules.case.api.routes import (
-    delete_case,
-    extract_knowledge_from_case,
-    generate_case_reports,
-)
+from faultmaven.modules.case.api.routes.cases import delete_case
+from faultmaven.modules.case.api.routes.knowledge import extract_knowledge_from_case
+from faultmaven.modules.case.api.routes.reports import generate_case_reports
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 

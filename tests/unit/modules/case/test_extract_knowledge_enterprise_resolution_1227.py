@@ -42,7 +42,7 @@ from faultmaven.api.v1.dependencies import (
 )
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.modules.auth.contracts import DevUser
-from faultmaven.modules.case.api.routes import router as case_router
+from faultmaven.modules.case.api.routes.router import router as case_router
 from faultmaven.modules.knowledge.domain.models.suggestion import (
     KnowledgeSuggestion,
     PIIScanStatus,

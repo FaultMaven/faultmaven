@@ -829,7 +829,7 @@ class DIContainer(BaseDIContainer):
                 source="copilot",
             ):
                 # Signature mirrors CaseService.create_case. `source` is not
-                # optional in practice: modules/case/api/routes.py passes it on
+                # optional in practice: modules/case/api/routes/cases.py passes it on
                 # every POST /api/v1/cases, so a stand-in without it raised
                 # TypeError -> 500 whenever the degraded fallback was active.
                 # The dropped parameters (initial_query, priority, user_id,
