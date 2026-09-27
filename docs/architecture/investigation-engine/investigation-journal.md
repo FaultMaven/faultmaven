@@ -213,7 +213,7 @@ Include: counts, entity names, time ranges, error codes, version numbers.
 
 **Problem:** Working conclusion reasoning is truncated to 500 chars in the context builder. For complex investigations with multiple competing hypotheses, 500 chars can't capture the reasoning chain.
 
-**Fix:** Increase from 500 to 1000 chars in `context_builder/__init__.py`:
+**Fix:** Increase from 500 to 1000 chars in `context_builder/assembly.py`:
 
 ```python
 # Current:
@@ -270,7 +270,7 @@ No model changes, no schema changes. Implemented in commit `a4b8924d`.
 | Change | File | Status |
 |---|---|---|
 | Evidence summary quality prompt | `templates.py` (INVESTIGATION_BASE) | Done |
-| Working conclusion reasoning cap 500→1000 | `context_builder/__init__.py` | Done |
+| Working conclusion reasoning cap 500→1000 | `context_builder/assembly.py` | Done |
 
 ### Phase 2: Investigation Journal — DONE
 
@@ -283,7 +283,7 @@ The core feature. Model change, schema change, context builder change, and promp
 | Export from contracts | `modules/case/contracts.py` | Done |
 | `JournalEntryOutput` in LLM schema | `core/investigation/schemas.py` | Done |
 | Journal extraction in milestone engine | `core/investigation/milestone_engine.py` | Done |
-| Journal section in context builder | `core/investigation/prompts/context_builder/__init__.py` | Done |
+| Journal section in context builder | `core/investigation/prompts/context_builder/assembly.py` | Done |
 | Journal prompt instructions | `core/investigation/prompts/templates.py` | Done |
 | Persistence (metadata blob) | `infrastructure/persistence/database_case_repository.py` | Done |
 | Tests (24 tests) | `tests/unit/core/investigation/test_investigation_journal.py` | Done |

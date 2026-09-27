@@ -1367,7 +1367,7 @@ authoritative**.
   coerces any non-SUPPORTS stance to a likelihood penalty). Before/after
   presence↔absence pairing is deferred to a later step (no
   evidence↔evidence link in the model yet).
-  `context_builder._build_evidence_needs_block` (re-verification
+  `context_builder.evidence_needs._build_evidence_needs_block` (re-verification
   section) + `templates._EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM` + the
   per-stage EVIDENCE-TYPES sections and the classification decision-tree
   step 4. This makes the "always-create a need per hypothesis" idea

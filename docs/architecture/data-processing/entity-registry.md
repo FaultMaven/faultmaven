@@ -245,7 +245,7 @@ Both delegate to `CaseRepository.find_entity` / `list_top_entities`.
 
 ### Context-builder highlights
 
-`faultmaven.core.investigation.prompts.context_builder.fetch_entity_highlights` pre-fetches the top entities for four investigative-signal types (`ip`, `hostname`, `user`, `service`, top 5 each) and renders a compact `<entity_highlights>` block. Only populated types surface — a case with zero IPs but plenty of users produces a block with just a `user:` section.
+`faultmaven.core.investigation.prompts.context_builder.entity_highlights.fetch_entity_highlights` pre-fetches the top entities for four investigative-signal types (`ip`, `hostname`, `user`, `service`, top 5 each) and renders a compact `<entity_highlights>` block. Only populated types surface — a case with zero IPs but plenty of users produces a block with just a `user:` section.
 
 The milestone engine calls `fetch_entity_highlights` before building the prompt when the feature flag is on and passes the result to `get_prompt_for_case` via the new `entity_highlights` kwarg. The `INVESTIGATION_BASE` template drops it into a slot between `{evidence}` and `{hypotheses}` — the LLM sees entity context right after the raw evidence that produced it. INQUIRY and TERMINAL templates don't reference the slot; `.format(**ctx)` tolerates extra keys.
 
