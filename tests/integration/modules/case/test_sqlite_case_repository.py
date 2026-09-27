@@ -626,7 +626,7 @@ class TestSQLiteCaseRepository:
 
         This bug affected 6 repository files:
         - sqlite_case_repository.py (line 1300)
-        - postgresql_hybrid_case_repository.py (line 1115)
+        - postgresql_hybrid_case_repository/repository.py (line 1115)
         - database_case_repository.py
         - modules/case/infrastructure/case_repository.py
         - infrastructure/case_repository.py

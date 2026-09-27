@@ -29,7 +29,7 @@ from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
 )
-from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
+from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
     PostgreSQLHybridCaseRepository,
 )
 
@@ -290,7 +290,7 @@ class TestPostgreSQLHybridSchemaConsistency:
     def test_insert_query_uses_correct_field_names(self):
         """Verify hybrid repo exposes the upsert path for uploaded_files."""
 
-        from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
+        from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
             PostgreSQLHybridCaseRepository,
         )
 
@@ -299,7 +299,7 @@ class TestPostgreSQLHybridSchemaConsistency:
     def test_select_query_uses_correct_field_names(self):
         """Verify hybrid repo exposes the get() entrypoint."""
 
-        from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
+        from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
             PostgreSQLHybridCaseRepository,
         )
 

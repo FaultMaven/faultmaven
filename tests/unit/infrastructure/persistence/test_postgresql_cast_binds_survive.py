@@ -27,10 +27,10 @@ from unittest.mock import MagicMock
 import pytest
 from sqlalchemy import text
 
-from faultmaven.modules.case.infrastructure import (
-    postgresql_hybrid_case_repository as _repo_module,
-)
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
+    repository as _repo_module,
+)
+from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
     PostgreSQLHybridCaseRepository,
 )
 

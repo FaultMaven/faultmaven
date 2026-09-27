@@ -137,7 +137,7 @@ OTHER_READERS: dict[tuple[str, str], tuple[int, str]] = {
         "InMemoryCaseRepository.save",
     ): (1, _PERSISTENCE),
     (
-        "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository.py",
+        "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository/repository.py",
         "PostgreSQLHybridCaseRepository.save",
     ): (1, _PERSISTENCE),
     (
@@ -156,7 +156,7 @@ OTHER_READERS: dict[tuple[str, str], tuple[int, str]] = {
         "SQLiteCaseRepository._case_record_params",
     ): (1, _PERSISTENCE),
     (
-        "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository.py",
+        "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository/repository.py",
         "PostgreSQLHybridCaseRepository._case_record_params",
     ): (1, _PERSISTENCE),
     (

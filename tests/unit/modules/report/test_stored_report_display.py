@@ -113,7 +113,7 @@ class _Row:
     "repo_module",
     [
         "faultmaven.modules.case.infrastructure.sqlite_case_repository",
-        "faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository",
+        "faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository",
     ],
 )
 def test_every_repository_normalizes_where_a_row_becomes_a_report(repo_module):

@@ -458,7 +458,7 @@ _PARSES = _ONE_VOCABULARY_PARSERS | {"get", "[]", "==literal"}
 _SVC = "modules/agent/domain/services/investigation_service.py"
 _INGEST = "modules/case/domain/services/case_data_ingestion_service.py"
 _SQLITE = "modules/case/infrastructure/sqlite_case_repository.py"
-_PG = "modules/case/infrastructure/postgresql_hybrid_case_repository.py"
+_PG = "modules/case/infrastructure/postgresql_hybrid_case_repository/repository.py"
 
 #: ``(module, scope, shape, receiver) -> (category, count)``. Categories:
 #:

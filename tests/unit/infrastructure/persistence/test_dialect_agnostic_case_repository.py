@@ -16,7 +16,7 @@ from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.problem import InquiryData
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
-from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
+from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
     PostgreSQLHybridCaseRepository,
 )
 

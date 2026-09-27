@@ -17,10 +17,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from faultmaven.modules.case.domain.models.evidence_needs import NeedObtainability
-from faultmaven.modules.case.infrastructure import (
-    postgresql_hybrid_case_repository as _repo_module,
-)
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
+    repository as _repo_module,
+)
+from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
     PostgreSQLHybridCaseRepository,
 )
 
