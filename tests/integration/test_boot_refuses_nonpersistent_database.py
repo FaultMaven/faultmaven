@@ -51,8 +51,9 @@ _CHILD = textwrap.dedent("""
 
     from fastapi.testclient import TestClient
 
+    from faultmaven.bootstrap.composition import _is_test_environment
     from faultmaven.config.settings import DatabaseSettings, get_settings
-    from faultmaven.main import app, _is_test_environment
+    from faultmaven.main import app
 
     result = {
         "test_env_predicate": _is_test_environment(get_settings()),
@@ -186,8 +187,9 @@ def test_gate_is_not_behind_the_test_environment_skip(
     """
     from fastapi.testclient import TestClient
 
+    from faultmaven.bootstrap.composition import _is_test_environment
     from faultmaven.config.settings import get_settings, reset_settings
-    from faultmaven.main import _is_test_environment, app
+    from faultmaven.main import app
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("DATABASE_URL", database_url)

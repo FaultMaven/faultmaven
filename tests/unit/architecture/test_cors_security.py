@@ -10,11 +10,13 @@ fail-closed rate limits **and** development's CORS at the same time: a wildcard
 any private network could make credentialed cross-origin calls to a deployed
 box. Staging is now classified as deployed, the same as production.
 
-**These tests drive ``main.setup_middleware`` and read the CORS middleware off
-the resulting stack.** The file they replace re-implemented the wildcard check
-as a local helper and asserted against *that*, so it would have stayed green
-through any change to ``main.py`` — including the one this file exists to pin.
-A guard that never touches the code it guards is not a guard.
+**These tests drive ``setup_middleware`` (defined in
+``faultmaven.bootstrap.middleware`` since fm#1707 wave 2, and imported into
+``faultmaven.main`` at the point it always ran) and read the CORS middleware
+off the resulting stack.** The file they replace re-implemented the wildcard
+check as a local helper and asserted against *that*, so it would have stayed
+green through any change to the real code — including the one this file
+exists to pin. A guard that never touches the code it guards is not a guard.
 
 Three properties:
 
@@ -65,11 +67,8 @@ def _install(environment, origins, *, is_cloud=False):
     """Run the real ``setup_middleware`` against a throwaway app."""
     app = FastAPI()
     settings = _settings_with(environment, origins, is_cloud=is_cloud)
-    with (
-        patch.object(main, "app", app),
-        patch("faultmaven.config.settings.get_settings", return_value=settings),
-    ):
-        main.setup_middleware()
+    with patch("faultmaven.config.settings.get_settings", return_value=settings):
+        main.setup_middleware(app)
     return app
 
 
