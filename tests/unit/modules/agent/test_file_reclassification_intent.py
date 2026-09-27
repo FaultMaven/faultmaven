@@ -1999,7 +1999,9 @@ def test_every_reader_of_a_stored_entry_tolerates_any_shape():
         (clarification, "_stored_suggestions"),  # truthiness only
         # ---- NOT stored-entry readers: they share a field NAME -------------
         # The re-render of THIS turn's engine follow-ups, not of a stored row.
-        (service, "InvestigationService.process_turn"),
+        # #1707 wave 3: this now lives in the response-building phase
+        # extracted from ``process_turn``.
+        (service, "InvestigationService._build_turn_response"),
         # The clarification friendly-names table.
         (clarification, "_clarification_suggestions_for_failed"),
         # A tool result's own label.
@@ -3337,11 +3339,12 @@ class TestATerminalCaseAnswersNothingStored:
             # fm#918 — see ``suggestion_is_live``.
             (clarification, "_stored_suggestions"),
             (clarification, "_clarification_suggestions_for_failed"),
-            # Also not a producer: ``process_turn`` RE-RENDERS whatever the
-            # engine returned into the response, forwarding ``f.get("intent")``
+            # Also not a producer: the response-building phase extracted from
+            # ``process_turn`` (#1707 wave 3) RE-RENDERS whatever the engine
+            # returned into the response, forwarding ``f.get("intent")``
             # unchanged. It cannot originate an intent, so it cannot originate
             # one on a terminal case either.
-            (service, "InvestigationService.process_turn"),
+            (service, "InvestigationService._build_turn_response"),
         }, (
             "a new intent-bearing follow-up builder: "
             f"{sorted(builders)}. If it can fire on a terminal case, the "

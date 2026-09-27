@@ -615,8 +615,9 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
     ),
     # --- not UploadedFile.data_type ----------------------------------------
     # Intent / request / tool-parameter ``data_type`` — a ``DataType`` the
-    # caller names, parsed as one on purpose.
-    (_SVC, "InvestigationService.process_turn", "attr", "intent"): ("other", 1),
+    # caller names, parsed as one on purpose. #1707 wave 3: this read now
+    # lives in the dispatch phase extracted from ``process_turn``.
+    (_SVC, "InvestigationService._dispatch_turn", "attr", "intent"): ("other", 1),
     ("models/api_models.py", "QueryIntent.validate_intent_fields", "attr", "self"): (
         "other",
         1,

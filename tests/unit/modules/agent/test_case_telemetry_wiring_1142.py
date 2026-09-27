@@ -535,9 +535,12 @@ class TestPathCoverageIsExhaustive:
         assert bypasses_engine, "expected at least GREETING to bypass the engine"
 
         # Just the emission block: from the label decision to the emit call.
-        src = inspect.getsource(InvestigationService.process_turn)
+        # #1707 wave 3: this block now lives in ``_save_and_emit_turn``, which
+        # the owner calls just before setting ``turn_row_emitted = True`` — the
+        # phase itself never binds that name (R4: it stays in the owner).
+        src = inspect.getsource(InvestigationService._save_and_emit_turn)
         start = src.index("turn_arms = turn_telemetry.get")
-        end = src.index("turn_row_emitted = True")
+        end = src.index("return agent_response_text")
         telemetry_block = src[start:end]
 
         # The block must be narrow enough that the dispatch chain is not in it,
