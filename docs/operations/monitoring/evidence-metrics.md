@@ -19,11 +19,11 @@ Names follow the `faultmaven_` prefix convention shared with
 
 | Metric | Type | Labels | Source | Status |
 | --- | --- | --- | --- | --- |
-| `faultmaven_evidence_dedup_hits_total` | counter | — | `InvestigationService._preprocess_attachment` | **Live** |
+| `faultmaven_evidence_dedup_hits_total` | counter | — | `attachments._preprocess_attachment` | **Live** |
 | `faultmaven_evidence_orphan_files_found_total` | counter | — | `faultmaven.modules.agent.jobs.storage_cleanup` | **Live** |
 | `faultmaven_evidence_orphan_files_deleted_total` | counter | — | `faultmaven.modules.agent.jobs.storage_cleanup` | **Live** |
 | `faultmaven_evidence_orphan_files_rescued_total` | counter | — | `faultmaven.modules.agent.jobs.storage_cleanup` | **Live** — files the DB cross-check saved (#1232). Not scrapable in practice: see the note below |
-| `faultmaven_evidence_mark_linked_failures_total` | counter | `outcome` | `InvestigationService._preprocess_attachment` | **Live** — API process, so genuinely scraped |
+| `faultmaven_evidence_mark_linked_failures_total` | counter | `outcome` | `attachments._preprocess_attachment` | **Live** — API process, so genuinely scraped |
 | `faultmaven_evidence_turn_async_retry_enqueued_total` | counter | `reason` | Turn retry path (async-turn-retry plan, deferred) | Scaffolded only; no emit sites (async retry plan deferred 2026-04-19) |
 | `faultmaven_evidence_turn_async_retry_outcome_total` | counter | `outcome` | Turn retry path (async-turn-retry plan, deferred) | Scaffolded only; no emit sites |
 | `faultmaven_evidence_turn_async_retry_latency_seconds` | histogram | — | Turn retry path (async-turn-retry plan, deferred) | Scaffolded only; no emit sites |

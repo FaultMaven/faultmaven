@@ -495,7 +495,7 @@ Every file stored via `FileStorageService.store_file()` gets a companion `{filen
 }
 ```
 
-`FileStorageService.mark_linked(storage_key)` flips `linked=true` once an Evidence row references the file. Called from `InvestigationService._preprocess_attachment` after `store_file` returns.
+`FileStorageService.mark_linked(storage_key)` flips `linked=true` once an Evidence row references the file. Called from `attachments._preprocess_attachment` after `store_file` returns.
 
 The sweep (`faultmaven.modules.agent.jobs.storage_cleanup`) enumerates sidecars **through the storage backend** — not by walking a directory, so it works whichever backend `STORAGE_BACKEND` selects — and deletes a file only when **both** signals agree: the database does not reference it, AND its sidecar says `linked=false` past `ORPHAN_FILE_TTL_HOURS` (default 24). Files without sidecars are skipped (unknown state is not license to delete). Unreadable sidecars count as errors and their files stay.
 
