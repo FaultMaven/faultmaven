@@ -25,7 +25,7 @@ from .similarity import _mutual_mirror
 if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import Case
 
-logger = logging.getLogger("faultmaven.core.investigation.causal_graph")
+logger = logging.getLogger(__name__)
 
 
 # §7.1.2 MECE arbitration (#656): Jaccard at/above which two ROOT

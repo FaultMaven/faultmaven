@@ -30,7 +30,7 @@ from .clusters import _normalize_and_group, _observe_late_grouping
 if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import Case
 
-logger = logging.getLogger("faultmaven.core.investigation.causal_graph")
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
