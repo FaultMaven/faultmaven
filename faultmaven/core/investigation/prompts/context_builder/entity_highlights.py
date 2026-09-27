@@ -5,7 +5,7 @@ from typing import Any, Optional, Sequence
 from faultmaven.core.investigation.prompts.fence import PromptFence
 from faultmaven.modules.case.contracts import EntityType
 
-logger = logging.getLogger("faultmaven.core.investigation.prompts.context_builder")
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================

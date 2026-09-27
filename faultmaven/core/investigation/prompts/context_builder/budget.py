@@ -1,7 +1,7 @@
 import logging
 from typing import Optional
 
-logger = logging.getLogger("faultmaven.core.investigation.prompts.context_builder")
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================

@@ -11,7 +11,7 @@ from faultmaven.core.preprocessing.evidence_metadata import (
 
 from .budget import HISTORY_AGENT_TRUNCATE_THRESHOLD
 
-logger = logging.getLogger("faultmaven.core.investigation.prompts.context_builder")
+logger = logging.getLogger(__name__)
 
 
 _TRUNCATION_MARKER = "[...analysis removed for brevity...]"
