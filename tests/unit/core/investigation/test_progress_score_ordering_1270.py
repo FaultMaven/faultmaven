@@ -353,7 +353,12 @@ async def test_the_guard_survives_a_short_circuited_decision():
 
     engine = _terminal_confirm_engine()
     with pytest.MonkeyPatch.context() as mp:
+        # The predicate has two readers since fm#1707: ``score_progress`` in
+        # ``progress``, and the engine's ``_check_if_progress_made`` delegate in
+        # ``engine``. Spy both, as the single pre-split patch did, so a call
+        # from either one breaks the short-circuit assertion below.
         mp.setattr(progress_module, "check_if_progress_made", counting_pred)
+        mp.setattr(engine_module, "check_if_progress_made", counting_pred)
         mp.setattr(engine_module, "score_progress", recording_score)
         result = await engine.process_turn(
             case=_case_awaiting_confirmation("resolved"),
