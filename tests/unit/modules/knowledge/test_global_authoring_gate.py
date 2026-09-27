@@ -29,7 +29,7 @@ from faultmaven.modules.knowledge.domain.global_authoring import (
     ensure_global_authoring_allowed,
     is_global_authoring_allowed,
 )
-from faultmaven.modules.knowledge.domain.services.conversion_service import (
+from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
 from faultmaven.providers.tenancy.factory import BUILTIN_MULTI, BUILTIN_SINGLE

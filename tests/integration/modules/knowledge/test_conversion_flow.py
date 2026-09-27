@@ -48,7 +48,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     ValidationResult,
     VerifyResponse,
 )
-from faultmaven.modules.knowledge.domain.services.conversion_service import (
+from faultmaven.modules.knowledge.domain.services.conversion_service.errors import (
     ConversionRejectedError,
 )
 

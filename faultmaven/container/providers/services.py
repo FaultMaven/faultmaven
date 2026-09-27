@@ -114,6 +114,11 @@ def create_milestone_engine(
     sanitizer: Any | None = None,
     redis_client: Any | None = None,
     runbook_kb: Any | None = None,
+    knowledge_service: Any | None = None,
+    report_service: Any | None = None,
+    team_service: Any | None = None,
+    share_repository: Any | None = None,
+    conversion_service: Any | None = None,
 ) -> Any | None:
     """Create milestone engine for investigation workflow.
 
@@ -129,6 +134,10 @@ def create_milestone_engine(
         runbook_kb: RunbookKnowledgeBase for terminal-turn runbook dedup
             (fm#1030). None without a KB vector store — the engine then takes
             its honest "dedup did not run" caveat.
+        knowledge_service, report_service, team_service, share_repository,
+        conversion_service: passed here, never assigned afterwards (#1722).
+            Each is None when its service is unavailable, exactly as the
+            engine saw it before.
     """
     if not case_repository:
         return None
@@ -148,6 +157,11 @@ def create_milestone_engine(
             redis_client=redis_client,
             trace_enabled=True,
             runbook_kb=runbook_kb,
+            knowledge_service=knowledge_service,
+            report_service=report_service,
+            team_service=team_service,
+            share_repository=share_repository,
+            conversion_service=conversion_service,
         )
         logger.debug("MilestoneEngine initialized with investigation tools")
         return engine
@@ -1507,6 +1521,67 @@ def register_services(container: BaseDIContainer) -> None:
     )
     container._register_service("case_service", case_service)
 
+    # Knowledge Service — prefer KnowledgeVectorStore (scope-enforcing) over the
+    # generic ChromaDBVectorStore. Fall back to vector_store if not registered.
+    knowledge_vector_store = getattr(container, "knowledge_vector_store", None)
+    knowledge_service = create_knowledge_service(
+        knowledge_vector_store or vector_store,
+        knowledge_ingester,
+        container.get_service("sanitizer", required=True),
+        container.get_service("tracer", required=True),
+        container.get_service("llm_provider", required=False),
+        redis_client,
+        settings,
+        share_repository=share_repository,
+    )
+    container._register_service("knowledge_service", knowledge_service)
+
+    # Report Generation Service (TD-001: migrated from IReportStore to CaseRepository)
+    lock_manager = getattr(container, "lock_manager", None)
+    pii_redactor = getattr(container, "pii_redactor", None)
+    report_generation_service = create_report_generation_service(
+        case_repository=case_repository,
+        lock_manager=lock_manager,
+        pii_redactor=pii_redactor,
+    )
+    container.report_generation_service = report_generation_service
+    if report_generation_service:
+        container._register_service(
+            "report_generation_service", report_generation_service
+        )
+
+    # Document-to-runbook conversion (#1722). Built here, before the engine
+    # that calls it, instead of in the lifespan and late-bound afterwards:
+    # none of its collaborators is the engine. Construction touches no I/O;
+    # the lifespan still ensures its tables exist. A construction failure
+    # leaves it None with the same warning the lifespan used to log, and
+    # does not abort the registrations after it.
+    try:
+        from faultmaven.infrastructure.persistence.database import get_db_session
+        from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
+            ConversionService,
+        )
+
+        conversion_service = ConversionService(
+            llm_router=container.get_service("llm_provider"),
+            settings=settings,
+            db_session_factory=get_db_session,
+            knowledge_service=knowledge_service,
+            share_repository=share_repository,
+            # Membership resolver for the team publish target (#854); absent
+            # (standalone) -> team-scoped publish is refused.
+            team_service=team_service,
+        )
+    except Exception as conv_err:
+        logger.warning(
+            f"Document conversion service not available: {conv_err}",
+            exc_info=True,
+        )
+        conversion_service = None
+    container.conversion_service = conversion_service
+    if conversion_service:
+        container._register_service("conversion_service", conversion_service)
+
     # Evidence service removed in storage redesign 2026-04 phase 2 (standalone path deletion).
     # Milestone Engine (with investigation tools for evidence searching).
     # Agent tools read evidence directly from case.evidence via case_repository.
@@ -1546,6 +1621,11 @@ def register_services(container: BaseDIContainer) -> None:
         sanitizer=sanitizer,
         redis_client=redis_client,
         runbook_kb=runbook_kb,
+        knowledge_service=knowledge_service,
+        report_service=report_generation_service,
+        team_service=team_service,
+        share_repository=share_repository,
+        conversion_service=conversion_service,
     )
     container.milestone_engine = milestone_engine
     if milestone_engine:
@@ -1620,21 +1700,6 @@ def register_services(container: BaseDIContainer) -> None:
     )
     container._register_service("data_service", data_service)
 
-    # Knowledge Service — prefer KnowledgeVectorStore (scope-enforcing) over the
-    # generic ChromaDBVectorStore. Fall back to vector_store if not registered.
-    knowledge_vector_store = getattr(container, "knowledge_vector_store", None)
-    knowledge_service = create_knowledge_service(
-        knowledge_vector_store or vector_store,
-        knowledge_ingester,
-        container.get_service("sanitizer", required=True),
-        container.get_service("tracer", required=True),
-        container.get_service("llm_provider", required=False),
-        redis_client,
-        settings,
-        share_repository=share_repository,
-    )
-    container._register_service("knowledge_service", knowledge_service)
-
     # Suggestion Service — the write side of the knowledge flywheel (#1214),
     # over the durable ``knowledge_suggestions`` store (#1227).
     #
@@ -1653,32 +1718,5 @@ def register_services(container: BaseDIContainer) -> None:
         settings=settings,
     )
     container._register_service("suggestion_service", suggestion_service)
-
-    # Report Generation Service (TD-001: migrated from IReportStore to CaseRepository)
-    llm_provider = container.get_service("llm_provider")
-    lock_manager = getattr(container, "lock_manager", None)
-    pii_redactor = getattr(container, "pii_redactor", None)
-    report_generation_service = create_report_generation_service(
-        case_repository=case_repository,
-        lock_manager=lock_manager,
-        pii_redactor=pii_redactor,
-    )
-    container.report_generation_service = report_generation_service
-    if report_generation_service:
-        container._register_service(
-            "report_generation_service", report_generation_service
-        )
-
-    # Wire services into milestone engine (created earlier in the registration order)
-    if report_generation_service and milestone_engine:
-        milestone_engine.report_service = report_generation_service
-    if knowledge_service and milestone_engine:
-        milestone_engine.knowledge_service = knowledge_service
-        logger.info("✅ Knowledge service wired to MilestoneEngine")
-    # KB seeder pre-fetch owner-team arm (ADR-013 §D4): resolves the case
-    # owner's team-shared runbooks. None in standalone (arm resolves empty).
-    if milestone_engine:
-        milestone_engine.team_service = team_service
-        milestone_engine.share_repository = share_repository
 
     logger.info("✅ Service layer registered")

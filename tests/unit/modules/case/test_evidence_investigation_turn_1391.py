@@ -242,7 +242,7 @@ class TestTheRoutesActuallyStampIt:
         return _case(_work(), TurnOutcome.OUT_OF_BAND, _work())
 
     def test_the_evidence_row_is_stamped_from_its_OWN_clock_turn(self):
-        from faultmaven.modules.case.api.routes import _build_evidence_response
+        from faultmaven.modules.case.api.routes.evidence import _build_evidence_response
 
         case = self._case_with_history()
         evidence = _evidence(collected_at_turn=3)
@@ -257,7 +257,7 @@ class TestTheRoutesActuallyStampIt:
     def test_the_source_file_reference_is_stamped_from_the_FILE_turn(self):
         # The two turns on one row come from different clocks, so a swap here is
         # invisible unless they differ. They do: the file landed at clock 1.
-        from faultmaven.modules.case.api.routes import _build_evidence_response
+        from faultmaven.modules.case.api.routes.evidence import _build_evidence_response
 
         case = self._case_with_history()
         uploaded = _file(1)
@@ -276,7 +276,7 @@ class TestTheRoutesActuallyStampIt:
 
     def test_a_prepared_asides_list_gives_the_same_answer(self):
         # The hoisted list is an optimisation, so it must not change the result.
-        from faultmaven.modules.case.api.routes import _build_evidence_response
+        from faultmaven.modules.case.api.routes.evidence import _build_evidence_response
 
         case = self._case_with_history()
         evidence = _evidence(collected_at_turn=3)

@@ -91,7 +91,7 @@ async def test_the_share_lookup_is_asked_for_the_enterprise_not_the_billing_org(
 
 async def test_the_route_hands_the_service_the_bound_enterprise():
     """The route's own half: not the organization claim, which names a payer."""
-    from faultmaven.modules.case.api import routes as case_routes
+    from faultmaven.modules.case.api.routes import reports as case_routes
 
     case_service = MagicMock()
     case_service.get_case = AsyncMock(return_value=_case())
