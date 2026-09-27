@@ -18,7 +18,7 @@ async def test_unknown_case_id_raises_rather_than_no_op():
     RepositoryException. A silent return here would let a caller passing the
     wrong case id pass every in-memory-backed test while writing nothing.
     """
-    from faultmaven.modules.case.domain.models import UploadedFile
+    from faultmaven.modules.case.domain.models.evidence import UploadedFile
 
     repo = InMemoryCaseRepository()
     uploaded = UploadedFile(

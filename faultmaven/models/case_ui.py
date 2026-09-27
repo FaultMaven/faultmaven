@@ -18,12 +18,10 @@ from faultmaven.models.api_models import (
     VALID_NEXT_STATES_DESCRIPTION,
     ProgressTransparencyInfo,
 )
-from faultmaven.modules.case.domain.models import (
-    CaseState,
-    ConfidenceLevel,
-    HypothesisState,
-    InvestigationStage,
-)
+from faultmaven.modules.case.domain.models.conclusion import ConfidenceLevel
+from faultmaven.modules.case.domain.models.hypothesis import HypothesisState
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import InvestigationStage
 from faultmaven.modules.case.domain.services.case_action_manager import (
     CaseActionManager,
 )

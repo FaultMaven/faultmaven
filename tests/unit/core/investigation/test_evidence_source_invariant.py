@@ -21,7 +21,7 @@ import pytest
 from pydantic import ValidationError
 
 from faultmaven.core.investigation.schemas import EvidenceToAdd
-from faultmaven.modules.case.domain.models import (
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
@@ -182,9 +182,9 @@ class TestPostDropCategories:
 
     def test_no_evidence_form_class(self):
         """The dual-path form discriminator was dropped in migration 010."""
-        from faultmaven.modules.case.domain import models
+        from faultmaven.modules.case.domain.models import evidence
 
-        assert not hasattr(models, "EvidenceForm")
+        assert not hasattr(evidence, "EvidenceForm")
 
     def test_user_description_source_type_exists(self):
         """The chat-quote source-type marker is the post-010 addition."""

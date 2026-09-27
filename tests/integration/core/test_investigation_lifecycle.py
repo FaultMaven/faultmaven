@@ -47,11 +47,11 @@ from faultmaven.modules.case.contracts import (
     EvidenceCategory,
     EvidenceSourceType,
 )
-from faultmaven.modules.case.domain.models import (
-    Case,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.evidence import UploadedFile
+from faultmaven.modules.case.domain.models.problem import (
     InquiryData,
     ProblemVerification,
-    UploadedFile,
 )
 
 # The file the mocked LLM responses cite as ``source_file_id``; the case must

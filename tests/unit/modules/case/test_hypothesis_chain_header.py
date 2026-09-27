@@ -13,15 +13,14 @@ Design: docs/architecture/investigation-engine/
 import pytest
 from pydantic import ValidationError
 
-from faultmaven.modules.case.domain.models import (
-    Case,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.causal import InterventionQuadrant
+from faultmaven.modules.case.domain.models.hypothesis import (
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
-    InterventionQuadrant,
-    Solution,
-    SolutionType,
 )
+from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
 
 pytestmark = pytest.mark.unit
 

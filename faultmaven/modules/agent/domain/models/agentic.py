@@ -30,7 +30,10 @@ from typing import Any, Callable, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field
 
-from faultmaven.modules.case.domain.models import CaseState, InvestigationStrategy
+from faultmaven.modules.case.domain.models.lifecycle import (
+    CaseState,
+    InvestigationStrategy,
+)
 
 # Core Agentic Data Models
 

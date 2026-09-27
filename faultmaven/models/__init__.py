@@ -31,12 +31,9 @@ from faultmaven.modules.case.contracts import (
 )
 
 # Import case models from the new module location
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseSeverity,
-    CaseState,
-    UrgencyLevel,
-)
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseSeverity, CaseState
+from faultmaven.modules.case.domain.models.problem import UrgencyLevel
 
 # Import new v3.1.0 API models
 # Import DataType from api.py where it's currently defined

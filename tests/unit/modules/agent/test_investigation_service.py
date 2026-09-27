@@ -26,10 +26,9 @@ from faultmaven.models.api_models import (
 from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
 )
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseSeverity,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseSeverity, CaseState
+from faultmaven.modules.case.domain.models.problem import (
     InquiryData,
     ProblemVerification,
 )
@@ -751,7 +750,7 @@ class TestInvestigationServiceProcessTurn:
             would make this test measure the backstop rather than propagation.
             """
             from faultmaven.core.investigation.turn_outcome import TurnOutcome
-            from faultmaven.modules.case.domain.models import TurnProgress
+            from faultmaven.modules.case.domain.models.turn import TurnProgress
 
             case.turn_history.append(
                 TurnProgress(
@@ -1319,7 +1318,7 @@ class TestBuildProgressTransparencyVerificationStatus:
         )
 
     def _case(self, status):
-        from faultmaven.modules.case.domain.models import (
+        from faultmaven.modules.case.domain.models.progress import (
             InvestigationProgress,
             VerificationStatus,
         )
@@ -1386,7 +1385,7 @@ class TestBuildProgressTransparencyVerificationStatus:
     def test_cause_assurance_carried_alongside_status(self):
         # #572: the persisted assurance grade rides the same surfacing object so
         # the frontend can label a lower-assurance conclusion.
-        from faultmaven.modules.case.domain.models import CauseAssuranceGrade
+        from faultmaven.modules.case.domain.models.progress import CauseAssuranceGrade
 
         svc = self._service()
         case = self._case("INSUFFICIENT_EVIDENCE")
@@ -1416,18 +1415,22 @@ class TestTurnResponseCauseAssurance:
     def _case_with_confirmed_root(self, user_id: str) -> Case:
         from datetime import UTC
 
-        from faultmaven.modules.case.domain.models import (
+        from faultmaven.modules.case.domain.models.causal import (
             CausalNode,
+            NodeEvidenceLink,
+            NodeState,
+            NodeType,
+            ValidationMethod,
+        )
+        from faultmaven.modules.case.domain.models.conclusion import (
             ConfidenceLevel,
+            RootCauseConclusion,
+        )
+        from faultmaven.modules.case.domain.models.evidence import (
             Evidence,
             EvidenceCategory,
             EvidenceSourceType,
             EvidenceStance,
-            NodeEvidenceLink,
-            NodeState,
-            NodeType,
-            RootCauseConclusion,
-            ValidationMethod,
         )
 
         # Non-terminal (process_turn rejects terminal cases) with an identified,

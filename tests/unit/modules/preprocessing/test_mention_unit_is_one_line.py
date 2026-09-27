@@ -43,7 +43,7 @@ import re
 import pytest
 
 from faultmaven.models.api import DataType
-from faultmaven.modules.case.domain.models import EntityType
+from faultmaven.modules.case.domain.models.evidence import EntityType
 from faultmaven.modules.preprocessing.entities.line_tally import EntityRule
 from faultmaven.modules.preprocessing.entities.registry import (
     _EXTRACTORS,

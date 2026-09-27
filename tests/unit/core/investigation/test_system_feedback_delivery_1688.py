@@ -54,22 +54,24 @@ from faultmaven.models.interfaces import ILLMProvider
 from faultmaven.modules.agent.domain.services.investigation_service import (
     _backfill_consumed_turn,
 )
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
+    RootCauseConclusion,
+)
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
-    InquiryData,
-    InvestigationProgress,
-    ProblemVerification,
-    RootCauseConclusion,
-    Solution,
-    SolutionType,
-    TurnOutcome,
-    TurnProgress,
 )
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import (
+    InquiryData,
+    ProblemVerification,
+)
+from faultmaven.modules.case.domain.models.progress import InvestigationProgress
+from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
+from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 from faultmaven.utils.model_context import resolve_model_budget
 from faultmaven.utils.token_estimation import estimate_tokens
 

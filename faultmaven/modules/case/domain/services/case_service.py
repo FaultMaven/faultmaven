@@ -49,7 +49,8 @@ from faultmaven.modules.case.contracts import (
     is_server_written_assistant_row,
     is_server_written_user_row,
 )
-from faultmaven.modules.case.domain.models import Case, CaseState
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.utils.datetime import parse_utc_timestamp
 from faultmaven.utils.serialization import to_json_compatible

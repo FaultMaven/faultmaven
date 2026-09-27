@@ -254,7 +254,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 ### 3.1 Core Case Structure
 
 ```python
-# Illustrative subset — see faultmaven/modules/case/domain/models.py for the canonical model.
+# Illustrative subset — see faultmaven/modules/case/domain/models/case.py for the canonical model.
 class Case(BaseModel):
     """Root case entity."""
 
@@ -263,8 +263,8 @@ class Case(BaseModel):
     # ============================================================
     case_id: str                    # Primary key
     user_id: Optional[str]          # FK to users (SET NULL on user delete)
-    organization_id: str            # FK to organizations (CASCADE)
-    team_id: Optional[str]          # FK to teams (SET NULL)
+    enterprise_id: str              # FK to enterprises (CASCADE) — the isolation key (ADR-017)
+    organization_id: Optional[str]  # FK to organizations (SET NULL) — billing attribution only
     title: str                      # Max 200 chars
     description: str = ""           # Confirmed problem statement; required for INVESTIGATING/RESOLVED
 
@@ -278,7 +278,7 @@ class Case(BaseModel):
     # ============================================================
     # Investigation State (first-class columns — drive milestone engine)
     # ============================================================
-    investigation_strategy: Optional[str]  # Free-form strategy text
+    investigation_strategy: InvestigationStrategy = InvestigationStrategy.POST_MORTEM  # active_incident | post_mortem
     current_turn: int = 0
     turns_without_progress: int = 0
     version: int = 1                # Optimistic concurrency control
@@ -447,7 +447,6 @@ CREATE TABLE cases (
 -- Tier 1 indexes (both dialects)
 CREATE INDEX ix_cases_enterprise_id ON cases(enterprise_id);
 CREATE INDEX ix_cases_organization_id ON cases(organization_id);
-CREATE INDEX ix_cases_team_id ON cases(team_id);
 CREATE INDEX ix_cases_user_id ON cases(user_id);
 CREATE INDEX ix_cases_state ON cases(state);
 CREATE INDEX ix_cases_last_activity_at ON cases(last_activity_at);
@@ -469,7 +468,7 @@ COMMENT ON TABLE cases IS 'Root case entity with embedded low-cardinality data i
 
 **Notes**:
 
-- The Pydantic validator on `Case` enforces the same description-non-empty rule for INVESTIGATING and RESOLVED, plus cross-field invariants (`resolved_at` requires RESOLVED; RESOLVED requires `resolved_at` + `closed_at` + `closure_reason`).
+- The Pydantic validator on `Case` enforces the same description-non-empty rule for INVESTIGATING and RESOLVED, plus cross-field invariants (`resolved_at` requires RESOLVED; RESOLVED requires `resolved_at` + `closed_at`; CLOSED requires `closure_reason`, and `closure_reason` must be `None` in every other state, RESOLVED included).
 - `current_turn`, `turns_without_progress`, and `version` are first-class columns. The milestone engine reads/writes them directly without JSONB extraction.
 - `metadata` is the SQL column name (Python attribute is `case_metadata` to avoid clashing with SQLAlchemy's `metadata`).
 

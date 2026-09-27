@@ -14,15 +14,15 @@ import pytest
 from faultmaven.core.investigation.hypothesis_manager import (
     _RETIRED_NEVER_GROUNDED as _NEVER_GROUNDED,
 )
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.hypothesis import (
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
 )
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import InquiryData
 from faultmaven.modules.report.domain.services.report_generation_service import (
     ReportGenerationService,
 )

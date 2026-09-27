@@ -26,8 +26,8 @@ from faultmaven.exceptions import (
     ServiceError,
     ValidationException,
 )
-from faultmaven.modules.case.domain.models import (
-    Case,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import (
     CaseSeverity,
     CaseState,
     InvestigationStrategy,

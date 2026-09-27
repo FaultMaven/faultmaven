@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 from uuid import uuid4
 
 if TYPE_CHECKING:
-    from faultmaven.modules.case.domain.models import Case
+    from faultmaven.modules.case.domain.models.case import Case
 
 logger = logging.getLogger(__name__)
 

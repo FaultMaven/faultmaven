@@ -2455,7 +2455,7 @@ def _dense_case():
     sys.path.insert(0, str(Path(__file__).parent))
     import test_context_sliding_window as t
 
-    from faultmaven.modules.case.domain.models import JournalEntry
+    from faultmaven.modules.case.domain.models.documentation import JournalEntry
 
     evidence = [
         t._make_evidence(
@@ -2563,7 +2563,7 @@ class TestBothCallSitesWireTheBaseBuilder:
         from types import SimpleNamespace
 
         from faultmaven.core.investigation.schemas import TerminalResponse
-        from faultmaven.modules.case.domain.models import CaseState
+        from faultmaven.modules.case.domain.models.lifecycle import CaseState
 
         # The router's shape: no provider_name, no config — the chat names the
         # terminal prompt is assembled for resolve to (None, None).

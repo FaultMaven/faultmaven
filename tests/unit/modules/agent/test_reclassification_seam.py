@@ -55,7 +55,8 @@ from faultmaven.modules.agent.tools.base import ToolContext
 from faultmaven.modules.agent.tools.reclassify_evidence_tool import (
     ReclassifyEvidenceTool,
 )
-from faultmaven.modules.case.domain.models import CaseState, EvidenceSourceType
+from faultmaven.modules.case.domain.models.evidence import EvidenceSourceType
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
 
 from .conftest import (
     MockCaseRepository,

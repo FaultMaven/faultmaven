@@ -1,7 +1,7 @@
 """EvidenceToAdd.summary soft-truncation contract — ISS-057.
 
 The Evidence domain model caps ``summary`` at 500 chars (max_length=500
-on ``modules/case/domain/models.py``). Verbose providers — DeepSeek V4
+on ``modules/case/domain/models/evidence.py``). Verbose providers — DeepSeek V4
 Pro on logs-zookeeper q4 in particular — overshoot that bound and the
 turn used to 500 with a Pydantic ValidationError leaking out to the
 client.

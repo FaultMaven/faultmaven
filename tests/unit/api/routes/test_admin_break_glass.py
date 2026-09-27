@@ -40,7 +40,8 @@ from faultmaven.models.interfaces_operator_grant import (
     OperatorAccessGrant,
 )
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
-from faultmaven.modules.case.domain.models import Case, CaseState
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
 
 # A realistic case id: the domain model pins these at exactly 17 characters, so
 # a toy "case-1" would fail validation before reaching the gate under test.

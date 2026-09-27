@@ -112,7 +112,7 @@ from faultmaven.modules.case.contracts import (
     append_message_row,
 )
 from faultmaven.modules.case.contracts import ICaseRepository as CaseRepository
-from faultmaven.modules.case.domain.models import (
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceSourceType,
     UploadedFile,
