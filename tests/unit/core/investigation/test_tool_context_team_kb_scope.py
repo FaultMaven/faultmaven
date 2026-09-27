@@ -230,7 +230,7 @@ def test_the_principal_reaches_every_tool_context_build():
     assert calls, "no _build_tool_context call sites found — did it get renamed?"
     for call in calls:
         assert any(kw.arg == "user_id" for kw in call.keywords), (
-            f"milestone_engine.py:{call.lineno} builds a ToolContext without "
+            f"milestone_engine/engine.py:{call.lineno} builds a ToolContext without "
             "passing user_id; its KB tool would read global-only"
         )
 

@@ -48,8 +48,8 @@ faultmaven/
 │   ├── auth/ case/ knowledge/                  # VERTICAL MODULES: own tables, contracts.py, infrastructure/
 │   └── agent/ evidence/ preprocessing/ report/  # DOMAIN SERVICES: business logic only
 ├── core/
-│   ├── investigation/      # milestone_engine.py (process_turn), hypothesis_manager.py, progress_monitor.py,
-│   │                       # schemas.py, intent_resolver.py, turn_budget.py, prompts/{templates,context_builder}.py
+│   ├── investigation/      # milestone_engine/ (engine.py: process_turn), hypothesis_manager.py, progress_monitor.py,
+│   │                       # schemas.py, intent_resolver.py, turn_budget.py, prompts/{templates,context_builder}/
 │   ├── preprocessing/      # Tier 0/1 mechanical preprocessor
 │   └── processing/         # Log analyzer, pattern learner
 ├── infrastructure/         # Shared adapters: llm/ (providers/, router.py, cache.py, truncation.py, pricing.py),
@@ -164,7 +164,7 @@ alembic heads                                      # the only way to learn the c
 
 ## Investigation Engine
 
-- Case lifecycle: `INQUIRY → INVESTIGATING → RESOLVED | CLOSED` (`CaseState` in `faultmaven/modules/case/domain/models.py` — the authoritative enum source). Within INVESTIGATING the stages (`InvestigationStage`: DIAGNOSIS default, MITIGATION optional insert, TREATMENT) are **derived labels** re-computed from the gate milestones; they never drive prompt dispatch.
+- Case lifecycle: `INQUIRY → INVESTIGATING → RESOLVED | CLOSED` (`CaseState` in `faultmaven/modules/case/domain/models/lifecycle.py` — the authoritative enum source). Within INVESTIGATING the stages (`InvestigationStage`: DIAGNOSIS default, MITIGATION optional insert, TREATMENT) are **derived labels** re-computed from the gate milestones; they never drive prompt dispatch.
 - Milestones are opportunistic — several can complete in one turn. Gate milestones (`mitigation_accepted`, `mitigation_verified`, `solution_accepted`, `solution_verified`) fire on user compliance; progress indicators (`symptom_verified` LLM-set, `solution_proposed` programmatic, `cause_state` ∈ `UNKNOWN | CANDIDATES | IDENTIFIED` engine-derived and never path-stripped) inform focus only.
 - Hypotheses: `CAPTURED → ACTIVE → VALIDATED | REFUTED | INCONCLUSIVE | RETIRED` (`HypothesisState`); stagnant likelihood decays ×0.85 per stagnant turn, and a hypothesis whose causal support stands is never aged by time alone; anchoring detection prevents fixation on weak theories.
 - Design docs are canonical and start at `docs/architecture/investigation-engine/README.md`; the `investigation-framework` skill applies to `modules/agent/` and `core/investigation/`. LLM-facing rules (structured output, stop reasons, turn budget, reasoning intent): `.claude/rules/llm-providers.md`.

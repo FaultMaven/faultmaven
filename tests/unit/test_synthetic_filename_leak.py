@@ -381,7 +381,7 @@ class TestEvidenceContextRender:
 
 class TestDegradedFallbackRender:
     def test_current_turn_upload_stub_does_not_name_the_minted_file(self):
-        """The tightest-budget fallback is a third render path (templates.py),
+        """The tightest-budget fallback is a third render path (templates/fallback.py),
         reached exactly when a fresh upload must not be dropped."""
         case = _case([_pasted_file()], [])
         stub = _fallback_current_turn_evidence(case)

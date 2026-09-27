@@ -285,7 +285,7 @@ def _attr(name: str, value) -> str:
     ``identical_to_prior_upload_at_turn=…`` are still written inline, because
     each is a literal, an internally-minted id, or a derived number — none can
     carry untrusted text, so routing them would be churn without safety.
-    (``templates.py`` emits ``file_id`` inline for the same reason.)
+    (the ``templates/`` prompts emit ``file_id`` inline for the same reason.)
 
     **The rule for anyone adding an attribute: if its value can originate
     outside this process, it goes through here.**

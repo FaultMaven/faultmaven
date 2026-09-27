@@ -76,7 +76,7 @@ def test_every_enum_value_appears_in_prompt(outcome: TurnOutcome):
     assert outcome.value in prompt_values, (
         f"TurnOutcome.{outcome.name} ({outcome.value!r}) is not enumerated "
         f"in SCHEMA_INSTRUCTIONS. The LLM cannot emit this value. "
-        f"Add it to the outcome block in templates.py:SCHEMA_INSTRUCTIONS."
+        f"Add it to the outcome block in templates/investigation.py:SCHEMA_INSTRUCTIONS."
     )
 
 

@@ -1857,7 +1857,7 @@ class InvestigationService:
             #    check this against the code before trusting it:
             #
             #      - On an engine-routed turn ``MilestoneEngine`` saves the case
-            #        UNCONDITIONALLY at its Step 7 (``milestone_engine.py``, in
+            #        UNCONDITIONALLY at its Step 7 (``milestone_engine/engine.py``, in
             #        ``_process_turn_impl``) — before returning, and therefore
             #        before the agent reply is appended by step 4 below. The user
             #        message is durable at that point and the reply is not. A
