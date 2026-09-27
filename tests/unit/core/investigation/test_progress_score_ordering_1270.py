@@ -33,6 +33,7 @@ from faultmaven.core.investigation.milestone_engine import progress as progress_
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.progress import (
     check_if_progress_made,
+    score_progress,
 )
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
@@ -337,7 +338,7 @@ async def test_the_guard_survives_a_short_circuited_decision():
     designed. Wrapping the DECISION instead is what makes it robust, and the
     short-circuit is asserted here so this test cannot quietly stop covering it.
     """
-    real_pred = engine_module.check_if_progress_made
+    real_pred = progress_module.check_if_progress_made
     predicate_calls: list[int] = []
     decisions: list[dict[str, int]] = []
     real_score = engine_module.score_progress
@@ -353,12 +354,11 @@ async def test_the_guard_survives_a_short_circuited_decision():
 
     engine = _terminal_confirm_engine()
     with pytest.MonkeyPatch.context() as mp:
-        # The predicate has two readers since fm#1707: ``score_progress`` in
-        # ``progress``, and the engine's ``_check_if_progress_made`` delegate in
-        # ``engine``. Spy both, as the single pre-split patch did, so a call
-        # from either one breaks the short-circuit assertion below.
+        # The predicate has one reader since the #1707 delegate shim was
+        # dropped: ``score_progress`` in ``progress``, which calls it from
+        # ``progress``'s own namespace. Spying there is what breaks the
+        # short-circuit assertion below if the predicate is ever reached.
         mp.setattr(progress_module, "check_if_progress_made", counting_pred)
-        mp.setattr(engine_module, "check_if_progress_made", counting_pred)
         mp.setattr(engine_module, "score_progress", recording_score)
         result = await engine.process_turn(
             case=_case_awaiting_confirmation("resolved"),
@@ -540,26 +540,24 @@ async def test_a_confirmed_close_does_not_claim_a_resolution_milestone():
 
 
 def test_a_progress_true_already_on_the_dict_is_never_taken_back():
-    """``_score_progress`` is monotone.
+    """``score_progress`` is monotone.
 
     ``check_if_progress_made`` reads the nine ARMS, never the ``progress_made``
     key, so a plain assignment destroys a ``True`` an earlier writer put there —
     and the generation path has one: ``_apply_stage_gate_side_effects`` sets it
     beside ``compliance_detected`` before the first reading.
     """
-    engine = MilestoneEngine(_StubLLM(), MagicMock(), investigation_tools=MagicMock())
-
     metadata = {"progress_made": True}
     # Positive control: with no arm set the predicate says False, so a
     # non-monotone write would visibly clobber.
     assert check_if_progress_made(metadata) is False
 
-    assert engine._score_progress(metadata) is True
+    assert score_progress(metadata) is True
     assert metadata["progress_made"] is True
 
     # And it does not invent progress on a dict that never claimed any.
     empty: dict = {}
-    assert engine._score_progress(empty) is False
+    assert score_progress(empty) is False
     assert empty["progress_made"] is False
 
 

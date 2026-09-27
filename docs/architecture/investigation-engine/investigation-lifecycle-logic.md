@@ -1707,7 +1707,7 @@ async def record_turn(
     solutions_proposed = solutions_count_after - solutions_count_before
 
     # Determine if progress made (broadened definition)
-    progress_made = _check_if_progress_made(metadata)
+    progress_made = check_if_progress_made(metadata)
 
     # ============================================================
     # PROGRESS DEFINITION (for turns_without_progress counter)

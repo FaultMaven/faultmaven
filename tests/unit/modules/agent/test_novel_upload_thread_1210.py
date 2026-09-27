@@ -34,6 +34,9 @@ import pytest
 
 from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.progress import (
+    check_if_progress_made,
+)
 from faultmaven.core.investigation.schemas import (
     Attachment,
     InquiryResponse,
@@ -408,4 +411,4 @@ class TestWhenDedupCouldNotRun:
         )
 
         assert metadata.get("novel_files_uploaded") is None
-        assert engine._check_if_progress_made(metadata) is False
+        assert check_if_progress_made(metadata) is False

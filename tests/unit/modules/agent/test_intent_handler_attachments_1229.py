@@ -279,8 +279,9 @@ class TestTheNonEngineHandlersStillReportUploads:
     ``turns_without_progress`` write. That is self-consistent — the flag says
     False and the counter is unchanged, and those agree —
     where a True flag beside an untouched counter would be the disagreement
-    #1229 exists to remove. ``_check_if_progress_made`` is the sole writer of
-    that counter and it lives in the engine.
+    #1229 exists to remove. ``score_progress``/``check_if_progress_made`` are
+    the sole writer/predicate of that counter, and only the engine's turn
+    path calls them.
     """
 
     async def test_greeting_reports_the_upload(self, service, case):

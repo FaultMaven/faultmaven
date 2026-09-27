@@ -199,7 +199,6 @@ from .milestone_inference import (
     validate_reasoning_first,
 )
 from .progress import (
-    check_if_progress_made,
     confirmed_transition_arms,
     record_promptless_turn,
     score_progress,
@@ -2501,7 +2500,7 @@ class MilestoneEngine:
             # The invariant this restores is the one the deterministic path
             # already states: every arm is written before the read. See
             # ``_finish_deterministic_turn``.
-            self._score_progress(metadata)
+            score_progress(metadata)
 
             # 4c. Resolution backstop (INV-43). LAST of the openers, which is
             # what makes it a backstop rather than a fourth competing proposer:
@@ -2511,7 +2510,7 @@ class MilestoneEngine:
             # it. Only a resolution-READY case that NOBODY offered reaches the
             # proposal. Placed after 4b rather than before it because the offer
             # is engine action, not case progress — it writes none of the arms
-            # ``_score_progress`` reads.
+            # ``score_progress`` reads.
             _maybe_propose_confirmed_resolution(case_updated, metadata)
 
             # 5. Phase 4: Hypothesis Housekeeping (Decay & Anchoring)
@@ -3109,7 +3108,7 @@ class MilestoneEngine:
                     -1
                 ].model_copy(
                     update={
-                        "agent_response_summary": self._summarize_text(
+                        "agent_response_summary": summarize_for_turn_record(
                             agent_response_text, 500
                         ),
                         # Re-derived with the text, never carried over: the
@@ -3269,7 +3268,7 @@ class MilestoneEngine:
                         else {}
                     ),
                     # #1142 handoff. Four of the nine arms
-                    # ``_check_if_progress_made`` scores — ``novel_evidence_added``,
+                    # ``check_if_progress_made`` scores — ``novel_evidence_added``,
                     # ``novel_solutions_proposed``, ``status_transitioned``,
                     # ``hypothesis_evidence_links_applied`` — live only on the
                     # working dict above and are written nowhere, so
@@ -7393,7 +7392,7 @@ class MilestoneEngine:
         # may have been ADOPTED by a hand-off in the second pass, and
         # prune_abandoned_nodes drops only what no hypothesis still references.
         for old_path in abandoned:
-            self._gc_orphan_chain(case, old_path)
+            prune_abandoned_nodes(case, old_path)
 
         # B1 (#695): mirror each hypothesis's flat causal SUPPORTS links onto its
         # (now-linked) chain ROOT node. The flat hypothesis_evidence and
@@ -7434,13 +7433,6 @@ class MilestoneEngine:
                 survivor_ids.add(root_id)
         if survivor_ids:
             metadata["deductive_survivor_ids"] = survivor_ids
-
-    @staticmethod
-    def _gc_orphan_chain(case: "Case", abandoned_node_ids: list) -> None:
-        """Drop the nodes of a chain abandoned by a hypothesis re-root that are
-        now dead. Thin delegate to the pure ``prune_abandoned_nodes`` (shared
-        with the orphan-chain resolution post-pass)."""
-        prune_abandoned_nodes(case, abandoned_node_ids)
 
     @staticmethod
     def _nudge_ambiguous_orphan_chains(case: "Case", metadata: dict[str, Any]) -> None:
@@ -9578,8 +9570,8 @@ class MilestoneEngine:
             solutions_proposed=solutions_proposed,
             progress_made=progress_made,
             outcome=outcome,
-            user_message_summary=self._summarize_text(user_message, 200),
-            agent_response_summary=self._summarize_text(agent_response, 500),
+            user_message_summary=summarize_for_turn_record(user_message, 200),
+            agent_response_summary=summarize_for_turn_record(agent_response, 500),
             agent_response_synthesized=agent_response_synthesized,
             system_feedback=system_feedback,
             momentum=momentum,
@@ -9640,10 +9632,10 @@ class MilestoneEngine:
         deterministic branch still consumes a turn number.)
 
         **A genuinely novel upload counts as progress here.** The reading is
-        ``_check_if_progress_made`` itself, not a copy of one arm of it, so a
+        ``check_if_progress_made`` itself, not a copy of one arm of it, so a
         progress arm added there in future lands on these paths too rather than
         on the generation path alone. Its ``novel_files_uploaded`` arm is what
-        fires for an upload: ``_check_if_progress_made`` defines progress as
+        fires for an upload: ``check_if_progress_made`` defines progress as
         *advancement, not activity* — "an artifact the case did not already
         have" — and a file that survived content-hash dedup is exactly that.
         Nothing about a gate turn makes that untrue: whether the user accepted
@@ -9680,7 +9672,7 @@ class MilestoneEngine:
         # refinement to ``score_progress`` silently skipped all ten deterministic
         # branches, which is the divergence-between-copies failure the rest of
         # this work exists to close.
-        self._score_progress(metadata)
+        score_progress(metadata)
 
         # The shared prompt-less record, which also forwards the previous
         # turn's ``system_feedback``: none of these branches builds a prompt
@@ -9709,30 +9701,6 @@ class MilestoneEngine:
         }
         return metadata
 
-    def _score_progress(self, metadata: dict[str, Any]) -> bool:
-        """Thin delegate to :func:`score_progress`, the monotone write.
-
-        Kept as a method for the reason ``_check_if_progress_made`` is: the
-        engine's own call sites and their tests target the method. The write
-        itself lives at module scope so the service's consumed-turn backstop
-        (#1264) applies the SAME monotone rule rather than a copy of it.
-        """
-        return score_progress(metadata)
-
-    def _check_if_progress_made(self, metadata: dict[str, Any]) -> bool:
-        """Thin delegate to :func:`check_if_progress_made`.
-
-        The reading moved to module scope so callers outside this class — the
-        service's consumed-turn backstop (#1264) — can score a turn with the
-        SAME predicate rather than reimplementing it or hardcoding a verdict.
-        Kept as a method because every existing call site and test targets it.
-        """
-        return check_if_progress_made(metadata)
-
-    def _summarize_text(self, text: str, max_length: int = 200) -> str:
-        """Thin delegate to :func:`summarize_for_turn_record`."""
-        return summarize_for_turn_record(text, max_length)
-
     # =============================================================================
     # Phase 4 Housekeeping & Helpers
     # =============================================================================
@@ -9747,7 +9715,7 @@ class MilestoneEngine:
         """Apply confidence decay and anchoring detection.
 
         ``investigation_advanced`` is the turn's final ``progress_made``, so the
-        turn path calls this after ``_score_progress``; it is required, so no
+        turn path calls this after ``score_progress``; it is required, so no
         caller can run the age sweep on a turn it has not judged.
         ``case.turns_without_progress`` is read before Step 5.8 updates it — as
         of the previous turn — so the stall arm below engages one turn after the

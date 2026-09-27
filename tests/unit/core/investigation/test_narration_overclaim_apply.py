@@ -17,10 +17,11 @@ silently detach them from the engine; both notice variants are covered (the
 source names the pending shape "the guard's most probable real-world shape").
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.core.investigation.milestone_engine import engine as engine_module
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.response_synthesis import (
     _NARRATION_OVERCLAIM_NOTICE,
@@ -158,22 +159,25 @@ async def test_overclaim_with_pending_transition_uses_pending_variant():
 async def test_clean_narration_leaves_turn_summary_as_raw_text():
     """Control: no over-claim → no notice on either surface, the summary is
     EXACTLY the raw reply, and the re-record block does not fire (observed
-    via the _summarize_text spy: record creation is the only 500-cap call —
-    a silent extra re-record on clean turns is the #978 failure class)."""
+    via the ``summarize_for_turn_record`` spy: record creation is the only
+    500-cap call — a silent extra re-record on clean turns is the #978
+    failure class)."""
     engine = _make_engine(_CLEAN_PROSE)
-    engine._summarize_text = MagicMock(wraps=engine._summarize_text)
     case = _make_investigating_case()
 
-    result = await engine.process_turn(
-        case=case, user_message="What should we look at next?"
-    )
+    with patch.object(
+        engine_module,
+        "summarize_for_turn_record",
+        MagicMock(wraps=engine_module.summarize_for_turn_record),
+    ) as spy:
+        result = await engine.process_turn(
+            case=case, user_message="What should we look at next?"
+        )
 
     reply = result["agent_response"]
     assert _NARRATION_OVERCLAIM_NOTICE not in reply
     assert _NARRATION_OVERCLAIM_NOTICE_PENDING not in reply
     summary = result["case_updated"].turn_history[-1].agent_response_summary
     assert summary == _CLEAN_PROSE
-    agent_summary_calls = [
-        c for c in engine._summarize_text.call_args_list if 500 in c.args
-    ]
+    agent_summary_calls = [c for c in spy.call_args_list if 500 in c.args]
     assert len(agent_summary_calls) == 1, "re-record fired on a clean turn"

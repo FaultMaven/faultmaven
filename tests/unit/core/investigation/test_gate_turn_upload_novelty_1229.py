@@ -11,7 +11,7 @@ warnings lived in the same unreachable block, so the degradation was
 unobservable there as well.
 
 **The gate-semantics answer pinned here: a gate turn DOES count upload
-progress.** ``_check_if_progress_made`` defines progress as *advancement, not
+progress.** ``check_if_progress_made`` defines progress as *advancement, not
 activity* — "an artifact the case did not already hold" — and a file that
 survived content-hash dedup is exactly that. Whether the user accepted a
 mitigation is orthogonal to whether new data arrived.
@@ -42,7 +42,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import faultmaven.core.investigation.prompts.context_builder as context_builder
-from faultmaven.core.investigation.milestone_engine import engine as engine_module
 from faultmaven.core.investigation.milestone_engine import progress as progress_module
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
@@ -569,26 +568,22 @@ class TestTheStoredTurnAgreesWithTheReportedTurn:
         engine = _engine()
         case = _investigating_case(pending="closed")
         scored: list[dict] = []
-        # Spy the MODULE function, not the bound method: #1270 routed the
+        # Spy the MODULE function, not a bound method: #1270 routed the
         # deterministic write through the shared ``score_progress``, which calls
-        # ``check_if_progress_made`` at module scope. Patching the method here
-        # would silently observe nothing and make this guard vacuous.
-        original = engine_module.check_if_progress_made
+        # ``check_if_progress_made`` at module scope. #1707 later dropped the
+        # engine's own thin delegate entirely, so the predicate now has exactly
+        # one reader — ``progress``'s own module-level name.
+        original = progress_module.check_if_progress_made
 
         def _spy(metadata):
             scored.append(dict(metadata))
             return original(metadata)
 
-        # Since fm#1707 the predicate has two readers: ``score_progress`` in the
-        # ``progress`` submodule, and the engine's ``_check_if_progress_made``
-        # delegate, which reads its own module-level import. Spy both, as the
-        # single module-level patch did before the split.
-        monkeypatch.setattr(engine_module, "check_if_progress_made", _spy)
         monkeypatch.setattr(progress_module, "check_if_progress_made", _spy)
 
         await _gate_turn(engine, case, [_novel()])
 
-        assert scored, "the deterministic branch must score via _check_if_progress_made"
+        assert scored, "the deterministic branch must score via check_if_progress_made"
         assert scored[-1]["novel_files_uploaded"] == ["file_aaaaaaaaaaaa"], (
             "the upload keys must be on the dict BEFORE it is scored, or the "
             "arm cannot fire"
