@@ -772,7 +772,7 @@ from faultmaven.modules.agent.domain.services.investigation_service import Inves
 
 #### 3. Convention
 
-- Only the composition root (`main.py`) imports Domain Service classes
+- Only the composition root (`bootstrap/composition.py`, wired from `main.py`'s app) imports Domain Service classes
 - Domain Services communicate via Vertical Module contracts only
 - API routes delegate to injected services, never import domain internals
 
@@ -1065,7 +1065,7 @@ These should remain in shared locations:
 #### 3. **`container/`** ⚠️ **SHARED DI CONTAINER**
 - **Purpose**: Dependency injection wiring
 - **Why Shared**:
-  - Used by composition root (main.py)
+  - Used by the composition root (`bootstrap/composition.py`)
   - Pure infrastructure
 - **Structure**: Keep as-is
 
@@ -1235,7 +1235,7 @@ faultmaven/
 - ✅ Remove Report `infrastructure/` - TD-001 migration complete (now uses Case repository)
 - ✅ Update Evidence, Agent, Report to use Case module's `ICaseRepository` contract
 - ⏳ Add import-linter rules for Domain Service boundaries (prevent vertical modules from importing domain service internals)
-- ⏳ Update composition root (`main.py`) to wire Domain Services with Case contracts
+- ⏳ Update composition root (`bootstrap/composition.py`) to wire Domain Services with Case contracts
 - ⏳ Update API routes to use injected Domain Service instances
 
 ### Phase 3: Database Boundaries

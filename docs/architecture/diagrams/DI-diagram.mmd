@@ -10,7 +10,8 @@ flowchart TB
 %% Sibling primary diagram: system-architecture.mmd
 %%
 %% Sources (file:symbol):
-%%   faultmaven/main.py::lifespan                          (L325-525)
+%%   faultmaven/bootstrap/lifespan.py::lifespan             (L32-514)
+%%   faultmaven/bootstrap/composition.py::_wire_composition_root (app.state attachment, L184-516)
 %%   faultmaven/container/_container_impl.py               (init + register_* wrappers)
 %%   faultmaven/container/providers/infrastructure.py      (infra bindings)
 %%   faultmaven/container/providers/tools.py               (tools bindings)
@@ -61,12 +62,12 @@ flowchart TB
     %% TIER 5 — APP.STATE
     %%   Where routers discover services via Depends().
     %% ============================================================
-    AppState["📬 <b>app.state</b><br/>main.py lifespan L415-525<br/>Services attached here. Routers read via Depends()."]
+    AppState["📬 <b>app.state</b><br/>bootstrap/composition.py::_wire_composition_root<br/>Services attached here. Routers read via Depends()."]
 
     %% ============================================================
     %% SIDE PANEL — WIRING ORDER (executed at startup)
     %% ============================================================
-    Order["🔁 <b>Wiring order (main.py lifespan)</b><br/>1. Settings() — single source of truth<br/>2. register_infrastructure(container)<br/>3. register_tools(container)<br/>4. register_services(container)<br/>5. attach services → app.state<br/>6. late-bind conversion_service → milestone_engine<br/>7. apply llm_config_overrides (cloud only)"]
+    Order["🔁 <b>Wiring order (bootstrap/lifespan.py → bootstrap/composition.py)</b><br/>1. Settings() — single source of truth<br/>2. register_infrastructure(container)<br/>3. register_tools(container)<br/>4. register_services(container)<br/>5. attach services → app.state<br/>6. apply llm_config_overrides (cloud only)"]
 
     %% ============================================================
     %% EDGES (high-signal flows only)
