@@ -224,7 +224,7 @@ from .modules.auth.api.oauth import router as oauth_router
 from .modules.auth.api.session import router as session_router
 from .modules.auth.api.teams import router as teams_router
 from .modules.auth.domain.models.auth import DevUser
-from .modules.case.api.routes import router as case_router
+from .modules.case.api.routes.router import router as case_router
 from .modules.knowledge.api.conversion_routes import router as conversion_router
 from .modules.knowledge.api.routes import router as knowledge_router
 from .modules.report.api.routes import router as report_router
