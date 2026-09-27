@@ -85,7 +85,7 @@ def _evidence_recency(ev: Any) -> tuple:
     keeps the newest N on one backend and the oldest N on the other (#1609).
 
     The same key as the investigation prompt's ``_evidence_recency_key``
-    (``core/investigation/prompts/context_builder.py``), not imported from it:
+    (``core/investigation/prompts/context_builder/evidence.py``), not imported from it:
     this module does not depend on the engine's prompt package, and a private
     helper there is not an interface. Two copies, so a test pins them to the
     same order.
