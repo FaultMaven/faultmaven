@@ -212,7 +212,7 @@ When `processing_mode == "knowledge_query"`, the user is asking a general techni
 
 ## 5. Dispatch: `get_prompt_for_case()`
 
-The single entry point is `templates.get_prompt_for_case(case, user_message, ...)`. It:
+The single entry point is `templates.assembly.get_prompt_for_case(case, user_message, ...)`. It:
 
 1. Builds the dynamic context via `build_investigation_context(...)` from `prompts/context_builder.py`.
 2. Selects the template based on `case.state`:

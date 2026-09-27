@@ -1368,7 +1368,7 @@ authoritative**.
   presence↔absence pairing is deferred to a later step (no
   evidence↔evidence link in the model yet).
   `context_builder._build_evidence_needs_block` (re-verification
-  section) + `templates._EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM` + the
+  section) + `templates.diagnosis._EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM` + the
   per-stage EVIDENCE-TYPES sections and the classification decision-tree
   step 4. This makes the "always-create a need per hypothesis" idea
   unnecessary: the pool stays demand-side (outstanding needs to look
