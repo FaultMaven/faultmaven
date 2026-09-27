@@ -1276,10 +1276,10 @@ Copilot is already live.
 | `EvidenceCategory` enum | `faultmaven/modules/case/domain/models/evidence.py` |
 | LLM schema `EvidenceNeedUpdate` + stage hooks | `faultmaven/core/investigation/schemas.py:501`; `evidence_need_updates` on Diagnosis/Mitigation/Treatment/General state-updates (~`:1044`–`:1194`); **absent from `InquiryStateUpdate` by design (INV-07)** |
 | `SuggestedFollowUp.evidence_need_id` + validators | `faultmaven/core/investigation/schemas.py:897`–`929` |
-| Engine apply-layer `_apply_evidence_need_updates` | `faultmaven/core/investigation/milestone_engine/engine.py` `MilestoneEngine._apply_evidence_need_updates` |
+| Engine apply-layer `_apply_evidence_need_updates` | `faultmaven/core/investigation/milestone_engine/evidence_need_updates.py` `_apply_evidence_need_updates` |
 | ~~Engine backstop (path-conditional rejection)~~ | **Removed in the flow redesign** — `_path_conditional_emission_restriction` / `_RESTRICTED_STATE_BLOCK_NAMES` deleted; causal-need gating is now prompt-guided by `cause_state` (§7.3). |
 | Terminal-hypothesis supersession | `milestone_engine/terminal_proposals.py` `_supersede_needs_on_terminal_hypothesis` (+ `_TERMINAL_HYPOTHESIS_STATES`) |
-| Wire-flattening seam (`new_index_N` → real ID) | `milestone_engine/engine.py` `MilestoneEngine._flatten_follow_ups` |
+| Wire-flattening seam (`new_index_N` → real ID) | `milestone_engine/turn_records.py` `_flatten_follow_ups` |
 | Context block `<evidence_needs>` | `context_builder/evidence_needs.py` `_build_evidence_needs_block` (line render `_render_need_line`) |
 | Prompt directives | `prompts/templates/diagnosis.py:_EVIDENCE_NEEDS_LIFECYCLE_BLOCK`, `_..._RCA_POOL_EVAL_BLOCK`, `_..._REVERIFICATION_ADDENDUM`. The symptom-only addendum (`_EVIDENCE_NEEDS_SYMPTOM_ONLY_ADDENDUM`) was **removed in the flow redesign** (#410), together with the path backstop and path-dispatch blocks it served (§7.3). |
 | Persistence (save/load) | `sqlite_case_repository/saving.py:_upsert_evidence_needs`, `sqlite_case_repository/loading.py:_load_evidence_needs_for_case` |
@@ -1349,7 +1349,7 @@ authoritative**.
   `priority` default on create and uses **revise-don't-clobber** on
   update (an omitted/`""` field leaves the stored value unchanged). See
   the updated §8.6 schema. Apply-layer:
-  `milestone_engine.engine._apply_evidence_need_updates`.
+  `milestone_engine.evidence_need_updates._apply_evidence_need_updates`.
 
 - **Re-verification checklist re-anchored on evidence rows, not FULFILLED
   needs.** The MITIGATION/TREATMENT re-verification checklist (§4.4,
@@ -1363,8 +1363,8 @@ authoritative**.
   complete. Post-fix absence rows are **stand-alone audit rows**
   (`source_file_id` + extract) — not linked to a need *or* a hypothesis
   (a fix confirms the root-cause hypothesis; a confidence-bearing link
-  would erode it, and the apply-layer (`milestone_engine/engine.py`
-  `MilestoneEngine._apply_evidence_need_updates`) coerces any non-SUPPORTS stance to a likelihood penalty). Before/after
+  would erode it, and the apply-layer (`milestone_engine/evidence_need_updates.py`
+  `_apply_evidence_need_updates`) coerces any non-SUPPORTS stance to a likelihood penalty). Before/after
   presence↔absence pairing is deferred to a later step (no
   evidence↔evidence link in the model yet).
   `context_builder.evidence_needs._build_evidence_needs_block` (re-verification

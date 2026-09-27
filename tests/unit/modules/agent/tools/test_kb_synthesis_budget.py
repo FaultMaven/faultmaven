@@ -1,7 +1,7 @@
 """The KB synthesis budget must agree with the ceiling that actually binds.
 
 ``SYNTHESIS_MAX_TOKENS`` is not the real limit on a KB answer. The engine
-truncates every tool result to ``MilestoneEngine.TOOL_RESULT_MAX_CHARS`` before
+truncates every tool result to ``StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS`` before
 it re-enters the model's context, and the kb_qa result carries a fixed relay
 wrapper on top of the answer. Whatever the model writes beyond that allowance is
 generated, paid for, and then discarded.
@@ -22,7 +22,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.generation import (
+    StructuredOutputGenerator,
+)
 from faultmaven.core.investigation.milestone_engine.text_budget import (
     KB_QA_RELAY_SUFFIX,
 )
@@ -65,7 +67,7 @@ def _wrapper_overhead_chars() -> int:
     silently measure the wrong thing.
     """
     sentinel = "X"
-    wrapped = MilestoneEngine._format_tool_result(
+    wrapped = StructuredOutputGenerator._format_tool_result(
         ToolResult(success=True, data=sentinel), tool_name="kb_qa"
     )
     assert sentinel in wrapped, "sentinel did not reach the kb_qa wrapper branch"
@@ -74,7 +76,7 @@ def _wrapper_overhead_chars() -> int:
 
 def test_synthesis_budget_can_fill_the_engine_tool_result_cap():
     """Under-sizing clips the answer mid-procedure, and clips it silently."""
-    usable = MilestoneEngine.TOOL_RESULT_MAX_CHARS - _wrapper_overhead_chars()
+    usable = StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS - _wrapper_overhead_chars()
     reachable = SYNTHESIS_MAX_TOKENS * MIN_CHARS_PER_TOKEN
 
     assert reachable >= usable, (
@@ -91,7 +93,7 @@ def test_synthesis_budget_is_not_sized_past_what_the_engine_accepts():
     'give the answer room' does nothing on its own, because the extra text never
     survives ``TOOL_RESULT_MAX_CHARS`` -- it only adds latency to every KB turn.
     """
-    usable = MilestoneEngine.TOOL_RESULT_MAX_CHARS - _wrapper_overhead_chars()
+    usable = StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS - _wrapper_overhead_chars()
     reachable = SYNTHESIS_MAX_TOKENS * MIN_CHARS_PER_TOKEN
 
     assert reachable <= usable * MAX_OVERSHOOT, (
@@ -114,13 +116,13 @@ def test_relay_instructions_survive_the_largest_answer_the_budget_allows():
     the answer rather than itself.
     """
     biggest_answer = "A" * int(SYNTHESIS_MAX_TOKENS * MAX_CHARS_PER_TOKEN)
-    wrapped = MilestoneEngine._format_tool_result(
+    wrapped = StructuredOutputGenerator._format_tool_result(
         ToolResult(success=True, data=biggest_answer), tool_name="kb_qa"
     )
 
-    assert len(wrapped) <= MilestoneEngine.TOOL_RESULT_MAX_CHARS, (
+    assert len(wrapped) <= StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS, (
         f"wrapped kb_qa result is {len(wrapped)} chars, past the "
-        f"{MilestoneEngine.TOOL_RESULT_MAX_CHARS} cap — the engine would cut the tail"
+        f"{StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS} cap — the engine would cut the tail"
     )
     assert "Do not reply with plain text." in wrapped, (
         "the schema-tool instruction was truncated away; the model is no longer "
@@ -140,18 +142,18 @@ def test_relay_tail_survives_redaction_growth_past_the_cap():
     remove the schema-tool instruction again, on any deployment with redaction
     enabled and entities in the answer.
     """
-    wrapped = MilestoneEngine._format_tool_result(
+    wrapped = StructuredOutputGenerator._format_tool_result(
         ToolResult(success=True, data="A" * 7400), tool_name="kb_qa"
     )
     # Stand in for sanitisation: entities replaced by longer placeholders.
     grown = wrapped.replace("A" * 50, "<IP_ADDRESS_0123456789abcdef>" * 30, 1)
     assert (
-        len(grown) > MilestoneEngine.TOOL_RESULT_MAX_CHARS
+        len(grown) > StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS
     ), "test setup must actually push the result past the cap"
 
-    out, _ = MilestoneEngine._truncate_tool_result(grown, "kb_qa")
+    out, _ = StructuredOutputGenerator._truncate_tool_result(grown, "kb_qa")
 
-    assert len(out) <= MilestoneEngine.TOOL_RESULT_MAX_CHARS
+    assert len(out) <= StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS
     assert out.endswith(
         KB_QA_RELAY_SUFFIX
     ), "the relay instructions were cut by the post-redaction truncation"
@@ -165,15 +167,19 @@ def test_other_tools_keep_plain_head_truncation():
     tools already budget themselves against this cap; silently relocating their
     cut would change what the model sees for reasons unrelated to this fix.
     """
-    out, dropped = MilestoneEngine._truncate_tool_result("X" * 9000, "search_file")
+    out, dropped = StructuredOutputGenerator._truncate_tool_result(
+        "X" * 9000, "search_file"
+    )
 
     assert out.startswith("X" * 100)
     assert out.endswith("[truncated]")
     # cap + marker, not cap: this branch appends the marker on top of a
     # cap-length slice. Pre-existing and pinned byte-identical by #1090; kb_qa
     # is stricter only because its formatter reserves the relay wrapper.
-    assert len(out) == MilestoneEngine.TOOL_RESULT_MAX_CHARS + len("\n[truncated]")
-    assert dropped == 9000 - MilestoneEngine.TOOL_RESULT_MAX_CHARS
+    assert len(out) == StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS + len(
+        "\n[truncated]"
+    )
+    assert dropped == 9000 - StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS
     assert KB_QA_RELAY_SUFFIX not in out
 
 
@@ -195,7 +201,7 @@ def test_other_tools_keep_plain_head_truncation():
 
 def test_stated_allowance_fits_inside_what_the_engine_will_relay():
     """Telling the model a number larger than the cap teaches it to overflow."""
-    usable = MilestoneEngine.TOOL_RESULT_MAX_CHARS - _wrapper_overhead_chars()
+    usable = StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS - _wrapper_overhead_chars()
 
     assert KB_ANSWER_RELAY_CHARS <= usable, (
         f"the synthesizer is told it has {KB_ANSWER_RELAY_CHARS} characters but "
@@ -211,7 +217,7 @@ def test_stated_allowance_leaves_room_for_the_source_line():
     titles run comfortably past 100 characters. An allowance equal to the full
     relay budget would be overflowed by the source line alone.
     """
-    usable = MilestoneEngine.TOOL_RESULT_MAX_CHARS - _wrapper_overhead_chars()
+    usable = StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS - _wrapper_overhead_chars()
 
     assert usable - KB_ANSWER_RELAY_CHARS >= 250, (
         f"only {usable - KB_ANSWER_RELAY_CHARS} characters of headroom between "

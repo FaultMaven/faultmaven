@@ -27,6 +27,9 @@ from faultmaven.core.investigation.cause_assurance import (
     CauseAssuranceGrade,
     grade_cause_assurance,
 )
+from faultmaven.core.investigation.milestone_engine.chain_emission import (
+    _apply_chain_emission,
+)
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.modules.case.contracts import (
     Case,
@@ -324,7 +327,7 @@ def test_apply_chain_emission_mirrors_support_to_the_new_root():
         node_evidence_links=[],
     )
 
-    eng._apply_chain_emission(case, updates, metadata)
+    _apply_chain_emission(case, updates, metadata)
 
     assert hyp.root_node_id is not None
     root = case.causal_nodes[hyp.root_node_id]
@@ -365,7 +368,7 @@ def test_b2_resolves_names_root_node_id_placeholder():
         node_evidence_links=[],
     )
 
-    eng._apply_chain_emission(case, updates, metadata)
+    _apply_chain_emission(case, updates, metadata)
 
     resolved = case.root_cause_conclusion.names_root_node_id
     assert resolved is not None
@@ -393,7 +396,7 @@ def test_b2_leaves_real_node_id_untouched():
     updates = SimpleNamespace(
         causal_nodes_to_add=[], causal_edges_to_add=[], node_evidence_links=[]
     )
-    eng._apply_chain_emission(case, updates, metadata)
+    _apply_chain_emission(case, updates, metadata)
     assert case.root_cause_conclusion.names_root_node_id == root.node_id
 
 
@@ -428,5 +431,5 @@ def test_b2_does_not_resolve_placeholder_from_a_prior_turn():
         causal_edges_to_add=[],
         node_evidence_links=[],
     )
-    eng._apply_chain_emission(case, updates, metadata)
+    _apply_chain_emission(case, updates, metadata)
     assert case.root_cause_conclusion.names_root_node_id == "new_index_0"

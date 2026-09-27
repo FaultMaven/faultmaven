@@ -1,6 +1,6 @@
 """#1088 — the tool-result cut must be observable, per tool.
 
-``MilestoneEngine.TOOL_RESULT_MAX_CHARS`` truncates every tool result before it
+``StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS`` truncates every tool result before it
 re-enters the model's context. That clip used to be completely silent: no log
 line, no counter, nothing recorded that it had fired. So the clip rate was not
 merely unmeasured, it was **unmeasurable** without arithmetic across two
@@ -28,8 +28,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import BaseModel
 
-from faultmaven.core.investigation.milestone_engine import engine as me
+from faultmaven.core.investigation.milestone_engine import generation as me
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.generation import (
+    StructuredOutputGenerator,
+)
 from faultmaven.infrastructure.llm.providers.base import LLMResponse, ToolCall
 from faultmaven.models.interfaces import ToolResult
 
@@ -107,7 +110,7 @@ def _engine_returning(data: str, called_tool: str = "search_file"):
 
 
 async def _run(engine):
-    return await engine._tool_augmented_generate(
+    return await engine.generator._tool_augmented_generate(
         prompt="Search",
         schema_model=SampleResponse,
         investigation_tools=SEARCH_FILE_TOOL,
@@ -124,7 +127,9 @@ async def test_truncation_is_logged_with_what_it_dropped(caplog):
     decision turns on.
     """
     overflow = 1500
-    engine = _engine_returning("x" * (MilestoneEngine.TOOL_RESULT_MAX_CHARS + overflow))
+    engine = _engine_returning(
+        "x" * (StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS + overflow)
+    )
 
     with caplog.at_level("WARNING", logger=me.__name__):
         await _run(engine)
@@ -136,8 +141,11 @@ async def test_truncation_is_logged_with_what_it_dropped(caplog):
     )
     record = cut[0]
     assert record.tool == "search_file"
-    assert record.original_chars == MilestoneEngine.TOOL_RESULT_MAX_CHARS + overflow
-    assert record.cap_chars == MilestoneEngine.TOOL_RESULT_MAX_CHARS
+    assert (
+        record.original_chars
+        == StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS + overflow
+    )
+    assert record.cap_chars == StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS
     assert record.dropped_chars == overflow
 
 
@@ -150,7 +158,9 @@ async def test_truncation_counts_against_the_relayed_denominator():
     relayed counter and the size observation must fire on the SAME result that
     the truncation counter does.
     """
-    engine = _engine_returning("x" * (MilestoneEngine.TOOL_RESULT_MAX_CHARS + 1000))
+    engine = _engine_returning(
+        "x" * (StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS + 1000)
+    )
 
     with (
         patch.object(me, "tool_result_relayed_total") as relayed,
@@ -167,7 +177,7 @@ async def test_truncation_counts_against_the_relayed_denominator():
     # oversized result onto the cap value and hide the overflow entirely.
     sizes.labels.assert_called_once_with(tool="search_file")
     sizes.labels.return_value.observe.assert_called_once_with(
-        MilestoneEngine.TOOL_RESULT_MAX_CHARS + 1000
+        StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS + 1000
     )
 
 
@@ -177,7 +187,9 @@ async def test_a_result_under_the_cap_is_counted_but_not_reported_as_cut(caplog)
 
     A clip rate that counted uncut results as cuts would read 100% forever.
     """
-    engine = _engine_returning("x" * (MilestoneEngine.TOOL_RESULT_MAX_CHARS - 100))
+    engine = _engine_returning(
+        "x" * (StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS - 100)
+    )
 
     with caplog.at_level("WARNING", logger=me.__name__):
         with (
@@ -215,14 +227,16 @@ async def test_instrumentation_does_not_change_what_the_model_receives():
     #1088 is explicit that the ceiling is a separate, unmade decision. This
     pins that the instrumentation did not quietly make it.
     """
-    engine = _engine_returning("x" * (MilestoneEngine.TOOL_RESULT_MAX_CHARS + 1000))
+    engine = _engine_returning(
+        "x" * (StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS + 1000)
+    )
     await _run(engine)
 
-    second_call = engine.llm_provider.generate.call_args_list[1]
+    second_call = engine.deps.llm_provider.generate.call_args_list[1]
     messages = second_call.kwargs["messages"]
     tool_msg = [m for m in messages if m.get("role") == "tool"][0]
     assert tool_msg["content"] == (
-        "x" * MilestoneEngine.TOOL_RESULT_MAX_CHARS + "\n[truncated]"
+        "x" * StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS + "\n[truncated]"
     )
 
 
@@ -245,7 +259,7 @@ async def test_kb_qa_formatter_trim_is_counted_as_a_clip():
         patch.object(me, "tool_result_truncated_total") as truncated,
         patch.object(me, "tool_result_chars") as sizes,
     ):
-        wrapped = MilestoneEngine._format_tool_result(
+        wrapped = StructuredOutputGenerator._format_tool_result(
             ToolResult(success=True, data=answer), tool_name="kb_qa"
         )
 
@@ -280,7 +294,7 @@ async def test_a_formatter_trimmed_kb_qa_result_is_not_counted_twice():
         patch.object(me, "tool_result_truncated_total") as truncated,
         patch.object(me, "tool_result_chars") as sizes,
     ):
-        await engine._tool_augmented_generate(
+        await engine.generator._tool_augmented_generate(
             prompt="Search",
             schema_model=SampleResponse,
             investigation_tools=[
@@ -322,7 +336,7 @@ async def test_an_answer_quoting_the_trim_marker_is_still_measured():
         patch.object(me, "tool_result_truncated_total") as truncated,
         patch.object(me, "tool_result_chars") as sizes,
     ):
-        await engine._tool_augmented_generate(
+        await engine.generator._tool_augmented_generate(
             prompt="Search",
             schema_model=SampleResponse,
             investigation_tools=[
@@ -360,7 +374,7 @@ class _ExpandingRedaction:
 
 
 async def _run_kb_qa(engine, redaction_ctx=None):
-    return await engine._tool_augmented_generate(
+    return await engine.generator._tool_augmented_generate(
         prompt="Look it up",
         schema_model=SampleResponse,
         investigation_tools=KB_QA_TOOL,
@@ -406,11 +420,11 @@ async def test_the_loop_logs_the_count_its_cut_returned_not_the_overflow(caplog)
     record = loop_cuts[0]
 
     # Ground truth: what the cut helper actually destroys on this same input.
-    formatted = MilestoneEngine._format_tool_result(
+    formatted = StructuredOutputGenerator._format_tool_result(
         ToolResult(success=True, data=answer), tool_name="kb_qa"
     )
     grown = formatted.replace("10.0.0.1", "<IP_ADDRESS_0123456789abcdef>")
-    _, destroyed = MilestoneEngine._truncate_tool_result(grown, "kb_qa")
+    _, destroyed = StructuredOutputGenerator._truncate_tool_result(grown, "kb_qa")
 
     assert record.dropped_chars == destroyed
     assert record.dropped_chars != record.original_chars - record.cap_chars, (
@@ -451,7 +465,9 @@ async def test_a_second_cut_is_flagged_so_the_clip_count_can_deduplicate(caplog)
 @pytest.mark.asyncio
 async def test_a_first_and_only_cut_is_not_flagged_as_a_second_one(caplog):
     """The other half: a flag that is always True dedups away real clips."""
-    engine = _engine_returning("x" * (MilestoneEngine.TOOL_RESULT_MAX_CHARS + 500))
+    engine = _engine_returning(
+        "x" * (StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS + 500)
+    )
 
     with caplog.at_level("WARNING", logger=me.__name__):
         await _run(engine)

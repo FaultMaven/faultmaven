@@ -36,7 +36,8 @@ class AnthropicProvider(BaseLLMProvider):
     # `max_tokens`, so an unguarded budget can starve the structured JSON
     # output — the exact fm#1094 failure (starved answers of 101–215 chars,
     # roughly 30–60 tokens). The structured tool loop calls with
-    # max_tokens=8000 (milestone_engine.STRUCTURED_OUTPUT_MAX_TOKENS), so a
+    # max_tokens=8000
+    # (milestone_engine.generation.STRUCTURED_OUTPUT_MAX_TOKENS), so a
     # 1024-token floor is ~15–30x the observed starvation region while
     # leaving the default 4096 budget viable. A call that cannot satisfy the
     # floor is downgraded to no-thinking with a warning, never issued.

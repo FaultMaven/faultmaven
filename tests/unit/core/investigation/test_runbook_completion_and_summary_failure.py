@@ -37,6 +37,12 @@ import pytest
 
 from faultmaven.core.investigation.cause_assurance import CauseAssuranceGrade
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.regeneration import (
+    _remaining_regens_for,
+)
+from faultmaven.core.investigation.milestone_engine.runbook_creation import (
+    RunbookCreator,
+)
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
@@ -222,7 +228,7 @@ class TestAutoGenerateReportTupleReturn:
             investigation_tools=MagicMock(),
             report_service=report_service,
         )
-        payload, failed = await engine._auto_generate_report(case)
+        payload, failed = await engine.terminal.auto_generate_report(case)
         assert payload == "# Resolution Summary\n\nDetails here."
         assert failed is False
 
@@ -247,7 +253,7 @@ class TestAutoGenerateReportTupleReturn:
             investigation_tools=MagicMock(),
             report_service=report_service,
         )
-        payload, failed = await engine._auto_generate_report(case)
+        payload, failed = await engine.terminal.auto_generate_report(case)
         assert failed is True, "RESOLVED failure must flag summary_failed=True"
         assert payload is not None
         assert payload.startswith(
@@ -286,7 +292,7 @@ class TestAutoGenerateReportTupleReturn:
             investigation_tools=MagicMock(),
             report_service=report_service,
         )
-        payload, failed = await engine._auto_generate_report(case)
+        payload, failed = await engine.terminal.auto_generate_report(case)
         assert failed is True
         assert payload is not None
         assert payload.startswith("Closure summary generation did not complete")
@@ -404,18 +410,20 @@ class TestRunbookCreationFollowUps:
         conversion_service.convert_from_case = AsyncMock(
             return_value=MagicMock(drafts=[])
         )
-        engine.conversion_service = conversion_service
+        engine.deps.conversion_service = conversion_service
         # knowledge_service without runbook_kb → dedup is skipped
-        engine.knowledge_service = MagicMock(spec=[])
+        engine.deps.knowledge_service = MagicMock(spec=[])
 
-        result = await engine._handle_runbook_creation(case, metadata={})
+        result = await engine.runbooks.handle_runbook_creation(case, metadata={})
 
         # `runbook_already_exists=True` is passed at this call site (we
         # just kicked off conversion). The expected list contains only
         # the regen affordance.
         assert result["suggested_follow_ups"] == _resolved_suggestions(
             case,
-            remaining=await engine._remaining_regens_for(case),
+            remaining=await _remaining_regens_for(
+                engine.deps.report_service, engine.deps.repository, case
+            ),
             runbook_already_exists=True,
         )
         labels = [s["label"] for s in result["suggested_follow_ups"]]
@@ -432,9 +440,9 @@ class TestRunbookCreationFollowUps:
         case = _make_resolved_case()  # No root_cause, no solutions → NOT_READY
 
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        engine.knowledge_service = MagicMock(spec=[])
+        engine.deps.knowledge_service = MagicMock(spec=[])
 
-        result = await engine._handle_runbook_creation(case, metadata={})
+        result = await engine.runbooks.handle_runbook_creation(case, metadata={})
         assert result["suggested_follow_ups"] == []
 
 
@@ -483,12 +491,12 @@ async def _run_creation_turn(mock_llm, mock_repo, monkeypatch, scenario: str) ->
         _make_runbook_ready(case)
 
     engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-    engine.knowledge_service = MagicMock(spec=[])
+    engine.deps.knowledge_service = MagicMock(spec=[])
 
     conversion_service = MagicMock()
     conversion_service.convert_from_case = AsyncMock(return_value=MagicMock(drafts=[]))
     conversion_service.get_conversion_by_case = AsyncMock(return_value=None)
-    engine.conversion_service = conversion_service
+    engine.deps.conversion_service = conversion_service
 
     # `runbook_kb=None` means dedup is skipped, not clean — the honest "could
     # not check" caveat. Scenarios that need a real verdict install a KB.
@@ -501,11 +509,11 @@ async def _run_creation_turn(mock_llm, mock_repo, monkeypatch, scenario: str) ->
         existing.has_live_draft.return_value = True
         conversion_service.get_conversion_by_case = AsyncMock(return_value=existing)
     elif scenario == "service-unavailable":
-        engine.conversion_service = None
+        engine.deps.conversion_service = None
     elif scenario == "start-failure":
         monkeypatch.setattr(_FROM_CASE, classmethod(_raise_from_case))
     elif scenario == "similar-found":
-        engine.runbook_kb = _dedup_kb(
+        engine.deps.runbook_kb = _dedup_kb(
             [
                 RunbookMatch(
                     item_id="kb-1",
@@ -517,11 +525,11 @@ async def _run_creation_turn(mock_llm, mock_repo, monkeypatch, scenario: str) ->
         )
         embed_patch = patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024))
     elif scenario == "kickoff-clean-dedup":
-        engine.runbook_kb = _dedup_kb([])
+        engine.deps.runbook_kb = _dedup_kb([])
         embed_patch = patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024))
 
     with embed_patch:
-        return await engine._handle_runbook_creation(case, metadata={})
+        return await engine.runbooks.handle_runbook_creation(case, metadata={})
 
 
 # Every user-visible outcome of `_handle_runbook_creation`. The function has
@@ -576,7 +584,9 @@ async def _notification_content(mock_llm, outcome: str) -> str:
     repo.save = AsyncMock()
     engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
 
-    await engine._run_runbook_conversion(conversion_service, request, "u1", "o1")
+    await engine.runbooks._run_runbook_conversion(
+        conversion_service, request, "u1", "o1"
+    )
     return case.messages[-1]["content"]
 
 
@@ -865,7 +875,9 @@ class TestRunbookCompletionNotification:
 
         engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
 
-        await engine._run_runbook_conversion(conversion_service, request, "u1", "o1")
+        await engine.runbooks._run_runbook_conversion(
+            conversion_service, request, "u1", "o1"
+        )
 
         assert len(case.messages) == initial_message_count + 1
         notification = case.messages[-1]
@@ -912,7 +924,9 @@ class TestRunbookCompletionNotification:
 
         engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
 
-        await engine._run_runbook_conversion(conversion_service, request, "u1", "o1")
+        await engine.runbooks._run_runbook_conversion(
+            conversion_service, request, "u1", "o1"
+        )
 
         notification = case.messages[-1]
         assert notification["role"] == "system"
@@ -952,7 +966,9 @@ class TestRunbookCompletionNotification:
 
         engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
 
-        await engine._run_runbook_conversion(conversion_service, request, "u1", "o1")
+        await engine.runbooks._run_runbook_conversion(
+            conversion_service, request, "u1", "o1"
+        )
 
         notification = case.messages[-1]
         assert notification["role"] == "system"
@@ -987,7 +1003,9 @@ class TestRunbookCompletionNotification:
         engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
 
         # Must not raise
-        await engine._run_runbook_conversion(conversion_service, request, "u1", "o1")
+        await engine.runbooks._run_runbook_conversion(
+            conversion_service, request, "u1", "o1"
+        )
         repo.save.assert_not_called()
 
 
@@ -1062,7 +1080,7 @@ class TestCaseConversionUsesFactory:
             MilestoneEngine,
         )
 
-        source = inspect.getsource(MilestoneEngine._handle_runbook_creation)
+        source = inspect.getsource(RunbookCreator.handle_runbook_creation)
         assert "CaseConversionRequest.from_case(" in source, (
             "RG4 violation: _handle_runbook_creation no longer uses "
             "CaseConversionRequest.from_case factory — inline extraction "
@@ -1076,7 +1094,7 @@ class TestCaseConversionUsesFactory:
             MilestoneEngine,
         )
 
-        source = inspect.getsource(MilestoneEngine._handle_runbook_creation)
+        source = inspect.getsource(RunbookCreator.handle_runbook_creation)
         forbidden_markers = [
             "Root cause — from RootCauseConclusion",
             "Problem description — from ProblemVerification",
@@ -1125,8 +1143,8 @@ class TestRunbookConversionCarriesOrg:
         conversion_service.get_conversion_by_case = AsyncMock(return_value=None)
 
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        engine.conversion_service = conversion_service
-        engine.knowledge_service = MagicMock(spec=[])
+        engine.deps.conversion_service = conversion_service
+        engine.deps.knowledge_service = MagicMock(spec=[])
 
         # The kickoff fires the conversion as a fire-and-forget task, so capture
         # the coroutine and drive it here rather than racing the event loop.
@@ -1137,7 +1155,7 @@ class TestRunbookConversionCarriesOrg:
             return MagicMock()
 
         with patch("asyncio.create_task", side_effect=_capture):
-            await engine._handle_runbook_creation(case, metadata={})
+            await engine.runbooks.handle_runbook_creation(case, metadata={})
 
         assert spawned, "kickoff did not schedule the background conversion"
         for coro in spawned:
@@ -1166,7 +1184,7 @@ class TestRunbookConversionCarriesOrg:
         column the tenant lives in moved to the enterprise (ADR-017 D1); the
         trap did not.
         """
-        sig = inspect.signature(MilestoneEngine._run_runbook_conversion)
+        sig = inspect.signature(RunbookCreator._run_runbook_conversion)
         param = sig.parameters["enterprise_id"]
         assert param.default is inspect.Parameter.empty, (
             "#1143: _run_runbook_conversion.enterprise_id must stay required; "

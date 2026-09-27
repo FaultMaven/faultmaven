@@ -19,6 +19,9 @@ from faultmaven.core.investigation.causal_graph.similarity import (
     RESTATEMENT_STRONG,
     restatement_score,
 )
+from faultmaven.core.investigation.milestone_engine.chain_emission import (
+    _nudge_ambiguous_orphan_chains,
+)
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.modules.case.contracts import (
     Case,
@@ -479,7 +482,7 @@ def test_engine_nudge_appends_system_feedback_for_ambiguous_orphan():
     )
 
     metadata: dict = {}
-    MilestoneEngine._nudge_ambiguous_orphan_chains(case, metadata)
+    _nudge_ambiguous_orphan_chains(case, metadata)
 
     fb = metadata.get("system_feedback", "")
     assert "Unlinked causal chain" in fb
@@ -496,7 +499,7 @@ def test_engine_nudge_silent_and_reattaches_on_unambiguous_case():
     )
 
     metadata: dict = {}
-    MilestoneEngine._nudge_ambiguous_orphan_chains(case, metadata)
+    _nudge_ambiguous_orphan_chains(case, metadata)
 
     # T1 re-attached; no nudge emitted.
     assert "system_feedback" not in metadata or not metadata["system_feedback"]

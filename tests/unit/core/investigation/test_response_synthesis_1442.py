@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from faultmaven.core.investigation.milestone_engine import engine as me
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.response_synthesis import (
     RESPONSE_EMPTY_TEXT,
@@ -30,6 +31,10 @@ from faultmaven.core.investigation.milestone_engine.response_synthesis import (
     is_agent_response_synthesized,
     schema_answer_stop_reason,
     synthesized_agent_response,
+)
+from faultmaven.core.investigation.milestone_engine.structured_output import (
+    _parse_text_as_schema,
+    _synthesize_agent_response,
 )
 from faultmaven.core.investigation.schemas import BaseInteractionResponse
 from faultmaven.infrastructure.llm.providers.base import (
@@ -139,7 +144,7 @@ class TestTheSingleShotPath:
     @pytest.mark.parametrize("reason,text", MATRIX, ids=MATRIX_IDS)
     async def test_an_empty_answer_is_named_by_its_stop_reason(self, reason, text):
         engine = _single_shot_engine({"agent_response": ""}, reason)
-        parsed = await engine._generate_structured_output_inner("p", _Resp)
+        parsed = await engine.generator._generate_structured_output_inner("p", _Resp)
 
         assert parsed.agent_response == text
         assert is_agent_response_synthesized(parsed)
@@ -150,7 +155,7 @@ class TestTheSingleShotPath:
         the field; the wording comes from here, and the model's other fields
         survive."""
         engine = _single_shot_engine({"note": "model's own"}, reason)
-        parsed = await engine._generate_structured_output_inner("p", _Resp)
+        parsed = await engine.generator._generate_structured_output_inner("p", _Resp)
 
         assert parsed.agent_response == text
         assert parsed.note == "model's own"
@@ -161,7 +166,7 @@ class TestTheSingleShotPath:
         ``TOOL_CALLS`` stop means the answer came through a tool call, not
         that control was handed to one — so the engine names the blank."""
         engine = _single_shot_engine({"agent_response": ""}, StopReason.TOOL_CALLS)
-        parsed = await engine._generate_structured_output_inner("p", _Resp)
+        parsed = await engine.generator._generate_structured_output_inner("p", _Resp)
 
         assert parsed.agent_response == RESPONSE_EMPTY_TEXT
         assert is_agent_response_synthesized(parsed)
@@ -171,7 +176,7 @@ class TestTheSingleShotPath:
         whitespace said nothing, and the ENGINE names it rather than leaving
         it to the service's blind backstop."""
         engine = _single_shot_engine({"agent_response": " \n\t"}, StopReason.STOP)
-        parsed = await engine._generate_structured_output_inner("p", _Resp)
+        parsed = await engine.generator._generate_structured_output_inner("p", _Resp)
 
         assert parsed.agent_response == RESPONSE_EMPTY_TEXT
         assert is_agent_response_synthesized(parsed)
@@ -181,7 +186,7 @@ class TestTheSingleShotPath:
         """Whatever the stop reason says — a filter can stop a body that still
         carries a whole answer."""
         engine = _single_shot_engine({"agent_response": "pool exhausted"}, reason)
-        parsed = await engine._generate_structured_output_inner("p", _Resp)
+        parsed = await engine.generator._generate_structured_output_inner("p", _Resp)
 
         assert parsed.agent_response == "pool exhausted"
         assert not is_agent_response_synthesized(parsed)
@@ -218,7 +223,7 @@ async def _tool_loop(response: LLMResponse):
             },
         }
     ]
-    return await engine._tool_augmented_generate(
+    return await engine.generator._tool_augmented_generate(
         prompt="p",
         schema_model=_Resp,
         investigation_tools=tools,
@@ -274,8 +279,9 @@ def test_the_text_recovery_path_still_rejects_an_empty_answer():
     let a missing answer through this path.
     """
     engine = MilestoneEngine.__new__(MilestoneEngine)
+    engine.deps = EngineDeps()
     with pytest.raises(ValueError, match="empty agent_response"):
-        engine._parse_text_as_schema(json.dumps({"note": "x"}), _Resp)
+        _parse_text_as_schema(json.dumps({"note": "x"}), _Resp)
 
 
 @pytest.mark.unit
@@ -296,7 +302,8 @@ def _synthesized_diagnosis(reason: StopReason):
 
     blank = InvestigationResponse_Diagnosis(agent_response="", state_updates={})
     engine = MilestoneEngine.__new__(MilestoneEngine)
-    return engine._synthesize_agent_response(blank, reason)
+    engine.deps = EngineDeps()
+    return _synthesize_agent_response(blank, reason)
 
 
 def _turn_engine(response):
@@ -304,7 +311,7 @@ def _turn_engine(response):
     repo.save = AsyncMock(side_effect=lambda c: c)
     repo.get = AsyncMock(return_value=None)
     engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
-    engine._generate_structured_output = AsyncMock(return_value=response)
+    engine.generator.generate_structured_output = AsyncMock(return_value=response)
     return engine
 
 
@@ -396,14 +403,12 @@ async def test_the_terminal_qa_path_reports_the_flag_on_its_metadata():
     from faultmaven.modules.case.domain.models.lifecycle import CaseState
 
     blank = TerminalResponse(agent_response="", state_updates={})
-    synthesized = MilestoneEngine.__new__(MilestoneEngine)._synthesize_agent_response(
-        blank, StopReason.MAX_TOKENS
-    )
+    synthesized = _synthesize_agent_response(blank, StopReason.MAX_TOKENS)
     repo = MagicMock()
     repo.save = AsyncMock(side_effect=lambda c: c)
     repo.get = AsyncMock(return_value=None)
     engine = MilestoneEngine(MagicMock(), repo, investigation_tools=None)
-    engine._generate_structured_output = AsyncMock(return_value=synthesized)
+    engine.generator.generate_structured_output = AsyncMock(return_value=synthesized)
 
     from datetime import UTC, datetime
 
@@ -422,7 +427,7 @@ async def test_the_terminal_qa_path_reports_the_flag_on_its_metadata():
 
     result = await engine.process_turn(case=case, user_message="what was it?")
 
-    engine._generate_structured_output.assert_awaited_once()
+    engine.generator.generate_structured_output.assert_awaited_once()
     assert result["agent_response"] == RESPONSE_TRUNCATED_TEXT
     assert result["metadata"].get(MESSAGE_METADATA_AGENT_SYNTHESIZED) is True
 
@@ -507,8 +512,8 @@ async def test_a_blank_schema_tool_answer_is_named_by_the_engine(site):
         route = contextlib.nullcontext()
     else:
         engine = MilestoneEngine(provider, _repo(), investigation_tools=MagicMock())
-        engine._da_provider_supports_tools = MagicMock(return_value=True)
-        engine._build_da_tool_schemas = MagicMock(
+        engine.generator._da_provider_supports_tools = MagicMock(return_value=True)
+        engine.generator.build_da_tool_schemas = MagicMock(
             return_value=[
                 {
                     "type": "function",
@@ -520,7 +525,7 @@ async def test_a_blank_schema_tool_answer_is_named_by_the_engine(site):
                 }
             ]
         )
-        engine._build_tool_context = AsyncMock(return_value=MagicMock())
+        engine.generator.build_tool_context = AsyncMock(return_value=MagicMock())
         route = patch.object(me, "_route_toolless_turn_single_shot", return_value=False)
 
     case = _case(absence=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE)
@@ -594,7 +599,9 @@ def _force_branch(site, case, md, engine):
         from faultmaven.modules.case.domain.models.lifecycle import CaseState
 
         md["status_transitioned"] = True
-        engine._auto_generate_report = AsyncMock(return_value=(GATE_NOTICE, False))
+        engine.terminal.auto_generate_report = AsyncMock(
+            return_value=(GATE_NOTICE, False)
+        )
         now = datetime.now(UTC)
         return type(case).model_validate(
             {
@@ -646,20 +653,18 @@ async def test_engine_prose_on_a_placeholder_turn_is_the_whole_reply(site):
         )
 
         blank = InvestigationResponse_Diagnosis(agent_response="", state_updates={})
-    response = MilestoneEngine.__new__(MilestoneEngine)._synthesize_agent_response(
-        blank, StopReason.CONTENT_FILTER
-    )
+    response = _synthesize_agent_response(blank, StopReason.CONTENT_FILTER)
     assert response.agent_response == RESPONSE_WITHHELD_TEXT
 
     engine = _turn_engine(response)
-    apply = engine._process_response_structured
+    apply = engine.responses.process_response_structured
 
     async def _apply_then_select(*args, **kwargs):
         case_updated, md = await apply(*args, **kwargs)
         replaced = _force_branch(site, case_updated, md, engine)
         return (replaced or case_updated), md
 
-    engine._process_response_structured = _apply_then_select
+    engine.responses.process_response_structured = _apply_then_select
     detector = (
         patch.object(me, "_narration_overclaim_notice", return_value=GATE_NOTICE)
         if site == "inv40_overclaim"

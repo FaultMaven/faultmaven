@@ -20,6 +20,7 @@ renderings agree — rather than one hand-picked outcome.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -78,7 +79,7 @@ class _Engine:
     writes it — the path the engine's terminal short-circuit takes."""
 
     def __init__(self, text: str, flagged: bool, records: bool) -> None:
-        self.llm_provider = MagicMock()
+        self.deps = SimpleNamespace(llm_provider=MagicMock())
         self._text, self._flagged, self._records = text, flagged, records
         self.process_turn = AsyncMock(side_effect=self._turn)
 

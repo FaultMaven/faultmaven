@@ -10,6 +10,9 @@ from uuid import uuid4
 
 import pytest
 
+from faultmaven.core.investigation.milestone_engine.chain_emission import (
+    _apply_chain_emission,
+)
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.prompts.templates.assembly import (
     _select_diagnosis_block,
@@ -129,7 +132,7 @@ def test_apply_chain_emission_links_hypothesis_to_root_and_path():
         ]
     )
 
-    eng._apply_chain_emission(case, updates, metadata)
+    _apply_chain_emission(case, updates, metadata)
 
     assert h.root_node_id is not None
     d_id = next(
@@ -151,7 +154,7 @@ def test_apply_chain_emission_leaves_hypothesis_flat_when_ref_unresolvable():
         "hyp_root_refs": {h.hypothesis_id: "new_index_9"},  # out of range
     }
 
-    eng._apply_chain_emission(case, _updates(), metadata)
+    _apply_chain_emission(case, _updates(), metadata)
 
     assert h.root_node_id is None
 
@@ -178,7 +181,7 @@ def test_apply_chain_emission_rejects_non_root_ref():
         ]
     )
 
-    eng._apply_chain_emission(case, updates, metadata)
+    _apply_chain_emission(case, updates, metadata)
 
     assert h.root_node_id is None  # intermediate ref rejected
 
@@ -191,7 +194,7 @@ def test_apply_chain_emission_noop_when_no_root_ref():
     case.hypotheses = {h.hypothesis_id: h}
     metadata = {"hypotheses_generated": [h.hypothesis_id]}  # no hyp_root_refs
 
-    eng._apply_chain_emission(case, _updates(), metadata)
+    _apply_chain_emission(case, _updates(), metadata)
 
     assert h.root_node_id is None
     assert h.path == []
@@ -247,7 +250,7 @@ def test_reroot_moves_hypothesis_to_chain_and_gcs_old_stub():
         "hypotheses_generated": [],
         "hyp_root_refs": {h.hypothesis_id: "new_index_0"},
     }
-    eng._apply_chain_emission(case, _two_rung_chain(), metadata)
+    _apply_chain_emission(case, _two_rung_chain(), metadata)
 
     d_id = _problem_id(case)
     new_root = h.root_node_id
@@ -287,7 +290,7 @@ def test_reroot_keeps_old_root_when_another_hypothesis_still_uses_it():
         "hypotheses_generated": [],
         "hyp_root_refs": {h1.hypothesis_id: "new_index_0"},
     }
-    eng._apply_chain_emission(case, _two_rung_chain(), metadata)
+    _apply_chain_emission(case, _two_rung_chain(), metadata)
 
     # h1 moved to the new chain; the shared stub stays because h2 still uses it.
     assert h1.root_node_id != shared_root
@@ -333,7 +336,7 @@ def test_reroot_with_incomplete_chain_keeps_existing_link():
         "hypotheses_generated": [],
         "hyp_root_refs": {h.hypothesis_id: "new_index_0"},
     }
-    eng._apply_chain_emission(case, incomplete, metadata)
+    _apply_chain_emission(case, incomplete, metadata)
 
     # Re-root deferred: the hypothesis keeps its working [stub, D] link.
     assert h.root_node_id == stub_id
@@ -351,7 +354,7 @@ def test_reroot_gcs_full_abandoned_multi_rung_chain():
     case.hypotheses = {h.hypothesis_id: h}
 
     # First: link the hypothesis onto a 2-rung chain (root -> intermediate -> D).
-    eng._apply_chain_emission(
+    _apply_chain_emission(
         case,
         _two_rung_chain(),
         {"hypotheses_generated": [], "hyp_root_refs": {h.hypothesis_id: "new_index_0"}},
@@ -361,7 +364,7 @@ def test_reroot_gcs_full_abandoned_multi_rung_chain():
     assert h.path == [old_root, old_mid, d_id]
 
     # Then: re-root onto a different fresh root that reaches D directly.
-    eng._apply_chain_emission(
+    _apply_chain_emission(
         case,
         _updates(
             nodes=[
@@ -412,7 +415,7 @@ def _second_hyp() -> Hypothesis:
 
 def _root_owned_by(eng, case, hyp) -> str:
     """Anchor ``hyp`` on a fresh root->D chain and return that root's id."""
-    eng._apply_chain_emission(
+    _apply_chain_emission(
         case,
         _updates(
             nodes=[
@@ -447,7 +450,7 @@ def test_hypothesis_cannot_adopt_another_hypothesis_root():
         "hypotheses_generated": [adopter.hypothesis_id],
         "hyp_root_refs": {adopter.hypothesis_id: owned_root},
     }
-    eng._apply_chain_emission(case, _updates(), metadata)
+    _apply_chain_emission(case, _updates(), metadata)
 
     # The adopter stays flat; the owner keeps its chain untouched.
     assert adopter.root_node_id is None
@@ -468,7 +471,7 @@ def test_reroot_onto_another_hypothesis_root_is_refused():
     owner, mover = _hyp(), _second_hyp()
     case.hypotheses = {owner.hypothesis_id: owner, mover.hypothesis_id: mover}
     owned_root = _root_owned_by(eng, case, owner)
-    eng._apply_chain_emission(
+    _apply_chain_emission(
         case,
         _two_rung_chain(),
         {
@@ -479,7 +482,7 @@ def test_reroot_onto_another_hypothesis_root_is_refused():
     mover_root = mover.root_node_id
     assert mover_root not in (None, owned_root)
 
-    eng._apply_chain_emission(
+    _apply_chain_emission(
         case,
         _updates(),
         {
@@ -509,7 +512,7 @@ def test_two_new_hypotheses_cannot_share_one_emitted_root():
             second.hypothesis_id: "new_index_0",
         },
     }
-    eng._apply_chain_emission(
+    _apply_chain_emission(
         case,
         _updates(
             nodes=[
@@ -539,7 +542,7 @@ def test_re_anchoring_a_hypothesis_to_its_own_root_is_not_refused():
     root_id = _root_owned_by(eng, case, h)
 
     metadata = {"hypotheses_generated": [], "hyp_root_refs": {h.hypothesis_id: root_id}}
-    eng._apply_chain_emission(case, _updates(), metadata)
+    _apply_chain_emission(case, _updates(), metadata)
 
     assert h.root_node_id == root_id
     assert h.path[0] == root_id
@@ -566,7 +569,7 @@ def test_handoff_is_honored_when_the_owner_re_roots_in_the_same_batch():
             owner.hypothesis_id: "new_index_0",
         },
     }
-    eng._apply_chain_emission(case, _two_rung_chain(), metadata)
+    _apply_chain_emission(case, _two_rung_chain(), metadata)
 
     # The hand-off stands: the adopter owns the old chain, the owner is on the new
     # one, and nothing was refused or collected.

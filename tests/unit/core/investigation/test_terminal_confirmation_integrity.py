@@ -21,6 +21,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from faultmaven.core.investigation.milestone_engine.transition_consent import (
+    _user_confirms_transition,
+)
 from faultmaven.core.investigation.terminal_transitions import (
     BARE_CONSENT_MAX_LENGTH,
     _execute_resolved_transition,
@@ -129,7 +132,7 @@ class TestIsSubstantiveReply:
         )
         msg = "yes but what about the replication lag?"
         assert is_substantive_reply(msg) is True
-        assert engine._user_confirms_transition(msg) is False
+        assert _user_confirms_transition(msg) is False
 
 
 # =============================================================================

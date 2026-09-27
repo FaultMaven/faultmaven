@@ -12,7 +12,7 @@ Design issue: [#1142](https://github.com/FaultMaven/faultmaven/issues/1142).
 ## Why it exists
 
 `turns_without_progress` cannot answer "did the ENGINE stall this case?".
-`MilestoneEngine._check_if_progress_made` is an OR over arms that straddle both
+`check_if_progress_made` is an OR over arms that straddle both
 parties — user data (`novel_files_uploaded`) beside engine output (hypotheses,
 solutions, milestones, evidence links) — so the counter is the NOR of all of
 them. One live arm on either side holds it at 0, and it therefore fires only on a
@@ -127,7 +127,7 @@ it; changing a field's meaning or removing one does.
 `gate_name`
 
 `arms` carries two groups. The **predicate arms** are every arm
-`_check_if_progress_made` actually scores, including `outcome_progress` — a
+`check_if_progress_made` actually scores, including `outcome_progress` — a
 derived 0/1 for the one arm with no metadata key of its own, which the predicate
 expresses as `outcome in (DATA_REQUESTED, HYPOTHESIS_TESTED)`. An arm missing
 from that set is not cosmetic: the turn it fires on emits `progress_made=true`

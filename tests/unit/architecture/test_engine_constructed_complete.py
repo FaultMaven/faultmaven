@@ -16,6 +16,13 @@ anything whose last dotted segment names an engine (``engine``,
 ``milestone_engine``, ``_milestone_engine``, ``self.engine``), which is how
 the composition root and the services refer to it. The engine's own module is
 exempt: ``__init__`` is where these are meant to be set.
+
+#1707 moved every dependency into the shared ``EngineDeps`` holder
+(``self.deps``), so the late-binding shape this guard must also catch is
+``receiver_engine.deps.dep_name = ...``, one more Attribute hop than the flat
+shape the rule was written against. The intent is unchanged — no production
+code sets an engine dependency after construction — only the AST shape the
+scan recognises widened to match where the dependency now lives.
 """
 
 from __future__ import annotations
@@ -50,7 +57,13 @@ def _late_assignments(tree: ast.AST, deps: set[str]) -> list[str]:
         for target in targets:
             if not (isinstance(target, ast.Attribute) and target.attr in deps):
                 continue
-            receiver = ast.unparse(target.value).split(".")[-1].lower()
+            base = target.value
+            # Holder shape (#1707): receiver_engine.deps.dep_name = ...
+            # One more Attribute hop than the flat shape below; unwrap it so
+            # the receiver check still reaches the engine-named root.
+            if isinstance(base, ast.Attribute) and base.attr == "deps":
+                base = base.value
+            receiver = ast.unparse(base).split(".")[-1].lower()
             if receiver.endswith("engine"):
                 hits.append(f"line {target.lineno}: {ast.unparse(target)} = ...")
     return hits
@@ -91,5 +104,18 @@ def test_the_scan_catches_the_shapes_it_replaced():
         "    milestone_engine.report_service = report_generation_service\n"
         "_milestone_engine = getattr(container, 'milestone_engine', None)\n"
         "_milestone_engine.conversion_service = _conversion_svc\n"
+    )
+    assert len(_late_assignments(ast.parse(source), deps)) == 2
+
+
+def test_the_scan_catches_the_holder_shape_too():
+    # #1707: the same late-binding hazard, one Attribute hop deeper now that
+    # every dependency lives on the shared EngineDeps holder.
+    deps = _dependency_names()
+    source = (
+        "if report_generation_service and milestone_engine:\n"
+        "    milestone_engine.deps.report_service = report_generation_service\n"
+        "_milestone_engine = getattr(container, 'milestone_engine', None)\n"
+        "_milestone_engine.deps.conversion_service = _conversion_svc\n"
     )
     assert len(_late_assignments(ast.parse(source), deps)) == 2

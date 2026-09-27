@@ -32,7 +32,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.progress import (
+    check_if_progress_made,
+)
+from faultmaven.core.investigation.milestone_engine.response_application import (
+    ResponseApplier,
+)
 from faultmaven.core.investigation.schemas import (
     Attachment,
     InquiryResponse,
@@ -388,6 +395,8 @@ class TestWhenDedupCouldNotRun:
         await _run(service, repo, case_already_holding_it, sample_user_id)
 
         engine = MilestoneEngine.__new__(MilestoneEngine)
+        engine.deps = EngineDeps()
+        engine.responses = ResponseApplier(deps=engine.deps, kb_prefetcher=None)
         case = Case(
             case_id="case_aabb11223344",
             enterprise_id="org_123",
@@ -395,7 +404,7 @@ class TestWhenDedupCouldNotRun:
             description="d",
             state=CaseState.INQUIRY,
         )
-        _, metadata = await engine._process_response_structured(
+        _, metadata = await engine.responses.process_response_structured(
             case,
             "same file again",
             InquiryResponse(
@@ -406,4 +415,4 @@ class TestWhenDedupCouldNotRun:
         )
 
         assert metadata.get("novel_files_uploaded") is None
-        assert engine._check_if_progress_made(metadata) is False
+        assert check_if_progress_made(metadata) is False

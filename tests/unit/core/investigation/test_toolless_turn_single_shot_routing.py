@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine.engine import (
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.generation import (
     TOOLLESS_INFERENCE_OUTPUT_FLOOR,
-    MilestoneEngine,
 )
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _route_toolless_turn_single_shot,
@@ -129,7 +129,7 @@ def _engine_with_recording_provider():
 @pytest.mark.asyncio
 async def test_single_shot_call_carries_intent_and_floor_when_declared():
     engine, provider = _engine_with_recording_provider()
-    await engine._generate_structured_output(
+    await engine.generator.generate_structured_output(
         "prompt",
         InvestigationResponse_Diagnosis,
         case=_case(),
@@ -147,7 +147,7 @@ async def test_single_shot_call_carries_intent_and_floor_when_declared():
 @pytest.mark.asyncio
 async def test_single_shot_call_sends_no_intent_when_not_declared():
     engine, provider = _engine_with_recording_provider()
-    await engine._generate_structured_output(
+    await engine.generator.generate_structured_output(
         "prompt", InvestigationResponse_Diagnosis, case=_case(), user_message="hi"
     )
     kwargs = provider.generate.call_args.kwargs
@@ -157,7 +157,7 @@ async def test_single_shot_call_sends_no_intent_when_not_declared():
 
 @pytest.mark.unit
 def test_floor_sits_under_the_structured_output_cap():
-    from faultmaven.core.investigation.milestone_engine.engine import (
+    from faultmaven.core.investigation.milestone_engine.generation import (
         STRUCTURED_OUTPUT_MAX_TOKENS,
     )
 
@@ -201,7 +201,7 @@ def _tool_engine() -> MilestoneEngine:
     tools = MagicMock()
     tools.get_all_tools.return_value = []
     engine = MilestoneEngine(MagicMock(), repo, investigation_tools=tools)
-    engine._generate_structured_output = AsyncMock(
+    engine.generator.generate_structured_output = AsyncMock(
         return_value=InvestigationResponse_Diagnosis(
             agent_response="Checking the mount.", state_updates={}
         )
@@ -216,7 +216,7 @@ async def test_turn_with_nothing_to_search_takes_the_single_shot_seam_with_inten
     await engine.process_turn(
         case=_investigating_case(), user_message="df -h shows /var/lib 100%"
     )
-    kwargs = engine._generate_structured_output.call_args.kwargs
+    kwargs = engine.generator.generate_structured_output.call_args.kwargs
     assert kwargs.get("investigation_tools") is None
     assert kwargs["reasoning_intent"] is ReasoningIntent.INFERENCE
     assert kwargs["min_output_tokens"] == TOOLLESS_INFERENCE_OUTPUT_FLOOR
@@ -229,7 +229,7 @@ async def test_turn_with_searchable_evidence_stays_on_the_tool_loop():
     case = _investigating_case()
     case.evidence.append(_evidence())
     await engine.process_turn(case=case, user_message="df -h shows /var/lib 100%")
-    kwargs = engine._generate_structured_output.call_args.kwargs
+    kwargs = engine.generator.generate_structured_output.call_args.kwargs
     assert kwargs.get("investigation_tools") is not None
     assert "reasoning_intent" not in kwargs
 
@@ -256,7 +256,7 @@ async def test_single_shot_path_prunes_an_invalid_list_entry_instead_of_failing_
             response_time_ms=0,
         )
     )
-    parsed = await engine._generate_structured_output(
+    parsed = await engine.generator.generate_structured_output(
         "prompt", InvestigationResponse_Diagnosis, case=_case(), user_message="hi"
     )
     assert parsed.agent_response == "Checking the mount."

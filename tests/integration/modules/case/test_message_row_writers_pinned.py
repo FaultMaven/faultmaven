@@ -164,8 +164,8 @@ def _turn_service(session, answer: str, extra_metadata: dict | None = None):
         return {"case_updated": case, "agent_response": answer, "metadata": metadata}
 
     engine.process_turn = AsyncMock(side_effect=_turn)
-    engine.llm_provider = MagicMock()
-    engine.llm_provider.route = AsyncMock(return_value=None)
+    engine.deps = SimpleNamespace(llm_provider=MagicMock())
+    engine.deps.llm_provider.route = AsyncMock(return_value=None)
 
     cap = TurnCapService(
         CapPolicyResolver(_Orgs(), default_limit=lambda: 30, multi_tenant=lambda: True),
@@ -432,7 +432,7 @@ class TestSystemNoticeRow:
             description=case.description,
             scope="global",
         )
-        await engine._run_runbook_conversion(
+        await engine.runbooks._run_runbook_conversion(
             conversion_service, request, USER_ID, ENTERPRISE
         )
         live = spy.saved[-1]
@@ -559,7 +559,7 @@ class TestNewRowsGoLast:
         llm = MagicMock()
         llm.generate = AsyncMock(return_value=MagicMock())
         engine = MilestoneEngine(llm, repository, investigation_tools=MagicMock())
-        await engine._run_runbook_conversion(
+        await engine.runbooks._run_runbook_conversion(
             conversion,
             CaseConversionRequest(
                 case_id=case.case_id,

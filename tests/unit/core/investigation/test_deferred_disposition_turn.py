@@ -46,7 +46,7 @@ LLM_ANALYSIS = (
 
 def _engine(response):
     engine = MilestoneEngine(MagicMock(), _make_repo(), investigation_tools=MagicMock())
-    engine._generate_structured_output = AsyncMock(return_value=response)
+    engine.generator.generate_structured_output = AsyncMock(return_value=response)
     return engine
 
 

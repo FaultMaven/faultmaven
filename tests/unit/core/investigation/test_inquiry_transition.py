@@ -24,6 +24,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.response_application import (
+    ResponseApplier,
+)
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
     StructuredOutputMode,
@@ -1335,7 +1338,7 @@ class TestProblemStatementSingleWriter:
         import inspect
         import textwrap
 
-        src = textwrap.dedent(inspect.getsource(MilestoneEngine._apply_inquiry_updates))
+        src = textwrap.dedent(inspect.getsource(ResponseApplier._apply_inquiry_updates))
         tree = ast.parse(src)
 
         writes = [
@@ -1449,7 +1452,7 @@ class TestGate1ConsentPredicate:
             )
 
         assert calls_predicate(
-            MilestoneEngine._apply_inquiry_updates
+            ResponseApplier._apply_inquiry_updates
         ), "the LLM consent path no longer routes through the shared predicate"
         assert calls_predicate(
             MilestoneEngine._process_turn_impl

@@ -175,7 +175,7 @@ class TestCreateMilestoneEngine:
         )
 
         assert result is not None
-        assert result.investigation_tools is mock_tools
+        assert result.deps.investigation_tools is mock_tools
 
     def test_returns_none_on_initialization_error(self):
         """Returns None when MilestoneEngine initialization raises."""
@@ -210,8 +210,8 @@ class TestCreateMilestoneEngine:
         )
 
         assert result is not None
-        assert result.da_provider is mock_tcp
-        assert result.da_model == "claude-sonnet-4-5-20250929"
+        assert result.deps.da_provider is mock_tcp
+        assert result.deps.da_model == "claude-sonnet-4-5-20250929"
 
     def test_da_provider_defaults_to_none(self):
         """da_provider is None when not provided."""
@@ -226,8 +226,8 @@ class TestCreateMilestoneEngine:
         )
 
         assert result is not None
-        assert result.da_provider is None
-        assert result.da_model is None
+        assert result.deps.da_provider is None
+        assert result.deps.da_model is None
 
 
 # =========================================================================

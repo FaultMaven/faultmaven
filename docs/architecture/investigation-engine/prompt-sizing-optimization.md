@@ -110,7 +110,7 @@ index).
 stranded with a stub pointing at an uncallable tool. So the condition is
 `processing_mode == "directed_analysis" AND tools_available`, where
 `tools_available` (investigation tools registered AND `supports_tool_calling`) is
-computed by `milestone_engine.engine._tools_effectively_available()` and threaded through
+computed by `milestone_engine.generation.StructuredOutputGenerator.tools_effectively_available()` and threaded through
 `get_prompt_for_case` → `build_investigation_context` → `_build_evidence_context`.
 
 **Measured effect (offline A/B, deterministic):** the historical evidence block

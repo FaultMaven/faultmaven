@@ -22,6 +22,9 @@ from pydantic import BaseModel, Field
 
 import faultmaven.core.investigation.schemas as schemas
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.tool_messages import (
+    _build_schema_tool,
+)
 from faultmaven.core.investigation.schemas import (
     InquiryResponse,
     InvestigationResponse_Diagnosis,
@@ -374,7 +377,7 @@ def test_a_model_with_no_fields_is_not_mistaken_for_a_free_form_object():
     ],
 )
 def test_enforcement_is_requested_only_where_it_exists(capability, expected):
-    tools = MilestoneEngine._build_schema_tool(InquiryResponse, _Provider(capability))
+    tools = _build_schema_tool(InquiryResponse, _Provider(capability))
     assert tools[0]["function"].get("strict", False) is expected
 
 
@@ -386,7 +389,7 @@ def test_an_unusable_provider_falls_back_to_the_unenforced_tool():
         def get_structured_output_capability(self, model=None):
             raise RuntimeError("registry unavailable")
 
-    tools = MilestoneEngine._build_schema_tool(InquiryResponse, Broken())
+    tools = _build_schema_tool(InquiryResponse, Broken())
     assert tools[0]["function"].get("strict", False) is False
 
 

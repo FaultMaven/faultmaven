@@ -23,7 +23,17 @@ from faultmaven.core.investigation.milestone_engine.affordances import (
     _treatment_blocked_pending,
     engine_owned_affordances,
 )
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.hypothesis_updates import (
+    _apply_hypothesis_evidence_links,
+)
+from faultmaven.core.investigation.milestone_engine.progress import (
+    check_if_progress_made,
+)
+from faultmaven.core.investigation.milestone_engine.response_application import (
+    ResponseApplier,
+)
 from faultmaven.core.investigation.schemas import EvidenceToAdd, SolutionToAdd
 from faultmaven.core.investigation.turn_outcome import determine_turn_outcome
 from faultmaven.core.investigation.verification_status import (
@@ -51,11 +61,13 @@ pytestmark = pytest.mark.unit
 @pytest.fixture
 def engine():
     eng = MilestoneEngine.__new__(MilestoneEngine)
+    eng.deps = EngineDeps()
     # Attributes __init__ always sets and the engine reads directly (#1722).
-    eng.llm_provider = None
-    eng.team_service = None
-    eng.share_repository = None
-    eng.conversion_service = None
+    eng.deps.llm_provider = None
+    eng.deps.team_service = None
+    eng.deps.share_repository = None
+    eng.deps.conversion_service = None
+    eng.responses = ResponseApplier(deps=eng.deps, kb_prefetcher=None)
     return eng
 
 
@@ -279,7 +291,7 @@ def test_a_turn_of_pure_restatement_is_not_progress(engine):
     reference runs. Every id is still minted and recorded; only the progress
     reading narrows."""
     assert (
-        engine._check_if_progress_made(
+        check_if_progress_made(
             {
                 "evidence_added": ["ev_000000000001"],
                 "solutions_proposed": ["sol_000000000001"],
@@ -298,7 +310,7 @@ def test_any_genuinely_new_artifact_is_still_progress(engine):
         "novel_files_uploaded",
     ):
         assert (
-            engine._check_if_progress_made(
+            check_if_progress_made(
                 {novel_key: ["x"], "outcome": TurnOutcome.CONVERSATION}
             )
             is True
@@ -321,7 +333,7 @@ def test_barren_turns_now_reach_the_stall_threshold(engine):
     }
     for _ in range(EXHAUSTION_STALL_THRESHOLD):
         case.current_turn += 1
-        if engine._check_if_progress_made(restatement):
+        if check_if_progress_made(restatement):
             case.turns_without_progress = 0
         else:
             case.turns_without_progress += 1
@@ -412,7 +424,7 @@ def test_novel_keys_reach_the_progress_predicate_through_the_real_apply_path(eng
 
     The narrowing only works if ``novel_evidence_added`` survives from the mint
     loop, through the dict ``_process_response_structured`` returns, to
-    ``_check_if_progress_made``. If that plumbing ever breaks the key is simply
+    ``check_if_progress_made``. If that plumbing ever breaks the key is simply
     absent — and absent reads as "no progress" on EVERY turn, which would declare
     every case stalled. That fails silently and in the dangerous direction, so it
     is pinned against the real call rather than a fixture.
@@ -454,7 +466,7 @@ def test_novel_keys_reach_the_progress_predicate_through_the_real_apply_path(eng
             "status_transitioned": False,
         }
         asyncio.run(
-            engine._apply_investigation_updates(
+            engine.responses._apply_investigation_updates(
                 case,
                 updates,
                 metadata,
@@ -470,14 +482,14 @@ def test_novel_keys_reach_the_progress_predicate_through_the_real_apply_path(eng
     first = _drive(case, _emit("OOMKilled exit 137"))
     assert first["evidence_added"], "the row must still be minted"
     assert first["novel_evidence_added"] == first["evidence_added"]
-    assert engine._check_if_progress_made(first) is True
+    assert check_if_progress_made(first) is True
 
     # The SAME observation again, differing only in whitespace and case.
     case.current_turn = 6
     again = _drive(case, _emit("oomkilled   Exit 137"))
     assert again["evidence_added"], "the duplicate row is still minted and recorded"
     assert not again.get("novel_evidence_added")
-    assert engine._check_if_progress_made(again) is False
+    assert check_if_progress_made(again) is False
 
 
 # --- Arm 4: the same evidence link, re-emitted every turn --------------------
@@ -529,7 +541,7 @@ def test_the_caller_counts_only_material_links(engine):
     case = _case(current_turn=1)
     case.evidence = [_standing_evidence("OOMKilled exit 137", source="file_a")]
     hyp = next(iter(case.hypotheses.values()))
-    engine.hypothesis_manager = HypothesisManager.__new__(HypothesisManager)
+    engine.deps.hypothesis_manager = HypothesisManager.__new__(HypothesisManager)
 
     def emit(stance):
         return SimpleNamespace(
@@ -541,34 +553,33 @@ def test_the_caller_counts_only_material_links(engine):
         )
 
     first = {}
-    engine._apply_hypothesis_evidence_links(
-        case, [emit(EvidenceStance.SUPPORTS)], first
+    _apply_hypothesis_evidence_links(
+        engine.deps.hypothesis_manager, case, [emit(EvidenceStance.SUPPORTS)], first
     )
     assert first.get("hypothesis_evidence_links_applied") == 1
-    assert engine._check_if_progress_made(
-        {**first, "outcome": TurnOutcome.CONVERSATION}
-    )
+    assert check_if_progress_made({**first, "outcome": TurnOutcome.CONVERSATION})
 
     # Four more turns re-emitting the SAME link: none of them count.
     for turn in range(2, 6):
         case.current_turn = turn
         repeat = {}
-        engine._apply_hypothesis_evidence_links(
-            case, [emit(EvidenceStance.SUPPORTS)], repeat
+        _apply_hypothesis_evidence_links(
+            engine.deps.hypothesis_manager,
+            case,
+            [emit(EvidenceStance.SUPPORTS)],
+            repeat,
         )
         assert not repeat.get("hypothesis_evidence_links_applied"), turn
         assert (
-            engine._check_if_progress_made(
-                {**repeat, "outcome": TurnOutcome.CONVERSATION}
-            )
+            check_if_progress_made({**repeat, "outcome": TurnOutcome.CONVERSATION})
             is False
         ), turn
 
     # A revised stance counts again.
     case.current_turn = 6
     revised = {}
-    engine._apply_hypothesis_evidence_links(
-        case, [emit(EvidenceStance.REFUTES)], revised
+    _apply_hypothesis_evidence_links(
+        engine.deps.hypothesis_manager, case, [emit(EvidenceStance.REFUTES)], revised
     )
     assert revised.get("hypothesis_evidence_links_applied") == 1
 

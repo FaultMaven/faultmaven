@@ -36,6 +36,10 @@ from faultmaven.core.investigation.causal_graph.ingestion import (
     seed_problem_node,
 )
 from faultmaven.core.investigation.cause_assurance import ENGINE_EVIDENCE_AUTHOR
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
+from faultmaven.core.investigation.milestone_engine.hypothesis_updates import (
+    _apply_hypothesis_evidence_links,
+)
 from faultmaven.modules.case.contracts import (
     CONFIRMED_ESTABLISHED_BY,
     Case,
@@ -200,13 +204,14 @@ def test_hypothesis_axis_refuses_any_llm_stance_on_an_absence_row(stance):
     case.hypotheses[hyp.hypothesis_id] = hyp
 
     engine = MilestoneEngine.__new__(MilestoneEngine)
+    engine.deps = EngineDeps()
     # A REAL manager, so removing the gate makes this test fail by the link
     # LANDING — not by an AttributeError on the way there. A mutation that
     # trips over missing wiring proves the call site is reached; it does not
     # prove the gate is what refuses the link.
-    engine.hypothesis_manager = create_hypothesis_manager()
-    MilestoneEngine._apply_hypothesis_evidence_links(
-        engine,
+    engine.deps.hypothesis_manager = create_hypothesis_manager()
+    _apply_hypothesis_evidence_links(
+        engine.deps.hypothesis_manager,
         case,
         [
             SimpleNamespace(
@@ -251,13 +256,14 @@ def test_both_axes_still_accept_ordinary_causal_evidence():
     hyp = _hypothesis("hyp_1b14ba619dd5", HypothesisState.ACTIVE)
     case.hypotheses[hyp.hypothesis_id] = hyp
     engine = MilestoneEngine.__new__(MilestoneEngine)
+    engine.deps = EngineDeps()
     from faultmaven.core.investigation.hypothesis_manager import (
         create_hypothesis_manager,
     )
 
-    engine.hypothesis_manager = create_hypothesis_manager()
-    MilestoneEngine._apply_hypothesis_evidence_links(
-        engine,
+    engine.deps.hypothesis_manager = create_hypothesis_manager()
+    _apply_hypothesis_evidence_links(
+        engine.deps.hypothesis_manager,
         case,
         [
             SimpleNamespace(
@@ -1031,7 +1037,7 @@ def _engine_for_incident(emission: dict):
     repo.save = AsyncMock(side_effect=lambda c: c)
     repo.get = AsyncMock(side_effect=lambda cid: None)
     engine = MilestoneEngine(llm, repo, investigation_tools=MagicMock())
-    engine._generate_structured_output = AsyncMock(
+    engine.generator.generate_structured_output = AsyncMock(
         return_value=InvestigationResponse_Diagnosis.model_validate(emission)
     )
     return engine

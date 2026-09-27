@@ -44,7 +44,11 @@ from faultmaven.core.investigation.causal_graph.projection import (
     project_hypothesis_states_from_roots,
 )
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.turn_records import (
+    _perform_hypothesis_housekeeping,
+)
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
@@ -81,7 +85,8 @@ SUPPORTS, REFUTES = EvidenceStance.SUPPORTS, EvidenceStance.REFUTES
 
 def _engine() -> MilestoneEngine:
     eng = MilestoneEngine.__new__(MilestoneEngine)
-    eng.hypothesis_manager = HypothesisManager()
+    eng.deps = EngineDeps()
+    eng.deps.hypothesis_manager = HypothesisManager()
     return eng
 
 
@@ -181,7 +186,9 @@ def _housekeep(
     as Step 5.8 moves it, so a run of turns that did not advance stalls the
     case here exactly as it would on the turn path."""
     case.current_turn = turn
-    eng._perform_hypothesis_housekeeping(case, {}, investigation_advanced=advanced)
+    _perform_hypothesis_housekeeping(
+        eng.deps.hypothesis_manager, case, {}, investigation_advanced=advanced
+    )
     case.turns_without_progress = 0 if advanced else case.turns_without_progress + 1
 
 
@@ -328,7 +335,7 @@ def test_one_stagnant_turn_costs_one_decay_step():
     case = _case([h], [a, b, finding])
 
     case.current_turn = 8
-    eng.hypothesis_manager.link_evidence(
+    eng.deps.hypothesis_manager.link_evidence(
         h, finding.evidence_id, EvidenceStance.NEUTRAL, turn=8
     )
     assert h.iterations_without_progress == 1
@@ -602,7 +609,7 @@ def test_a_supported_leader_restated_every_turn_keeps_its_belief():
 
     for turn in range(6, 16):
         case.current_turn = turn
-        eng.hypothesis_manager.update_hypothesis_likelihood(
+        eng.deps.hypothesis_manager.update_hypothesis_likelihood(
             leader, leader.likelihood, turn, "restated", case
         )
         _housekeep(eng, case, turn)
@@ -619,7 +626,7 @@ def test_restating_an_ignored_prior_does_not_shield_it_from_aging():
     observed = []
     for turn in range(1, 5):
         case.current_turn = turn
-        eng.hypothesis_manager.update_hypothesis_likelihood(
+        eng.deps.hypothesis_manager.update_hypothesis_likelihood(
             prior, prior.likelihood, turn, "restated", case
         )
         _housekeep(eng, case, turn)

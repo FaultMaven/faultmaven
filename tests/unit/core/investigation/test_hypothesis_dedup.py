@@ -30,8 +30,14 @@ from faultmaven.core.investigation.causal_graph.similarity import (
     hypothesis_statements_duplicate,
 )
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
-from faultmaven.core.investigation.milestone_engine import engine as milestone_engine
+from faultmaven.core.investigation.milestone_engine import (
+    response_application as milestone_engine,
+)
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.response_application import (
+    ResponseApplier,
+)
 from faultmaven.core.investigation.schemas import (
     HypothesisToAdd,
     HypothesisUpdate,
@@ -226,12 +232,14 @@ def test_find_duplicate_returns_none_for_distinct():
 
 def _engine() -> MilestoneEngine:
     eng = MilestoneEngine.__new__(MilestoneEngine)
+    eng.deps = EngineDeps()
     # Attributes __init__ always sets and the engine reads directly (#1722).
-    eng.llm_provider = None
-    eng.team_service = None
-    eng.share_repository = None
-    eng.conversion_service = None
-    eng.hypothesis_manager = HypothesisManager()
+    eng.deps.llm_provider = None
+    eng.deps.team_service = None
+    eng.deps.share_repository = None
+    eng.deps.conversion_service = None
+    eng.deps.hypothesis_manager = HypothesisManager()
+    eng.responses = ResponseApplier(deps=eng.deps, kb_prefetcher=None)
     return eng
 
 
@@ -261,7 +269,7 @@ async def test_duplicate_of_standing_hypothesis_not_minted():
     meta = _meta()
     # The counter is a no-op unless ENABLE_METRICS — assert the fire via a mock.
     with patch.object(milestone_engine, "hypothesis_dedup_skipped_total") as counter:
-        await eng._apply_investigation_updates(
+        await eng.responses._apply_investigation_updates(
             case,
             _DSU(hypotheses_to_add=[_h2a("under load the connection pool exhausted")]),
             meta,
@@ -279,7 +287,7 @@ async def test_duplicate_of_standing_hypothesis_not_minted():
 async def test_intra_batch_duplicate_minted_once():
     eng, case = _engine(), _case()
     meta = _meta()
-    await eng._apply_investigation_updates(
+    await eng.responses._apply_investigation_updates(
         case,
         _DSU(
             hypotheses_to_add=[
@@ -298,7 +306,7 @@ async def test_elaboration_in_same_batch_survives_as_distinct():
     elaboration) both mint — the dedup must not collapse a real refinement."""
     eng, case = _engine(), _case()
     meta = _meta()
-    await eng._apply_investigation_updates(
+    await eng.responses._apply_investigation_updates(
         case,
         _DSU(
             hypotheses_to_add=[
@@ -321,7 +329,7 @@ async def test_duplicate_across_categories_does_not_inflate_work_gate():
     corruption vector. Dedup ignores category, so the gate stays honest."""
     eng, case = _engine(), _case()
     meta = _meta()
-    await eng._apply_investigation_updates(
+    await eng.responses._apply_investigation_updates(
         case,
         _DSU(
             hypotheses_to_add=[
@@ -351,7 +359,7 @@ async def test_positional_integrity_new_index_resolves_past_skipped_dup():
         case, "connection pool exhausted under load", HypothesisCategory.DATABASE
     )
     meta = _meta()
-    await eng._apply_investigation_updates(
+    await eng.responses._apply_investigation_updates(
         case,
         _DSU(
             hypotheses_to_add=[
@@ -401,7 +409,7 @@ async def test_revival_of_refuted_cause_is_minted():
     case.hypotheses[refuted.hypothesis_id] = refuted
 
     meta = _meta()
-    await eng._apply_investigation_updates(
+    await eng.responses._apply_investigation_updates(
         case,
         _DSU(hypotheses_to_add=[_h2a("under load the connection pool exhausted")]),
         meta,
@@ -422,7 +430,7 @@ async def test_dedup_does_not_reroot_canonical():
         case, "connection pool exhausted under load", HypothesisCategory.DATABASE
     )
     meta = _meta()
-    await eng._apply_investigation_updates(
+    await eng.responses._apply_investigation_updates(
         case,
         _DSU(
             hypotheses_to_add=[

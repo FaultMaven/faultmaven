@@ -4,9 +4,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine.engine import (
-    MilestoneEngine,
-    MilestoneEngineError,
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.errors import MilestoneEngineError
+from faultmaven.core.investigation.milestone_engine.turn_records import (
+    _create_turn_record,
 )
 from faultmaven.core.investigation.schemas import MilestoneUpdates
 from faultmaven.infrastructure.llm.structured_output_capability import (
@@ -2322,7 +2323,9 @@ class TestNeedsInfoFollowupProposesClose:
         # No root_cause, no solutions, no evidence → SUGGEST_CLOSE on
         # re-eval (critical_missing >= 2 AND not has_evidence).
         metadata = {}
-        await engine._check_automatic_transitions(case, metadata, user_message="ok")
+        await engine.transitions.check_automatic_transitions(
+            case, metadata, user_message="ok"
+        )
 
         assert case.pending_transition is not None
         assert case.pending_transition["to_state"] == "closed"
@@ -2369,7 +2372,9 @@ class TestNeedsInfoFollowupProposesClose:
         # case.solutions stays empty → readiness verdict is NEEDS_INFO
         # (one critical missing — "solution")
         metadata = {}
-        await engine._check_automatic_transitions(case, metadata, user_message="ok")
+        await engine.transitions.check_automatic_transitions(
+            case, metadata, user_message="ok"
+        )
 
         assert case.pending_transition is not None
         assert case.pending_transition["to_state"] == "closed"
@@ -2415,7 +2420,9 @@ class TestNeedsInfoFollowupProposesClose:
             )
         )
         metadata = {}
-        await engine._check_automatic_transitions(case, metadata, user_message="ok")
+        await engine.transitions.check_automatic_transitions(
+            case, metadata, user_message="ok"
+        )
 
         # Pending transition stays as RESOLVED, needs_info cleared
         assert case.pending_transition is not None
@@ -2454,7 +2461,7 @@ class TestCreateTurnRecordSystemFeedbackTruncation:
         short_feedback = (
             "MILESTONE ORDER ERROR: mitigation_verified without acceptance."
         )
-        record = engine._create_turn_record(
+        record = _create_turn_record(
             turn_number=1,
             milestones_completed=[],
             evidence_added=[],
@@ -2502,7 +2509,7 @@ class TestCreateTurnRecordSystemFeedbackTruncation:
         )
         assert len(oversized_feedback) > 1000  # sanity: the test setup is real
 
-        record = engine._create_turn_record(
+        record = _create_turn_record(
             turn_number=6,
             milestones_completed=[],
             evidence_added=[],
@@ -2526,7 +2533,7 @@ class TestCreateTurnRecordSystemFeedbackTruncation:
         from faultmaven.modules.case.contracts import TurnOutcome
 
         engine = self._make_engine()
-        record = engine._create_turn_record(
+        record = _create_turn_record(
             turn_number=1,
             milestones_completed=[],
             evidence_added=[],

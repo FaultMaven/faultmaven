@@ -123,13 +123,18 @@ Both values are read from `ProtectionSettings` in the constructor. The construct
 
 ### MilestoneEngine Integration
 
-**File:** `core/investigation/milestone_engine/engine.py`
+**Files:** `core/investigation/milestone_engine/engine.py` (the main turn path) and
+`core/investigation/milestone_engine/terminal_turns.py` (`TerminalTurnHandler`,
+the terminal Q&A path) — both build a `CaseRedactionContext` the same way,
+reading `_should_redact()` from `core/investigation/milestone_engine/redaction.py`.
+The `StructuredOutputGenerator` collaborator (`generation.py`) redacts the
+prompt and tool results within the shape it owns.
 
 The engine manages the redaction lifecycle within `_process_turn_impl()`:
 
 1. **Create context** — after case loading, before prompt generation
-2. **Redact prompt** — at the entry to `_generate_structured_output()`, covering both DA (tool-augmented) and single-shot paths
-3. **Redact tool results** — in `_tool_augmented_generate()` after `_format_tool_result()` and before truncation/append
+2. **Redact prompt** — at the entry to `StructuredOutputGenerator.generate_structured_output()`, covering both DA (tool-augmented) and single-shot paths
+3. **Redact tool results** — in `StructuredOutputGenerator._tool_augmented_generate()` after `_format_tool_result()` and before truncation/append
 4. **Save registry** — after LLM call completes, before returning result
 5. **Return context** — included in the result dict so `InvestigationService` can reverse-substitute
 

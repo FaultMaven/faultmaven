@@ -16,6 +16,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 import test_context_sliding_window as t  # noqa: E402
 
+from faultmaven.core.investigation.milestone_engine.generation import (
+    StructuredOutputGenerator,
+)
 from faultmaven.core.investigation.milestone_engine.text_budget import (
     _is_context_length_error,
 )
@@ -702,7 +705,7 @@ def test_tool_loop_messages_bounded_elides_oldest_keeps_recent():
 
     from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 
-    fake = SimpleNamespace(da_model=None)
+    fake = SimpleNamespace(deps=SimpleNamespace(da_model=None))
     msgs = [
         {"role": "system", "content": "SYS " + "s" * 200},
         {"role": "user", "content": "BASE " + "x" * 400},
@@ -729,7 +732,7 @@ def test_tool_loop_messages_bounded_elides_oldest_keeps_recent():
             }
         )
     budget = 400
-    out = MilestoneEngine._bound_tool_loop_messages(
+    out = StructuredOutputGenerator._bound_tool_loop_messages(
         fake, msgs, budget, "openai", tools=None, window_tokens=None
     )
 
@@ -753,7 +756,7 @@ def test_tool_loop_messages_bounded_elides_oldest_keeps_recent():
     # No-op (returns the SAME list object) when already under budget.
     under = msgs[:4]
     assert (
-        MilestoneEngine._bound_tool_loop_messages(
+        StructuredOutputGenerator._bound_tool_loop_messages(
             fake, under, 10**6, "openai", tools=None, window_tokens=None
         )
         is under
@@ -786,14 +789,16 @@ def test_tools_effectively_available_gates_on_capability():
 
     def eng(tools, provider):
         ns = SimpleNamespace(
-            investigation_tools=tools,
-            da_provider=None,
-            llm_provider=provider,
-            da_model=None,
+            deps=SimpleNamespace(
+                investigation_tools=tools,
+                da_provider=None,
+                llm_provider=provider,
+                da_model=None,
+            )
         )
         # _tools_effectively_available delegates to this method on self.
         ns._da_provider_supports_tools = (
-            lambda: MilestoneEngine._da_provider_supports_tools(ns)
+            lambda: StructuredOutputGenerator._da_provider_supports_tools(ns)
         )
         return ns
 
@@ -801,13 +806,13 @@ def test_tools_effectively_available_gates_on_capability():
     incapable = SimpleNamespace(supports_tool_calling=lambda m: False)
     no_attr = SimpleNamespace()  # missing capability info → assume capable
 
-    f = MilestoneEngine._tools_effectively_available
+    f = StructuredOutputGenerator.tools_effectively_available
     assert f(eng(object(), capable)) is True
     assert f(eng(None, capable)) is False  # no tools registered
     assert f(eng(object(), incapable)) is False  # tools present but incapable
     assert f(eng(object(), no_attr)) is True  # unknown capability → capable
     # The shared helper agrees with the gate's capability half.
-    g = MilestoneEngine._da_provider_supports_tools
+    g = StructuredOutputGenerator._da_provider_supports_tools
     assert g(eng(object(), incapable)) is False
     assert g(eng(object(), capable)) is True
 
@@ -912,8 +917,8 @@ def test_resolve_tool_loop_budget_is_bounded():
 
     from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 
-    b = MilestoneEngine._resolve_tool_loop_budget(
-        SimpleNamespace(da_model=MODEL), PROVIDER
+    b = StructuredOutputGenerator._resolve_tool_loop_budget(
+        SimpleNamespace(deps=SimpleNamespace(da_model=MODEL)), PROVIDER
     )
     # Soft cap: prompt_target (32K default, clamped to the window) + observation
     # allowance (16K default), on messages alone. Hard cap: the window, known
@@ -942,7 +947,7 @@ def test_tool_loop_bound_counts_reasoning_artifacts(monkeypatch):
 
     from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 
-    fake = SimpleNamespace(da_model=None)
+    fake = SimpleNamespace(deps=SimpleNamespace(da_model=None))
     reasoning = "step " * 2000  # thousands of tokens of hidden reasoning
 
     msgs = [
@@ -990,7 +995,7 @@ def test_tool_loop_bound_counts_reasoning_artifacts(monkeypatch):
     # Sized so ONE reasoning-carrying group fits and four do not: the elision
     # policy is unchanged, only the estimate that drives it.
     budget = 4000
-    out = MilestoneEngine._bound_tool_loop_messages(
+    out = StructuredOutputGenerator._bound_tool_loop_messages(
         fake, msgs, budget, "openai", tools=None, window_tokens=None
     )
 
@@ -1018,7 +1023,7 @@ def test_tool_loop_bound_counts_reasoning_artifacts(monkeypatch):
         },
     ]
     assert (
-        MilestoneEngine._bound_tool_loop_messages(
+        StructuredOutputGenerator._bound_tool_loop_messages(
             fake, gemini_msgs, 1000, "openai", tools=None, window_tokens=None
         )
         is not gemini_msgs

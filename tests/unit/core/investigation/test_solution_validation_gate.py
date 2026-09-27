@@ -22,10 +22,16 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
+from faultmaven.core.investigation.milestone_engine import response_application
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.response_application import (
+    ResponseApplier,
+)
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _coerce_intervention_quadrant,
     _solution_cause_validated,
@@ -116,17 +122,34 @@ def _make_case(cause_state: CauseState, *, with_symptom: bool = False) -> Case:
     return case
 
 
+@pytest.fixture(autouse=True)
+def _stub_chain_emission(monkeypatch):
+    """The chain-emission tail (runs after the gate) is stubbed so the test
+    isolates the gate decision and needs no DI wiring. #1707 moved both
+    functions out of the engine into module scope; the caller
+    (``ResponseApplier._apply_investigation_updates``) reads them from its OWN
+    module namespace, which is therefore the one binding a stub must patch."""
+    monkeypatch.setattr(
+        response_application, "_apply_chain_emission", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        response_application, "_nudge_ambiguous_orphan_chains", lambda *a, **k: None
+    )
+
+
 def _make_engine() -> MilestoneEngine:
-    """Bare engine; stub the chain-emission tail (runs after the gate) so the
-    test isolates the gate decision and needs no DI wiring."""
+    """Bare engine, wired only enough for ``responses._apply_investigation_updates``."""
     eng = MilestoneEngine.__new__(MilestoneEngine)
+    eng.deps = EngineDeps()
     # Attributes __init__ always sets and the engine reads directly (#1722).
-    eng.llm_provider = None
-    eng.team_service = None
-    eng.share_repository = None
-    eng.conversion_service = None
-    eng._apply_chain_emission = lambda *a, **k: None
-    eng._nudge_ambiguous_orphan_chains = lambda *a, **k: None
+    eng.deps.llm_provider = None
+    eng.deps.team_service = None
+    eng.deps.share_repository = None
+    eng.deps.conversion_service = None
+    eng.responses = ResponseApplier(
+        deps=eng.deps,
+        kb_prefetcher=SimpleNamespace(prefetch_kb_context=AsyncMock()),
+    )
     return eng
 
 
@@ -244,7 +267,7 @@ class TestM5SolutionGate:
         case = _make_case(CauseState.CANDIDATES)
         eng = _make_engine()
 
-        await eng._apply_investigation_updates(
+        await eng.responses._apply_investigation_updates(
             case, _updates(SolutionType.CODE_FIX), _meta()
         )
 
@@ -267,7 +290,7 @@ class TestM5SolutionGate:
         case.root_cause_conclusion = _rcc()
         eng = _make_engine()
 
-        await eng._apply_investigation_updates(
+        await eng.responses._apply_investigation_updates(
             case, _updates(SolutionType.CODE_FIX), _meta()
         )
 
@@ -287,7 +310,7 @@ class TestM5SolutionGate:
         case = _make_case(CauseState.UNKNOWN, with_symptom=True)
         eng = _make_engine()
 
-        await eng._apply_investigation_updates(
+        await eng.responses._apply_investigation_updates(
             case, _updates(SolutionType.CODE_FIX, with_rcc=True), _meta()
         )
 
@@ -305,7 +328,7 @@ class TestM5SolutionGate:
         case = _make_case(CauseState.UNKNOWN, with_symptom=True)
         eng = _make_engine()
 
-        await eng._apply_investigation_updates(
+        await eng.responses._apply_investigation_updates(
             case, _updates(SolutionType.WORKAROUND), _meta()
         )
 
@@ -379,7 +402,7 @@ class TestR9SolutionLinkageMapping:
         case.causal_nodes[node.node_id] = node
         eng = _make_engine()
 
-        await eng._apply_investigation_updates(
+        await eng.responses._apply_investigation_updates(
             case,
             _solution_update(quadrant="remediation", node_ref=node.node_id),
             _meta(),
@@ -399,7 +422,7 @@ class TestR9SolutionLinkageMapping:
         case.root_cause_conclusion = _rcc()
         eng = _make_engine()
 
-        await eng._apply_investigation_updates(
+        await eng.responses._apply_investigation_updates(
             case, _solution_update(quadrant="remediation"), _meta()
         )
 
@@ -412,7 +435,7 @@ class TestR9SolutionLinkageMapping:
         case.root_cause_conclusion = _rcc()
         eng = _make_engine()
 
-        await eng._apply_investigation_updates(
+        await eng.responses._apply_investigation_updates(
             case,
             _solution_update(quadrant="not-a-quadrant", node_ref="cn_deadbeef0000"),
             _meta(),
@@ -429,7 +452,9 @@ class TestR9SolutionLinkageMapping:
         case.root_cause_conclusion = _rcc()
         eng = _make_engine()
 
-        await eng._apply_investigation_updates(case, _solution_update(), _meta())
+        await eng.responses._apply_investigation_updates(
+            case, _solution_update(), _meta()
+        )
 
         sol = case.solutions[-1]
         assert sol.quadrant is None

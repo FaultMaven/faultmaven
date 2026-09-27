@@ -25,7 +25,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.core.investigation import terminal_transitions as tt
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.runbook_creation import (
+    RunbookCreator,
+)
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.models.report import RunbookMatch
 from faultmaven.modules.case.contracts import (
@@ -213,8 +217,10 @@ async def test_a_kb_without_a_scope_resolver_skips_dedup_with_the_did_not_run_ca
 
 def _engine(**attrs) -> MilestoneEngine:
     engine = MilestoneEngine.__new__(MilestoneEngine)
-    engine.team_service = attrs.get("team_service")
-    engine.share_repository = attrs.get("share_repository")
+    engine.deps = EngineDeps()
+    engine.deps.team_service = attrs.get("team_service")
+    engine.deps.share_repository = attrs.get("share_repository")
+    engine.runbooks = RunbookCreator(case_locks={}, deps=engine.deps)
     return engine
 
 
@@ -223,7 +229,7 @@ async def test_the_engine_resolver_builds_the_owner_scope_in_standalone():
     """No team service (standalone): global ∪ the OWNER's personal items —
     keyed on ``case.user_id``, so user B's case can never widen into user A's
     personal runbooks."""
-    resolver = _engine()._runbook_dedup_scope_resolver(_case())
+    resolver = _engine().runbooks._runbook_dedup_scope_resolver(_case())
 
     scope = await resolver()
 
@@ -239,7 +245,7 @@ async def test_the_engine_resolver_includes_the_owners_team_shared_items():
 
     resolver = _engine(
         team_service=team_service, share_repository=share_repository
-    )._runbook_dedup_scope_resolver(_case())
+    ).runbooks._runbook_dedup_scope_resolver(_case())
 
     scope = await resolver()
 
@@ -262,7 +268,7 @@ async def test_the_engine_resolver_does_not_swallow_a_team_arm_failure():
 
     resolver = _engine(
         team_service=team_service, share_repository=share_repository
-    )._runbook_dedup_scope_resolver(_case())
+    ).runbooks._runbook_dedup_scope_resolver(_case())
 
     with pytest.raises(RuntimeError, match="team lookup failed"):
         await resolver()
@@ -277,8 +283,8 @@ async def test_the_engine_passes_its_injected_kb_and_owner_resolver_to_dedup(
     ``hasattr(knowledge_service, "runbook_kb")`` probe) and the case-owner
     resolver into ``evaluate_runbook_suggestion``."""
     engine = _engine()
-    engine.knowledge_service = MagicMock()
-    engine.runbook_kb = _RecordingKB()
+    engine.deps.knowledge_service = MagicMock()
+    engine.deps.runbook_kb = _RecordingKB()
 
     captured = {}
 
@@ -295,8 +301,8 @@ async def test_the_engine_passes_its_injected_kb_and_owner_resolver_to_dedup(
         fake_evaluate,
     )
 
-    await engine._handle_runbook_creation(_case(), metadata={})
+    await engine.runbooks.handle_runbook_creation(_case(), metadata={})
 
-    assert captured["runbook_kb"] is engine.runbook_kb
+    assert captured["runbook_kb"] is engine.deps.runbook_kb
     assert captured["scope_resolver"] is not None
     assert (await captured["scope_resolver"]())["$or"][1] == {"owner_id": OWNER}

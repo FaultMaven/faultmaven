@@ -185,7 +185,7 @@ def case(sample_case, sample_user_id):
 
 
 def _service(engine, repo, ledger, verdict="2"):
-    engine.llm_provider = _router(verdict)
+    engine.deps = SimpleNamespace(llm_provider=_router(verdict))
     return InvestigationService(
         milestone_engine=engine, case_repository=repo, turn_cap=_cap(ledger)
     )
@@ -308,7 +308,8 @@ class TestOutOfBandTurn:
         assert await ledger.usage(_subject(case.user_id), utc_day()) == 1
         engine.process_turn.assert_not_called()
         caps = [
-            c.kwargs.get("max_tokens") for c in engine.llm_provider.route.call_args_list
+            c.kwargs.get("max_tokens")
+            for c in engine.deps.llm_provider.route.call_args_list
         ]
         assert TRIAGE_MAX_TOKENS not in caps
         assert (
@@ -362,7 +363,8 @@ class TestControls:
             pass  # the stubbed preprocessing is not the subject; the charge is
         assert await ledger.usage(_subject(case.user_id), utc_day()) == 1
         caps = [
-            c.kwargs.get("max_tokens") for c in engine.llm_provider.route.call_args_list
+            c.kwargs.get("max_tokens")
+            for c in engine.deps.llm_provider.route.call_args_list
         ]
         assert TRIAGE_MAX_TOKENS not in caps
 
@@ -387,7 +389,8 @@ class TestControls:
         engine.process_turn.assert_called_once()
         assert saved.turn_history[-1].outcome != TurnOutcome.OUT_OF_BAND
         caps = [
-            c.kwargs.get("max_tokens") for c in engine.llm_provider.route.call_args_list
+            c.kwargs.get("max_tokens")
+            for c in engine.deps.llm_provider.route.call_args_list
         ]
         assert TRIAGE_MAX_TOKENS not in caps
 
@@ -479,7 +482,8 @@ class TestControls:
             "measuring the wrong branch"
         )
         caps = [
-            c.kwargs.get("max_tokens") for c in engine.llm_provider.route.call_args_list
+            c.kwargs.get("max_tokens")
+            for c in engine.deps.llm_provider.route.call_args_list
         ]
         assert TRIAGE_MAX_TOKENS not in caps, (
             "a message the INV-26 guard just judged to be a gate answer must "
@@ -519,7 +523,7 @@ class TestControls:
     ):
         ledger = InMemoryTurnLedger()
         service = _service(engine, recording_case_repository, ledger)
-        engine.llm_provider.route = AsyncMock(
+        engine.deps.llm_provider.route = AsyncMock(
             side_effect=RuntimeError("classifier down")
         )
         await _turn(service, recording_case_repository, case)

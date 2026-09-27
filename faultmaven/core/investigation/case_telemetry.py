@@ -6,7 +6,7 @@ case?"**, and the reason it needs its own channel is that nothing already
 recorded can answer it:
 
 * ``turns_without_progress`` is a NOR over the arms of
-  ``MilestoneEngine._check_if_progress_made``, and those arms straddle both
+  ``check_if_progress_made``, and those arms straddle both
   parties — user data (``novel_files_uploaded``) sits beside engine output
   (hypotheses, solutions, milestones, links). One live arm on either side holds
   the counter at 0, so it fires only on a JOINT stall and cannot isolate the
@@ -151,7 +151,7 @@ class TurnPath(str, Enum):
     ERROR = "error"
 
 
-#: Every arm ``MilestoneEngine._check_if_progress_made`` actually scores, as a
+#: Every arm ``check_if_progress_made`` actually scores, as a
 #: count. An arm missing from here is not a cosmetic gap: the turn it fires on
 #: emits ``progress_made=True`` with every recorded arm 0, which is exactly the
 #: shape the counter-integrity rule reads as a LYING COUNTER, and — if the arm is
@@ -372,7 +372,7 @@ def _sanitize(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def collect_progress_arms(metadata: Mapping[str, Any]) -> dict[str, int]:
-    """Per-arm counts read off the SAME dict ``_check_if_progress_made`` scores.
+    """Per-arm counts read off the SAME dict ``check_if_progress_made`` scores.
 
     Counts, never the ids themselves: the ids are case content (filenames reach
     ``files_uploaded`` only as opaque ``file_id``s, but evidence and hypothesis

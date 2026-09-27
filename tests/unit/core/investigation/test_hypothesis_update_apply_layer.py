@@ -15,7 +15,12 @@ from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_assessment_state,
 )
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.hypothesis_updates import (
+    _apply_deferred_likelihood_updates,
+    _apply_hypothesis_updates,
+)
 from faultmaven.core.investigation.schemas import HypothesisUpdate
 from faultmaven.modules.case.contracts import (
     Case,
@@ -40,7 +45,8 @@ def _make_engine() -> MilestoneEngine:
     """Bare engine — only the apply helper is exercised. __init__ takes many
     deps, so bypass it and wire just the hypothesis manager the helper uses."""
     eng = MilestoneEngine.__new__(MilestoneEngine)
-    eng.hypothesis_manager = HypothesisManager()
+    eng.deps = EngineDeps()
+    eng.deps.hypothesis_manager = HypothesisManager()
     return eng
 
 
@@ -97,7 +103,8 @@ def test_refuted_with_reason_applies():
     case.hypotheses = {h.hypothesis_id: h}
     meta = _empty_metadata()
 
-    eng._apply_hypothesis_updates(
+    _apply_hypothesis_updates(
+        eng.deps.hypothesis_manager,
         case,
         [
             HypothesisUpdate(
@@ -125,7 +132,8 @@ def test_refuted_without_reason_is_skipped_with_feedback():
     case.hypotheses = {h.hypothesis_id: h}
     meta = _empty_metadata()
 
-    eng._apply_hypothesis_updates(
+    _apply_hypothesis_updates(
+        eng.deps.hypothesis_manager,
         case,
         [
             HypothesisUpdate(
@@ -150,7 +158,8 @@ def test_validated_transition_is_deferred_noop():
     case.hypotheses = {h.hypothesis_id: h}
     meta = _empty_metadata()
 
-    eng._apply_hypothesis_updates(
+    _apply_hypothesis_updates(
+        eng.deps.hypothesis_manager,
         case,
         [
             HypothesisUpdate(
@@ -174,7 +183,8 @@ def test_refuted_is_terminal_immutable_no_resurrection_or_corruption():
     h = _active_hyp()
     case.hypotheses = {h.hypothesis_id: h}
 
-    eng._apply_hypothesis_updates(
+    _apply_hypothesis_updates(
+        eng.deps.hypothesis_manager,
         case,
         [
             HypothesisUpdate(
@@ -189,7 +199,8 @@ def test_refuted_is_terminal_immutable_no_resurrection_or_corruption():
     assert h.state == HypothesisState.REFUTED
 
     meta2 = _empty_metadata()
-    eng._apply_hypothesis_updates(
+    _apply_hypothesis_updates(
+        eng.deps.hypothesis_manager,
         case,
         [HypothesisUpdate(hypothesis_id=h.hypothesis_id, state=HypothesisState.ACTIVE)],
         meta2,
@@ -220,7 +231,8 @@ def test_likelihood_not_applied_to_terminal_hypothesis():
     case.hypotheses = {h.hypothesis_id: h}
     meta = _empty_metadata()
 
-    eng._apply_hypothesis_updates(
+    _apply_hypothesis_updates(
+        eng.deps.hypothesis_manager,
         case,
         [HypothesisUpdate(hypothesis_id=h.hypothesis_id, likelihood=0.6)],
         meta,
@@ -241,7 +253,8 @@ def test_refuted_without_reason_does_not_apply_same_entry_likelihood():
     case.hypotheses = {h.hypothesis_id: h}
     meta = _empty_metadata()
 
-    eng._apply_hypothesis_updates(
+    _apply_hypothesis_updates(
+        eng.deps.hypothesis_manager,
         case,
         [
             HypothesisUpdate(
@@ -267,13 +280,16 @@ def test_likelihood_only_update_applies():
     case.hypotheses = {h.hypothesis_id: h}
     meta = _empty_metadata()
 
-    eng._apply_hypothesis_updates(
+    _apply_hypothesis_updates(
+        eng.deps.hypothesis_manager,
         case,
         [HypothesisUpdate(hypothesis_id=h.hypothesis_id, likelihood=0.3)],
         meta,
         case.current_turn,
     )
-    eng._apply_deferred_likelihood_updates(case, meta, case.current_turn)
+    _apply_deferred_likelihood_updates(
+        eng.deps.hypothesis_manager, case, meta, case.current_turn
+    )
 
     assert h.state == HypothesisState.ACTIVE  # unchanged
     assert h.likelihood == 0.3
@@ -287,7 +303,8 @@ def test_unknown_id_is_skipped_without_error():
     case.hypotheses = {h.hypothesis_id: h}
     meta = _empty_metadata()
 
-    eng._apply_hypothesis_updates(
+    _apply_hypothesis_updates(
+        eng.deps.hypothesis_manager,
         case,
         [HypothesisUpdate(hypothesis_id="hyp_doesnotexist", likelihood=0.1)],
         meta,
@@ -306,13 +323,16 @@ def test_new_index_placeholder_resolves_to_this_turn_hypothesis():
     meta = _empty_metadata()
     meta["hypotheses_generated"] = [h.hypothesis_id]  # created this turn
 
-    eng._apply_hypothesis_updates(
+    _apply_hypothesis_updates(
+        eng.deps.hypothesis_manager,
         case,
         [HypothesisUpdate(hypothesis_id="new_index_0", likelihood=0.2)],
         meta,
         case.current_turn,
     )
-    eng._apply_deferred_likelihood_updates(case, meta, case.current_turn)
+    _apply_deferred_likelihood_updates(
+        eng.deps.hypothesis_manager, case, meta, case.current_turn
+    )
 
     assert h.likelihood == 0.2
     assert meta["hypotheses_updated"] == [h.hypothesis_id]
@@ -339,7 +359,8 @@ def test_refuted_update_drives_m6_demotion_end_to_end():
     case.progress.root_cause_likelihood = 0.9
 
     # The LLM disconfirms via hypotheses_to_update (not an evidence link).
-    eng._apply_hypothesis_updates(
+    _apply_hypothesis_updates(
+        eng.deps.hypothesis_manager,
         case,
         [
             HypothesisUpdate(
@@ -374,13 +395,16 @@ def test_evidence_free_likelihood_update_capped_with_feedback():
     case.hypotheses = {h.hypothesis_id: h}
     meta = _empty_metadata()
 
-    eng._apply_hypothesis_updates(
+    _apply_hypothesis_updates(
+        eng.deps.hypothesis_manager,
         case,
         [HypothesisUpdate(hypothesis_id=h.hypothesis_id, likelihood=0.9)],
         meta,
         case.current_turn,
     )
-    eng._apply_deferred_likelihood_updates(case, meta, case.current_turn)
+    _apply_deferred_likelihood_updates(
+        eng.deps.hypothesis_manager, case, meta, case.current_turn
+    )
 
     # Ceiling semantics: the cap refuses the RAISE but never demotes below
     # the current earned value (0.7 here), so the applied value is unchanged.
@@ -412,13 +436,16 @@ def test_supported_likelihood_update_no_cap_feedback():
     case.hypotheses = {h.hypothesis_id: h}
     meta = _empty_metadata()
 
-    eng._apply_hypothesis_updates(
+    _apply_hypothesis_updates(
+        eng.deps.hypothesis_manager,
         case,
         [HypothesisUpdate(hypothesis_id=h.hypothesis_id, likelihood=0.9)],
         meta,
         case.current_turn,
     )
-    eng._apply_deferred_likelihood_updates(case, meta, case.current_turn)
+    _apply_deferred_likelihood_updates(
+        eng.deps.hypothesis_manager, case, meta, case.current_turn
+    )
 
     assert h.likelihood == 0.9
     assert "capped" not in meta.get("system_feedback", "")
@@ -441,7 +468,8 @@ def test_same_turn_link_then_likelihood_is_not_capped():
     meta = _empty_metadata()
 
     # Step 3b: the likelihood update is stashed, not applied.
-    eng._apply_hypothesis_updates(
+    _apply_hypothesis_updates(
+        eng.deps.hypothesis_manager,
         case,
         [HypothesisUpdate(hypothesis_id=h.hypothesis_id, likelihood=0.9)],
         meta,
@@ -461,7 +489,9 @@ def test_same_turn_link_then_likelihood_is_not_capped():
     )
 
     # Step 4a-bis: the deferred update now sees the link — no cap.
-    eng._apply_deferred_likelihood_updates(case, meta, case.current_turn)
+    _apply_deferred_likelihood_updates(
+        eng.deps.hypothesis_manager, case, meta, case.current_turn
+    )
     assert h.likelihood == 0.9
     assert "capped" not in meta.get("system_feedback", "")
 
@@ -479,14 +509,15 @@ def test_deferred_apply_respects_same_turn_refutation():
     meta = _empty_metadata()
 
     # Step 3b: stash while still ACTIVE.
-    eng._apply_hypothesis_updates(
+    _apply_hypothesis_updates(
+        eng.deps.hypothesis_manager,
         case,
         [HypothesisUpdate(hypothesis_id=h.hypothesis_id, likelihood=0.45)],
         meta,
         case.current_turn,
     )
     # Step 4 (links pass) auto-refutes it.
-    eng.hypothesis_manager.refute_hypothesis(
+    eng.deps.hypothesis_manager.refute_hypothesis(
         hypothesis=h,
         current_turn=case.current_turn,
         refuting_evidence_ids=[],
@@ -496,7 +527,9 @@ def test_deferred_apply_respects_same_turn_refutation():
     assert h.likelihood == 0.0
 
     # Step 4a-bis: the deferred apply must skip it with feedback.
-    eng._apply_deferred_likelihood_updates(case, meta, case.current_turn)
+    _apply_deferred_likelihood_updates(
+        eng.deps.hypothesis_manager, case, meta, case.current_turn
+    )
     assert h.likelihood == 0.0  # not resurrected
     assert "immutable" in meta.get("system_feedback", "")
 
@@ -520,7 +553,8 @@ def test_duplicate_entries_for_one_hypothesis_are_applied_once():
 
     # A DOWNWARD move: the B1 evidence-free cap is a ceiling on raises only, so
     # this lands unclamped and is unambiguously progress (|delta| = 0.3).
-    eng._apply_hypothesis_updates(
+    _apply_hypothesis_updates(
+        eng.deps.hypothesis_manager,
         case,
         [
             HypothesisUpdate(hypothesis_id=h.hypothesis_id, likelihood=0.4),
@@ -529,7 +563,9 @@ def test_duplicate_entries_for_one_hypothesis_are_applied_once():
         meta,
         case.current_turn,
     )
-    eng._apply_deferred_likelihood_updates(case, meta, case.current_turn)
+    _apply_deferred_likelihood_updates(
+        eng.deps.hypothesis_manager, case, meta, case.current_turn
+    )
 
     assert h.iterations_without_progress == 0, (
         "the duplicate entry was applied a second time and recorded stagnation "
@@ -550,7 +586,8 @@ def test_an_id_and_its_new_index_alias_collapse_to_one_entry():
     meta = _empty_metadata()
     meta["hypotheses_generated"] = [h.hypothesis_id]
 
-    eng._apply_hypothesis_updates(
+    _apply_hypothesis_updates(
+        eng.deps.hypothesis_manager,
         case,
         [
             HypothesisUpdate(hypothesis_id="new_index_0", likelihood=0.4),
@@ -559,6 +596,8 @@ def test_an_id_and_its_new_index_alias_collapse_to_one_entry():
         meta,
         case.current_turn,
     )
-    eng._apply_deferred_likelihood_updates(case, meta, case.current_turn)
+    _apply_deferred_likelihood_updates(
+        eng.deps.hypothesis_manager, case, meta, case.current_turn
+    )
 
     assert h.iterations_without_progress == 0
