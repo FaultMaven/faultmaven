@@ -39,7 +39,8 @@ _CHILD = textwrap.dedent("""
 
     from fastapi.testclient import TestClient
 
-    from faultmaven.main import app, _is_test_environment
+    from faultmaven.bootstrap.composition import _is_test_environment
+    from faultmaven.main import app
     from faultmaven.config.settings import get_settings
 
     result = {"gate_live": not _is_test_environment(get_settings())}
@@ -161,9 +162,9 @@ class TestTheGateRunsAfterTheMigrationsItDependsOn:
         import ast
         import inspect
 
-        from faultmaven import main
+        from faultmaven.bootstrap import composition
 
-        tree = ast.parse(inspect.getsource(main._wire_composition_root))
+        tree = ast.parse(inspect.getsource(composition._wire_composition_root))
         calls = {}
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):

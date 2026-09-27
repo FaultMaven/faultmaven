@@ -39,6 +39,11 @@ from tests.utils import reset_settings_singleton as reset_settings
 # before settings exist) and which are real bypasses is triaged in #1332.
 KNOWN_ENV_ACCESS = {
     "faultmaven/bootstrap/data_init.py": 2,
+    # ``_is_test_environment``'s except-branch fallback (moved out of
+    # ``faultmaven/main.py`` in fm#1707 wave 2, which is why this entry is
+    # new rather than inherited): it runs only when ``get_settings()`` itself
+    # raised, so settings genuinely do not exist yet to read this through.
+    "faultmaven/bootstrap/composition.py": 2,
     "faultmaven/config/presets.py": 11,
     # Three keys reach the protection presets, each with exactly ONE reader:
     # PROTECTION_PROFILE (``resolve_protection_profile`` — which preset is

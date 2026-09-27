@@ -407,11 +407,11 @@ await case_vector_store.add_documents(case_id, documents)
    await case_vector_store.delete_case_collection(case_id)
    ```
 
-2. **Scheduled orphan sweep (opt-in)** — an *optional* in-process background job compares live ChromaDB collections against the active-case-ID set in the database and deletes any `case_*` collection without a matching active case, as a safety net. It is **disabled by default** (`server.run_scheduler=False`, "operational neutrality"); when enabled it runs every 6 hours. The main.py lifespan only starts it when `run_scheduler` is true, and it refuses to start under the multi-tenant provider (the sweep is cross-tenant, ADR-010 P3). Operators who leave it off can instead run the equivalent CLI job (`python -m faultmaven.jobs.run`) or an external scheduler:
+2. **Scheduled orphan sweep (opt-in)** — an *optional* in-process background job compares live ChromaDB collections against the active-case-ID set in the database and deletes any `case_*` collection without a matching active case, as a safety net. It is **disabled by default** (`server.run_scheduler=False`, "operational neutrality"); when enabled it runs every 6 hours. The `bootstrap/lifespan.py` lifespan only starts it when `run_scheduler` is true, and it refuses to start under the multi-tenant provider (the sweep is cross-tenant, ADR-010 P3). Operators who leave it off can instead run the equivalent CLI job (`python -m faultmaven.jobs.run`) or an external scheduler:
 
    ```python
    # faultmaven/infrastructure/tasks/case_cleanup.py
-   # Started from main.py lifespan ONLY when settings.server.run_scheduler is True.
+   # Started from bootstrap/lifespan.py's lifespan ONLY when settings.server.run_scheduler is True.
    if settings.server.run_scheduler:
        case_cleanup_scheduler = start_case_cleanup_scheduler(
            case_vector_store=case_vector_store,
