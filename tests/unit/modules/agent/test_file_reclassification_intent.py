@@ -35,14 +35,20 @@ from faultmaven.core.preprocessing.models import UnifiedDataType
 from faultmaven.exceptions import NotFoundError, ValidationException
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import IntentType, QueryIntent
-from faultmaven.modules.agent.domain.services.investigation_service.service import (
-    _DATA_TYPE_TO_SOURCE_TYPE,
-    InvestigationService,
+from faultmaven.modules.agent.domain.services.investigation_service.attachments import (
+    _PreprocessedAttachment,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.clarification import (
     _admit_clarification_entries,
     _build_classification_clarification,
     _carry_forward_unresolved_clarifications,
-    _PreprocessedAttachment,
     _sanitize_label_fragment,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
+    InvestigationService,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
+    _DATA_TYPE_TO_SOURCE_TYPE,
 )
 from faultmaven.modules.case.domain.models.evidence import (
     EvidenceSourceType,

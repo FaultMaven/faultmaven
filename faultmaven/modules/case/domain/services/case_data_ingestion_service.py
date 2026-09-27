@@ -4,7 +4,7 @@ Purpose: Handles case-specific data ingestion and evidence extraction workflows.
 
 NOTE: As of the Unified Ingestion Pipeline (v4.1), attachment preprocessing is
 handled by process_turn() in investigation_service/service.py via
-AttachmentPreprocessor.preprocess_attachment() (investigation_service/attachments.py).
+_preprocess_attachment() (investigation_service/attachments.py).
 This service is retained for potential batch/background processing use cases but
 is no longer called from the primary turn pipeline.
 

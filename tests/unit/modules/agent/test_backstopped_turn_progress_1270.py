@@ -38,6 +38,8 @@ from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.models.api import DataType
 from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
     _backfill_consumed_turn,
 )
 from faultmaven.modules.case.domain.models.lifecycle import CaseState

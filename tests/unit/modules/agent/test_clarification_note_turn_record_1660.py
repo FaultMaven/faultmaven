@@ -34,6 +34,8 @@ from faultmaven.core.preprocessing.models import UnifiedDataType
 from faultmaven.models.api import DataType
 from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
     _record_composed_reply,
 )
 from faultmaven.modules.case.contracts import MESSAGE_METADATA_AGENT_SYNTHESIZED

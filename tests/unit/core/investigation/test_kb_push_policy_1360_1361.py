@@ -457,7 +457,7 @@ class TestTheOffStateIsCoherentAcrossEveryConsumer:
     """
 
     def test_no_consumer_sees_a_runbook_when_the_push_is_off(self, push):
-        from faultmaven.modules.agent.domain.services.investigation_service.service import (
+        from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
             _kb_context_sources,
         )
 
@@ -478,7 +478,7 @@ class TestTheOffStateIsCoherentAcrossEveryConsumer:
     def test_every_consumer_sees_the_runbooks_when_the_push_is_on(self, push):
         """The converse, so the test above cannot pass by everything being
         permanently empty."""
-        from faultmaven.modules.agent.domain.services.investigation_service.service import (
+        from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
             _kb_context_sources,
         )
 
@@ -526,7 +526,7 @@ class TestTheTurnResponseCitesItsSources:
     the backend never emitted, so they were unreachable code."""
 
     def test_sources_are_built_from_the_pre_fetched_runbooks(self):
-        from faultmaven.modules.agent.domain.services.investigation_service.service import (
+        from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
             _kb_context_sources,
         )
 
@@ -541,7 +541,7 @@ class TestTheTurnResponseCitesItsSources:
         assert sources[0].metadata["trigger"] == "symptom"
 
     def test_no_pre_fetch_means_no_sources(self):
-        from faultmaven.modules.agent.domain.services.investigation_service.service import (
+        from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
             _kb_context_sources,
         )
 
@@ -557,7 +557,7 @@ class TestTheTurnResponseCitesItsSources:
         an internal name.
         """
         from faultmaven.models.api_models import TurnResponse
-        from faultmaven.modules.agent.domain.services.investigation_service.service import (
+        from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
             _kb_context_sources,
         )
         from faultmaven.modules.case.domain.models.lifecycle import CaseState
@@ -584,7 +584,7 @@ class TestTheTurnResponseCitesItsSources:
         The case carries context persisted while the push was ON — the state
         the pre-fetch's edge-triggered clearing branch never reaches.
         """
-        from faultmaven.modules.agent.domain.services.investigation_service.service import (
+        from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
             _kb_context_sources,
         )
 
@@ -593,7 +593,7 @@ class TestTheTurnResponseCitesItsSources:
 
     def test_sources_are_cited_when_the_push_is_on(self, push):
         """Positive control: the gate is not a permanent empty list."""
-        from faultmaven.modules.agent.domain.services.investigation_service.service import (
+        from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
             _kb_context_sources,
         )
 

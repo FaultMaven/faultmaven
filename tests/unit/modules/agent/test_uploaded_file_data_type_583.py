@@ -36,8 +36,10 @@ from faultmaven.core.preprocessing.models import (
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.modules.agent.domain.services.investigation_service.service import (
-    _DATA_TYPE_TO_SOURCE_TYPE,
     InvestigationService,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
+    _DATA_TYPE_TO_SOURCE_TYPE,
     _published_source_type,
 )
 from faultmaven.modules.case.domain.models.evidence import (
