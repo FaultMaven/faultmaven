@@ -39,6 +39,8 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     InvestigationActionType,
     InvestigationStage,
+    is_server_written_assistant_row,
+    is_server_written_user_row,
 )
 from faultmaven.modules.case.domain.models import CauseState
 
