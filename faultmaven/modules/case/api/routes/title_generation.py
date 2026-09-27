@@ -16,7 +16,12 @@ from fastapi import HTTPException, status
 
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.models.interfaces_case import ICaseService
-from faultmaven.modules.case.domain.models import is_default_case_title
+
+# ``_is_default_case_title``: the alias and why it bounds auto-titling are
+# documented where the route package binds it, in ``routes/__init__.py``.
+from faultmaven.modules.case.domain.models import (
+    is_default_case_title as _is_default_case_title,
+)
 
 logger = logging.getLogger("faultmaven.modules.case.api.routes")
 
@@ -703,23 +708,6 @@ def _titleable_substance(case, user_signals: str) -> str:
 # ends so a user-chosen title that merely *starts* "Case-..." is never mistaken
 # for a placeholder and silently overwritten.
 #
-# BOTH date widths are accepted. The generator emitted ``Case-{MMDD}-{seq}`` until
-# 1519b1ec (2026-01-28) made it year-safe; every case created before that day still
-# carries the 4-digit form. Matching only the current width would leave exactly
-# those rows unnameable forever — the oldest cases in any long-lived deployment,
-# and the ones whose titles a user is least likely to remember.
-# The predicate itself lives in the case domain (``is_default_case_title``) so
-# the orientation reply can refuse to quote a placeholder as the case's subject
-# (#1343); this alias keeps the route's call sites and tests unchanged.
-#
-# This is the whole cost bound on server-side auto-titling: a case is titled at
-# most once, because the moment it succeeds this stops answering True. It does
-# not depend on a rate limiter — the ``title_generation`` preset in
-# ``config/protection.py`` is configured but never checked (fm#985 item 12), so
-# a design that leaned on it would have no guard at all.
-_is_default_case_title = is_default_case_title
-
-
 class _TitleSubstanceTooThin(ValidationException):
     """The case does not carry enough substance to name yet.
 

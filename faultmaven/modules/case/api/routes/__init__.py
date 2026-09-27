@@ -142,16 +142,21 @@ from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.utils.serialization import to_json_compatible
 
-# fm#1707: the old module's only direct use of `is_default_case_title` (the
-# `_is_default_case_title` alias) moved into title_generation.py, so this
-# module-level binding is otherwise unread until `generate_case_reports`'s
-# unmoved local `from faultmaven.modules.case.contracts import
-# is_default_case_title` shadows it -- which ruff's F811 reads as this import
-# being unused before it is redefined. It stays imported here (facade parity:
-# `from faultmaven.modules.case.api.routes import is_default_case_title` must
-# keep working, same as on origin/main) with one no-op read to tell ruff
-# otherwise.
-_ = is_default_case_title
+# BOTH date widths are accepted. The generator emitted ``Case-{MMDD}-{seq}`` until
+# 1519b1ec (2026-01-28) made it year-safe; every case created before that day still
+# carries the 4-digit form. Matching only the current width would leave exactly
+# those rows unnameable forever — the oldest cases in any long-lived deployment,
+# and the ones whose titles a user is least likely to remember.
+# The predicate itself lives in the case domain (``is_default_case_title``) so
+# the orientation reply can refuse to quote a placeholder as the case's subject
+# (#1343); this alias keeps the route's call sites and tests unchanged.
+#
+# This is the whole cost bound on server-side auto-titling: a case is titled at
+# most once, because the moment it succeeds this stops answering True. It does
+# not depend on a rate limiter — the ``title_generation`` preset in
+# ``config/protection.py`` is configured but never checked (fm#985 item 12), so
+# a design that leaned on it would have no guard at all.
+_is_default_case_title = is_default_case_title
 
 from .title_generation import (
     _MIN_PROBLEM_STATEMENT_LEN_FOR_TITLE,
@@ -182,7 +187,6 @@ from .title_generation import (
     _generate_smart_extractive_title,
     _generate_title_with_llm,
     _has_problem_statement,
-    _is_default_case_title,
     _is_manner_adverb,
     _sanitize_title_content,
     _titleable_substance,
