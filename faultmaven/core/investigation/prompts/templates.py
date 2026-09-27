@@ -1621,9 +1621,9 @@ Why: [diagnostic value]"
 # the cross-stage contract.
 #
 # The anti-anchoring framing ("unexpected findings are equally important")
-# is NOT restated here — context_builder/evidence_needs.py renders it once
-# at the top of the <evidence_needs> block (design §6.1). Restating it would
-# burn tokens for no signal.
+# is NOT restated here — context_builder.py renders it once at the top
+# of the <evidence_needs> block (design §6.1). Restating it would burn
+# tokens for no signal.
 _EVIDENCE_NEEDS_LIFECYCLE_BLOCK = """\
 **EVIDENCE NEEDS (demand-side pool):**
 The case carries a pool of needs — what data would advance the
