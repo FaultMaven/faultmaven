@@ -26,7 +26,7 @@ Instead of hardcoding provider-specific logic throughout the codebase, this syst
    - `OpenAIProvider`, `AnthropicProvider`, `GroqProvider`, etc.
    - Each overrides `get_structured_output_capability()` with provider-specific logic
 
-4. **`milestone_engine/__init__.py`** - Consumer of capability system
+4. **`milestone_engine/engine.py`** - Consumer of capability system
    - Uses `get_structured_output_strategy()` to determine approach
    - Conditionally includes schema in prompt
    - Uses strategy-determined `response_format`
@@ -45,7 +45,7 @@ Instead of hardcoding provider-specific logic throughout the codebase, this syst
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         Client Code                                  │
-│              (milestone_engine/__init__.py)                          │
+│              (milestone_engine/engine.py)                          │
 └────────────────────────────┬────────────────────────────────────────┘
                              │
                              │ get_structured_output_strategy(schema)
@@ -80,7 +80,7 @@ Instead of hardcoding provider-specific logic throughout the codebase, this syst
 ### Before (Hardcoded Provider Logic)
 
 ```python
-# milestone_engine/__init__.py - OLD APPROACH
+# milestone_engine/engine.py - OLD APPROACH
 response_format = create_response_format_json_schema(schema_model)
 
 # PROBLEM: Always includes schema in prompt, even for STRICT-capable models
@@ -108,7 +108,7 @@ if effective_model not in STRICT_JSON_SCHEMA_MODELS:
 ### After (Capability System)
 
 ```python
-# milestone_engine/__init__.py - NEW APPROACH
+# milestone_engine/engine.py - NEW APPROACH
 schema = schema_model.model_json_schema()
 strategy = self.llm_provider.get_structured_output_strategy(schema)
 

@@ -123,7 +123,7 @@ Both values are read from `ProtectionSettings` in the constructor. The construct
 
 ### MilestoneEngine Integration
 
-**File:** `core/investigation/milestone_engine/__init__.py`
+**File:** `core/investigation/milestone_engine/engine.py`
 
 The engine manages the redaction lifecycle within `_process_turn_impl()`:
 
@@ -203,7 +203,7 @@ If a user types `<IP_ADDRESS_1>` in their message, `reverse()` would replace it 
 | --- | --- | --- |
 | `infrastructure/security/case_redaction.py` | New file | None |
 | `infrastructure/security/redaction.py` | Added `sanitize_text_with_registry()`, wired Presidio config to settings, `\b` word boundary on password regex, removed dead code | Low |
-| `core/investigation/milestone_engine/__init__.py` | Redaction lifecycle in turn processing + tool loop | Medium |
+| `core/investigation/milestone_engine/engine.py` | Redaction lifecycle in turn processing + tool loop | Medium |
 | `modules/agent/domain/services/investigation_service.py` | Extraction-layer context creation + reverse-substitution | Low |
 | `modules/preprocessing/preprocessing_service.py` | `redaction_context` param on all 3 sanitize paths | Low |
 | `container/providers/services.py` | Pass sanitizer + redis_client to engine | Low |

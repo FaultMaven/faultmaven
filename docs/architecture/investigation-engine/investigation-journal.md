@@ -295,7 +295,7 @@ Implemented with a **pair-integrity invariant**: `status=REFUTED` and
 other cannot exist. Domain-level Pydantic validator enforces the pair at
 construction; the LLM schema permits each field optional so structured-
 output parsing is resilient. The LLM-driven `HypothesisUpdate` consumer
-(`milestone_engine._apply_hypothesis_updates`) applies the REFUTED +
+(`milestone_engine.engine._apply_hypothesis_updates`) applies the REFUTED +
 `refutation_reason` pair together (plus likelihood tracking); other state
 transitions (VALIDATED / RETIRED / ACTIVE / INCONCLUSIVE) are deliberately
 not applied in that slice. Internal refutation paths in

@@ -449,7 +449,7 @@ Neither is a behavioral rule; both are system-computed adaptive context that mod
 
 ### DA System Instruction
 
-When investigation tools are available, the tool-augmented generation loop (`_tool_augmented_generate`) injects a **DA system instruction** as the system message. This instruction is a significant behavioral control surface that operates in parallel with the template-level rules. It is built dynamically by `_build_da_system_instruction()` in `milestone_engine/__init__.py`.
+When investigation tools are available, the tool-augmented generation loop (`_tool_augmented_generate`) injects a **DA system instruction** as the system message. This instruction is a significant behavioral control surface that operates in parallel with the template-level rules. It is built dynamically by `_build_da_system_instruction()` in `milestone_engine/engine.py`.
 
 **Key behavioral content — Question Routing:**
 
@@ -476,7 +476,7 @@ The DA system instruction also carries six operational clauses that are not beha
 
 These clauses are prompt-layer operational guidance rather than behavioral rules, which is why they live in the DA system instruction rather than in Rules 1–8.
 
-**Location:** `milestone_engine/__init__.py::_build_da_system_instruction()`. (Line numbers are intentionally omitted; they drift with refactors — `grep` for the function name.)
+**Location:** `milestone_engine/engine.py::_build_da_system_instruction()`. (Line numbers are intentionally omitted; they drift with refactors — `grep` for the function name.)
 
 ### INVESTIGATION_BASE Layout
 

@@ -545,7 +545,7 @@ There is no single complete prompt. Each turn assembles a prompt from a fixed ou
 
 `INVESTIGATION_BASE` is the only shell that accepts injected components at runtime — three placeholders: `{adaptive_instructions}`, `{evidence_grounding}`, and `{diagnostic_reasoning}`. All other shells are self-contained. Fallback templates are minimal and used only when the primary assembly fails (token limit, provider error).
 
-`SCHEMA_INSTRUCTIONS` is appended to the final prompt by `milestone_engine/__init__.py` at call time — not part of any template. It is conditional: only injected when the LLM provider requires the JSON schema embedded in the prompt (providers using `json_object` or `prompt_only` structured output mode). Providers with native structured output support skip it.
+`SCHEMA_INSTRUCTIONS` is appended to the final prompt by `milestone_engine/engine.py` at call time — not part of any template. It is conditional: only injected when the LLM provider requires the JSON schema embedded in the prompt (providers using `json_object` or `prompt_only` structured output mode). Providers with native structured output support skip it.
 
 `_READING_DISCIPLINE`, `_DATA_CITATION`, `_ADVISOR_ROLE`, and `_ACTION_IMPACT` are present in both INQUIRY and INVESTIGATION_BASE but absent from TERMINAL — terminal turns do not do diagnostic reasoning, do not propose actions, and do not need evidence grounding.
 

@@ -42,7 +42,7 @@ Two per-role **model** keys need a caveat the table above does not carry:
 
 - `{PROVIDER}_DA_MODEL` **requires `DA_PROVIDER`.** The investigation tool loop
   passes a per-role model only when a dedicated DA provider exists
-  (`milestone_engine._tool_augmented_generate` sets `model` under
+  (`milestone_engine.engine._tool_augmented_generate` sets `model` under
   `if self.da_model and self.da_provider`), so setting only `OPENAI_DA_MODEL`
   leaves the base `OPENAI_MODEL` running, silently. Every other role passes its
   model unconditionally. Set `DA_PROVIDER` alongside it — it may name the same
@@ -78,7 +78,7 @@ key-by-key reference with defaults is `.env.example` (CI-synced to
 
 ### Tool Calling
 
-Controls whether the provider can execute the DA tool loop (`_tool_augmented_generate()` in `milestone_engine/__init__.py`). When tool calling is unavailable, the investigation falls back to single-shot generation without evidence-gathering tools (`answer_from_kb`, `case_evidence_search`, `search_file`, etc.).
+Controls whether the provider can execute the DA tool loop (`_tool_augmented_generate()` in `milestone_engine/engine.py`). When tool calling is unavailable, the investigation falls back to single-shot generation without evidence-gathering tools (`answer_from_kb`, `case_evidence_search`, `search_file`, etc.).
 
 **Impact of no tool calling:**
 - No dynamic evidence retrieval during investigation

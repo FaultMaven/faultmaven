@@ -599,7 +599,7 @@ These are properties of the allocator's structure, asserted by tests (§14):
 | Reserve bounding incl. current-turn floor (§6, INV-1/INV-2) | Implemented (continuity via compact-history floor; INV-1 via evidence floor + fallback slot) |
 | Overflow **and starvation** backstop (§7) | Implemented — `templates._assemble_allocated` |
 | `FALLBACK_*` templates: current-turn stub slot + compact journal slot (§7) | Implemented |
-| Runtime context-length-error recovery → one `FALLBACK_*` retry (§7.1) | Implemented — `milestone_engine._generate_structured_output` wrapper |
+| Runtime context-length-error recovery → one `FALLBACK_*` retry (§7.1) | Implemented — `milestone_engine.engine._generate_structured_output` wrapper |
 | Token-native accounting (§8) | Implemented (`TokenBudget`, token-native only) |
 | Sole assembly path | The allocator is the only path — the char-based first draft and the `PROMPT_ALLOCATOR_*` gate flags were removed |
 | Invariant test matrix (§14) | Implemented — `tests/.../test_prompt_budget_allocator.py` |

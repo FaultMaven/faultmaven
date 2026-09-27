@@ -72,7 +72,7 @@ AND
 sum(rate(faultmaven_inquiry_turn_total[1h])) > 0
 ```
 
-**What a sustained zero on `gate1` means.** The consolidator (`engine_owned_affordances`) isn't returning a `gate1` tuple when it should. Likely causes: predicate logic regressed (`_gate1_is_pending` no longer detects the state), or the response builder stopped calling the consolidator, or some higher-priority branch is short-circuiting. Audit the response-builder branch in `milestone_engine/__init__.py` against the predicate definition and `engine_owned_affordances` in `milestone_engine/affordances.py`, in lockstep.
+**What a sustained zero on `gate1` means.** The consolidator (`engine_owned_affordances`) isn't returning a `gate1` tuple when it should. Likely causes: predicate logic regressed (`_gate1_is_pending` no longer detects the state), or the response builder stopped calling the consolidator, or some higher-priority branch is short-circuiting. Audit the response-builder branch in `milestone_engine/engine.py` against the predicate definition and `engine_owned_affordances` in `milestone_engine/affordances.py`, in lockstep.
 
 **Note on `gate2` / `gate3`.** These labels are historical. Gate 2 (investigation path selection) and Gate 3 (post-mitigation continuation) were removed in redesign R5 — there is no prospective path fork — so neither label is emitted any more. The live gate labels are `disposition`, `gate1`, `insufficient_evidence`, `insufficient_evidence_restatement_held`, `restatement_held`, `not_yet_productive` and `treatment_blocked`.
 

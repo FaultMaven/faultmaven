@@ -135,7 +135,7 @@ Three changes close a class of first-request cold-start incidents where a 225 KB
 | Area | v5.1 | v5.2 |
 |------|------|------|
 | **Vectorization trigger** | Reactive: auto-vectorize after 3+ DA calls, 3+ empty searches, timeout, or low confidence | Proactive: background vectorization starts immediately for DA-mode large files. Reactive triggers retained as fallback (timeout, empty searches, low confidence). `da_call_count >= 3` trigger removed. |
-| **Integration point** | `agent_orchestration_service._execute_with_streaming()` (secondary `/sessions/execute` path only) | `milestone_engine._tool_augmented_generate()` (primary `/turns` path). Tracking lives where tools execute — same pattern as `deep_analysis_count` / `MAX_DEEP_ANALYSIS` enforcement already in the method. |
+| **Integration point** | `agent_orchestration_service._execute_with_streaming()` (secondary `/sessions/execute` path only) | `milestone_engine.engine._tool_augmented_generate()` (primary `/turns` path). Tracking lives where tools execute — same pattern as `deep_analysis_count` / `MAX_DEEP_ANALYSIS` enforcement already in the method. |
 | **Cross-turn DA init** | `EvidenceDAState` initialized with `da_call_count=0` every turn; persistent count synced only after a DA call completes | `da_invocation_count` persisted on Evidence model via `repository.save(case)` after each `deep_analysis` call. |
 | **Reactive triggers** | 4 triggers: timeout, 3+ empty searches, 3+ DA calls, low confidence | 3 triggers: timeout, 3+ empty searches, low confidence. DA call count trigger removed (replaced by proactive vectorization). |
 | **Small-file fallback condition** | Redundant `not self._should_auto_vectorize(state)` check | Simplified to direct size check: `content_size_bytes < vectorization_min_size_bytes`. |
@@ -689,7 +689,7 @@ The `Evidence.original_filename` field (set during `_preprocess_attachment()`) p
 
 #### DA Tool Loop Integration
 
-In Directed Analysis turns, `search_file` is available inside the bounded DA Tool Loop (`_tool_augmented_generate()` in `milestone_engine/__init__.py`) alongside the other investigation tools (`deep_analysis`, `kb_qa`, `web_search`, `case_evidence_search`) and the terminating `schema_tool`. The LLM iterates up to 4 times with an iteration-0 guardrail that forces at least one investigation-tool call before the structured response is generated. See [Orchestration Capabilities §5.4](../investigation-engine/orchestration-capabilities.md#54-tool-augmented-generation-v50--v60) for full details.
+In Directed Analysis turns, `search_file` is available inside the bounded DA Tool Loop (`_tool_augmented_generate()` in `milestone_engine/engine.py`) alongside the other investigation tools (`deep_analysis`, `kb_qa`, `web_search`, `case_evidence_search`) and the terminating `schema_tool`. The LLM iterates up to 4 times with an iteration-0 guardrail that forces at least one investigation-tool call before the structured response is generated. See [Orchestration Capabilities §5.4](../investigation-engine/orchestration-capabilities.md#54-tool-augmented-generation-v50--v60) for full details.
 
 ### 3.3 Search Modes
 
@@ -919,7 +919,7 @@ Vectorization uses a two-layer strategy: **proactive** for DA-mode queries with 
 When the query classifier routes to DIRECTED_ANALYSIS and evidence exceeds the vectorization size threshold, vectorization starts as a **background task** before the DA tool loop begins. The tool loop runs concurrently — the agent can use `search_file` and `deep_analysis` immediately. When vectorization completes, `case_evidence_search` becomes available.
 
 ```python
-# In milestone_engine._tool_augmented_generate() — called only for DA turns
+# In milestone_engine.engine._tool_augmented_generate() — called only for DA turns
 async def _start_proactive_vectorization(
     self, case: Case, tool_context: ToolContext,
 ) -> dict[str, asyncio.Task]:
@@ -1244,7 +1244,7 @@ As it worked: before each LLM call, the orchestration service extracted entities
 > **v5.2 change**: Proactive background vectorization for DA-mode large files. `da_call_count >= 3` reactive trigger removed.
 > **v5.0 change**: Replaced v4.2 global `consecutive_empty_searches` counter with per-evidence state.
 
-**Proactive path:** At the start of `_tool_augmented_generate()` in `milestone_engine/__init__.py`, `_start_proactive_vectorization()` starts `asyncio.create_task()` for each qualifying evidence file (above size threshold, not already vectorized). These tasks run concurrently with the DA tool loop. Since `_tool_augmented_generate()` is only called for DA-mode turns, no mode check is needed.
+**Proactive path:** At the start of `_tool_augmented_generate()` in `milestone_engine/engine.py`, `_start_proactive_vectorization()` starts `asyncio.create_task()` for each qualifying evidence file (above size threshold, not already vectorized). These tasks run concurrently with the DA tool loop. Since `_tool_augmented_generate()` is only called for DA-mode turns, no mode check is needed.
 
 **Reactive fallback:** The tool loop also tracks DA failure signals per-evidence using simple counters (same pattern as `deep_analysis_count`):
 

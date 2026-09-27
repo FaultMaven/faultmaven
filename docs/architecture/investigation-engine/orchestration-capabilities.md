@@ -19,15 +19,15 @@ transitions only, and it has no online reader (see §2).
 
 ### 1.2 Trigger Sites
 
-Checkpoints fire at three sites, all in `milestone_engine/__init__.py`, and all with
+Checkpoints fire at three sites, all in `milestone_engine/engine.py`, and all with
 trigger `pre_case_action`. Every site is guarded by `if self.checkpoint_service:`
 so the engine degrades safely when the service is not wired.
 
 | Site | When | Metadata captured |
 |---|---|---|
-| [`milestone_engine/__init__.py`](../../../faultmaven/core/investigation/milestone_engine/__init__.py) `MilestoneEngine._process_turn_impl` | Confirmed case-state transition via the `pending_transition` path | `from_state`, `to_state` |
-| [`milestone_engine/__init__.py`](../../../faultmaven/core/investigation/milestone_engine/__init__.py) `MilestoneEngine._transition_to_investigating` | Just before INQUIRY → INVESTIGATING (Gap #6) | `from_state`, `to_state="investigating"` |
-| [`milestone_engine/__init__.py`](../../../faultmaven/core/investigation/milestone_engine/__init__.py) `MilestoneEngine._check_automatic_transitions` | Just before a user-confirmed terminal transition (Gap #6) | `from_state`, `to_state` |
+| [`milestone_engine/engine.py`](../../../faultmaven/core/investigation/milestone_engine/engine.py) `MilestoneEngine._process_turn_impl` | Confirmed case-state transition via the `pending_transition` path | `from_state`, `to_state` |
+| [`milestone_engine/engine.py`](../../../faultmaven/core/investigation/milestone_engine/engine.py) `MilestoneEngine._transition_to_investigating` | Just before INQUIRY → INVESTIGATING (Gap #6) | `from_state`, `to_state="investigating"` |
+| [`milestone_engine/engine.py`](../../../faultmaven/core/investigation/milestone_engine/engine.py) `MilestoneEngine._check_automatic_transitions` | Just before a user-confirmed terminal transition (Gap #6) | `from_state`, `to_state` |
 
 These snapshots make every state change reversible at the data layer — the prior
 state is still on disk, recoverable by an operator reading `case_checkpoints`.
@@ -189,7 +189,7 @@ wired into `_tool_augmented_generate()` — not a port of the substring check.
 
 **Reactive auto-vectorization**: The agent may call `search_file` or `deep_analysis` repeatedly on the same evidence file without resolution, hitting empty results or low-confidence answers.
 
-**Mechanism** (`_track_da_result()` and `_reactive_vectorize()` in `milestone_engine/__init__.py`):
+**Mechanism** (`_track_da_result()` and `_reactive_vectorize()` in `milestone_engine/engine.py`):
 
 1. Track DA failure signals **independently per evidence file**, keyed by `evidence_id` in turn-local dicts (`da_empty_search_counts`) plus the tool result's own timeout and confidence signals. State is **in-turn only**: persisting it across turns would need a backing column on Evidence, which nothing else wants yet.
 2. When **any single trigger** fires on a qualifying file, auto-vectorize it — no user confirmation needed. Qualifying means `vectorization_min_size_bytes <= size <= VECTORIZATION_MAX_SIZE_BYTES`; files outside that band are left alone.
@@ -210,7 +210,7 @@ See [Data Preprocessing](../data-processing/data-preprocessing-design-specificat
 
 **Problem**: Multiple tool results can fill the context window with low-signal log noise, pushing out high-value information.
 
-**Mechanism** (message elision: the budget/marker primitives `_ToolLoopBudget`, `_tool_loop_message_tokens`, `_tool_payload_tokens`, `_TOOL_LOOP_ELISION_MARKER` in `milestone_engine/text_budget.py`, applied by the tool loop in `milestone_engine/__init__.py`):
+**Mechanism** (message elision: the budget/marker primitives `_ToolLoopBudget`, `_tool_loop_message_tokens`, `_tool_payload_tokens`, `_TOOL_LOOP_ELISION_MARKER` in `milestone_engine/text_budget.py`, applied by the tool loop in `milestone_engine/engine.py`):
 
 1. Resolve two per-call caps (#614): a soft cap on the messages — the prompt target plus `prompt_budget.tool_observation_max_tokens` — and, when `resolve_model_budget()` knows the model's context window, that window less the call's completion (its `max_tokens`, or the response reserve if larger) as a hard cap on the messages plus the `tools=` payload, so the ceiling tracks the model actually in use.
 2. Before the first call, and only when the window is known, fit the head (system + base task) beside the completion and the largest `tools=` payload: when it does not fit, re-assemble the base for the receiving model at the room left, and refuse the loop (non-tool path) if even that cannot fit. With the window unknown the base is sent as assembled.
@@ -235,7 +235,7 @@ or absent with the marker accounting for it.
 
 **Problem**: The LLM needs access to case evidence (search_file, deep_analysis) and knowledge base (kb_qa) to produce grounded responses. Without tool access, the LLM either hallucinates details or answers from training data instead of runbook content.
 
-**Mechanism** (`_tool_augmented_generate()` in `milestone_engine/__init__.py`):
+**Mechanism** (`_tool_augmented_generate()` in `milestone_engine/engine.py`):
 
 1. A turn gets tools when `investigation_tools` is registered **and** the turn has something for them to target. A turn with no searchable material takes the single-shot structured path instead — see [§5.5](#55-generation-path-selection-v61). On the loop, the LLM decides which tool to invoke based on the user's question and tool descriptions.
 2. `tool_choice` varies by query context:
