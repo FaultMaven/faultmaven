@@ -12,27 +12,19 @@ This service wraps the MilestoneEngine and provides:
 
 import copy
 import logging
-from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from faultmaven.config.tenant_context import get_current_billing_organization_id
 from faultmaven.core.investigation.case_telemetry import (
-    TELEMETRY_HANDOFF_KEY,
     TurnPath,
-    collect_progress_arms,
     emit_case_turn,
 )
 from faultmaven.core.investigation.intent_resolver import IntentResolver
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.core.investigation.suggestion_liveness import (
-    entry_file_id,
     live_suggestions,
-)
-from faultmaven.core.investigation.turn_pipeline import (
-    generate_implicit_query,
-    submitted_name,
 )
 from faultmaven.core.investigation.turn_uploads import report_turn_uploads
 from faultmaven.exceptions import (
@@ -53,24 +45,13 @@ from faultmaven.infrastructure.protection.tenant_turn_cap import (
 )
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import (
-    AttachmentResult,
     IntentType,
-    ProgressTransparencyInfo,
     QueryIntent,
-    SuggestedActionResponse,
     TurnResponse,
 )
 from faultmaven.modules.agent.domain.services.investigation_service.attachments import (
-    _attachment_reroute,
     _engine_attachment_metadata,
-    _preprocess_attachment,
-    _PreprocessedAttachment,
-    _turn_delivers_evidence_bearing_attachment,
-)
-from faultmaven.modules.agent.domain.services.investigation_service.clarification import (
-    _build_classification_clarification,
-    _carry_forward_unresolved_clarifications,
-    _stored_suggestions,
+    _preprocess_turn_uploads,
 )
 from faultmaven.modules.agent.domain.services.investigation_service.intent_gates import (
     _minted_intent_swallows_gate_consent,
@@ -80,11 +61,15 @@ from faultmaven.modules.agent.domain.services.investigation_service.reclassifica
     _reclassified_collections,
     _reextract_under_override,
 )
-from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
-    _backfill_consumed_turn,
-    _kb_context_sources,
-    _published_source_type,
-    _record_composed_reply,
+from faultmaven.modules.agent.domain.services.investigation_service.turn_messages import (
+    _build_user_message,
+    _save_and_emit_turn,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.turn_response import (
+    _build_turn_response,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.turn_results import (
+    _absorb_engine_result,
 )
 from faultmaven.modules.agent.domain.services.orientation import (
     OUT_OF_BAND_MARKER,
@@ -101,21 +86,15 @@ from faultmaven.modules.agent.domain.services.out_of_band import (
     has_investigation_history,
 )
 from faultmaven.modules.agent.domain.services.query_classifier import (
-    QueryClassification,
     classify_query,
 )
 from faultmaven.modules.case.contracts import (
-    MESSAGE_METADATA_AGENT_SYNTHESIZED,
     Case,
-    MessageRowKind,
     TurnOutcome,
-    VerificationStatus,
-    append_message_row,
 )
 from faultmaven.modules.case.contracts import ICaseRepository as CaseRepository
 from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
-    UploadedFile,
 )
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
@@ -349,7 +328,10 @@ class InvestigationService:
             # submitted; ``case.uploaded_files`` already had each row
             # appended inside ``_preprocess_attachment``.
             classification, preprocess_results, query, uploaded_files_this_turn = (
-                await self._preprocess_turn_uploads(
+                await _preprocess_turn_uploads(
+                    self.file_storage_service,
+                    self.preprocessing_service,
+                    self.repository,
                     case=case,
                     case_id=case_id,
                     classification=classification,
@@ -387,7 +369,7 @@ class InvestigationService:
             #    So: an LLM failure commits nothing; a post-LLM failure can commit
             #    a half turn. Do not reason about this path as all-or-nothing.
             intent, intent_type, orientation_kind, user_message_obj, was_terminal = (
-                self._build_user_message(
+                _build_user_message(
                     case=case,
                     case_id=case_id,
                     next_turn=next_turn,
@@ -446,7 +428,7 @@ class InvestigationService:
                 turn_meta,
                 turn_telemetry,
                 updated_case,
-            ) = self._absorb_engine_result(
+            ) = _absorb_engine_result(
                 preprocess_results=preprocess_results, query=query, result=result
             )
 
@@ -489,7 +471,8 @@ class InvestigationService:
             # ``result.setdefault("metadata", {})`` far above and has already
             # been ``.pop()``-ed from by then, so a None would have raised long
             # before this line.
-            agent_response_text = await self._save_and_emit_turn(
+            agent_response_text = await _save_and_emit_turn(
+                self.repository,
                 agent_response_text=agent_response_text,
                 attachment_metadata=attachment_metadata,
                 intent_type=intent_type,
@@ -503,7 +486,7 @@ class InvestigationService:
             turn_row_emitted = True
 
             # 5. Build TurnResponse
-            return self._build_turn_response(
+            return _build_turn_response(
                 agent_response_text=agent_response_text,
                 case_id=case_id,
                 clarification=clarification,
@@ -619,166 +602,6 @@ class InvestigationService:
         )
         processing_mode = classification.mode.value
         return classification, next_turn, processing_mode
-
-    async def _preprocess_turn_uploads(
-        self,
-        *,
-        case,
-        case_id,
-        classification,
-        next_turn,
-        payload,
-        processing_mode,
-        user_id,
-    ):
-        """Preprocess each attachment, re-route the classification for a fresh evidence-bearing upload, and derive the query."""
-        uploaded_files_this_turn: List["UploadedFile"] = []
-        preprocess_results: List[_PreprocessedAttachment] = []
-        if payload.has_attachments:
-            for attachment in payload.attachments:
-                result = await _preprocess_attachment(
-                    self.file_storage_service,
-                    self.preprocessing_service,
-                    self.repository,
-                    case,
-                    attachment,
-                    user_id,
-                    next_turn,
-                    processing_mode=processing_mode,
-                )
-                preprocess_results.append(result)
-                uploaded_files_this_turn.append(result.uploaded_file)
-
-        # #708: a fresh evidence-bearing upload must drive Directed
-        # Analysis even when the accompanying message is a generic cover
-        # note. classify_query only sees the message text, so a cover note
-        # ("here's the logs") with no inline entities routes to TRIAGE —
-        # and a knowledge-phrased cover ("what causes connection resets?")
-        # routes to KNOWLEDGE_QUERY — either of which lets the agent skip
-        # the freshly uploaded evidence. Re-route both to DA using the
-        # attachment signal the preprocessor already produced. This is
-        # channel-agnostic (Copilot pasted-content and Slack file uploads
-        # flow through the same path) and composes with the Slack agent's
-        # message_to_text alert-flattening, which already carries alert
-        # entities in the query text. query_mode threads to the engine and
-        # drives force_tools (tool_choice=required); DA subsumes triage.
-        #
-        # Scoped to INVESTIGATING: on INQUIRY the goal is to frame the
-        # problem, and a fresh upload is characterized via the structural
-        # index, not forced into directed analysis before the problem
-        # statement is confirmed. (Terminal turns never reach the engine's
-        # generation path — they short-circuit to _process_terminal_turn.)
-        # (The INQUIRY exception is AGENT_META → TRIAGE, #1328 — see
-        # ``_attachment_reroute``.)
-        rerouted = _attachment_reroute(case.state, classification.mode)
-        if rerouted is not None and _turn_delivers_evidence_bearing_attachment(
-            preprocess_results
-        ):
-            prior_mode = classification.mode.value
-            classification = QueryClassification(
-                mode=rerouted,
-                detected_entities=classification.detected_entities,
-                confidence=0.8,
-            )
-            # ``classification.mode.value`` threads to the engine via
-            # intent_data["query_mode"] below; the ``processing_mode`` local
-            # is only consumed by preprocessing (already run above), so it
-            # is intentionally not reassigned here.
-            logger.info(
-                "Query re-routed %s→%s on case %s turn %s: "
-                "fresh evidence-bearing attachment (#708/#1328)",
-                prior_mode,
-                rerouted.value.upper(),
-                case_id,
-                next_turn,
-            )
-
-        # Determine query (explicit or implicit)
-        query = payload.query
-        if not payload.has_query and payload.has_attachments:
-            query = generate_implicit_query(
-                uploaded_files_this_turn,
-                [a.filename for a in payload.attachments],
-            )
-        return classification, preprocess_results, query, uploaded_files_this_turn
-
-    def _build_user_message(self, *, case, case_id, next_turn, payload, query, user_id):
-        """Re-derive a client-sent GREETING, append the user message row, and advance the case's turn counters."""
-        intent = payload.intent
-        intent_type = intent.type if intent else IntentType.CONVERSATION
-        # GREETING is server-minted: the service derives it from the text
-        # (or from its absence) below. A client-sent GREETING used to be
-        # obeyed as-is — any text, any state, with any attachment — and
-        # answered from the static onboarding string. It is now read as
-        # plain conversation and re-derived; the enum value stays on the
-        # wire for the clients' generated types.
-        if intent is not None and intent_type == IntentType.GREETING:
-            logger.info(
-                "Ignoring client-sent GREETING intent on case %s; deriving "
-                "the intent from the message instead",
-                case_id,
-            )
-            intent = None
-            intent_type = IntentType.CONVERSATION
-        orientation_kind: Optional[OrientationKind] = None
-
-        # Appended unconditionally. NOTHING upstream de-duplicates this
-        # route, and an earlier version of this comment claimed otherwise
-        # (#1419) — read that claim before trusting it:
-        #
-        # ``DeduplicationMiddleware`` skips ``multipart/form-data``
-        # outright (``_should_skip``), and this route is declared with
-        # ``Form(...)``/``File(...)``, so its content hash is never
-        # computed for a turn. ``IdempotencyMiddleware`` only engages when
-        # the client sends an ``Idempotency-Key`` header. So two identical
-        # back-to-back submissions from a client that sends neither are
-        # both processed and both charged.
-        #
-        # That is the open question in #1419, not a settled one. What IS
-        # settled is that a role+content comparison here is the wrong
-        # answer: it cannot tell a resubmission from two members of a
-        # team-shared case posting the same adjacent text ("still broken",
-        # "+1"), which are two real turns. Such a guard was tried in
-        # ``CaseService.add_message_to_case``, had no callers so never ran,
-        # was "fixed" by #855 to compare ``author_id`` and still never ran,
-        # and both were retired in #1412.
-        #
-        # A blank ``query`` — every whitespace spelling, which
-        # ``detect_orientation`` already calls ``EMPTY`` — is recorded as
-        # ``EMPTY_TURN_TEXT`` and flagged, never written blank: the row is
-        # part of the aggregate save, and a blank one aborts it (#1420).
-        # That decision is the row kind's, not this call site's (#1452).
-        # ``query`` is non-blank for every turn carrying data: a paste
-        # becomes an attachment, and any attachment has already replaced
-        # ``query`` via ``generate_implicit_query`` above.
-        user_message_obj = append_message_row(
-            case,
-            MessageRowKind.USER_TURN,
-            query,
-            turn_number=next_turn,
-            author_id=user_id,
-            metadata={
-                "has_attachments": payload.has_attachments,
-                "attachment_count": len(payload.attachments),
-                "intent_type": intent_type.value,
-                "intent_metadata": (
-                    intent.model_dump(exclude_unset=True, exclude={"type"})
-                    if intent
-                    else {}
-                ),
-            },
-        )
-        case.message_count += 1
-        case.current_turn = next_turn
-        # #1142: this assignment is what "a turn was consumed" MEANS, and it
-        # is the reason the telemetry row is emitted from this method rather
-        # than from the engine — several routes below consume a turn number
-        # without reaching ``MilestoneEngine.process_turn`` at all. Read
-        # terminality here, before dispatch: the engine's terminal
-        # short-circuit returns before any turn bookkeeping, so afterwards
-        # nothing distinguishes it from a generation turn that did nothing.
-        was_terminal = case.is_terminal
-        return intent, intent_type, orientation_kind, user_message_obj, was_terminal
 
     async def _dispatch_turn(
         self,
@@ -1101,372 +924,6 @@ class InvestigationService:
             )
         return attachment_metadata, intent_type, oob_kind, result
 
-    def _absorb_engine_result(self, *, preprocess_results, query, result):
-        """Backfill turn history, reverse-redact the response, and rebuild stored suggestions from the handler's result."""
-        updated_case = result["case_updated"]
-        agent_response_text = result["agent_response"]
-
-        # 3a. #1264: every consumed turn gets a ``turn_history`` entry.
-        #
-        # Both repositories persist ``Case.effective_current_turn`` — the
-        # last recorded turn number — rather than the in-flight
-        # ``current_turn``. That is #500's prevention half, and it is still
-        # right: it stops the stored counter running ahead of the history,
-        # which is what let one interrupted turn permanently wedge a case.
-        # But it means a route that consumes a turn number WITHOUT recording
-        # one freezes the persisted counter. ``process_turn`` reloads the
-        # case every request and derives ``next_turn`` from that column, so
-        # the very next turn re-derives the number just used — no process
-        # boundary required. Measured on the corpus: 7 cases carry a
-        # ``(case_id, turn_number)`` pair with two user messages, and one
-        # resolved case has THREE user turns all stamped turn 9.
-        #
-        # The rule this restores is one the engine already states: its
-        # deterministic branches record a TurnProgress because "a
-        # deterministic branch still consumes a turn number"
-        # (``_finish_deterministic_turn``). So ``turn_history`` is already a
-        # record of CONSUMED turns rather than of engine turns, and the
-        # routes that skip it — greeting, file reclassification, and the
-        # terminal short-circuit — are the ones that were missed, not a
-        # different kind of turn.
-        #
-        # Placed at the chokepoint rather than at those three sites for the
-        # reason the telemetry emission is here too: this method is where a
-        # turn number is consumed, so a backstop here cannot be missed by a
-        # route added later. It is a no-op on every path that already
-        # recorded, which is the overwhelming majority.
-        # ONE binding of the turn's metadata dict, shared by every reader
-        # and by the backfill that WRITES to it (#1270). ``or {}`` cannot be
-        # used here: ``{}`` is falsy, so a route returning ``{"metadata":
-        # {}}`` -- or omitting the key -- got a FRESH dict, the backfill's
-        # progress reading was written into that throwaway, and the three
-        # surfaces below (the persisted assistant message, the #1142 row,
-        # ``TurnResponse.progress_made``) went on reading
-        # ``result["metadata"]``, which never received it. That is exactly
-        # the one-turn-three-verdicts split this fix exists to close,
-        # re-opened by a defensive default. ``setdefault`` binds the real
-        # dict and installs one when the key is absent, so the write always
-        # lands where the reads look.
-        turn_meta: dict[str, Any] = result.setdefault("metadata", {})
-
-        _backfill_consumed_turn(
-            updated_case,
-            user_message=query or "",
-            agent_response=agent_response_text,
-            metadata=turn_meta,
-        )
-
-        # Placed HERE, not beside the save: ``next_read_turn`` below is
-        # ``effective_current_turn + 1``, and every consumer of the turn
-        # clock on this path reads it after this point. Recording the turn
-        # after them would leave them reading a counter that is one behind
-        # for this turn — which is the same off-by-one this issue is about,
-        # just relocated. Caught by #1263's window test, which stopped
-        # closing its recovery window.
-
-        # #1142: lift the engine's progress-arm reading out of the returned
-        # metadata BEFORE step 4 persists that dict onto the assistant
-        # ``case_messages`` row. Popped rather than copied: the row is
-        # readable through the transcript API, and this is monitoring data
-        # collected like logging data, not part of the product surface.
-        turn_telemetry = turn_meta.pop(TELEMETRY_HANDOFF_KEY, None) or {}
-
-        # Reverse-substitute PII placeholders so user sees real values.
-        # The LLM worked with redacted content; the user should not.
-        redaction_ctx = result.get("redaction_ctx")
-        if redaction_ctx:
-            agent_response_text = redaction_ctx.reverse(agent_response_text)
-
-        # 3b. Store suggestions with intent metadata for next turn's
-        #      intent resolver (bounded choice matching). Clarification
-        #      suggestions (classification_failed this turn) are built
-        #      here — before the save — so a user who *types* a choice
-        #      ("application logs") instead of clicking resolves to the
-        #      same file_reclassification intent as a click.
-        #
-        # Read the carry off ``updated_case``: the reclassification
-        # handler ``model_copy``s the case, so this is still the PREVIOUS
-        # turn's list at this point.
-        #
-        # ``next_read_turn`` is the number the NEXT turn's adoption site
-        # will compute, and BOTH sides of the seam are filtered at it, so
-        # what is stored is exactly what the next read accepts. It is
-        # ``effective_current_turn + 1``, not ``current_turn + 1``. Since
-        # #1264 those agree on every route — the backfill above guarantees
-        # this turn is recorded before the counter is read — but deriving
-        # from the persisted clock keeps the seam correct BY CONSTRUCTION
-        # rather than by the two happening to match. If a route ever stops
-        # recording again, that shows up as a clock bug, not as silently
-        # dropped clarification questions.
-        # Filtering at the wrong one is not a rounding error — it ages
-        # every entry an extra turn after every clarification click and
-        # permanently drops questions the reader would still have taken.
-        resolved_file_id = turn_meta.get("file_reclassified", {}).get("file_id")
-        next_read_turn = updated_case.effective_current_turn + 1
-        carried_entries = _carry_forward_unresolved_clarifications(
-            updated_case.last_suggestions,
-            updated_case,
-            resolved_file_id,
-            as_of_turn=next_read_turn,
-        )
-
-        # Choices and the note that introduces them come back together
-        # from one filter pass, so the note cannot name a different set
-        # of attachments than the choices target.
-        clarification, clarification_note = _build_classification_clarification(
-            preprocess_results
-        )
-
-        raw_follow_ups = result.get("suggested_follow_ups", [])
-        stored = _stored_suggestions(
-            case=updated_case,
-            clarification=clarification,
-            carried=carried_entries,
-            follow_ups=raw_follow_ups,
-            offered_turn=updated_case.current_turn,
-            as_of_turn=next_read_turn,
-        )
-        updated_case.last_suggestions = stored or None
-
-        # The CARDS are derived from what survived storage, so one rule
-        # decides both. A turn can deliver an unclassifiable attachment
-        # AND close the case; ``_handle_file_reclassification`` refuses on
-        # a terminal case, so each card would be a button that answers 422
-        # while the typed route is silently dropped by the liveness rule —
-        # and "How should I treat it?" is not a question a closed case is
-        # asking. Special-casing ``is_terminal`` here instead would put the
-        # same judgement in two places and, worse, make the filter inside
-        # ``_stored_suggestions`` unreachable: an invariant nothing can
-        # break is an invariant nothing is checking.
-        offered_ids = {entry_file_id(e) for e in stored}
-        clarification = [
-            s for s in clarification if (s.intent or {}).get("file_id") in offered_ids
-        ]
-        if not clarification:
-            clarification_note = None
-        if clarification_note:
-            # #1660: the note is the whole reply when the answer was blank,
-            # and the turn record — written above as unanswered — has to
-            # say what the row will. A row the engine flagged keeps its
-            # flag below, so its record is left as it is.
-            composed_onto_nothing = not agent_response_text.strip() and not (
-                turn_meta.get(MESSAGE_METADATA_AGENT_SYNTHESIZED)
-            )
-            agent_response_text += clarification_note
-            if composed_onto_nothing:
-                _record_composed_reply(updated_case, agent_response_text)
-        return (
-            agent_response_text,
-            clarification,
-            raw_follow_ups,
-            turn_meta,
-            turn_telemetry,
-            updated_case,
-        )
-
-    async def _save_and_emit_turn(
-        self,
-        *,
-        agent_response_text,
-        attachment_metadata,
-        intent_type,
-        oob_kind,
-        payload,
-        turn_meta,
-        turn_telemetry,
-        updated_case,
-        was_terminal,
-    ):
-        """Append the agent message, save the case, and emit the #1142 turn-telemetry row."""
-        agent_message = append_message_row(
-            updated_case,
-            MessageRowKind.AGENT_ANSWER,
-            agent_response_text,
-            turn_number=updated_case.current_turn,
-            metadata=turn_meta,
-        )
-        # Read back from the row, not branched beside it: ``TurnResponse``
-        # below reads this same name, and a marker that reached only the
-        # stored row would leave the live client rendering an empty bubble
-        # while a reload showed text that was never delivered. (Slack
-        # rejects an empty message outright.) This kind never drops a row.
-        agent_response_text = agent_message["content"]
-        updated_case.message_count += 1
-        await self.repository.save(updated_case)
-
-        # 4b. #1142: one row per consumed turn, on every route. Emitted
-        # AFTER the save so the counter, the case state and both ledgers are
-        # the settled post-turn values — the pre-existing
-        # ``grounding_assessment`` trace reports from inside response
-        # application and therefore carries the PREVIOUS turn's
-        # ``turns_without_progress``.
-        #
-        # The route is taken from the engine's handoff when there is one.
-        # The fallbacks are not cosmetic: GREETING and FILE_RECLASSIFICATION
-        # are answered here without ever calling the engine, and a terminal
-        # case short-circuits inside it, so all three would otherwise be
-        # stream GAPS — and a gap silently shortens every streak a consumer
-        # computes, making a correct handshake read as an engine-dry run.
-        turn_metadata = turn_meta
-        # No handoff means the route never reached the engine's progress
-        # decision — but it still reported its uploads, because every route
-        # runs ``report_turn_uploads``. Reading the arms off the returned
-        # metadata rather than defaulting to all-zero is what keeps
-        # ``user_supplied_new`` true on a turn where the user DID upload
-        # (a file riding a clarification click, or arriving on a closed
-        # case). All-zero there would print "the user supplied nothing" on
-        # exactly the engine-dry-user-supplying turn this stream exists to
-        # surface.
-        turn_arms = turn_telemetry.get("arms") or collect_progress_arms(turn_metadata)
-        if turn_telemetry.get("path"):
-            turn_path = turn_telemetry["path"]
-        elif oob_kind is not None:
-            turn_path = TurnPath.OUT_OF_BAND
-        elif intent_type == IntentType.GREETING:
-            turn_path = TurnPath.GREETING
-        elif intent_type == IntentType.FILE_RECLASSIFICATION:
-            turn_path = TurnPath.RECLASSIFICATION
-        elif was_terminal:
-            turn_path = TurnPath.TERMINAL
-        else:
-            turn_path = TurnPath.LLM
-        emit_case_turn(
-            updated_case,
-            path=turn_path,
-            arms=turn_arms,
-            gate_name=turn_telemetry.get("gate_name"),
-            progress_made=bool(turn_metadata.get("progress_made", False)),
-            outcome=turn_metadata.get("outcome") or turn_telemetry.get("outcome"),
-            validation_repairs=int(turn_telemetry.get("validation_repairs", 0)),
-            repair_pattern=turn_telemetry.get("repair_pattern"),
-            # ``payload.query``, not ``query``: on an attachment-only turn
-            # ``query`` has been replaced by ``generate_implicit_query``'s
-            # engine-composed sentence, and reporting its length would say
-            # the user wrote a paragraph on a turn they typed nothing. This
-            # field's whole job is telling "user went silent" apart from
-            # "user wrote a paragraph that produced nothing".
-            user_message_chars=len(payload.query or ""),
-            attachment_count=len(attachment_metadata or []),
-        )
-        return agent_response_text
-
-    def _build_turn_response(
-        self,
-        *,
-        agent_response_text,
-        case_id,
-        clarification,
-        payload,
-        preprocess_results,
-        raw_follow_ups,
-        turn_meta,
-        updated_case,
-        uploaded_files_this_turn,
-    ):
-        """Assemble and return the TurnResponse (suggested actions, cause assurance, sources, progress transparency)."""
-        suggested_actions = [
-            SuggestedActionResponse(
-                label=f["label"],
-                type=f["action_type"],
-                payload=f.get("payload"),
-                body=f.get("body"),
-                hints=f.get("hints"),
-                intent=f.get("intent"),
-            )
-            for f in raw_follow_ups
-        ]
-
-        # Prepend classification-clarification suggestions (built at 3b)
-        # when this turn's attachment hit classification_failed.
-        # User-in-the-loop guidance takes priority over generic
-        # follow-up suggestions from the engine.
-        if clarification:
-            suggested_actions = clarification + suggested_actions
-
-        # Read-time assurance grade for narration-only clients (#572/INV-28):
-        # present whenever the case has stated a root cause, recomputed from
-        # the causal graph so a resolution turn (which never recomputes the
-        # persisted progress field) still carries the true grade beside the
-        # cause claim the LLM wrote into agent_response.
-        turn_cause_assurance = None
-        turn_cause_overclaim = None
-        if updated_case.root_cause_conclusion is not None:
-            from faultmaven.core.investigation.cause_assurance import (
-                conclusion_overclaims,
-                grade_cause_assurance,
-            )
-
-            _grade = grade_cause_assurance(updated_case)
-            turn_cause_assurance = _grade.value
-            turn_cause_overclaim = conclusion_overclaims(
-                updated_case.root_cause_conclusion, _grade
-            )
-
-        # Which runbooks informed this turn (fm#1361). The citation
-        # components in the Copilot read ``item.sources`` and have been
-        # unreachable code because nothing ever assigned it: the backend
-        # held the identity on ``case.kb_context`` and dropped it on the
-        # way out.
-        #
-        # Read from ``updated_case``, not the pre-turn case: both pre-fetch
-        # triggers fire during response application, so this turn's hits
-        # exist only on the post-turn object.
-        turn_sources = _kb_context_sources(updated_case)
-
-        response = TurnResponse(
-            agent_response=agent_response_text,
-            turn_number=updated_case.current_turn,
-            investigation_turn=updated_case.investigation_turn_count,
-            milestones_completed=turn_meta.get("milestones_completed", []),
-            case_state=updated_case.state,
-            progress_made=turn_meta.get("progress_made", False),
-            attachments_processed=[
-                AttachmentResult(
-                    file_id=res.uploaded_file.file_id,
-                    # The chip the Copilot renders on the very turn
-                    # the user pasted — #666's most immediate surface.
-                    # ``file_id`` is the documented handle the frontend
-                    # references an attachment by, so this field is
-                    # display-only.
-                    #
-                    # ``submitted_name``, not ``uploaded_file.display_name``:
-                    # dedup matches on content_hash ALONE, so the row can
-                    # be one the user named differently on an earlier turn,
-                    # and naming the chip from it reports a filename they
-                    # never sent.
-                    filename=submitted_name(att.filename, res.uploaded_file),
-                    # Published as the 6-valued vocabulary (see the
-                    # field's description), so folded at the read
-                    # boundary: the row may hold either one (#583).
-                    source_type=_published_source_type(res.uploaded_file),
-                    file_size=res.uploaded_file.size_bytes,
-                    processing_status=(
-                        "duplicate" if res.duplicate_of else "completed"
-                    ),
-                    uploaded_at=datetime.now(timezone.utc).isoformat(),
-                    upload_source=res.uploaded_file.upload_source,
-                    duplicate_of=res.duplicate_of,
-                    duplicate_turn=res.duplicate_turn,
-                )
-                for att, res in zip(payload.attachments, preprocess_results)
-            ],
-            suggested_actions=suggested_actions,
-            progress_transparency=self._build_progress_transparency(
-                turn_meta, updated_case
-            ),
-            sources=turn_sources,
-            cause_assurance=turn_cause_assurance,
-            cause_overclaim=turn_cause_overclaim,
-        )
-
-        logger.info(
-            f"Processed turn {response.turn_number} for case {case_id}, "
-            f"status={response.case_state}, milestones={len(response.milestones_completed)}, "
-            f"attachments={len(uploaded_files_this_turn)}, messages={updated_case.message_count}"
-        )
-
-        return response
-
     @trace("investigation_service_get_progress")
     async def get_progress(self, case_id: str, user_id: str) -> Dict[str, Any]:
         """
@@ -1692,62 +1149,6 @@ class InvestigationService:
         )
 
         return result
-
-    def _build_progress_transparency(
-        self, metadata: Dict[str, Any], case: "Case"
-    ) -> Optional[ProgressTransparencyInfo]:
-        """Build ProgressTransparencyInfo from turn metadata.
-
-        ``verification_status`` carries the engine's persisted assessment for
-        the turn (the grounding × progress join) so the frontend can surface the
-        honest partial outcome — e.g. ``insufficient_evidence`` — alongside the
-        stalled-milestone info.
-
-        Emitted when transparent mode is active (stalled-milestone surfacing)
-        **or** when the status is one of the honest-partial readings. The latter
-        is decoupled from ``progress_transparent`` on purpose: a declared data
-        wall reaches ``INSUFFICIENT_EVIDENCE`` *before* the time-stall thresholds
-        that drive transparent mode, so gating the status on that flag would hide
-        the very outcome the frontend needs to show. ``active`` still reflects
-        transparent mode only.
-        """
-        verification_status = None
-        cause_assurance = None
-        if case.progress:
-            if case.progress.verification_status:
-                verification_status = case.progress.verification_status.value
-            if case.progress.cause_assurance:
-                cause_assurance = case.progress.cause_assurance.value
-
-        transparent = bool(metadata.get("progress_transparent"))
-        # Every engine-driven honest-partial reading is surfaced independently of
-        # transparent mode, for the same reason: each can be reached on a turn
-        # that never activates it, and gating on the flag would hide the outcome
-        # the frontend exists to show. ``INSUFFICIENT_EVIDENCE`` via the declared
-        # data wall (which fires before the time thresholds); ``TREATMENT_BLOCKED``
-        # (#1136) because a case parked on an unapplied fix is conversational —
-        # transparent mode counts investigative turns, so a fix-blocked stall can
-        # sit in that cell for turns on end without ever tripping it;
-        # ``RESTATEMENT_HELD`` (#1195) because it is carved OUT of
-        # ``INSUFFICIENT_EVIDENCE`` — omitting it would silence, in this channel,
-        # exactly the cases that channel used to (wrongly) report, which is the
-        # suppression-without-replacement failure that fix exists to avoid.
-        surface_honest_partial = verification_status in (
-            VerificationStatus.INSUFFICIENT_EVIDENCE.value,
-            VerificationStatus.TREATMENT_BLOCKED.value,
-            VerificationStatus.RESTATEMENT_HELD.value,
-        )
-        if not transparent and not surface_honest_partial:
-            return None
-
-        return ProgressTransparencyInfo(
-            active=transparent,
-            pending_milestone=metadata.get("pending_milestone"),
-            milestone_description=metadata.get("milestone_description"),
-            repair_type=metadata.get("stagnation_type"),
-            verification_status=verification_status,
-            cause_assurance=cause_assurance,
-        )
 
     async def _handle_greeting(
         self,
