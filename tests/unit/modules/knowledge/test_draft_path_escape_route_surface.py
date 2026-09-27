@@ -109,7 +109,7 @@ def _client(file_path):
     """The real conversion router, with the real exception handlers."""
     from faultmaven.api.exception_handlers import get_exception_handlers
     from faultmaven.modules.knowledge.api import conversion_routes as cr
-    from faultmaven.modules.knowledge.domain.services.conversion_service import (
+    from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
         ConversionService,
     )
 

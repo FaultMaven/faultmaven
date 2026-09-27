@@ -1050,7 +1050,7 @@ def _wire_services(app, chroma) -> None:
     from faultmaven.modules.case.infrastructure.sessionless_case_repository import (
         SessionlessCaseRepository,
     )
-    from faultmaven.modules.knowledge.domain.services.conversion_service import (
+    from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
         ConversionService,
     )
     from faultmaven.modules.knowledge.domain.services.knowledge_service import (

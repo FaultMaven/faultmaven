@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from faultmaven.modules.knowledge.domain.services.conversion_service import (
+from faultmaven.modules.knowledge.domain.services.conversion_service.prompts import (
     ANALYSIS_SYSTEM_PROMPT,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (

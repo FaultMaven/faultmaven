@@ -277,7 +277,7 @@ def _app_with_real_service():
     from faultmaven.modules.knowledge.api.conversion_routes import (
         router as conversion_router,
     )
-    from faultmaven.modules.knowledge.domain.services.conversion_service import (
+    from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
         ConversionService,
     )
 
