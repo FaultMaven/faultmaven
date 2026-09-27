@@ -78,8 +78,8 @@ _FLAG = frozenset({"agent_response_synthesized"})
 
 _CTX = "faultmaven/core/investigation/prompts/context_builder/history.py"
 _CASE_SERVICE = "faultmaven/modules/case/domain/services/case_service.py"
-_INVESTIGATION = (
-    "faultmaven/modules/agent/domain/services/investigation_service/service.py"
+_INVESTIGATION_RECLASSIFICATION = (
+    "faultmaven/modules/agent/domain/services/investigation_service/reclassification.py"
 )
 
 #: (file, function) -> (read count, {guarding function: names it must use}).
@@ -122,7 +122,7 @@ _WIRE = "the LLM request payload's own `messages`, not a case's rows"
 
 #: (file, function) -> (read count, why it puts nothing in front of a model).
 OTHER_READERS: dict[tuple[str, str], tuple[int, str]] = {
-    (_INVESTIGATION, "InvestigationService._handle_file_reclassification"): (
+    (_INVESTIGATION_RECLASSIFICATION, "_handle_file_reclassification"): (
         1,
         "copies the list onto a shallow case copy",
     ),

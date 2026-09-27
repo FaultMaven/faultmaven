@@ -217,8 +217,8 @@ _MUST_FIND = {
     "row_literal": {_CONSTRUCTOR},
     "construction": {
         (
-            "faultmaven/modules/agent/domain/services/investigation_service/service.py",
-            "InvestigationService._handle_file_reclassification",
+            "faultmaven/modules/agent/domain/services/investigation_service/reclassification.py",
+            "_handle_file_reclassification",
         )
     },
     "add_message": {
