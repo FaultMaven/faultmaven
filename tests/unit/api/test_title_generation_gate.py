@@ -31,8 +31,8 @@ from faultmaven.modules.auth.contracts import UserDTO
 from faultmaven.modules.case.api.routes import generate_case_title
 from faultmaven.modules.case.api.title_generation import MIN_CONTENT_LENGTH_FOR_TITLE
 from faultmaven.modules.case.contracts import CaseState
-from faultmaven.modules.case.domain.models import (
-    Case,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,

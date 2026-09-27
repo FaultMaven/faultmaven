@@ -11,18 +11,20 @@ from datetime import UTC, datetime
 
 import pytest
 
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.evidence_needs import (
     EvidenceNeed,
-    Hypothesis,
-    HypothesisCategory,
-    HypothesisGenerationMode,
-    HypothesisState,
     NeedObtainability,
     NeedPurpose,
     NeedState,
 )
+from faultmaven.modules.case.domain.models.hypothesis import (
+    Hypothesis,
+    HypothesisCategory,
+    HypothesisGenerationMode,
+    HypothesisState,
+)
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.report.domain.services.report_generation_service import (
     ReportGenerationService,
 )

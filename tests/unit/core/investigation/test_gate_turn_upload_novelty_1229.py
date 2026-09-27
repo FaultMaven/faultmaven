@@ -45,12 +45,10 @@ import faultmaven.core.investigation.milestone_engine as milestone_engine_module
 import faultmaven.core.investigation.prompts.context_builder as context_builder
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
-    InvestigationProgress,
-    ProblemVerification,
-)
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import ProblemVerification
+from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 
 pytestmark = pytest.mark.unit
 

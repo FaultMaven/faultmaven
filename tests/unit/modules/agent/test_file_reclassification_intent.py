@@ -44,13 +44,12 @@ from faultmaven.modules.agent.domain.services.investigation_service import (
     _PreprocessedAttachment,
     _sanitize_label_fragment,
 )
-from faultmaven.modules.case.domain.models import (
-    CaseState,
+from faultmaven.modules.case.domain.models.evidence import (
     EvidenceSourceType,
-    TurnOutcome,
-    TurnProgress,
     UploadedFile,
 )
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 
 from .conftest import (
     MockCaseRepository,

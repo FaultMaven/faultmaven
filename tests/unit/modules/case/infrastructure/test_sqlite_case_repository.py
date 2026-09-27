@@ -27,31 +27,36 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseAction,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.causal import (
     CausalEdge,
     CausalNode,
+    InterventionQuadrant,
+    NodeEvidenceLink,
+    NodeState,
+    NodeType,
+    ValidationMethod,
+)
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
     EvidenceStance,
+    UploadedFile,
+)
+from faultmaven.modules.case.domain.models.hypothesis import (
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
-    InterventionQuadrant,
-    InvestigationStrategy,
-    NodeEvidenceLink,
-    NodeState,
-    NodeType,
-    Solution,
-    SolutionType,
-    UploadedFile,
-    ValidationMethod,
 )
+from faultmaven.modules.case.domain.models.lifecycle import (
+    CaseAction,
+    CaseState,
+    InvestigationStrategy,
+)
+from faultmaven.modules.case.domain.models.problem import InquiryData
+from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
 from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
 from faultmaven.modules.case.domain.owned_models.report import (
     CaseReport,

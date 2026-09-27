@@ -1304,8 +1304,8 @@ async def _seed_case_with_content(
     precisely so a Phase-3 call site that confuses them shows up as a failure
     rather than as a value that happens to be equal.
     """
-    from faultmaven.modules.case.domain.models import (
-        Case,
+    from faultmaven.modules.case.domain.models.case import Case
+    from faultmaven.modules.case.domain.models.evidence import (
         Evidence,
         EvidenceCategory,
         EvidenceSourceType,

@@ -44,7 +44,9 @@ import pytest
 
 from faultmaven.models.api_models import CaseSearchRequest
 from faultmaven.modules.case.contracts import ICaseRepository
-from faultmaven.modules.case.domain.models import Case, CaseState, InquiryData
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import InquiryData
 from faultmaven.modules.case.domain.services.case_service import CaseService
 from faultmaven.modules.case.infrastructure import sessionless_case_repository
 from faultmaven.modules.case.infrastructure.case_repository import (

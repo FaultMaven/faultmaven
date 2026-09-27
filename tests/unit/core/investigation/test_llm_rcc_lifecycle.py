@@ -24,12 +24,14 @@ from unittest.mock import patch
 
 import pytest
 
-from faultmaven.core.investigation.causal_graph import (
+from faultmaven.core.investigation.causal_graph.disconfirmation import (
     _attach_engine_refutation,
     demote_disconfirmed_cause_via_evidence,
+)
+from faultmaven.core.investigation.causal_graph.ingestion import seed_problem_node
+from faultmaven.core.investigation.causal_graph.rcc import (
     link_llm_rcc_to_cause,
     retract_disconfirmed_rcc,
-    seed_problem_node,
 )
 from faultmaven.core.investigation.milestone_engine import (
     _recompute_cause_state_from_chain,
@@ -182,7 +184,7 @@ def test_link_single_strong_match():
     case = _case(hyps=[hyp])
     case.root_cause_conclusion = _llm_rcc(_POOL_LEAK)
     with patch(
-        "faultmaven.core.investigation.causal_graph.llm_rcc_cause_linked_total"
+        "faultmaven.core.investigation.causal_graph.rcc.llm_rcc_cause_linked_total"
     ) as counter:
         assert link_llm_rcc_to_cause(case) is True
     assert case.root_cause_conclusion.validated_hypothesis_id == hyp.hypothesis_id
@@ -294,7 +296,7 @@ def test_linked_llm_rcc_retracted_when_cause_refuted():
     case.root_cause_conclusion = _llm_rcc(_POOL_LEAK, vhid=hyp.hypothesis_id)
     hyp.state = HypothesisState.REFUTED
     with patch(
-        "faultmaven.core.investigation.causal_graph."
+        "faultmaven.core.investigation.causal_graph.rcc."
         "llm_rcc_retracted_disconfirmed_total"
     ) as counter:
         assert retract_disconfirmed_rcc(case) is True
@@ -408,7 +410,7 @@ def test_m6_clears_conclusion_naming_the_disconfirmed_cause():
         )
     )
     with patch(
-        "faultmaven.core.investigation.causal_graph."
+        "faultmaven.core.investigation.causal_graph.disconfirmation."
         "llm_rcc_retracted_disconfirmed_total"
     ) as counter:
         assert demote_disconfirmed_cause_via_evidence(case) is True
@@ -433,7 +435,7 @@ def test_m6_clears_unlinked_conclusion_on_sole_disconfirmed_cause():
         )
     )
     with patch(
-        "faultmaven.core.investigation.causal_graph."
+        "faultmaven.core.investigation.causal_graph.disconfirmation."
         "llm_rcc_retracted_disconfirmed_total"
     ) as counter:
         assert demote_disconfirmed_cause_via_evidence(case) is True
@@ -463,7 +465,7 @@ def test_m6_proxy_wipe_of_conclusion_linked_elsewhere_not_counted():
         )
     )
     with patch(
-        "faultmaven.core.investigation.causal_graph."
+        "faultmaven.core.investigation.causal_graph.disconfirmation."
         "llm_rcc_retracted_disconfirmed_total"
     ) as counter:
         # Representative resolves to the linked hyp_y (not disconfirmed), so M6

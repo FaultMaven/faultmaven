@@ -21,7 +21,7 @@ from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
 )
 from faultmaven.modules.case.contracts import Case, CaseState
-from faultmaven.modules.case.domain.models import InvestigationProgress
+from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 
 
 async def test_intent_routing():

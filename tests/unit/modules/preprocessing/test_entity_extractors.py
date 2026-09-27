@@ -14,7 +14,7 @@ import re
 import pytest
 
 from faultmaven.models.api import DataType
-from faultmaven.modules.case.domain.models import EntityType
+from faultmaven.modules.case.domain.models.evidence import EntityType
 from faultmaven.modules.preprocessing.entities import (
     EntityObservation,
     extract_entities_for_data_type,

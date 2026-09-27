@@ -50,7 +50,7 @@ from faultmaven.modules.case.api.title_generation import (
     _TitleSubstanceTooThin,
 )
 from faultmaven.modules.case.contracts import CaseState
-from faultmaven.modules.case.domain.models import Case
+from faultmaven.modules.case.domain.models.case import Case
 
 TENANT_ORG = "org_tenant_alpha"
 

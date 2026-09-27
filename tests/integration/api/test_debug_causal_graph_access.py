@@ -20,7 +20,9 @@ from fastapi.testclient import TestClient
 
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.modules.auth.domain.models.auth import DevUser
-from faultmaven.modules.case.domain.models import Case, CaseState, InquiryData
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import InquiryData
 
 DEBUG_PATH = "/debug/cases/{case_id}/causal-graph"
 

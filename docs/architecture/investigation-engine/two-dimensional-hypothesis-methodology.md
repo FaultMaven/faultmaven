@@ -424,7 +424,7 @@ observable facts** matching its predicted state (an exact log/stack trace, a
 return code, a reproducer's output). Assumption, inference, and secondary
 correlation are not validation. Engine-side, a node reaches VALIDATED only on
 **causally-grounding SUPPORTS** link(s) (`derive_node_states` →
-`_node_evidence_tally`, `causal_graph.py`), net of refutations and behind the
+`_node_evidence_tally`, `causal_graph/`), net of refutations and behind the
 M7 AND-gate.
 
 A SUPPORTS link is causally grounding **only** when its backing datum is
@@ -683,7 +683,7 @@ function has no sound source for it. So the guards split by who can supply each:
 the **agent** certifies exhaustiveness by naming the survivor in a
 `deductive_validations` assertion (the one un-computable guard, opt-in, rare, on
 the unobservable-cause path only); the **engine** owns every guard it can check.
-`causal_graph.validate_by_exclusion` runs each turn right after `derive_node_states`
+`causal_graph.derivation.validate_by_exclusion` runs each turn right after `derive_node_states`
 (so the siblings' states are settled), and for each asserted survivor calls
 `deductively_validated(..., exhaustive=True)` — which re-checks ≥2 members and that
 every non-survivor is *absolutely* excluded — before stamping
@@ -1158,7 +1158,7 @@ text it renders from the graph.
 *The conclusion carries the whole conjunction.* `contributing_factors` is not
 empty, though — the mirror populates it from the graph, with the statements of
 the VALIDATED nodes that share an M7 AND-set with the chain it renders and are
-not themselves on it (`causal_graph.validated_and_conjuncts`). A conclusion
+not themselves on it (`causal_graph.queries.validated_and_conjuncts`). A conclusion
 mirrors ONE chain — root as the cause, rungs as the mechanism — so a
 co-necessary cause sits off that chain, and without this a cause the
 investigation established as a conjunction reached the report, and any runbook

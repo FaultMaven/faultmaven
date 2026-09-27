@@ -32,9 +32,9 @@ from faultmaven.core.investigation.verification_status import (
     VerificationStatus,
     assess_verification_status,
 )
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import (
     InquiryData,
     PreliminaryUrgency,
     ProblemConfirmation,

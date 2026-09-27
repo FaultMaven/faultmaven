@@ -32,7 +32,7 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
     InMemoryInvestigationSessionRepository,
 )
 from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.modules.case.domain.models import CaseSeverity
+from faultmaven.modules.case.domain.models.lifecycle import CaseSeverity
 from faultmaven.modules.case.domain.services.api_case_service import APICaseService
 from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
     SQLiteCaseRepository,

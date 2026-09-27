@@ -34,7 +34,7 @@ from pydantic.fields import FieldInfo
 
 from faultmaven.core.investigation import milestone_engine as me
 from faultmaven.core.investigation import reliability_metrics, schemas
-from faultmaven.core.investigation.causal_graph import ingest_emitted_chain
+from faultmaven.core.investigation.causal_graph.ingestion import ingest_emitted_chain
 from faultmaven.core.investigation.confidence_repair import (
     CONFIDENCE_REPAIRS_CONTEXT_KEY,
     ConfidenceAction,
@@ -1096,7 +1096,7 @@ def _node_with_stored_link(stance: str, confidence: float) -> tuple[Case, str]:
 
 
 def _node_support_ev_ids(case: Case, node_id: str) -> list:
-    from faultmaven.core.investigation.causal_graph import _node_evidence_tally
+    from faultmaven.core.investigation.causal_graph.support import _node_evidence_tally
 
     return _node_evidence_tally(
         case.causal_nodes[node_id], {EV_ID: EvidenceCategory.CAUSAL_EVIDENCE}

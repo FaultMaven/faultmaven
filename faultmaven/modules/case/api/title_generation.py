@@ -19,7 +19,7 @@ from faultmaven.models.interfaces_case import ICaseService
 
 # ``_is_default_case_title``: the alias and why it bounds auto-titling are
 # documented where the route module binds it, in ``routes.py``.
-from faultmaven.modules.case.domain.models import (
+from faultmaven.modules.case.domain.models.evidence import (
     is_default_case_title as _is_default_case_title,
 )
 

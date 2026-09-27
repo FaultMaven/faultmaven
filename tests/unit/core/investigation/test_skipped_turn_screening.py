@@ -6,12 +6,9 @@ pad the action-loop / momentum windows.
 """
 
 from faultmaven.core.investigation.progress_monitor import ProgressMonitor
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
-    TurnOutcome,
-    TurnProgress,
-)
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 
 
 def _turn(n: int, outcome: TurnOutcome, **kw) -> TurnProgress:

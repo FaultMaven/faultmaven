@@ -20,10 +20,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from faultmaven.core.investigation.causal_graph import (
-    mechanism_for_chain,
-    seed_problem_node,
-)
+from faultmaven.core.investigation.causal_graph.ingestion import seed_problem_node
+from faultmaven.core.investigation.causal_graph.queries import mechanism_for_chain
 from faultmaven.core.investigation.cause_assurance import (
     confirm_root_from_resolution_absence,
 )

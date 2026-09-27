@@ -24,18 +24,20 @@ from faultmaven.core.investigation.prompts.context_builder import (
 from faultmaven.core.investigation.prompts.templates import (
     get_fallback_prompt_for_case,
 )
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.hypothesis import (
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
+)
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import (
     InquiryData,
     InvestigationStage,
-    MitigationRecord,
     ProblemVerification,
 )
+from faultmaven.modules.case.domain.models.progress import MitigationRecord
 
 
 def _case_with_hypotheses(

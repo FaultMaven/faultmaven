@@ -30,11 +30,8 @@ from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
     _backfill_consumed_turn,
 )
-from faultmaven.modules.case.domain.models import (
-    CaseState,
-    TurnOutcome,
-    TurnProgress,
-)
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 
 pytestmark = pytest.mark.unit
 
@@ -215,7 +212,7 @@ class TestTheRecordDoesNotDestroyWhatTurnHistoryFeeds:
         prompt. These routes build no prompt, so they have not consumed it —
         dropping it silently swallows a reasoning-validation error whenever a
         greeting lands between two engine turns."""
-        from faultmaven.modules.case.domain.models import TurnOutcome, TurnProgress
+        from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 
         case = sample_case
         case.turn_history = [
@@ -365,7 +362,7 @@ class TestTheBackfilledTurnIsHonest:
         """Every route that reaches the engine's bookkeeping already records.
         Appending a second entry for the same turn would break the consecutive
         invariant the repositories depend on."""
-        from faultmaven.modules.case.domain.models import TurnOutcome, TurnProgress
+        from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 
         case = sample_case
         case.current_turn = 2
@@ -438,7 +435,7 @@ class TestTheDoublesCanActuallyExpressTheDefect:
     async def test_the_recording_repository_applies_the_projection(
         self, recording_case_repository, sample_case
     ):
-        from faultmaven.modules.case.domain.models import TurnOutcome, TurnProgress
+        from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 
         case = sample_case
         case.current_turn = 7
@@ -459,7 +456,7 @@ class TestTheDoublesCanActuallyExpressTheDefect:
     async def test_the_plain_repository_cannot(self, mock_case_repository, sample_case):
         """Stated as a fact about the plain double, so the reason these tests
         use the recording one is written down rather than folklore."""
-        from faultmaven.modules.case.domain.models import TurnOutcome, TurnProgress
+        from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 
         case = sample_case
         case.current_turn = 7

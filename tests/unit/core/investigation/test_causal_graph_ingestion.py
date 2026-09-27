@@ -11,7 +11,7 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.core.investigation.causal_graph import (
+from faultmaven.core.investigation.causal_graph.ingestion import (
     chain_path_to_problem,
     ingest_emitted_chain,
     seed_problem_node,

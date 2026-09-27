@@ -28,7 +28,7 @@ from faultmaven.modules.case.contracts import (
     InvestigationStage,
     TurnOutcome,
 )
-from faultmaven.modules.case.domain.models import CauseState
+from faultmaven.modules.case.domain.models.progress import CauseState
 from faultmaven.modules.knowledge.contracts import (
     describe_troubleshooting_domains,
     describe_troubleshooting_scope,

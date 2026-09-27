@@ -809,7 +809,8 @@ class DIContainer(BaseDIContainer):
             get_current_billing_organization_id,
             get_current_enterprise_id,
         )
-        from faultmaven.modules.case.domain.models import Case, CaseState
+        from faultmaven.modules.case.domain.models.case import Case
+        from faultmaven.modules.case.domain.models.lifecycle import CaseState
 
         class MinimalCaseService:
             def __init__(self):

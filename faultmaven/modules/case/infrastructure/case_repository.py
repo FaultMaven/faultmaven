@@ -12,25 +12,30 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 from uuid import uuid4
 
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseAction,
-    CaseEntity,
-    CaseState,
-    DocumentationData,
-    EntityType,
-    EscalationState,
-    Evidence,
-    Hypothesis,
-    InquiryData,
-    InvestigationProgress,
-    ProblemVerification,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.conclusion import (
     RootCauseConclusion,
-    Solution,
-    TurnProgress,
-    UploadedFile,
     WorkingConclusion,
 )
+from faultmaven.modules.case.domain.models.documentation import (
+    DocumentationData,
+    EscalationState,
+)
+from faultmaven.modules.case.domain.models.evidence import (
+    CaseEntity,
+    EntityType,
+    Evidence,
+    UploadedFile,
+)
+from faultmaven.modules.case.domain.models.hypothesis import Hypothesis
+from faultmaven.modules.case.domain.models.lifecycle import CaseAction, CaseState
+from faultmaven.modules.case.domain.models.problem import (
+    InquiryData,
+    ProblemVerification,
+)
+from faultmaven.modules.case.domain.models.progress import InvestigationProgress
+from faultmaven.modules.case.domain.models.solution import Solution
+from faultmaven.modules.case.domain.models.turn import TurnProgress
 
 if TYPE_CHECKING:
     # Report models now owned by Case module - import from case domain models

@@ -15,23 +15,27 @@ from datetime import UTC, datetime
 
 import pytest
 
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.causal import (
     CausalEdge,
     CausalNode,
+    NodeEvidenceLink,
+    NodeState,
+    NodeType,
+    ValidationMethod,
+)
+from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
+    RootCauseConclusion,
+)
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
     EvidenceStance,
-    InquiryData,
-    NodeEvidenceLink,
-    NodeState,
-    NodeType,
-    RootCauseConclusion,
-    ValidationMethod,
 )
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import InquiryData
 from faultmaven.modules.report.domain.services.report_generation_service import (
     ReportGenerationService,
 )
@@ -210,7 +214,7 @@ async def test_no_map_section_when_the_map_would_contradict_the_hypotheses():
     """fm#1091 at the section boundary: the summary lists this cause as Refuted
     a few sections below, so the map that would draw it as the validated cause
     of D is absent — the document never asserts both."""
-    from faultmaven.modules.case.domain.models import (
+    from faultmaven.modules.case.domain.models.hypothesis import (
         Hypothesis,
         HypothesisCategory,
         HypothesisGenerationMode,

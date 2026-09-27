@@ -40,7 +40,7 @@ from faultmaven.modules.case.contracts import (
     MESSAGE_METADATA_USER_EMPTY,
     is_server_written_assistant_row,
 )
-from faultmaven.modules.case.domain.models import TurnOutcome, TurnProgress
+from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 
 #: Every text the server writes into an assistant row: the engine's four
 #: stop-reason placeholders and the service backstop's.

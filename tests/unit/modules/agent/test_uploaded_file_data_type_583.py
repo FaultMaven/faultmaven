@@ -40,7 +40,10 @@ from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
     _published_source_type,
 )
-from faultmaven.modules.case.domain.models import EvidenceSourceType, UploadedFile
+from faultmaven.modules.case.domain.models.evidence import (
+    EvidenceSourceType,
+    UploadedFile,
+)
 
 from .conftest import MockMilestoneEngine, RecordingCaseRepository, create_sample_case
 from .test_file_reclassification_intent import (
