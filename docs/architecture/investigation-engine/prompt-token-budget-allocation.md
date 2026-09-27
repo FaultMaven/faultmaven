@@ -11,7 +11,7 @@
 > **Authoritative source:**
 > `faultmaven/core/investigation/prompts/context_builder.py`
 > (`build_investigation_context`, `TokenBudget`) and
-> `faultmaven/core/investigation/prompts/templates.py` (`get_prompt_for_case`,
+> `faultmaven/core/investigation/prompts/templates/__init__.py` (`get_prompt_for_case`,
 > `_budgeted_prompt`).
 >
 > **Related docs:**

@@ -481,11 +481,14 @@ class TestCitationInstructions:
         (#1198 review). Asserted over the module source so a fourth one
         added anywhere in the file is caught too.
         """
-        import inspect
+        from pathlib import Path
 
         from faultmaven.core.investigation.prompts import templates
 
-        source = inspect.getsource(templates)
+        pkg_dir = Path(templates.__file__).parent
+        source = "".join(
+            p.read_text(encoding="utf-8") for p in sorted(pkg_dir.glob("*.py"))
+        )
         for banned in (
             "cite the filename",
             "label (filename, description)",

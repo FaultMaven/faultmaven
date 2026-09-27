@@ -649,11 +649,21 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
     # block's is ``ev.source_type``.
     (_CB, "_render_orphan_file_block", "name_arg", "_attr('data_type')"): ("other", 1),
     (_CB, "_render_evidence_block", "name_arg", "_attr('data_type')"): ("other", 1),
-    # Prompt prose that happens to contain "update"/"select" and the word.
-    ("core/investigation/prompts/templates.py", "<module>", "sql", "<sql>"): (
-        "other",
-        2,
-    ),
+    # Prompt prose that happens to contain "update"/"select" and the word —
+    # one site in each submodule that now holds it (blocks.py:
+    # _EVIDENCE_GROUNDING_BLOCK; investigation.py: INVESTIGATION_BASE).
+    (
+        "core/investigation/prompts/templates/blocks.py",
+        "<module>",
+        "sql",
+        "<sql>",
+    ): ("other", 1),
+    (
+        "core/investigation/prompts/templates/investigation.py",
+        "<module>",
+        "sql",
+        "<sql>",
+    ): ("other", 1),
     # The legacy data-ingestion service's own in-memory classification
     # results; it never touches ``uploaded_files``.
     (_INGEST, "CaseDataIngestionService._calculate_confidence_score", "attr", "data"): (

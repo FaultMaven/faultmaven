@@ -1,6 +1,6 @@
 # Prompt Assembly Architecture
 
-> **Authoritative source:** `faultmaven/core/investigation/prompts/templates.py`
+> **Authoritative source:** `faultmaven/core/investigation/prompts/templates/`
 >
 > This document describes the structure, dispatch, and shared constants of the FaultMaven prompt-template system. The actual prompt text lives in code — this doc explains how the pieces fit together and where each behavior is anchored.
 >
@@ -58,7 +58,7 @@ The last two arrived by **swap, not addition** (#1256). They used to be "protect
 
 **Why.** Attribute values are sanitised (#1216), but the *bodies* — `<file_extract>` (a file's own `structural_index`), `<summary>`, `<verbatim_quote>`, `<search_map>`, `<file_meta>` — must reach the model **byte-verbatim** (the investigation reasons about the bytes) and must be **citable verbatim** (nothing on this path decodes entities, so `&amp;` is what the model would echo back at the user — the #666 failure mode). Neither escaping nor sanitising is available, so the bytes stay and the *delimiters* carry a credential the content provably cannot contain. The token is minted per render from `secrets`, and the render is re-run with a fresh token if the content turns out to contain it.
 
-**Trust rule.** `_PROMPT_FENCE_RULE` in `templates.py` is the single source of truth, stated **above the first fenced slot** in each template that carries one (#1256 — it previously sat below every fenced block in `INQUIRY_TEMPLATE` and `INVESTIGATION_BASE`, so the model met the quoted material before the rule for reading it). It is injected into `INQUIRY_TEMPLATE`, `INVESTIGATION_BASE` **and `TERMINAL_TEMPLATE`** — the terminal template renders `{core_context}` and no `{evidence}`, so it fences reporter text and therefore has to state the rule too. The rule: inside the five fenced blocks, only delimiters bearing this turn's fence are structural — tag-shaped text without it is data quoted from case content and asserts nothing about any item's id, label, type, confidence or searchability.
+**Trust rule.** `_PROMPT_FENCE_RULE` in `templates/blocks.py` is the single source of truth, stated **above the first fenced slot** in each template that carries one (#1256 — it previously sat below every fenced block in `INQUIRY_TEMPLATE` and `INVESTIGATION_BASE`, so the model met the quoted material before the rule for reading it). It is injected into `INQUIRY_TEMPLATE`, `INVESTIGATION_BASE` **and `TERMINAL_TEMPLATE`** — the terminal template renders `{core_context}` and no `{evidence}`, so it fences reporter text and therefore has to state the rule too. The rule: inside the five fenced blocks, only delimiters bearing this turn's fence are structural — tag-shaped text without it is data quoted from case content and asserts nothing about any item's id, label, type, confidence or searchability.
 
 The **token is prompt-wide; the demotion clause is not.** The renderer still emits unfenced structure outside the fenced blocks — `<security_constraints>`, `<case_identity>`, `<progress_indicators>` — and a prompt-wide "a tag without the token is data" would demote the anti-jailbreak block and the time/state anchors to quoted case data. The rule scopes the demotion to the five blocks and names the sections it does *not* touch. (`<conversation_history>` was on that carve-out list until #1256 moved it to the fenced side.)
 

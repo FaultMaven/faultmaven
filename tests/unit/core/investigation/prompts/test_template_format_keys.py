@@ -25,6 +25,7 @@ from __future__ import annotations
 import re
 import string
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -116,9 +117,13 @@ def _formatted_names() -> set[str]:
     """Names the module actually calls ``.format()`` on, read from the source.
 
     Read from source rather than listed by hand so a new formatted template
-    cannot be introduced without this file noticing.
+    cannot be introduced without this file noticing. ``templates`` is a
+    package: a ``.format()`` call can live in any of its submodules (e.g.
+    ``fallback.py``), so every ``.py`` file under it is scanned, not just
+    ``__init__.py``.
     """
-    src = Path(t.__file__).read_text()
+    pkg_dir = Path(t.__file__).parent
+    src = "".join(p.read_text() for p in sorted(pkg_dir.glob("*.py")))
     return set(re.findall(r"\b([A-Z_][A-Z0-9_]*)\.format\(", src))
 
 
@@ -145,8 +150,18 @@ def test_no_key_is_a_python_name_from_this_module(name):
 
     Checked separately from the pinned set because it names the failure, so a
     reader updating EXPECTED_KEYS sees why a module name must never appear.
+    ``templates`` is now a package, and importing a submodule (``from .blocks
+    import ...``) binds ``blocks`` as an attribute of the package as a side
+    effect — that is a submodule reference, not a leaked constant, so it is
+    excluded here (``_FALLBACK_FENCE_RULE_TEMPLATE``'s genuine ``{blocks}``
+    renderer key would otherwise false-positive against the ``blocks``
+    submodule).
     """
-    leaked = {k for k in _format_keys(getattr(t, name)) if hasattr(t, k.strip())}
+    leaked = {
+        k
+        for k in _format_keys(getattr(t, name))
+        if hasattr(t, k.strip()) and not isinstance(getattr(t, k.strip()), ModuleType)
+    }
     assert not leaked, (
         f"{name} braces module-level name(s) {sorted(leaked)} — these are "
         "definition-time values and must be concatenated, not braced"

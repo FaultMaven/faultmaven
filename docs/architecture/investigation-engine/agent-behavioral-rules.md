@@ -142,7 +142,7 @@ The three-step framework is an internal reasoning scaffold, not an output format
 
 **What it prevents**: Agent claims to execute actions (voice failure) or recommends destructive operations without flagging impact (substance failure). Both erode user trust — one promises action the agent can't deliver, the other understates the cost of action the user can deliver.
 
-**Injection point**: All three templates — a strict negative constraint. Implemented via the `_ADVISOR_ROLE_CONSTRAINT` module-level constant in `templates.py`, which is string-concatenated into `INQUIRY_TEMPLATE`, `INVESTIGATION_BASE`, and `TERMINAL_TEMPLATE`. A single definition eliminates the risk of copies drifting out of sync. The TERMINAL inclusion is deliberate: the agent must preserve advisor voice even after a case reaches resolution (terminal Q&A about prior findings or closure discussions).
+**Injection point**: All three templates — a strict negative constraint. Implemented via the `_ADVISOR_ROLE_CONSTRAINT` module-level constant in `templates/blocks.py`, which is string-concatenated into `INQUIRY_TEMPLATE`, `INVESTIGATION_BASE`, and `TERMINAL_TEMPLATE`. A single definition eliminates the risk of copies drifting out of sync. The TERMINAL inclusion is deliberate: the agent must preserve advisor voice even after a case reaches resolution (terminal Q&A about prior findings or closure discussions).
 
 **Prompt injection**:
 
@@ -287,7 +287,7 @@ and state what specific data or input would unblock you.
 
 **Injection point**: INQUIRY template (step 2 of the YOUR TASK list) and INVESTIGATING base template (DIAGNOSIS instructions, scoped to Zone 2). Also enforced via the DA system instruction's TYPE B question routing (see [DA System Instruction](#da-system-instruction) below). There is no free-standing "KNOWLEDGE FIRST" prompt block — the rule is realized by the two template excerpts below.
 
-**Prompt realization (INQUIRY)** — mandatory KB check as a numbered task step (`templates.py`, `INQUIRY_TEMPLATE`):
+**Prompt realization (INQUIRY)** — mandatory KB check as a numbered task step (`templates/inquiry.py`, `INQUIRY_TEMPLATE`):
 
 ```text
 2. KNOWLEDGE BASE CHECK. Call kb_qa once for the symptom.
@@ -297,7 +297,7 @@ and state what specific data or input would unblock you.
    - No match: proceed without mentioning the search.
 ```
 
-**Prompt realization (INVESTIGATING)** — scoped to Zone 2, not unconditional (`templates.py`):
+**Prompt realization (INVESTIGATING)** — scoped to Zone 2, not unconditional (`templates/diagnosis.py`):
 
 ```text
 **KNOWLEDGE & RUNBOOK AUTHORITY (CRITICAL INSTRUCTION — Zone 2 only):**
@@ -306,7 +306,7 @@ and state what specific data or input would unblock you.
   Do NOT call kb_qa in Zone 1 — it contains procedures, not incident facts.
 ```
 
-The full block continues with the per-Cause runbook structure (Statement / Chain / Indicators / Interventions) and the cause-attribution procedure — matching each retrieved Cause's Indicators against current case evidence. See [Runbook Causal-Chain Template](../knowledge-and-ai/document-to-runbook-conversion.md) and `templates.py` for the complete text.
+The full block continues with the per-Cause runbook structure (Statement / Chain / Indicators / Interventions) and the cause-attribution procedure — matching each retrieved Cause's Indicators against current case evidence. See [Runbook Causal-Chain Template](../knowledge-and-ai/document-to-runbook-conversion.md) and `templates/diagnosis.py` for the complete text.
 
 **Prescribed behavior**:
 
@@ -422,7 +422,7 @@ evidence, and never guess a vendor or model name.
 
 ### Where Rules Live in the Code
 
-Rules are injected into template strings in `templates.py` and assembled at runtime by `get_prompt_for_case()`. The table below maps each rule to its actual injection point:
+Rules are injected into template strings in `templates/` and assembled at runtime by `get_prompt_for_case()`. The table below maps each rule to its actual injection point:
 
 | Rule | Template | Section in Template | Position |
 | ---- | -------- | ------------------- | -------- |

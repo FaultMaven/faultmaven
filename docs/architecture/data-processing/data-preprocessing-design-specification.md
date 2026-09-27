@@ -78,7 +78,7 @@ a `(first_ts, last_ts)` tuple of `datetime` objects (not strings) from the first
 parseable timestamps in the file. Used by `_build_entity_profile()` for duration calculation
 and per-event span tracking.
 
-**Agent routing rules** (`templates.py`, `_EVIDENCE_GROUNDING_BLOCK`):
+**Agent routing rules** (`templates/blocks.py`, `_EVIDENCE_GROUNDING_BLOCK`):
 
 Replaced the gray-zone "general characterisation questions" carve-out with a four-category
 routing rule:
@@ -93,7 +93,7 @@ Added IP-count disambiguation example to the routing rule (the 867-line-occurren
 for OpenSSH files). Added file-specific identifier rule prohibiting asserting technical meanings
 of internal error codes from training data.
 
-**Intake instruction** (`templates.py`, INQUIRY phase): When the user submits a file without a
+**Intake instruction** (`templates/inquiry.py`, INQUIRY phase): When the user submits a file without a
 question, the agent now uses the file extract for the orientation response (not `search_file`),
 leading with FILE SUMMARY pattern/finding, naming key entities and anomalies.
 
@@ -1195,7 +1195,7 @@ automatically index large files for semantic search — you do not need to manag
 **Note:** The per-turn routing rule in `_EVIDENCE_GROUNDING_BLOCK` (injected via
 `evidence_grounding=`) provides finer-grained routing guidance that supersedes the
 `DATA_ACCESS_DIRECTED_ANALYSIS` defaults for specific question types. See Section 1 of
-`templates.py` for the four-category rule (characterization / retrieval / count /
+`templates/blocks.py` for the four-category rule (characterization / retrieval / count /
 temporal distribution). The DA mode prompt governs tool selection strategy; the
 evidence grounding block governs what source to answer from.
 
