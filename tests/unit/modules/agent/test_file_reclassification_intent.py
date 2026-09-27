@@ -3081,8 +3081,8 @@ def test_every_data_type_writer_retires_the_question():
     # matching a smaller set against a smaller expectation.
     assert {
         service_module,
-        "modules/case/infrastructure/sqlite_case_repository.py",
-        "modules/case/infrastructure/postgresql_hybrid_case_repository.py",
+        "modules/case/infrastructure/sqlite_case_repository/repository.py",
+        "modules/case/infrastructure/postgresql_hybrid_case_repository/repository.py",
     } <= parsed, f"the token filter excluded a module holding a known writer: {parsed}"
 
     assert found == {
@@ -3128,12 +3128,12 @@ def test_every_data_type_writer_retires_the_question():
         # entry is the one to look at: outside a repository, building a row
         # with a ``data_type`` is a write.
         (
-            "modules/case/infrastructure/sqlite_case_repository.py",
+            "modules/case/infrastructure/sqlite_case_repository/repository.py",
             "SQLiteCaseRepository.find_uploaded_file_by_content_hash",
             "constructor",
         ),
         (
-            "modules/case/infrastructure/postgresql_hybrid_case_repository.py",
+            "modules/case/infrastructure/postgresql_hybrid_case_repository/repository.py",
             "PostgreSQLHybridCaseRepository.find_uploaded_file_by_content_hash",
             "constructor",
         ),

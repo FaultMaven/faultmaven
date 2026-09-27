@@ -112,7 +112,7 @@ from faultmaven.modules.case.infrastructure.case_repository import (
 from faultmaven.modules.case.infrastructure.sessionless_case_repository import (
     SessionlessCaseRepository,
 )
-from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     SQLiteCaseRepository,
 )
 

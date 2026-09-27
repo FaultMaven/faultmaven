@@ -38,7 +38,7 @@ from faultmaven.modules.case.domain.models.lifecycle import (
     CaseState,
     InvestigationStrategy,
 )
-from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     SQLiteCaseRepository,
 )
 

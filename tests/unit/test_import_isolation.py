@@ -125,7 +125,7 @@ open(OUT, 'w').write(json.dumps({{"checked": sorted(names), "failed": failed}}))
 # `terminal_transitions` module that `SQLiteCaseRepository.save()` imports
 # lazily to decide terminal transitions.
 CASE_SAVE_IMPORTS = (
-    "faultmaven.modules.case.infrastructure.sqlite_case_repository",
+    "faultmaven.modules.case.infrastructure.sqlite_case_repository.repository",
     "faultmaven.core.investigation.terminal_transitions",
 )
 
