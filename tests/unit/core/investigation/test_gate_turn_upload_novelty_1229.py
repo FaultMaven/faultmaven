@@ -580,6 +580,11 @@ class TestTheStoredTurnAgreesWithTheReportedTurn:
             scored.append(dict(metadata))
             return original(metadata)
 
+        # Since fm#1707 the predicate has two readers: ``score_progress`` in the
+        # ``progress`` submodule, and the engine's ``_check_if_progress_made``
+        # delegate through the package namespace. Spy both, as the single
+        # module-level patch did before the split.
+        monkeypatch.setattr(milestone_engine_module, "check_if_progress_made", _spy)
         monkeypatch.setattr(
             milestone_engine_module.progress, "check_if_progress_made", _spy
         )
