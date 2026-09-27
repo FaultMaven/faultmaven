@@ -22,7 +22,7 @@ import pytest
 
 from faultmaven.exceptions import AuthorizationError, ValidationException
 from faultmaven.modules.auth.contracts import is_team_member
-from faultmaven.modules.knowledge.domain.services.conversion_service import (
+from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
 
@@ -117,7 +117,7 @@ class TestConversionTeamPublishGuard:
         # Membership clears the guard → flow proceeds to the LLM-availability
         # check (sentinel: returns None) → ConversionRejectedError, NOT
         # AuthorizationError. Proves the guard did not block a member.
-        from faultmaven.modules.knowledge.domain.services.conversion_service import (
+        from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
             ConversionRejectedError,
         )
 
@@ -187,7 +187,7 @@ class TestConversionTeamPublishGuard:
     async def test_personal_scope_never_gated(self, tmp_path):
         # Personal scope carries no team target — no team service needed and
         # no membership consulted (reaches the LLM-availability sentinel).
-        from faultmaven.modules.knowledge.domain.services.conversion_service import (
+        from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
             ConversionRejectedError,
         )
 
@@ -483,7 +483,7 @@ class TestSharingSurfacesAgree:
             )
 
     async def test_both_surfaces_accept_member(self, tmp_path):
-        from faultmaven.modules.knowledge.domain.services.conversion_service import (
+        from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
             ConversionRejectedError,
         )
 

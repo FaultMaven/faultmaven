@@ -122,7 +122,7 @@ The conversion feature is a **domain service** within the knowledge module. It d
 faultmaven/modules/knowledge/
     domain/
         services/
-            conversion_service.py      # NEW -- orchestrates the pipeline
+            conversion_service/        # NEW -- orchestrates the pipeline
             document_parser.py         # NEW -- text extraction from file formats
         models/
             conversion.py             # NEW -- ConversionJob, ConversionDraft models

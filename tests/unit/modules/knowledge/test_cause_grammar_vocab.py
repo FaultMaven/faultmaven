@@ -16,7 +16,6 @@ labels / quadrant tags / fallback token. These tests pin it three ways:
 import pytest
 
 from faultmaven.modules.case.domain.models.causal import InterventionQuadrant
-from faultmaven.modules.knowledge.domain.services import conversion_service
 from faultmaven.modules.knowledge.domain.services.cause_grammar import (
     FALLBACK_CAUSE_LETTER,
     FALLBACK_INDICATOR_TOKEN,
@@ -25,6 +24,9 @@ from faultmaven.modules.knowledge.domain.services.cause_grammar import (
     OPTIONAL_CAUSE_SUBFIELDS,
     QUADRANT_ALTERNATION,
     REQUIRED_CAUSE_SUBFIELDS,
+)
+from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
+    CONVERSION_SYSTEM_PROMPT,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookValidator,
@@ -75,7 +77,7 @@ class TestConversionPromptCoversVocabulary:
     instruct every term the validator enforces, so prompt and validator can't
     drift apart."""
 
-    PROMPT = conversion_service.CONVERSION_SYSTEM_PROMPT
+    PROMPT = CONVERSION_SYSTEM_PROMPT
 
     def test_prompt_instructs_every_required_subfield(self):
         for sub in REQUIRED_CAUSE_SUBFIELDS:

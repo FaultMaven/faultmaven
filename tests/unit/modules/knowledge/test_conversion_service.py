@@ -53,7 +53,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     generate_draft_id,
     generate_runbook_id,
 )
-from faultmaven.modules.knowledge.domain.services.conversion_service import (
+from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ANALYSIS_SYSTEM_PROMPT,
     CONVERSION_SYSTEM_PROMPT,
     DEFAULT_ENTERPRISE_ID,
@@ -1224,7 +1224,7 @@ class TestScanBulkDiscardGuard:
     @pytest.mark.asyncio
     async def test_raises_when_all_files_missing(self, tmp_path):
         """If every active draft file is absent, scan must raise RuntimeError."""
-        from faultmaven.modules.knowledge.domain.services.conversion_service import (
+        from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
             ConversionService,
         )
 
@@ -1258,7 +1258,7 @@ class TestScanBulkDiscardGuard:
     @pytest.mark.asyncio
     async def test_allows_partial_discard_when_some_files_survive(self, tmp_path):
         """If at least one file exists, scan should proceed normally."""
-        from faultmaven.modules.knowledge.domain.services.conversion_service import (
+        from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
             ConversionService,
         )
 
@@ -1294,7 +1294,7 @@ class TestScanBulkDiscardGuard:
     @pytest.mark.asyncio
     async def test_already_discarded_drafts_not_counted(self, tmp_path):
         """Pre-discarded rows don't count toward the guard threshold."""
-        from faultmaven.modules.knowledge.domain.services.conversion_service import (
+        from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
             ConversionService,
         )
 
@@ -1522,7 +1522,7 @@ class TestConversionPromptIsV4:
     Resolution). Regression guard for the v3->v4 template migration."""
 
     def test_conversion_system_prompt_is_v4(self):
-        from faultmaven.modules.knowledge.domain.services.conversion_service import (
+        from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
             CONVERSION_SYSTEM_PROMPT as p,
         )
 

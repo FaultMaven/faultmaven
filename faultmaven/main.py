@@ -528,6 +528,10 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
 
     # Document-to-runbook conversion service
     try:
+        from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
+            ConversionService,
+        )
+
         from .config.settings import get_settings as _get_settings
         from .infrastructure.persistence.database import (
             get_db_session,
@@ -536,9 +540,6 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
         from .infrastructure.persistence.models import (
             ConversionDraftModel,
             ConversionJobModel,
-        )
-        from .modules.knowledge.domain.services.conversion_service import (
-            ConversionService,
         )
 
         # Ensure conversion tables exist (safe no-op if already present)

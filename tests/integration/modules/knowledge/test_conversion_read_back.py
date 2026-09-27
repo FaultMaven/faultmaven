@@ -38,7 +38,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     PreprocessingResult,
     SourceAssessment,
 )
-from faultmaven.modules.knowledge.domain.services.conversion_service import (
+from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
 

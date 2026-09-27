@@ -55,7 +55,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     PreprocessingResult,
     SourceAssessment,
 )
-from faultmaven.modules.knowledge.domain.services.conversion_service import (
+from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
 from faultmaven.utils.runbook_id import RunbookPathEscape
@@ -484,7 +484,7 @@ class TestTheCaseRaceStillReturnsTheWinner:
     def _handler_source() -> str:
         import inspect
 
-        from faultmaven.modules.knowledge.domain.services.conversion_service import (
+        from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
             ConversionService,
         )
 

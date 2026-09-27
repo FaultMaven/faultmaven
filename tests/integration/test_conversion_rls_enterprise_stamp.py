@@ -70,7 +70,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     SourceFileInfo,
     ValidationResult,
 )
-from faultmaven.modules.knowledge.domain.services.conversion_service import (
+from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     DEFAULT_ENTERPRISE_ID,
     ConversionService,
 )

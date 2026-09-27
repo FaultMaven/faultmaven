@@ -333,7 +333,7 @@ def test_the_remaining_writers_read_the_actors_organization():
 
     from faultmaven.modules.case.domain.services import investigation_session_service
     from faultmaven.modules.case.domain.services.case_service import CaseService
-    from faultmaven.modules.knowledge.domain.services.conversion_service import (
+    from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
         ConversionService,
     )
 

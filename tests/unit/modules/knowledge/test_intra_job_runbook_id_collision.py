@@ -17,7 +17,7 @@ from __future__ import annotations
 import pytest
 
 from faultmaven.modules.knowledge.domain.models.conversion import FailureModeAnalysis
-from faultmaven.modules.knowledge.domain.services.conversion_service import (
+from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     _partition_failure_modes,
 )
 from faultmaven.utils.runbook_id import runbook_id_from_parts

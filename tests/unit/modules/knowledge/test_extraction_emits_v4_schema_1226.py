@@ -38,7 +38,9 @@ from faultmaven.modules.knowledge.domain.models.suggestion import (
     KnowledgeSuggestion,
     PIIScanStatus,
 )
-from faultmaven.modules.knowledge.domain.services import conversion_service
+from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
+    CONVERSION_SYSTEM_PROMPT,
+)
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     VALID_DOMAINS,
     RunbookValidator,
@@ -231,7 +233,7 @@ class TestThePromptAsksForV4:
         svc = _service(provider)
         await _extract(svc)
 
-        shared = conversion_service.CONVERSION_SYSTEM_PROMPT
+        shared = CONVERSION_SYSTEM_PROMPT
         assert provider.prompts[0].startswith(shared)
         assert shared not in svc.EXTRACTION_PROMPT
 

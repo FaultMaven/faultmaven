@@ -41,7 +41,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionErrorCode,
     DraftUpdateRequest,
 )
-from faultmaven.modules.knowledge.domain.services.conversion_service import (
+from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionRejectedError,
     ConversionService,
 )
