@@ -1432,7 +1432,7 @@ class TestGate1ConsentPredicate:
         from faultmaven.core.investigation.milestone_engine.engine import (
             MilestoneEngine,
         )
-        from faultmaven.modules.agent.domain.services.investigation_service import (
+        from faultmaven.modules.agent.domain.services.investigation_service.service import (
             InvestigationService,
         )
 

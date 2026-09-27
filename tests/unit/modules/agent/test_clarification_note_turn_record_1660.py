@@ -32,7 +32,7 @@ from faultmaven.core.investigation.prompts.fence import PromptFence, mint_token
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.core.preprocessing.models import UnifiedDataType
 from faultmaven.models.api import DataType
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
     _record_composed_reply,
 )

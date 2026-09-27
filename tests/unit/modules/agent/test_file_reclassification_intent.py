@@ -35,7 +35,7 @@ from faultmaven.core.preprocessing.models import UnifiedDataType
 from faultmaven.exceptions import NotFoundError, ValidationException
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import IntentType, QueryIntent
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
     _DATA_TYPE_TO_SOURCE_TYPE,
     InvestigationService,
     _admit_clarification_entries,
@@ -1970,7 +1970,7 @@ def test_every_reader_of_a_stored_entry_tolerates_any_shape():
 
     liveness = "core/investigation/suggestion_liveness.py"
     resolver = "core/investigation/intent_resolver.py"
-    service = "modules/agent/domain/services/investigation_service.py"
+    service = "modules/agent/domain/services/investigation_service/service.py"
     engine = "core/investigation/milestone_engine/engine.py"
 
     assert set(readers) == {
@@ -3075,7 +3075,7 @@ def test_every_data_type_writer_retires_the_question():
 
         _Walk(rel).visit(tree)
 
-    service_module = "modules/agent/domain/services/investigation_service.py"
+    service_module = "modules/agent/domain/services/investigation_service/service.py"
     # The filter did not exclude a file a known writer lives in. Without this,
     # a narrowed token list drops hits and the equality below still passes by
     # matching a smaller set against a smaller expectation.
@@ -3274,7 +3274,7 @@ class TestATerminalCaseAnswersNothingStored:
             "core/investigation/milestone_engine/terminal_replies.py"
         )
         engine_stage_gates = "core/investigation/milestone_engine/stage_gates.py"
-        service = "modules/agent/domain/services/investigation_service.py"
+        service = "modules/agent/domain/services/investigation_service/service.py"
         assert builders == {
             # The three engine GATE builders. Each is emitted beside a
             # ``propose_transition`` or an open Gate 1, so never on a terminal

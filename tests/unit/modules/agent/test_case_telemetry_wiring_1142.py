@@ -37,7 +37,7 @@ from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngin
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import IntentType, QueryIntent
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
 )
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
@@ -310,7 +310,7 @@ class TestTheErrorPathIsARowNotAGap:
         documented (case_id, turn) dedup key — and on turn 1 invents a row for
         turn 0, which never existed.
         """
-        import faultmaven.modules.agent.domain.services.investigation_service as mod
+        import faultmaven.modules.agent.domain.services.investigation_service.service as mod
 
         async def explode(*_args, **_kwargs):
             raise RuntimeError("extractor died on the raw bytes")
@@ -376,7 +376,7 @@ class TestTheErrorPathIsARowNotAGap:
     ):
         """The success row is emitted before ``TurnResponse`` is assembled, so a
         failure in between would otherwise produce two rows for one turn."""
-        import faultmaven.modules.agent.domain.services.investigation_service as mod
+        import faultmaven.modules.agent.domain.services.investigation_service.service as mod
 
         def explode(*_args, **_kwargs):
             raise RuntimeError("response assembly failed")
@@ -463,7 +463,7 @@ class TestPathCoverageIsExhaustive:
         """
         import inspect
 
-        from faultmaven.modules.agent.domain.services.investigation_service import (
+        from faultmaven.modules.agent.domain.services.investigation_service.service import (
             _INTENT_DISPATCH,
             _IntentDispatchKind,
         )

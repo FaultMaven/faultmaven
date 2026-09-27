@@ -36,7 +36,7 @@ from faultmaven.infrastructure.protection.tenant_turn_cap import (
     TurnCapService,
     utc_day,
 )
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
 )
 from faultmaven.modules.agent.domain.services.out_of_band import (

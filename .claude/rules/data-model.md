@@ -4,7 +4,7 @@ paths:
   - "faultmaven/modules/case/**"
   - "faultmaven/infrastructure/persistence/**"
   - "faultmaven/cli/**"
-  - "faultmaven/modules/agent/domain/services/investigation_service.py"
+  - "faultmaven/modules/agent/domain/services/investigation_service/**"
   - "faultmaven/infrastructure/protection/tenant_turn_cap.py"
   - "faultmaven/config/constants.py"
   - "faultmaven/bootstrap/data_init.py"

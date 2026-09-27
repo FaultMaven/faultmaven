@@ -99,7 +99,7 @@ def _case(**overrides):
 
 
 def _service(ledger, *, case=None, default=30):
-    from faultmaven.modules.agent.domain.services.investigation_service import (
+    from faultmaven.modules.agent.domain.services.investigation_service.service import (
         InvestigationService,
     )
 
@@ -190,7 +190,7 @@ async def test_the_refusal_carries_the_message_and_the_reset_instant():
 
 
 def _unconfigured_service():
-    from faultmaven.modules.agent.domain.services.investigation_service import (
+    from faultmaven.modules.agent.domain.services.investigation_service.service import (
         InvestigationService,
     )
 

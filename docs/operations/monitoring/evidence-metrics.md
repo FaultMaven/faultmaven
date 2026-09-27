@@ -56,7 +56,8 @@ never linked to an Evidence row.
       More than 10 files were found orphaned (past TTL with linked=False).
       This indicates files are being stored but Evidence rows aren't being
       created / linked. Check `faultmaven/modules/agent/domain/services/
-      investigation_service.py::_preprocess_attachment` for errors between
+      investigation_service/attachments.py::AttachmentPreprocessor.preprocess_attachment`
+      for errors between
       `store_file` and Evidence persistence.
     runbook_url: "https://docs.faultmaven.internal/runbooks/orphan-files"
 ```
@@ -98,7 +99,8 @@ would justify retrying the call (#1232 direction 3, deliberately not taken).
       uploaded_files.storage_ref, and the row's ON DELETE CASCADE lifetime
       reclaims the object normally once the case is deleted — so this is a
       signal about the STORAGE BACKEND, not about data at risk. Check
-      `investigation_service.py::_preprocess_attachment` and the backend for
+      `investigation_service/attachments.py::AttachmentPreprocessor.preprocess_attachment`
+      and the backend for
       errors on the mark_linked write.
 ```
 

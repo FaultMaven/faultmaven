@@ -35,7 +35,7 @@ from faultmaven.core.preprocessing.models import (
 )
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import IntentType, QueryIntent
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
     _DATA_TYPE_TO_SOURCE_TYPE,
     InvestigationService,
     _published_source_type,
@@ -212,7 +212,9 @@ class TestReclassificationMetricLabel:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("stored", ["structured_config", "configuration"])
     async def test_from_type_is_folded(self, stored, monkeypatch):
-        from faultmaven.modules.agent.domain.services import investigation_service
+        from faultmaven.modules.agent.domain.services.investigation_service import (
+            service as investigation_service,
+        )
 
         metric = MagicMock()
         monkeypatch.setattr(
@@ -455,7 +457,7 @@ def _is_str_literal(node) -> bool:
 #: used (``_TYPE_MAP.get(stored)``).
 _PARSES = _ONE_VOCABULARY_PARSERS | {"get", "[]", "==literal"}
 
-_SVC = "modules/agent/domain/services/investigation_service.py"
+_SVC = "modules/agent/domain/services/investigation_service/service.py"
 _INGEST = "modules/case/domain/services/case_data_ingestion_service.py"
 _SQLITE = "modules/case/infrastructure/sqlite_case_repository.py"
 _PG = "modules/case/infrastructure/postgresql_hybrid_case_repository.py"

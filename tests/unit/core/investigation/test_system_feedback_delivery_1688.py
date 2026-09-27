@@ -51,7 +51,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputStrategy,
 )
 from faultmaven.models.interfaces import ILLMProvider
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
     _backfill_consumed_turn,
 )
 from faultmaven.modules.case.domain.models.case import Case

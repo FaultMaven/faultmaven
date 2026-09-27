@@ -49,7 +49,7 @@ from faultmaven.core.investigation.suggestion_liveness import is_clarification_e
 from faultmaven.exceptions import NotFoundError, ValidationException
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import IntentType
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
     _reclassified_collections,
 )

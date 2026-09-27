@@ -78,7 +78,9 @@ _FLAG = frozenset({"agent_response_synthesized"})
 
 _CTX = "faultmaven/core/investigation/prompts/context_builder/history.py"
 _CASE_SERVICE = "faultmaven/modules/case/domain/services/case_service.py"
-_INVESTIGATION = "faultmaven/modules/agent/domain/services/investigation_service.py"
+_INVESTIGATION = (
+    "faultmaven/modules/agent/domain/services/investigation_service/service.py"
+)
 
 #: (file, function) -> (read count, {guarding function: names it must use}).
 PROMPT_READERS: dict[tuple[str, str], tuple[int, dict[str, frozenset[str]]]] = {

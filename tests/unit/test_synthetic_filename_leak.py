@@ -45,7 +45,7 @@ from faultmaven.core.investigation.turn_pipeline import (
     submitted_name,
 )
 from faultmaven.models.interfaces import ToolResult
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
     _clarification_subject,
     _upload_subject,
 )
@@ -633,7 +633,7 @@ class TestClarificationSeedsStayPasteOnly:
     for a captured web page. It stays paste-only while the copy covers both."""
 
     def test_capture_is_not_treated_as_a_paste_for_seeding(self):
-        from faultmaven.modules.agent.domain.services.investigation_service import (
+        from faultmaven.modules.agent.domain.services.investigation_service.service import (
             _is_paste_upload,
         )
 

@@ -16,7 +16,7 @@ from faultmaven.exceptions import (
     NotFoundError,
 )
 from faultmaven.models.api import DataType
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
 )
 from faultmaven.modules.case.domain.models.evidence import EvidenceSourceType

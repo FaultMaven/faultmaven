@@ -32,7 +32,7 @@ from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngin
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import IntentType, QueryIntent
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
     _INTENT_DISPATCH,
     InvestigationService,
     _IntentDispatchKind,
