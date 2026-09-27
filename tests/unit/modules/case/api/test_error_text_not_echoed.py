@@ -112,27 +112,18 @@ def _routes_source() -> list[pathlib.Path]:
 
     The case router used to be one file (``case/api/routes.py``); fm#1707
     split it into a package of sub-routers (``case/api/routes/``), one file
-    per resource, plus ``title_generation.py``, its sibling in ``case/api/``:
-    that module carries its own bound ``except`` handlers (and its own
-    ``HTTPException`` construction — ``_generate_and_persist_title``'s
-    persistence-failure arms) and must stay on the guarded surface. Every
-    sub-router is named explicitly, not globbed, so a new unrelated module
-    later added to ``case/api/`` or ``case/api/routes/`` does not silently
-    join the surface.
+    per resource. Every module in that package is route code, so the package
+    is globbed: a sub-router added later is guarded from the day it exists,
+    as a handler added to the old single file was. ``title_generation.py``,
+    its sibling in ``case/api/``, carries its own bound ``except`` handlers
+    (and its own ``HTTPException`` construction —
+    ``_generate_and_persist_title``'s persistence-failure arms), so it is
+    named explicitly; ``case/api/`` itself is not globbed, so an unrelated
+    module added there does not silently join the surface.
     """
     routes_dir = pathlib.Path(routes_dependencies_module.__file__).parent
     paths = sorted(
-        [
-            routes_dir / "cases.py",
-            routes_dir / "conversation.py",
-            routes_dir / "data.py",
-            routes_dir / "dependencies.py",
-            routes_dir / "evidence.py",
-            routes_dir / "knowledge.py",
-            routes_dir / "reports.py",
-            routes_dir / "sharing.py",
-            routes_dir.parent / "title_generation.py",
-        ]
+        [*routes_dir.glob("*.py"), routes_dir.parent / "title_generation.py"]
     )
     handlers = sum(
         isinstance(node, ast.ExceptHandler) and bool(node.name)
