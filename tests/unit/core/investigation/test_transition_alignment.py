@@ -296,7 +296,7 @@ async def test_check_automatic_transitions_sets_override_for_resolved():
     )
     metadata: dict = {"response_obj": fake_response}
 
-    await engine._check_automatic_transitions(
+    await engine.transitions.check_automatic_transitions(
         case=case, metadata=metadata, user_message="The fix worked."
     )
 
@@ -322,7 +322,7 @@ async def test_check_automatic_transitions_sets_override_for_closed():
     )
     metadata: dict = {"response_obj": fake_response}
 
-    await engine._check_automatic_transitions(
+    await engine.transitions.check_automatic_transitions(
         case=case, metadata=metadata, user_message="Close as unresolved."
     )
 
@@ -355,7 +355,7 @@ async def test_check_automatic_transitions_closure_reason_inquiry_only():
     )
     metadata: dict = {"response_obj": fake_response}
 
-    await engine._check_automatic_transitions(
+    await engine.transitions.check_automatic_transitions(
         case=case, metadata=metadata, user_message="never mind, close this case."
     )
 
@@ -393,7 +393,7 @@ async def test_check_automatic_transitions_closure_reason_stabilized_investigati
     )
     metadata: dict = {"response_obj": fake_response}
 
-    await engine._check_automatic_transitions(
+    await engine.transitions.check_automatic_transitions(
         case=case, metadata=metadata, user_message="ok closing — mitigation worked"
     )
 
@@ -424,7 +424,7 @@ async def test_llm_emit_resolved_pivots_to_close_when_thin():
     )
     metadata: dict = {"response_obj": fake_response}
 
-    await engine._check_automatic_transitions(
+    await engine.transitions.check_automatic_transitions(
         case=case, metadata=metadata, user_message="The fix worked."
     )
 
@@ -462,7 +462,7 @@ async def test_llm_emit_closed_pivots_to_resolved_when_resolution_grade():
     )
     metadata: dict = {"response_obj": fake_response}
 
-    await engine._check_automatic_transitions(
+    await engine.transitions.check_automatic_transitions(
         case=case, metadata=metadata, user_message="Let's close this."
     )
 
@@ -521,7 +521,7 @@ async def test_llm_emit_resolved_needs_info_keeps_resolve_with_flag():
     )
     metadata: dict = {"response_obj": fake_response}
 
-    await engine._check_automatic_transitions(
+    await engine.transitions.check_automatic_transitions(
         case=case, metadata=metadata, user_message="The fix worked."
     )
 
@@ -554,7 +554,7 @@ async def test_llm_emit_resolved_ready_keeps_resolve_pair():
     )
     metadata: dict = {"response_obj": fake_response}
 
-    await engine._check_automatic_transitions(
+    await engine.transitions.check_automatic_transitions(
         case=case, metadata=metadata, user_message="The fix worked."
     )
 
@@ -580,7 +580,7 @@ async def test_check_automatic_transitions_no_override_when_no_proposal():
     fake_response.state_updates.proposed_transition = None
     metadata: dict = {"response_obj": fake_response}
 
-    await engine._check_automatic_transitions(
+    await engine.transitions.check_automatic_transitions(
         case=case, metadata=metadata, user_message="Let me check the logs."
     )
 

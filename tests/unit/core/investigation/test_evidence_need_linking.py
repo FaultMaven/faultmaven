@@ -21,6 +21,12 @@ from faultmaven.core.investigation.evidence_need_linking import (
     link_evidence_suggestions_to_needs,
     sweep_silent_inferred_needs,
 )
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
+from faultmaven.core.investigation.milestone_engine.turn_records import (
+    _awaiting_recent_evidence,
+    _flatten_follow_ups,
+    _resolve_id_ref,
+)
 from faultmaven.modules.case.contracts import (
     EvidenceNeed,
     NeedObtainability,
@@ -492,13 +498,13 @@ class TestEngineWiring:
     def test_linking_runs_before_the_save(self):
         src = self._source()
         assert src.index("link_evidence_suggestions_to_needs(") < src.index(
-            "await self.repository.save(case_updated)"
+            "await self.deps.repository.save(case_updated)"
         ), "linking must precede save() or created needs and the ask history are lost"
 
     def test_linking_runs_before_flattening(self):
         src = self._source()
         assert src.index("link_evidence_suggestions_to_needs(") < src.index(
-            "follow_ups = self._flatten_follow_ups("
+            "follow_ups = _flatten_follow_ups("
         ), "linking must precede flattening or the wire response carries nulls"
 
     def test_linking_runs_after_the_terminal_sweep(self):
@@ -525,6 +531,7 @@ class TestWireResponseCarriesTheNeedId:
         )
 
         engine = MilestoneEngine.__new__(MilestoneEngine)
+        engine.deps = EngineDeps()
         case = _Case()
         fu = SimpleNamespace(
             label="Share target provider details",
@@ -537,9 +544,9 @@ class TestWireResponseCarriesTheNeedId:
 
         meta = {}
         link_evidence_suggestions_to_needs(
-            case, [fu], meta, 7, MilestoneEngine._resolve_id_ref.__get__(engine)
+            case, [fu], meta, 7, _resolve_id_ref.__get__(engine)
         )
-        out = engine._flatten_follow_ups([fu], meta)
+        out = _flatten_follow_ups([fu], meta)
 
         assert out[0]["evidence_need_id"] == case.evidence_needs[0].need_id
         assert out[0]["evidence_need_id"].startswith("eneed_")
@@ -755,9 +762,7 @@ class TestAntiAnchoringIsNotDisabled:
         inferred.engine_inferred = True
         inferred.created_at_turn = 10
 
-        assert not MilestoneEngine._awaiting_recent_evidence(
-            self._case_with([inferred], 10), 3
-        )
+        assert not _awaiting_recent_evidence(self._case_with([inferred], 10), 3)
 
     def test_model_authored_need_still_stands_it_down(self):
         """The mechanism must keep working for deliberate asks — this is the
@@ -769,9 +774,7 @@ class TestAntiAnchoringIsNotDisabled:
         authored = _need("model authored ask")
         authored.created_at_turn = 10
 
-        assert MilestoneEngine._awaiting_recent_evidence(
-            self._case_with([authored], 10), 3
-        )
+        assert _awaiting_recent_evidence(self._case_with([authored], 10), 3)
 
     def test_a_backfilled_ask_every_turn_never_holds_the_stand_down_open(self):
         """The end-to-end shape: an agent asking for something every turn (the
@@ -788,7 +791,7 @@ class TestAntiAnchoringIsNotDisabled:
                 turn=turn,
             )
 
-        assert not MilestoneEngine._awaiting_recent_evidence(
+        assert not _awaiting_recent_evidence(
             self._case_with(case.evidence_needs, 15), 3
         )
 
@@ -1092,7 +1095,7 @@ class TestSweepIsWiredBeforeLinking:
     def test_sweep_runs_before_the_save(self):
         src = self._source()
         assert src.index("sweep_silent_inferred_needs(") < src.index(
-            "await self.repository.save(case_updated)"
+            "await self.deps.repository.save(case_updated)"
         )
 
 

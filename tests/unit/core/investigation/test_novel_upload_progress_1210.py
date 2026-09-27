@@ -35,7 +35,14 @@ from datetime import datetime, timezone
 
 import pytest
 
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.progress import (
+    check_if_progress_made,
+)
+from faultmaven.core.investigation.milestone_engine.response_application import (
+    ResponseApplier,
+)
 from faultmaven.core.investigation.schemas import InquiryResponse
 from faultmaven.modules.case.contracts import Case, CaseState, TurnOutcome, UploadedFile
 
@@ -47,7 +54,10 @@ TURN = 5
 
 @pytest.fixture
 def engine():
-    return MilestoneEngine.__new__(MilestoneEngine)
+    eng = MilestoneEngine.__new__(MilestoneEngine)
+    eng.deps = EngineDeps()
+    eng.responses = ResponseApplier(deps=eng.deps, kb_prefetcher=None)
+    return eng
 
 
 def _row(file_id: str = FILE_ID, turn: int = TURN) -> UploadedFile:
@@ -110,7 +120,7 @@ async def _run(engine, case, attachments):
         agent_response="ack",
         state_updates=InquiryResponse.InquiryStateUpdate(),
     )
-    _, metadata = await engine._process_response_structured(
+    _, metadata = await engine.responses.process_response_structured(
         case, "here are the logs", response, attachments
     )
     return metadata
@@ -140,7 +150,7 @@ class TestTheArmUnderTheProductionOrdering:
         metadata = await _run(engine, case, [_attachment(True)])
 
         assert metadata["outcome"] == TurnOutcome.CONVERSATION
-        assert engine._check_if_progress_made(metadata) is True
+        assert check_if_progress_made(metadata) is True
 
     async def test_a_byte_identical_resubmission_is_not_reported_novel(self, engine):
         case = _case([_row()])
@@ -156,7 +166,7 @@ class TestTheArmUnderTheProductionOrdering:
 
         metadata = await _run(engine, case, [_attachment(False)])
 
-        assert engine._check_if_progress_made(metadata) is False
+        assert check_if_progress_made(metadata) is False
 
     async def test_every_attachment_is_still_reported_either_way(self, engine):
         """``files_uploaded`` is the turn's record of what arrived, novel or
@@ -174,12 +184,12 @@ class TestTheArmUnderTheProductionOrdering:
 
 
 class TestTheArmInIsolation:
-    """``_check_if_progress_made`` is a disjunction, so a turn can be progress
+    """``check_if_progress_made`` is a disjunction, so a turn can be progress
     for reasons unrelated to the upload. These read the arm on its own."""
 
     def test_the_upload_arm_alone_is_progress(self, engine):
         assert (
-            engine._check_if_progress_made(
+            check_if_progress_made(
                 {
                     "novel_files_uploaded": [FILE_ID],
                     "outcome": TurnOutcome.CONVERSATION,
@@ -192,7 +202,7 @@ class TestTheArmInIsolation:
         """``files_uploaded`` names every attachment including re-submissions,
         which is why it is not the arm (#1136)."""
         assert (
-            engine._check_if_progress_made(
+            check_if_progress_made(
                 {
                     "files_uploaded": [FILE_ID],
                     "outcome": TurnOutcome.CONVERSATION,
@@ -236,7 +246,7 @@ class TestANoveltySignalThatIsNotAnAnswer:
 
         metadata = await _run(engine, case, [_attachment(signal)])
 
-        assert engine._check_if_progress_made(metadata) is False
+        assert check_if_progress_made(metadata) is False
 
     @pytest.mark.parametrize("signal", [None, _ABSENT], ids=["undetermined", "absent"])
     async def test_it_is_logged(self, engine, caplog, signal):

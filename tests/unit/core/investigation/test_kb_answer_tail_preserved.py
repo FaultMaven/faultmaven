@@ -29,7 +29,9 @@ from unittest.mock import patch
 import pytest
 
 from faultmaven.core.investigation import milestone_engine as me
-from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.generation import (
+    StructuredOutputGenerator,
+)
 from faultmaven.core.investigation.milestone_engine.text_budget import (
     FENCE_REPAIR_RESERVE,
     KB_QA_ANSWER_TRUNCATED_MARKER,
@@ -49,7 +51,7 @@ REMEDIATION_COMMAND = "-XX:MaxRAMPercentage=75.0"
 
 def _answer_budget() -> int:
     return (
-        MilestoneEngine.TOOL_RESULT_MAX_CHARS
+        StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS
         - len(KB_QA_RELAY_PREFIX)
         - len(KB_QA_RELAY_SUFFIX)
     )
@@ -103,7 +105,7 @@ def _retained_answer_chars(relayed: str, answer: str) -> int:
 
 
 def _relayed(answer: str) -> str:
-    return MilestoneEngine._format_tool_result(
+    return StructuredOutputGenerator._format_tool_result(
         ToolResult(success=True, data=answer), tool_name="kb_qa"
     )
 
@@ -166,9 +168,9 @@ def test_trimmed_result_still_fits_the_engine_cap():
     """Regression pin: both markers must be inside the budget, not on top of it."""
     relayed = _relayed(_runbook_answer(OVERSIZED))
 
-    assert len(relayed) <= MilestoneEngine.TOOL_RESULT_MAX_CHARS, (
+    assert len(relayed) <= StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS, (
         f"relayed kb_qa result is {len(relayed)} chars, past the "
-        f"{MilestoneEngine.TOOL_RESULT_MAX_CHARS} cap"
+        f"{StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS} cap"
     )
 
 
@@ -214,12 +216,12 @@ def test_the_post_redaction_cut_also_keeps_the_tail():
     # Stand in for sanitisation: entities replaced by longer placeholders.
     grown = relayed.replace("Background:", "<IP_ADDRESS_0123456789abcdef>" * 20)
     assert (
-        len(grown) > MilestoneEngine.TOOL_RESULT_MAX_CHARS
+        len(grown) > StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS
     ), "test setup must actually push the result past the cap"
 
-    out, _ = MilestoneEngine._truncate_tool_result(grown, "kb_qa")
+    out, _ = StructuredOutputGenerator._truncate_tool_result(grown, "kb_qa")
 
-    assert len(out) <= MilestoneEngine.TOOL_RESULT_MAX_CHARS
+    assert len(out) <= StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS
     assert out.endswith(KB_QA_RELAY_SUFFIX), "the relay instructions were cut"
     assert REMEDIATION_COMMAND in out, (
         "the post-redaction cut discarded the remediation steps the formatter "
@@ -413,7 +415,7 @@ def test_realignment_does_not_rewind_through_a_long_unbroken_run():
 
     relayed = _relayed(answer)
 
-    unused = MilestoneEngine.TOOL_RESULT_MAX_CHARS - len(relayed)
+    unused = StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS - len(relayed)
     assert unused <= 800, (
         f"{unused} characters of the cap went unused — realignment rewound "
         f"through a long unbroken run, discarding answer text to tidy a seam"
@@ -476,13 +478,13 @@ def test_a_twice_cut_answer_carries_one_marker_not_two():
     relayed = _relayed(_runbook_answer(OVERSIZED))
     grown = relayed.replace("Background:", "<IP_ADDRESS_0123456789abcdef>" * 3)
     assert (
-        len(grown) > MilestoneEngine.TOOL_RESULT_MAX_CHARS
+        len(grown) > StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS
     ), "setup must re-cross the cap"
 
-    out, _ = MilestoneEngine._truncate_tool_result(grown, "kb_qa")
+    out, _ = StructuredOutputGenerator._truncate_tool_result(grown, "kb_qa")
 
     assert out.count(KB_QA_ANSWER_TRUNCATED_MARKER) == 1
-    assert len(out) <= MilestoneEngine.TOOL_RESULT_MAX_CHARS
+    assert len(out) <= StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS
 
 
 def test_fence_repair_cannot_push_the_result_past_the_budget():
@@ -501,8 +503,10 @@ def test_fence_repair_cannot_push_the_result_past_the_budget():
     for n in range(7400, 9400, 7):
         answer = ("## Diagnose\n\n" + unit * 300)[:n]
         relayed = _relayed(answer)
-        if len(relayed) > MilestoneEngine.TOOL_RESULT_MAX_CHARS:
-            over.append((n, len(relayed) - MilestoneEngine.TOOL_RESULT_MAX_CHARS))
+        if len(relayed) > StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS:
+            over.append(
+                (n, len(relayed) - StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS)
+            )
 
     assert not over, (
         f"fence repair pushed {len(over)} of these answers past the cap "
@@ -573,7 +577,7 @@ def test_the_fence_reserve_still_applies_when_a_fence_is_present():
     for n in range(7400, 9400, 7):
         answer = ("## Diagnose\n\n" + unit * 300)[:n]
         relayed = _relayed(answer)
-        if len(relayed) > MilestoneEngine.TOOL_RESULT_MAX_CHARS:
+        if len(relayed) > StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS:
             over.append(n)
 
     assert not over, f"{len(over)} fenced answers exceeded the cap"

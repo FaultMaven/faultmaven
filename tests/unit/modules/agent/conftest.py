@@ -1,6 +1,7 @@
 """Test fixtures for Agent module unit tests."""
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Optional
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -130,7 +131,7 @@ class MockMilestoneEngine:
     """
 
     def __init__(self):
-        self.llm_provider = MagicMock()
+        self.deps = SimpleNamespace(llm_provider=MagicMock())
         self.process_turn = AsyncMock(side_effect=self._process_turn)
 
     async def _process_turn(

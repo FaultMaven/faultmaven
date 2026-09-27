@@ -26,7 +26,11 @@ from faultmaven.core.investigation.hypothesis_manager import (
     IGNORED_STAGNATION_TURN_THRESHOLD,
     HypothesisManager,
 )
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.turn_records import (
+    _perform_hypothesis_housekeeping,
+)
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
@@ -51,7 +55,8 @@ _SELF_RATIONALE = "Model-proposed theory: undersized pool"
 
 def _engine() -> MilestoneEngine:
     eng = MilestoneEngine.__new__(MilestoneEngine)
-    eng.hypothesis_manager = HypothesisManager()
+    eng.deps = EngineDeps()
+    eng.deps.hypothesis_manager = HypothesisManager()
     return eng
 
 
@@ -178,7 +183,9 @@ def test_ignored_hypothesis_decays_through_housekeeping():
     for turn in range(1, IGNORED_STAGNATION_TURN_THRESHOLD):
         case = _case(turn)
         case.hypotheses = {h.hypothesis_id: h}
-        eng._perform_hypothesis_housekeeping(case, {}, investigation_advanced=True)
+        _perform_hypothesis_housekeeping(
+            eng.deps.hypothesis_manager, case, {}, investigation_advanced=True
+        )
         assert h.likelihood == prior
         assert h.iterations_without_progress == 0
 
@@ -190,7 +197,9 @@ def test_ignored_hypothesis_decays_through_housekeeping():
     ):
         case = _case(turn)
         case.hypotheses = {h.hypothesis_id: h}
-        eng._perform_hypothesis_housekeeping(case, {}, investigation_advanced=True)
+        _perform_hypothesis_housekeeping(
+            eng.deps.hypothesis_manager, case, {}, investigation_advanced=True
+        )
         assert h.likelihood < last
         assert h.likelihood <= prior
         last = h.likelihood
@@ -208,7 +217,9 @@ def test_recently_touched_hypothesis_does_not_decay():
     before = h.likelihood
     case = _case(turn)
     case.hypotheses = {h.hypothesis_id: h}
-    eng._perform_hypothesis_housekeeping(case, {}, investigation_advanced=True)
+    _perform_hypothesis_housekeeping(
+        eng.deps.hypothesis_manager, case, {}, investigation_advanced=True
+    )
     assert h.likelihood == before
     assert h.iterations_without_progress == 0
 
@@ -222,7 +233,9 @@ def test_age_decay_never_validates_refutes_or_concludes():
     for turn in range(1, 30):
         case = _case(turn)
         case.hypotheses = {h.hypothesis_id: h}
-        eng._perform_hypothesis_housekeeping(case, {}, investigation_advanced=True)
+        _perform_hypothesis_housekeeping(
+            eng.deps.hypothesis_manager, case, {}, investigation_advanced=True
+        )
         # NO INCORRECT CONCLUSION: age alone never validates or refutes.
         assert h.state not in (HypothesisState.VALIDATED, HypothesisState.REFUTED)
         assert h.refutation_reason is None
@@ -243,7 +256,9 @@ def test_ignored_hypothesis_eventually_trips_stagnation_anchoring():
         case = _case(turn)
         case.hypotheses = {h.hypothesis_id: h}
         meta: dict = {}
-        eng._perform_hypothesis_housekeeping(case, meta, investigation_advanced=True)
+        _perform_hypothesis_housekeeping(
+            eng.deps.hypothesis_manager, case, meta, investigation_advanced=True
+        )
         if h.state == HypothesisState.RETIRED:
             retired = True
             # Retirement is an anti-anchoring soft-retire, never a refutation.
@@ -278,7 +293,9 @@ def test_captured_promotion_starts_a_fresh_stagnation_clock():
     prior = h.likelihood
     # First ACTIVE housekeeping turn (same turn as promotion): no aging yet — the
     # age since (re)start is 0, well under the threshold.
-    eng._perform_hypothesis_housekeeping(case, {}, investigation_advanced=True)
+    _perform_hypothesis_housekeeping(
+        eng.deps.hypothesis_manager, case, {}, investigation_advanced=True
+    )
     assert h.iterations_without_progress == 0
     assert h.likelihood == prior
 
@@ -286,7 +303,9 @@ def test_captured_promotion_starts_a_fresh_stagnation_clock():
     grace_turn = promote_turn + IGNORED_STAGNATION_TURN_THRESHOLD - 1
     case2 = _case(grace_turn)
     case2.hypotheses = {h.hypothesis_id: h}
-    eng._perform_hypothesis_housekeeping(case2, {}, investigation_advanced=True)
+    _perform_hypothesis_housekeeping(
+        eng.deps.hypothesis_manager, case2, {}, investigation_advanced=True
+    )
     assert h.iterations_without_progress == 0
     assert h.likelihood == prior
 
@@ -310,7 +329,9 @@ def test_ignored_seed_and_self_generated_decay_identically():
         for h in (seeded, self_gen):
             case = _case(turn)
             case.hypotheses = {h.hypothesis_id: h}
-            eng._perform_hypothesis_housekeeping(case, {}, investigation_advanced=True)
+            _perform_hypothesis_housekeeping(
+                eng.deps.hypothesis_manager, case, {}, investigation_advanced=True
+            )
 
         assert (
             seeded.iterations_without_progress == self_gen.iterations_without_progress

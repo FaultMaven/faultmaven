@@ -22,11 +22,15 @@ from faultmaven.core.investigation.milestone_engine.kb_prefetch import (
 
 
 def _engine(knowledge_service=None):
+    from faultmaven.core.investigation.milestone_engine.kb_prefetch import (
+        KbPrefetcher,
+    )
     from tests.unit.core.investigation.test_solution_offer_liveness import _make_engine
 
     engine = _make_engine()
-    engine.knowledge_service = knowledge_service
-    engine.runbook_kb = None
+    engine.deps.knowledge_service = knowledge_service
+    engine.deps.runbook_kb = None
+    engine.kb_prefetcher = KbPrefetcher(deps=engine.deps)
     return engine
 
 
@@ -74,7 +78,7 @@ class TestPrefetchUsesHybridRetrieval:
         service = MagicMock()
         service.search_knowledge = AsyncMock(return_value=[])
         engine = _engine(service)
-        await engine._prefetch_kb_context(_case(), "disk full", "symptom")
+        await engine.kb_prefetcher.prefetch_kb_context(_case(), "disk full", "symptom")
         kwargs = service.search_knowledge.call_args.kwargs
         assert kwargs["use_hybrid"] is True, (
             "pure vector search puts the runbook covering #1272's incident at "
@@ -100,7 +104,9 @@ class TestStaleContextIsCleared:
         engine = _engine(service)
         case = _case()
         case.kb_context = [{"title": "Something From An Earlier Turn"}]
-        await engine._prefetch_kb_context(case, "root cause query", "root_cause")
+        await engine.kb_prefetcher.prefetch_kb_context(
+            case, "root cause query", "root_cause"
+        )
         assert case.kb_context is None
 
 
@@ -129,12 +135,12 @@ class TestRemediationPrefetchOnTheIdentifiedEdge:
         )
 
         monkeypatch.setattr(
-            "faultmaven.core.investigation.milestone_engine.engine."
+            "faultmaven.core.investigation.milestone_engine.response_application."
             "_kb_prefetch_query_on_identification",
             lambda *a, **k: edge_query,
         )
         engine = _make_engine()
-        engine._prefetch_kb_context = AsyncMock(return_value=[])
+        engine.responses.kb_prefetcher.prefetch_kb_context = AsyncMock(return_value=[])
         return engine
 
     @pytest.mark.asyncio
@@ -149,16 +155,18 @@ class TestRemediationPrefetchOnTheIdentifiedEdge:
 
         engine = self._engine_on_edge(monkeypatch, "redis maxmemory reached")
         case = _make_case()
-        await engine._apply_investigation_updates(case, _solution_updates(), _meta())
+        await engine.responses._apply_investigation_updates(
+            case, _solution_updates(), _meta()
+        )
         calls = [
             c
-            for c in engine._prefetch_kb_context.await_args_list
+            for c in engine.responses.kb_prefetcher.prefetch_kb_context.await_args_list
             if c.args[2:3] == ("root_cause",)
         ]
         assert len(calls) == 1, (
             "the remediation-time KB prefetch on the cause_state→IDENTIFIED edge "
             f"must fire; prefetch calls seen: "
-            f"{engine._prefetch_kb_context.await_args_list}"
+            f"{engine.responses.kb_prefetcher.prefetch_kb_context.await_args_list}"
         )
         assert (
             calls[0].args[0] is case and calls[0].args[1] == "redis maxmemory reached"
@@ -175,12 +183,12 @@ class TestRemediationPrefetchOnTheIdentifiedEdge:
         )
 
         engine = self._engine_on_edge(monkeypatch, None)
-        await engine._apply_investigation_updates(
+        await engine.responses._apply_investigation_updates(
             _make_case(), _solution_updates(), _meta()
         )
         assert not [
             c
-            for c in engine._prefetch_kb_context.await_args_list
+            for c in engine.responses.kb_prefetcher.prefetch_kb_context.await_args_list
             if c.args[2:3] == ("root_cause",)
         ]
 
@@ -217,7 +225,7 @@ class TestPrefetchFloorAndScope:
         )
         engine = _engine(ks)
         case = _case()
-        await engine._prefetch_kb_context(case, "X fails", "symptom")
+        await engine.kb_prefetcher.prefetch_kb_context(case, "X fails", "symptom")
         assert [r["parent_document_id"] for r in case.kb_context] == ["on-topic"]
 
     @pytest.mark.asyncio
@@ -227,7 +235,7 @@ class TestPrefetchFloorAndScope:
         # wired but resolves empty with no team_service/share_repository.
         ks = _SearchRecordingStub([_search_hit()])
         engine = _engine(ks)
-        await engine._prefetch_kb_context(_case(), "X fails", "symptom")
+        await engine.kb_prefetcher.prefetch_kb_context(_case(), "X fails", "symptom")
         assert ks.filters_seen == [{"$or": [{"scope": "global"}, {"owner_id": "u1"}]}]
 
     @pytest.mark.asyncio
@@ -237,20 +245,22 @@ class TestPrefetchFloorAndScope:
         # case.user_id, NOT the session user, and on the case's tenant (#879).
         ks = _SearchRecordingStub([_search_hit()])
         engine = _engine(ks)
-        engine.team_service = SimpleNamespace(
+        engine.deps.team_service = SimpleNamespace(
             list_all_user_team_ids=AsyncMock(return_value=["team_1"])
         )
-        engine.share_repository = SimpleNamespace(
+        engine.deps.share_repository = SimpleNamespace(
             list_resource_ids=AsyncMock(return_value=["rb_team_a"])
         )
         case = _case()
         case.user_id = "owner_b"
-        await engine._prefetch_kb_context(case, "X fails", "symptom")
+        await engine.kb_prefetcher.prefetch_kb_context(case, "X fails", "symptom")
         scope_filter = ks.filters_seen[0]
         assert {"parent_document_id": {"$in": ["rb_team_a"]}} in scope_filter["$or"]
         assert {"owner_id": "owner_b"} in scope_filter["$or"]
-        engine.team_service.list_all_user_team_ids.assert_awaited_once_with("owner_b")
-        engine.share_repository.list_resource_ids.assert_awaited_once_with(
+        engine.deps.team_service.list_all_user_team_ids.assert_awaited_once_with(
+            "owner_b"
+        )
+        engine.deps.share_repository.list_resource_ids.assert_awaited_once_with(
             resource_type="knowledge_item",
             scope_type="team",
             scope_ids=["team_1"],
@@ -263,7 +273,7 @@ class TestPrefetchFloorAndScope:
         engine = _engine(ks)
         case = _case()
         case.user_id = "user_b"
-        await engine._prefetch_kb_context(case, "X fails", "symptom")
+        await engine.kb_prefetcher.prefetch_kb_context(case, "X fails", "symptom")
         scope_filter = ks.filters_seen[0]
         assert [c for c in scope_filter["$or"] if "owner_id" in c] == [
             {"owner_id": "user_b"}
@@ -277,7 +287,7 @@ class TestPrefetchFloorAndScope:
         engine = _engine(ks)
         case = _case()
         case.user_id = None
-        await engine._prefetch_kb_context(case, "X fails", "symptom")
+        await engine.kb_prefetcher.prefetch_kb_context(case, "X fails", "symptom")
         assert ks.filters_seen == [{"scope": "global"}]
 
     def test_prefetch_fetches_deeper_than_the_prompt_surface(self):
@@ -292,7 +302,7 @@ class TestPrefetchFloorAndScope:
         ks = _SearchRecordingStub(hits)
         engine = _engine(ks)
         case = _case()
-        await engine._prefetch_kb_context(case, "X fails", "symptom")
+        await engine.kb_prefetcher.prefetch_kb_context(case, "X fails", "symptom")
         assert ks.limits_seen == [KB_PREFETCH_FETCH_LIMIT]
         assert [r["parent_document_id"] for r in case.kb_context] == [
             f"rb{i}" for i in range(KB_CONTEXT_MAX_ENTRIES)

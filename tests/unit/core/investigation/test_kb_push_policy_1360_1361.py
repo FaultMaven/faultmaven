@@ -74,11 +74,15 @@ def _case(kb_context=None):
 
 
 def _engine(knowledge_service=None):
+    from faultmaven.core.investigation.milestone_engine.kb_prefetch import (
+        KbPrefetcher,
+    )
     from tests.unit.core.investigation.test_solution_offer_liveness import _make_engine
 
     engine = _make_engine()
-    engine.knowledge_service = knowledge_service
-    engine.runbook_kb = None
+    engine.deps.knowledge_service = knowledge_service
+    engine.deps.runbook_kb = None
+    engine.kb_prefetcher = KbPrefetcher(deps=engine.deps)
     return engine
 
 
@@ -210,7 +214,9 @@ class TestThePreFetchItself:
         push(False)
         service = MagicMock()
         service.search_knowledge = AsyncMock(return_value=[])
-        await _engine(service)._prefetch_kb_context(_case(), "disk full", "symptom")
+        await _engine(service).kb_prefetcher.prefetch_kb_context(
+            _case(), "disk full", "symptom"
+        )
         service.search_knowledge.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -222,7 +228,9 @@ class TestThePreFetchItself:
         """
         push(False)
         case = _case(TWO_HITS)
-        await _engine(MagicMock())._prefetch_kb_context(case, "disk full", "symptom")
+        await _engine(MagicMock()).kb_prefetcher.prefetch_kb_context(
+            case, "disk full", "symptom"
+        )
         assert case.kb_context is None
 
     @pytest.mark.asyncio
@@ -240,7 +248,9 @@ class TestThePreFetchItself:
         service = MagicMock()
         service.search_knowledge = AsyncMock(return_value=[hit])
         case = _case()
-        await _engine(service)._prefetch_kb_context(case, "disk full", "symptom")
+        await _engine(service).kb_prefetcher.prefetch_kb_context(
+            case, "disk full", "symptom"
+        )
         service.search_knowledge.assert_awaited_once()
         assert [e["parent_document_id"] for e in case.kb_context] == [RUNBOOK_ID]
 
@@ -272,7 +282,9 @@ class TestThePreFetchLogCarriesIdentity:
         with caplog.at_level(
             logging.INFO, logger="faultmaven.core.investigation.milestone_engine"
         ):
-            await _engine(service)._prefetch_kb_context(_case(), "disk full", "symptom")
+            await _engine(service).kb_prefetcher.prefetch_kb_context(
+                _case(), "disk full", "symptom"
+            )
 
         records = [r for r in caplog.records if "KB pre-fetch" in r.getMessage()]
         assert len(records) == 1, "the pre-fetch logs once per firing"
@@ -315,7 +327,9 @@ class TestThePreFetchLogCarriesIdentity:
         with caplog.at_level(
             logging.INFO, logger="faultmaven.core.investigation.milestone_engine"
         ):
-            await _engine(service)._prefetch_kb_context(_case(), "disk full", "symptom")
+            await _engine(service).kb_prefetcher.prefetch_kb_context(
+                _case(), "disk full", "symptom"
+            )
 
         record = [r for r in caplog.records if "KB pre-fetch" in r.getMessage()][0]
         assert getattr(record, "kb_prefetch_hits") == 2

@@ -22,6 +22,9 @@ from faultmaven.core.investigation.milestone_engine.cause_state import (
 from faultmaven.core.investigation.milestone_engine.milestone_inference import (
     validate_reasoning_first,
 )
+from faultmaven.core.investigation.milestone_engine.structured_output import (
+    _validate_with_degradation,
+)
 from faultmaven.core.investigation.schemas import InternalReasoning, MilestoneUpdates
 from faultmaven.modules.case.contracts import (
     Case,
@@ -822,9 +825,7 @@ class TestStructuredOutputDegradation:
                 ]
             },
         }
-        parsed = eng._validate_with_degradation(
-            content, InvestigationResponse_Diagnosis
-        )
+        parsed = _validate_with_degradation(content, InvestigationResponse_Diagnosis)
         assert parsed.agent_response == "Here is my analysis."
         # the invalid entry is pruned; the valid one survives
         summaries = [e.summary for e in parsed.state_updates.evidence_to_add]
@@ -837,9 +838,7 @@ class TestStructuredOutputDegradation:
 
         eng = self._engine()
         content = {"agent_response": "All good.", "state_updates": {}}
-        parsed = eng._validate_with_degradation(
-            content, InvestigationResponse_Diagnosis
-        )
+        parsed = _validate_with_degradation(content, InvestigationResponse_Diagnosis)
         assert parsed.agent_response == "All good."
 
     def test_conversational_fallback_drops_state_updates(self):
@@ -863,9 +862,7 @@ class TestStructuredOutputDegradation:
                 ]
             },
         }
-        parsed = eng._validate_with_degradation(
-            content, InvestigationResponse_Diagnosis
-        )
+        parsed = _validate_with_degradation(content, InvestigationResponse_Diagnosis)
         assert parsed.agent_response == "Survives as conversation."
         assert parsed.state_updates.evidence_to_add == []
 
@@ -900,7 +897,7 @@ class TestStructuredOutputDegradation:
         with caplog.at_level(
             logging.WARNING, logger="faultmaven.core.investigation.milestone_engine"
         ):
-            parsed = eng._validate_with_degradation(
+            parsed = _validate_with_degradation(
                 content, InvestigationResponse_Diagnosis
             )
         assert parsed.agent_response == ""  # structural only, no wording here
@@ -921,9 +918,7 @@ class TestStructuredOutputDegradation:
 
         eng = self._engine()
         content = {"state_updates": {"evidence_to_add": "should-be-a-list"}}
-        parsed = eng._validate_with_degradation(
-            content, InvestigationResponse_Diagnosis
-        )
+        parsed = _validate_with_degradation(content, InvestigationResponse_Diagnosis)
         assert parsed.agent_response == ""  # blanked, no 500
 
     def test_fallback_logs_non_prunable_errors(self, caplog):
@@ -946,7 +941,7 @@ class TestStructuredOutputDegradation:
         with caplog.at_level(
             logging.WARNING, logger="faultmaven.core.investigation.milestone_engine"
         ):
-            parsed = eng._validate_with_degradation(
+            parsed = _validate_with_degradation(
                 content, InvestigationResponse_Diagnosis
             )
         assert parsed.agent_response == "hi"  # turn survives, no 500

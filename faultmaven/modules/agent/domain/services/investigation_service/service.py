@@ -265,8 +265,8 @@ class InvestigationService:
         self.preprocessing_service = preprocessing_service
         self.file_storage_service = file_storage_service
         self._turn_cap = turn_cap
-        self.intent_resolver = IntentResolver(milestone_engine.llm_provider)
-        self.out_of_band_triage = OutOfBandTriage(milestone_engine.llm_provider)
+        self.intent_resolver = IntentResolver(milestone_engine.deps.llm_provider)
+        self.out_of_band_triage = OutOfBandTriage(milestone_engine.deps.llm_provider)
         # Fail-fast: refuse to construct if the intent dispatch table is
         # missing any IntentType value (or vice-versa). The system cannot
         # honor the API contract if it can't route every advertised intent.
@@ -1665,7 +1665,7 @@ class InvestigationService:
         and the case context are never involved.
         """
         agent_response = await answer_out_of_band(
-            self.engine.llm_provider, case, user_message, kind
+            self.engine.deps.llm_provider, case, user_message, kind
         )
         return {
             "agent_response": agent_response,

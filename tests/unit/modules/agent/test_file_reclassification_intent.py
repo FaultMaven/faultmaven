@@ -1983,7 +1983,7 @@ def test_every_reader_of_a_stored_entry_tolerates_any_shape():
     clarification = (
         "modules/agent/domain/services/investigation_service/clarification.py"
     )
-    engine = "core/investigation/milestone_engine/engine.py"
+    generation = "core/investigation/milestone_engine/generation.py"
 
     assert set(readers) == {
         # ---- stored-entry readers. Shape-tolerant via the leaves. ----------
@@ -2003,7 +2003,7 @@ def test_every_reader_of_a_stored_entry_tolerates_any_shape():
         # The clarification friendly-names table.
         (clarification, "_clarification_suggestions_for_failed"),
         # A tool result's own label.
-        (engine, "MilestoneEngine._format_tool_result"),
+        (generation, "StructuredOutputGenerator._format_tool_result"),
         # HTTP request/response bodies, unrelated to this seam.
         ("api/middleware/body_size.py", "RequestBodySizeLimitMiddleware.__call__"),
         (

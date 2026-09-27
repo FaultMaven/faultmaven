@@ -34,6 +34,9 @@ from typing import Any, Dict, List
 import pytest
 
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.tool_messages import (
+    _build_schema_tool,
+)
 from faultmaven.core.investigation.schemas import (
     InquiryResponse,
     InvestigationResponse_Diagnosis,
@@ -150,7 +153,7 @@ def _tool_path_wire_schema(model: Any) -> Dict[str, Any]:
     resolver, which is exactly what ``GeminiProvider.generate`` applies to
     ``FunctionDeclaration.parameters``.
     """
-    tool = MilestoneEngine._build_schema_tool(model, _StrictProvider())[0]
+    tool = _build_schema_tool(model, _StrictProvider())[0]
     return GeminiProvider._resolve_refs_for_gemini(tool["function"]["parameters"])
 
 

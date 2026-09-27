@@ -47,7 +47,7 @@ from faultmaven.infrastructure.llm.providers.base import ReasoningIntent
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _LLM_RULES = _PROJECT_ROOT / ".claude/rules/llm-providers.md"
 _PACKAGE = _PROJECT_ROOT / "faultmaven"
-_ENGINE = _PACKAGE / "core" / "investigation" / "milestone_engine" / "engine.py"
+_ENGINE = _PACKAGE / "core" / "investigation" / "milestone_engine" / "generation.py"
 
 # The knobs the table's "Declares" column records, in the order it lists them.
 _KNOBS = ("reasoning_intent", "min_output_tokens")
@@ -373,7 +373,7 @@ def test_llm_rules_state_the_output_floor_correctly() -> None:
     )
     assert int(quoted.group(1)) == floor, (
         f"llm-providers.md says TOOLLESS_INFERENCE_OUTPUT_FLOOR is "
-        f"{quoted.group(1)}; milestone_engine/engine.py says {floor}."
+        f"{quoted.group(1)}; milestone_engine/generation.py says {floor}."
     )
     assert floor < cap, (
         f"llm-providers.md says the floor sits 'well under' "

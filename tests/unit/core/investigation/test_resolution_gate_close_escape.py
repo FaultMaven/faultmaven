@@ -117,7 +117,7 @@ async def test_repeat_needs_info_escapes_to_close_not_clobbered():
     }
     metadata = _llm_proposes_resolved()
 
-    await engine._check_automatic_transitions(
+    await engine.transitions.check_automatic_transitions(
         case=case, metadata=metadata, user_message="yes, it's resolved"
     )
 
@@ -139,7 +139,7 @@ async def test_first_needs_info_stays_resolved_not_prematurely_closed():
     case = _needs_info_case()  # no pending_transition yet
     metadata = _llm_proposes_resolved()
 
-    await engine._check_automatic_transitions(
+    await engine.transitions.check_automatic_transitions(
         case=case, metadata=metadata, user_message="mark resolved"
     )
 
@@ -163,7 +163,7 @@ async def test_ready_case_resolves_guard_does_not_interfere():
     )
     metadata = _llm_proposes_resolved()
 
-    await engine._check_automatic_transitions(
+    await engine.transitions.check_automatic_transitions(
         case=case, metadata=metadata, user_message="mark resolved"
     )
 
@@ -181,7 +181,7 @@ async def test_readiness_verdict_recorded_for_transition_compliance():
     case = _needs_info_case()
     metadata = _llm_proposes_resolved()
 
-    await engine._check_automatic_transitions(
+    await engine.transitions.check_automatic_transitions(
         case=case, metadata=metadata, user_message="mark resolved"
     )
 
@@ -205,7 +205,7 @@ async def test_readiness_verdict_recorded_on_needs_info_recheck():
         "response_obj": MagicMock(state_updates=MagicMock(proposed_transition=None))
     }
 
-    await engine._check_automatic_transitions(
+    await engine.transitions.check_automatic_transitions(
         case=case, metadata=metadata, user_message="I don't have a solution"
     )
 

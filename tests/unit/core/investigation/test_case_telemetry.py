@@ -146,7 +146,7 @@ def _hyp(case: Case, label: str, state: HypothesisState) -> None:
 
 
 def test_every_arm_the_predicate_reads_is_recorded():
-    """The event audits ``_check_if_progress_made``, so it must cover its arms.
+    """The event audits ``check_if_progress_made``, so it must cover its arms.
 
     The keys are EXTRACTED from the predicate's source, not intersected with a
     list written here. That difference is the whole test: a hard-coded candidate
@@ -160,11 +160,11 @@ def test_every_arm_the_predicate_reads_is_recorded():
     import inspect
     import re
 
-    # The module-level predicate, not the method: #1264 moved the reading out
-    # so the service's consumed-turn backstop could score with the same
-    # predicate, leaving ``MilestoneEngine._check_if_progress_made`` a thin
-    # delegate whose source contains no arms at all. Reading the delegate would
-    # make this guard silently vacuous.
+    # The module-level predicate: #1264 moved the reading out so the service's
+    # consumed-turn backstop could score with the same predicate; the engine's
+    # own ``_check_if_progress_made`` delegate (a thin wrapper whose source
+    # contained no arms at all) was later dropped entirely (#1707) once its
+    # last production caller moved to this same module-level name.
     from faultmaven.core.investigation.milestone_engine.progress import (
         check_if_progress_made,
     )
@@ -186,7 +186,7 @@ def test_every_arm_the_predicate_reads_is_recorded():
     assert len(read_keys) >= 8, f"predicate source did not parse: {read_keys}"
     missing = read_keys - set(PROGRESS_ARM_KEYS)
     assert not missing, (
-        f"arms scored by _check_if_progress_made but not carried by the "
+        f"arms scored by check_if_progress_made but not carried by the "
         f"telemetry event: {sorted(missing)}"
     )
     # Every predicate arm must also count toward attribution, or a turn the

@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngineError
+from faultmaven.core.investigation.milestone_engine.errors import MilestoneEngineError
 from faultmaven.core.investigation.milestone_engine.text_budget import (
     _is_context_length_error,
 )
@@ -140,14 +140,14 @@ async def test_token_limit_triggers_minimal_prompt_retry_and_degrades():
     inner = AsyncMock(side_effect=[overflow, degraded])
 
     with (
-        patch.object(engine, "_generate_structured_output_inner", inner),
+        patch.object(engine.generator, "_generate_structured_output_inner", inner),
         patch(
             "faultmaven.core.investigation.prompts.templates.fallback."
             "get_fallback_prompt_for_case",
             return_value="MINIMAL FALLBACK PROMPT",
         ),
     ):
-        result = await engine._generate_structured_output(
+        result = await engine.generator.generate_structured_output(
             prompt="A very large prompt " * 10000,
             schema_model=MagicMock(),
             investigation_tools=[{"name": "search_file"}],
@@ -184,7 +184,7 @@ async def test_double_overflow_propagates_without_infinite_retry():
     inner = AsyncMock(side_effect=[overflow, overflow])
 
     with (
-        patch.object(engine, "_generate_structured_output_inner", inner),
+        patch.object(engine.generator, "_generate_structured_output_inner", inner),
         patch(
             "faultmaven.core.investigation.prompts.templates.fallback."
             "get_fallback_prompt_for_case",
@@ -192,7 +192,7 @@ async def test_double_overflow_propagates_without_infinite_retry():
         ),
     ):
         with pytest.raises(MilestoneEngineError) as exc_info:
-            await engine._generate_structured_output(
+            await engine.generator.generate_structured_output(
                 prompt="huge",
                 schema_model=MagicMock(),
                 case=case,
@@ -218,9 +218,9 @@ async def test_non_overflow_failure_does_not_trigger_fallback_retry():
     quota = MilestoneEngineError("out of credits", error_code="QUOTA_EXHAUSTED")
     inner = AsyncMock(side_effect=quota)
 
-    with patch.object(engine, "_generate_structured_output_inner", inner):
+    with patch.object(engine.generator, "_generate_structured_output_inner", inner):
         with pytest.raises(MilestoneEngineError) as exc_info:
-            await engine._generate_structured_output(
+            await engine.generator.generate_structured_output(
                 prompt="hi",
                 schema_model=MagicMock(),
                 case=case,
@@ -243,9 +243,9 @@ async def test_no_user_message_skips_recovery_and_raises():
     overflow = MilestoneEngineError("boom", error_code=TOKEN_LIMIT)
     inner = AsyncMock(side_effect=overflow)
 
-    with patch.object(engine, "_generate_structured_output_inner", inner):
+    with patch.object(engine.generator, "_generate_structured_output_inner", inner):
         with pytest.raises(MilestoneEngineError) as exc_info:
-            await engine._generate_structured_output(
+            await engine.generator.generate_structured_output(
                 prompt="huge",
                 schema_model=MagicMock(),
                 case=case,
@@ -282,7 +282,7 @@ async def test_inner_raise_does_not_chain_provider_exception():
         agent_response: str = "x"
 
     engine = _make_engine()
-    engine.llm_provider.get_structured_output_strategy = MagicMock(
+    engine.deps.llm_provider.get_structured_output_strategy = MagicMock(
         return_value=MagicMock()
     )
 
@@ -297,10 +297,10 @@ async def test_inner_raise_does_not_chain_provider_exception():
     )
 
     with patch.object(
-        engine.llm_error_handler, "with_retry", AsyncMock(return_value=(None, err))
+        engine.deps.llm_error_handler, "with_retry", AsyncMock(return_value=(None, err))
     ):
         with pytest.raises(MilestoneEngineError) as exc_info:
-            await engine._generate_structured_output_inner(
+            await engine.generator._generate_structured_output_inner(
                 prompt="hi", schema_model=_Schema
             )
 
@@ -358,14 +358,14 @@ async def test_degraded_prompt_tells_the_agent_it_has_no_tools():
     inner = AsyncMock(side_effect=[overflow, MagicMock(name="degraded")])
 
     with (
-        patch.object(engine, "_generate_structured_output_inner", inner),
+        patch.object(engine.generator, "_generate_structured_output_inner", inner),
         patch(
             "faultmaven.core.investigation.prompts.templates.fallback."
             "get_fallback_prompt_for_case",
             return_value="MINIMAL FALLBACK PROMPT",
         ),
     ):
-        await engine._generate_structured_output(
+        await engine.generator.generate_structured_output(
             prompt="huge",
             schema_model=MagicMock(),
             case=case,
@@ -418,14 +418,14 @@ async def test_output_truncation_also_takes_the_degrade_path():
     inner = AsyncMock(side_effect=[truncated, degraded])
 
     with (
-        patch.object(engine, "_generate_structured_output_inner", inner),
+        patch.object(engine.generator, "_generate_structured_output_inner", inner),
         patch(
             "faultmaven.core.investigation.prompts.templates.fallback."
             "get_fallback_prompt_for_case",
             return_value="MINIMAL FALLBACK PROMPT",
         ),
     ):
-        result = await engine._generate_structured_output(
+        result = await engine.generator.generate_structured_output(
             prompt="huge",
             schema_model=MagicMock(),
             case=case,
@@ -502,9 +502,9 @@ async def test_degrade_emits_the_recovery_metric_with_its_reason():
     metric = MagicMock()
 
     with (
-        patch.object(engine, "_generate_structured_output_inner", inner),
+        patch.object(engine.generator, "_generate_structured_output_inner", inner),
         patch(
-            "faultmaven.core.investigation.milestone_engine.engine."
+            "faultmaven.core.investigation.milestone_engine.generation."
             "prompt_context_recovery_total",
             metric,
         ),
@@ -514,7 +514,7 @@ async def test_degrade_emits_the_recovery_metric_with_its_reason():
             return_value="MINIMAL FALLBACK PROMPT",
         ),
     ):
-        await engine._generate_structured_output(
+        await engine.generator.generate_structured_output(
             prompt="huge",
             schema_model=MagicMock(),
             case=case,

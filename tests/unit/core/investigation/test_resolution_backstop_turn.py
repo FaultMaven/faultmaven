@@ -64,7 +64,7 @@ def _make_repo():
 
 def _engine(response):
     engine = MilestoneEngine(MagicMock(), _make_repo(), investigation_tools=MagicMock())
-    engine._generate_structured_output = AsyncMock(return_value=response)
+    engine.generator.generate_structured_output = AsyncMock(return_value=response)
     return engine
 
 
@@ -285,7 +285,7 @@ async def test_decline_of_an_llm_opened_offer_also_silences_the_backstop():
     """
     case = _confirmed_case()
     engine = MilestoneEngine(MagicMock(), _make_repo(), investigation_tools=MagicMock())
-    engine._generate_structured_output = AsyncMock(
+    engine.generator.generate_structured_output = AsyncMock(
         side_effect=[
             InvestigationResponse_Diagnosis(
                 agent_response="Sounds like the fix held — I'll propose resolving.",
@@ -334,7 +334,9 @@ async def test_contradicted_needs_info_offer_records_no_signature():
         "proposed_at": datetime.now(UTC).isoformat(),
     }
     engine = MilestoneEngine(MagicMock(), _make_repo(), investigation_tools=MagicMock())
-    engine._generate_structured_output = AsyncMock(return_value=_silent_response())
+    engine.generator.generate_structured_output = AsyncMock(
+        return_value=_silent_response()
+    )
 
     await engine.process_turn(
         case=case,

@@ -30,9 +30,11 @@ from faultmaven.core.investigation.case_telemetry import (
 )
 from faultmaven.core.investigation.milestone_engine import engine as engine_module
 from faultmaven.core.investigation.milestone_engine import progress as progress_module
+from faultmaven.core.investigation.milestone_engine import turn_records
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.progress import (
     check_if_progress_made,
+    score_progress,
 )
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
@@ -337,7 +339,7 @@ async def test_the_guard_survives_a_short_circuited_decision():
     designed. Wrapping the DECISION instead is what makes it robust, and the
     short-circuit is asserted here so this test cannot quietly stop covering it.
     """
-    real_pred = engine_module.check_if_progress_made
+    real_pred = progress_module.check_if_progress_made
     predicate_calls: list[int] = []
     decisions: list[dict[str, int]] = []
     real_score = engine_module.score_progress
@@ -353,13 +355,16 @@ async def test_the_guard_survives_a_short_circuited_decision():
 
     engine = _terminal_confirm_engine()
     with pytest.MonkeyPatch.context() as mp:
-        # The predicate has two readers since fm#1707: ``score_progress`` in
-        # ``progress``, and the engine's ``_check_if_progress_made`` delegate in
-        # ``engine``. Spy both, as the single pre-split patch did, so a call
-        # from either one breaks the short-circuit assertion below.
+        # The predicate has one reader since the #1707 delegate shim was
+        # dropped: ``score_progress`` in ``progress``, which calls it from
+        # ``progress``'s own namespace. Spying there is what breaks the
+        # short-circuit assertion below if the predicate is ever reached.
         mp.setattr(progress_module, "check_if_progress_made", counting_pred)
-        mp.setattr(engine_module, "check_if_progress_made", counting_pred)
+        # score_progress now has two readers (#1707): engine.py's
+        # _process_turn_impl, and turn_records.py's _finish_deterministic_turn
+        # — the terminal-confirm path this test drives. Same spy on both.
         mp.setattr(engine_module, "score_progress", recording_score)
+        mp.setattr(turn_records, "score_progress", recording_score)
         result = await engine.process_turn(
             case=_case_awaiting_confirmation("resolved"),
             user_message="yes, resolved",
@@ -410,10 +415,13 @@ def _terminal_confirm_engine():
     repo.save = AsyncMock(side_effect=lambda c: c)
     repo.get = AsyncMock(return_value=None)
     engine = MilestoneEngine(_StubLLM(), repo, investigation_tools=MagicMock())
-    engine._auto_generate_report = AsyncMock(return_value=(None, False))
-    engine._remaining_regens_for = AsyncMock(return_value=1)
+    engine.terminal.auto_generate_report = AsyncMock(return_value=(None, False))
+    # _remaining_regens_for is now a plain function (no engine binding to
+    # stub); report_service stays unset, so it short-circuits to its
+    # documented default without touching the repository. No assertion here
+    # depends on the exact count.
     # Proves the turn short-circuited rather than reaching generation.
-    engine._generate_structured_output = AsyncMock(
+    engine.generator.generate_structured_output = AsyncMock(
         side_effect=AssertionError("reached the LLM; not the deterministic branch")
     )
     return engine
@@ -499,7 +507,7 @@ async def test_the_confirm_branch_reports_the_state_change_once():
     )
 
     assert result["case_updated"].state == CaseState.RESOLVED
-    assert engine._auto_generate_report.await_count == 1
+    assert engine.terminal.auto_generate_report.await_count == 1
 
     arms = result["metadata"][TELEMETRY_HANDOFF_KEY]["arms"]
     assert (
@@ -540,26 +548,24 @@ async def test_a_confirmed_close_does_not_claim_a_resolution_milestone():
 
 
 def test_a_progress_true_already_on_the_dict_is_never_taken_back():
-    """``_score_progress`` is monotone.
+    """``score_progress`` is monotone.
 
     ``check_if_progress_made`` reads the nine ARMS, never the ``progress_made``
     key, so a plain assignment destroys a ``True`` an earlier writer put there —
     and the generation path has one: ``_apply_stage_gate_side_effects`` sets it
     beside ``compliance_detected`` before the first reading.
     """
-    engine = MilestoneEngine(_StubLLM(), MagicMock(), investigation_tools=MagicMock())
-
     metadata = {"progress_made": True}
     # Positive control: with no arm set the predicate says False, so a
     # non-monotone write would visibly clobber.
     assert check_if_progress_made(metadata) is False
 
-    assert engine._score_progress(metadata) is True
+    assert score_progress(metadata) is True
     assert metadata["progress_made"] is True
 
     # And it does not invent progress on a dict that never claimed any.
     empty: dict = {}
-    assert engine._score_progress(empty) is False
+    assert score_progress(empty) is False
     assert empty["progress_made"] is False
 
 
@@ -594,7 +600,7 @@ def test_every_scored_arm_on_its_own_means_progress(arm):
 
 @pytest.mark.asyncio
 async def test_housekeeping_reads_the_final_progress_verdict_of_its_turn(
-    engine_and_llm,
+    engine_and_llm, monkeypatch
 ):
     """Housekeeping decides whether the turn ages ignored priors from the turn's
     ``progress_made``, so it must receive the FINAL verdict — the one the turn
@@ -604,13 +610,20 @@ async def test_housekeeping_reads_the_final_progress_verdict_of_its_turn(
     turn did not advance."""
     engine, llm = engine_and_llm
     seen: list[tuple[bool, int]] = []
-    real = engine._perform_hypothesis_housekeeping
+    # A module-level function since #1707: the engine's own call site reads
+    # it from its own namespace, so that is where the spy must sit.
+    real = engine_module._perform_hypothesis_housekeeping
 
-    def spy(case, metadata, *, investigation_advanced):
+    def spy(hypothesis_manager, case, metadata, *, investigation_advanced):
         seen.append((investigation_advanced, case.turns_without_progress))
-        return real(case, metadata, investigation_advanced=investigation_advanced)
+        return real(
+            hypothesis_manager,
+            case,
+            metadata,
+            investigation_advanced=investigation_advanced,
+        )
 
-    engine._perform_hypothesis_housekeeping = spy
+    monkeypatch.setattr(engine_module, "_perform_hypothesis_housekeeping", spy)
 
     llm.payload = _TURN1
     first = await engine.process_turn(_inquiry_case(), "Our checkout API is 503ing")

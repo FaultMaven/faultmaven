@@ -83,7 +83,7 @@ def engine():
     router.route = AsyncMock(
         side_effect=AssertionError("no LLM call expected on an orientation turn")
     )
-    double.llm_provider = router
+    double.deps = SimpleNamespace(llm_provider=router)
     return double
 
 

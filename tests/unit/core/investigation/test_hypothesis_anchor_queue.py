@@ -13,7 +13,11 @@ from uuid import uuid4
 import pytest
 
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.response_application import (
+    ResponseApplier,
+)
 from faultmaven.core.investigation.schemas import (
     HypothesisToAdd,
     InvestigationResponse_Diagnosis,
@@ -37,12 +41,14 @@ def _engine() -> MilestoneEngine:
     """Bare engine — exercises the apply path with just the hypothesis manager
     wired (the matcher step skips gracefully without investigation_tools)."""
     eng = MilestoneEngine.__new__(MilestoneEngine)
+    eng.deps = EngineDeps()
     # Attributes __init__ always sets and the engine reads directly (#1722).
-    eng.llm_provider = None
-    eng.team_service = None
-    eng.share_repository = None
-    eng.conversion_service = None
-    eng.hypothesis_manager = HypothesisManager()
+    eng.deps.llm_provider = None
+    eng.deps.team_service = None
+    eng.deps.share_repository = None
+    eng.deps.conversion_service = None
+    eng.deps.hypothesis_manager = HypothesisManager()
+    eng.responses = ResponseApplier(deps=eng.deps, kb_prefetcher=None)
     return eng
 
 
@@ -92,7 +98,7 @@ def _h2a(statement="connection pool exhausted"):
 
 async def test_unverified_hypotheses_are_queued_as_captured():
     eng, case = _engine(), _case(symptom_verified=False)
-    await eng._apply_investigation_updates(
+    await eng.responses._apply_investigation_updates(
         case, _DSU(hypotheses_to_add=_h2a()), _meta()
     )
     hyps = list(case.hypotheses.values())
@@ -104,7 +110,7 @@ async def test_unverified_hypotheses_are_queued_as_captured():
 
 async def test_verified_hypotheses_are_active():
     eng, case = _engine(), _case(symptom_verified=True)
-    await eng._apply_investigation_updates(
+    await eng.responses._apply_investigation_updates(
         case, _DSU(hypotheses_to_add=_h2a()), _meta()
     )
     hyps = list(case.hypotheses.values())
@@ -121,7 +127,7 @@ async def test_queued_hypotheses_auto_promote_on_verification_without_reemission
 
     # Turn N: symptom unverified, LLM emits a hypothesis -> queued (CAPTURED).
     case = _case(symptom_verified=False)
-    await eng._apply_investigation_updates(
+    await eng.responses._apply_investigation_updates(
         case, _DSU(hypotheses_to_add=_h2a()), _meta()
     )
     (hyp_id,) = list(case.hypotheses.keys())
@@ -130,7 +136,9 @@ async def test_queued_hypotheses_auto_promote_on_verification_without_reemission
     # Turn N+1: symptom verifies; the LLM emits NO new hypotheses this turn.
     case.progress.symptom_verified = True
     meta = _meta()
-    await eng._apply_investigation_updates(case, _DSU(hypotheses_to_add=[]), meta)
+    await eng.responses._apply_investigation_updates(
+        case, _DSU(hypotheses_to_add=[]), meta
+    )
 
     # Auto-applied: promoted to ACTIVE with no re-emission, and counted as
     # generated this turn for progress accounting.

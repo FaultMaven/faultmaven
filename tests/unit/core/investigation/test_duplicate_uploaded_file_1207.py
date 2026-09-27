@@ -28,7 +28,11 @@ from datetime import datetime, timezone
 
 import pytest
 
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.response_application import (
+    ResponseApplier,
+)
 from faultmaven.core.investigation.schemas import InquiryResponse
 from faultmaven.modules.case.contracts import Case, CaseState, UploadedFile
 from faultmaven.modules.case.infrastructure.sqlite_case_repository.saving import (
@@ -44,7 +48,10 @@ REUPLOAD_TURN = 5
 
 @pytest.fixture
 def engine():
-    return MilestoneEngine.__new__(MilestoneEngine)
+    eng = MilestoneEngine.__new__(MilestoneEngine)
+    eng.deps = EngineDeps()
+    eng.responses = ResponseApplier(deps=eng.deps, kb_prefetcher=None)
+    return eng
 
 
 def _complete_row(file_id: str = FILE_ID) -> UploadedFile:
@@ -102,7 +109,7 @@ async def _run(engine, case, attachments):
         agent_response="ack",
         state_updates=InquiryResponse.InquiryStateUpdate(),
     )
-    _, metadata = await engine._process_response_structured(
+    _, metadata = await engine.responses.process_response_structured(
         case, "msg", response, attachments
     )
     return metadata

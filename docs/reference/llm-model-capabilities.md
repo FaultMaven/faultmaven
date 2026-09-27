@@ -42,8 +42,9 @@ Two per-role **model** keys need a caveat the table above does not carry:
 
 - `{PROVIDER}_DA_MODEL` **requires `DA_PROVIDER`.** The investigation tool loop
   passes a per-role model only when a dedicated DA provider exists
-  (`milestone_engine.engine._tool_augmented_generate` sets `model` under
-  `if self.da_model and self.da_provider`), so setting only `OPENAI_DA_MODEL`
+  (`milestone_engine.generation.StructuredOutputGenerator._tool_augmented_generate`
+  sets `model` under `if self.deps.da_model and self.deps.da_provider`), so
+  setting only `OPENAI_DA_MODEL`
   leaves the base `OPENAI_MODEL` running, silently. Every other role passes its
   model unconditionally. Set `DA_PROVIDER` alongside it — it may name the same
   provider as `CHAT_PROVIDER`.

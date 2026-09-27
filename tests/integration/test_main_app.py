@@ -146,12 +146,12 @@ def test_milestone_engine_holds_the_services_the_app_publishes(booted_app_client
     """
     engine = app.state.investigation_service.engine
     assert app.state.conversion_service is not None
-    assert engine.conversion_service is app.state.conversion_service
-    assert engine.knowledge_service is app.state.knowledge_service
-    assert engine.report_service is app.state.report_generation_service
-    assert engine.share_repository is app.state.share_repository
+    assert engine.deps.conversion_service is app.state.conversion_service
+    assert engine.deps.knowledge_service is app.state.knowledge_service
+    assert engine.deps.report_service is app.state.report_generation_service
+    assert engine.deps.share_repository is app.state.share_repository
     # None in standalone; identity still pins that both read one source.
-    assert engine.team_service is app.state.team_service
+    assert engine.deps.team_service is app.state.team_service
 
 
 def test_suggestion_service_composition_root_wiring(booted_app_client):

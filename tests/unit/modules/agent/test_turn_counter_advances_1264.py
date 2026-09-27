@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.modules.agent.domain.services.investigation_service.service import (
@@ -134,6 +135,9 @@ class TestTheTerminalShortCircuit:
         from faultmaven.core.investigation.milestone_engine.engine import (
             MilestoneEngine,
         )
+        from faultmaven.core.investigation.milestone_engine.terminal_turns import (
+            TerminalTurnHandler,
+        )
 
         case = sample_case
         case.inquiry.problem_statement_confirmed = True
@@ -165,9 +169,13 @@ class TestTheTerminalShortCircuit:
         from collections import defaultdict
 
         engine = MilestoneEngine.__new__(MilestoneEngine)
-        engine.llm_provider = MagicMock()
-        engine.repository = recording_case_repository
+        engine.deps = EngineDeps()
+        engine.deps.llm_provider = MagicMock()
+        engine.deps.repository = recording_case_repository
         engine._case_locks = defaultdict(asyncio.Lock)
+        engine.terminal = TerminalTurnHandler(
+            deps=engine.deps, generator=None, runbooks=None
+        )
 
         # Returns the case it was HANDED, not a closure over the outer one:
         # the service increments the reloaded object, and returning the stale
@@ -180,7 +188,7 @@ class TestTheTerminalShortCircuit:
             }
 
         answered = AsyncMock(side_effect=answer)
-        engine._process_terminal_qa = answered
+        engine.terminal._process_terminal_qa = answered
 
         service = InvestigationService(
             milestone_engine=engine, case_repository=recording_case_repository

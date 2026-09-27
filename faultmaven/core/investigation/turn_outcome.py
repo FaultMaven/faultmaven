@@ -86,7 +86,7 @@ def determine_turn_outcome(
 def _new_data_request_raised(case: Case) -> bool:
     """Whether a **new** outstanding data ask was raised this turn.
 
-    ``DATA_REQUESTED`` is one of the arms ``_check_if_progress_made`` treats as
+    ``DATA_REQUESTED`` is one of the arms ``check_if_progress_made`` treats as
     progress, so every false positive here resets ``turns_without_progress`` and
     disarms the stall net. The former implementation (#1136) produced them two
     ways at once, and both fired on turns where nothing was asked:

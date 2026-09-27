@@ -136,8 +136,8 @@ def service(session):
     # ``process_turn``'s broad ``except Exception`` and re-raised as a generic
     # ServiceException, burying the diagnostic. The tests assert on the mock
     # afterwards instead.
-    engine.llm_provider = MagicMock()
-    engine.llm_provider.route = AsyncMock(return_value=None)
+    engine.deps = SimpleNamespace(llm_provider=MagicMock())
+    engine.deps.llm_provider.route = AsyncMock(return_value=None)
 
     return InvestigationService(
         milestone_engine=engine,
@@ -242,4 +242,4 @@ class TestEmptyTurnPersists:
         handler and re-raised as a generic ServiceException.
         """
         await self._turn(service, query=None)
-        service.engine.llm_provider.route.assert_not_awaited()
+        service.engine.deps.llm_provider.route.assert_not_awaited()

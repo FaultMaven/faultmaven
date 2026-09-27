@@ -27,10 +27,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine.engine import (
-    MilestoneEngine,
-    MilestoneEngineError,
-)
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.errors import MilestoneEngineError
 from faultmaven.core.investigation.prompts.context_builder.assembly import (
     system_feedback_block,
 )
@@ -102,7 +100,7 @@ def _engine() -> MilestoneEngine:
     repo.save = AsyncMock(side_effect=lambda c: c)
     repo.get = AsyncMock(side_effect=lambda cid: None)
     engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
-    engine._generate_structured_output = AsyncMock(side_effect=_SeamReached())
+    engine.generator.generate_structured_output = AsyncMock(side_effect=_SeamReached())
     return engine
 
 
@@ -211,14 +209,14 @@ async def _turn(engine: MilestoneEngine, case: Case, message: str, **intent) -> 
     Returns whether the turn reached the LLM seam, i.e. built a prompt.
     """
     case.current_turn += 1
-    seam_calls = engine._generate_structured_output.call_count
+    seam_calls = engine.generator.generate_structured_output.call_count
     try:
         await engine.process_turn(case=case, user_message=message, **intent)
     except MilestoneEngineError:
         # The engine wraps a turn error; the seam's own count says whether
         # this was the sentinel rather than an earlier failure.
         pass
-    return engine._generate_structured_output.call_count > seam_calls
+    return engine.generator.generate_structured_output.call_count > seam_calls
 
 
 # ---------------------------------------------------------------------------
@@ -266,7 +264,7 @@ class TestAPromptlessTurnPassesTheNoticeOn:
         engine = _engine()
         case = _with_notice(_investigating_case())
         assert await _turn(engine, case, SUBSTANTIVE)
-        prompt = engine._generate_structured_output.call_args[0][0]
+        prompt = engine.generator.generate_structured_output.call_args[0][0]
         assert f"{FROM_PREVIOUS_TURN}\n{NOTICE}" in prompt
 
     @pytest.mark.asyncio
@@ -286,10 +284,10 @@ class TestAPromptlessTurnPassesTheNoticeOn:
             assert case.turn_history[-1].system_feedback == NOTICE, message
             assert case.turn_history[-1].system_feedback_forwarded, message
         assert not case.is_terminal
-        assert engine._generate_structured_output.call_count == 0
+        assert engine.generator.generate_structured_output.call_count == 0
 
         assert await _turn(engine, case, SUBSTANTIVE)
-        prompt = engine._generate_structured_output.call_args[0][0]
+        prompt = engine.generator.generate_structured_output.call_args[0][0]
         # Named by the turn that wrote it: the history above ends on the gate
         # exchange, so "previous turn" would point at the wrong one.
         assert f"{FROM_TURN_3}\n{NOTICE}" in prompt
@@ -595,8 +593,8 @@ class TestTheFallbackRendersTheNotice:
                 raise overflow
             return MagicMock()
 
-        engine._generate_structured_output_inner = inner
-        await engine._generate_structured_output(
+        engine.generator._generate_structured_output_inner = inner
+        await engine.generator.generate_structured_output(
             "the full prompt",
             MagicMock(),
             case=_fallback_case(CaseState.INVESTIGATING),

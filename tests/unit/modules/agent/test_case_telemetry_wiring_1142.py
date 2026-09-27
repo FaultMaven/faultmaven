@@ -81,7 +81,7 @@ def engine():
     """Returns the shape the real generation path returns, INCLUDING the
     telemetry handoff — which is what the service lifts the progress arms off."""
     double = create_autospec(MilestoneEngine, instance=True)
-    double.llm_provider = MagicMock()
+    double.deps = SimpleNamespace(llm_provider=MagicMock())
 
     async def spy(
         *,

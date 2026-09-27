@@ -26,14 +26,20 @@ M5 creation gate in ``test_solution_validation_gate.py``.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from faultmaven.core.investigation.milestone_engine import response_application
 from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_assessment_state,
 )
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.response_application import (
+    ResponseApplier,
+)
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _supersede_pending_solution_offers,
     _withdraw_unlicensed_solution_offers,
@@ -126,15 +132,32 @@ def _make_case(*, established: bool = True) -> Case:
     return case
 
 
+@pytest.fixture(autouse=True)
+def _stub_chain_emission(monkeypatch):
+    """Both functions moved out of the engine into module scope (#1707); the
+    caller (``ResponseApplier._apply_investigation_updates``) reads them from
+    its OWN module namespace, which is therefore the one binding a stub must
+    patch."""
+    monkeypatch.setattr(
+        response_application, "_apply_chain_emission", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        response_application, "_nudge_ambiguous_orphan_chains", lambda *a, **k: None
+    )
+
+
 def _make_engine() -> MilestoneEngine:
     eng = MilestoneEngine.__new__(MilestoneEngine)
+    eng.deps = EngineDeps()
     # Attributes __init__ always sets and the engine reads directly (#1722).
-    eng.llm_provider = None
-    eng.team_service = None
-    eng.share_repository = None
-    eng.conversion_service = None
-    eng._apply_chain_emission = lambda *a, **k: None
-    eng._nudge_ambiguous_orphan_chains = lambda *a, **k: None
+    eng.deps.llm_provider = None
+    eng.deps.team_service = None
+    eng.deps.share_repository = None
+    eng.deps.conversion_service = None
+    eng.responses = ResponseApplier(
+        deps=eng.deps,
+        kb_prefetcher=SimpleNamespace(prefetch_kb_context=AsyncMock()),
+    )
     return eng
 
 
@@ -204,7 +227,7 @@ def _pending_solutions(case: Case) -> list[ProposedAction]:
 class TestDerivationThroughApply:
     async def test_offer_creation_derives_true_same_turn(self):
         case = _make_case()
-        await _make_engine()._apply_investigation_updates(
+        await _make_engine().responses._apply_investigation_updates(
             case, _solution_updates(), _meta()
         )
         assert len(_pending_solutions(case)) == 1
@@ -214,9 +237,11 @@ class TestDerivationThroughApply:
     async def test_reproposal_supersedes_prior_pending_offer(self):
         case = _make_case()
         eng = _make_engine()
-        await eng._apply_investigation_updates(case, _solution_updates(), _meta())
+        await eng.responses._apply_investigation_updates(
+            case, _solution_updates(), _meta()
+        )
         case.current_turn = 6
-        await eng._apply_investigation_updates(
+        await eng.responses._apply_investigation_updates(
             case, _solution_updates("Apply the corrected fix"), _meta()
         )
 
@@ -237,14 +262,16 @@ class TestDerivationThroughApply:
                 _solution_updates("fix B").solutions_to_add[0],
             ]
         )
-        await _make_engine()._apply_investigation_updates(case, updates, _meta())
+        await _make_engine().responses._apply_investigation_updates(
+            case, updates, _meta()
+        )
         pending = _pending_solutions(case)
         assert len(pending) == 1
         assert pending[0].description == "fix B"
 
     async def test_mitigation_never_feeds_solution_proposed(self):
         case = _make_case()  # symptom evidence present → no 3D downgrade
-        await _make_engine()._apply_investigation_updates(
+        await _make_engine().responses._apply_investigation_updates(
             case, _workaround_updates(), _meta()
         )
         assert any(
@@ -264,7 +291,7 @@ class TestDerivationThroughApply:
 class TestLicenseLostWithdrawal:
     async def _case_with_offer(self) -> Case:
         case = _make_case()
-        await _make_engine()._apply_investigation_updates(
+        await _make_engine().responses._apply_investigation_updates(
             case, _solution_updates(), _meta()
         )
         assert case.progress.solution_proposed is True
@@ -340,8 +367,12 @@ class TestLicenseLostWithdrawal:
     async def test_pending_mitigation_survives_license_loss(self):
         case = _make_case()
         eng = _make_engine()
-        await eng._apply_investigation_updates(case, _workaround_updates(), _meta())
-        await eng._apply_investigation_updates(case, _solution_updates(), _meta())
+        await eng.responses._apply_investigation_updates(
+            case, _workaround_updates(), _meta()
+        )
+        await eng.responses._apply_investigation_updates(
+            case, _solution_updates(), _meta()
+        )
         case.root_cause_conclusion = None
         _recompute_assessment_state(case, metadata={})
         # SOLUTION offer withdrawn; the mitigation offer is untouched (not
@@ -469,7 +500,7 @@ class TestSameTurnCreateThenWithdraw:
         case = _make_case(established=False)
         case.progress.cause_state = CauseState.IDENTIFIED
         metadata = _meta()
-        await _make_engine()._apply_investigation_updates(
+        await _make_engine().responses._apply_investigation_updates(
             case, _solution_updates(), metadata
         )
         assert _pending_solutions(case) == []
@@ -582,7 +613,7 @@ class TestWorkingConclusionLicense:
 class TestPendingActionContextBlock:
     async def test_withdrawn_offer_leaves_pending_action_block(self):
         case = _make_case()
-        await _make_engine()._apply_investigation_updates(
+        await _make_engine().responses._apply_investigation_updates(
             case, _solution_updates(), _meta()
         )
         ctx = build_investigation_context(case, "status?")
@@ -604,9 +635,13 @@ class TestReproposalSparesMitigation:
     async def test_new_solution_supersedes_solution_but_not_mitigation(self):
         case = _make_case()
         eng = _make_engine()
-        await eng._apply_investigation_updates(case, _workaround_updates(), _meta())
-        await eng._apply_investigation_updates(case, _solution_updates(), _meta())
-        await eng._apply_investigation_updates(
+        await eng.responses._apply_investigation_updates(
+            case, _workaround_updates(), _meta()
+        )
+        await eng.responses._apply_investigation_updates(
+            case, _solution_updates(), _meta()
+        )
+        await eng.responses._apply_investigation_updates(
             case, _solution_updates("Apply the corrected fix"), _meta()
         )
         assert len(_pending_solutions(case)) == 1
@@ -648,7 +683,7 @@ class TestTypeMatchedStageGates:
         case = _make_case()
         diag = _inject_action(case, InvestigationActionType.DIAGNOSTIC)
         metadata = _meta()
-        await _make_engine()._apply_investigation_updates(
+        await _make_engine().responses._apply_investigation_updates(
             case, _milestone_updates(solution_accepted=True), metadata
         )
         assert case.progress.solution_accepted is False
@@ -661,7 +696,7 @@ class TestTypeMatchedStageGates:
         sol = _inject_action(case, InvestigationActionType.SOLUTION, turn=3)
         diag = _inject_action(case, InvestigationActionType.DIAGNOSTIC, turn=4)
         metadata = _meta()
-        await _make_engine()._apply_investigation_updates(
+        await _make_engine().responses._apply_investigation_updates(
             case, _milestone_updates(solution_accepted=True), metadata
         )
         assert case.progress.solution_accepted is True
@@ -674,7 +709,7 @@ class TestTypeMatchedStageGates:
         case = _make_case()
         sol = _inject_action(case, InvestigationActionType.SOLUTION)
         metadata = _meta()
-        await _make_engine()._apply_investigation_updates(
+        await _make_engine().responses._apply_investigation_updates(
             case, _milestone_updates(mitigation_accepted=True), metadata
         )
         assert case.progress.mitigation is None
@@ -689,7 +724,7 @@ class TestTypeMatchedStageGates:
         case = _make_case()
         case.progress.mitigation = MitigationRecord(proposed_at_turn=2, accepted=True)
         metadata = _meta()
-        await _make_engine()._apply_investigation_updates(
+        await _make_engine().responses._apply_investigation_updates(
             case, _milestone_updates(mitigation_verified=True), metadata
         )
         assert case.progress.mitigation.verified is True
@@ -766,7 +801,9 @@ class TestSameTurnGateBundles:
             milestones=MilestoneUpdates(solution_accepted=True),
         )
         metadata = _meta()
-        await _make_engine()._apply_investigation_updates(case, updates, metadata)
+        await _make_engine().responses._apply_investigation_updates(
+            case, updates, metadata
+        )
 
         assert case.progress.solution_accepted is True
         assert "solution_accepted" in metadata["milestones_completed"]
@@ -790,7 +827,9 @@ class TestSameTurnGateBundles:
             milestones=MilestoneUpdates(mitigation_accepted=True),
         )
         metadata = _meta()
-        await _make_engine()._apply_investigation_updates(case, updates, metadata)
+        await _make_engine().responses._apply_investigation_updates(
+            case, updates, metadata
+        )
 
         assert case.progress.mitigation is not None
         assert case.progress.mitigation.accepted is True
@@ -814,7 +853,7 @@ class TestIdempotentReemission:
         case = _make_case()
         eng = _make_engine()
         # Turn N: register through the real pipeline.
-        await eng._apply_investigation_updates(
+        await eng.responses._apply_investigation_updates(
             case,
             _Updates(
                 solutions_to_add=_solution_updates().solutions_to_add,
@@ -827,7 +866,7 @@ class TestIdempotentReemission:
         # SOLUTION remains). Must absorb silently — the old order injected
         # a false "was not registered ... re-propose" instruction.
         metadata = _meta()
-        await eng._apply_investigation_updates(
+        await eng.responses._apply_investigation_updates(
             case,
             _Updates(milestones=MilestoneUpdates(solution_accepted=True)),
             metadata,
@@ -850,7 +889,7 @@ class TestMitigationRejectionCoherence:
         # response" advice must NOT fire; no stale record gets verified.
         case = _make_case()
         metadata = _meta()
-        await _make_engine()._apply_investigation_updates(
+        await _make_engine().responses._apply_investigation_updates(
             case,
             _milestone_updates(mitigation_accepted=True, mitigation_verified=True),
             metadata,
@@ -869,7 +908,7 @@ class TestMitigationRejectionCoherence:
         case.progress.mitigation = MitigationRecord(proposed_at_turn=2, accepted=True)
         second = _inject_action(case, InvestigationActionType.MITIGATION, turn=6)
         metadata = _meta()
-        await _make_engine()._apply_investigation_updates(
+        await _make_engine().responses._apply_investigation_updates(
             case, _milestone_updates(mitigation_accepted=True), metadata
         )
         assert "was not re-registered" in metadata.get("system_feedback", "")
@@ -881,7 +920,7 @@ class TestMitigationRejectionCoherence:
         case = _make_case()
         case.progress.mitigation = MitigationRecord(proposed_at_turn=2, accepted=True)
         metadata = _meta()
-        await _make_engine()._apply_investigation_updates(
+        await _make_engine().responses._apply_investigation_updates(
             case, _milestone_updates(mitigation_accepted=True), metadata
         )
         assert not metadata.get("system_feedback")
