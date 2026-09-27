@@ -34,9 +34,7 @@ from .cause_state import (
     _gate1_statement_presentation,
     _resolve_chat_provider_name,
 )
-from .progress import (
-    summarize_for_turn_record,
-)
+from .progress import summarize_for_turn_record
 from .response_synthesis import (
     _NARRATION_OVERCLAIM_NOTICE,
     _NARRATION_OVERCLAIM_NOTICE_PENDING,
@@ -44,9 +42,7 @@ from .response_synthesis import (
     _prose_with_gate_notice,
     is_agent_response_synthesized,
 )
-from .stage_gates import (
-    _close_confirmation_suggestions,
-)
+from .stage_gates import _close_confirmation_suggestions
 from .terminal_replies import (
     _build_resolution_confirmation,
     _resolution_confirmation_suggestions,

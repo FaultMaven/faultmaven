@@ -15,28 +15,16 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
     _perform_hypothesis_housekeeping,
     _resolve_id_ref,
 )
-from faultmaven.core.investigation.state_validator import (
-    ValidationSeverity,
-)
+from faultmaven.core.investigation.state_validator import ValidationSeverity
 from faultmaven.core.investigation.working_conclusion_generator import (
     calculate_progress_metrics,
 )
-from faultmaven.modules.case.contracts import (
-    TurnOutcome,
-)
+from faultmaven.modules.case.contracts import TurnOutcome
 
-from .affordances import (
-    engine_owned_affordances,
-)
-from .progress import (
-    score_progress,
-)
-from .response_synthesis import (
-    is_agent_response_synthesized,
-)
-from .stage_gates import (
-    _refresh_working_conclusion,
-)
+from .affordances import engine_owned_affordances
+from .progress import score_progress
+from .response_synthesis import is_agent_response_synthesized
+from .stage_gates import _refresh_working_conclusion
 from .terminal_proposals import (
     _maybe_propose_confirmed_resolution,
     _sweep_needs_for_terminal_hypotheses,

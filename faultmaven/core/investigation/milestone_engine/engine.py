@@ -10,12 +10,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-from faultmaven.core.investigation.hypothesis_manager import (
-    create_hypothesis_manager,
-)
-from faultmaven.core.investigation.llm_error_handler import (
-    LLMErrorHandler,
-)
+from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
+from faultmaven.core.investigation.llm_error_handler import LLMErrorHandler
 from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.errors import MilestoneEngineError
 from faultmaven.core.investigation.milestone_engine.generation import (
@@ -62,17 +58,13 @@ from faultmaven.core.investigation.milestone_engine.vectorization import (
     EvidenceVectorizer,
 )
 from faultmaven.core.investigation.progress_monitor import ProgressMonitor
-from faultmaven.core.investigation.state_validator import (
-    StateValidator,
-)
+from faultmaven.core.investigation.state_validator import StateValidator
 from faultmaven.infrastructure.llm.metering import (
     TurnTokenTracker,
     active_token_tracker,
 )
 from faultmaven.models.interfaces import ILLMProvider
-from faultmaven.modules.agent.tools.vectorize_file_tool import (
-    VECTORIZED_SYSTEM_MESSAGE,
-)
+from faultmaven.modules.agent.tools.vectorize_file_tool import VECTORIZED_SYSTEM_MESSAGE
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
@@ -84,9 +76,7 @@ from faultmaven.modules.case.domain.services.case_action_manager import (
 from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.knowledge.contracts import IKnowledgeService
 
-from .affordances import (
-    gate1_statement_is_confirmable,
-)
+from .affordances import gate1_statement_is_confirmable
 from .response_synthesis import (
     _DISPOSITION_GATE_ANSWERED_KEY,
     _note_engine_disposition_withdrawn,

@@ -8,16 +8,10 @@ from faultmaven.core.investigation.milestone_engine.regeneration import (
 from faultmaven.core.investigation.milestone_engine.turn_records import (
     _finish_deterministic_turn,
 )
-from faultmaven.modules.case.contracts import (
-    CaseState,
-)
+from faultmaven.modules.case.contracts import CaseState
 
-from .progress import (
-    confirmed_transition_arms,
-)
-from .stage_gates import (
-    _close_confirmation_suggestions,
-)
+from .progress import confirmed_transition_arms
+from .stage_gates import _close_confirmation_suggestions
 from .terminal_replies import (
     _compose_terminal_reply,
     _resolution_confirmation_suggestions,
