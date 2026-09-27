@@ -502,9 +502,11 @@ class TestEngineWiring:
         )
 
     def test_linking_runs_before_the_save(self):
+        # #1707 wave 3 step B: ``repository`` is now a direct parameter of
+        # ``_persist_turn``, not ``self.deps.repository``.
         src = self._source()
         assert src.index("link_evidence_suggestions_to_needs(") < src.index(
-            "await self.deps.repository.save(case_updated)"
+            "await repository.save(case_updated)"
         ), "linking must precede save() or created needs and the ask history are lost"
 
     def test_linking_runs_before_flattening(self):
@@ -891,13 +893,15 @@ class TestAsksTheUserNeverSeesAreNotRecorded:
         from faultmaven.core.investigation.evidence_need_linking import (
             _REPLACEMENT_METADATA_FLAGS,
         )
-        from faultmaven.core.investigation.milestone_engine.engine import (
-            MilestoneEngine,
+
+        # #1707 wave 3 step B: ``_compose_turn_reply`` moved out of the
+        # engine class into a module function of turn_completion.py, where
+        # every flag below is read — not on the owner method itself.
+        from faultmaven.core.investigation.milestone_engine.turn_completion import (
+            _compose_turn_reply,
         )
 
-        # #1707 wave 3: every flag below is read in the reply-composing
-        # phase ``_compose_turn_reply``, not in the owner method itself.
-        src = inspect.getsource(MilestoneEngine._compose_turn_reply)
+        src = inspect.getsource(_compose_turn_reply)
         for flag in _REPLACEMENT_METADATA_FLAGS:
             assert f'"{flag}"' in src, (
                 f"{flag} is no longer read in _process_turn_impl — the "
@@ -1083,13 +1087,14 @@ class TestSweepIsWiredBeforeLinking:
     def _source(self):
         import inspect
 
-        from faultmaven.core.investigation.milestone_engine.engine import (
-            MilestoneEngine,
+        # #1707 wave 3 step B: the sweep and the linker both live in
+        # ``_apply_turn_response``, now a module function of
+        # turn_application.py rather than a method of the engine class.
+        from faultmaven.core.investigation.milestone_engine.turn_application import (
+            _apply_turn_response,
         )
 
-        # #1707 wave 3: the sweep and the linker both live in the phase
-        # ``_apply_turn_response`` split off ``_process_turn_impl``.
-        return inspect.getsource(MilestoneEngine._apply_turn_response)
+        return inspect.getsource(_apply_turn_response)
 
     def test_turn_path_sweeps_inferred_needs(self):
         assert "sweep_silent_inferred_needs(" in self._source()
@@ -1111,9 +1116,11 @@ class TestSweepIsWiredBeforeLinking:
             reinlined_process_turn_impl_source,
         )
 
+        # #1707 wave 3 step B: ``repository`` is now a direct parameter of
+        # ``_persist_turn``, not ``self.deps.repository``.
         src = reinlined_process_turn_impl_source()
         assert src.index("sweep_silent_inferred_needs(") < src.index(
-            "await self.deps.repository.save(case_updated)"
+            "await repository.save(case_updated)"
         )
 
 
@@ -1127,13 +1134,14 @@ class TestGuardCallIsPinned:
     def test_turn_path_consults_the_replacement_guard(self):
         import inspect
 
-        from faultmaven.core.investigation.milestone_engine.engine import (
-            MilestoneEngine,
+        # #1707 wave 3 step B: the guard is consulted in
+        # ``_apply_turn_response``, now a module function of
+        # turn_application.py rather than a method of the engine class.
+        from faultmaven.core.investigation.milestone_engine.turn_application import (
+            _apply_turn_response,
         )
 
-        # #1707 wave 3: the guard is consulted in the phase
-        # ``_apply_turn_response``, not in the owner method itself.
-        src = inspect.getsource(MilestoneEngine._apply_turn_response)
+        src = inspect.getsource(_apply_turn_response)
         assert "suggestions_are_engine_replaced(" in src, (
             "the replacement guard is no longer consulted — EVIDENCE asks on "
             "gate and resolution turns are being recorded despite never being "
@@ -1143,11 +1151,11 @@ class TestGuardCallIsPinned:
     def test_guard_is_consulted_before_linking(self):
         import inspect
 
-        from faultmaven.core.investigation.milestone_engine.engine import (
-            MilestoneEngine,
+        from faultmaven.core.investigation.milestone_engine.turn_application import (
+            _apply_turn_response,
         )
 
-        src = inspect.getsource(MilestoneEngine._apply_turn_response)
+        src = inspect.getsource(_apply_turn_response)
         assert src.index("suggestions_are_engine_replaced(") < src.index(
             "link_evidence_suggestions_to_needs("
         )

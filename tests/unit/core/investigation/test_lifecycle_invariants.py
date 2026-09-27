@@ -1766,10 +1766,14 @@ class TestINV15_AgentAdvisorRole:
         the only runtime backstop for INV-15; if it's removed, drift in
         the LLM becomes invisible.
         """
-        # #1707 wave 3: the scan lives in ``_compose_turn_reply``, the phase
-        # ``_process_turn_impl`` split off to build the final reply — not in
-        # the owner method itself.
-        source = inspect.getsource(MilestoneEngine._compose_turn_reply)
+        # #1707 wave 3 step B: the scan lives in ``_compose_turn_reply``,
+        # now a module function of turn_completion.py rather than a method
+        # of the engine class.
+        from faultmaven.core.investigation.milestone_engine.turn_completion import (
+            _compose_turn_reply,
+        )
+
+        source = inspect.getsource(_compose_turn_reply)
 
         # Pin the LIVE scan line — the telemetry key emitted from the runtime
         # scan — not a comment or the phrase-list constant. Deleting the scan

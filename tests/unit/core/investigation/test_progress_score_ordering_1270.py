@@ -28,8 +28,14 @@ from faultmaven.core.investigation.case_telemetry import (
     build_case_turn_event,
     collect_progress_arms,
 )
-from faultmaven.core.investigation.milestone_engine import engine as engine_module
 from faultmaven.core.investigation.milestone_engine import progress as progress_module
+
+# #1707 wave 3 step B: score_progress and _perform_hypothesis_housekeeping
+# are read in _apply_turn_response, a module function of turn_application.py
+# now, not a method of the engine class.
+from faultmaven.core.investigation.milestone_engine import (
+    turn_application as turn_application_module,
+)
 from faultmaven.core.investigation.milestone_engine import turn_records
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.progress import (
@@ -227,14 +233,14 @@ async def test_the_last_reading_of_the_turn_saw_every_arm_the_row_reports(
     """
     engine, llm = engine_and_llm
     seen: list[dict[str, int]] = []
-    real = engine_module.score_progress
+    real = turn_application_module.score_progress
 
     def recording(metadata):
         verdict = real(metadata)
         seen.append(collect_progress_arms(metadata))
         return verdict
 
-    monkeypatch.setattr(engine_module, "score_progress", recording)
+    monkeypatch.setattr(turn_application_module, "score_progress", recording)
 
     result = await _two_turn_transition(engine, llm)
     reported = result["metadata"][TELEMETRY_HANDOFF_KEY]["arms"]
@@ -269,14 +275,14 @@ async def test_a_transition_turn_carrying_an_upload_is_not_a_late_write(
     """
     engine, llm = engine_and_llm
     decisions: list[dict[str, int]] = []
-    real_score = engine_module.score_progress
+    real_score = turn_application_module.score_progress
 
     def recording_score(metadata):
         verdict = real_score(metadata)
         decisions.append(collect_progress_arms(metadata))
         return verdict
 
-    monkeypatch.setattr(engine_module, "score_progress", recording_score)
+    monkeypatch.setattr(turn_application_module, "score_progress", recording_score)
 
     llm.payload = _TURN1
     first = await engine.process_turn(_inquiry_case(), "Our checkout API is 503ing")
@@ -342,7 +348,7 @@ async def test_the_guard_survives_a_short_circuited_decision():
     real_pred = progress_module.check_if_progress_made
     predicate_calls: list[int] = []
     decisions: list[dict[str, int]] = []
-    real_score = engine_module.score_progress
+    real_score = turn_application_module.score_progress
 
     def counting_pred(metadata):
         predicate_calls.append(1)
@@ -363,7 +369,7 @@ async def test_the_guard_survives_a_short_circuited_decision():
         # score_progress now has two readers (#1707): engine.py's
         # _process_turn_impl, and turn_records.py's _finish_deterministic_turn
         # — the terminal-confirm path this test drives. Same spy on both.
-        mp.setattr(engine_module, "score_progress", recording_score)
+        mp.setattr(turn_application_module, "score_progress", recording_score)
         mp.setattr(turn_records, "score_progress", recording_score)
         result = await engine.process_turn(
             case=_case_awaiting_confirmation("resolved"),
@@ -612,7 +618,7 @@ async def test_housekeeping_reads_the_final_progress_verdict_of_its_turn(
     seen: list[tuple[bool, int]] = []
     # A module-level function since #1707: the engine's own call site reads
     # it from its own namespace, so that is where the spy must sit.
-    real = engine_module._perform_hypothesis_housekeeping
+    real = turn_application_module._perform_hypothesis_housekeeping
 
     def spy(hypothesis_manager, case, metadata, *, investigation_advanced):
         seen.append((investigation_advanced, case.turns_without_progress))
@@ -623,7 +629,9 @@ async def test_housekeeping_reads_the_final_progress_verdict_of_its_turn(
             investigation_advanced=investigation_advanced,
         )
 
-    monkeypatch.setattr(engine_module, "_perform_hypothesis_housekeeping", spy)
+    monkeypatch.setattr(
+        turn_application_module, "_perform_hypothesis_housekeeping", spy
+    )
 
     llm.payload = _TURN1
     first = await engine.process_turn(_inquiry_case(), "Our checkout API is 503ing")

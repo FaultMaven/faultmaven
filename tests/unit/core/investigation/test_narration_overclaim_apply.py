@@ -21,8 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import engine as engine_module
-from faultmaven.core.investigation.milestone_engine import turn_records
+from faultmaven.core.investigation.milestone_engine import turn_completion, turn_records
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.response_synthesis import (
     _NARRATION_OVERCLAIM_NOTICE,
@@ -167,14 +166,15 @@ async def test_clean_narration_leaves_turn_summary_as_raw_text():
     case = _make_investigating_case()
 
     # #1707: the function has two readers now — turn_records.py's
-    # _create_turn_record (the initial write, Step 6) and engine.py's
-    # _process_turn_impl (the narration-overclaim re-record, R7 whole-function
-    # move). Same shared spy on both bindings, so the aggregate count still
-    # answers "did an extra re-record fire on a clean turn".
+    # _create_turn_record (the initial write, Step 6) and, since wave 3 step
+    # B, turn_completion.py's _compose_turn_reply (the narration-overclaim
+    # re-record, moved out of the engine class as a module function). Same
+    # shared spy on both bindings, so the aggregate count still answers "did
+    # an extra re-record fire on a clean turn".
     spy = MagicMock(wraps=turn_records.summarize_for_turn_record)
     with (
         patch.object(turn_records, "summarize_for_turn_record", spy),
-        patch.object(engine_module, "summarize_for_turn_record", spy),
+        patch.object(turn_completion, "summarize_for_turn_record", spy),
     ):
         result = await engine.process_turn(
             case=case, user_message="What should we look at next?"
