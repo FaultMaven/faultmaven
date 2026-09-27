@@ -26,7 +26,7 @@ so the engine degrades safely when the service is not wired.
 
 | Site | When | Metadata captured |
 |---|---|---|
-| [`milestone_engine/engine.py`](../../../faultmaven/core/investigation/milestone_engine/engine.py) `MilestoneEngine._process_turn_impl` | Confirmed case-state transition via the `pending_transition` path | `from_state`, `to_state` |
+| [`milestone_engine/transition_turns.py`](../../../faultmaven/core/investigation/milestone_engine/transition_turns.py) `_confirm_pending_transition` | Confirmed case-state transition via the `pending_transition` path | `from_state`, `to_state` |
 | [`milestone_engine/transitions.py`](../../../faultmaven/core/investigation/milestone_engine/transitions.py) `TransitionManager._transition_to_investigating` | Just before INQUIRY → INVESTIGATING (Gap #6) | `from_state`, `to_state="investigating"` |
 | [`milestone_engine/transitions.py`](../../../faultmaven/core/investigation/milestone_engine/transitions.py) `TransitionManager.check_automatic_transitions` | Just before a user-confirmed terminal transition (Gap #6) | `from_state`, `to_state` |
 

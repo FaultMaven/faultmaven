@@ -130,13 +130,15 @@ reading `_should_redact()` from `core/investigation/milestone_engine/redaction.p
 The `StructuredOutputGenerator` collaborator (`generation.py`) redacts the
 prompt and tool results within the shape it owns.
 
-The engine manages the redaction lifecycle within `_process_turn_impl()`:
+The engine manages the redaction lifecycle across `_process_turn_impl()`'s
+phases (#1707 wave 3 split the turn path into private phase methods, then
+sibling-module functions — the lifecycle now spans three of them):
 
-1. **Create context** — after case loading, before prompt generation
+1. **Create context** — after case loading, before prompt generation, in `_generate_turn_response` (`turn_generation.py`)
 2. **Redact prompt** — at the entry to `StructuredOutputGenerator.generate_structured_output()`, covering both DA (tool-augmented) and single-shot paths
 3. **Redact tool results** — in `StructuredOutputGenerator._tool_augmented_generate()` after `_format_tool_result()` and before truncation/append
-4. **Save registry** — after LLM call completes, before returning result
-5. **Return context** — included in the result dict so `InvestigationService` can reverse-substitute
+4. **Save registry** — after LLM call completes, before returning result, in `_persist_turn` (`turn_completion.py`)
+5. **Return context** — threaded from `_generate_turn_response` through `_persist_turn` as a phase input/output, then included in the result dict so `InvestigationService` can reverse-substitute
 
 The `_should_redact()` helper checks `SANITIZE_PII` setting. When `False`, `CaseRedactionContext` is created with `enabled=False` and all operations are no-ops.
 

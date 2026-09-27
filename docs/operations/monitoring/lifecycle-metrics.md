@@ -24,7 +24,7 @@ sum(rate(faultmaven_gate1_statement_composed_total[24h]))
 sum(rate(faultmaven_engine_owned_affordance_served_total{gate="gate1"}[24h]))
 ```
 
-**What a dropping ratio means.** Gate 1 is serving its affordances without the statement they refer to — the user is being asked to confirm text they cannot see. That is the exact defect #1607 closed, and the two production cases that motivated it (`case_79b48eb30837`, and a dropdown turn on a case with no stated problem) would both have shown it. Because composition happens at the same call site as the affordance substitution, a gap means that site has been edited apart — check `_process_turn_impl`'s gate branch and `_gate1_statement_presentation`.
+**What a dropping ratio means.** Gate 1 is serving its affordances without the statement they refer to — the user is being asked to confirm text they cannot see. That is the exact defect #1607 closed, and the two production cases that motivated it (`case_79b48eb30837`, and a dropdown turn on a case with no stated problem) would both have shown it. Because composition happens at the same call site as the affordance substitution, a gap means that site has been edited apart — check `_compose_turn_reply`'s (`turn_completion.py`, the phase `_process_turn_impl` split off in #1707 wave 3 to build the final reply) gate branch and `_gate1_statement_presentation`.
 
 **Suggested alert (tune with production data):**
 

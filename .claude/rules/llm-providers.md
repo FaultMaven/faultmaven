@@ -266,7 +266,7 @@ them**, four `EXTRACTION` and one `INFERENCE`:
 | `modules/agent/tools/document_qa_tool.py` (KB/doc answer synthesis) | `reasoning_intent=EXTRACTION` |
 | `modules/agent/domain/services/out_of_band.py` (out-of-band triage, #1329) | `reasoning_intent=EXTRACTION`, `min_output_tokens=TRIAGE_MIN_OUTPUT_TOKENS` |
 | `modules/agent/domain/services/out_of_band.py` (out-of-band answer, #1329) | `reasoning_intent=EXTRACTION` |
-| `core/investigation/milestone_engine/engine.py` (tool-less single-shot diagnostic turn, fm#1116) | `reasoning_intent=INFERENCE`, `min_output_tokens=TOOLLESS_INFERENCE_OUTPUT_FLOOR` |
+| `core/investigation/milestone_engine/turn_generation.py` (tool-less single-shot diagnostic turn, fm#1116) | `reasoning_intent=INFERENCE`, `min_output_tokens=TOOLLESS_INFERENCE_OUTPUT_FLOOR` |
 
 Paths are relative to `faultmaven/`. The four `EXTRACTION` sites are grounded
 transformations of supplied context rather than reasoning over candidates, so
