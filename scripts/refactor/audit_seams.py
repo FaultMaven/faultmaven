@@ -127,11 +127,17 @@ def main():
 
     _defines_cache: dict[str, set[str]] = {}
 
-    def module_defines(mod: str | None) -> set[str]:
-        """Top-level names a first-party module defines (empty if not resolvable)."""
+    def module_defines(mod: str | None, include_imports: bool = False) -> set[str]:
+        """Top-level names a first-party module defines (empty if not resolvable).
+
+        With ``include_imports``, names it imports too: a module that imports a
+        moved function by name is where a call through that bare name reads it,
+        so patching it THERE is correct, not stale.
+        """
         if not mod:
             return set()
-        if mod not in _defines_cache:
+        key = (mod, include_imports)
+        if key not in _defines_cache:
             names: set[str] = set()
             base = repo / Path(*mod.split("."))
             for cand in (base.with_suffix(".py"), base / "__init__.py"):
@@ -143,11 +149,13 @@ def main():
                                 (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
                             ):
                                 names.add(node.name)
+                            elif include_imports and isinstance(node, ast.ImportFrom):
+                                names.update(a.asname or a.name for a in node.names)
                     except SyntaxError:
                         pass
                     break
-            _defines_cache[mod] = names
-        return _defines_cache[mod]
+            _defines_cache[key] = names
+        return _defines_cache[key]
 
     def emit(kind, path, node, msg):
         findings.append(f"{kind:<12} {path}:{getattr(node, 'lineno', 0)}  {msg}")
@@ -369,7 +377,17 @@ def main():
                                         repr(new).replace("'", '"'),
                                     )
                                 )
-                            elif name in moved and not receiver_is_collab(recv):
+                            elif (
+                                name in moved
+                                and not receiver_is_collab(recv)
+                                and not (
+                                    isinstance(recv, ast.Name)
+                                    and name
+                                    in module_defines(
+                                        module_alias.get(recv.id), include_imports=True
+                                    )
+                                )
+                            ):
                                 emit(
                                     "STALE-PATCH",
                                     rel,

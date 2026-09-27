@@ -307,3 +307,32 @@ class TestModuleAliases:
             "from pkg import fetching as f\n\n\ndef test():\n    assert f._fetch(None, 1)\n",
         )
         assert _audit(python_exe, extracted).returncode == 0
+
+
+class TestPatchOnTheReadingModule:
+    def test_patching_the_module_that_imports_the_function_by_name_is_clean(
+        self, extracted, python_exe
+    ):
+        # engine.py calls the moved _fetch by its bare, imported name, so the
+        # engine module's namespace is where a patch must land.
+        write(
+            extracted / "pkg" / "engine.py",
+            "from pkg.fetching import _fetch\n\n\nclass Engine:\n    pass\n",
+        )
+        write(
+            extracted / "tests" / "test_p.py",
+            "from pkg import engine as mod\n\n\ndef test(monkeypatch):\n"
+            '    monkeypatch.setattr(mod, "_fetch", lambda *a: 1)\n',
+        )
+        assert _audit(python_exe, extracted).returncode == 0
+
+    def test_patching_a_module_that_does_not_read_it_is_still_stale(
+        self, extracted, python_exe
+    ):
+        write(extracted / "pkg" / "other.py", "X = 1\n")
+        write(
+            extracted / "tests" / "test_q.py",
+            "from pkg import other as mod\n\n\ndef test(monkeypatch):\n"
+            '    monkeypatch.setattr(mod, "_fetch", lambda *a: 1)\n',
+        )
+        assert "STALE-PATCH" in _audit(python_exe, extracted).stdout

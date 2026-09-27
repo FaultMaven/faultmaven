@@ -541,6 +541,10 @@ def plan(repo: Path, spec: dict):
     for n, g in home.items():
         if g is None and n != "__init__":
             owner_reads |= {collab_dep(d) for d in members[n].dep_reads}
+            # the owner also reads every dependency it now PASSES to a moved function
+            for _, r in members[n].member_refs:
+                if home[r] is not None and home[r]["kind"] == "functions":
+                    owner_reads |= {collab_dep(d) for d in deps.get(r, [])}
     init_sets = members["__init__"].state_writes if "__init__" in members else set()
     unread = sorted(a for a in init_sets if a not in owner_reads)
 
