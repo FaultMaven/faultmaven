@@ -39,12 +39,12 @@ from faultmaven.config.tenant_context import (
 from faultmaven.exceptions import ValidationException
 from faultmaven.models.api_models import TurnResponse
 from faultmaven.modules.auth.contracts import UserDTO
-from faultmaven.modules.case.api.routes import (
+from faultmaven.modules.case.api.routes.conversation import submit_turn
+from faultmaven.modules.case.api.routes.dependencies import (
     _di_get_case_service_dependency,
     _is_default_case_title,
-    router,
-    submit_turn,
 )
+from faultmaven.modules.case.api.routes.router import router
 from faultmaven.modules.case.api.title_generation import (
     _auto_title_case_if_default,
     _TitleSubstanceTooThin,

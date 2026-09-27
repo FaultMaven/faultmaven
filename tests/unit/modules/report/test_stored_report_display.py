@@ -153,7 +153,7 @@ async def test_the_download_endpoint_serves_normalized_bytes():
     """
     from unittest.mock import AsyncMock
 
-    from faultmaven.modules.case.api.routes import download_case_report
+    from faultmaven.modules.case.api.routes.reports import download_case_report
     from faultmaven.modules.case.infrastructure.sqlite_case_repository.rows import (
         _row_to_report,
     )

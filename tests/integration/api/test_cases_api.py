@@ -152,7 +152,7 @@ def app(mock_case_service, mock_session_service, mock_user):
     # Import the actual dependencies used by case routes
     # Note: Case routes use wrapper functions, so we override those
     from faultmaven.api.v1.auth_dependencies import require_authentication
-    from faultmaven.modules.case.api.routes import (
+    from faultmaven.modules.case.api.routes.dependencies import (
         _di_get_case_service_dependency,
         _di_get_session_service_dependency,
     )
@@ -295,7 +295,7 @@ class TestCreateCase:
         from httpx import ASGITransport, AsyncClient
 
         from faultmaven.main import app as main_app
-        from faultmaven.modules.case.api.routes import (
+        from faultmaven.modules.case.api.routes.dependencies import (
             _di_get_case_service_dependency,
             _di_get_session_service_dependency,
         )

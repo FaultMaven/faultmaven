@@ -25,7 +25,7 @@ import pytest
 
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.models.api_models import AttachmentResult, IntentType, TurnResponse
-from faultmaven.modules.case.api.routes import resolve_paste_source_meta
+from faultmaven.modules.case.api.routes.dependencies import resolve_paste_source_meta
 from faultmaven.modules.case.contracts import CaseState
 from faultmaven.modules.case.domain.models.case import Case
 
@@ -338,10 +338,10 @@ class TestEndpointValidation:
             OrientationKind,
             detect_orientation,
         )
-        from faultmaven.modules.case.api import routes
+        from faultmaven.modules.case.api.routes import conversation
 
         assert "At least one of query, files, or pasted_content" not in (
-            inspect.getsource(routes)
+            inspect.getsource(conversation)
         )
         assert detect_orientation(None) == OrientationKind.EMPTY
 
@@ -478,7 +478,7 @@ class TestSubmitTurnRejectsMalformedIntent:
 
         from fastapi import HTTPException  # noqa: F401
 
-        from faultmaven.modules.case.api.routes import submit_turn
+        from faultmaven.modules.case.api.routes.conversation import submit_turn
 
         case_service = MagicMock()
         case_service.get_case = AsyncMock(return_value=_make_mock_case())
@@ -525,7 +525,7 @@ class TestSubmitTurnBillingExhaustion:
     async def _submit_with_process_error(service_error):
         from unittest.mock import AsyncMock, MagicMock
 
-        from faultmaven.modules.case.api.routes import submit_turn
+        from faultmaven.modules.case.api.routes.conversation import submit_turn
 
         case_service = MagicMock()
         case_service.get_case = AsyncMock(return_value=_make_mock_case())
@@ -601,7 +601,7 @@ class TestObservedAtParsing:
     """The route's `observed_at` parser: fail to unknown, never to now."""
 
     def _parse(self, raw):
-        from faultmaven.modules.case.api.routes import _parse_observed_at
+        from faultmaven.modules.case.api.routes.dependencies import _parse_observed_at
 
         return _parse_observed_at(raw, "corr-1")
 

@@ -14,7 +14,7 @@
   "module_types": {
     "vertical": {
       "description": "Owns database tables; has contracts.py, api/, domain/, infrastructure/",
-      "structure": ["contracts.py", "api/routes.py", "domain/models/", "domain/services/", "infrastructure/persistence/"]
+      "structure": ["contracts.py", "api/routes.py (or api/routes/ package for a large module, e.g. case)", "domain/models/", "domain/services/", "infrastructure/persistence/"]
     },
     "domain_service": {
       "description": "Business logic only; has api/ and domain/; imports shared models from Case or Auth contracts",

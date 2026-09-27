@@ -64,7 +64,7 @@ MOUNTS = (
     ("/api/v1", "faultmaven.modules.auth.api.session"),
     ("/api/v1", "faultmaven.modules.auth.api.sso"),
     ("/api/v1", "faultmaven.modules.auth.api.teams"),
-    ("/api/v1", "faultmaven.modules.case.api.routes"),
+    ("/api/v1", "faultmaven.modules.case.api.routes.router"),
     ("/api/v1", "faultmaven.modules.knowledge.api.conversion_routes"),
     ("/api/v1", "faultmaven.modules.knowledge.api.routes"),
     ("/api/v1", "faultmaven.modules.report.api.routes"),
