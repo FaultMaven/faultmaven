@@ -21,7 +21,7 @@ the provider table names the shipped default) and
 `tests/unit/architecture/test_llm_rules_pin_reasoning_intent_call_sites.py`
 (the `| Call site | Declares |` table and every "N call sites" count match the
 code, and the quoted `TOOLLESS_INFERENCE_OUTPUT_FLOOR` value matches
-`milestone_engine/engine.py`).
+`milestone_engine/generation.py`).
 
 ## Supported LLM Providers
 

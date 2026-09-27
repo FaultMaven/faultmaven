@@ -58,6 +58,26 @@ _MODULES_UNDER_GUARD = {
     # tenancy-carrying self-call, and adding a required parameter ahead of a
     # defaulted one is exactly how the campaign moved these signatures.
     "faultmaven.core.investigation.milestone_engine.engine": "MilestoneEngine",
+    # The engine's collaborators (#1707 wave 2): each shares the same wide,
+    # positional, DI-carrying self-call shape the campaign moved signatures
+    # under, and each is now its own module with its own internal self-calls.
+    "faultmaven.core.investigation.milestone_engine.generation": (
+        "StructuredOutputGenerator"
+    ),
+    "faultmaven.core.investigation.milestone_engine.vectorization": (
+        "EvidenceVectorizer"
+    ),
+    "faultmaven.core.investigation.milestone_engine.kb_prefetch": "KbPrefetcher",
+    "faultmaven.core.investigation.milestone_engine.terminal_turns": (
+        "TerminalTurnHandler"
+    ),
+    "faultmaven.core.investigation.milestone_engine.runbook_creation": (
+        "RunbookCreator"
+    ),
+    "faultmaven.core.investigation.milestone_engine.response_application": (
+        "ResponseApplier"
+    ),
+    "faultmaven.core.investigation.milestone_engine.transitions": ("TransitionManager"),
     "faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository": (
         "PostgreSQLHybridCaseRepository"
     ),
