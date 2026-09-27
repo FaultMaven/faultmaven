@@ -512,7 +512,7 @@ Accept settings beyond LLM:
 > redesign** (commit `7b5a1b93`). There is no storage representation of an
 > archived case: the `cases` table has no `is_archived` or `archived_at` column,
 > `alembic/` contains no archive migration, and
-> `postgresql_hybrid_case_repository._row_to_case` says outright that both are
+> `postgresql_hybrid_case_repository.loading._row_to_case` says outright that both are
 > gone. The last surviving trace was the `include_archived` query parameter on
 > `GET /api/v1/cases`, which was accepted, published, and applied to nothing —
 > removed in API contract 4.0.0 (#1413), where the full record of this intent now
