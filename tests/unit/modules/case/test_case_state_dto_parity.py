@@ -8,7 +8,7 @@ product does not implement, or stops a real state crossing a boundary.
 
 from faultmaven.infrastructure.persistence.models import CaseState as PersistedCaseState
 from faultmaven.modules.case.contracts import CaseStateDTO
-from faultmaven.modules.case.domain.models import CaseState as DomainCaseState
+from faultmaven.modules.case.domain.models.lifecycle import CaseState as DomainCaseState
 
 
 def _values(enum_cls) -> set[str]:

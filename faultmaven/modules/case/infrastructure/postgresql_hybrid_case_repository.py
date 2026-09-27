@@ -26,45 +26,61 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.modules.case.domain.models import (
-    ActionAttempt,
-    Case,
-    CaseAction,
-    CaseEntity,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.causal import (
     CausalEdge,
     CausalNode,
+    NodeEvidenceLink,
+    NodeState,
+    NodeType,
+    ValidationMethod,
+)
+from faultmaven.modules.case.domain.models.conclusion import (
+    RootCauseConclusion,
+    WorkingConclusion,
+    normalize_stored_report_content,
+)
+from faultmaven.modules.case.domain.models.documentation import (
     DocumentationData,
-    EntityType,
     EscalationState,
+)
+from faultmaven.modules.case.domain.models.evidence import (
+    CaseEntity,
+    EntityType,
     Evidence,
     EvidenceCategory,
-    EvidenceNeed,
     EvidenceSourceType,
     EvidenceStance,
-    Hypothesis,
-    HypothesisCategory,
-    HypothesisEvidenceLink,
-    InquiryData,
-    InvestigationProgress,
-    InvestigationStrategy,
+    UploadedFile,
+)
+from faultmaven.modules.case.domain.models.evidence_needs import (
+    EvidenceNeed,
     NeedObtainability,
     NeedPriority,
     NeedPurpose,
     NeedState,
-    NodeEvidenceLink,
-    NodeState,
-    NodeType,
-    ProblemVerification,
-    ProposedAction,
-    RootCauseConclusion,
-    Solution,
-    TurnProgress,
-    UploadedFile,
-    ValidationMethod,
-    WorkingConclusion,
-    normalize_stored_report_content,
 )
+from faultmaven.modules.case.domain.models.hypothesis import (
+    Hypothesis,
+    HypothesisCategory,
+    HypothesisEvidenceLink,
+)
+from faultmaven.modules.case.domain.models.lifecycle import (
+    CaseAction,
+    CaseState,
+    InvestigationStrategy,
+)
+from faultmaven.modules.case.domain.models.problem import (
+    InquiryData,
+    ProblemVerification,
+)
+from faultmaven.modules.case.domain.models.progress import InvestigationProgress
+from faultmaven.modules.case.domain.models.solution import (
+    ActionAttempt,
+    ProposedAction,
+    Solution,
+)
+from faultmaven.modules.case.domain.models.turn import TurnProgress
 from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
 
 # Case-owned models (per module-organization-design.md)

@@ -70,7 +70,7 @@ from faultmaven.modules.case.contracts import (
     is_server_written_assistant_row,
     is_server_written_user_row,
 )
-from faultmaven.modules.case.domain.models import CauseState
+from faultmaven.modules.case.domain.models.progress import CauseState
 
 
 # =============================================================================

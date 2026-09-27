@@ -29,12 +29,14 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     InquiryData,
 )
-from faultmaven.modules.case.domain.models import (
-    CauseState,
+from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
-    InvestigationProgress,
     RootCauseConclusion,
     WorkingConclusion,
+)
+from faultmaven.modules.case.domain.models.progress import (
+    CauseState,
+    InvestigationProgress,
 )
 
 pytestmark = pytest.mark.unit

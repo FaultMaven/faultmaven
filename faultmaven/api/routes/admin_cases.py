@@ -70,7 +70,7 @@ from faultmaven.models.interfaces_operator_audit import (
 )
 from faultmaven.models.interfaces_operator_grant import IOperatorGrantRepository
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
-from faultmaven.modules.case.domain.models import CaseState
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.providers.tenancy.factory import (
     BUILTIN_MULTI,
     requested_tenant_provider,

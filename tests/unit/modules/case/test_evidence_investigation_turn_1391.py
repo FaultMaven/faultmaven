@@ -23,12 +23,9 @@ import pytest
 
 from faultmaven.models.api_models import UploadedFileMetadata
 from faultmaven.modules.case.contracts import UploadedFile
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
-    TurnOutcome,
-    TurnProgress,
-)
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 
 pytestmark = pytest.mark.unit
 
@@ -86,7 +83,7 @@ def _evidence(*, collected_at_turn: int, source_file_id: str | None = None):
     — the chat-quote case — which is the honest shape for evidence that came
     out of the conversation rather than an attachment.
     """
-    from faultmaven.modules.case.domain.models import Evidence
+    from faultmaven.modules.case.domain.models.evidence import Evidence
 
     return Evidence(
         evidence_id="ev_aabb11223344",

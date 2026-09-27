@@ -21,8 +21,8 @@ from faultmaven.core.investigation.milestone_engine import (
     _has_searchable_material,
     _should_force_tools,
 )
-from faultmaven.modules.case.domain.models import (
-    Case,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,

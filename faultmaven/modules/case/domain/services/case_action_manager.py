@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any, Dict, Mapping, Optional
 
-from faultmaven.modules.case.domain.models import CaseState
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.utils.serialization import to_json_compatible
 
 #: What a user may PICK from the status menu. A strict subset of

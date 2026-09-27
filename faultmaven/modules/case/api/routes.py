@@ -132,8 +132,9 @@ from faultmaven.models.interfaces_case import ICaseService
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.auth.contracts import ISessionService, UserDTO
-from faultmaven.modules.case.domain.models import Case as CaseEntity
-from faultmaven.modules.case.domain.models import CaseState, is_default_case_title
+from faultmaven.modules.case.domain.models.case import Case as CaseEntity
+from faultmaven.modules.case.domain.models.evidence import is_default_case_title
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.services.case_converter import CaseConverter
 from faultmaven.modules.case.domain.services.case_ui_adapter import (
     transform_case_for_ui,
@@ -1285,7 +1286,7 @@ async def list_cases(
 
         # DEFENSIVE: Ensure we actually have CaseSummary objects (validation check)
         from faultmaven.models.api_models import CaseSummary
-        from faultmaven.modules.case.domain.models import Case as CaseEntity
+        from faultmaven.modules.case.domain.models.case import Case as CaseEntity
 
         validated_summaries = []
         for item in case_summaries:

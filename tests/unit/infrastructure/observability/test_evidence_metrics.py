@@ -23,7 +23,7 @@ from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
 )
-from faultmaven.modules.case.domain.models import (
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,

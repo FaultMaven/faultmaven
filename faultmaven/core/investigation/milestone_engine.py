@@ -11272,7 +11272,7 @@ class MilestoneEngine:
 
         # Convert and store problem_confirmation from LLM schema to domain model
         if updates.problem_confirmation:
-            from faultmaven.modules.case.domain.models import (
+            from faultmaven.modules.case.domain.models.problem import (
                 ProblemConfirmation as DomainProblemConfirmation,
             )
 
@@ -11283,10 +11283,10 @@ class MilestoneEngine:
 
         # Convert and store preliminary_urgency from LLM schema to domain model
         if updates.preliminary_urgency:
-            from faultmaven.modules.case.domain.models import (
+            from faultmaven.modules.case.domain.models.problem import (
                 PreliminaryUrgency as DomainPreliminaryUrgency,
             )
-            from faultmaven.modules.case.domain.models import UrgencyLevel
+            from faultmaven.modules.case.domain.models.problem import UrgencyLevel
 
             case.inquiry.preliminary_urgency = DomainPreliminaryUrgency(
                 level=UrgencyLevel(
@@ -13777,7 +13777,7 @@ class MilestoneEngine:
                     assess_resolution_readiness,
                     propose_transition,
                 )
-                from faultmaven.modules.case.domain.models import (
+                from faultmaven.modules.case.domain.models.lifecycle import (
                     LEGAL_TRANSITIONS,
                 )
 

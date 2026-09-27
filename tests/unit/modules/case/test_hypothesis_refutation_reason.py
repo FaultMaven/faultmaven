@@ -10,7 +10,7 @@ Reference: investigation-journal.md Phase 3, agent-behavioral-rules.md Rule 2.
 import pytest
 from pydantic import ValidationError
 
-from faultmaven.modules.case.domain.models import (
+from faultmaven.modules.case.domain.models.hypothesis import (
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,

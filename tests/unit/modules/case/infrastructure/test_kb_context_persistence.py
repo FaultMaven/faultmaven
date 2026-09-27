@@ -34,7 +34,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.modules.case.domain.models import Case
+from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
     PostgreSQLHybridCaseRepository,
 )

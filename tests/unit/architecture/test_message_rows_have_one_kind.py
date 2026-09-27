@@ -219,10 +219,12 @@ def test_the_enum_is_gone():
     """
     import faultmaven.models as models
     import faultmaven.modules.case as case_module
-    from faultmaven.modules.case.domain import models as domain_models
+    from faultmaven.modules.case.domain.models import (
+        lifecycle as domain_models_lifecycle,
+    )
 
     for module, control in (
-        (domain_models, "CaseState"),
+        (domain_models_lifecycle, "CaseState"),
         (case_module, "CaseState"),
         (models, "CaseState"),
     ):

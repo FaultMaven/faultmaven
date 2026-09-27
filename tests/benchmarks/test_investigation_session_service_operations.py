@@ -33,7 +33,11 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
 )
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.models.investigation_session import InvestigationSession, SessionState
-from faultmaven.modules.case.domain.models import Case, CaseState, InvestigationStrategy
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import (
+    CaseState,
+    InvestigationStrategy,
+)
 from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
 )

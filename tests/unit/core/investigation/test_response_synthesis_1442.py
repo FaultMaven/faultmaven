@@ -319,7 +319,7 @@ class TestThroughAProcessedTurn:
         from faultmaven.modules.case.contracts import (
             MESSAGE_METADATA_AGENT_SYNTHESIZED,
         )
-        from faultmaven.modules.case.domain.models import EvidenceCategory
+        from faultmaven.modules.case.domain.models.evidence import EvidenceCategory
         from tests.unit.core.investigation.test_resolution_backstop_turn import _case
 
         # A stabilized case: no engine gate composes prose on this turn.
@@ -341,7 +341,7 @@ class TestThroughAProcessedTurn:
         from faultmaven.modules.case.contracts import (
             MESSAGE_METADATA_AGENT_SYNTHESIZED,
         )
-        from faultmaven.modules.case.domain.models import EvidenceCategory
+        from faultmaven.modules.case.domain.models.evidence import EvidenceCategory
         from tests.unit.core.investigation.test_resolution_backstop_turn import _case
 
         case = _case(absence=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
@@ -370,7 +370,7 @@ class TestThroughAProcessedTurn:
         from faultmaven.modules.case.contracts import (
             MESSAGE_METADATA_AGENT_SYNTHESIZED,
         )
-        from faultmaven.modules.case.domain.models import EvidenceCategory
+        from faultmaven.modules.case.domain.models.evidence import EvidenceCategory
         from tests.unit.core.investigation.test_resolution_backstop_turn import _case
 
         case = _case(absence=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE)
@@ -392,7 +392,8 @@ async def test_the_terminal_qa_path_reports_the_flag_on_its_metadata():
     metadata — so it has to be on it."""
     from faultmaven.core.investigation.schemas import TerminalResponse
     from faultmaven.modules.case.contracts import MESSAGE_METADATA_AGENT_SYNTHESIZED
-    from faultmaven.modules.case.domain.models import Case, CaseState
+    from faultmaven.modules.case.domain.models.case import Case
+    from faultmaven.modules.case.domain.models.lifecycle import CaseState
 
     blank = TerminalResponse(agent_response="", state_updates={})
     synthesized = MilestoneEngine.__new__(MilestoneEngine)._synthesize_agent_response(
@@ -495,7 +496,7 @@ async def test_a_blank_schema_tool_answer_is_named_by_the_engine(site):
     from unittest.mock import patch
 
     from faultmaven.modules.case.contracts import MESSAGE_METADATA_AGENT_SYNTHESIZED
-    from faultmaven.modules.case.domain.models import EvidenceCategory
+    from faultmaven.modules.case.domain.models.evidence import EvidenceCategory
     from tests.unit.core.investigation.test_resolution_backstop_turn import _case
 
     provider = _schema_tool_provider()
@@ -590,7 +591,7 @@ def _force_branch(site, case, md, engine):
         # through a validated copy: state and both timestamps land together.
         from datetime import UTC, datetime
 
-        from faultmaven.modules.case.domain.models import CaseState
+        from faultmaven.modules.case.domain.models.lifecycle import CaseState
 
         md["status_transitioned"] = True
         engine._auto_generate_report = AsyncMock(return_value=(GATE_NOTICE, False))
@@ -627,7 +628,7 @@ async def test_engine_prose_on_a_placeholder_turn_is_the_whole_reply(site):
     from faultmaven.core.investigation.prompts.fence import mint_token
     from faultmaven.core.investigation.schemas import InquiryResponse
     from faultmaven.modules.case.contracts import MESSAGE_METADATA_AGENT_SYNTHESIZED
-    from faultmaven.modules.case.domain.models import EvidenceCategory
+    from faultmaven.modules.case.domain.models.evidence import EvidenceCategory
     from tests.unit.core.investigation.test_gate_one_decline_1464 import (
         _inquiry_case_awaiting_gate_one,
     )

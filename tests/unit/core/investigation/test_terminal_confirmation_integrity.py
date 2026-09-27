@@ -30,13 +30,15 @@ from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
 )
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import (
     InquiryData,
-    InvestigationActionType,
-    InvestigationProgress,
     ProblemVerification,
+)
+from faultmaven.modules.case.domain.models.progress import InvestigationProgress
+from faultmaven.modules.case.domain.models.solution import (
+    InvestigationActionType,
     ProposedAction,
     Solution,
     SolutionOutcome,

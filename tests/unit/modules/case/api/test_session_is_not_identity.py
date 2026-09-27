@@ -59,7 +59,7 @@ from fastapi import FastAPI
 
 from faultmaven.api.route_enumeration import ServedRoute, iter_served_routes
 from faultmaven.modules.case.api.routes import router as case_router
-from faultmaven.modules.case.domain.models import Case
+from faultmaven.modules.case.domain.models.case import Case
 
 #: Dependencies that refuse an anonymous caller, spelled as
 #: ``tests/integration/api/test_openapi_documents_auth.py`` spells them so the

@@ -14,9 +14,9 @@ from faultmaven.modules.agent.domain.services.orientation import (
     detect_orientation,
     last_investigation_message,
 )
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import (
     InquiryData,
     InvestigationStage,
     ProblemVerification,

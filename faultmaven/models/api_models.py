@@ -15,11 +15,9 @@ from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from faultmaven.models.api import CaseMessagesResponse, Source
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
-    InvestigationStage,
-)
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import InvestigationStage
 from faultmaven.modules.case.domain.services.case_action_manager import (
     CaseActionManager,
 )

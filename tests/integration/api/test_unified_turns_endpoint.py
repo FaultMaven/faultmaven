@@ -27,7 +27,7 @@ from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.models.api_models import AttachmentResult, IntentType, TurnResponse
 from faultmaven.modules.case.api.routes import resolve_paste_source_meta
 from faultmaven.modules.case.contracts import CaseState
-from faultmaven.modules.case.domain.models import Case
+from faultmaven.modules.case.domain.models.case import Case
 
 # ============================================================
 # Helpers
