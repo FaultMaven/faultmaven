@@ -244,7 +244,7 @@ class TestTheStructuralGuard:
 
     @staticmethod
     def _guard():
-        from faultmaven.main import _assert_cors_outermost
+        from faultmaven.bootstrap.middleware import _assert_cors_outermost
 
         return _assert_cors_outermost
 

@@ -150,7 +150,7 @@ flowchart TB
     %% ============================================================
     %% COMPOSITION ROOT — binds everything together at startup
     %% ============================================================
-    Root["🔧 <b>Composition Root</b><br/>main.py lifespan<br/>+ container/_container_impl.py<br/>+ container/providers/{infrastructure, services, tools}<br/>+ bootstrap/ (auto-init · migrations · 59 built-in runbooks)<br/>→ app.state"]
+    Root["🔧 <b>Composition Root</b><br/>bootstrap/lifespan.py + bootstrap/composition.py<br/>+ container/_container_impl.py<br/>+ container/providers/{infrastructure, services, tools}<br/>+ bootstrap/ (auto-init · migrations · 59 built-in runbooks)<br/>→ app.state"]
 
     %% ============================================================
     %% REQUEST & RUNTIME EDGES

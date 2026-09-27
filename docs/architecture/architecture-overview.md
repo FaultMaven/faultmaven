@@ -151,7 +151,7 @@ See `.importlinter` at repo root for the current contracts. Architecture princip
 
 | To understand... | Read |
 |------------------|------|
-| How the system boots and wires dependencies | `faultmaven/main.py`, `faultmaven/container/`, Principle 5 |
+| How the system boots and wires dependencies | `faultmaven/bootstrap/lifespan.py`, `faultmaven/bootstrap/composition.py`, `faultmaven/container/`, Principle 5 |
 | How investigation turns are processed | [Investigation Lifecycle Logic](investigation-engine/investigation-lifecycle-logic.md) |
 | How prompts are assembled | [Prompt Assembly Architecture](investigation-engine/prompt-assembly-architecture.md) + [Agent Behavioral Rules](investigation-engine/agent-behavioral-rules.md) |
 | How evidence is classified and preprocessed | [data-processing/](data-processing/) |

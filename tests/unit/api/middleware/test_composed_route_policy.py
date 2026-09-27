@@ -251,17 +251,20 @@ def test_the_coherence_gate_is_wired_into_the_lifespan():
     inside the lifespan beside the deployment-coherence and credential gates, and
     exercising it end-to-end would mean standing up the whole composition root
     for one branch.
+
+    ``lifespan`` moved to ``faultmaven.bootstrap.lifespan`` (fm#1707 wave 2), so
+    this reads that module's source, not ``faultmaven.main``'s.
     """
     import inspect
     import re
 
-    import faultmaven.main
+    from faultmaven.bootstrap import lifespan as lifespan_module
 
-    source = inspect.getsource(faultmaven.main)
+    source = inspect.getsource(lifespan_module)
 
-    # `assert "raise RuntimeError" in source` was vacuous: main.py has six of
-    # them, so downgrading the gate to a logger.warning still passed. Pin the
-    # raise to THIS call.
+    # `assert "raise RuntimeError" in source` was vacuous: this module has
+    # several of them, so downgrading the gate to a logger.warning still
+    # passed. Pin the raise to THIS call.
     assert re.search(
         r"assert_policy_coherent\(app\)\s*\n\s*if _policy_problem:\s*\n\s*"
         r"raise RuntimeError\(_policy_problem\)",

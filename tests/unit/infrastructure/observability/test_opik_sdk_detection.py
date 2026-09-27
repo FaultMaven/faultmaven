@@ -5,7 +5,8 @@ documented once beside the guard itself — see
 ``faultmaven/infrastructure/observability/tracing.py``. This file pins the two
 bare-``import opik`` sites that guard reaches: ``tracing.OPIK_AVAILABLE``
 (which feeds ``OpikTracer.health_check``'s ``opik_sdk_available``) and
-``main.OPIK_AVAILABLE`` (which picks the startup log line).
+``bootstrap.middleware.OPIK_AVAILABLE`` (which picks the startup log line and
+gates ``OpikMiddleware``; moved out of ``faultmaven.main`` in fm#1707 wave 2).
 
 The first test pins the CPython fact the guards rest on rather than assuming
 it, and pins it precisely: a namespace package *sets* ``__file__`` to None
@@ -74,9 +75,10 @@ def _probe(substitute: str) -> dict:
     continue past it to the real ``opik/__init__.py`` in site-packages, and on
     CI the test would silently measure the real package and pass vacuously.
 
-    One interpreter for both flags: ``faultmaven.main`` already imports
-    ``tracing``, so a separate tracing-only probe would pay a second process
-    for a fact this one already has.
+    One interpreter for both flags, imported explicitly rather than relying on
+    one to pull in the other (``bootstrap.middleware`` does not import
+    ``tracing``): a separate tracing-only probe would pay a second process for
+    a fact this one already has.
 
     Runs in a temporary cwd (importing the app bootstraps settings, which
     writes ``data/``) and pins ``faultmaven`` to this checkout, since the
@@ -92,14 +94,14 @@ sys.modules["opik"] = opik
 import json
 
 from faultmaven.infrastructure.observability import tracing
-import faultmaven.main as main
+from faultmaven.bootstrap import middleware as bootstrap_middleware
 
 with open(OUT, "w") as f:
     json.dump(
         {{
             "tracing_available": tracing.OPIK_AVAILABLE,
-            "main_available": main.OPIK_AVAILABLE,
-            "main_middleware_available": main.OPIK_MIDDLEWARE_AVAILABLE,
+            "main_available": bootstrap_middleware.OPIK_AVAILABLE,
+            "main_middleware_available": bootstrap_middleware.OPIK_MIDDLEWARE_AVAILABLE,
         }},
         f,
     )

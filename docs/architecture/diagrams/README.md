@@ -12,8 +12,8 @@ or directly on GitHub (which renders `.mmd` inline).
   the composition root as the wiring node.
 - **[DI-diagram.mmd](./DI-diagram.mmd)** — zoom on dependency injection.
   Shows how Settings feeds the three provider modules (infrastructure, tools,
-  services), which are composed at startup in `main.py` lifespan and attached
-  to `app.state`.
+  services), which are composed at startup in `bootstrap/lifespan.py`'s
+  lifespan and attached to `app.state`.
 
 ## Regenerating to PNG/SVG
 
