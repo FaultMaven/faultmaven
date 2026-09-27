@@ -39,7 +39,7 @@ if TYPE_CHECKING:  # static analysis only — never executed at runtime
 # ``__all__`` by tests/unit/test_import_isolation.py.
 _EXPORTS_BY_SUBMODULE = {
     "hypothesis_manager": ("HypothesisManager", "create_hypothesis_manager"),
-    "milestone_engine": ("MilestoneEngine",),
+    "milestone_engine.engine": ("MilestoneEngine",),
 }
 
 _SUBMODULE_BY_EXPORT = {
