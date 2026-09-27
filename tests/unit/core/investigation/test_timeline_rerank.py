@@ -28,15 +28,15 @@ from faultmaven.core.investigation.prompts.context_builder.evidence import (
     _extract_time_window_from_query,
     _score_evidence_for_tier_a,
 )
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
-    InquiryData,
     UploadedFile,
 )
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import InquiryData
 
 # ---------------------------------------------------------------------------
 # Helpers

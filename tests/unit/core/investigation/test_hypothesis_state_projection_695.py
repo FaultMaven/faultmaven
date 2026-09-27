@@ -16,7 +16,7 @@ from uuid import uuid4
 import pytest
 
 from faultmaven.core.investigation import causal_graph as causal_graph_module
-from faultmaven.core.investigation.causal_graph import (
+from faultmaven.core.investigation.causal_graph.projection import (
     project_hypothesis_states_from_roots,
 )
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
@@ -228,9 +228,11 @@ def test_projection_is_the_sole_source_writer_of_validated():
         .stdout.strip()
         .splitlines()
     )
-    # Exactly one assignment, and it is inside the projection function.
+    # Exactly one assignment, and it is inside the projection function (now
+    # causal_graph/projection.py — the causal_graph package's own submodule,
+    # fm#1707).
     assert len(out) == 1, f"unexpected VALIDATED writers:\n{chr(10).join(out)}"
-    assert "causal_graph.py" in out[0]
+    assert "causal_graph/projection.py" in out[0]
     src = inspect.getsource(project_hypothesis_states_from_roots)
     assert "HypothesisState.VALIDATED" in src
 
@@ -256,10 +258,13 @@ def test_explicit_refutation_still_flips_state_after_flat_removal():
 
 
 def test_projection_lives_next_to_node_derivation():
-    # Coherence pin: the projection is defined in the causal-graph module (the
-    # graph->state derivation home), not smuggled into an unrelated layer.
-    assert (
-        project_hypothesis_states_from_roots.__module__ == causal_graph_module.__name__
+    # Coherence pin: the projection is defined inside the causal-graph package
+    # (the graph->state derivation home), not smuggled into an unrelated
+    # layer. Since fm#1707 the package's own submodules (e.g.
+    # causal_graph.projection) hold it, so the check is "inside the package",
+    # not "equal to the facade module".
+    assert project_hypothesis_states_from_roots.__module__.startswith(
+        causal_graph_module.__name__ + "."
     )
 
 

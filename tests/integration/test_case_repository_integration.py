@@ -29,25 +29,31 @@ from faultmaven.infrastructure.persistence.database import (
     reset_engine,
 )
 from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseAction,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
+    UploadedFile,
+)
+from faultmaven.modules.case.domain.models.hypothesis import (
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
-    InvestigationActionType,
-    InvestigationProgress,
+)
+from faultmaven.modules.case.domain.models.lifecycle import (
+    CaseAction,
+    CaseState,
     InvestigationStrategy,
+)
+from faultmaven.modules.case.domain.models.problem import InquiryData
+from faultmaven.modules.case.domain.models.progress import InvestigationProgress
+from faultmaven.modules.case.domain.models.solution import (
+    InvestigationActionType,
     ProposedAction,
     Solution,
     SolutionType,
-    UploadedFile,
 )
 from faultmaven.modules.case.infrastructure.case_repository import (
     CaseRepository,
@@ -645,7 +651,7 @@ async def test_action_history_round_trip(db_repository: SQLiteCaseRepository):
     """
     from datetime import datetime, timedelta, timezone
 
-    from faultmaven.modules.case.domain.models import CaseAction
+    from faultmaven.modules.case.domain.models.lifecycle import CaseAction
 
     case_id = f"case_{uuid4().hex[:12]}"
     case = Case(

@@ -184,7 +184,7 @@ class TestServerWrittenRowsAreNotQuoted:
         # an ASIDE and the record path was never actually exercised. A
         # hand-rolled stand-in is no better — it drifts from the model the code
         # is handed.
-        from faultmaven.modules.case.domain.models import TurnOutcome, TurnProgress
+        from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 
         record = TurnProgress(
             turn_number=4,

@@ -35,8 +35,10 @@ import re
 
 import pytest
 
-from faultmaven.core.investigation.prompts.templates import SCHEMA_INSTRUCTIONS
-from faultmaven.modules.case.domain.models import TurnOutcome
+from faultmaven.core.investigation.prompts.templates.investigation import (
+    SCHEMA_INSTRUCTIONS,
+)
+from faultmaven.modules.case.domain.models.turn import TurnOutcome
 
 
 def _extract_outcome_values_from_prompt() -> set[str]:

@@ -31,14 +31,14 @@ from faultmaven.core.investigation.milestone_engine import (
     _route_toolless_turn_single_shot,
     _should_force_tools,
 )
-from faultmaven.core.investigation.prompts.templates import (
+from faultmaven.core.investigation.prompts.templates.assembly import get_prompt_for_case
+from faultmaven.core.investigation.prompts.templates.blocks import (
     _DIAGNOSTIC_REASONING_BLOCK,
     _EVIDENCE_GROUNDING_BLOCK,
     _FAULTMAVEN_DOCS_URL,
     _SELF_REFERENCE_RULE,
     AGENT_META_INSTRUCTIONS,
     KNOWLEDGE_QUERY_INSTRUCTIONS,
-    get_prompt_for_case,
 )
 from faultmaven.modules.agent.domain.services.investigation_service import (
     _EVIDENCE_REROUTE_MODES,

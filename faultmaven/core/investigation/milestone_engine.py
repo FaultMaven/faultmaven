@@ -46,27 +46,41 @@ from faultmaven.core.investigation.case_telemetry import (
     TurnPath,
     collect_progress_arms,
 )
-from faultmaven.core.investigation.causal_graph import (
-    any_chain_root_inconclusive,
-    any_chain_root_validated,
-    chain_path_to_problem,
-    demote_disconfirmed_cause_via_evidence,
+from faultmaven.core.investigation.causal_graph.clusters import mece_contested_root_ids
+from faultmaven.core.investigation.causal_graph.derivation import (
     derive_node_states,
-    find_duplicate_hypothesis,
-    hypothesis_statements_duplicate,
+    validate_by_exclusion,
+)
+from faultmaven.core.investigation.causal_graph.disconfirmation import (
+    any_chain_root_inconclusive,
+    demote_disconfirmed_cause_via_evidence,
+)
+from faultmaven.core.investigation.causal_graph.ingestion import (
+    chain_path_to_problem,
     ingest_emitted_chain,
-    is_chain_root_validated,
-    link_llm_rcc_to_cause,
-    mece_contested_root_ids,
     mirror_hypothesis_support_to_root_nodes,
+)
+from faultmaven.core.investigation.causal_graph.projection import (
+    any_chain_root_validated,
     project_hypothesis_states_from_roots,
+)
+from faultmaven.core.investigation.causal_graph.pruning import (
     prune_abandoned_nodes,
     resolve_orphan_chains,
+)
+from faultmaven.core.investigation.causal_graph.queries import is_chain_root_validated
+from faultmaven.core.investigation.causal_graph.rcc import (
+    link_llm_rcc_to_cause,
     retract_disconfirmed_rcc,
     retract_stale_engine_rcc,
-    support_count_held_root_ids,
     synthesize_rcc_from_validated_root,
-    validate_by_exclusion,
+)
+from faultmaven.core.investigation.causal_graph.similarity import (
+    find_duplicate_hypothesis,
+    hypothesis_statements_duplicate,
+)
+from faultmaven.core.investigation.causal_graph.support import (
+    support_count_held_root_ids,
 )
 from faultmaven.core.investigation.cause_assurance import (
     CauseAssuranceGrade,
@@ -127,9 +141,9 @@ from faultmaven.core.investigation.progress_monitor import ProgressMonitor
 from faultmaven.core.investigation.prompts.context_builder.budget import (
     structural_index_is_searchable,
 )
-from faultmaven.core.investigation.prompts.templates import (
+from faultmaven.core.investigation.prompts.templates.assembly import get_prompt_for_case
+from faultmaven.core.investigation.prompts.templates.investigation import (
     SCHEMA_INSTRUCTIONS,
-    get_prompt_for_case,
 )
 from faultmaven.core.investigation.reliability_metrics import (
     schema_validation_total,
@@ -10611,7 +10625,7 @@ class MilestoneEngine:
                 and case is not None
                 and _is_context_length_error(exc)
             ):
-                from faultmaven.core.investigation.prompts.templates import (
+                from faultmaven.core.investigation.prompts.templates.fallback import (
                     DEGRADED_NO_TOOLS_NOTICE,
                     get_fallback_prompt_for_case,
                 )
@@ -11272,7 +11286,7 @@ class MilestoneEngine:
 
         # Convert and store problem_confirmation from LLM schema to domain model
         if updates.problem_confirmation:
-            from faultmaven.modules.case.domain.models import (
+            from faultmaven.modules.case.domain.models.problem import (
                 ProblemConfirmation as DomainProblemConfirmation,
             )
 
@@ -11283,10 +11297,10 @@ class MilestoneEngine:
 
         # Convert and store preliminary_urgency from LLM schema to domain model
         if updates.preliminary_urgency:
-            from faultmaven.modules.case.domain.models import (
+            from faultmaven.modules.case.domain.models.problem import (
                 PreliminaryUrgency as DomainPreliminaryUrgency,
             )
-            from faultmaven.modules.case.domain.models import UrgencyLevel
+            from faultmaven.modules.case.domain.models.problem import UrgencyLevel
 
             case.inquiry.preliminary_urgency = DomainPreliminaryUrgency(
                 level=UrgencyLevel(
@@ -13777,7 +13791,7 @@ class MilestoneEngine:
                     assess_resolution_readiness,
                     propose_transition,
                 )
-                from faultmaven.modules.case.domain.models import (
+                from faultmaven.modules.case.domain.models.lifecycle import (
                     LEGAL_TRANSITIONS,
                 )
 

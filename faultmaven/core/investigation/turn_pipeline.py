@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, List
 from faultmaven.modules.case.contracts import is_minted_filename
 
 if TYPE_CHECKING:
-    from faultmaven.modules.case.domain.models import UploadedFile
+    from faultmaven.modules.case.domain.models.evidence import UploadedFile
 
 
 def submitted_name(submitted_filename: "str | None", uf: "UploadedFile") -> str:

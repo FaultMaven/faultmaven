@@ -565,7 +565,7 @@ propose_transition(
     to_status="closed",
     summary=closure.message,
     # closure_reason derived by engine via derive_closure_reason():
-    # inquiry_only | solution_deferred | closed_rca_infeasible | mitigation_sufficient | closed_insufficient_evidence
+    # inquiry_only | solution_deferred | closed_rca_infeasible | mitigation_sufficient | closed_restatement_held | closed_insufficient_evidence
 )
 # User confirms → _execute_closed_transition(case, user_id, closure_reason)
 ```
@@ -1951,14 +1951,17 @@ The retrospective shape is **direct** vs **mitigated**, derived from
 
 `closure_reason` is `None` for all RESOLVED cases — resolution itself is the
 categorization. Only CLOSED cases carry a `closure_reason` value (`inquiry_only`,
-`closed_rca_infeasible`, `mitigation_sufficient`, or `closed_insufficient_evidence`).
-`derive_closure_reason` (in `terminal_transitions.py`) returns `inquiry_only`
-when the case never left INQUIRY, `closed_insufficient_evidence` when the case
-is closed from INVESTIGATING while in the `INSUFFICIENT_EVIDENCE`
-verification-status cell (see
+`solution_deferred`, `closed_rca_infeasible`, `mitigation_sufficient`,
+`closed_restatement_held`, or `closed_insufficient_evidence`).
+`derive_closure_reason` (in `terminal_transitions.py`) picks the most specific
+reason first: `inquiry_only` when the case never left INQUIRY; `solution_deferred`
+when a fix is documented but was never applied; `closed_rca_infeasible` when RCA
+was declared infeasible with a rationale; `mitigation_sufficient` when a
+mitigation is verified; `closed_restatement_held` when the restatement guard held
+every unsettled root (#1195); otherwise `closed_insufficient_evidence`. It no
+longer keys on the `INSUFFICIENT_EVIDENCE` verification-status cell (see
 [Insufficient-Evidence Handling §3.5](./insufficient-evidence-handling.md)),
-and otherwise `closed_insufficient_evidence` — `mitigation_sufficient`
-reason was folded into the latter.
+which a case stuck at symptom verification never reaches.
 
 ---
 

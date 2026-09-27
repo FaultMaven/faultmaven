@@ -16,19 +16,20 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
+    RootCauseConclusion,
+)
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
-    InvestigationProgress,
-    ProblemVerification,
-    RootCauseConclusion,
-    Solution,
-    SolutionType,
 )
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import ProblemVerification
+from faultmaven.modules.case.domain.models.progress import InvestigationProgress
+from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
 
 
 def _make_repo():
@@ -376,7 +377,7 @@ async def test_check_automatic_transitions_closure_reason_stabilized_investigati
         investigation_tools=MagicMock(),
     )
     case = _make_investigating_case()
-    from faultmaven.modules.case.domain.models import MitigationRecord
+    from faultmaven.modules.case.domain.models.progress import MitigationRecord
 
     case.progress.mitigation = MitigationRecord(
         proposed_at_turn=case.current_turn,
@@ -605,7 +606,7 @@ class TestDeriveClosureReasonInsufficientEvidence:
         from faultmaven.core.investigation.terminal_transitions import (
             derive_closure_reason,
         )
-        from faultmaven.modules.case.domain.models import VerificationStatus
+        from faultmaven.modules.case.domain.models.progress import VerificationStatus
 
         case = _make_investigating_case()
         case.progress.verification_status = VerificationStatus.INSUFFICIENT_EVIDENCE
@@ -616,7 +617,7 @@ class TestDeriveClosureReasonInsufficientEvidence:
         from faultmaven.core.investigation.terminal_transitions import (
             derive_closure_reason,
         )
-        from faultmaven.modules.case.domain.models import VerificationStatus
+        from faultmaven.modules.case.domain.models.progress import VerificationStatus
 
         case = _make_investigating_case()
         # Any non-insufficient status closes as the generic investigated reason.
@@ -627,7 +628,7 @@ class TestDeriveClosureReasonInsufficientEvidence:
         from faultmaven.core.investigation.terminal_transitions import (
             derive_closure_reason,
         )
-        from faultmaven.modules.case.domain.models import VerificationStatus
+        from faultmaven.modules.case.domain.models.progress import VerificationStatus
 
         case = _make_inquiry_case()
         case.progress = InvestigationProgress(

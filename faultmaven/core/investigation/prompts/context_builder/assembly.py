@@ -18,7 +18,7 @@ from faultmaven.modules.case.contracts import (
     InvestigationActionType,
     InvestigationStage,
 )
-from faultmaven.modules.case.domain.models import CauseState
+from faultmaven.modules.case.domain.models.progress import CauseState
 
 from .budget import (
     _SECTION_DROPPED_MARKER,

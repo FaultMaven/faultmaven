@@ -1,9 +1,9 @@
-from faultmaven.core.investigation.causal_graph import (
+from faultmaven.core.investigation.causal_graph.clusters import mece_contested_root_ids
+from faultmaven.core.investigation.causal_graph.support import (
     BLOCK_REASON_COUNT,
     BLOCK_REASON_HEDGED,
     BLOCK_REASON_MIRROR,
     BLOCK_REASON_RESTATEMENT,
-    mece_contested_root_ids,
     restatement_held_root_ids,
     root_support_block_reasons,
 )

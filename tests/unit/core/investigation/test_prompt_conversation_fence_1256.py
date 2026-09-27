@@ -58,13 +58,13 @@ from faultmaven.core.investigation.prompts.fence import (
     split_fenced,
     terminate_dangling,
 )
-from faultmaven.core.investigation.prompts.templates import (
-    _PROMPT_FENCE_RULE,
-    INQUIRY_TEMPLATE,
+from faultmaven.core.investigation.prompts.templates.assembly import get_prompt_for_case
+from faultmaven.core.investigation.prompts.templates.blocks import _PROMPT_FENCE_RULE
+from faultmaven.core.investigation.prompts.templates.inquiry import INQUIRY_TEMPLATE
+from faultmaven.core.investigation.prompts.templates.investigation import (
     INVESTIGATION_BASE,
-    TERMINAL_TEMPLATE,
-    get_prompt_for_case,
 )
+from faultmaven.core.investigation.prompts.templates.terminal import TERMINAL_TEMPLATE
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,

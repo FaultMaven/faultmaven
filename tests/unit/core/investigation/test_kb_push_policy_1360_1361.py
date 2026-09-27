@@ -30,7 +30,7 @@ from faultmaven.core.investigation.case_telemetry import (
     TurnPath,
     build_case_turn_event,
 )
-from faultmaven.core.investigation.prompts.templates import get_prompt_for_case
+from faultmaven.core.investigation.prompts.templates.assembly import get_prompt_for_case
 from tests.utils import reset_settings_singleton
 
 #: The one entry every prompt assertion is written against. Title, excerpt and
@@ -558,7 +558,7 @@ class TestTheTurnResponseCitesItsSources:
         from faultmaven.modules.agent.domain.services.investigation_service import (
             _kb_context_sources,
         )
-        from faultmaven.modules.case.domain.models import CaseState
+        from faultmaven.modules.case.domain.models.lifecycle import CaseState
 
         response = TurnResponse(
             agent_response="…",
@@ -601,7 +601,7 @@ class TestTheTurnResponseCitesItsSources:
     def test_the_field_defaults_to_empty_rather_than_missing(self):
         """Every existing caller builds a ``TurnResponse`` without it."""
         from faultmaven.models.api_models import TurnResponse
-        from faultmaven.modules.case.domain.models import CaseState
+        from faultmaven.modules.case.domain.models.lifecycle import CaseState
 
         response = TurnResponse(
             agent_response="…",

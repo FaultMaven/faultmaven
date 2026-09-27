@@ -40,15 +40,13 @@ from faultmaven.api.exception_handlers import (
     http_exception_handler,
     request_validation_exception_handler,
 )
+from faultmaven.api.v1.auth_dependencies import require_authentication
+from faultmaven.api.v1.dependencies import get_investigation_service
 from faultmaven.models.api_models import TurnResponse
-from faultmaven.modules.case.api.routes import (
-    _di_get_case_service_dependency,
-    get_investigation_service,
-    require_authentication,
-)
+from faultmaven.modules.case.api.routes import _di_get_case_service_dependency
 from faultmaven.modules.case.api.routes import router as case_router
 from faultmaven.modules.case.contracts import CaseState
-from faultmaven.modules.case.domain.models import Case
+from faultmaven.modules.case.domain.models.case import Case
 
 TURNS_URL = "/api/v1/cases/case_abc123def456/turns"
 

@@ -1272,8 +1272,8 @@ Copilot is already live.
 
 | Concern | Location |
 |---|---|
-| Domain model `EvidenceNeed` + `NeedPurpose`/`NeedState`/`NeedPriority` | `faultmaven/modules/case/domain/models.py` (`EvidenceNeed` ~`:1954`; enums ~`:1901`–`:1941`) |
-| `EvidenceCategory` enum | `faultmaven/modules/case/domain/models.py:1221` |
+| Domain model `EvidenceNeed` + `NeedPurpose`/`NeedState`/`NeedPriority` | `faultmaven/modules/case/domain/models/evidence_needs.py` |
+| `EvidenceCategory` enum | `faultmaven/modules/case/domain/models/evidence.py` |
 | LLM schema `EvidenceNeedUpdate` + stage hooks | `faultmaven/core/investigation/schemas.py:501`; `evidence_need_updates` on Diagnosis/Mitigation/Treatment/General state-updates (~`:1044`–`:1194`); **absent from `InquiryStateUpdate` by design (INV-07)** |
 | `SuggestedFollowUp.evidence_need_id` + validators | `faultmaven/core/investigation/schemas.py:897`–`929` |
 | Engine apply-layer `_apply_evidence_need_updates` | `faultmaven/core/investigation/milestone_engine.py:6310`–`6637` (invoked ~`:6137`) |
@@ -1281,7 +1281,7 @@ Copilot is already live.
 | Terminal-hypothesis supersession | `milestone_engine.py:_supersede_needs_on_terminal_hypothesis` (+ `_TERMINAL_HYPOTHESIS_STATES`) |
 | Wire-flattening seam (`new_index_N` → real ID) | `milestone_engine.py:_flatten_follow_ups` ~`:7476`–`7530` |
 | Context block `<evidence_needs>` | `context_builder/evidence_needs.py` `_build_evidence_needs_block` (line render `_render_need_line`) |
-| Prompt directives | `prompts/templates.py:_EVIDENCE_NEEDS_LIFECYCLE_BLOCK` ~`:1170`, `_..._SYMPTOM_ONLY_ADDENDUM` ~`:1206`, `_..._RCA_POOL_EVAL_BLOCK` ~`:1222`, `_..._REVERIFICATION_ADDENDUM` ~`:1253` |
+| Prompt directives | `prompts/templates/diagnosis.py:_EVIDENCE_NEEDS_LIFECYCLE_BLOCK`, `_..._RCA_POOL_EVAL_BLOCK`, `_..._REVERIFICATION_ADDENDUM`. The symptom-only addendum (`_EVIDENCE_NEEDS_SYMPTOM_ONLY_ADDENDUM`) was **removed in the flow redesign** (#410), together with the path backstop and path-dispatch blocks it served (§7.3). |
 | Persistence (save/load) | `sqlite_case_repository.py:_upsert_evidence_needs` ~`:2320`, `_load_evidence_needs_for_case` ~`:633` |
 | Migration | `alembic/versions/20260526_1000_014_evidence_needs.py` |
 | Metrics | `faultmaven/core/investigation/lifecycle_metrics.py:137`–`194` |
@@ -1368,7 +1368,7 @@ authoritative**.
   presence↔absence pairing is deferred to a later step (no
   evidence↔evidence link in the model yet).
   `context_builder.evidence_needs._build_evidence_needs_block` (re-verification
-  section) + `templates._EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM` + the
+  section) + `templates.diagnosis._EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM` + the
   per-stage EVIDENCE-TYPES sections and the classification decision-tree
   step 4. This makes the "always-create a need per hypothesis" idea
   unnecessary: the pool stays demand-side (outstanding needs to look

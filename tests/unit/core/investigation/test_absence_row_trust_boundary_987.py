@@ -26,11 +26,13 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.core.investigation.causal_graph import (
+from faultmaven.core.investigation.causal_graph.derivation import derive_node_states
+from faultmaven.core.investigation.causal_graph.disconfirmation import (
     demote_disconfirmed_cause_via_evidence,
-    derive_node_states,
-    ingest_emitted_chain,
     m6_disconfirmation_basis,
+)
+from faultmaven.core.investigation.causal_graph.ingestion import (
+    ingest_emitted_chain,
     seed_problem_node,
 )
 from faultmaven.core.investigation.cause_assurance import ENGINE_EVIDENCE_AUTHOR
@@ -428,7 +430,9 @@ def test_m6_engine_row_records_inference_with_provenance_not_an_observation():
     that arm is the LATCH. The counterfactual provenance TEXT is pinned at its
     source in ``test_m6_fires_on_a_genuine_failed_fix``.
     """
-    from faultmaven.core.investigation.causal_graph import _attach_engine_refutation
+    from faultmaven.core.investigation.causal_graph.disconfirmation import (
+        _attach_engine_refutation,
+    )
 
     case = _case()
     seed_problem_node(case)
@@ -872,7 +876,7 @@ def test_undatable_legacy_acceptance_is_labeled_apart_from_no_fix_applied():
         )
     )
     with patch(
-        "faultmaven.core.investigation.causal_graph.m6_demotion_refused_total"
+        "faultmaven.core.investigation.causal_graph.disconfirmation.m6_demotion_refused_total"
     ) as counter:
         assert m6_disconfirmation_basis(legacy) is None
     counter.labels.assert_called_once_with(reason="undatable_acceptance")
@@ -880,7 +884,7 @@ def test_undatable_legacy_acceptance_is_labeled_apart_from_no_fix_applied():
     # ...and a case where nothing was ever tried keeps the benign label.
     untouched = _case()
     with patch(
-        "faultmaven.core.investigation.causal_graph.m6_demotion_refused_total"
+        "faultmaven.core.investigation.causal_graph.disconfirmation.m6_demotion_refused_total"
     ) as counter:
         assert m6_disconfirmation_basis(untouched) is None
     counter.labels.assert_called_once_with(reason="no_fix_applied")
@@ -909,7 +913,7 @@ def test_undatable_label_ignores_mitigations_and_pending_offers():
         )
     )
     with patch(
-        "faultmaven.core.investigation.causal_graph.m6_demotion_refused_total"
+        "faultmaven.core.investigation.causal_graph.disconfirmation.m6_demotion_refused_total"
     ) as counter:
         assert m6_disconfirmation_basis(case) is None
     counter.labels.assert_called_once_with(reason="no_fix_applied")

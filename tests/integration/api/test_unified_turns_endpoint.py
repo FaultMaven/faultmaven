@@ -27,7 +27,7 @@ from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.models.api_models import AttachmentResult, IntentType, TurnResponse
 from faultmaven.modules.case.api.routes import resolve_paste_source_meta
 from faultmaven.modules.case.contracts import CaseState
-from faultmaven.modules.case.domain.models import Case
+from faultmaven.modules.case.domain.models.case import Case
 
 # ============================================================
 # Helpers
@@ -175,7 +175,7 @@ class TestTurnPayloadConstruction:
 # ============================================================
 #
 # These tests cover the input-origin discrimination in the unified turns
-# endpoint at modules/case/api/routes.py:2140-2166. The route distinguishes
+# endpoint (``submit_turn`` in modules/case/api/routes.py). The route distinguishes
 # three submission origins so the classifier can apply the correct
 # confidence boost downstream:
 #
@@ -340,9 +340,8 @@ class TestEndpointValidation:
         )
         from faultmaven.modules.case.api import routes
 
-        assert (
-            "At least one of query, files, or pasted_content"
-            not in inspect.getsource(routes)
+        assert "At least one of query, files, or pasted_content" not in (
+            inspect.getsource(routes)
         )
         assert detect_orientation(None) == OrientationKind.EMPTY
 

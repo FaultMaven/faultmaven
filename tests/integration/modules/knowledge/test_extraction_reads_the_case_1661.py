@@ -56,13 +56,13 @@ from faultmaven.infrastructure.security.redaction import (
     RedactionUnavailableError,
 )
 from faultmaven.modules.case.contracts import MessageRowKind, append_message_row
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
 )
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
 )

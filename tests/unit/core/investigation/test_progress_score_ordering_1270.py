@@ -427,10 +427,8 @@ def _case_awaiting_confirmation(to_state: str):
     """
     from datetime import UTC, datetime
 
-    from faultmaven.modules.case.domain.models import (
-        InvestigationProgress,
-        ProblemVerification,
-    )
+    from faultmaven.modules.case.domain.models.problem import ProblemVerification
+    from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 
     case = Case(
         case_id="case_1270bbbbbbbb",

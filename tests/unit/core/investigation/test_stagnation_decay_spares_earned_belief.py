@@ -40,7 +40,7 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.core.investigation.causal_graph import (
+from faultmaven.core.investigation.causal_graph.projection import (
     project_hypothesis_states_from_roots,
 )
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager

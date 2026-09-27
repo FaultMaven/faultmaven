@@ -15,7 +15,7 @@ labels / quadrant tags / fallback token. These tests pin it three ways:
 
 import pytest
 
-from faultmaven.modules.case.domain.models import InterventionQuadrant
+from faultmaven.modules.case.domain.models.causal import InterventionQuadrant
 from faultmaven.modules.knowledge.domain.services import conversion_service
 from faultmaven.modules.knowledge.domain.services.cause_grammar import (
     FALLBACK_CAUSE_LETTER,

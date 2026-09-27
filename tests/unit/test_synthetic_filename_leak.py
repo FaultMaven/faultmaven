@@ -37,7 +37,7 @@ from faultmaven.core.investigation.prompts.context_builder.evidence import (
     _build_evidence_context,
 )
 from faultmaven.core.investigation.prompts.fence import render_fenced
-from faultmaven.core.investigation.prompts.templates import (
+from faultmaven.core.investigation.prompts.templates.fallback import (
     _fallback_stub_block,
 )
 from faultmaven.core.investigation.turn_pipeline import (
@@ -57,7 +57,7 @@ from faultmaven.modules.case.contracts import (
     InquiryData,
     UploadedFile,
 )
-from faultmaven.modules.case.domain.models import Case
+from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.report.domain.services.report_generation_service import (
     ReportGenerationService,
 )
@@ -481,11 +481,14 @@ class TestCitationInstructions:
         (#1198 review). Asserted over the module source so a fourth one
         added anywhere in the file is caught too.
         """
-        import inspect
+        from pathlib import Path
 
         from faultmaven.core.investigation.prompts import templates
 
-        source = inspect.getsource(templates)
+        pkg_dir = Path(templates.__file__).parent
+        source = "".join(
+            p.read_text(encoding="utf-8") for p in sorted(pkg_dir.glob("*.py"))
+        )
         for banned in (
             "cite the filename",
             "label (filename, description)",
@@ -495,7 +498,7 @@ class TestCitationInstructions:
             assert banned not in source, banned
 
     def test_investigating_templates_say_what_to_cite_instead(self):
-        from faultmaven.core.investigation.prompts.templates import (
+        from faultmaven.core.investigation.prompts.templates.investigation import (
             INVESTIGATION_BASE,
             SCHEMA_INSTRUCTIONS,
         )

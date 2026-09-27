@@ -19,7 +19,7 @@ These tests pin the two contracts that made the original writes wrong.
 import pydantic
 import pytest
 
-from faultmaven.modules.case.domain.models import TurnOutcome, TurnProgress
+from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 
 pytestmark = pytest.mark.unit
 

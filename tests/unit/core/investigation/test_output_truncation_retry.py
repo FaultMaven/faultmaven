@@ -353,7 +353,7 @@ async def test_ceiling_truncation_degrades_to_the_minimal_prompt():
     engine.llm_provider.generate = generate
 
     with patch(
-        "faultmaven.core.investigation.prompts.templates.get_fallback_prompt_for_case",
+        "faultmaven.core.investigation.prompts.templates.fallback.get_fallback_prompt_for_case",
         return_value="MINIMAL FALLBACK PROMPT",
     ):
         result = await engine._generate_structured_output(
@@ -390,7 +390,7 @@ async def test_the_degrade_is_metered_as_truncation_not_overflow():
             metric,
         ),
         patch(
-            "faultmaven.core.investigation.prompts.templates."
+            "faultmaven.core.investigation.prompts.templates.fallback."
             "get_fallback_prompt_for_case",
             return_value="MINIMAL FALLBACK PROMPT",
         ),

@@ -61,7 +61,7 @@ from faultmaven.config.tenant_context import (
     set_current_enterprise_id,
 )
 from faultmaven.models.api_models import CaseListFilter
-from faultmaven.modules.case.domain.models import CaseState
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
 
 pytestmark = [pytest.mark.unit]
 
@@ -397,7 +397,7 @@ async def test_create_case_sets_the_state_field_that_exists(service):
     — #1431's mechanism inside the class this file guards. Pinned by asking
     the model, so it fails if ``status`` is ever reintroduced as an alias.
     """
-    from faultmaven.modules.case.domain.models import Case
+    from faultmaven.modules.case.domain.models.case import Case
 
     assert "status" not in Case.model_fields
     assert "state" in Case.model_fields

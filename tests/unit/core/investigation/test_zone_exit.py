@@ -31,15 +31,17 @@ from faultmaven.core.investigation.milestone_engine import (
 from faultmaven.core.investigation.prompts.context_builder.assembly import (
     build_investigation_context,
 )
-from faultmaven.core.investigation.prompts.templates import (
-    _RCA_DIAGNOSIS_BLOCK,
+from faultmaven.core.investigation.prompts.templates.assembly import (
     _get_diagnosis_focus_emphasis,
     get_prompt_for_case,
 )
-from faultmaven.modules.case.domain.models import (
-    CauseState,
+from faultmaven.core.investigation.prompts.templates.diagnosis import (
+    _RCA_DIAGNOSIS_BLOCK,
+)
+from faultmaven.modules.case.domain.models.problem import InvestigationStage
+from faultmaven.modules.case.domain.models.progress import CauseState
+from faultmaven.modules.case.domain.models.solution import (
     InvestigationActionType,
-    InvestigationStage,
     ProposedAction,
 )
 
@@ -79,7 +81,7 @@ def _diagnostic(
 class TestZonePendingEmphasis:
     def _pending_progress(self):
         # symptom verified, cause identified, solution pending → the else branch.
-        from faultmaven.modules.case.domain.models import InvestigationProgress
+        from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 
         p = InvestigationProgress()
         p.symptom_verified = True

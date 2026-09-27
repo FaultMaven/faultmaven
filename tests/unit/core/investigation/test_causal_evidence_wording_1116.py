@@ -18,9 +18,13 @@ from __future__ import annotations
 
 import pytest
 
-from faultmaven.core.investigation.prompts.templates import (
+from faultmaven.core.investigation.prompts.templates.blocks import (
     _EVIDENCE_GROUNDING_BLOCK,
+)
+from faultmaven.core.investigation.prompts.templates.diagnosis import (
     _RCA_DIAGNOSIS_BLOCK,
+)
+from faultmaven.core.investigation.prompts.templates.investigation import (
     INVESTIGATION_BASE,
     SCHEMA_INSTRUCTIONS,
 )

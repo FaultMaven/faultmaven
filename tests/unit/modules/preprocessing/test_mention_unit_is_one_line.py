@@ -43,7 +43,7 @@ import re
 import pytest
 
 from faultmaven.models.api import DataType
-from faultmaven.modules.case.domain.models import EntityType
+from faultmaven.modules.case.domain.models.evidence import EntityType
 from faultmaven.modules.preprocessing.entities.line_tally import EntityRule
 from faultmaven.modules.preprocessing.entities.registry import (
     _EXTRACTORS,
@@ -539,7 +539,7 @@ class TestLogsExtractorProfileCountsLines:
         made it the attempt count, so the routing line must stop calling it
         a line count or an upper bound, or it contradicts the header.
         """
-        from faultmaven.core.investigation.prompts.templates import (
+        from faultmaven.core.investigation.prompts.templates.blocks import (
             _EVIDENCE_GROUNDING_BLOCK,
         )
 

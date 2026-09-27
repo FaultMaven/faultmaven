@@ -12,11 +12,9 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from faultmaven.modules.case.api.routes import (
-    _di_get_case_service_dependency,
-    get_investigation_service,
-    require_authentication,
-)
+from faultmaven.api.v1.auth_dependencies import require_authentication
+from faultmaven.api.v1.dependencies import get_investigation_service
+from faultmaven.modules.case.api.routes import _di_get_case_service_dependency
 from faultmaven.modules.case.api.routes import router as case_router
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # settings default: MAX_UPLOAD_SIZE_MB=10

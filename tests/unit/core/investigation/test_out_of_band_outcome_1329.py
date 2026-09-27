@@ -16,10 +16,10 @@ from faultmaven.core.investigation.prompts.context_builder.history import (
 )
 from faultmaven.core.investigation.prompts.fence import PromptFence
 from faultmaven.models.api_models import TurnResponse
-from faultmaven.modules.case.domain.models import (
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.turn import (
     NON_INVESTIGATIVE_OUTCOMES,
-    Case,
-    CaseState,
     TurnOutcome,
     TurnProgress,
 )

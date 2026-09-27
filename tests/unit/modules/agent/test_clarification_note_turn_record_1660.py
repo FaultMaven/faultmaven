@@ -35,7 +35,7 @@ from faultmaven.modules.agent.domain.services.investigation_service import (
     _record_composed_reply,
 )
 from faultmaven.modules.case.contracts import MESSAGE_METADATA_AGENT_SYNTHESIZED
-from faultmaven.modules.case.domain.models import TurnOutcome, TurnProgress
+from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 
 from .conftest import MockCaseRepository, create_sample_case
 

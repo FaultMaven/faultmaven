@@ -265,7 +265,9 @@ def _case_with_kb_entries(
     """
     from datetime import datetime, timezone
 
-    from faultmaven.modules.case.domain.models import Case, CaseState, InquiryData
+    from faultmaven.modules.case.domain.models.case import Case
+    from faultmaven.modules.case.domain.models.lifecycle import CaseState
+    from faultmaven.modules.case.domain.models.problem import InquiryData
 
     sections = ["Cause A: memory ceiling", "Cause B: fragmentation"]
     entries = [

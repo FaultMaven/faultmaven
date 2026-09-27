@@ -15,23 +15,27 @@ from datetime import UTC, datetime
 
 import pytest
 
-from faultmaven.modules.case.domain.models import (
-    CONFIRMED_ESTABLISHED_BY,
-    Case,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.causal import (
     CausalNode,
+    NodeEvidenceLink,
+    NodeState,
+    NodeType,
+    ValidationMethod,
+)
+from faultmaven.modules.case.domain.models.conclusion import (
+    CONFIRMED_ESTABLISHED_BY,
     ConfidenceLevel,
+    RootCauseConclusion,
+)
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
     EvidenceStance,
-    InquiryData,
-    NodeEvidenceLink,
-    NodeState,
-    NodeType,
-    RootCauseConclusion,
-    ValidationMethod,
 )
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import InquiryData
 from faultmaven.modules.report.domain.services.report_generation_service import (
     ReportGenerationService,
 )

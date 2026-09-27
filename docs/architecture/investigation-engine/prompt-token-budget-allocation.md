@@ -11,7 +11,7 @@
 > **Authoritative source:**
 > `faultmaven/core/investigation/prompts/context_builder/`
 > (`build_investigation_context` in `__init__.py`, `TokenBudget` in `budget.py`) and
-> `faultmaven/core/investigation/prompts/templates.py` (`get_prompt_for_case`,
+> `faultmaven/core/investigation/prompts/templates/assembly.py` (`get_prompt_for_case`,
 > `_budgeted_prompt`).
 >
 > **Related docs:**
@@ -597,7 +597,7 @@ These are properties of the allocator's structure, asserted by tests (§14):
 | Top-down priority-greedy allocator with floors + caps (§4–§5) | Implemented — `context_builder.assembly._allocate_sections` |
 | Pressure-driven compaction (§5.2) | Implemented (conversation fidelity by fit; caps replace turn-count triggers) |
 | Reserve bounding incl. current-turn floor (§6, INV-1/INV-2) | Implemented (continuity via compact-history floor; INV-1 via evidence floor + fallback slot) |
-| Overflow **and starvation** backstop (§7) | Implemented — `templates._assemble_allocated` |
+| Overflow **and starvation** backstop (§7) | Implemented — `templates.assembly._assemble_allocated` |
 | `FALLBACK_*` templates: current-turn stub slot + compact journal slot (§7) | Implemented |
 | Runtime context-length-error recovery → one `FALLBACK_*` retry (§7.1) | Implemented — `milestone_engine._generate_structured_output` wrapper |
 | Token-native accounting (§8) | Implemented (`TokenBudget`, token-native only) |

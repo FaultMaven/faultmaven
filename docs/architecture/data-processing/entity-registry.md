@@ -181,7 +181,7 @@ any entity type, or if a new loop anywhere in `entities/` iterates a raw
 
 ## Entity type vocabulary
 
-Initial set — defined in `faultmaven.modules.case.domain.models.EntityType`:
+Initial set — defined in `EntityType` in `faultmaven/modules/case/domain/models/evidence.py`:
 
 | Type | Captured by | Example | Notes |
 | --- | --- | --- | --- |

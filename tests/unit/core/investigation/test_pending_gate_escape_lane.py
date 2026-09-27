@@ -37,19 +37,20 @@ from faultmaven.core.investigation.terminal_transitions import (
     closure_verdict,
     deferred_disposition_signature,
 )
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
+    RootCauseConclusion,
+)
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
-    InvestigationProgress,
-    ProblemVerification,
-    RootCauseConclusion,
-    Solution,
-    SolutionType,
 )
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import ProblemVerification
+from faultmaven.modules.case.domain.models.progress import InvestigationProgress
+from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
 
 # The two messages that were swallowed in the live incident.
 INCIDENT_REFUSAL = (

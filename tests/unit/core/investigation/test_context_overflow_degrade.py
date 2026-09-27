@@ -142,7 +142,7 @@ async def test_token_limit_triggers_minimal_prompt_retry_and_degrades():
     with (
         patch.object(engine, "_generate_structured_output_inner", inner),
         patch(
-            "faultmaven.core.investigation.prompts.templates."
+            "faultmaven.core.investigation.prompts.templates.fallback."
             "get_fallback_prompt_for_case",
             return_value="MINIMAL FALLBACK PROMPT",
         ),
@@ -186,7 +186,7 @@ async def test_double_overflow_propagates_without_infinite_retry():
     with (
         patch.object(engine, "_generate_structured_output_inner", inner),
         patch(
-            "faultmaven.core.investigation.prompts.templates."
+            "faultmaven.core.investigation.prompts.templates.fallback."
             "get_fallback_prompt_for_case",
             return_value="MINIMAL FALLBACK PROMPT",
         ),
@@ -347,7 +347,9 @@ async def test_degraded_prompt_tells_the_agent_it_has_no_tools():
     agent is invited to search what it cannot reach, and the user cannot tell a
     context-starved answer from a normal one. Pin that the notice is appended and
     that it states both facts: reduced context AND no tools."""
-    from faultmaven.core.investigation.prompts.templates import DEGRADED_NO_TOOLS_NOTICE
+    from faultmaven.core.investigation.prompts.templates.fallback import (
+        DEGRADED_NO_TOOLS_NOTICE,
+    )
 
     engine = _make_engine()
     case = MagicMock()
@@ -358,7 +360,7 @@ async def test_degraded_prompt_tells_the_agent_it_has_no_tools():
     with (
         patch.object(engine, "_generate_structured_output_inner", inner),
         patch(
-            "faultmaven.core.investigation.prompts.templates."
+            "faultmaven.core.investigation.prompts.templates.fallback."
             "get_fallback_prompt_for_case",
             return_value="MINIMAL FALLBACK PROMPT",
         ),
@@ -418,7 +420,7 @@ async def test_output_truncation_also_takes_the_degrade_path():
     with (
         patch.object(engine, "_generate_structured_output_inner", inner),
         patch(
-            "faultmaven.core.investigation.prompts.templates."
+            "faultmaven.core.investigation.prompts.templates.fallback."
             "get_fallback_prompt_for_case",
             return_value="MINIMAL FALLBACK PROMPT",
         ),
@@ -507,7 +509,7 @@ async def test_degrade_emits_the_recovery_metric_with_its_reason():
             metric,
         ),
         patch(
-            "faultmaven.core.investigation.prompts.templates."
+            "faultmaven.core.investigation.prompts.templates.fallback."
             "get_fallback_prompt_for_case",
             return_value="MINIMAL FALLBACK PROMPT",
         ),

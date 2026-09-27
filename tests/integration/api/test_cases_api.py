@@ -31,7 +31,8 @@ from httpx import ASGITransport, AsyncClient
 from faultmaven.main import app as main_app
 from faultmaven.models.api_models import CaseSummary
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
-from faultmaven.modules.case.domain.models import Case, CaseSeverity, CaseState
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseSeverity, CaseState
 
 
 @pytest.fixture

@@ -21,7 +21,8 @@ from httpx import ASGITransport, AsyncClient
 from faultmaven.main import app as main_app
 from faultmaven.models.api_models import CASE_SUMMARY_CONTENT_FIELDS, CaseSummary
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
-from faultmaven.modules.case.domain.models import CaseState, InvestigationStage
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import InvestigationStage
 
 pytestmark = pytest.mark.integration
 

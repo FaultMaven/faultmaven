@@ -40,9 +40,11 @@ import pytest
 from faultmaven.core.investigation.prompts.context_builder.assembly import (
     build_investigation_context,
 )
-from faultmaven.core.investigation.prompts.templates import (
-    INVESTIGATION_BASE,
+from faultmaven.core.investigation.prompts.templates.fallback import (
     get_fallback_prompt_for_case,
+)
+from faultmaven.core.investigation.prompts.templates.investigation import (
+    INVESTIGATION_BASE,
 )
 from faultmaven.modules.case.contracts import (
     Case,
