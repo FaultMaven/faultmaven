@@ -38,7 +38,7 @@ from fastapi.dependencies.utils import get_flat_params
 from fastapi.params import ParamTypes
 
 from faultmaven.models.api_models import CaseListFilter, CaseSearchRequest
-from faultmaven.modules.case.api.routes import router as case_router
+from faultmaven.modules.case.api.routes.router import router as case_router
 
 _SPEC = json.loads(
     (

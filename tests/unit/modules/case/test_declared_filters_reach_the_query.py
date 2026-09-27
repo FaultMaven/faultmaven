@@ -101,7 +101,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from faultmaven.api.routes import admin_cases
 from faultmaven.infrastructure.persistence import database as database_module
 from faultmaven.models.api_models import CaseListFilter, CaseSearchRequest
-from faultmaven.modules.case.api import routes as case_routes
+from faultmaven.modules.case.api.routes import cases as case_routes
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.problem import InquiryData

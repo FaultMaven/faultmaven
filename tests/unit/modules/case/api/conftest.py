@@ -25,11 +25,11 @@ from faultmaven.api.v1.auth_dependencies import (
     require_authentication,
 )
 from faultmaven.api.v1.dependencies import get_case_service
-from faultmaven.modules.case.api.routes import (
+from faultmaven.modules.case.api.routes.dependencies import (
     _di_get_case_service_dependency,
     _di_get_session_service_dependency,
 )
-from faultmaven.modules.case.api.routes import router as case_router
+from faultmaven.modules.case.api.routes.router import router as case_router
 
 
 def _owner_or_shared_case_service(

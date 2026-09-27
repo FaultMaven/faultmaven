@@ -599,7 +599,7 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
         1,
     ),
     (
-        "modules/case/api/routes.py",
+        "modules/case/api/routes/conversation.py",
         "reclassify_evidence",
         "get",
         "body",

@@ -27,7 +27,7 @@ one statement earlier and passes ``error_response.model_dump()``, and two of
 them *return* a body instead of raising. Those are fixed and the guards now
 follow local aliases and cover returned bodies — see ``tests/error_text_ast``.
 
-Scope is ``routes.py``, as before. ``modules/case/api/replay.py``, named here
+Scope is the ``routes/`` package, as before. ``modules/case/api/replay.py``, named here
 as the one queued exception, no longer exists. The class assertions below are
 now also made surface-wide by
 ``tests/unit/api/test_api_surface_error_text_not_echoed.py`` (#1400); this file
@@ -40,8 +40,10 @@ import pathlib
 
 import pytest
 
-import faultmaven.modules.case.api.routes as routes_module
 from faultmaven.exceptions import ServiceException
+from faultmaven.modules.case.api.routes import (
+    dependencies as routes_dependencies_module,
+)
 from tests.error_text_ast import (
     http_exception_leak_sites,
     returned_body_leak_sites,
@@ -108,15 +110,30 @@ async def test_500_body_does_not_echo_the_exception(build_app, call_api):
 def _routes_source() -> list[pathlib.Path]:
     """The guarded files, with a floor so an empty parse cannot pass vacuously.
 
-    ``routes_module.__file__`` alone would miss ``title_generation.py``, its
-    sibling in ``case/api/``: that module carries its own bound ``except``
-    handlers (and its own ``HTTPException`` construction —
-    ``_generate_and_persist_title``'s persistence-failure arms) and must stay
-    on the guarded surface. Named explicitly, not globbed, so a new unrelated
-    module later added to ``case/api/`` does not silently join the surface.
+    The case router used to be one file (``case/api/routes.py``); fm#1707
+    split it into a package of sub-routers (``case/api/routes/``), one file
+    per resource, plus ``title_generation.py``, its sibling in ``case/api/``:
+    that module carries its own bound ``except`` handlers (and its own
+    ``HTTPException`` construction — ``_generate_and_persist_title``'s
+    persistence-failure arms) and must stay on the guarded surface. Every
+    sub-router is named explicitly, not globbed, so a new unrelated module
+    later added to ``case/api/`` or ``case/api/routes/`` does not silently
+    join the surface.
     """
-    routes_path = pathlib.Path(routes_module.__file__)
-    paths = sorted([routes_path, routes_path.parent / "title_generation.py"])
+    routes_dir = pathlib.Path(routes_dependencies_module.__file__).parent
+    paths = sorted(
+        [
+            routes_dir / "cases.py",
+            routes_dir / "conversation.py",
+            routes_dir / "data.py",
+            routes_dir / "dependencies.py",
+            routes_dir / "evidence.py",
+            routes_dir / "knowledge.py",
+            routes_dir / "reports.py",
+            routes_dir / "sharing.py",
+            routes_dir.parent / "title_generation.py",
+        ]
+    )
     handlers = sum(
         isinstance(node, ast.ExceptHandler) and bool(node.name)
         for path in paths
