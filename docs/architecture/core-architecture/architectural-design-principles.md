@@ -259,7 +259,7 @@ faultmaven/
 from faultmaven.modules.case.contracts import CaseDTO, ICaseRepository
 
 # ❌ FORBIDDEN: Import from internal domain
-from faultmaven.modules.case.domain.models import Case
+from faultmaven.modules.case.domain.models.case import Case
 ```
 
 ### When to Use Vertical Slicing
@@ -920,7 +920,7 @@ Moving code is not rewriting it. If you find yourself changing logic during a st
 # Ticket: FMVN-1234
 # Approved: @jane on 2026-01-15
 # Sunset: 2026-04-15 (90 days)
-from faultmaven.modules.case.domain.models import Case, Investigation
+from faultmaven.modules.case.domain.models.case import Case
 ```
 
 ### Pre-Launch Rule

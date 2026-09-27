@@ -430,7 +430,7 @@ class ICaseRepository(Protocol):
 class CaseStateDTO(str, Enum):
     """Public case state enum for cross-module use.
 
-    MUST mirror ``domain.models.CaseState``, which is the single authority on
+    MUST mirror ``domain.models.lifecycle.CaseState``, which is the single authority on
     the lifecycle; the persistence enum mirrors it too. Adding a state means
     changing all three plus a migration. Parity is enforced by
     ``tests/unit/modules/case/test_case_state_dto_parity.py``.
