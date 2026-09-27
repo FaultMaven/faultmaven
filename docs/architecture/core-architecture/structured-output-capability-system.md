@@ -26,7 +26,7 @@ Instead of hardcoding provider-specific logic throughout the codebase, this syst
    - `OpenAIProvider`, `AnthropicProvider`, `GroqProvider`, etc.
    - Each overrides `get_structured_output_capability()` with provider-specific logic
 
-4. **`milestone_engine/engine.py`** - Consumer of capability system
+4. **`milestone_engine/generation.py`** (`StructuredOutputGenerator`) - Consumer of capability system
    - Uses `get_structured_output_strategy()` to determine approach
    - Conditionally includes schema in prompt
    - Uses strategy-determined `response_format`
@@ -45,7 +45,7 @@ Instead of hardcoding provider-specific logic throughout the codebase, this syst
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         Client Code                                  │
-│              (milestone_engine/engine.py)                          │
+│           (milestone_engine/generation.py)                         │
 └────────────────────────────┬────────────────────────────────────────┘
                              │
                              │ get_structured_output_strategy(schema)
@@ -108,7 +108,7 @@ if effective_model not in STRICT_JSON_SCHEMA_MODELS:
 ### After (Capability System)
 
 ```python
-# milestone_engine/engine.py - NEW APPROACH
+# milestone_engine/generation.py - NEW APPROACH
 schema = schema_model.model_json_schema()
 strategy = self.llm_provider.get_structured_output_strategy(schema)
 

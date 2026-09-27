@@ -1,7 +1,7 @@
 # Tool-Result Context Budget
 
 Metrics defined in `faultmaven/core/investigation/tool_loop_metrics.py`, emitted
-from the investigation tool loop (`MilestoneEngine._tool_augmented_generate`).
+from the investigation tool loop (`StructuredOutputGenerator._tool_augmented_generate`, `milestone_engine/generation.py`).
 They answer one question: **what does the engine relay to the model, and what
 does it cut off on the way?**
 

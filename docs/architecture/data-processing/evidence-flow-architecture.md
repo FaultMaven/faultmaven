@@ -622,7 +622,7 @@ User          API(/turns)    Investigation    Context      Deep Analysis   Stora
 
 During `INQUIRY` the user submits files to characterize the situation. No `Evidence` rows are created on intake — only `UploadedFile` rows carrying the preprocessing artifacts (`summary`, `structural_index`, `data_type`, coverage timestamps). The LLM reads files via `<uploaded_file file_id="...">` prompt blocks. When the case transitions to `INVESTIGATING` (the user confirms the problem statement), the LLM begins emitting `evidence_to_add` entries claim-by-claim; each new Evidence row carries a `source_file_id` back to the originating `UploadedFile`. There is no retroactive attribution sweep at the transition — milestones derive from evidence categories as rows are created turn-by-turn.
 
-See `core/investigation/milestone_engine/engine.py:_transition_to_investigating` for the transition handler.
+See `core/investigation/milestone_engine/transitions.py:TransitionManager._transition_to_investigating` for the transition handler.
 
 ---
 
@@ -638,7 +638,7 @@ The design decisions that govern the taxonomy and classification semantics live 
 
 - **Evidence is claim-anchored.** The `evidence` table holds rows that the LLM emits with a category (`symptom_evidence` / `causal_evidence` / `symptom_absence_evidence` / `causal_absence_evidence`) and either a `source_file_id` pointing at an `uploaded_files` row or `source_type=user_description` for chat-quote rows. File-level dedup is on `uploaded_files.content_hash`; the LLM never sees duplicate intake. See [evidence-driven-investigation-framework.md §5](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model).
 - **Strict category validation.** `EvidenceToAdd.validate_category` raises `ValidationError` on any value outside the four valid categories. `LLMErrorHandler` does not classify Pydantic ValidationError as retryable, so the turn fails fast surfacing the validation message — re-calling the LLM blindly wouldn't fix a category-choice error without a prompt change. See [Evidence Failure Modes → Scenario 3](./evidence-failure-modes.md) and `core/investigation/schemas.py:validate_category`.
-- **No Evidence during INQUIRY; no retroactive attribution.** File uploads create `UploadedFile` rows only at intake. The LLM reads them via `<uploaded_file file_id="...">` prompt blocks and emits `evidence_to_add` once the case enters `INVESTIGATING`. Milestones derive from categories as rows are created turn-by-turn. See `core/investigation/milestone_engine/engine.py:_transition_to_investigating`.
+- **No Evidence during INQUIRY; no retroactive attribution.** File uploads create `UploadedFile` rows only at intake. The LLM reads them via `<uploaded_file file_id="...">` prompt blocks and emits `evidence_to_add` once the case enters `INVESTIGATING`. Milestones derive from categories as rows are created turn-by-turn. See `core/investigation/milestone_engine/transitions.py:TransitionManager._transition_to_investigating`.
 - **Source-discriminator lives on the row, not in a separate column.** `source_type` + `source_file_id` carry the source information together; the `evidence_source_invariant` DB CHECK requires `source_file_id IS NOT NULL OR source_type = 'user_description'`.
 
 ---

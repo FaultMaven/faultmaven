@@ -260,7 +260,7 @@ controls.
 | Channel | Mechanism | Who decides | Governed by |
 | ------- | --------- | ----------- | ----------- |
 | **Pull** | The `answer_from_kb` tool (`kb_qa.py`) | The model elects it, per turn | Always available |
-| **Push** | `MilestoneEngine._prefetch_kb_context` — a deterministic hybrid search fired at case transitions, whose top hits are written to `case.kb_context` and rendered into every subsequent prompt as `<knowledge_context>` | Nobody; it fires on the trigger | `KB_PREFETCH_ENABLED` (default `true`) |
+| **Push** | `KbPrefetcher.prefetch_kb_context` (`milestone_engine/kb_prefetch.py`) — a deterministic hybrid search fired at case transitions, whose top hits are written to `case.kb_context` and rendered into every subsequent prompt as `<knowledge_context>` | Nobody; it fires on the trigger | `KB_PREFETCH_ENABLED` (default `true`) |
 
 **`KB_PREFETCH_ENABLED=false` turns off the push only.** The tool stays registered and
 electable, so the model can still retrieve a runbook whenever it judges one useful;
@@ -442,7 +442,7 @@ receives the resolved ids (see Remaining work 1):
 - Team and organization models exist in the auth module (`modules/auth/domain/models/`)
 - `team_members` junction table supports multi-team membership per user
 - `TeamService.list_all_user_team_ids(user_id)` resolves all team memberships across orgs
-- `MilestoneEngine._prefetch_kb_context` resolves the **case owner's** teams (keyed on `case.user_id`, deliberately not the session user, so one user's case can never surface another's shares) to shared `knowledge_item` ids via `resolve_shared_kb_ids` against `resource_shares`, and passes them to `build_kb_scope_filter` — so the **engine KB prefetch** does see team-shared items
+- `KbPrefetcher.prefetch_kb_context` (`milestone_engine/kb_prefetch.py`) resolves the **case owner's** teams (keyed on `case.user_id`, deliberately not the session user, so one user's case can never surface another's shares) to shared `knowledge_item` ids via `resolve_shared_kb_ids` against `resource_shares`, and passes them to `build_kb_scope_filter` — so the **engine KB prefetch** does see team-shared items
 - The unified `answer_from_kb` tool builds the combined filter via `build_kb_scope_filter`, whose team arm is `{"parent_document_id": {"$in": shared_ids}}`
 - ChromaDB metadata stores only the immutable floor (`scope` = `global`/`personal` + `owner_id`) at ingestion time — never `team_id`; team visibility lives in the `resource_shares` table (ADR-013 §D4)
 - API endpoints (`GET /knowledge/documents`) support `scope=team` filter with team membership check
@@ -451,7 +451,7 @@ receives the resolved ids (see Remaining work 1):
 
 1. **`ToolContext.shared_kb_ids` is never populated on the live turn path.** The
    `kb_qa` tool reads the team arm from `context.shared_kb_ids`
-   (`kb_tool_adapter.py`), but `MilestoneEngine._build_tool_context` does not set
+   (`kb_tool_adapter.py`), but `StructuredOutputGenerator.build_tool_context` (`milestone_engine/generation.py`) does not set
    it, so it defaults to `[]` and `build_kb_scope_filter` omits the team arm
    entirely. The only writer was `AgentOrchestrationService`, deleted in #982 —
    and that writer sat on the separate `/sessions/execute` surface, never on
