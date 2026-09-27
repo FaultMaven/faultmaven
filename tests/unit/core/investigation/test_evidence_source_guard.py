@@ -8,7 +8,9 @@ drops the file anchor and records the slice as USER_DESCRIPTION instead.
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import _resolve_evidence_source
+from faultmaven.core.investigation.milestone_engine.milestone_inference import (
+    _resolve_evidence_source,
+)
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,

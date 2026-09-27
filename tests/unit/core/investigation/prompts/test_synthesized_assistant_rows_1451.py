@@ -26,7 +26,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.response_synthesis import (
     RESPONSE_EMPTY_TEXT,
     RESPONSE_NO_SIGNAL_TEXT,
     RESPONSE_TRUNCATED_TEXT,

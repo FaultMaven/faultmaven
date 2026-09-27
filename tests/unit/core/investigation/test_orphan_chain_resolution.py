@@ -19,7 +19,7 @@ from faultmaven.core.investigation.causal_graph.similarity import (
     RESTATEMENT_STRONG,
     restatement_score,
 )
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,

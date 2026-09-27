@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.affordances import (
     _gate1_is_pending,
     _hypothesis_vacuum_pending,
     _insufficient_evidence_handoff_pending,
@@ -506,7 +506,7 @@ class TestLLMContract:
             "schema must not expose `intent` — intent is engine-owned and "
             "attached at the response-builder layer onto "
             "SuggestedActionResponse. See engine_owned_affordances() in "
-            "milestone_engine.py."
+            "milestone_engine/affordances.py."
         )
 
     def test_suggested_follow_up_schema_does_not_mention_intent(self):

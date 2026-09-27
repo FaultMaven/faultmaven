@@ -32,7 +32,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.prompts.context_builder.evidence import (
     _build_evidence_context,
 )
@@ -790,7 +790,7 @@ def test_the_tripwire_still_drives_something_real():
     die by ``AttributeError`` rather than assert. Checked here so that a break
     is a plain red test.
     """
-    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+    from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
     from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
         SQLiteCaseRepository,
     )
@@ -832,7 +832,7 @@ async def test_uploaded_at_turn_is_immutable_across_a_deduped_reupload():
         create_async_engine,
     )
 
-    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+    from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
     from faultmaven.core.investigation.schemas import InquiryResponse
     from faultmaven.infrastructure.persistence.models import Base
     from faultmaven.modules.case.contracts import Case, CaseState

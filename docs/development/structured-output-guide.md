@@ -175,7 +175,7 @@ class Response(BaseModel):
 
 **Current Protection:**
 ```python
-# milestone_engine.py line 402
+# milestone_engine/engine.py, MilestoneEngine._validate_with_degradation
 return schema_model.model_validate_json(content)  # Raises ValidationError on incomplete JSON
 ```
 

@@ -24,7 +24,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import RESPONSE_WITHHELD_TEXT
+from faultmaven.core.investigation.milestone_engine.response_synthesis import (
+    RESPONSE_WITHHELD_TEXT,
+)
 from faultmaven.core.investigation.prompts.context_builder import history as cb
 from faultmaven.core.investigation.prompts.fence import PromptFence, mint_token
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload

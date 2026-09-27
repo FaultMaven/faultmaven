@@ -282,7 +282,7 @@ The core feature. Model change, schema change, context builder change, and promp
 | `investigation_journal` field on Case | `modules/case/domain/models/case.py` | Done |
 | Export from contracts | `modules/case/contracts.py` | Done |
 | `JournalEntryOutput` in LLM schema | `core/investigation/schemas.py` | Done |
-| Journal extraction in milestone engine | `core/investigation/milestone_engine.py` | Done |
+| Journal extraction in milestone engine | `core/investigation/milestone_engine/` | Done |
 | Journal section in context builder | `core/investigation/prompts/context_builder/assembly.py` | Done |
 | Journal prompt instructions | `core/investigation/prompts/templates/investigation.py` | Done |
 | Persistence (metadata blob) | `infrastructure/persistence/database_case_repository.py` | Done |
@@ -295,7 +295,7 @@ Implemented with a **pair-integrity invariant**: `status=REFUTED` and
 other cannot exist. Domain-level Pydantic validator enforces the pair at
 construction; the LLM schema permits each field optional so structured-
 output parsing is resilient. The LLM-driven `HypothesisUpdate` consumer
-(`milestone_engine._apply_hypothesis_updates`) applies the REFUTED +
+(`milestone_engine.engine._apply_hypothesis_updates`) applies the REFUTED +
 `refutation_reason` pair together (plus likelihood tracking); other state
 transitions (VALIDATED / RETIRED / ACTIVE / INCONCLUSIVE) are deliberately
 not applied in that slice. Internal refutation paths in

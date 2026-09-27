@@ -25,7 +25,9 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from faultmaven.core.investigation.milestone_engine import CATEGORY_MILESTONE_MAP
+from faultmaven.core.investigation.milestone_engine.stage_gates import (
+    CATEGORY_MILESTONE_MAP,
+)
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.evidence import (

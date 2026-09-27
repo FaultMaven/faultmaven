@@ -18,7 +18,7 @@ from uuid import uuid4
 import pytest
 
 from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.seeded_provenance import (
     SEEDED_FROM_RUNBOOK_KEY,
     SEEDED_INTERVENTIONS_KEY,

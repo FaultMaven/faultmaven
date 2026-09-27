@@ -310,7 +310,7 @@ raises the sensitivity of the stream for no reach the join does not provide.
 
 ## Relationship to `grounding_assessment`
 
-`milestone_engine._log_grounding_assessment` stays as it is. It is a *grounding
+`milestone_engine.cause_state._log_grounding_assessment` stays as it is. It is a *grounding
 and seam* trace — the grade × cause_state divergence, the per-node list — not a
 progress ledger, and it is emitted from inside response application, before the
 progress decision and the counter update, so its `turns_without_progress` is the

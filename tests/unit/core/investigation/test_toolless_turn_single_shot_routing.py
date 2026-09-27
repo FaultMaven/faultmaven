@@ -10,9 +10,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.engine import (
     TOOLLESS_INFERENCE_OUTPUT_FLOOR,
     MilestoneEngine,
+)
+from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _route_toolless_turn_single_shot,
 )
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
@@ -155,7 +157,7 @@ async def test_single_shot_call_sends_no_intent_when_not_declared():
 
 @pytest.mark.unit
 def test_floor_sits_under_the_structured_output_cap():
-    from faultmaven.core.investigation.milestone_engine import (
+    from faultmaven.core.investigation.milestone_engine.engine import (
         STRUCTURED_OUTPUT_MAX_TOKENS,
     )
 

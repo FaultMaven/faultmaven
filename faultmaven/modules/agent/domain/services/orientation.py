@@ -342,7 +342,7 @@ def build_orientation(case: Any, kind: OrientationKind) -> dict[str, Any]:
         # suggestion — so an orientation turn was the one pending turn with no
         # clickable consent path, showing a different (and possibly cut-off)
         # rendering of the same text (#1607).
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.cause_state import (
             _gate1_statement_presentation,
             _investigation_confirmation_suggestions,
         )

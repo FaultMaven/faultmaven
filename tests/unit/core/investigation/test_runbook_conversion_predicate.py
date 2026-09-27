@@ -29,7 +29,9 @@ from faultmaven.core.investigation.cause_assurance import (
     has_root_cause_record,
     runbook_conversion_ready,
 )
-from faultmaven.core.investigation.milestone_engine import _runbook_suggestion
+from faultmaven.core.investigation.milestone_engine.terminal_replies import (
+    _runbook_suggestion,
+)
 from faultmaven.core.investigation.terminal_transitions import (
     RunbookReadiness,
     assess_runbook_readiness,
@@ -261,7 +263,6 @@ class TestProvenanceUniquenessOffer:
 
     def test_offer_suppressed_when_confirmed_cause_was_seeded(self, monkeypatch):
         import faultmaven.core.investigation.seeded_provenance as seeder
-        from faultmaven.core.investigation import milestone_engine
 
         _pin_grade(monkeypatch, CauseAssuranceGrade.CONFIRMED)
         monkeypatch.setattr(
@@ -270,13 +271,12 @@ class TestProvenanceUniquenessOffer:
         case = self._ready_case()
         # Readiness passes, but provenance suppresses the offer.
         assert runbook_conversion_ready(case) is True
-        assert milestone_engine._runbook_suggestion(case) is None
+        assert _runbook_suggestion(case) is None
 
     def test_offer_shown_when_confirmed_cause_self_discovered(self, monkeypatch):
         import faultmaven.core.investigation.seeded_provenance as seeder
-        from faultmaven.core.investigation import milestone_engine
 
         _pin_grade(monkeypatch, CauseAssuranceGrade.CONFIRMED)
         monkeypatch.setattr(seeder, "confirmed_root_seed_origin", lambda case: None)
         case = self._ready_case()
-        assert milestone_engine._runbook_suggestion(case) is not None
+        assert _runbook_suggestion(case) is not None

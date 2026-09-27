@@ -20,9 +20,11 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import (
-    _narration_asserts_disposition,
+from faultmaven.core.investigation.milestone_engine.engine import (
     _narration_overclaim_notice,
+)
+from faultmaven.core.investigation.milestone_engine.response_synthesis import (
+    _narration_asserts_disposition,
     _prose_with_gate_notice,
 )
 from faultmaven.modules.case.domain.models.case import Case

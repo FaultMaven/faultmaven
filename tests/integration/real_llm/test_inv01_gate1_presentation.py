@@ -23,7 +23,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.modules.case.contracts import CaseState
 
 from .helpers import assert_case_status, assert_has_confirmation_suggestions

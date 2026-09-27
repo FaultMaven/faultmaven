@@ -20,13 +20,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.core.investigation import milestone_engine as me
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine import engine as me
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.response_synthesis import (
     RESPONSE_EMPTY_TEXT,
     RESPONSE_NO_SIGNAL_TEXT,
     RESPONSE_TRUNCATED_TEXT,
     RESPONSE_WITHHELD_TEXT,
-    MilestoneEngine,
     is_agent_response_synthesized,
     schema_answer_stop_reason,
     synthesized_agent_response,

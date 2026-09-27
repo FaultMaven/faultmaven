@@ -1231,7 +1231,7 @@ The old STAGE_INSTRUCTIONS dictionary and prompt templates remain in the codebas
 5. **Add ActionAttempt tracking** — List on Case for solution and mitigation history (Section 10.6)
 6. **Update EvidenceCategory enum** — Final shape is the presence/absence quartet: `symptom_evidence`, `causal_evidence`, `symptom_absence_evidence`, `causal_absence_evidence` (§10.3; the interim `mitigation_evidence`/`solution_evidence` categories were removed)
 7. **Update evidence_processor.py** — Validation rules for new evidence categories
-8. **Update milestone_engine.py** — Stage dispatch, compliance detection (post-LLM), progress monitoring
+8. **Update milestone_engine/** — Stage dispatch, compliance detection (post-LLM), progress monitoring
 9. **Update context_builder/** (DONE) — Stage-specific context loading (hypothesis condensing per stage), ProposedAction in prompt context.
 10. **Update LLM response schemas** — ProposedAction output, gate milestones, progress milestones
 11. **Update tests** — All test files referencing old milestones/stages

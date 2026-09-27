@@ -21,7 +21,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.core.investigation import milestone_engine as me
 from faultmaven.core.investigation.case_telemetry import (
     PREDICATE_ARM_KEYS,
     TELEMETRY_HANDOFF_KEY,
@@ -29,8 +28,10 @@ from faultmaven.core.investigation.case_telemetry import (
     build_case_turn_event,
     collect_progress_arms,
 )
-from faultmaven.core.investigation.milestone_engine import (
-    MilestoneEngine,
+from faultmaven.core.investigation.milestone_engine import engine as engine_module
+from faultmaven.core.investigation.milestone_engine import progress as progress_module
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.progress import (
     check_if_progress_made,
 )
 from faultmaven.infrastructure.llm.structured_output_capability import (
@@ -224,14 +225,14 @@ async def test_the_last_reading_of_the_turn_saw_every_arm_the_row_reports(
     """
     engine, llm = engine_and_llm
     seen: list[dict[str, int]] = []
-    real = me.score_progress
+    real = engine_module.score_progress
 
     def recording(metadata):
         verdict = real(metadata)
         seen.append(collect_progress_arms(metadata))
         return verdict
 
-    monkeypatch.setattr(me, "score_progress", recording)
+    monkeypatch.setattr(engine_module, "score_progress", recording)
 
     result = await _two_turn_transition(engine, llm)
     reported = result["metadata"][TELEMETRY_HANDOFF_KEY]["arms"]
@@ -266,14 +267,14 @@ async def test_a_transition_turn_carrying_an_upload_is_not_a_late_write(
     """
     engine, llm = engine_and_llm
     decisions: list[dict[str, int]] = []
-    real_score = me.score_progress
+    real_score = engine_module.score_progress
 
     def recording_score(metadata):
         verdict = real_score(metadata)
         decisions.append(collect_progress_arms(metadata))
         return verdict
 
-    monkeypatch.setattr(me, "score_progress", recording_score)
+    monkeypatch.setattr(engine_module, "score_progress", recording_score)
 
     llm.payload = _TURN1
     first = await engine.process_turn(_inquiry_case(), "Our checkout API is 503ing")
@@ -336,10 +337,10 @@ async def test_the_guard_survives_a_short_circuited_decision():
     designed. Wrapping the DECISION instead is what makes it robust, and the
     short-circuit is asserted here so this test cannot quietly stop covering it.
     """
-    real_pred = me.check_if_progress_made
+    real_pred = engine_module.check_if_progress_made
     predicate_calls: list[int] = []
     decisions: list[dict[str, int]] = []
-    real_score = me.score_progress
+    real_score = engine_module.score_progress
 
     def counting_pred(metadata):
         predicate_calls.append(1)
@@ -352,8 +353,13 @@ async def test_the_guard_survives_a_short_circuited_decision():
 
     engine = _terminal_confirm_engine()
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(me, "check_if_progress_made", counting_pred)
-        mp.setattr(me, "score_progress", recording_score)
+        # The predicate has two readers since fm#1707: ``score_progress`` in
+        # ``progress``, and the engine's ``_check_if_progress_made`` delegate in
+        # ``engine``. Spy both, as the single pre-split patch did, so a call
+        # from either one breaks the short-circuit assertion below.
+        mp.setattr(progress_module, "check_if_progress_made", counting_pred)
+        mp.setattr(engine_module, "check_if_progress_made", counting_pred)
+        mp.setattr(engine_module, "score_progress", recording_score)
         result = await engine.process_turn(
             case=_case_awaiting_confirmation("resolved"),
             user_message="yes, resolved",

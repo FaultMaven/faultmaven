@@ -27,7 +27,7 @@ from sqlalchemy import event
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.protection.tenant_turn_cap import (

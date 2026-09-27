@@ -26,7 +26,7 @@ import pytest
 
 from faultmaven.core.investigation import milestone_engine
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import MilestoneUpdates, SolutionToAdd
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.conclusion import WorkingConclusion
@@ -331,7 +331,7 @@ class TestLicenseReadsTheSettledTurn:
                 proposed_in_turn=3,
             )
         )
-        real = milestone_engine._recompute_cause_state_from_chain
+        real = milestone_engine.cause_state._recompute_cause_state_from_chain
 
         def _recompute_with_m6(case, **kwargs):
             validated = real(case, **kwargs)
@@ -341,7 +341,9 @@ class TestLicenseReadsTheSettledTurn:
             return validated
 
         monkeypatch.setattr(
-            milestone_engine, "_recompute_cause_state_from_chain", _recompute_with_m6
+            milestone_engine.cause_state,
+            "_recompute_cause_state_from_chain",
+            _recompute_with_m6,
         )
 
         await _make_engine()._apply_investigation_updates(case, _Updates(), _meta())

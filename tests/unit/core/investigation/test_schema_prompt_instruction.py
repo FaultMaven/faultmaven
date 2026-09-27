@@ -12,7 +12,9 @@ import json
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import _schema_prompt_instruction
+from faultmaven.core.investigation.milestone_engine.affordances import (
+    _schema_prompt_instruction,
+)
 from faultmaven.core.investigation.prompts.templates.investigation import (
     SCHEMA_INSTRUCTIONS,
 )

@@ -996,10 +996,10 @@ _FILTER_ORIGINS = {
     ("modules/agent/tools/kb_qa.py", "_arun"),  # kb_qa: ToolContext.user_id
     ("modules/knowledge/domain/services/knowledge_service.py", "search_documents"),
     (
-        "core/investigation/milestone_engine.py",
+        "core/investigation/milestone_engine/engine.py",
         "_runbook_dedup_scope_resolver._resolve",
     ),
-    ("core/investigation/milestone_engine.py", "_prefetch_kb_context"),
+    ("core/investigation/milestone_engine/engine.py", "_prefetch_kb_context"),
     (
         "modules/report/domain/services/report_recommendation_service.py",
         "_resolve_requester_scope",
@@ -1027,7 +1027,7 @@ _KB_READ_SITES = {
     # service reads: caller-supplied (milestone pre-fetch) or built in place
     ("modules/knowledge/domain/services/knowledge_service.py", "search_knowledge"),
     ("modules/knowledge/domain/services/knowledge_service.py", "search_documents"),
-    ("core/investigation/milestone_engine.py", "_prefetch_kb_context"),
+    ("core/investigation/milestone_engine/engine.py", "_prefetch_kb_context"),
 }
 
 

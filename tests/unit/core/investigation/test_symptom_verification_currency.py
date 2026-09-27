@@ -464,7 +464,9 @@ class TestEvidenceCoverageResolution:
 
     def test_a_ranged_file_is_not_inherited(self):
         """The reported bug. Unknown is honest; a fabricated recent end is not."""
-        from faultmaven.core.investigation.milestone_engine import _evidence_coverage
+        from faultmaven.core.investigation.milestone_engine.milestone_inference import (
+            _evidence_coverage,
+        )
 
         case, fid = self._case_with_file(
             datetime(2026, 8, 4, 12, 0, tzinfo=timezone.utc),
@@ -475,7 +477,9 @@ class TestEvidenceCoverageResolution:
     def test_a_point_in_time_file_is_inherited(self):
         """The motivating path: an alert stamped from a forwarding caller's
         observed_at describes ONE moment, so the slice can only be that moment."""
-        from faultmaven.core.investigation.milestone_engine import _evidence_coverage
+        from faultmaven.core.investigation.milestone_engine.milestone_inference import (
+            _evidence_coverage,
+        )
 
         instant = datetime(2026, 8, 4, 17, 36, 17, tzinfo=timezone.utc)
         case, fid = self._case_with_file(instant, instant)
@@ -483,7 +487,9 @@ class TestEvidenceCoverageResolution:
 
     def test_the_extract_beats_the_file(self):
         """An evidence row is a SLICE; its own quoted lines are the authority."""
-        from faultmaven.core.investigation.milestone_engine import _evidence_coverage
+        from faultmaven.core.investigation.milestone_engine.milestone_inference import (
+            _evidence_coverage,
+        )
 
         case, fid = self._case_with_file(
             datetime(2026, 8, 4, 12, 0, tzinfo=timezone.utc),

@@ -16,8 +16,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_assessment_state,
+)
+from faultmaven.core.investigation.milestone_engine.milestone_inference import (
     validate_reasoning_first,
 )
 from faultmaven.core.investigation.schemas import InternalReasoning, MilestoneUpdates
@@ -244,7 +246,7 @@ class TestDeferredImplementationClose:
     def test_no_proposal_when_cause_license_fell(self):
         # The monotone Solution record survives a license_lost withdrawal;
         # the close proposal must not cite it while no cause stands (INV-32).
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
             _maybe_propose_deferred_close,
         )
 
@@ -260,7 +262,7 @@ class TestDeferredImplementationClose:
         assert case.pending_transition is None
 
     def test_no_proposal_when_feasible_now(self):
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
             _maybe_propose_deferred_close,
         )
 
@@ -271,7 +273,7 @@ class TestDeferredImplementationClose:
         assert case.pending_transition is None
 
     def test_no_proposal_when_deferred_but_no_solution(self):
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
             _maybe_propose_deferred_close,
         )
 
@@ -281,7 +283,7 @@ class TestDeferredImplementationClose:
         assert "transition_proposed_this_turn" not in meta
 
     def test_proposes_close_when_deferred_with_solution(self):
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
             _maybe_propose_deferred_close,
         )
 
@@ -294,7 +296,7 @@ class TestDeferredImplementationClose:
         assert meta.get("override_suggestions")
 
     def test_no_proposal_when_handshake_in_flight(self):
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
             _maybe_propose_deferred_close,
         )
 
@@ -319,7 +321,7 @@ class TestDeferredImplementationClose:
         could offer to discard an attribution its own eligibility scored
         resolvable.
         """
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
             _maybe_propose_deferred_close,
         )
         from faultmaven.core.investigation.terminal_transitions import (
@@ -351,7 +353,7 @@ class TestDeferredImplementationClose:
     def test_close_branch_survives_without_a_confirmation(self):
         """The pivot must not swallow the ordinary deferred close: with no
         gone=>gone row the case is NOT resolution-grade and CLOSE is correct."""
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
             _maybe_propose_deferred_close,
         )
 
@@ -373,7 +375,7 @@ class TestDeferredImplementationClose:
         reason. The message must be non-empty and must match what the handshake
         is actually proposing.
         """
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
             _maybe_propose_deferred_close,
         )
 
@@ -402,7 +404,7 @@ class TestDeferredImplementationClose:
         the resolve branch, the prose/affordance incoherence this function was
         fixed to stop producing.
         """
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
             _maybe_propose_deferred_close,
         )
         from faultmaven.core.investigation.terminal_transitions import (
@@ -437,9 +439,11 @@ class TestDeferredImplementationClose:
         guards read, so nothing carried the refusal forward — five identical
         offers against five explicit declines.
         """
-        from faultmaven.core.investigation.milestone_engine import (
-            _maybe_propose_deferred_close,
+        from faultmaven.core.investigation.milestone_engine.response_synthesis import (
             _record_deferred_disposition_decline,
+        )
+        from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
+            _maybe_propose_deferred_close,
         )
         from faultmaven.core.investigation.terminal_transitions import (
             cancel_pending_transition,
@@ -466,9 +470,11 @@ class TestDeferredImplementationClose:
         case would carry a documented cause and fix with no route to a
         disposition. When a premise moves the offer is legitimate again.
         """
-        from faultmaven.core.investigation.milestone_engine import (
-            _maybe_propose_deferred_close,
+        from faultmaven.core.investigation.milestone_engine.response_synthesis import (
             _record_deferred_disposition_decline,
+        )
+        from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
+            _maybe_propose_deferred_close,
         )
         from faultmaven.core.investigation.terminal_transitions import (
             cancel_pending_transition,
@@ -504,9 +510,11 @@ class TestDeferredImplementationClose:
         a refusal, this flag is the ONLY thing standing between the user and
         that takeover.
         """
-        from faultmaven.core.investigation.milestone_engine import (
-            _maybe_propose_deferred_close,
+        from faultmaven.core.investigation.milestone_engine.response_synthesis import (
             _note_engine_disposition_withdrawn,
+        )
+        from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
+            _maybe_propose_deferred_close,
         )
         from faultmaven.core.investigation.terminal_transitions import (
             cancel_pending_transition,
@@ -537,9 +545,11 @@ class TestDeferredImplementationClose:
     def test_withdrawal_of_another_proposers_offer_is_not_noted(self):
         """The turn guard is keyed to THIS proposer's offer: withdrawing an
         LLM- or user-initiated disposition must not suppress it."""
-        from faultmaven.core.investigation.milestone_engine import (
-            _maybe_propose_deferred_close,
+        from faultmaven.core.investigation.milestone_engine.response_synthesis import (
             _note_engine_disposition_withdrawn,
+        )
+        from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
+            _maybe_propose_deferred_close,
         )
 
         case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
@@ -564,9 +574,11 @@ class TestDeferredImplementationClose:
         flip and the offer re-fires forever against a user who has refused
         both.
         """
-        from faultmaven.core.investigation.milestone_engine import (
-            _maybe_propose_deferred_close,
+        from faultmaven.core.investigation.milestone_engine.response_synthesis import (
             _record_deferred_disposition_decline,
+        )
+        from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
+            _maybe_propose_deferred_close,
         )
         from faultmaven.core.investigation.terminal_transitions import (
             cancel_pending_transition,
@@ -608,7 +620,7 @@ class TestDeferredImplementationClose:
         """The refusal record is persisted in the progress blob, so it must
         not grow without limit on a case that keeps changing underneath the
         offer."""
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.response_synthesis import (
             _MAX_DECLINED_DISPOSITION_SIGNATURES,
             _record_deferred_disposition_decline,
         )
@@ -640,9 +652,11 @@ class TestDeferredImplementationClose:
         lands -> the user confirms -> the pivot presents RESOLVED -> the user
         refuses THAT -> nothing is recorded and the offer returns next turn.
         """
-        from faultmaven.core.investigation.milestone_engine import (
-            _maybe_propose_deferred_close,
+        from faultmaven.core.investigation.milestone_engine.response_synthesis import (
             _record_deferred_disposition_decline,
+        )
+        from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
+            _maybe_propose_deferred_close,
         )
         from faultmaven.core.investigation.terminal_transitions import (
             cancel_pending_transition,
@@ -687,9 +701,11 @@ class TestDeferredImplementationClose:
     def test_decline_of_another_proposers_offer_is_not_recorded(self):
         """A decline of an LLM- or user-initiated disposition says nothing
         about the engine-initiated one, so it must not suppress it."""
-        from faultmaven.core.investigation.milestone_engine import (
-            _maybe_propose_deferred_close,
+        from faultmaven.core.investigation.milestone_engine.response_synthesis import (
             _record_deferred_disposition_decline,
+        )
+        from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
+            _maybe_propose_deferred_close,
         )
 
         case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
@@ -718,7 +734,7 @@ class TestDeferredImplementationClose:
         without this case the guard is asserted by its sibling and tested by
         neither.
         """
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
             _maybe_propose_deferred_close,
         )
 
@@ -748,7 +764,7 @@ class TestDeferredImplementationClose:
         standing so every later confirm turn fails identically. Exercises the
         previously-dead ``terminal=True`` fixture path.
         """
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
             _maybe_propose_deferred_close,
         )
 
@@ -772,7 +788,9 @@ class TestStructuredOutputDegradation:
     """
 
     def _engine(self):
-        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
 
         return MilestoneEngine.__new__(MilestoneEngine)
 

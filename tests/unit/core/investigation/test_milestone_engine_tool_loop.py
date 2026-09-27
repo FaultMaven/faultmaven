@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 import pytest
 from pydantic import BaseModel, Field
 
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.engine import (
     MilestoneEngine,
     MilestoneEngineError,
 )
@@ -1462,7 +1462,9 @@ def _caps(soft: int, prompt_limit: Optional[int]):
     completion tokens, is ``prompt_limit``. Imported lazily so this module
     still imports against a tree without it (the regression pin below is
     revert-verified against one)."""
-    from faultmaven.core.investigation.milestone_engine import _ToolLoopBudget
+    from faultmaven.core.investigation.milestone_engine.text_budget import (
+        _ToolLoopBudget,
+    )
 
     window = None if prompt_limit is None else prompt_limit + 8_000
     return _ToolLoopBudget(soft=soft, window=window, response_reserve=0)
@@ -3244,7 +3246,7 @@ class TestToolLoopTruncationLadder:
         ]
 
     async def test_a_truncated_call_is_retried_at_a_doubled_cap(self):
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.engine import (
             STRUCTURED_OUTPUT_MAX_TOKENS,
         )
         from faultmaven.infrastructure.llm.providers import StopReason
@@ -3314,7 +3316,7 @@ class TestToolLoopTruncationLadder:
         )
 
         with patch(
-            "faultmaven.core.investigation.milestone_engine.record_provider_call"
+            "faultmaven.core.investigation.milestone_engine.engine.record_provider_call"
         ) as record:
             await engine._tool_augmented_generate(
                 prompt="Investigate",

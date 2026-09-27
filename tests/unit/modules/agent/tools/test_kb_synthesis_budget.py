@@ -22,9 +22,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.text_budget import (
     KB_QA_RELAY_SUFFIX,
-    MilestoneEngine,
 )
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.document_qa_tool import (

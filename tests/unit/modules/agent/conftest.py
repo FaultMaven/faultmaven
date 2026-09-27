@@ -17,7 +17,7 @@ from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 
 if TYPE_CHECKING:
-    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+    from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
     from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 
 

@@ -25,7 +25,7 @@ from faultmaven.core.investigation.causal_graph.queries import (
     incoming_and_groups,
     validated_and_conjuncts,
 )
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_cause_state_from_chain,
 )
 from faultmaven.modules.case.contracts import (

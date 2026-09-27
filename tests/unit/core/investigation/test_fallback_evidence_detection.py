@@ -14,7 +14,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import _post_process_llm_response
+from faultmaven.core.investigation.milestone_engine.milestone_inference import (
+    _post_process_llm_response,
+)
 from faultmaven.modules.case.domain.models.evidence import (
     EvidenceCategory,
     EvidenceSourceType,

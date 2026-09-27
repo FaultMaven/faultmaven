@@ -1161,4 +1161,4 @@ counters have no emit sites; keep this as the intended procedure):
 ---
 
 **Implementation Status:** Complete
-**Next Steps:** Wait for Phase 4 (evidence classification) to integrate error handling in `faultmaven/core/investigation/milestone_engine.py`
+**Next Steps:** Wait for Phase 4 (evidence classification) to integrate error handling in the `faultmaven/core/investigation/milestone_engine/` package

@@ -165,7 +165,7 @@ def test_every_arm_the_predicate_reads_is_recorded():
     # predicate, leaving ``MilestoneEngine._check_if_progress_made`` a thin
     # delegate whose source contains no arms at all. Reading the delegate would
     # make this guard silently vacuous.
-    from faultmaven.core.investigation.milestone_engine import (
+    from faultmaven.core.investigation.milestone_engine.progress import (
         check_if_progress_made,
     )
 

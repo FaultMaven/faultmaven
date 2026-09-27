@@ -24,8 +24,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import (
-    MilestoneEngineError,
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngineError
+from faultmaven.core.investigation.milestone_engine.text_budget import (
     _is_context_length_error,
 )
 from faultmaven.exceptions import TOKEN_LIMIT, LLMErrorCategory, LLMException
@@ -109,7 +109,7 @@ def test_plain_error_without_overflow_phrase_is_not_context_length():
 
 
 def _make_engine():
-    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+    from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 
     repo = MagicMock()
     repo.save = AsyncMock()
@@ -504,7 +504,7 @@ async def test_degrade_emits_the_recovery_metric_with_its_reason():
     with (
         patch.object(engine, "_generate_structured_output_inner", inner),
         patch(
-            "faultmaven.core.investigation.milestone_engine."
+            "faultmaven.core.investigation.milestone_engine.engine."
             "prompt_context_recovery_total",
             metric,
         ),

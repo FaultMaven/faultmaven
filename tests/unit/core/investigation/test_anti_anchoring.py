@@ -25,7 +25,7 @@ from faultmaven.core.investigation.hypothesis_manager import (
     _RETIRED_STALLED,
     HypothesisManager,
 )
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.engine import (
     _ANTI_ANCHORING_COOLDOWN_TURNS,
     MilestoneEngine,
 )

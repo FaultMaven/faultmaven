@@ -34,7 +34,7 @@ from faultmaven.core.investigation.cause_assurance import (
     CauseAssuranceGrade,
     grade_cause_assurance,
 )
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_cause_state_from_chain,
 )
 from faultmaven.modules.case.contracts import (

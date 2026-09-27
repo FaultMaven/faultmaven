@@ -113,10 +113,18 @@ def test_the_engine_no_longer_carries_its_own_copy():
     would evade.
     """
     import inspect
+    from pathlib import Path
 
     from faultmaven.core.investigation import milestone_engine
 
-    source = inspect.getsource(milestone_engine)
+    # ``milestone_engine`` is a package (fm#1707): ``inspect.getsource`` on the
+    # package object only returns ``__init__.py``. Read every submodule too, or
+    # a fence-stripper reintroduced in one of them (e.g. ``text_budget.py``,
+    # which now owns the engine's fence-repair helpers) goes unseen.
+    package_dir = Path(milestone_engine.__file__).parent
+    source = "\n".join(
+        p.read_text(encoding="utf-8") for p in sorted(package_dir.glob("*.py"))
+    )
 
     assert "json_payload_text" in source, "the engine no longer delegates"
     # No local compilation of a fence pattern, however it is spelled.

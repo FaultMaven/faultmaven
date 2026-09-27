@@ -10,7 +10,7 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.prompts.templates.assembly import (
     _select_diagnosis_block,
 )

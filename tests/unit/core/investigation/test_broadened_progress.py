@@ -17,7 +17,9 @@ class TestBroadenedProgressDefinition:
     @pytest.fixture
     def engine(self):
         """Create a MilestoneEngine instance for testing _check_if_progress_made."""
-        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
 
         instance = MilestoneEngine.__new__(MilestoneEngine)
         return instance

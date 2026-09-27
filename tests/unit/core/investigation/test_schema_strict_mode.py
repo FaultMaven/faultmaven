@@ -21,7 +21,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 import faultmaven.core.investigation.schemas as schemas
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import (
     InquiryResponse,
     InvestigationResponse_Diagnosis,
@@ -561,7 +561,9 @@ def test_the_reasoning_gate_still_rejects_an_unjustified_milestone():
 
     This asserts the gate FIRES, which is the direction that can regress.
     """
-    from faultmaven.core.investigation.milestone_engine import validate_reasoning_first
+    from faultmaven.core.investigation.milestone_engine.milestone_inference import (
+        validate_reasoning_first,
+    )
 
     case = _case_in_investigating_with_evidence()
     response = InvestigationResponse_Diagnosis.model_validate(
@@ -590,7 +592,9 @@ def test_the_reasoning_gate_still_rejects_an_unjustified_milestone():
 def test_the_reasoning_gate_accepts_a_justified_milestone():
     """The other half: the gate must not reject a turn that DID justify itself,
     or strict mode would strip every milestone instead of none."""
-    from faultmaven.core.investigation.milestone_engine import validate_reasoning_first
+    from faultmaven.core.investigation.milestone_engine.milestone_inference import (
+        validate_reasoning_first,
+    )
 
     case = _case_in_investigating_with_evidence()
     response = InvestigationResponse_Diagnosis.model_validate(

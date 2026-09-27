@@ -25,7 +25,7 @@ from faultmaven.core.investigation.causal_graph.queries import mechanism_for_cha
 from faultmaven.core.investigation.cause_assurance import (
     confirm_root_from_resolution_absence,
 )
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_cause_state_from_chain,
 )
 from faultmaven.modules.case.contracts import (

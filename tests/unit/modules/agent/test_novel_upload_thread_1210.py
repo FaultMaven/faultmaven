@@ -32,7 +32,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import (
     Attachment,
     InquiryResponse,

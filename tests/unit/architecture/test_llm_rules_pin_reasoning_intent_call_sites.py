@@ -47,7 +47,7 @@ from faultmaven.infrastructure.llm.providers.base import ReasoningIntent
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _LLM_RULES = _PROJECT_ROOT / ".claude/rules/llm-providers.md"
 _PACKAGE = _PROJECT_ROOT / "faultmaven"
-_ENGINE = _PACKAGE / "core" / "investigation" / "milestone_engine.py"
+_ENGINE = _PACKAGE / "core" / "investigation" / "milestone_engine" / "engine.py"
 
 # The knobs the table's "Declares" column records, in the order it lists them.
 _KNOBS = ("reasoning_intent", "min_output_tokens")

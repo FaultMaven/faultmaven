@@ -26,8 +26,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import (
-    MilestoneEngine,
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _route_toolless_turn_single_shot,
     _should_force_tools,
 )

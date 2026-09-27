@@ -21,10 +21,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.response_synthesis import (
     _NARRATION_OVERCLAIM_NOTICE,
     _NARRATION_OVERCLAIM_NOTICE_PENDING,
-    MilestoneEngine,
     _narration_asserts_disposition,
 )
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis

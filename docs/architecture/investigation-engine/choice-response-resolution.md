@@ -226,11 +226,11 @@ The rejected message falls back to conversation: where a pending transition exis
 | Type definition | `api_models.py` `QueryIntent` | Declares `hypothesis_action` as a valid intent type |
 | Service dispatch | [`investigation_service.py:528`](../../../faultmaven/modules/agent/domain/services/investigation_service.py) | Routes typed intent to the per-intent handler |
 | Service handler | [`investigation_service.py:1026`](../../../faultmaven/modules/agent/domain/services/investigation_service.py) (`_handle_hypothesis_action`) | Validates payload shape, forwards to the engine with `intent_data` |
-| Engine handler | [`milestone_engine.py:2520`](../../../faultmaven/core/investigation/milestone_engine.py) (`elif intent_type == "hypothesis_action" and intent_data:`) | Applies the state change on `case.hypotheses[...]` and sets `metadata["hypothesis_action_applied"] = True` |
+| Engine handler | [`milestone_engine/engine.py`](../../../faultmaven/core/investigation/milestone_engine/engine.py) `MilestoneEngine._process_turn_impl` (`elif intent_type == "hypothesis_action" and intent_data:`) | Applies the state change on `case.hypotheses[...]` and sets `metadata["hypothesis_action_applied"] = True` |
 
 ### 5.2 State Transitions Applied by the Engine
 
-The engine handler (`milestone_engine.py:2520–2554`) dispatches on `intent_data["action"]`:
+The engine handler (`milestone_engine/engine.py` `MilestoneEngine._process_turn_impl`) dispatches on `intent_data["action"]`:
 
 | Action | State change | Mechanism |
 |---|---|---|
@@ -363,7 +363,7 @@ if (
 
 ### 6.4 Hypothesis Action Handler
 
-The handler lives at [`milestone_engine.py:2520`](../../../faultmaven/core/investigation/milestone_engine.py) (`elif intent_type == "hypothesis_action" and intent_data:`). See [§5.1 Dispatch Chain](#51-dispatch-chain) for the four-layer dispatch path and [§5.2 State Transitions Applied by the Engine](#52-state-transitions-applied-by-the-engine) for the per-action state changes (`refute` → `hypothesis_manager.refute_hypothesis(...)`; `validate` → direct assignment with `likelihood = 1.0`; `retire` → direct assignment with `retirement_reason`). After the state change the handler falls through to normal LLM processing so the agent can acknowledge the action in its reply.
+The handler lives at [`milestone_engine/engine.py`](../../../faultmaven/core/investigation/milestone_engine/engine.py) `MilestoneEngine._process_turn_impl` (`elif intent_type == "hypothesis_action" and intent_data:`). See [§5.1 Dispatch Chain](#51-dispatch-chain) for the four-layer dispatch path and [§5.2 State Transitions Applied by the Engine](#52-state-transitions-applied-by-the-engine) for the per-action state changes (`refute` → `hypothesis_manager.refute_hypothesis(...)`; `validate` → direct assignment with `likelihood = 1.0`; `retire` → direct assignment with `retirement_reason`). After the state change the handler falls through to normal LLM processing so the agent can acknowledge the action in its reply.
 
 ---
 

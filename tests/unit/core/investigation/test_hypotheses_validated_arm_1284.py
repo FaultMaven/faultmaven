@@ -25,8 +25,10 @@ from faultmaven.core.investigation.causal_graph.ingestion import seed_problem_no
 from faultmaven.core.investigation.causal_graph.projection import (
     project_hypothesis_states_from_roots,
 )
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_assessment_state,
+)
+from faultmaven.core.investigation.milestone_engine.progress import (
     check_if_progress_made,
 )
 from faultmaven.modules.case.contracts import (
@@ -276,7 +278,9 @@ def test_a_standing_identification_is_not_re_recorded():
     ],
 )
 def test_the_identification_edge_is_the_rising_edge_only(prior, current, expected):
-    from faultmaven.core.investigation.milestone_engine import is_identification_edge
+    from faultmaven.core.investigation.milestone_engine.cause_state import (
+        is_identification_edge,
+    )
 
     assert is_identification_edge(prior, current) is expected
 
@@ -338,7 +342,7 @@ def test_identifying_the_cause_turns_the_transparency_light_off():
 
 
 def test_engine_derived_milestones_are_not_llm_claims():
-    from faultmaven.core.investigation.milestone_engine import (
+    from faultmaven.core.investigation.milestone_engine.stage_gates import (
         ENGINE_DERIVED_MILESTONES,
         llm_claimable_milestones,
     )
@@ -366,8 +370,8 @@ def test_identification_is_not_attributed_to_this_turns_evidence():
     """
     import inspect
 
-    from faultmaven.core.investigation.milestone_engine import (
-        MilestoneEngine,
+    from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+    from faultmaven.core.investigation.milestone_engine.stage_gates import (
         llm_claimable_milestones,
     )
 

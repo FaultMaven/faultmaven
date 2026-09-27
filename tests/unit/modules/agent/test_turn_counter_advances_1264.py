@@ -129,7 +129,9 @@ class TestTheTerminalShortCircuit:
     ):
         from unittest.mock import AsyncMock, MagicMock
 
-        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
 
         case = sample_case
         case.inquiry.problem_statement_confirmed = True
@@ -295,7 +297,7 @@ class TestTheRecordDoesNotDestroyWhatTurnHistoryFeeds:
         import inspect
 
         import faultmaven.core.investigation.milestone_engine as engine_module
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.progress import (
             check_if_progress_made,
             score_progress,
         )
@@ -320,13 +322,13 @@ class TestTheRecordDoesNotDestroyWhatTurnHistoryFeeds:
         case.turn_history = []
         case.current_turn = 3
         calls: list[dict] = []
-        original = engine_module.check_if_progress_made
+        original = engine_module.progress.check_if_progress_made
 
         def _spy(metadata):
             calls.append(dict(metadata))
             return original(metadata)
 
-        monkeypatch.setattr(engine_module, "check_if_progress_made", _spy)
+        monkeypatch.setattr(engine_module.progress, "check_if_progress_made", _spy)
         _backfill_consumed_turn(
             case,
             user_message="here",

@@ -29,13 +29,13 @@ from unittest.mock import patch
 import pytest
 
 from faultmaven.core.investigation import milestone_engine as me
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.text_budget import (
     FENCE_REPAIR_RESERVE,
     KB_QA_ANSWER_TRUNCATED_MARKER,
     KB_QA_RELAY_PREFIX,
     KB_QA_RELAY_SUFFIX,
     PARAGRAPH_REALIGN_MAX_CHARS,
-    MilestoneEngine,
     _balance_code_fences,
     _elide_answer_middle,
 )
@@ -527,7 +527,7 @@ def test_the_fence_reserve_costs_nothing_when_repair_cannot_fire():
     assert "```" not in answer, "this test needs fence-free content"
 
     with_reserve, dropped_with = _elide_answer_middle(answer, _answer_budget())
-    with patch.object(me, "FENCE_REPAIR_RESERVE", 0):
+    with patch.object(me.text_budget, "FENCE_REPAIR_RESERVE", 0):
         without_reserve, dropped_without = _elide_answer_middle(
             answer, _answer_budget()
         )

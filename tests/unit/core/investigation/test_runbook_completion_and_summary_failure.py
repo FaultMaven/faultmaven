@@ -30,12 +30,13 @@ import inspect
 import re
 from contextlib import nullcontext
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from faultmaven.core.investigation.cause_assurance import CauseAssuranceGrade
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
@@ -300,7 +301,7 @@ class TestAckTurnFollowUpsOnFailure:
     """G2: ``_select_ack_follow_ups`` returns regen affordance on failure."""
 
     def test_success_resolved_returns_minimal_suggestions(self, monkeypatch):
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_replies import (
             _resolved_ack_suggestions,
             _select_ack_follow_ups,
         )
@@ -308,7 +309,7 @@ class TestAckTurnFollowUpsOnFailure:
         # Runbook affordance is grade-gated (#695 Defect A); pin CONFIRMED so the
         # MagicMock case yields a deterministic grade for both sides.
         monkeypatch.setattr(
-            "faultmaven.core.investigation.milestone_engine.grade_cause_assurance",
+            "faultmaven.core.investigation.milestone_engine.cause_state.grade_cause_assurance",
             lambda case: CauseAssuranceGrade.CONFIRMED,
         )
         case = MagicMock()
@@ -318,7 +319,7 @@ class TestAckTurnFollowUpsOnFailure:
         assert follow_ups == _resolved_ack_suggestions(case)
 
     def test_success_closed_returns_empty(self):
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_replies import (
             _select_ack_follow_ups,
         )
 
@@ -331,13 +332,13 @@ class TestAckTurnFollowUpsOnFailure:
     def test_failure_resolved_includes_regen_and_runbook(self, monkeypatch):
         """G2: failed RESOLVED summary → ack-turn offers regen + runbook
         (runbook because the cause is CONFIRMED — #695 Defect A)."""
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_replies import (
             _resolved_suggestions,
             _select_ack_follow_ups,
         )
 
         monkeypatch.setattr(
-            "faultmaven.core.investigation.milestone_engine.grade_cause_assurance",
+            "faultmaven.core.investigation.milestone_engine.cause_state.grade_cause_assurance",
             lambda case: CauseAssuranceGrade.CONFIRMED,
         )
         case = MagicMock()
@@ -354,7 +355,7 @@ class TestAckTurnFollowUpsOnFailure:
         Failure can only happen when generation was attempted; for CLOSED
         that means the substance gate already PASSED.
         """
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_replies import (
             _select_ack_follow_ups,
         )
 
@@ -390,7 +391,7 @@ class TestRunbookCreationFollowUps:
         on the resulting draft in the Dashboard Drafts editor, not via
         another chat click.
         """
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_replies import (
             _resolved_suggestions,
         )
 
@@ -598,7 +599,15 @@ def _known_affordance_labels() -> set[str]:
     """
     import faultmaven.core.investigation.milestone_engine as engine_module
 
-    labels = set(_LABEL_LITERAL_RE.findall(inspect.getsource(engine_module)))
+    # fm#1707: ``milestone_engine`` is a package, so ``inspect.getsource`` on
+    # the module object alone would only see ``__init__.py``. Read every
+    # submodule too, or a label added to a moved suggestion builder (e.g. the
+    # runbook affordance, now in ``terminal_replies.py``) goes unscraped.
+    engine_dir = Path(engine_module.__file__).parent
+    engine_source = "\n".join(
+        p.read_text(encoding="utf-8") for p in sorted(engine_dir.glob("*.py"))
+    )
+    labels = set(_LABEL_LITERAL_RE.findall(engine_source))
     assert "Generate runbook from this case" in labels, (
         "affordance-label scrape found no runbook label — the pattern has "
         "drifted and this property would pass vacuously"
@@ -1049,7 +1058,9 @@ class TestCaseConversionUsesFactory:
     """
 
     def test_chat_path_uses_from_case_factory(self):
-        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
 
         source = inspect.getsource(MilestoneEngine._handle_runbook_creation)
         assert "CaseConversionRequest.from_case(" in source, (
@@ -1061,7 +1072,9 @@ class TestCaseConversionUsesFactory:
     def test_chat_path_has_no_inline_extraction_markers(self):
         """Pins that the cleanup stayed clean — old inline-extraction
         markers must not return."""
-        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
 
         source = inspect.getsource(MilestoneEngine._handle_runbook_creation)
         forbidden_markers = [

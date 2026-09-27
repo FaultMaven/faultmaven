@@ -33,7 +33,7 @@ from faultmaven.core.investigation.causal_graph.rcc import (
     link_llm_rcc_to_cause,
     retract_disconfirmed_rcc,
 )
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_cause_state_from_chain,
 )
 from faultmaven.core.investigation.terminal_transitions import _cause_identified

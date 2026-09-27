@@ -36,10 +36,12 @@ from faultmaven.core.investigation.llm_error_handler import (
     is_output_truncation_error,
     is_truncated_json_error,
 )
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.engine import (
     STRUCTURED_OUTPUT_MAX_TOKENS,
     STRUCTURED_OUTPUT_MAX_TOKENS_CEILING,
     MilestoneEngineError,
+)
+from faultmaven.core.investigation.milestone_engine.text_budget import (
     _is_context_length_error,
 )
 from faultmaven.exceptions import TOKEN_LIMIT, LLMErrorCategory, LLMException
@@ -87,7 +89,7 @@ def _make_engine():
     handler classified what the engine raised, so a mocked handler would test
     the two halves separately and prove nothing about the seam between them.
     """
-    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+    from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 
     repo = MagicMock()
     repo.save = AsyncMock()
@@ -385,7 +387,7 @@ async def test_the_degrade_is_metered_as_truncation_not_overflow():
 
     with (
         patch(
-            "faultmaven.core.investigation.milestone_engine."
+            "faultmaven.core.investigation.milestone_engine.engine."
             "prompt_context_recovery_total",
             metric,
         ),

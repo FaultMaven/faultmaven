@@ -464,7 +464,7 @@ def test_grounding_trace_flags_seam_divergence(caplog):
     import logging as _logging
 
     from faultmaven.core.investigation.cause_assurance import grade_cause_assurance
-    from faultmaven.core.investigation.milestone_engine import (
+    from faultmaven.core.investigation.milestone_engine.cause_state import (
         _log_grounding_assessment,
     )
 
@@ -500,7 +500,7 @@ def test_grounding_trace_no_divergence_on_clean_not_grounded(caplog):
     import logging as _logging
 
     from faultmaven.core.investigation.cause_assurance import grade_cause_assurance
-    from faultmaven.core.investigation.milestone_engine import (
+    from faultmaven.core.investigation.milestone_engine.cause_state import (
         _log_grounding_assessment,
     )
 
@@ -521,7 +521,7 @@ def test_grounding_trace_no_divergence_on_clean_not_grounded(caplog):
 def test_grounding_trace_silent_above_debug(caplog):
     import logging as _logging
 
-    from faultmaven.core.investigation.milestone_engine import (
+    from faultmaven.core.investigation.milestone_engine.cause_state import (
         _log_grounding_assessment,
     )
 

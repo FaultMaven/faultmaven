@@ -24,8 +24,8 @@ Contract pinned here:
 import inspect
 import re
 
-from faultmaven.core.investigation import milestone_engine
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine import engine as milestone_engine
+from faultmaven.core.investigation.milestone_engine.response_synthesis import (
     _prose_with_gate_notice,
 )
 

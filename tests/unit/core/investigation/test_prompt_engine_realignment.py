@@ -22,7 +22,7 @@ from unittest.mock import DEFAULT, patch
 import pytest
 
 from faultmaven.core.investigation.causal_graph.rcc import link_llm_rcc_to_cause
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.cause_state import (
     _kb_prefetch_query_on_identification,
 )
 from faultmaven.core.investigation.prompts.templates.diagnosis import (

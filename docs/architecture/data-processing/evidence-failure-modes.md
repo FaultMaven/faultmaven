@@ -36,7 +36,7 @@ File upload → Storage (local/S3) → Preprocessing (Tier 0+1, zero LLM) → DB
 
 Each step can fail, leaving the system in an inconsistent state. This document defines explicit error recovery strategies for each failure point.
 
-> **Note:** The 2026-02 version of this document placed LLM analysis *between* storage and DB insert. That was for an earlier architecture where an LLM classifier ran at ingest. As of v4.1 (Unified Ingestion Pipeline), classification is purely rule-based and runs before storage — no LLM calls happen during evidence creation. LLM calls happen at turn processing time (`milestone_engine.process_turn`). This doc has been partially rewritten; scenarios below retain the original framing for reference and will be refactored when implementation begins.
+> **Note:** The 2026-02 version of this document placed LLM analysis *between* storage and DB insert. That was for an earlier architecture where an LLM classifier ran at ingest. As of v4.1 (Unified Ingestion Pipeline), classification is purely rule-based and runs before storage — no LLM calls happen during evidence creation. LLM calls happen at turn processing time (`milestone_engine.engine.process_turn`). This doc has been partially rewritten; scenarios below retain the original framing for reference and will be refactored when implementation begins.
 
 ---
 
@@ -76,7 +76,7 @@ async def process_turn_with_attachment(case_id, user_message, file):
 
 ### Scenario 2: LLM Call Timeout
 
-> **Current implementation (2026-04-19):** This scenario's "LLM timeout at ingest" framing is obsolete — Tier 0+1 is zero-LLM, so file upload no longer depends on an LLM call. The real remaining failure surface is **LLM calls during turn processing** in `milestone_engine.py`. Current handling:
+> **Current implementation (2026-04-19):** This scenario's "LLM timeout at ingest" framing is obsolete — Tier 0+1 is zero-LLM, so file upload no longer depends on an LLM call. The real remaining failure surface is **LLM calls during turn processing** in `milestone_engine/engine.py`. Current handling:
 >
 > - `BaseExternalClient.call_external` retries `retryable=True` errors synchronously within the request.
 > - On terminal failure, `modules/case/api/routes.py` `submit_turn` returns specific error codes (`LLM_OVER_CAPACITY` / `RATE_LIMIT_EXCEEDED` / `LLM_TIMEOUT` / `SERVICE_ERROR`) with appropriate `Retry-After` headers and actionable user-facing messages.

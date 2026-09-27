@@ -192,7 +192,7 @@ def test_hypothesis_axis_refuses_any_llm_stance_on_an_absence_row(stance):
     from faultmaven.core.investigation.hypothesis_manager import (
         create_hypothesis_manager,
     )
-    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+    from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 
     case = _case()
     case.evidence.append(_success_absence_row())
@@ -227,7 +227,7 @@ def test_both_axes_still_accept_ordinary_causal_evidence():
     would silence the grounding path the whole engine runs on."""
     from types import SimpleNamespace
 
-    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+    from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 
     case = _case()
     seed_problem_node(case)
@@ -597,7 +597,7 @@ def test_evidence_based_disconfirmation_demotes_without_any_fix_record():
 def test_resolution_recap_never_renders_the_early_stage_placeholder():
     """Acceptance criterion 4. The placeholder contradicted the ten preceding
     turns at the most trust-sensitive moment of the case."""
-    from faultmaven.core.investigation.milestone_engine import (
+    from faultmaven.core.investigation.milestone_engine.cause_state import (
         NO_ROOT_CAUSE_ESTABLISHED,
         _get_root_cause_summary,
     )
@@ -617,7 +617,9 @@ def test_resolution_recap_never_renders_the_early_stage_placeholder():
 def test_recap_still_surfaces_a_real_working_conclusion():
     """The fallback must stay LIVE — gating it on the placeholder must not
     silence a genuine finding the conclusion record does not hold."""
-    from faultmaven.core.investigation.milestone_engine import _get_root_cause_summary
+    from faultmaven.core.investigation.milestone_engine.cause_state import (
+        _get_root_cause_summary,
+    )
     from faultmaven.modules.case.contracts import WorkingConclusion
 
     case = _case()
@@ -671,7 +673,7 @@ def test_resolved_case_truth_surfaces_agree_with_the_confirmed_cause():
     All three structured surfaces must now agree with the cause the user
     confirmed, and the record must say HOW it was established.
     """
-    from faultmaven.core.investigation.milestone_engine import (
+    from faultmaven.core.investigation.milestone_engine.cause_state import (
         _recompute_cause_state_from_chain,
     )
     from faultmaven.core.investigation.terminal_transitions import (
@@ -1014,7 +1016,7 @@ def _incident_emission(root_node_id: str, hypothesis_id: str):
 def _engine_for_incident(emission: dict):
     from unittest.mock import AsyncMock, MagicMock
 
-    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+    from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
     from faultmaven.core.investigation.schemas import (
         InvestigationResponse_Diagnosis,
     )

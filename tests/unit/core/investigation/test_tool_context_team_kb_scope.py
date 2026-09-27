@@ -28,6 +28,7 @@ principal directly cannot tell whether anything upstream supplies one.
 
 import ast
 import inspect
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -41,7 +42,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.security]
 
 def _engine(team_ids=None, shared_ids=None, *, wired=True):
     """A MilestoneEngine with just enough wiring to build a tool context."""
-    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+    from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 
     engine = MilestoneEngine.__new__(MilestoneEngine)
     engine.repository = MagicMock()
@@ -181,9 +182,25 @@ async def test_a_failed_resolution_narrows_rather_than_raising():
 # ---------------------------------------------------------------------------
 
 
+def _module_source(module) -> str:
+    """``inspect.getsource``, widened for a package (fm#1707).
+
+    ``milestone_engine`` is now a package: ``inspect.getsource`` on the
+    package object returns only ``__init__.py``, silently dropping any call
+    site that lives in one of its submodules.
+    """
+    path = getattr(module, "__file__", None)
+    if path and Path(path).name == "__init__.py":
+        pkg_dir = Path(path).parent
+        return "\n".join(
+            p.read_text(encoding="utf-8") for p in sorted(pkg_dir.glob("*.py"))
+        )
+    return inspect.getsource(module)
+
+
 def _call_sites(module, attr_path: tuple[str, ...]) -> list[ast.Call]:
     """Every ``ast.Call`` in ``module`` whose callee is ``attr_path``."""
-    tree = ast.parse(inspect.getsource(module))
+    tree = ast.parse(_module_source(module))
     wanted = ".".join(attr_path)
     found = []
     for node in ast.walk(tree):

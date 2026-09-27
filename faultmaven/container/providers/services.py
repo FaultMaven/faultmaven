@@ -134,7 +134,9 @@ def create_milestone_engine(
         return None
 
     try:
-        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
 
         engine = MilestoneEngine(
             llm_provider=llm_provider,

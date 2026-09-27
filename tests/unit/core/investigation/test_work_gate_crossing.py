@@ -19,7 +19,7 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_assessment_state,
     _resolve_chat_provider_name,
 )
@@ -49,7 +49,7 @@ def counter():
     """Patch the module-global counter with a Mock so ``labels(...).inc()`` calls
     are captured deterministically (the real counter is a NoOp in the unit env)."""
     with patch(
-        "faultmaven.core.investigation.milestone_engine.work_gate_crossed_total",
+        "faultmaven.core.investigation.milestone_engine.cause_state.work_gate_crossed_total",
         new=MagicMock(),
     ) as m:
         yield m
