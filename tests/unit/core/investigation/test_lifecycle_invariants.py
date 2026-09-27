@@ -1671,7 +1671,7 @@ class TestINV15_AgentAdvisorRole:
         """``_ADVISOR_ROLE_CONSTRAINT`` (the prompt constant) explicitly
         bans the action-claim phrases.
         """
-        from faultmaven.core.investigation.prompts.templates import (
+        from faultmaven.core.investigation.prompts.templates.blocks import (
             _ADVISOR_ROLE_CONSTRAINT,
         )
 
@@ -1693,7 +1693,7 @@ class TestINV15_AgentAdvisorRole:
         A banned-only list without alternatives leaves the LLM no
         graceful path; this test pins the prescriptive guidance.
         """
-        from faultmaven.core.investigation.prompts.templates import (
+        from faultmaven.core.investigation.prompts.templates.blocks import (
             _ADVISOR_ROLE_CONSTRAINT,
         )
 
@@ -1710,24 +1710,32 @@ class TestINV15_AgentAdvisorRole:
         the INVESTIGATION_BASE, and TERMINAL_TEMPLATE. A drop from any of
         these would let the LLM act outside its role in that phase.
         """
-        from faultmaven.core.investigation.prompts import templates as tmpl
+        from faultmaven.core.investigation.prompts.templates import (
+            inquiry as tmpl_inquiry,
+        )
+        from faultmaven.core.investigation.prompts.templates import (
+            investigation as tmpl_investigation,
+        )
+        from faultmaven.core.investigation.prompts.templates import (
+            terminal as tmpl_terminal,
+        )
 
         # All three top-level templates render the constraint as a substring
         # (woven in via either _ADVISOR_ROLE_CONSTRAINT directly or the
         # _ACTIVE_ADVISOR_ROLE_BLOCK wrapper).
         banned_marker = "BANNED PHRASES"
-        assert banned_marker in tmpl.INQUIRY_TEMPLATE, (
+        assert banned_marker in tmpl_inquiry.INQUIRY_TEMPLATE, (
             "INV-15 violation: INQUIRY_TEMPLATE no longer embeds the "
             "advisor-role banned-phrase block."
         )
-        assert banned_marker in tmpl.TERMINAL_TEMPLATE, (
+        assert banned_marker in tmpl_terminal.TERMINAL_TEMPLATE, (
             "INV-15 violation: TERMINAL_TEMPLATE no longer embeds the "
             "advisor-role banned-phrase block."
         )
         # INVESTIGATION_BASE / DIAGNOSIS / etc. — use the active-stage
         # wrapper. We check at least one investigation-stage template.
-        if hasattr(tmpl, "INVESTIGATION_BASE"):
-            assert banned_marker in tmpl.INVESTIGATION_BASE, (
+        if hasattr(tmpl_investigation, "INVESTIGATION_BASE"):
+            assert banned_marker in tmpl_investigation.INVESTIGATION_BASE, (
                 "INV-15 violation: INVESTIGATION_BASE no longer embeds "
                 "the advisor-role banned-phrase block."
             )
@@ -1978,7 +1986,7 @@ class TestINV19_InquiryTemplateOffersNoPathChoice:
     undo the data-grounded design."""
 
     def test_inquiry_template_does_not_contain_per_path_confirmation_buttons(self):
-        from faultmaven.core.investigation.prompts import templates as tmpl
+        from faultmaven.core.investigation.prompts.templates import inquiry as tmpl
 
         assert "Investigate (Mitigation First)" not in tmpl.INQUIRY_TEMPLATE, (
             "INV-19 violation: INQUIRY_TEMPLATE re-introduced the "
@@ -2055,7 +2063,7 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
         """INQUIRY_TEMPLATE must explicitly name INQUIRY → RESOLVED as
         a non-edge. Omission is not prohibition for an LLM — the
         prompt has to say so."""
-        from faultmaven.core.investigation.prompts import templates as tmpl
+        from faultmaven.core.investigation.prompts.templates import inquiry as tmpl
 
         assert "INQUIRY → RESOLVED (NOT a valid edge" in tmpl.INQUIRY_TEMPLATE, (
             "INV-22 prompt guard removed: INQUIRY_TEMPLATE no longer "

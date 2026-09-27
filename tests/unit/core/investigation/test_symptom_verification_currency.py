@@ -250,7 +250,7 @@ def test_zone2_emphasis_anchors_the_window_without_calling_the_case_dead():
     with nothing to say about WHERE to look. It must now name the window — and
     must not imply a non-firing problem is not worth investigating."""
 
-    from faultmaven.core.investigation.prompts.templates import (
+    from faultmaven.core.investigation.prompts.templates.assembly import (
         _get_diagnosis_focus_emphasis,
     )
 
@@ -264,7 +264,7 @@ def test_zone2_emphasis_anchors_the_window_without_calling_the_case_dead():
 
 
 def test_zone2_emphasis_is_unchanged_when_current():
-    from faultmaven.core.investigation.prompts.templates import (
+    from faultmaven.core.investigation.prompts.templates.assembly import (
         _get_diagnosis_focus_emphasis,
     )
 
@@ -276,7 +276,7 @@ def test_zone2_emphasis_is_unchanged_when_current():
 def test_progress_only_callers_keep_working():
     """The optional ``case`` parameter must not change existing call sites."""
 
-    from faultmaven.core.investigation.prompts.templates import (
+    from faultmaven.core.investigation.prompts.templates.assembly import (
         _get_diagnosis_focus_emphasis,
     )
 
@@ -615,7 +615,7 @@ class TestReviewFindingsResidual:
         than treat the question as settled. Every currency surface is gated on
         symptom_verified, so suppressing it there kept them all dormant."""
 
-        from faultmaven.core.investigation.prompts.templates import (
+        from faultmaven.core.investigation.prompts.templates.assembly import (
             _get_diagnosis_focus_emphasis,
         )
 

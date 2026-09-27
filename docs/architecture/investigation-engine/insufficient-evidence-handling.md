@@ -35,7 +35,7 @@ Standardized terms used throughout this document. Where the codebase already has
 | **Disposition** | A **terminal outcome** — `RESOLVED` or `CLOSED` — reached only through the propose→confirm handshake (never auto-fired). This document does **not** overload "disposition" for the assessment concept below. |
 | **Verification status** | Proposed unifying *assessment variable*: the engine's reading of whether a grounded cause is reachable and, if not, why. It is a **join of two orthogonal axes** — grounding (is a cause grounded?) × progress (has progress stalled?) — not a merged scalar (§5.1). Today this reading is split across the two layers (§3); it is not yet a single computed field (§4, §5). |
 | **Insufficient-evidence** | The verification-status cell where diagnostic work has actually happened (the *work gate*, §5.2) but no cause can be grounded from currently available data. Distinct **both** from "not investigated yet" **and** from "the reasoner produced nothing" — the latter is a model/provider failure, not a property of the case (§5.2). |
-| **Advisor posture** | The engine's baseline stance: it *suggests, asks, and recommends* — it is "an advisor, never an actor" (`templates.py`). It never claims to take actions itself. |
+| **Advisor posture** | The engine's baseline stance: it *suggests, asks, and recommends* — it is "an advisor, never an actor" (`templates/blocks.py`). It never claims to take actions itself. |
 | **Structured handoff** | The engine's response shape when progress is blocked: state what is established, state what remains uncertain and why, and present the user with concrete options (data that would decide it, alternative angles, escalation, or pause). |
 | **Enforcement tier** | From the invariant matrix: *Structural > Code-guarded > Schema > Prompt-only*, in decreasing strength. A Prompt-only behavior depends on LLM compliance and is subject to drift. |
 
@@ -66,7 +66,7 @@ Neither of these represents "insufficient evidence" as such; the situation is in
 
 ### 3.3 The response shape — advisor posture and structured handoff
 
-The engine's baseline is the **advisor posture** (`templates.py`): it suggests, asks, and recommends, and never claims to act. On a stall, the prompt templates instruct a **structured handoff**, including the explicit boundary statement and options:
+The engine's baseline is the **advisor posture** (`templates/blocks.py`): it suggests, asks, and recommends, and never claims to act. On a stall, the prompt templates instruct a **structured handoff**, including the explicit boundary statement and options:
 
 > State the boundary — *"Given the available evidence, the cause is likely X or Y but I cannot determine which without \<specific data/access/test\>."* … Present options … *A well-documented partial investigation that narrows the problem and identifies what is needed next is a valuable outcome.*
 

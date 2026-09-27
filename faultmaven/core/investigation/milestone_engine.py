@@ -141,9 +141,9 @@ from faultmaven.core.investigation.progress_monitor import ProgressMonitor
 from faultmaven.core.investigation.prompts.context_builder import (
     structural_index_is_searchable,
 )
-from faultmaven.core.investigation.prompts.templates import (
+from faultmaven.core.investigation.prompts.templates.assembly import get_prompt_for_case
+from faultmaven.core.investigation.prompts.templates.investigation import (
     SCHEMA_INSTRUCTIONS,
-    get_prompt_for_case,
 )
 from faultmaven.core.investigation.reliability_metrics import (
     schema_validation_total,
@@ -10625,7 +10625,7 @@ class MilestoneEngine:
                 and case is not None
                 and _is_context_length_error(exc)
             ):
-                from faultmaven.core.investigation.prompts.templates import (
+                from faultmaven.core.investigation.prompts.templates.fallback import (
                     DEGRADED_NO_TOOLS_NOTICE,
                     get_fallback_prompt_for_case,
                 )

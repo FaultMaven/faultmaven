@@ -23,11 +23,13 @@ from __future__ import annotations
 
 import pytest
 
-from faultmaven.core.investigation.prompts.templates import (
+from faultmaven.core.investigation.prompts.templates.assembly import _page_capture_hint
+from faultmaven.core.investigation.prompts.templates.blocks import (
     _FOLLOW_UP_SUGGESTIONS_BLOCK,
-    INQUIRY_TEMPLATE,
+)
+from faultmaven.core.investigation.prompts.templates.inquiry import INQUIRY_TEMPLATE
+from faultmaven.core.investigation.prompts.templates.investigation import (
     INVESTIGATION_BASE,
-    _page_capture_hint,
 )
 
 

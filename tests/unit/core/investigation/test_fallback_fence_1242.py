@@ -54,23 +54,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import tiktoken
 
-from faultmaven.core.investigation.prompts import templates
 from faultmaven.core.investigation.prompts.fence import (
     FENCE_ATTR,
     TERMINATOR_NOTE,
     absorbed_delimiters,
 )
-from faultmaven.core.investigation.prompts.templates import (
+from faultmaven.core.investigation.prompts.templates import assembly
+from faultmaven.core.investigation.prompts.templates.assembly import get_prompt_for_case
+from faultmaven.core.investigation.prompts.templates.blocks import _PROMPT_FENCE_RULE
+from faultmaven.core.investigation.prompts.templates.fallback import (
     _FALLBACK_FEEDBACK_MAX_TOKENS,
     _FALLBACK_FENCE_RULE_HEAD,
     _FALLBACK_FENCE_RULE_TEMPLATE,
     _FALLBACK_MAX_TOKENS,
-    _PROMPT_FENCE_RULE,
     DEGRADED_NO_TOOLS_NOTICE,
     _cap_notice,
     _fallback_tokens,
     get_fallback_prompt_for_case,
-    get_prompt_for_case,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -933,7 +933,7 @@ class TestTheCompactRuleStaysCompact:
         resolved = dataclasses.replace(
             resolve_model_budget(None, None), prompt_target=50_000, prompt_budget=20_000
         )
-        prompt = templates._assemble_allocated(
+        prompt = assembly._assemble_allocated(
             _dense_case(_CJK),
             lambda budget: {},
             lambda ctx: "x" * 100_000,

@@ -186,10 +186,10 @@ def test_the_prompt_defines_the_pair_it_renders():
     attribute had every reason to win the currency judgement — the original
     defect wearing a new attribute."""
 
-    from faultmaven.core.investigation.prompts.templates import (
+    from faultmaven.core.investigation.prompts.templates.blocks import (
         _EVIDENCE_GROUNDING_BLOCK,
-        INQUIRY_TEMPLATE,
     )
+    from faultmaven.core.investigation.prompts.templates.inquiry import INQUIRY_TEMPLATE
 
     # BOTH states. INV-07 keeps a forwarded alert un-promoted through INQUIRY,
     # so turn 1 — where the age decides whether there is an incident at all —
@@ -213,10 +213,10 @@ def test_the_prompt_says_which_turn_fresh_this_turn_names():
     YOU received the item", which a model re-citing a turn-3 file on turn 9
     can read either way."""
 
-    from faultmaven.core.investigation.prompts.templates import (
+    from faultmaven.core.investigation.prompts.templates.blocks import (
         _EVIDENCE_GROUNDING_BLOCK,
-        INQUIRY_TEMPLATE,
     )
+    from faultmaven.core.investigation.prompts.templates.inquiry import INQUIRY_TEMPLATE
 
     for block in (INQUIRY_TEMPLATE, _EVIDENCE_GROUNDING_BLOCK):
         assert "the turn it was UPLOADED" in block
@@ -238,7 +238,9 @@ def test_every_mode_that_states_the_rule_also_states_the_definition(processing_m
     which turn the attribute names — and the reading that matters is the
     negative one, where a re-cited file carries nothing."""
 
-    from faultmaven.core.investigation.prompts.templates import get_prompt_for_case
+    from faultmaven.core.investigation.prompts.templates.assembly import (
+        get_prompt_for_case,
+    )
     from faultmaven.modules.case.contracts import CaseState, InquiryData
     from faultmaven.modules.case.domain.models.case import Case
 
@@ -432,10 +434,10 @@ def test_a_known_observation_time_is_never_reported_as_missing():
 
     import re
 
-    from faultmaven.core.investigation.prompts.templates import (
+    from faultmaven.core.investigation.prompts.templates.blocks import (
         _EVIDENCE_GROUNDING_BLOCK,
-        INQUIRY_TEMPLATE,
     )
+    from faultmaven.core.investigation.prompts.templates.inquiry import INQUIRY_TEMPLATE
 
     for block in (INQUIRY_TEMPLATE, _EVIDENCE_GROUNDING_BLOCK):
         text = re.sub(r"\s+", " ", block)
@@ -452,7 +454,7 @@ def test_a_known_observation_time_is_never_reported_as_missing():
     # itself "by forwarding it", which is meaningless to a browser capture and
     # doubly so because the Copilot does not send observed_at at all today.
     # Scoped to the block: "forward" occurs in unrelated prose elsewhere.
-    from faultmaven.core.investigation.prompts.templates import (
+    from faultmaven.core.investigation.prompts.templates.blocks import (
         _OBSERVATION_TIME_BLOCK,
     )
 
@@ -462,10 +464,10 @@ def test_a_known_observation_time_is_never_reported_as_missing():
 
 
 def test_the_prompt_defines_the_inferred_marker():
-    from faultmaven.core.investigation.prompts.templates import (
+    from faultmaven.core.investigation.prompts.templates.blocks import (
         _EVIDENCE_GROUNDING_BLOCK,
-        INQUIRY_TEMPLATE,
     )
+    from faultmaven.core.investigation.prompts.templates.inquiry import INQUIRY_TEMPLATE
 
     for block in (INQUIRY_TEMPLATE, _EVIDENCE_GROUNDING_BLOCK):
         assert "observed_basis" in block

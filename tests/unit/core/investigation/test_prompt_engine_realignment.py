@@ -25,7 +25,13 @@ from faultmaven.core.investigation.causal_graph.rcc import link_llm_rcc_to_cause
 from faultmaven.core.investigation.milestone_engine import (
     _kb_prefetch_query_on_identification,
 )
-from faultmaven.core.investigation.prompts import templates
+from faultmaven.core.investigation.prompts.templates.diagnosis import (
+    _DIAGNOSIS_ZONES_PREAMBLE,
+    _HYPOTHESIS_EVIDENCE_ORDERING_BLOCK,
+)
+from faultmaven.core.investigation.prompts.templates.treatment import (
+    TREATMENT_INSTRUCTIONS,
+)
 from faultmaven.core.investigation.schemas import (
     MilestoneUpdates,
     RootCauseConclusionUpdate,
@@ -73,11 +79,11 @@ def test_diagnosis_prompt_does_not_teach_setting_root_cause_identified():
     """The prompt must not instruct the LLM to set the removed boolean; if it
     did, the schema/prompt would re-diverge (the split-brain this closes)."""
     for block in (
-        templates._HYPOTHESIS_EVIDENCE_ORDERING_BLOCK,
-        templates._DIAGNOSIS_ZONES_PREAMBLE,
+        _HYPOTHESIS_EVIDENCE_ORDERING_BLOCK,
+        _DIAGNOSIS_ZONES_PREAMBLE,
     ):
         assert "root_cause_identified" not in block
-    assert "root_cause_identified=True" not in templates.TREATMENT_INSTRUCTIONS
+    assert "root_cause_identified=True" not in TREATMENT_INSTRUCTIONS
 
 
 def test_rcc_schemas_carry_names_root_node_id():
@@ -85,7 +91,7 @@ def test_rcc_schemas_carry_names_root_node_id():
     authoritative attribution hint, and TREATMENT teaches it."""
     assert "names_root_node_id" in RootCauseConclusionUpdate.model_fields
     assert "names_root_node_id" in RootCauseConclusion.model_fields
-    assert "names_root_node_id" in templates.TREATMENT_INSTRUCTIONS
+    assert "names_root_node_id" in TREATMENT_INSTRUCTIONS
 
 
 # ---------------------------------------------------------------------------

@@ -32,17 +32,17 @@ from faultmaven.core.investigation.milestone_engine import (
     MilestoneEngine,
     MilestoneEngineError,
 )
-from faultmaven.core.investigation.prompts import templates
 from faultmaven.core.investigation.prompts.context_builder import (
     system_feedback_block,
 )
 from faultmaven.core.investigation.prompts.fence import TERMINATOR_NOTE
-from faultmaven.core.investigation.prompts.templates import (
+from faultmaven.core.investigation.prompts.templates import assembly
+from faultmaven.core.investigation.prompts.templates.assembly import get_prompt_for_case
+from faultmaven.core.investigation.prompts.templates.fallback import (
     _FALLBACK_FEEDBACK_MAX_TOKENS,
     _FALLBACK_FENCE_RULE_HEAD,
     _fallback_tokens,
     get_fallback_prompt_for_case,
-    get_prompt_for_case,
 )
 from faultmaven.core.investigation.terminal_transitions import propose_transition
 from faultmaven.infrastructure.llm.structured_output_capability import (
@@ -546,9 +546,9 @@ class TestTheFallbackRendersTheNotice:
 
     def test_the_starvation_arm(self, monkeypatch):
         calls = []
-        real = templates.get_fallback_prompt_for_case
+        real = assembly.get_fallback_prompt_for_case
         monkeypatch.setattr(
-            templates,
+            assembly,
             "get_fallback_prompt_for_case",
             lambda *a, **k: calls.append(a) or real(*a, **k),
         )
@@ -565,7 +565,7 @@ class TestTheFallbackRendersTheNotice:
         resolved = dataclasses.replace(
             resolve_model_budget(None, None), prompt_target=50_000, prompt_budget=10_000
         )
-        prompt = templates._assemble_allocated(
+        prompt = assembly._assemble_allocated(
             case,
             lambda budget: {},
             lambda ctx: "x" * 20_000,

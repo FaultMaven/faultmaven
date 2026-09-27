@@ -13,7 +13,9 @@ import json
 import pytest
 
 from faultmaven.core.investigation.milestone_engine import _schema_prompt_instruction
-from faultmaven.core.investigation.prompts.templates import SCHEMA_INSTRUCTIONS
+from faultmaven.core.investigation.prompts.templates.investigation import (
+    SCHEMA_INSTRUCTIONS,
+)
 from faultmaven.core.investigation.schemas import (
     InquiryResponse,
     InvestigationResponse_Diagnosis,

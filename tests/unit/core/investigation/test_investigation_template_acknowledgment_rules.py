@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import pytest
 
-from faultmaven.core.investigation.prompts.templates import INVESTIGATION_BASE
+from faultmaven.core.investigation.prompts.templates.investigation import (
+    INVESTIGATION_BASE,
+)
 
 
 @pytest.mark.unit

@@ -27,9 +27,9 @@ _QUARTET = {
     "causal_absence_evidence",
 }
 
-_TEMPLATES = (
+_TEMPLATES_DIR = (
     Path(__file__).resolve().parents[4]
-    / "faultmaven/core/investigation/prompts/templates.py"
+    / "faultmaven/core/investigation/prompts/templates"
 )
 
 
@@ -48,10 +48,12 @@ def test_legacy_category_value_is_rejected(legacy):
 
 # --- no prompt emits a legacy category (source grep) -----------------------
 def test_prompts_emit_no_legacy_category():
-    src = _TEMPLATES.read_text(encoding="utf-8")
+    src = "".join(
+        p.read_text(encoding="utf-8") for p in sorted(_TEMPLATES_DIR.glob("*.py"))
+    )
     offenders = [tok for tok in _LEGACY if tok in src]
     assert not offenders, (
-        f"templates.py still references legacy categories {offenders}; "
+        f"templates package still references legacy categories {offenders}; "
         "prompts must emit only the absence quartet"
     )
 

@@ -30,7 +30,7 @@ from faultmaven.core.investigation.case_telemetry import (
     TurnPath,
     build_case_turn_event,
 )
-from faultmaven.core.investigation.prompts.templates import get_prompt_for_case
+from faultmaven.core.investigation.prompts.templates.assembly import get_prompt_for_case
 from tests.utils import reset_settings_singleton
 
 #: The one entry every prompt assertion is written against. Title, excerpt and

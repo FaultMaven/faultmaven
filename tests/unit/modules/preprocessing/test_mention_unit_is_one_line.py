@@ -539,7 +539,7 @@ class TestLogsExtractorProfileCountsLines:
         made it the attempt count, so the routing line must stop calling it
         a line count or an upper bound, or it contradicts the header.
         """
-        from faultmaven.core.investigation.prompts.templates import (
+        from faultmaven.core.investigation.prompts.templates.blocks import (
             _EVIDENCE_GROUNDING_BLOCK,
         )
 

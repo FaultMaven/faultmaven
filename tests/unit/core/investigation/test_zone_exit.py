@@ -31,10 +31,12 @@ from faultmaven.core.investigation.milestone_engine import (
 from faultmaven.core.investigation.prompts.context_builder import (
     build_investigation_context,
 )
-from faultmaven.core.investigation.prompts.templates import (
-    _RCA_DIAGNOSIS_BLOCK,
+from faultmaven.core.investigation.prompts.templates.assembly import (
     _get_diagnosis_focus_emphasis,
     get_prompt_for_case,
+)
+from faultmaven.core.investigation.prompts.templates.diagnosis import (
+    _RCA_DIAGNOSIS_BLOCK,
 )
 from faultmaven.modules.case.domain.models.problem import InvestigationStage
 from faultmaven.modules.case.domain.models.progress import CauseState

@@ -39,7 +39,7 @@ from faultmaven.core.investigation.milestone_engine import (
 from faultmaven.core.investigation.prompts.context_builder import (
     build_investigation_context,
 )
-from faultmaven.core.investigation.prompts.templates import (
+from faultmaven.core.investigation.prompts.templates.assembly import (
     _get_diagnosis_focus_emphasis,
 )
 from faultmaven.core.investigation.schemas import MilestoneUpdates, SolutionToAdd
