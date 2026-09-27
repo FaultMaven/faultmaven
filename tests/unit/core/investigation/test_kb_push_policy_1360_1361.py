@@ -558,7 +558,7 @@ class TestTheTurnResponseCitesItsSources:
         from faultmaven.modules.agent.domain.services.investigation_service import (
             _kb_context_sources,
         )
-        from faultmaven.modules.case.domain.models import CaseState
+        from faultmaven.modules.case.domain.models.lifecycle import CaseState
 
         response = TurnResponse(
             agent_response="…",
@@ -601,7 +601,7 @@ class TestTheTurnResponseCitesItsSources:
     def test_the_field_defaults_to_empty_rather_than_missing(self):
         """Every existing caller builds a ``TurnResponse`` without it."""
         from faultmaven.models.api_models import TurnResponse
-        from faultmaven.modules.case.domain.models import CaseState
+        from faultmaven.modules.case.domain.models.lifecycle import CaseState
 
         response = TurnResponse(
             agent_response="…",

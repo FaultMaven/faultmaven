@@ -105,18 +105,28 @@ async def test_500_body_does_not_echo_the_exception(build_app, call_api):
     assert response.json()["detail"] == "Failed to resume case (unexpected error)"
 
 
-def _routes_source() -> pathlib.Path:
-    """The guarded file, with a floor so an empty parse cannot pass vacuously."""
-    path = pathlib.Path(routes_module.__file__)
+def _routes_source() -> list[pathlib.Path]:
+    """The guarded files, with a floor so an empty parse cannot pass vacuously.
+
+    ``routes_module.__file__`` alone would miss ``title_generation.py``, its
+    sibling in ``case/api/``: that module carries its own bound ``except``
+    handlers (and its own ``HTTPException`` construction —
+    ``_generate_and_persist_title``'s persistence-failure arms) and must stay
+    on the guarded surface. Named explicitly, not globbed, so a new unrelated
+    module later added to ``case/api/`` does not silently join the surface.
+    """
+    routes_path = pathlib.Path(routes_module.__file__)
+    paths = sorted([routes_path, routes_path.parent / "title_generation.py"])
     handlers = sum(
         isinstance(node, ast.ExceptHandler) and bool(node.name)
+        for path in paths
         for node in ast.walk(ast.parse(path.read_text()))
     )
     assert handlers >= 20, (
         f"case router unexpectedly has only {handlers} bound except handlers — "
         "the guards below would pass without inspecting anything"
     )
-    return path
+    return paths
 
 
 @pytest.mark.unit
@@ -140,7 +150,9 @@ def test_no_500_site_interpolates_the_exception():
     nodes rather than unparsed substrings, which is what closes that gap (and
     ``repr(e)``, ``f"{e!s}"`` and ``e.args[0]`` with it).
     """
-    offenders = http_exception_leak_sites(_routes_source())
+    offenders = [
+        site for path in _routes_source() for site in http_exception_leak_sites(path)
+    ]
 
     assert offenders == [], (
         "5xx HTTPException sites carrying the caught exception into the "
@@ -158,7 +170,9 @@ def test_no_except_handler_returns_the_exception():
     ``GET /cases/health`` by returning ``{"error": str(e)}`` with a 200. Same
     leak, different wire shape.
     """
-    offenders = returned_body_leak_sites(_routes_source())
+    offenders = [
+        site for path in _routes_source() for site in returned_body_leak_sites(path)
+    ]
 
     assert offenders == [], (
         "return statements inside except handlers carrying the caught "

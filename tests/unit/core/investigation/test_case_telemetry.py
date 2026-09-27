@@ -24,24 +24,26 @@ from faultmaven.core.investigation.case_telemetry import (
     collect_progress_arms,
     emit_case_turn,
 )
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseSeverity,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
-    EvidenceNeed,
     EvidenceSourceType,
+    UploadedFile,
+)
+from faultmaven.modules.case.domain.models.evidence_needs import EvidenceNeed, NeedState
+from faultmaven.modules.case.domain.models.hypothesis import (
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
-    NeedState,
-    ProblemVerification,
-    TurnOutcome,
-    UploadedFile,
 )
+from faultmaven.modules.case.domain.models.lifecycle import CaseSeverity, CaseState
+from faultmaven.modules.case.domain.models.problem import (
+    InquiryData,
+    ProblemVerification,
+)
+from faultmaven.modules.case.domain.models.turn import TurnOutcome
 
 pytestmark = pytest.mark.unit
 

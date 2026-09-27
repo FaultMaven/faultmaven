@@ -16,8 +16,8 @@ import os
 import psutil
 import pytest
 
-from faultmaven.modules.case.domain.models import (
-    Case,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import (
     CaseState,
     InvestigationStrategy,
 )

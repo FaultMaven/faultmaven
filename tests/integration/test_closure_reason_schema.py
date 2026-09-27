@@ -106,7 +106,7 @@ def test_the_column_is_wide_enough_for_every_reason_the_model_allows(
     silently truncates (SQLite) at the moment a case closes — the least
     recoverable time to find out.
     """
-    from faultmaven.modules.case.domain.models import VALID_CLOSURE_REASONS
+    from faultmaven.modules.case.domain.models.lifecycle import VALID_CLOSURE_REASONS
 
     declared_length = migrated_columns["closure_reason"]["type"].length
     longest = max(VALID_CLOSURE_REASONS, key=len)
@@ -131,7 +131,8 @@ class TestTheRetiredValueCannotComeBack:
         from datetime import datetime, timedelta, timezone
         from uuid import uuid4
 
-        from faultmaven.modules.case.domain.models import Case, CaseState
+        from faultmaven.modules.case.domain.models.case import Case
+        from faultmaven.modules.case.domain.models.lifecycle import CaseState
 
         now = datetime.now(timezone.utc)
         return Case(

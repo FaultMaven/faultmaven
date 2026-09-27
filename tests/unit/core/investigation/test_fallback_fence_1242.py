@@ -87,11 +87,8 @@ from faultmaven.modules.case.contracts import (
     ProblemVerification,
     UploadedFile,
 )
-from faultmaven.modules.case.domain.models import (
-    JournalEntry,
-    TurnOutcome,
-    TurnProgress,
-)
+from faultmaven.modules.case.domain.models.documentation import JournalEntry
+from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 from faultmaven.utils.model_context import resolve_model_budget
 from faultmaven.utils.token_estimation import estimate_tokens
 

@@ -20,7 +20,7 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.core.investigation.causal_graph import root_restates_case_frame
+from faultmaven.core.investigation.causal_graph.support import root_restates_case_frame
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
@@ -200,9 +200,9 @@ def test_dilution_fp_bounded_under_realistic_sibling_frames():
     tails). Under the entry-bar semantics this is an upper bound on validation
     DELAY, not a permanent block: an already-validated root is ruled by
     evidence alone, and the frame shrinks as siblings are refuted/retired."""
-    from faultmaven.core.investigation.causal_graph import (
-        _content_tokens,
-        _node_restates,
+    from faultmaven.core.investigation.causal_graph.support import _node_restates
+    from faultmaven.core.investigation.cause_assurance import (
+        content_tokens as _content_tokens,
     )
 
     pack = json.loads(PACK_JSON.read_text(encoding="utf-8"))
@@ -292,7 +292,9 @@ def test_656_disjunction_root_stays_blocked_against_verbose_siblings():
         "Transient network congestion or resource contention causing "
         "intermittent 502 errors"
     )
-    from faultmaven.core.investigation.causal_graph import _content_tokens
+    from faultmaven.core.investigation.cause_assurance import (
+        content_tokens as _content_tokens,
+    )
 
     st = _content_tokens(root.statement)
     covers = [
@@ -323,9 +325,11 @@ def _assert_sibling_held_premises(case, root, *, attached: int, unattached: int)
     elements the fixture intends, in the intended attachment state, and the
     anchors alone do NOT account for the root — so a True verdict can only be
     coming from the sibling arm."""
-    from faultmaven.core.investigation.causal_graph import (
+    from faultmaven.core.investigation.causal_graph.similarity import (
         ROOT_NOVELTY_MIN_FRACTION,
-        _content_tokens,
+    )
+    from faultmaven.core.investigation.cause_assurance import (
+        content_tokens as _content_tokens,
     )
 
     standing = [h for h in case.hypotheses.values() if h.statement]
@@ -378,9 +382,11 @@ def test_attached_sibling_rooted_elsewhere_no_longer_holds_a_real_root():
     # Premises, asserted rather than assumed. ``all()`` over an empty dict is
     # vacuously true, so the COUNT is asserted first; and a root the anchors
     # alone already fail to cover would be released for the wrong reason.
-    from faultmaven.core.investigation.causal_graph import (
+    from faultmaven.core.investigation.causal_graph.similarity import (
         ROOT_NOVELTY_MIN_FRACTION,
-        _content_tokens,
+    )
+    from faultmaven.core.investigation.cause_assurance import (
+        content_tokens as _content_tokens,
     )
 
     assert len(case.hypotheses) == 1
@@ -489,11 +495,13 @@ def test_attribution_is_set_equality_not_a_second_novelty_threshold():
     the union leaves nothing. Set equality holds it; a second threshold would
     not. fm#1140 records seven wrong implementations that passed the whole
     suite — this is the one that looks right."""
-    from faultmaven.core.investigation.causal_graph import (
+    from faultmaven.core.investigation.causal_graph.similarity import (
         _FRAME_OWNER_JACCARD,
         ROOT_NOVELTY_MIN_FRACTION,
-        _content_tokens,
         _mutual_mirror,
+    )
+    from faultmaven.core.investigation.cause_assurance import (
+        content_tokens as _content_tokens,
     )
 
     dominant = (
@@ -544,9 +552,11 @@ def test_symptom_restatement_is_not_excused_by_a_covering_sibling():
     # unless (a) a sibling is actually standing and (b) the anchors alone
     # already account for the root — which is what makes the sibling able to
     # excuse it if the anchors arm is dropped.
-    from faultmaven.core.investigation.causal_graph import (
+    from faultmaven.core.investigation.causal_graph.similarity import (
         ROOT_NOVELTY_MIN_FRACTION,
-        _content_tokens,
+    )
+    from faultmaven.core.investigation.cause_assurance import (
+        content_tokens as _content_tokens,
     )
 
     assert len(case.hypotheses) == 1
@@ -571,10 +581,12 @@ def test_attribution_only_releases_never_holds():
     construction rather than by measurement, and what bounds the blast radius of
     any future edit to it. Swept over the whole shipped corpus under the
     harshest realistic frame."""
-    from faultmaven.core.investigation.causal_graph import (
+    from faultmaven.core.investigation.causal_graph.similarity import (
         ROOT_NOVELTY_MIN_FRACTION,
-        _content_tokens,
-        _node_restates,
+    )
+    from faultmaven.core.investigation.causal_graph.support import _node_restates
+    from faultmaven.core.investigation.cause_assurance import (
+        content_tokens as _content_tokens,
     )
 
     pack = json.loads(PACK_JSON.read_text(encoding="utf-8"))
@@ -643,10 +655,12 @@ def test_a_roots_own_hypothesis_cannot_attribute_the_frame_away():
     elements does not. The owner deliberately does NOT mutually mirror the root,
     so the pin tests the attribution loop rather than the presumptive-owner
     arm."""
-    from faultmaven.core.investigation.causal_graph import (
+    from faultmaven.core.investigation.causal_graph.similarity import (
         _FRAME_OWNER_JACCARD,
-        _content_tokens,
         _mutual_mirror,
+    )
+    from faultmaven.core.investigation.cause_assurance import (
+        content_tokens as _content_tokens,
     )
 
     root = _root(
@@ -713,9 +727,9 @@ def test_population_pin_multi_element_attached_frame():
 
     On the pre-fix engine this case derived ``cause_assurance=no_root`` with
     zero VALIDATED roots."""
-    from faultmaven.core.investigation.causal_graph import (
-        _content_tokens,
-        _node_restates,
+    from faultmaven.core.investigation.causal_graph.support import _node_restates
+    from faultmaven.core.investigation.cause_assurance import (
+        content_tokens as _content_tokens,
     )
 
     symptom = (
@@ -797,9 +811,11 @@ def test_656_disjunction_blocked_when_the_anchor_pre_names_a_disjunct():
     this fix RELEASED. Held now by the two conditions read off the root's FULL
     token set — no rival may contribute root content the attributing claim
     lacks, and the attributing claim must out-cover the problem statement."""
-    from faultmaven.core.investigation.causal_graph import (
+    from faultmaven.core.investigation.causal_graph.similarity import (
         ROOT_NOVELTY_MIN_FRACTION,
-        _content_tokens,
+    )
+    from faultmaven.core.investigation.cause_assurance import (
+        content_tokens as _content_tokens,
     )
 
     case = _case(
@@ -829,9 +845,11 @@ def test_656_disjunction_blocked_when_the_anchor_pre_names_the_only_rival():
     """The same boundary with NO rival standing for the pre-named disjunct, so
     the subsumption condition is vacuous and only the principal-source
     condition can hold it. Without that condition this releases."""
-    from faultmaven.core.investigation.causal_graph import (
+    from faultmaven.core.investigation.causal_graph.similarity import (
         ROOT_NOVELTY_MIN_FRACTION,
-        _content_tokens,
+    )
+    from faultmaven.core.investigation.cause_assurance import (
+        content_tokens as _content_tokens,
     )
 
     case = _case(
@@ -885,12 +903,14 @@ def test_known_limit_lopsided_disjunction_escapes():
     bug") leaves the root 0.643 novel. Attribution is never consulted. Pinned
     with that mechanism asserted, so the pin cannot silently start passing for a
     different reason."""
-    from faultmaven.core.investigation.causal_graph import (
+    from faultmaven.core.investigation.causal_graph.similarity import (
         _FRAME_OWNER_JACCARD,
         ROOT_NOVELTY_MIN_FRACTION,
-        _content_tokens,
         _mutual_mirror,
-        _node_restates,
+    )
+    from faultmaven.core.investigation.causal_graph.support import _node_restates
+    from faultmaven.core.investigation.cause_assurance import (
+        content_tokens as _content_tokens,
     )
 
     case = _case(

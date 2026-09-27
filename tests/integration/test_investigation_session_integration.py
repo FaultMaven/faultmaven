@@ -28,7 +28,9 @@ from faultmaven.infrastructure.persistence.repository_factory import (
     reset_inmemory_investigation_session_repository,
 )
 from faultmaven.models.investigation_session import InvestigationSession, SessionState
-from faultmaven.modules.case.domain.models import Case, CaseState, InquiryData
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import InquiryData
 from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
     SQLiteCaseRepository,
 )

@@ -1272,8 +1272,8 @@ Copilot is already live.
 
 | Concern | Location |
 |---|---|
-| Domain model `EvidenceNeed` + `NeedPurpose`/`NeedState`/`NeedPriority` | `faultmaven/modules/case/domain/models.py` (`EvidenceNeed` ~`:1954`; enums ~`:1901`–`:1941`) |
-| `EvidenceCategory` enum | `faultmaven/modules/case/domain/models.py:1221` |
+| Domain model `EvidenceNeed` + `NeedPurpose`/`NeedState`/`NeedPriority` | `faultmaven/modules/case/domain/models/evidence_needs.py` |
+| `EvidenceCategory` enum | `faultmaven/modules/case/domain/models/evidence.py` |
 | LLM schema `EvidenceNeedUpdate` + stage hooks | `faultmaven/core/investigation/schemas.py:501`; `evidence_need_updates` on Diagnosis/Mitigation/Treatment/General state-updates (~`:1044`–`:1194`); **absent from `InquiryStateUpdate` by design (INV-07)** |
 | `SuggestedFollowUp.evidence_need_id` + validators | `faultmaven/core/investigation/schemas.py:897`–`929` |
 | Engine apply-layer `_apply_evidence_need_updates` | `faultmaven/core/investigation/milestone_engine.py:6310`–`6637` (invoked ~`:6137`) |

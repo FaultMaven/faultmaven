@@ -14,7 +14,7 @@ from faultmaven.modules.case.contracts import (
     InvestigationProgress,
     InvestigationStage,
 )
-from faultmaven.modules.case.domain.models import CauseState
+from faultmaven.modules.case.domain.models.progress import CauseState
 
 from .blocks import (
     _DIAGNOSTIC_REASONING_BLOCK,

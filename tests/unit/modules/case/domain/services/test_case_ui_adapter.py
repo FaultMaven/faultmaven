@@ -20,24 +20,29 @@ from faultmaven.models.case_ui import (
     CaseUIResponse_Investigating,
     CaseUIResponse_Resolved,
 )
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
+    RootCauseConclusion,
+)
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
+    UploadedFile,
+)
+from faultmaven.modules.case.domain.models.hypothesis import (
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
+)
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import (
     InquiryData,
     ProblemConfirmation,
-    RootCauseConclusion,
-    Solution,
-    SolutionType,
-    UploadedFile,
 )
+from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
 from faultmaven.modules.case.domain.services.case_ui_adapter import (
     transform_case_for_ui,
 )
@@ -446,11 +451,8 @@ class TestTransformInvestigating:
     def test_progress_transparency_when_stalled(self):
         from datetime import datetime, timezone
 
-        from faultmaven.modules.case.domain.models import (
-            TurnOutcome,
-            TurnProgress,
-            VerificationStatus,
-        )
+        from faultmaven.modules.case.domain.models.progress import VerificationStatus
+        from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 
         case = _make_investigating_case()
         # Phase 3: the persisted verification status is surfaced alongside the
@@ -490,11 +492,8 @@ class TestTransformInvestigating:
     def test_progress_transparency_carries_cause_assurance(self):
         from datetime import datetime, timezone
 
-        from faultmaven.modules.case.domain.models import (
-            CauseAssuranceGrade,
-            TurnOutcome,
-            TurnProgress,
-        )
+        from faultmaven.modules.case.domain.models.progress import CauseAssuranceGrade
+        from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 
         case = _make_investigating_case()
         # The persisted assurance grade rides the same surfacing object so the
@@ -534,12 +533,11 @@ class TestTransformInvestigating:
         pending in the CaseUIResponse."""
         from datetime import datetime, timezone
 
-        from faultmaven.modules.case.domain.models import (
+        from faultmaven.modules.case.domain.models.progress import (
             CauseState,
             InvestigationProgress,
-            TurnOutcome,
-            TurnProgress,
         )
+        from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 
         case = _make_investigating_case()
         # symptom verified AND cause identified (engine-derived); only

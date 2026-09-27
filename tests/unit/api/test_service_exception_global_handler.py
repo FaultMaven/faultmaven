@@ -357,7 +357,7 @@ _ALLOWED_ARMS: dict[tuple[str, str, str], str] = {
         "ServiceException",
     ): "Repository reads only.",
     (
-        "faultmaven/modules/case/api/routes.py",
+        "faultmaven/modules/case/api/title_generation.py",
         "_generate_and_persist_title",
         "ServiceException",
     ): (
@@ -387,6 +387,7 @@ _ALLOWED_ARMS: dict[tuple[str, str, str], str] = {
 #: fails here rather than making the inventory silently smaller.
 _KNOWN_ARM_FILES = {
     "faultmaven/modules/case/api/routes.py",
+    "faultmaven/modules/case/api/title_generation.py",
     "faultmaven/modules/report/api/routes.py",
 }
 

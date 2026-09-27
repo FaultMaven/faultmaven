@@ -242,7 +242,7 @@ def test_every_mode_that_states_the_rule_also_states_the_definition(processing_m
         get_prompt_for_case,
     )
     from faultmaven.modules.case.contracts import CaseState, InquiryData
-    from faultmaven.modules.case.domain.models import Case
+    from faultmaven.modules.case.domain.models.case import Case
 
     case = Case(
         case_id="case_aabb11223344",

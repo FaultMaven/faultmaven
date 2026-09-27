@@ -57,7 +57,7 @@ from faultmaven.modules.case.contracts import (
     InquiryData,
     UploadedFile,
 )
-from faultmaven.modules.case.domain.models import Case
+from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.report.domain.services.report_generation_service import (
     ReportGenerationService,
 )

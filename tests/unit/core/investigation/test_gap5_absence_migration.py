@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from faultmaven.core.investigation.milestone_engine import CATEGORY_MILESTONE_MAP
-from faultmaven.modules.case.domain.models import EvidenceCategory
+from faultmaven.modules.case.domain.models.evidence import EvidenceCategory
 
 _LEGACY = ("mitigation_evidence", "solution_evidence")
 _QUARTET = {
@@ -104,11 +104,8 @@ from faultmaven.core.investigation.terminal_transitions import (  # noqa: E402
     assess_closure_readiness,
     assess_resolution_readiness,
 )
-from faultmaven.modules.case.domain.models import (  # noqa: E402
-    Case,
-    Evidence,
-    EvidenceSourceType,
-)
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.evidence import Evidence, EvidenceSourceType
 
 
 def _ev(category: EvidenceCategory, idx: int = 1) -> Evidence:

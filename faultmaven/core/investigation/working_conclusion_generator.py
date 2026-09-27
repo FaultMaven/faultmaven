@@ -28,7 +28,7 @@ from faultmaven.modules.case.contracts import (
     InvestigationMomentum,
     WorkingConclusion,
 )
-from faultmaven.modules.case.domain.models import CauseState
+from faultmaven.modules.case.domain.models.progress import CauseState
 
 #: Link count at or above which a hypothesis stops reading as thinly
 #: supported. An editorial band, NOT a claim about what a case requires.

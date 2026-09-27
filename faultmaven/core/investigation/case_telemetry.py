@@ -96,7 +96,7 @@ from typing import TYPE_CHECKING, Any, Mapping
 from faultmaven.core.investigation.kb_push import visible_kb_context
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from faultmaven.modules.case.domain.models import Case
+    from faultmaven.modules.case.domain.models.case import Case
 
 #: Bumped whenever a field changes meaning or is removed. The consumer is
 #: explicitly NOT app-specific, so the payload is a contract; adding a field is
@@ -536,7 +536,7 @@ def _assessment(case: "Case") -> dict[str, Any]:
         is_progress_stalled,
         work_gate_passed,
     )
-    from faultmaven.modules.case.domain.models import CauseState
+    from faultmaven.modules.case.domain.models.progress import CauseState
 
     p = case.progress
     seam_divergence = p.cause_assurance == CauseAssuranceGrade.CONFIRMED and (

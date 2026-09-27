@@ -40,7 +40,10 @@ from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
     _published_source_type,
 )
-from faultmaven.modules.case.domain.models import EvidenceSourceType, UploadedFile
+from faultmaven.modules.case.domain.models.evidence import (
+    EvidenceSourceType,
+    UploadedFile,
+)
 
 from .conftest import MockMilestoneEngine, RecordingCaseRepository, create_sample_case
 from .test_file_reclassification_intent import (
@@ -595,7 +598,12 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
         "other",
         1,
     ),
-    ("modules/case/api/routes.py", "reclassify_evidence", "get", "body"): ("other", 1),
+    (
+        "modules/case/api/routes.py",
+        "reclassify_evidence",
+        "get",
+        "body",
+    ): ("other", 1),
     (
         "modules/agent/tools/reclassify_evidence_tool.py",
         "ReclassifyEvidenceTool.execute_with_context",

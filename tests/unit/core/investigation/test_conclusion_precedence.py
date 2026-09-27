@@ -21,10 +21,10 @@ from unittest.mock import patch
 
 import pytest
 
-from faultmaven.core.investigation.causal_graph import (
+from faultmaven.core.investigation.causal_graph.disconfirmation import (
     _attach_engine_refutation,
-    seed_problem_node,
 )
+from faultmaven.core.investigation.causal_graph.ingestion import seed_problem_node
 from faultmaven.core.investigation.cause_assurance import ENGINE_RCC_AUTHOR
 from faultmaven.core.investigation.milestone_engine import (
     _recompute_assessment_state,
@@ -543,7 +543,7 @@ def test_replaced_conclusion_is_not_restored_when_the_root_demotes():
 
 def _inversions():
     return patch(
-        "faultmaven.core.investigation.causal_graph.rcc_precedence_inversion_total"
+        "faultmaven.core.investigation.causal_graph.rcc.rcc_precedence_inversion_total"
     )
 
 

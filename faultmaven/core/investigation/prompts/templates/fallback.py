@@ -9,7 +9,7 @@ from faultmaven.core.investigation.prompts.context_builder import (
 )
 from faultmaven.core.investigation.prompts.fence import PromptFence, render_fenced
 from faultmaven.modules.case.contracts import Case, CaseState
-from faultmaven.modules.case.domain.models import CauseState
+from faultmaven.modules.case.domain.models.progress import CauseState
 from faultmaven.utils.model_context import MIN_PROMPT_BUDGET
 
 logger = logging.getLogger(__name__)

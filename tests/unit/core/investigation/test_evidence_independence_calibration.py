@@ -21,11 +21,13 @@ If a knob value changes, these pins say exactly which behavior classes moved.
 
 import pytest
 
-from faultmaven.core.investigation.causal_graph import (
+from faultmaven.core.investigation.causal_graph.similarity import _mutual_mirror
+from faultmaven.core.investigation.causal_graph.support import (
     _EVIDENCE_MIRROR_JACCARD,
-    _content_tokens,
     _independent_causal_support_count,
-    _mutual_mirror,
+)
+from faultmaven.core.investigation.cause_assurance import (
+    content_tokens as _content_tokens,
 )
 
 pytestmark = pytest.mark.unit

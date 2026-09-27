@@ -30,7 +30,7 @@ from faultmaven.modules.case.contracts import (
     InquiryData,
     UploadedFile,
 )
-from faultmaven.modules.case.domain.models import Case
+from faultmaven.modules.case.domain.models.case import Case
 
 _EV_COUNTER = 0
 

@@ -24,7 +24,7 @@ from fastapi import HTTPException
 
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.tenant_context import set_current_enterprise_id
-from faultmaven.modules.case.domain.models import Case
+from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.owned_models.report import (
     CaseReport,
     ReportStatus,

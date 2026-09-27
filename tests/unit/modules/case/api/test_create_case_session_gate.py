@@ -29,7 +29,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from faultmaven.exceptions import ServiceException, SessionStoreException
-from faultmaven.modules.case.domain.models import Case
+from faultmaven.modules.case.domain.models.case import Case
 
 # Both marks at module level. The vacuity controls are not optional coverage —
 # under `pytest -m security` a lone refusal assertion passes for a route that

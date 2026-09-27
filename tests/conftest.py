@@ -1250,7 +1250,8 @@ def test_config():
 @pytest.fixture
 def sample_case():
     """Sample case for testing case persistence functionality."""
-    from faultmaven.modules.case.domain.models import Case, CaseState
+    from faultmaven.modules.case.domain.models.case import Case
+    from faultmaven.modules.case.domain.models.lifecycle import CaseState
 
     return Case(
         case_id="case_test12345678",
@@ -1302,7 +1303,7 @@ def sample_case_summary():
     from datetime import datetime, timezone
 
     from faultmaven.models.api_models import CaseSummary
-    from faultmaven.modules.case.domain.models import CaseState
+    from faultmaven.modules.case.domain.models.lifecycle import CaseState
 
     return CaseSummary(
         case_id="case_test12345678",
@@ -1416,7 +1417,8 @@ def case_search_request_data():
 @pytest.fixture
 def multiple_cases():
     """Multiple sample cases for testing list and search operations."""
-    from faultmaven.modules.case.domain.models import Case, CaseState
+    from faultmaven.modules.case.domain.models.case import Case
+    from faultmaven.modules.case.domain.models.lifecycle import CaseState
 
     cases = []
     for i in range(5):
@@ -1439,7 +1441,8 @@ def case_with_conversation():
     from datetime import datetime, timedelta, timezone
     from uuid import uuid4
 
-    from faultmaven.modules.case.domain.models import Case, CaseState
+    from faultmaven.modules.case.domain.models.case import Case
+    from faultmaven.modules.case.domain.models.lifecycle import CaseState
 
     now = datetime.now(timezone.utc)
     case_id = "case_conversation1"

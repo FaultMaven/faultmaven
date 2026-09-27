@@ -128,7 +128,7 @@ class JournalEntryOutput(BaseModel):
         return v
 ```
 
-> The LLM-facing `JournalEntryOutput` schema truncates over-length content rather than rejecting it, because structured-output rejections from a single chatty turn would corrupt the whole response. The persisted `JournalEntry` domain model in `modules/case/domain/models.py` keeps a strict `max_length=200` — by the time content lands there it has already been normalized.
+> The LLM-facing `JournalEntryOutput` schema truncates over-length content rather than rejecting it, because structured-output rejections from a single chatty turn would corrupt the whole response. The persisted `JournalEntry` domain model in `modules/case/domain/models/documentation.py` keeps a strict `max_length=200` — by the time content lands there it has already been normalized.
 
 ### Prompt Injection
 
@@ -278,8 +278,8 @@ The core feature. Model change, schema change, context builder change, and promp
 
 | Change | File | Status |
 |---|---|---|
-| `JournalEntry` model | `modules/case/domain/models.py` | Done |
-| `investigation_journal` field on Case | `modules/case/domain/models.py` | Done |
+| `JournalEntry` model | `modules/case/domain/models/documentation.py` | Done |
+| `investigation_journal` field on Case | `modules/case/domain/models/case.py` | Done |
 | Export from contracts | `modules/case/contracts.py` | Done |
 | `JournalEntryOutput` in LLM schema | `core/investigation/schemas.py` | Done |
 | Journal extraction in milestone engine | `core/investigation/milestone_engine.py` | Done |
@@ -307,7 +307,7 @@ rather than forcing an invented refutation reason.
 
 | Change | File | Status |
 |---|---|---|
-| `refutation_reason` on Hypothesis (+ `@model_validator` pair check) | `modules/case/domain/models.py` | Done |
+| `refutation_reason` on Hypothesis (+ `@model_validator` pair check) | `modules/case/domain/models/hypothesis.py` | Done |
 | Schema field on `HypothesisUpdate` (dormant: no consumer yet, future-ready) | `core/investigation/schemas.py` | Done |
 | Context builder: inline rendering of refutation reason under REFUTED hypotheses | `core/investigation/prompts/context_builder.py` | Done |
 | Prompt: REFUTED-vs-RETIRED distinction + pair-integrity requirement | `core/investigation/prompts/templates/diagnosis.py` | Done |

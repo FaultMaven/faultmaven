@@ -26,17 +26,19 @@ from faultmaven.core.investigation.terminal_transitions import (
     confirm_pending_transition,
     propose_transition,
 )
-from faultmaven.modules.case.domain.models import (
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import (
     LEGAL_TRANSITIONS,
-    Case,
     CaseAction,
     CaseState,
-    InquiryData,
-    InvestigationProgress,
-    KnowledgeResolution,
-    ProblemVerification,
     is_valid_action,
 )
+from faultmaven.modules.case.domain.models.problem import (
+    InquiryData,
+    KnowledgeResolution,
+    ProblemVerification,
+)
+from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.services.case_action_manager import (
     USER_SELECTABLE_ACTIONS,
     earned_edge_refusal,
@@ -473,7 +475,7 @@ class TestINV05_StageGatesAutoFireWithoutHandshake:
         """A fresh INVESTIGATING case starts in DIAGNOSIS. No gate flags
         set → ``current_stage`` returns DIAGNOSIS (the default).
         """
-        from faultmaven.modules.case.domain.models import InvestigationStage
+        from faultmaven.modules.case.domain.models.problem import InvestigationStage
 
         case = _make_investigating_case()
         assert case.current_stage == InvestigationStage.DIAGNOSIS
@@ -486,10 +488,8 @@ class TestINV05_StageGatesAutoFireWithoutHandshake:
         round-trip; no pending_transition is written; no user-confirmation
         turn is required. Asymmetric with INV-03's disposition handshake.
         """
-        from faultmaven.modules.case.domain.models import (
-            InvestigationStage,
-            MitigationRecord,
-        )
+        from faultmaven.modules.case.domain.models.problem import InvestigationStage
+        from faultmaven.modules.case.domain.models.progress import MitigationRecord
 
         case = _make_investigating_case()
         assert case.current_stage == InvestigationStage.DIAGNOSIS
@@ -514,7 +514,7 @@ class TestINV05_StageGatesAutoFireWithoutHandshake:
         to TREATMENT immediately. Same auto-fire semantics as
         mitigation_accepted; same absence of handshake artifacts.
         """
-        from faultmaven.modules.case.domain.models import InvestigationStage
+        from faultmaven.modules.case.domain.models.problem import InvestigationStage
 
         case = _make_investigating_case()
         case.progress.solution_accepted = True
@@ -530,7 +530,7 @@ class TestINV05_StageGatesAutoFireWithoutHandshake:
         future refactor introduces a handshake into stage computation,
         this test breaks and INV-05's asymmetry with INV-03 collapses.
         """
-        from faultmaven.modules.case.domain.models import InvestigationProgress
+        from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 
         # The progress-level computed property
         source = inspect.getsource(

@@ -28,7 +28,7 @@ from faultmaven.core.investigation.prompts.templates.fallback import (
     get_fallback_prompt_for_case,
 )
 from faultmaven.exceptions import LLMException  # noqa: E402
-from faultmaven.modules.case.domain.models import JournalEntry  # noqa: E402
+from faultmaven.modules.case.domain.models.documentation import JournalEntry
 
 PROVIDER, MODEL = "openai", "gpt-4"
 FILE_ID = "file_aabb12345678"

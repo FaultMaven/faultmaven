@@ -29,12 +29,12 @@ from dataclasses import dataclass
 from datetime import datetime, time, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from faultmaven.core.investigation.causal_graph import (
+from faultmaven.core.investigation.causal_graph.clusters import mece_contested_root_ids
+from faultmaven.core.investigation.causal_graph.support import (
     BLOCK_REASON_COUNT,
     BLOCK_REASON_HEDGED,
     BLOCK_REASON_MIRROR,
     BLOCK_REASON_RESTATEMENT,
-    mece_contested_root_ids,
     restatement_held_root_ids,
     root_support_block_reasons,
 )
@@ -70,7 +70,7 @@ from faultmaven.modules.case.contracts import (
     is_server_written_assistant_row,
     is_server_written_user_row,
 )
-from faultmaven.modules.case.domain.models import CauseState
+from faultmaven.modules.case.domain.models.progress import CauseState
 
 
 # =============================================================================
