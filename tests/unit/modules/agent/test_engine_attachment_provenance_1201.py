@@ -28,8 +28,8 @@ from datetime import datetime, timezone
 import pytest
 
 from faultmaven.modules.agent.domain.services.investigation_service.attachments import (
-    _PreprocessedAttachment,
     _engine_attachment_metadata,
+    _PreprocessedAttachment,
 )
 from faultmaven.modules.case.contracts import UploadedFile
 
