@@ -12,7 +12,7 @@ it, and it owns no persistence of its own — anything it stores goes through th
 Case module's contracts.
 
 It exposes **no HTTP routes**. Investigation turns arrive through the Case
-module's turn endpoint and are driven by `core/investigation/milestone_engine.py`.
+module's turn endpoint and are driven by `core/investigation/milestone_engine/`.
 The agent-execution endpoints (`POST /cases/{id}/sessions/{sid}/execute`, with
 its SSE streaming variant) were removed along with the `AgentOrchestrationService`
 they drove; the milestone engine had already taken over that work, and nothing
