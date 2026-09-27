@@ -334,17 +334,17 @@ _BYPASSING = {"ServiceException", "LLMException", "FaultMavenException"}
 #: not re-point an entry, and a changed ``except`` re-opens the question.
 _ALLOWED_ARMS: dict[tuple[str, str, str], str] = {
     (
-        "faultmaven/modules/case/api/routes.py",
+        "faultmaven/modules/case/api/routes/__init__.py",
         "create_case",
         "(ServiceException, SessionException)",
     ): "Wraps only `session_service.get_session` — the ownership gate. 503.",
     (
-        "faultmaven/modules/case/api/routes.py",
+        "faultmaven/modules/case/api/routes/__init__.py",
         "resume_case_in_session",
         "(ServiceException, SessionException)",
     ): "Wraps only `session_service.get_session` — the ownership gate. 503.",
     (
-        "faultmaven/modules/case/api/routes.py",
+        "faultmaven/modules/case/api/routes/__init__.py",
         "create_case",
         "ServiceException",
     ): (
@@ -352,12 +352,12 @@ _ALLOWED_ARMS: dict[tuple[str, str, str], str] = {
         "filled later by `_generate_and_persist_title`, not here."
     ),
     (
-        "faultmaven/modules/case/api/routes.py",
+        "faultmaven/modules/case/api/routes/__init__.py",
         "list_cases",
         "ServiceException",
     ): "Repository reads only.",
     (
-        "faultmaven/modules/case/api/routes.py",
+        "faultmaven/modules/case/api/routes/title_generation.py",
         "_generate_and_persist_title",
         "ServiceException",
     ): (
@@ -386,7 +386,8 @@ _ALLOWED_ARMS: dict[tuple[str, str, str], str] = {
 #: to live there today. A rename that drops one out of the derivation below
 #: fails here rather than making the inventory silently smaller.
 _KNOWN_ARM_FILES = {
-    "faultmaven/modules/case/api/routes.py",
+    "faultmaven/modules/case/api/routes/__init__.py",
+    "faultmaven/modules/case/api/routes/title_generation.py",
     "faultmaven/modules/report/api/routes.py",
 }
 

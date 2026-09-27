@@ -595,7 +595,12 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
         "other",
         1,
     ),
-    ("modules/case/api/routes.py", "reclassify_evidence", "get", "body"): ("other", 1),
+    (
+        "modules/case/api/routes/__init__.py",
+        "reclassify_evidence",
+        "get",
+        "body",
+    ): ("other", 1),
     (
         "modules/agent/tools/reclassify_evidence_tool.py",
         "ReclassifyEvidenceTool.execute_with_context",

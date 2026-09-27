@@ -188,8 +188,13 @@ class TestNoServiceLocatorInApiLayer:
         import glob
         import os
 
-        module_routes = glob.glob("faultmaven/modules/*/api/routes.py") + glob.glob(
-            "faultmaven/modules/*/api/*.py"
+        module_routes = (
+            glob.glob("faultmaven/modules/*/api/routes.py")
+            + glob.glob("faultmaven/modules/*/api/*.py")
+            # fm#1707: a converted `routes.py` becomes a `routes/` package
+            # (case: `routes/__init__.py` + `routes/title_generation.py`) —
+            # one directory deeper than the flat globs above reach.
+            + glob.glob("faultmaven/modules/*/api/routes/*.py")
         )
 
         for route_file in module_routes:
