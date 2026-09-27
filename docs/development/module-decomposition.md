@@ -215,6 +215,40 @@ python scripts/refactor/audit_seams.py --repo WT --spec spec.json --report r.jso
 
 **Delete a delegate shim rather than moving it.** A method whose body only calls a module function, kept "because callers and tests target it", is a compatibility shim. Point its callers at the function.
 
+## 10. Splitting a long function body
+
+Sections 1–9 move whole definitions. A method whose size is its own body needs Extract Method: runs of its statements become named **phases**. A wrong cut changes behaviour without changing any statement: an input bound on only some paths, an output left unbound on one, a read that now resolves to a global. So every cut is checked statically, and the whole split is proven by re-inlining.
+
+The phase rules:
+
+- **Two shapes.** A phase is a run of consecutive statements of one statement list, at any nesting depth.
+  - **STRAIGHT** contains no `return`. The owner calls `a, b = [await] self._phase(x=x, ...)`, and the phase ends with `return a, b`.
+  - **TAIL** is a suffix of its statement list on which every path ends in `return` or `raise`. The owner calls `return [await] self._phase(...)` where the suffix began.
+
+  There is no reply-or-continue protocol. A block that sometimes returns and sometimes falls through keeps its dispatch (the `if` tests and the fall-through code) in the owner; only its terminating branches become TAIL phases.
+- **Inputs** are the names the run reads before binding them; an augmented assignment `x += a` reads `x`. Each must be bound on every path into the phase. Parameter names equal argument names.
+- **Outputs** are the names the run assigns that are read after it. Each must be assigned on every fall-through path of the phase, or already bound on entry, in which case it is also an input so that its entry value survives the paths that do not re-bind it. An `except ... as e` name is never an output.
+- **What stays in the owner.** A phase never assigns a name that an `except`/`finally` handler or a closure outside it reads. Also refused inside a phase: `nonlocal`, `global`, `yield`, `locals()`, `vars()`, `del`, a `break` or `continue` that escapes it, and a read of a name bound only later in the function.
+
+The phase call replaces its statements in place, inside the same `try`, so exceptions propagate unchanged.
+
+The tools, in order:
+
+```bash
+python scripts/refactor/phase_flow.py --file F --func Class.method --outline [--depth N]
+python scripts/refactor/phase_flow.py --file F --func Class.method --phase NAME:FIRST-LAST [...]
+python scripts/refactor/extract_phase.py --file F --func Class.method --phase NAME:FIRST-LAST [...] --apply
+python scripts/refactor/verify_inline.py --base BASE_FILE --head HEAD_FILE --func Class.method
+```
+
+- **`phase_flow.py`** prints the method's statement ranges (`--outline`), then reports each candidate phase's shape, inputs and outputs. It refuses any phase the rules above reject, and overlapping phases.
+- **`extract_phase.py`** is step A. Each phase becomes a private method of the same class with keyword-only parameters, its body moved verbatim, and the owner gets the call. It uses `phase_flow.py`'s analysis, so it refuses the same phases. Run black, then replace each placeholder docstring with one line saying what the phase does.
+- **`verify_inline.py`** is the step-A proof, and is independent of `extract_phase.py`. It substitutes every phase body back at its call site and requires the base method's AST exactly. It then checks the call contract (arguments equal parameters, call targets equal returned outputs, a call is awaited exactly when its method is async, a TAIL call is returned), and the bindings: a base local that a phase reads before binding must be a parameter, a STRAIGHT phase's returned names must be bound on every path or be parameters, and no base local resolves as a global. Those binding checks catch splits whose re-inline is AST-equal but which raise at run time.
+
+**Step B** moves the phase methods out as module functions with §9's tools. A phase that calls back into the owner stays a method: `extract_members.py` refuses to move it. Phases are functions, not collaborators, because each has one caller and holds no state. Step B also changes the `logger` name on records emitted from a moved phase to the new module's `__name__`; check that nothing keys on the old name.
+
+**Source-reading tests.** A test that reads `inspect.getsource(<owner>)` and asserts that a call is present, or that one call precedes another, finds the call moved into a phase. Point a presence check at the phase that now holds the call. For an order check across phases, never concatenate sources, which changes the order: rebuild the owner by re-inlining every phase at its call site, and assert on that. Prove each re-pointed test with a planted failure, as in §5.
+
 ## Checking CI before building on a SHA
 
 ```bash
