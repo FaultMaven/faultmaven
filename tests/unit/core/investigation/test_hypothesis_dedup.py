@@ -25,13 +25,13 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.core.investigation import milestone_engine
 from faultmaven.core.investigation.causal_graph import (
     find_duplicate_hypothesis,
     hypothesis_statements_duplicate,
 )
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine import engine as milestone_engine
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import (
     HypothesisToAdd,
     HypothesisUpdate,

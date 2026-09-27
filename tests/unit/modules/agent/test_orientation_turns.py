@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, create_autospec
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.infrastructure.protection.tenant_turn_cap import (
     SUBJECT_ACCOUNT,

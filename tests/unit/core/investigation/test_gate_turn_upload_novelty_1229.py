@@ -41,9 +41,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import faultmaven.core.investigation.milestone_engine as milestone_engine_module
 import faultmaven.core.investigation.prompts.context_builder as context_builder
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine import engine as engine_module
+from faultmaven.core.investigation.milestone_engine import progress as progress_module
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
 from faultmaven.modules.case.domain.models import (
     Case,
@@ -574,7 +575,7 @@ class TestTheStoredTurnAgreesWithTheReportedTurn:
         # deterministic write through the shared ``score_progress``, which calls
         # ``check_if_progress_made`` at module scope. Patching the method here
         # would silently observe nothing and make this guard vacuous.
-        original = milestone_engine_module.check_if_progress_made
+        original = engine_module.check_if_progress_made
 
         def _spy(metadata):
             scored.append(dict(metadata))
@@ -582,12 +583,10 @@ class TestTheStoredTurnAgreesWithTheReportedTurn:
 
         # Since fm#1707 the predicate has two readers: ``score_progress`` in the
         # ``progress`` submodule, and the engine's ``_check_if_progress_made``
-        # delegate through the package namespace. Spy both, as the single
-        # module-level patch did before the split.
-        monkeypatch.setattr(milestone_engine_module, "check_if_progress_made", _spy)
-        monkeypatch.setattr(
-            milestone_engine_module.progress, "check_if_progress_made", _spy
-        )
+        # delegate, which reads its own module-level import. Spy both, as the
+        # single module-level patch did before the split.
+        monkeypatch.setattr(engine_module, "check_if_progress_made", _spy)
+        monkeypatch.setattr(progress_module, "check_if_progress_made", _spy)
 
         await _gate_turn(engine, case, [_novel()])
 

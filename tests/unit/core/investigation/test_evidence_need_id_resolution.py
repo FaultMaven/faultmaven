@@ -32,7 +32,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 
 
 def _make_engine() -> MilestoneEngine:
@@ -188,7 +188,7 @@ class TestDropCounterObservability:
 
         mock_counter = MagicMock()
         with patch(
-            "faultmaven.core.investigation.milestone_engine."
+            "faultmaven.core.investigation.milestone_engine.engine."
             "evidence_need_id_dropped_total",
             mock_counter,
         ):
@@ -205,7 +205,7 @@ class TestDropCounterObservability:
 
         mock_counter = MagicMock()
         with patch(
-            "faultmaven.core.investigation.milestone_engine."
+            "faultmaven.core.investigation.milestone_engine.engine."
             "evidence_need_id_dropped_total",
             mock_counter,
         ):
@@ -228,7 +228,7 @@ class TestDropCounterObservability:
 
         mock_counter = MagicMock()
         with patch(
-            "faultmaven.core.investigation.milestone_engine."
+            "faultmaven.core.investigation.milestone_engine.engine."
             "evidence_need_id_dropped_total",
             mock_counter,
         ):
@@ -329,7 +329,9 @@ class TestBothCallSitesUseFlattener:
     def test_both_seams_call_flatten_follow_ups(self):
         import inspect
 
-        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
 
         src_terminal = inspect.getsource(MilestoneEngine._process_terminal_qa)
         src_turn = inspect.getsource(MilestoneEngine._process_turn_impl)

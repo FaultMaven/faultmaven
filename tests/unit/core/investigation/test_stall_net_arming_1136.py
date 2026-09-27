@@ -17,13 +17,13 @@ from datetime import datetime, timezone
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import (
-    MilestoneEngine,
+from faultmaven.core.investigation.milestone_engine.affordances import (
     _restates_standing_evidence,
     _restates_standing_solution,
     _treatment_blocked_pending,
     engine_owned_affordances,
 )
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import EvidenceToAdd, SolutionToAdd
 from faultmaven.core.investigation.turn_outcome import determine_turn_outcome
 from faultmaven.core.investigation.verification_status import (
@@ -374,7 +374,7 @@ def test_a_progressing_grounded_case_gets_no_handoff():
 
 def test_the_three_status_branches_are_mutually_exclusive():
     """All three read the same join, and a case has exactly one status."""
-    from faultmaven.core.investigation.milestone_engine import (
+    from faultmaven.core.investigation.milestone_engine.affordances import (
         _hypothesis_vacuum_pending,
         _insufficient_evidence_handoff_pending,
     )

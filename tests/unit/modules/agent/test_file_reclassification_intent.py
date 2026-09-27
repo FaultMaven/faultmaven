@@ -1972,7 +1972,7 @@ def test_every_reader_of_a_stored_entry_tolerates_any_shape():
     liveness = "core/investigation/suggestion_liveness.py"
     resolver = "core/investigation/intent_resolver.py"
     service = "modules/agent/domain/services/investigation_service.py"
-    engine = "core/investigation/milestone_engine/__init__.py"
+    engine = "core/investigation/milestone_engine/engine.py"
 
     assert set(readers) == {
         # ---- stored-entry readers. Shape-tolerant via the leaves. ----------

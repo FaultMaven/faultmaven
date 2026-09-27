@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _has_searchable_material,
     _should_force_tools,
 )

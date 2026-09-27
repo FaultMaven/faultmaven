@@ -142,10 +142,12 @@ class TestAnnotation:
         to the wrapper or the cap re-checks this rather than silently
         invalidating it.
         """
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
+        from faultmaven.core.investigation.milestone_engine.text_budget import (
             KB_QA_RELAY_PREFIX,
             KB_QA_RELAY_SUFFIX,
-            MilestoneEngine,
         )
 
         budget = (
@@ -175,7 +177,9 @@ class TestAnnotation:
         an answer flagged MAX_TOKENS filled its budget by definition, so it is
         always over the relay allowance.
         """
-        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
         from faultmaven.models.interfaces import ToolResult
 
         # ~8060 chars: a full 2000-token answer at the 4.03 chars/token

@@ -27,10 +27,14 @@ from faultmaven.core.investigation.case_telemetry import (
 from faultmaven.core.investigation.coverage_trust import CALLER_DECLARED_COVERAGE_SOURCE
 from faultmaven.core.investigation.intent_resolver import IntentResolver
 from faultmaven.core.investigation.kb_push import visible_kb_context
-from faultmaven.core.investigation.milestone_engine import (
-    MilestoneEngine,
-    _evidence_coverage,
+from faultmaven.core.investigation.milestone_engine.affordances import (
     gate1_statement_is_confirmable,
+)
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.milestone_inference import (
+    _evidence_coverage,
+)
+from faultmaven.core.investigation.milestone_engine.progress import (
     record_promptless_turn,
     score_progress,
     summarize_for_turn_record,

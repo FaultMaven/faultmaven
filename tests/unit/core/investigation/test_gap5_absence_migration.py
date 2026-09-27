@@ -16,7 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import CATEGORY_MILESTONE_MAP
+from faultmaven.core.investigation.milestone_engine.stage_gates import (
+    CATEGORY_MILESTONE_MAP,
+)
 from faultmaven.modules.case.domain.models import EvidenceCategory
 
 _LEGACY = ("mitigation_evidence", "solution_evidence")

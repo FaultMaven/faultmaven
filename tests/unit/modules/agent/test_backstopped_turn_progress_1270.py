@@ -33,7 +33,7 @@ from faultmaven.core.investigation.case_telemetry import (
     TELEMETRY_LOGGER_NAME,
     collect_progress_arms,
 )
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.models.api import DataType
 from faultmaven.modules.agent.domain.services.investigation_service import (
@@ -291,7 +291,9 @@ def test_the_backfill_does_not_take_back_a_progress_true(sample_case):
 
     # Positive control: the arms alone say False, so a non-monotone write-back
     # would visibly clobber and this test would not be measuring monotonicity.
-    from faultmaven.core.investigation.milestone_engine import check_if_progress_made
+    from faultmaven.core.investigation.milestone_engine.progress import (
+        check_if_progress_made,
+    )
 
     assert check_if_progress_made(metadata) is False
 

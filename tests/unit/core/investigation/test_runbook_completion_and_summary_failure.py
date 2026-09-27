@@ -36,7 +36,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.core.investigation.cause_assurance import CauseAssuranceGrade
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
@@ -301,7 +301,7 @@ class TestAckTurnFollowUpsOnFailure:
     """G2: ``_select_ack_follow_ups`` returns regen affordance on failure."""
 
     def test_success_resolved_returns_minimal_suggestions(self, monkeypatch):
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_replies import (
             _resolved_ack_suggestions,
             _select_ack_follow_ups,
         )
@@ -319,7 +319,7 @@ class TestAckTurnFollowUpsOnFailure:
         assert follow_ups == _resolved_ack_suggestions(case)
 
     def test_success_closed_returns_empty(self):
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_replies import (
             _select_ack_follow_ups,
         )
 
@@ -332,7 +332,7 @@ class TestAckTurnFollowUpsOnFailure:
     def test_failure_resolved_includes_regen_and_runbook(self, monkeypatch):
         """G2: failed RESOLVED summary → ack-turn offers regen + runbook
         (runbook because the cause is CONFIRMED — #695 Defect A)."""
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_replies import (
             _resolved_suggestions,
             _select_ack_follow_ups,
         )
@@ -355,7 +355,7 @@ class TestAckTurnFollowUpsOnFailure:
         Failure can only happen when generation was attempted; for CLOSED
         that means the substance gate already PASSED.
         """
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_replies import (
             _select_ack_follow_ups,
         )
 
@@ -391,7 +391,7 @@ class TestRunbookCreationFollowUps:
         on the resulting draft in the Dashboard Drafts editor, not via
         another chat click.
         """
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_replies import (
             _resolved_suggestions,
         )
 
@@ -1058,7 +1058,9 @@ class TestCaseConversionUsesFactory:
     """
 
     def test_chat_path_uses_from_case_factory(self):
-        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
 
         source = inspect.getsource(MilestoneEngine._handle_runbook_creation)
         assert "CaseConversionRequest.from_case(" in source, (
@@ -1070,7 +1072,9 @@ class TestCaseConversionUsesFactory:
     def test_chat_path_has_no_inline_extraction_markers(self):
         """Pins that the cleanup stayed clean — old inline-extraction
         markers must not return."""
-        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
 
         source = inspect.getsource(MilestoneEngine._handle_runbook_creation)
         forbidden_markers = [

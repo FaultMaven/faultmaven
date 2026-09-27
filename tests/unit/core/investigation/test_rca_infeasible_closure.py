@@ -15,7 +15,7 @@ mitigation_verified, so both always apply and the more informative label wins.
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _apply_stage_gate_side_effects,
     _close_confirmation_suggestions,
 )

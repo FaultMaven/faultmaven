@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.engine import (
     MilestoneEngine,
     MilestoneEngineError,
 )
@@ -426,7 +426,7 @@ class TestMilestoneEngine:
     @pytest.mark.asyncio
     async def test_reasoning_validation_success(self, mock_llm, mock_repo, base_case):
         """Test successful reasoning validation when milestone completed with justification"""
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.milestone_inference import (
             validate_reasoning_first,
         )
         from faultmaven.core.investigation.schemas import (
@@ -490,7 +490,7 @@ class TestMilestoneEngine:
     @pytest.mark.asyncio
     async def test_reasoning_validation_failure_no_justification(self, base_case):
         """Test reasoning validation fails when milestone completed without justification"""
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.milestone_inference import (
             validate_reasoning_first,
         )
         from faultmaven.core.investigation.schemas import (

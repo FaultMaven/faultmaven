@@ -16,7 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 import test_context_sliding_window as t  # noqa: E402
 
-from faultmaven.core.investigation.milestone_engine import (  # noqa: E402
+from faultmaven.core.investigation.milestone_engine.text_budget import (
     _is_context_length_error,
 )
 from faultmaven.core.investigation.prompts.context_builder import (  # noqa: E402
@@ -698,7 +698,7 @@ def test_tool_loop_messages_bounded_elides_oldest_keeps_recent():
     assistant/tool pairing stays valid."""
     from types import SimpleNamespace
 
-    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+    from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 
     fake = SimpleNamespace(da_model=None)
     msgs = [
@@ -780,7 +780,7 @@ def test_spend_weighted_tokens_downweights_cache_reads():
 def test_tools_effectively_available_gates_on_capability():
     from types import SimpleNamespace
 
-    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+    from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 
     def eng(tools, provider):
         ns = SimpleNamespace(
@@ -908,7 +908,7 @@ def test_target_tokens_is_enforced_by_the_backstop_not_only_the_fill(
 def test_resolve_tool_loop_budget_is_bounded():
     from types import SimpleNamespace
 
-    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+    from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 
     b = MilestoneEngine._resolve_tool_loop_budget(
         SimpleNamespace(da_model=MODEL), PROVIDER
@@ -938,7 +938,7 @@ def test_tool_loop_bound_counts_reasoning_artifacts(monkeypatch):
     """
     from types import SimpleNamespace
 
-    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+    from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 
     fake = SimpleNamespace(da_model=None)
     reasoning = "step " * 2000  # thousands of tokens of hidden reasoning

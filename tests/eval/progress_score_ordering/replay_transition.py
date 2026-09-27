@@ -39,7 +39,7 @@ assert Path(faultmaven.__file__).is_relative_to(
     REPO_ROOT
 ), f"imported faultmaven from {faultmaven.__file__}, not from {REPO_ROOT}"
 
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine  # noqa: E402
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.infrastructure.llm.structured_output_capability import (  # noqa: E402
     StructuredOutputCapability,
     StructuredOutputMode,

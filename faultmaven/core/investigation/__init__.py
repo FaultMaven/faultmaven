@@ -33,7 +33,7 @@ if TYPE_CHECKING:  # static analysis only — never executed at runtime
         HypothesisManager,
         create_hypothesis_manager,
     )
-    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+    from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 
 # Which submodule owns each re-exported name. Kept exhaustive against
 # ``__all__`` by tests/unit/test_import_isolation.py.

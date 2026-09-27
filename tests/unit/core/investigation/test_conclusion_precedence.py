@@ -26,7 +26,7 @@ from faultmaven.core.investigation.causal_graph import (
     seed_problem_node,
 )
 from faultmaven.core.investigation.cause_assurance import ENGINE_RCC_AUTHOR
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_assessment_state,
     _recompute_cause_state_from_chain,
 )

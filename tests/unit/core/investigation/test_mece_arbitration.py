@@ -24,7 +24,7 @@ from faultmaven.core.investigation.causal_graph import (
     mece_contested_root_ids,
     retract_stale_engine_rcc,
 )
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_cause_state_from_chain,
 )
 from faultmaven.core.investigation.prompts.context_builder import (

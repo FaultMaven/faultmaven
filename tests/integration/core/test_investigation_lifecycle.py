@@ -23,7 +23,7 @@ from uuid import uuid4
 import pytest
 
 from faultmaven.core.investigation.checkpoint_service import CheckpointService
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import (
     EvidenceToAdd,
     InquiryResponse,

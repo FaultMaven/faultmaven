@@ -14,7 +14,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import _apply_symptom_retraction
+from faultmaven.core.investigation.milestone_engine.milestone_inference import (
+    _apply_symptom_retraction,
+)
 from faultmaven.core.investigation.schemas import MilestoneJustifications
 from faultmaven.modules.case.contracts import (
     Case,

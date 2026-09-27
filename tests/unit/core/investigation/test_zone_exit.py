@@ -24,9 +24,11 @@ from unittest.mock import patch
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import (
-    _apply_stage_gate_side_effects,
+from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_assessment_state,
+)
+from faultmaven.core.investigation.milestone_engine.stage_gates import (
+    _apply_stage_gate_side_effects,
 )
 from faultmaven.core.investigation.prompts.context_builder import (
     build_investigation_context,

@@ -19,7 +19,7 @@ import pytest
 from pydantic import ValidationError
 
 from faultmaven.core.investigation.cause_assurance import CauseAssuranceGrade
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.terminal_transitions import (
     _execute_resolved_transition,
     cancel_pending_transition,
@@ -1475,7 +1475,7 @@ class TestINV12_FreeTextRoutesToQA:
         constants must change in lockstep, or clicking the suggestion would
         stop triggering its action.
         """
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_replies import (
             GENERATE_RUNBOOK_PAYLOAD,
             REGENERATE_CLOSURE_SUMMARY_PAYLOAD,
             REGENERATE_RESOLUTION_SUMMARY_PAYLOAD,
@@ -1527,7 +1527,7 @@ class TestINV13_AckTurnVsQATurnSuggestions:
         on the ack turn would be noise. (Runbook is offered here because the
         cause is CONFIRMED — #695 Defect A gates it on the grade.)
         """
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_replies import (
             _resolved_ack_suggestions,
         )
 
@@ -1557,7 +1557,9 @@ class TestINV13_AckTurnVsQATurnSuggestions:
         cases) returns both the regen affordance and the runbook affordance
         (runbook offered because the cause is CONFIRMED — #695 Defect A).
         """
-        from faultmaven.core.investigation.milestone_engine import _resolved_suggestions
+        from faultmaven.core.investigation.milestone_engine.terminal_replies import (
+            _resolved_suggestions,
+        )
 
         monkeypatch.setattr(
             "faultmaven.core.investigation.milestone_engine.terminal_replies.runbook_conversion_ready",
@@ -1581,7 +1583,9 @@ class TestINV13_AckTurnVsQATurnSuggestions:
         the substance gate would PASS, [] when FAIL. CLOSED cases never
         get the runbook affordance (only RESOLVED cases qualify).
         """
-        from faultmaven.core.investigation.milestone_engine import _closed_suggestions
+        from faultmaven.core.investigation.milestone_engine.terminal_replies import (
+            _closed_suggestions,
+        )
 
         case = _make_investigating_case()
         object.__setattr__(case, "state", CaseState.CLOSED)
@@ -1613,7 +1617,7 @@ class TestINV13_AckTurnVsQATurnSuggestions:
         suggestion sets for RESOLVED are NOT equal. The ack set is a
         proper subset of the Q&A set (runbook only vs regen+runbook).
         """
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_replies import (
             _resolved_ack_suggestions,
             _resolved_suggestions,
         )
@@ -1759,7 +1763,7 @@ class TestINV15_AgentAdvisorRole:
         )
         # At least one of the canonical completion phrases must be in the
         # module-level tuple the scan reads (INV-15 / INV-40 share it).
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.response_synthesis import (
             _COMPLETION_PHRASES,
         )
 
@@ -1896,7 +1900,7 @@ class TestINV18_RunbookEligibilityResolvedOnly:
         payload, the dispatcher must NOT route to _handle_runbook_creation.
         Falls through to terminal Q&A instead.
         """
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_replies import (
             GENERATE_RUNBOOK_PAYLOAD,
         )
 
@@ -1931,7 +1935,7 @@ class TestINV18_RunbookEligibilityResolvedOnly:
         RESOLVED case DOES route to _handle_runbook_creation. Confirms
         the eligibility gate is precise (not over-rejecting).
         """
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.terminal_replies import (
             GENERATE_RUNBOOK_PAYLOAD,
         )
 

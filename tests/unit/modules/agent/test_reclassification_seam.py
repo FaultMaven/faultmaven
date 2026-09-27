@@ -37,8 +37,8 @@ from faultmaven.core.investigation.coverage_trust import (
     CALLER_DECLARED_COVERAGE_SOURCE,
     is_vouched,
 )
-from faultmaven.core.investigation.milestone_engine import (
-    MilestoneEngine,
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.milestone_inference import (
     _evidence_coverage,
 )
 from faultmaven.core.investigation.prompts.context_builder import _confidence_marker

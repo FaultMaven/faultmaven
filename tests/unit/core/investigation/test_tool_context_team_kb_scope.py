@@ -42,7 +42,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.security]
 
 def _engine(team_ids=None, shared_ids=None, *, wired=True):
     """A MilestoneEngine with just enough wiring to build a tool context."""
-    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+    from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 
     engine = MilestoneEngine.__new__(MilestoneEngine)
     engine.repository = MagicMock()

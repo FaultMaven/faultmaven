@@ -19,7 +19,7 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_assessment_state,
     _resolve_chat_provider_name,
 )

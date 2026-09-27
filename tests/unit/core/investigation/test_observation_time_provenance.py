@@ -19,7 +19,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import _evidence_coverage
+from faultmaven.core.investigation.milestone_engine.milestone_inference import (
+    _evidence_coverage,
+)
 from faultmaven.core.investigation.prompts.context_builder import (
     _file_observed_attr,
     _observed_attr,

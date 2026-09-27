@@ -20,8 +20,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import BaseModel
 
-from faultmaven.core.investigation import milestone_engine as me
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine import engine as me
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.reliability_metrics import (
     SCHEMA_VALIDATION_OUTCOMES,
     TOOL_CALL_OUTCOMES,

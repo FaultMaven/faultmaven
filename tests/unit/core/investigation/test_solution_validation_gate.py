@@ -25,8 +25,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import (
-    MilestoneEngine,
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _coerce_intervention_quadrant,
     _solution_cause_validated,
 )

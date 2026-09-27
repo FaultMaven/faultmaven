@@ -57,7 +57,7 @@ _MODULES_UNDER_GUARD = {
     # bind. That is the whole selection rule: the trap needs a wide, positional,
     # tenancy-carrying self-call, and adding a required parameter ahead of a
     # defaulted one is exactly how the campaign moved these signatures.
-    "faultmaven.core.investigation.milestone_engine": "MilestoneEngine",
+    "faultmaven.core.investigation.milestone_engine.engine": "MilestoneEngine",
     "faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository": (
         "PostgreSQLHybridCaseRepository"
     ),

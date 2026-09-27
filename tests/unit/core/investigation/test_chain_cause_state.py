@@ -20,7 +20,7 @@ from faultmaven.core.investigation.causal_graph import (
     synthesize_rcc_from_validated_root,
 )
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_assessment_state,
     _recompute_cause_state_from_chain,
 )

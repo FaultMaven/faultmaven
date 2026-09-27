@@ -29,7 +29,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.engine import (
     MilestoneEngine,
     MilestoneEngineError,
 )

@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
     StructuredOutputMode,
@@ -948,7 +948,7 @@ class TestGate1PresentsItsStatement:
         prevent. The status line is pinned alongside it, so the frame cannot
         drift into wording that never says what is being asked for.
         """
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.cause_state import (
             _gate1_statement_presentation,
         )
 
@@ -1381,7 +1381,7 @@ class TestGate1ConsentPredicate:
         ],
     )
     def test_truth_table(self, statement, expected):
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.affordances import (
             gate1_statement_is_confirmable,
         )
 
@@ -1394,7 +1394,7 @@ class TestGate1ConsentPredicate:
         would pend forever: an empty block quote above buttons whose every
         click is refused.
         """
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.affordances import (
             _gate1_is_pending,
             gate1_statement_is_confirmable,
         )
@@ -1429,7 +1429,9 @@ class TestGate1ConsentPredicate:
         import inspect
         import textwrap
 
-        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
         from faultmaven.modules.agent.domain.services.investigation_service import (
             InvestigationService,
         )

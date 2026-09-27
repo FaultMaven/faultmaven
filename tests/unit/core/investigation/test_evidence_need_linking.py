@@ -476,7 +476,9 @@ class TestEngineWiring:
     def _source(self):
         import inspect
 
-        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
 
         return inspect.getsource(MilestoneEngine._process_turn_impl)
 
@@ -518,7 +520,9 @@ class TestWireResponseCarriesTheNeedId:
     def test_flattened_suggestion_carries_the_id(self):
         from types import SimpleNamespace
 
-        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
 
         engine = MilestoneEngine.__new__(MilestoneEngine)
         case = _Case()
@@ -743,7 +747,9 @@ class TestAntiAnchoringIsNotDisabled:
         return SimpleNamespace(evidence_needs=needs, current_turn=turn)
 
     def test_inferred_need_does_not_stand_anti_anchoring_down(self):
-        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
 
         inferred = _need("engine inferred ask")
         inferred.engine_inferred = True
@@ -756,7 +762,9 @@ class TestAntiAnchoringIsNotDisabled:
     def test_model_authored_need_still_stands_it_down(self):
         """The mechanism must keep working for deliberate asks — this is the
         control, so the fix above is a narrowing and not a disabling."""
-        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
 
         authored = _need("model authored ask")
         authored.created_at_turn = 10
@@ -768,7 +776,9 @@ class TestAntiAnchoringIsNotDisabled:
     def test_a_backfilled_ask_every_turn_never_holds_the_stand_down_open(self):
         """The end-to-end shape: an agent asking for something every turn (the
         fm#1079 loop) must not thereby suppress anti-anchoring forever."""
-        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
 
         case = _Case()
         for turn in range(6, 16):
@@ -872,7 +882,9 @@ class TestAsksTheUserNeverSeesAreNotRecorded:
         from faultmaven.core.investigation.evidence_need_linking import (
             _REPLACEMENT_METADATA_FLAGS,
         )
-        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
 
         src = inspect.getsource(MilestoneEngine._process_turn_impl)
         for flag in _REPLACEMENT_METADATA_FLAGS:
@@ -1060,7 +1072,9 @@ class TestSweepIsWiredBeforeLinking:
     def _source(self):
         import inspect
 
-        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
 
         return inspect.getsource(MilestoneEngine._process_turn_impl)
 
@@ -1092,7 +1106,9 @@ class TestGuardCallIsPinned:
     def test_turn_path_consults_the_replacement_guard(self):
         import inspect
 
-        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
 
         src = inspect.getsource(MilestoneEngine._process_turn_impl)
         assert "suggestions_are_engine_replaced(" in src, (
@@ -1104,7 +1120,9 @@ class TestGuardCallIsPinned:
     def test_guard_is_consulted_before_linking(self):
         import inspect
 
-        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
 
         src = inspect.getsource(MilestoneEngine._process_turn_impl)
         assert src.index("suggestions_are_engine_replaced(") < src.index(

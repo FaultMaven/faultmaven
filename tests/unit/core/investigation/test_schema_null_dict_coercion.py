@@ -118,7 +118,7 @@ def test_a_non_string_justification_does_not_500_the_turn(emitted, expected):
 def test_a_non_string_justification_survives_the_real_backstop():
     """The property at the layer that actually 500s — the guard above is a unit
     check on the coercion; this one proves the turn is preserved end to end."""
-    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+    from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 
     engine = MilestoneEngine.__new__(MilestoneEngine)
     parsed = engine._validate_with_degradation(

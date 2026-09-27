@@ -20,7 +20,7 @@ from faultmaven.modules.case.domain.models import (
 )
 
 if TYPE_CHECKING:
-    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+    from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
     from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 
 

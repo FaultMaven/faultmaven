@@ -115,7 +115,9 @@ class TestIsSubstantiveReply:
         """The typed-pattern lane (_user_confirms_transition) and the
         minted-intent lane must reject the same substantive message —
         the predicate is shared precisely so they cannot drift."""
-        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
 
         engine = MilestoneEngine(
             MagicMock(), MagicMock(), investigation_tools=MagicMock()

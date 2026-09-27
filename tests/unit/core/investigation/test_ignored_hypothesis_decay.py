@@ -26,7 +26,7 @@ from faultmaven.core.investigation.hypothesis_manager import (
     IGNORED_STAGNATION_TURN_THRESHOLD,
     HypothesisManager,
 )
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,

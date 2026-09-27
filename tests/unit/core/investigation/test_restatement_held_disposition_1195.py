@@ -60,14 +60,16 @@ from faultmaven.core.investigation.exhaustion_thresholds import (
     EXHAUSTION_MIN_TURNS,
     EXHAUSTION_STALL_THRESHOLD,
 )
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.affordances import (
     _GATE_VERIFICATION_STATUS,
     _insufficient_evidence_handoff_pending,
     _insufficient_evidence_handoff_suggestions,
     _restatement_held_pending,
     _restatement_held_suggestions,
-    _terminal_confirmation_response,
     engine_owned_affordances,
+)
+from faultmaven.core.investigation.milestone_engine.terminal_replies import (
+    _terminal_confirmation_response,
 )
 from faultmaven.core.investigation.terminal_transitions import derive_closure_reason
 from faultmaven.core.investigation.verification_status import (
@@ -674,7 +676,7 @@ class TestRestatementHeldHandoff:
         itself — ``grade_cause_assurance`` plus a ``work_gate_passed`` rebuild
         of every evidence datum key — so that is what this counts."""
         calls = {"n": 0}
-        real = milestone_engine.assess_verification_status
+        real = milestone_engine.affordances.assess_verification_status
 
         def counting(c, **kw):
             calls["n"] += 1
@@ -749,7 +751,7 @@ class TestRestatementHeldHandoff:
     def test_peers_are_mutually_exclusive_on_this_case(self):
         """All four mid-investigation branches read the same join, and a case
         has exactly one verification status — so exactly one can fire."""
-        from faultmaven.core.investigation.milestone_engine import (
+        from faultmaven.core.investigation.milestone_engine.affordances import (
             _hypothesis_vacuum_pending,
             _treatment_blocked_pending,
         )
@@ -952,7 +954,7 @@ class TestRestatementHeldClosure:
 
         from faultmaven.core.investigation import milestone_engine
 
-        src = inspect.getsource(milestone_engine.engine_owned_affordances)
+        src = inspect.getsource(milestone_engine.affordances.engine_owned_affordances)
         emitted = set(re.findall(r'return \(\s*"([a-z0-9_]+)"', src))
         emitted |= set(re.findall(r'gate = \(\s*"([a-z0-9_]+)"', src))
         emitted |= set(re.findall(r'\s+else "([a-z0-9_]+)"', src))

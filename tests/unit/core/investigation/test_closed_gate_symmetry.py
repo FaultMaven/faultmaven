@@ -29,8 +29,8 @@ from unittest.mock import patch
 import pytest
 
 from faultmaven.core.investigation import terminal_transitions
-from faultmaven.core.investigation.milestone_engine import (
-    MilestoneEngine,
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.terminal_replies import (
     _resolution_confirmation_suggestions,
 )
 from faultmaven.core.investigation.terminal_transitions import (

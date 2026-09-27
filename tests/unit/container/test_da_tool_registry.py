@@ -184,7 +184,7 @@ class TestCreateMilestoneEngine:
         mock_tools = MagicMock()
 
         with patch(
-            "faultmaven.core.investigation.milestone_engine.MilestoneEngine.__init__",
+            "faultmaven.core.investigation.milestone_engine.engine.MilestoneEngine.__init__",
             side_effect=Exception("init failed"),
         ):
             result = create_milestone_engine(

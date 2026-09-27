@@ -32,7 +32,6 @@ import pytest
 from pydantic import BaseModel, Field
 from pydantic.fields import FieldInfo
 
-from faultmaven.core.investigation import milestone_engine as me
 from faultmaven.core.investigation import reliability_metrics, schemas
 from faultmaven.core.investigation.causal_graph import ingest_emitted_chain
 from faultmaven.core.investigation.confidence_repair import (
@@ -47,7 +46,8 @@ from faultmaven.core.investigation.confidence_repair import (
     count as count_confidence_repair,
 )
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine import engine as me
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,

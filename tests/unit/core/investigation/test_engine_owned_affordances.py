@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.affordances import (
     _gate1_is_pending,
     _hypothesis_vacuum_pending,
     _insufficient_evidence_handoff_pending,

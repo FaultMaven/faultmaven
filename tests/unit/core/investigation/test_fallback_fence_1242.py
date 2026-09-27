@@ -616,11 +616,11 @@ class TestTheRuntimeRecoveryPathIsFencedToo:
 
     @pytest.mark.asyncio
     async def test_the_recovery_prompt_carries_the_rule_and_one_token(self):
-        from faultmaven.core.investigation.milestone_engine import (
-            TOKEN_LIMIT,
+        from faultmaven.core.investigation.milestone_engine.engine import (
             MilestoneEngine,
             MilestoneEngineError,
         )
+        from faultmaven.exceptions import TOKEN_LIMIT
 
         repo = MagicMock()
         repo.save = AsyncMock()

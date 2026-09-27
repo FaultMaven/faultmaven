@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.kb_prefetch import (
     KB_CONTEXT_MAX_ENTRIES,
     KB_CONTEXT_MAX_PER_RUNBOOK,
     KB_PREFETCH_FETCH_LIMIT,

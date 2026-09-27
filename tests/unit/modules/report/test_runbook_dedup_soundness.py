@@ -345,7 +345,7 @@ async def test_a_similar_match_stops_creation_and_offers_generate_anyway(
     review first?" and then created the draft in the same breath — a
     rhetorical question with the duplicate already made (fm#1030 review,
     CORE 2)."""
-    from faultmaven.core.investigation.milestone_engine import (
+    from faultmaven.core.investigation.milestone_engine.terminal_replies import (
         GENERATE_RUNBOOK_ANYWAY_PAYLOAD,
     )
 
@@ -393,9 +393,9 @@ async def test_the_confirm_payload_dispatches_with_dedup_confirmed():
     """The exact-match dispatch routes the "generate anyway" payload back
     into creation with ``dedup_confirmed=True`` — same click-only side-effect
     policy as every other terminal action."""
-    from faultmaven.core.investigation.milestone_engine import (
+    from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+    from faultmaven.core.investigation.milestone_engine.terminal_replies import (
         GENERATE_RUNBOOK_ANYWAY_PAYLOAD,
-        MilestoneEngine,
     )
     from faultmaven.modules.case.contracts import CaseState
 
@@ -428,7 +428,7 @@ async def test_the_plain_generate_payload_still_stops_on_a_similar_match(
     ordinary payload through ``_process_terminal_turn`` and asserts the stop
     actually happens: nothing created, the similar-match message returned.
     """
-    from faultmaven.core.investigation.milestone_engine import (
+    from faultmaven.core.investigation.milestone_engine.terminal_replies import (
         GENERATE_RUNBOOK_PAYLOAD,
     )
     from faultmaven.modules.case.contracts import CaseState
@@ -506,7 +506,7 @@ def ready_case(monkeypatch):
 
 
 def _engine_for_creation() -> "object":
-    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+    from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 
     engine = MilestoneEngine.__new__(MilestoneEngine)
     engine.knowledge_service = MagicMock()

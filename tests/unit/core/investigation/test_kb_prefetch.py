@@ -13,11 +13,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.kb_prefetch import (
     KB_CONTEXT_MAX_ENTRIES,
     KB_PREFETCH_FETCH_LIMIT,
     KB_PREFETCH_RELEVANCE_THRESHOLD,
-    MilestoneEngine,
 )
 
 
@@ -129,7 +129,7 @@ class TestRemediationPrefetchOnTheIdentifiedEdge:
         )
 
         monkeypatch.setattr(
-            "faultmaven.core.investigation.milestone_engine."
+            "faultmaven.core.investigation.milestone_engine.engine."
             "_kb_prefetch_query_on_identification",
             lambda *a, **k: edge_query,
         )

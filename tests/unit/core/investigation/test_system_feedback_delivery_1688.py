@@ -27,8 +27,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import (
-    TOKEN_LIMIT,
+from faultmaven.core.investigation.milestone_engine.engine import (
     MilestoneEngine,
     MilestoneEngineError,
 )
@@ -45,6 +44,7 @@ from faultmaven.core.investigation.prompts.templates import (
     get_prompt_for_case,
 )
 from faultmaven.core.investigation.terminal_transitions import propose_transition
+from faultmaven.exceptions import TOKEN_LIMIT
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
     StructuredOutputMode,

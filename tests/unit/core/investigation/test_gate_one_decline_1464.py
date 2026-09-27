@@ -45,11 +45,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import (
-    MilestoneEngine,
-    _gate1_is_pending,
+from faultmaven.core.investigation.milestone_engine.affordances import _gate1_is_pending
+from faultmaven.core.investigation.milestone_engine.cause_state import (
     _investigation_confirmation_suggestions,
 )
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,

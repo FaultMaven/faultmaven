@@ -25,7 +25,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.core.investigation import terminal_transitions as tt
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.models.report import RunbookMatch
 from faultmaven.modules.case.contracts import (

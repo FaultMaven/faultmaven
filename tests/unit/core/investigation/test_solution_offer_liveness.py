@@ -30,9 +30,11 @@ from unittest.mock import patch
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import (
-    MilestoneEngine,
+from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_assessment_state,
+)
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _supersede_pending_solution_offers,
     _withdraw_unlicensed_solution_offers,
 )
