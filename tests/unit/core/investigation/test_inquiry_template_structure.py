@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from faultmaven.core.investigation.prompts.templates import INQUIRY_TEMPLATE
+from faultmaven.core.investigation.prompts.templates.inquiry import INQUIRY_TEMPLATE
 
 
 @pytest.mark.unit

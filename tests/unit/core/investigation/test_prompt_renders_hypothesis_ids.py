@@ -21,7 +21,7 @@ from faultmaven.core.investigation.prompts.context_builder import (
     _build_state_summary,
     build_investigation_context,
 )
-from faultmaven.core.investigation.prompts.templates import (
+from faultmaven.core.investigation.prompts.templates.fallback import (
     get_fallback_prompt_for_case,
 )
 from faultmaven.modules.case.domain.models import (

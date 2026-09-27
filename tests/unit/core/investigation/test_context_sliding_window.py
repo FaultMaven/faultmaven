@@ -1999,7 +1999,9 @@ class TestRule5NewDataClaimedButNotAttached:
     rather than fabricate analysis of prior-turn evidence."""
 
     def test_investigation_base_includes_new_data_claim_rule(self):
-        from faultmaven.core.investigation.prompts.templates import INVESTIGATION_BASE
+        from faultmaven.core.investigation.prompts.templates.investigation import (
+            INVESTIGATION_BASE,
+        )
 
         # The trigger language and the prohibition both appear in the
         # WORK WITH WHAT YOU GET block. We assert both halves so a future

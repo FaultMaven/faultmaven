@@ -26,12 +26,16 @@ from __future__ import annotations
 
 import pytest
 
-from faultmaven.core.investigation.prompts.templates import (
+from faultmaven.core.investigation.prompts.templates.diagnosis import (
     _EVIDENCE_NEEDS_LIFECYCLE_BLOCK,
     _EVIDENCE_NEEDS_RCA_POOL_EVAL_BLOCK,
     _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM,
     _RCA_DIAGNOSIS_BLOCK,
+)
+from faultmaven.core.investigation.prompts.templates.investigation import (
     INVESTIGATION_BASE,
+)
+from faultmaven.core.investigation.prompts.templates.treatment import (
     MITIGATION_INSTRUCTIONS,
     TREATMENT_INSTRUCTIONS,
 )

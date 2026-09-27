@@ -23,9 +23,9 @@ from faultmaven.core.investigation.prompts.context_builder import (  # noqa: E40
     TokenBudget,
     build_investigation_context,
 )
-from faultmaven.core.investigation.prompts.templates import (  # noqa: E402
+from faultmaven.core.investigation.prompts.templates.assembly import get_prompt_for_case
+from faultmaven.core.investigation.prompts.templates.fallback import (
     get_fallback_prompt_for_case,
-    get_prompt_for_case,
 )
 from faultmaven.exceptions import LLMException  # noqa: E402
 from faultmaven.modules.case.domain.models import JournalEntry  # noqa: E402
@@ -138,7 +138,9 @@ def test_fallback_preserves_journal():
 
 def test_fallback_journal_digest_keeps_newest_not_oldest():
     """With more high-signal entries than the cap, the NEWEST must survive."""
-    from faultmaven.core.investigation.prompts.templates import _fallback_journal_digest
+    from faultmaven.core.investigation.prompts.templates.fallback import (
+        _fallback_journal_digest,
+    )
 
     case = _case_with_current_turn_upload()
     case.investigation_journal = [
@@ -599,7 +601,7 @@ def test_no_section_vanishes_unmarked_on_the_assembled_prompt(monkeypatch):
     """
     from faultmaven.config.settings import get_settings
     from faultmaven.core.investigation.prompts import context_builder as cb
-    from faultmaven.core.investigation.prompts import templates as tp
+    from faultmaven.core.investigation.prompts.templates import assembly as tp
 
     settings = get_settings()
     real_allocate = cb._allocate_sections

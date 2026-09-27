@@ -2398,7 +2398,7 @@ class TestToolLoopBaseFitsTheReceivingModel:
         sys.path.insert(0, str(Path(__file__).parent))
         import test_prompt_budget_allocator as allocator_tests
 
-        from faultmaven.core.investigation.prompts.templates import (
+        from faultmaven.core.investigation.prompts.templates.assembly import (
             get_prompt_for_case,
         )
 

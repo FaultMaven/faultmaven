@@ -49,14 +49,16 @@ from faultmaven.core.investigation.prompts.fence import (
     absorbed_delimiters,
     reseal,
 )
-from faultmaven.core.investigation.prompts.templates import (
-    _PROMPT_FENCE_RULE,
-    INQUIRY_TEMPLATE,
-    INVESTIGATION_BASE,
-    TERMINAL_TEMPLATE,
+from faultmaven.core.investigation.prompts.templates.assembly import get_prompt_for_case
+from faultmaven.core.investigation.prompts.templates.blocks import _PROMPT_FENCE_RULE
+from faultmaven.core.investigation.prompts.templates.fallback import (
     get_fallback_prompt_for_case,
-    get_prompt_for_case,
 )
+from faultmaven.core.investigation.prompts.templates.inquiry import INQUIRY_TEMPLATE
+from faultmaven.core.investigation.prompts.templates.investigation import (
+    INVESTIGATION_BASE,
+)
+from faultmaven.core.investigation.prompts.templates.terminal import TERMINAL_TEMPLATE
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,

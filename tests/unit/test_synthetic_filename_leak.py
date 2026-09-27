@@ -37,7 +37,7 @@ from faultmaven.core.investigation.prompts.context_builder import (
     _build_evidence_context,
 )
 from faultmaven.core.investigation.prompts.fence import render_fenced
-from faultmaven.core.investigation.prompts.templates import (
+from faultmaven.core.investigation.prompts.templates.fallback import (
     _fallback_stub_block,
 )
 from faultmaven.core.investigation.turn_pipeline import (
@@ -498,7 +498,7 @@ class TestCitationInstructions:
             assert banned not in source, banned
 
     def test_investigating_templates_say_what_to_cite_instead(self):
-        from faultmaven.core.investigation.prompts.templates import (
+        from faultmaven.core.investigation.prompts.templates.investigation import (
             INVESTIGATION_BASE,
             SCHEMA_INSTRUCTIONS,
         )

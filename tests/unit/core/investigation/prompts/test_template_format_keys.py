@@ -25,17 +25,50 @@ from __future__ import annotations
 import re
 import string
 from pathlib import Path
-from types import ModuleType
 
 import pytest
 
-from faultmaven.core.investigation.prompts import templates as t
+from faultmaven.core.investigation.prompts.templates import (
+    assembly,
+    blocks,
+    diagnosis,
+    fallback,
+    inquiry,
+    investigation,
+    terminal,
+    treatment,
+)
+from faultmaven.core.investigation.prompts.templates.fallback import (
+    _FALLBACK_FENCE_RULE_TEMPLATE,
+    FALLBACK_INQUIRY_TEMPLATE,
+    FALLBACK_INVESTIGATION_TEMPLATE,
+    FALLBACK_TERMINAL_TEMPLATE,
+)
+from faultmaven.core.investigation.prompts.templates.inquiry import INQUIRY_TEMPLATE
+from faultmaven.core.investigation.prompts.templates.investigation import (
+    INVESTIGATION_BASE,
+)
+from faultmaven.core.investigation.prompts.templates.terminal import TERMINAL_TEMPLATE
 
 pytestmark = pytest.mark.unit
 
+#: `templates` has no facade any more (fm#1707): each formatted template is
+#: read from the submodule that DEFINES it, never through a re-export.
+_SUBMODULES = (
+    assembly,
+    blocks,
+    diagnosis,
+    fallback,
+    inquiry,
+    investigation,
+    terminal,
+    treatment,
+)
+
 #: Keys each formatted template is rendered with. Update deliberately, in step
 #: with the renderer — a diff here means the prompt's contract with its caller
-#: changed.
+#: changed. Values are read from the module that defines each name (see the
+#: imports above), not through any package-level re-export.
 EXPECTED_KEYS: dict[str, set[str]] = {
     "_FALLBACK_FENCE_RULE_TEMPLATE": {
         "blocks",
@@ -108,23 +141,52 @@ EXPECTED_KEYS: dict[str, set[str]] = {
     },
 }
 
+#: The value for each `EXPECTED_KEYS` name, read from its defining module —
+#: the one canonical import path (fm#1707: no facade re-export).
+_VALUES: dict[str, str] = {
+    "_FALLBACK_FENCE_RULE_TEMPLATE": _FALLBACK_FENCE_RULE_TEMPLATE,
+    "FALLBACK_INQUIRY_TEMPLATE": FALLBACK_INQUIRY_TEMPLATE,
+    "FALLBACK_INVESTIGATION_TEMPLATE": FALLBACK_INVESTIGATION_TEMPLATE,
+    "FALLBACK_TERMINAL_TEMPLATE": FALLBACK_TERMINAL_TEMPLATE,
+    "INQUIRY_TEMPLATE": INQUIRY_TEMPLATE,
+    "TERMINAL_TEMPLATE": TERMINAL_TEMPLATE,
+    "INVESTIGATION_BASE": INVESTIGATION_BASE,
+}
+
 
 def _format_keys(text: str) -> set[str]:
     return {f[1] for f in string.Formatter().parse(text) if f[1]}
 
 
 def _formatted_names() -> set[str]:
-    """Names the module actually calls ``.format()`` on, read from the source.
+    """Names the package actually calls ``.format()`` on, read from the source.
 
     Read from source rather than listed by hand so a new formatted template
     cannot be introduced without this file noticing. ``templates`` is a
-    package: a ``.format()`` call can live in any of its submodules (e.g.
-    ``fallback.py``), so every ``.py`` file under it is scanned, not just
-    ``__init__.py``.
+    package with no code of its own (an empty ``__init__.py``): a
+    ``.format()`` call lives in one of its submodules (e.g. ``fallback.py``),
+    so every ``.py`` file under the package directory is scanned.
     """
-    pkg_dir = Path(t.__file__).parent
+    pkg_dir = Path(fallback.__file__).parent
     src = "".join(p.read_text() for p in sorted(pkg_dir.glob("*.py")))
     return set(re.findall(r"\b([A-Z_][A-Z0-9_]*)\.format\(", src))
+
+
+def _package_state() -> dict[str, object]:
+    """Every top-level name bound across the package's submodules.
+
+    Mirrors what a flat facade used to re-export, so a ``{name}`` collision
+    with a constant defined ANYWHERE in the package is still caught — not
+    only within the formatted string's own defining module. None of these
+    submodules binds another submodule as an attribute of itself (each uses
+    ``from .blocks import X`` — a name import, not ``from . import blocks``),
+    so this merge contains only genuine module-level values, never a
+    submodule object; there is nothing to exclude by type.
+    """
+    merged: dict[str, object] = {}
+    for mod in _SUBMODULES:
+        merged.update(vars(mod))
+    return merged
 
 
 def test_the_set_of_formatted_templates_is_known():
@@ -137,7 +199,7 @@ def test_the_set_of_formatted_templates_is_known():
 
 @pytest.mark.parametrize("name", sorted(EXPECTED_KEYS))
 def test_template_keys_match_what_the_renderer_supplies(name):
-    value = getattr(t, name)
+    value = _VALUES[name]
     assert isinstance(
         value, str
     ), f"{name} is not a string"  # never skip: skipping fails open
@@ -146,22 +208,13 @@ def test_template_keys_match_what_the_renderer_supplies(name):
 
 @pytest.mark.parametrize("name", sorted(EXPECTED_KEYS))
 def test_no_key_is_a_python_name_from_this_module(name):
-    """The specific slip this guards: bracing a constant defined in the module.
+    """The specific slip this guards: bracing a constant defined in the package.
 
     Checked separately from the pinned set because it names the failure, so a
     reader updating EXPECTED_KEYS sees why a module name must never appear.
-    ``templates`` is now a package, and importing a submodule (``from .blocks
-    import ...``) binds ``blocks`` as an attribute of the package as a side
-    effect — that is a submodule reference, not a leaked constant, so it is
-    excluded here (``_FALLBACK_FENCE_RULE_TEMPLATE``'s genuine ``{blocks}``
-    renderer key would otherwise false-positive against the ``blocks``
-    submodule).
     """
-    leaked = {
-        k
-        for k in _format_keys(getattr(t, name))
-        if hasattr(t, k.strip()) and not isinstance(getattr(t, k.strip()), ModuleType)
-    }
+    state = _package_state()
+    leaked = {k for k in _format_keys(_VALUES[name]) if k.strip() in state}
     assert not leaked, (
         f"{name} braces module-level name(s) {sorted(leaked)} — these are "
         "definition-time values and must be concatenated, not braced"
