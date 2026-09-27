@@ -47,7 +47,8 @@ def extracted(tmp_path: Path):
     )
     write(
         tmp_path / "pkg" / "planning.py",
-        "class Planner:\n    def plan(self, y):\n        return y\n",
+        "class Planner:\n    def plan(self, y):\n        return y\n\n"
+        "    @staticmethod\n    def _helper(y):\n        return y\n",
     )
     spec = {
         "source": "pkg/engine.py",
@@ -59,7 +60,7 @@ def extracted(tmp_path: Path):
                 "kind": "collaborator",
                 "class": "Planner",
                 "attr": "planner",
-                "members": ["_plan"],
+                "members": ["_plan", "_helper"],
             },
         ],
     }
@@ -67,12 +68,13 @@ def extracted(tmp_path: Path):
         "homes": {
             "_fetch": "pkg/fetching.py",
             "_plan": "pkg/planning.py",
+            "_helper": "pkg/planning.py",
             "__init__": None,
         },
         "deps": {"_fetch": ["repo"]},
-        "collab_attr": {"_plan": "planner"},
-        "collab_class": {"_plan": "Planner"},
-        "rename": {"_plan": "plan"},
+        "collab_attr": {"_plan": "planner", "_helper": "planner"},
+        "collab_class": {"_plan": "Planner", "_helper": "Planner"},
+        "rename": {"_plan": "plan", "_helper": "_helper"},
         "collab_deps": {"planner": []},
         "unread": [],
     }
@@ -336,3 +338,46 @@ class TestPatchOnTheReadingModule:
             '    monkeypatch.setattr(mod, "_fetch", lambda *a: 1)\n',
         )
         assert "STALE-PATCH" in _audit(python_exe, extracted).stdout
+
+
+class TestCollaboratorClassReceivers:
+    def test_a_reference_through_the_collaborator_class_is_its_new_home(
+        self, extracted, python_exe
+    ):
+        write(
+            extracted / "tests" / "test_c.py",
+            "from pkg.planning import Planner\n\n\ndef test():\n    assert Planner._plan\n",
+        )
+        r = _audit(python_exe, extracted)
+        assert r.returncode == 0, r.stdout
+
+    def test_rewrite_is_idempotent(self, extracted, python_exe):
+        # _helper keeps its private name on the collaborator, so a
+        # class-qualified reference still spells the moved name. A second pass
+        # must see it as already home, not append the attribute again (it
+        # produced Planner.planner._helper before).
+        t = extracted / "tests" / "test_i.py"
+        write(
+            t,
+            "from pkg.planning import Planner\n\n\ndef test(engine):\n"
+            "    engine._plan(3)\n    Planner._helper(4)\n",
+        )
+        _audit(python_exe, extracted, "--rewrite")
+        once = t.read_text()
+        _audit(python_exe, extracted, "--rewrite")
+        assert t.read_text() == once, "a second --rewrite pass must change nothing"
+        assert "engine.planner.plan(3)" in once
+        assert "Planner._helper(4)" in once
+
+    def test_reading_a_moved_function_off_the_module_that_imports_it_is_clean(
+        self, extracted, python_exe
+    ):
+        write(
+            extracted / "pkg" / "engine.py",
+            "from pkg.fetching import _fetch\n\n\nclass Engine:\n    pass\n",
+        )
+        write(
+            extracted / "tests" / "test_r.py",
+            "from pkg import engine as engine_module\n\n\ndef test():\n    real = engine_module._fetch\n    assert real\n",
+        )
+        assert _audit(python_exe, extracted).returncode == 0
