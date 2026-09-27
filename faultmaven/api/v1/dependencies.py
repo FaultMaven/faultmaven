@@ -217,7 +217,7 @@ async def get_case_vector_store(request: Request):
 # falling back to a ``session_id`` query parameter. Deleted with
 # ``get_current_session``, ``get_optional_session`` and ``get_request_metadata``
 # (#1554): no route depended on any of them, and its one caller — a
-# ``_di_get_session_id_dependency`` wrapper in ``modules/case/api/routes/`` —
+# ``_di_get_session_id_dependency`` wrapper in ``modules/case/api/routes.py`` —
 # was itself referenced by nothing. They are not merely dead, they are dead
 # machinery for turning a caller-chosen identifier into a session, in the module
 # the next person adding a route reads first; #1461 is the defect that ships when
