@@ -133,7 +133,7 @@ from faultmaven.models.interfaces_case import ICaseService
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.auth.contracts import ISessionService, UserDTO
 from faultmaven.modules.case.domain.models import Case as CaseEntity
-from faultmaven.modules.case.domain.models import CaseState
+from faultmaven.modules.case.domain.models import CaseState, is_default_case_title
 from faultmaven.modules.case.domain.services.case_converter import CaseConverter
 from faultmaven.modules.case.domain.services.case_ui_adapter import (
     transform_case_for_ui,
@@ -141,6 +141,17 @@ from faultmaven.modules.case.domain.services.case_ui_adapter import (
 from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.utils.serialization import to_json_compatible
+
+# fm#1707: the old module's only direct use of `is_default_case_title` (the
+# `_is_default_case_title` alias) moved into title_generation.py, so this
+# module-level binding is otherwise unread until `generate_case_reports`'s
+# unmoved local `from faultmaven.modules.case.contracts import
+# is_default_case_title` shadows it -- which ruff's F811 reads as this import
+# being unused before it is redefined. It stays imported here (facade parity:
+# `from faultmaven.modules.case.api.routes import is_default_case_title` must
+# keep working, same as on origin/main) with one no-op read to tell ruff
+# otherwise.
+_ = is_default_case_title
 
 from .title_generation import (
     _MIN_PROBLEM_STATEMENT_LEN_FOR_TITLE,
