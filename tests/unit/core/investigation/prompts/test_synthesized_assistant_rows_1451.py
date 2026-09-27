@@ -197,7 +197,7 @@ class TestTurnRecordSurfaces:
         # state; stub it so the <previous_turn> block is what renders.
         from unittest.mock import patch
 
-        with patch.object(cb, "_build_state_summary", return_value="STATE"):
+        with patch.object(cb.history, "_build_state_summary", return_value="STATE"):
             return cb._build_compact_history(case, "and now?", _fence())
 
     @pytest.mark.parametrize("placeholder", PLACEHOLDERS)

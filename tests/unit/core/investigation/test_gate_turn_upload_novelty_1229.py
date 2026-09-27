@@ -476,7 +476,7 @@ class TestTheGenerationPathReturnBoundary:
             seen.append(case_arg.turns_without_progress)
             return original(case_arg, *a, **kw)
 
-        monkeypatch.setattr(context_builder, "_build_state_summary", _spy)
+        monkeypatch.setattr(context_builder.history, "_build_state_summary", _spy)
 
         engine = _generating_engine()
         case = _investigating_case()

@@ -932,7 +932,7 @@ class TestTierDOrphanUploads:
         case.uploaded_files.extend([oldest, middle, newest])
 
         with patch(
-            "faultmaven.core.investigation.prompts.context_builder."
+            "faultmaven.core.investigation.prompts.context_builder.evidence."
             "EVIDENCE_CONTEXT_MAX_TOTAL_CHARS",
             squeezed_budget,
         ):
@@ -2070,7 +2070,7 @@ class TestCurrentTurnFloor:
         )
 
         with patch(
-            "faultmaven.core.investigation.prompts.context_builder."
+            "faultmaven.core.investigation.prompts.context_builder.evidence."
             "EVIDENCE_CONTEXT_MAX_TOTAL_CHARS",
             8000,
         ):
@@ -2109,7 +2109,7 @@ class TestCurrentTurnFloor:
         # ordering tries the big (turn 9) first; `continue` must let the small
         # (turn 2) still render.
         with patch(
-            "faultmaven.core.investigation.prompts.context_builder."
+            "faultmaven.core.investigation.prompts.context_builder.evidence."
             "EVIDENCE_CONTEXT_MAX_TOTAL_CHARS",
             3000,
         ):
@@ -2171,7 +2171,7 @@ class TestCurrentTurnFloor:
             )
 
         with patch(
-            "faultmaven.core.investigation.prompts.context_builder."
+            "faultmaven.core.investigation.prompts.context_builder.evidence."
             "EVIDENCE_CONTEXT_MAX_TOTAL_CHARS",
             4000,
         ):

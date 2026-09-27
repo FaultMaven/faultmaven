@@ -580,7 +580,7 @@ class TestEveryCallerControlledStringIsInTheCorpus:
 
         import faultmaven.core.investigation.prompts.context_builder as cb
 
-        monkeypatch.setattr(cb, "_confidence_marker", fake_marker)
+        monkeypatch.setattr(cb.evidence, "_confidence_marker", fake_marker)
 
         seen_tokens = []
         real_mint = fence_mod.mint_token
