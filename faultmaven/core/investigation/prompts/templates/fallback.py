@@ -12,7 +12,7 @@ from faultmaven.modules.case.contracts import Case, CaseState
 from faultmaven.modules.case.domain.models import CauseState
 from faultmaven.utils.model_context import MIN_PROMPT_BUDGET
 
-logger = logging.getLogger("faultmaven.core.investigation.prompts.templates")
+logger = logging.getLogger(__name__)
 
 
 _FALLBACK_FENCE_RULE_TEMPLATE = """\
