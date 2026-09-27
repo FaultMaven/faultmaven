@@ -7,7 +7,7 @@ M7 AND-proof (symmetric), chain-root validation, and deductive strict-exclusion
 
 import pytest
 
-from faultmaven.core.investigation.causal_graph import (
+from faultmaven.core.investigation.causal_graph.queries import (
     DEDUCTIVE_EXCLUSION_MAX_BELIEF,
     and_constraints_refuted,
     and_constraints_satisfied,

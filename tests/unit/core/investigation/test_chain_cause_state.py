@@ -12,11 +12,15 @@ from datetime import datetime, timezone
 import pytest
 
 from faultmaven.core.investigation import milestone_engine
-from faultmaven.core.investigation.causal_graph import (
+from faultmaven.core.investigation.causal_graph.disconfirmation import (
     _attach_engine_refutation,
-    any_chain_root_validated,
     demote_disconfirmed_cause_via_evidence,
-    seed_problem_node,
+)
+from faultmaven.core.investigation.causal_graph.ingestion import seed_problem_node
+from faultmaven.core.investigation.causal_graph.projection import (
+    any_chain_root_validated,
+)
+from faultmaven.core.investigation.causal_graph.rcc import (
     synthesize_rcc_from_validated_root,
 )
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
@@ -519,7 +523,9 @@ def test_node_only_counterfactual_refute_retracts_conclusion():
 def test_ordinary_refute_does_not_suppress_decisive_attach():
     """A pre-existing ordinary (non-counterfactual) refute must NOT block M6 from
     attaching its DECISIVE CAUSAL_ABSENCE refutation."""
-    from faultmaven.core.investigation.causal_graph import _attach_engine_refutation
+    from faultmaven.core.investigation.causal_graph.disconfirmation import (
+        _attach_engine_refutation,
+    )
 
     ordinary = _evidence("ev_ordinary", EvidenceCategory.CAUSAL_EVIDENCE)
     root = _root(support_label="ev_root_support")
@@ -579,7 +585,9 @@ def test_hedged_counterfactual_does_not_suppress_decisive_attach():
     """INV-30 refute side: a pre-existing HEDGED absence-REFUTES must not
     satisfy ``_attach_engine_refutation``'s idempotence check — when M6 fires,
     the engine still attaches its own DECISIVE refutation."""
-    from faultmaven.core.investigation.causal_graph import _attach_engine_refutation
+    from faultmaven.core.investigation.causal_graph.disconfirmation import (
+        _attach_engine_refutation,
+    )
 
     hedged_row = _evidence("ev_hedged_row", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
     root = _root(support_label="ev_root_support")
@@ -618,7 +626,9 @@ def test_llm_decisive_refute_does_not_suppress_engine_marker():
     recorded the failure with its own DECISIVE refute (suppressing the mint
     left the window at -1 and re-qualified stale premature rows). Idempotence
     is scoped to the ENGINE's own row."""
-    from faultmaven.core.investigation.causal_graph import _attach_engine_refutation
+    from faultmaven.core.investigation.causal_graph.disconfirmation import (
+        _attach_engine_refutation,
+    )
     from faultmaven.core.investigation.cause_assurance import (
         latest_disconfirmation_turn,
     )
@@ -1009,7 +1019,7 @@ def _rcc(*, vhid=None):
 
 
 def test_retract_disconfirmed_rcc_clears_when_named_hyp_refuted():
-    from faultmaven.core.investigation.causal_graph import retract_disconfirmed_rcc
+    from faultmaven.core.investigation.causal_graph.rcc import retract_disconfirmed_rcc
 
     hyp = _hyp(root_node_id=None, hypothesis_id="hyp_0000000000ab")
     # REFUTED set post-construction (the constructor validator requires a
@@ -1023,7 +1033,7 @@ def test_retract_disconfirmed_rcc_clears_when_named_hyp_refuted():
 
 
 def test_retract_disconfirmed_rcc_keeps_when_named_hyp_active():
-    from faultmaven.core.investigation.causal_graph import retract_disconfirmed_rcc
+    from faultmaven.core.investigation.causal_graph.rcc import retract_disconfirmed_rcc
 
     hyp = _hyp(
         root_node_id=None,
@@ -1042,7 +1052,7 @@ def test_retract_disconfirmed_rcc_ignores_unlinked_rcc():
     # untouched even amid a refuted hypothesis — no likelihood proxy, so no
     # false-clear of a possibly-valid conclusion (the regression the proxy caused;
     # documented residual instead).
-    from faultmaven.core.investigation.causal_graph import retract_disconfirmed_rcc
+    from faultmaven.core.investigation.causal_graph.rcc import retract_disconfirmed_rcc
 
     refuted = _hyp(root_node_id=None, hypothesis_id="hyp_0000000000ad")
     refuted.state = HypothesisState.REFUTED

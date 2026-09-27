@@ -19,11 +19,11 @@ from unittest.mock import patch
 
 import pytest
 
-from faultmaven.core.investigation.causal_graph import (
+from faultmaven.core.investigation.causal_graph.clusters import (
     distinct_cause_clusters,
     mece_contested_root_ids,
-    retract_stale_engine_rcc,
 )
+from faultmaven.core.investigation.causal_graph.rcc import retract_stale_engine_rcc
 from faultmaven.core.investigation.milestone_engine import (
     _recompute_cause_state_from_chain,
 )
@@ -652,8 +652,8 @@ def test_negation_blind_merge_is_the_accepted_lexical_limit():
 def test_synthesize_refuses_to_mint_while_contested():
     """Defense in depth: a direct (non-recompute) caller of the mirror
     synthesis never gets an arbitrary pick minted on a contested case."""
-    from faultmaven.core.investigation.causal_graph import (
-        derive_node_states,
+    from faultmaven.core.investigation.causal_graph.derivation import derive_node_states
+    from faultmaven.core.investigation.causal_graph.rcc import (
         synthesize_rcc_from_validated_root,
     )
 

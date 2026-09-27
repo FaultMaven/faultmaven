@@ -640,7 +640,7 @@ def bridge_flat_hypotheses_to_graph(case) -> None:
     (promote/demote) and the orphan-resolution stub path. Heavy imports are
     deferred so importing this module stays cheap for non-graph tests.
     """
-    from faultmaven.core.investigation.causal_graph import seed_problem_node
+    from faultmaven.core.investigation.causal_graph.ingestion import seed_problem_node
     from faultmaven.modules.case.contracts import (
         CausalEdge,
         CausalNode,

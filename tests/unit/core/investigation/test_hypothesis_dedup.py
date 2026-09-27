@@ -26,7 +26,7 @@ from uuid import uuid4
 import pytest
 
 from faultmaven.core.investigation import milestone_engine
-from faultmaven.core.investigation.causal_graph import (
+from faultmaven.core.investigation.causal_graph.similarity import (
     find_duplicate_hypothesis,
     hypothesis_statements_duplicate,
 )
