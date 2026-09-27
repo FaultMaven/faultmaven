@@ -1281,7 +1281,7 @@ Copilot is already live.
 | Terminal-hypothesis supersession | `milestone_engine.py:_supersede_needs_on_terminal_hypothesis` (+ `_TERMINAL_HYPOTHESIS_STATES`) |
 | Wire-flattening seam (`new_index_N` → real ID) | `milestone_engine.py:_flatten_follow_ups` ~`:7476`–`7530` |
 | Context block `<evidence_needs>` | `context_builder.py:_build_evidence_needs_block` ~`:1753`–`1892` (line render ~`:1737`) |
-| Prompt directives | `prompts/templates/diagnosis.py:_EVIDENCE_NEEDS_LIFECYCLE_BLOCK`, `_..._SYMPTOM_ONLY_ADDENDUM`, `_..._RCA_POOL_EVAL_BLOCK`, `_..._REVERIFICATION_ADDENDUM` |
+| Prompt directives | `prompts/templates/diagnosis.py:_EVIDENCE_NEEDS_LIFECYCLE_BLOCK`, `_..._RCA_POOL_EVAL_BLOCK`, `_..._REVERIFICATION_ADDENDUM`. The symptom-only addendum (`_EVIDENCE_NEEDS_SYMPTOM_ONLY_ADDENDUM`) was **removed in the flow redesign** (#410), together with the path backstop and path-dispatch blocks it served (§7.3). |
 | Persistence (save/load) | `sqlite_case_repository.py:_upsert_evidence_needs` ~`:2320`, `_load_evidence_needs_for_case` ~`:633` |
 | Migration | `alembic/versions/20260526_1000_014_evidence_needs.py` |
 | Metrics | `faultmaven/core/investigation/lifecycle_metrics.py:137`–`194` |
