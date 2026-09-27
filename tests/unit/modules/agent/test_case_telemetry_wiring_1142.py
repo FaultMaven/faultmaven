@@ -313,7 +313,10 @@ class TestTheErrorPathIsARowNotAGap:
         documented (case_id, turn) dedup key — and on turn 1 invents a row for
         turn 0, which never existed.
         """
-        import faultmaven.modules.agent.domain.services.investigation_service.service as mod
+        # #1707 wave 3: ``_preprocess_attachment`` is called from
+        # ``attachments._preprocess_turn_uploads`` now (moved off the class),
+        # so it is read as a bare module-global name of attachments.py itself.
+        import faultmaven.modules.agent.domain.services.investigation_service.attachments as mod
 
         async def explode(*_args, **_kwargs):
             raise RuntimeError("extractor died on the raw bytes")
@@ -379,7 +382,10 @@ class TestTheErrorPathIsARowNotAGap:
     ):
         """The success row is emitted before ``TurnResponse`` is assembled, so a
         failure in between would otherwise produce two rows for one turn."""
-        import faultmaven.modules.agent.domain.services.investigation_service.service as mod
+        # #1707 wave 3: ``TurnResponse(...)`` is constructed inside
+        # ``_build_turn_response``, moved off the class into ``turn_response``,
+        # so that module's own binding is the one that runs at call time.
+        import faultmaven.modules.agent.domain.services.investigation_service.turn_response as mod
 
         def explode(*_args, **_kwargs):
             raise RuntimeError("response assembly failed")
@@ -537,8 +543,14 @@ class TestPathCoverageIsExhaustive:
         # Just the emission block: from the label decision to the emit call.
         # #1707 wave 3: this block now lives in ``_save_and_emit_turn``, which
         # the owner calls just before setting ``turn_row_emitted = True`` — the
-        # phase itself never binds that name (R4: it stays in the owner).
-        src = inspect.getsource(InvestigationService._save_and_emit_turn)
+        # phase itself never binds that name (R4: it stays in the owner). Step
+        # B moved the phase itself off the class into a module function of
+        # ``turn_messages``.
+        from faultmaven.modules.agent.domain.services.investigation_service import (
+            turn_messages,
+        )
+
+        src = inspect.getsource(turn_messages._save_and_emit_turn)
         start = src.index("turn_arms = turn_telemetry.get")
         end = src.index("return agent_response_text")
         telemetry_block = src[start:end]

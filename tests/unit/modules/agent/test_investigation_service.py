@@ -26,6 +26,9 @@ from faultmaven.models.api_models import (
 from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
 )
+from faultmaven.modules.agent.domain.services.investigation_service.turn_response import (
+    _build_progress_transparency,
+)
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseSeverity, CaseState
 from faultmaven.modules.case.domain.models.problem import (
@@ -1309,15 +1312,12 @@ class TestInvestigationServiceGetProgress:
 class TestBuildProgressTransparencyVerificationStatus:
     """Phase 3: the honest-partial verification_status must reach the live
     TurnResponse even when transparent mode (the time-stall detector) is not
-    active — a declared data wall reaches INSUFFICIENT_EVIDENCE first."""
+    active — a declared data wall reaches INSUFFICIENT_EVIDENCE first.
 
-    def _service(self):
-        from unittest.mock import MagicMock
-
-        return InvestigationService(
-            milestone_engine=MagicMock(),
-            case_repository=MagicMock(),
-        )
+    #1707 wave 3: ``_build_progress_transparency`` moved off the class into a
+    module function of ``turn_response`` (it read no ``self`` state), so these
+    call it directly rather than through an ``InvestigationService`` instance.
+    """
 
     def _case(self, status):
         from faultmaven.modules.case.domain.models.progress import (
@@ -1332,20 +1332,18 @@ class TestBuildProgressTransparencyVerificationStatus:
         return case
 
     def test_insufficient_evidence_surfaced_without_transparent_mode(self):
-        svc = self._service()
         case = self._case("INSUFFICIENT_EVIDENCE")
         # No progress_transparent flag → previously returned None, hiding the
         # honest partial. Now it must surface with active reflecting the stall.
-        info = svc._build_progress_transparency({}, case)
+        info = _build_progress_transparency({}, case)
         assert info is not None
         assert info.active is False
         assert info.verification_status == "insufficient_evidence"
 
     def test_non_insufficient_status_stays_silent_without_transparent_mode(self):
-        svc = self._service()
         case = self._case("OPEN")
         # OPEN is not the honest-partial; without transparent mode, stay silent.
-        assert svc._build_progress_transparency({}, case) is None
+        assert _build_progress_transparency({}, case) is None
 
     def test_restatement_held_surfaced_without_transparent_mode(self):
         """#1195: ``RESTATEMENT_HELD`` is carved OUT of ``INSUFFICIENT_EVIDENCE``,
@@ -1353,9 +1351,8 @@ class TestBuildProgressTransparencyVerificationStatus:
         it and the carve-out silences, in the user-facing transparency block,
         exactly the cases that block used to (wrongly) report — suppression
         without replacement, which is the failure #1195 exists to avoid."""
-        svc = self._service()
         case = self._case("RESTATEMENT_HELD")
-        info = svc._build_progress_transparency({}, case)
+        info = _build_progress_transparency({}, case)
         assert info is not None
         assert info.active is False
         assert info.verification_status == "restatement_held"
@@ -1363,16 +1360,14 @@ class TestBuildProgressTransparencyVerificationStatus:
     def test_treatment_blocked_surfaced_without_transparent_mode(self):
         """#1136's honest partial, pinned alongside — a fix-blocked stall is
         conversational, so transparent mode may never activate on it."""
-        svc = self._service()
         case = self._case("TREATMENT_BLOCKED")
-        info = svc._build_progress_transparency({}, case)
+        info = _build_progress_transparency({}, case)
         assert info is not None
         assert info.verification_status == "treatment_blocked"
 
     def test_transparent_mode_still_active_and_carries_status(self):
-        svc = self._service()
         case = self._case("INSUFFICIENT_EVIDENCE")
-        info = svc._build_progress_transparency(
+        info = _build_progress_transparency(
             {
                 "progress_transparent": True,
                 "pending_milestone": "root_cause_identified",
@@ -1389,10 +1384,9 @@ class TestBuildProgressTransparencyVerificationStatus:
         # the frontend can label a lower-assurance conclusion.
         from faultmaven.modules.case.domain.models.progress import CauseAssuranceGrade
 
-        svc = self._service()
         case = self._case("INSUFFICIENT_EVIDENCE")
         case.progress.cause_assurance = CauseAssuranceGrade.MECHANISTIC
-        info = svc._build_progress_transparency({}, case)
+        info = _build_progress_transparency({}, case)
         assert info is not None
         assert info.cause_assurance == "mechanistic"
 

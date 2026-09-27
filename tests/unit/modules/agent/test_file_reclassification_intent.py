@@ -1979,7 +1979,11 @@ def test_every_reader_of_a_stored_entry_tolerates_any_shape():
 
     liveness = "core/investigation/suggestion_liveness.py"
     resolver = "core/investigation/intent_resolver.py"
-    service = "modules/agent/domain/services/investigation_service/service.py"
+    # #1707 wave 3: ``_build_turn_response`` moved off the class into its own
+    # module, so the re-render it does now reads from there.
+    turn_response = (
+        "modules/agent/domain/services/investigation_service/turn_response.py"
+    )
     clarification = (
         "modules/agent/domain/services/investigation_service/clarification.py"
     )
@@ -1999,9 +2003,9 @@ def test_every_reader_of_a_stored_entry_tolerates_any_shape():
         (clarification, "_stored_suggestions"),  # truthiness only
         # ---- NOT stored-entry readers: they share a field NAME -------------
         # The re-render of THIS turn's engine follow-ups, not of a stored row.
-        # #1707 wave 3: this now lives in the response-building phase
-        # extracted from ``process_turn``.
-        (service, "InvestigationService._build_turn_response"),
+        # #1707 wave 3: this is the response-building phase extracted from
+        # ``process_turn``, now a module function of ``turn_response``.
+        (turn_response, "_build_turn_response"),
         # The clarification friendly-names table.
         (clarification, "_clarification_suggestions_for_failed"),
         # A tool result's own label.
@@ -3311,7 +3315,11 @@ class TestATerminalCaseAnswersNothingStored:
             "core/investigation/milestone_engine/terminal_replies.py"
         )
         engine_stage_gates = "core/investigation/milestone_engine/stage_gates.py"
-        service = "modules/agent/domain/services/investigation_service/service.py"
+        # #1707 wave 3: ``_build_turn_response`` moved off the class into its
+        # own module.
+        turn_response = (
+            "modules/agent/domain/services/investigation_service/turn_response.py"
+        )
         clarification = (
             "modules/agent/domain/services/investigation_service/clarification.py"
         )
@@ -3344,7 +3352,7 @@ class TestATerminalCaseAnswersNothingStored:
             # returned into the response, forwarding ``f.get("intent")``
             # unchanged. It cannot originate an intent, so it cannot originate
             # one on a terminal case either.
-            (service, "InvestigationService._build_turn_response"),
+            (turn_response, "_build_turn_response"),
         }, (
             "a new intent-bearing follow-up builder: "
             f"{sorted(builders)}. If it can fire on a terminal case, the "
