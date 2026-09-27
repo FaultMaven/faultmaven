@@ -39,7 +39,7 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | ✅ Design | Approved | This document |
 | ✅ ORM Models | Complete | `faultmaven/infrastructure/persistence/models.py` |
 | ✅ Migration | Complete | `alembic/versions/` — single baseline `a1e0c17bd001` (`001_enterprise_baseline`), current head |
-| ✅ PostgreSQL Repository | Complete | `postgresql_hybrid_case_repository.py` |
+| ✅ PostgreSQL Repository | Complete | `postgresql_hybrid_case_repository/repository.py` |
 | ✅ SQLite Repository | Complete | `sqlite_case_repository/` |
 | ✅ SQLite Integration Tests | Complete | Tests passing with real SQLite database |
 | ⏳ PostgreSQL Tests | Pending | Not yet run against real PostgreSQL |
@@ -216,7 +216,7 @@ class SQLiteCaseRepository(CaseRepository):
 
 ### 2.4 PostgreSQL Implementation (Production)
 
-**File**: `faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository.py`
+**File**: `faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository/repository.py`
 
 ```python
 class PostgreSQLHybridCaseRepository(CaseRepository):
@@ -1881,7 +1881,7 @@ psql -U faultmaven -d faultmaven_cases -c "SELECT * FROM evidence WHERE case_id 
 - [x] Design approved (this document)
 - [x] ORM models (`faultmaven/infrastructure/persistence/models.py`)
 - [x] Single baseline migration `a1e0c17bd001` (`001_enterprise_baseline`) — the enterprise isolates, RLS keyed on `enterprise_id`
-- [x] Repository implementation (`postgresql_hybrid_case_repository.py`, `sqlite_case_repository/`)
+- [x] Repository implementation (`postgresql_hybrid_case_repository/repository.py`, `sqlite_case_repository/`)
 - [x] Container.py wiring (`CASE_STORAGE_TYPE=database`)
 - [x] Enterprise tier bootstrap (default enterprise seed; NOT NULL `enterprise_id` on users/orgs)
 - [x] `case_actions.triggered_by` column + read path wired (migration 008)

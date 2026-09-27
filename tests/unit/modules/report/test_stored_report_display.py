@@ -17,6 +17,12 @@ from faultmaven.modules.case.contracts import (
     CONFIRMED_ESTABLISHED_BY,
     normalize_stored_report_content,
 )
+from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
+    rows as pg_rows,
+)
+from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+    rows as sqlite_rows,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -110,13 +116,11 @@ class _Row:
 
 
 @pytest.mark.parametrize(
-    "repo_module",
-    [
-        "faultmaven.modules.case.infrastructure.sqlite_case_repository.repository",
-        "faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository",
-    ],
+    "row_to_report",
+    [sqlite_rows._row_to_report, pg_rows._row_to_report],
+    ids=["sqlite", "postgresql"],
 )
-def test_every_repository_normalizes_where_a_row_becomes_a_report(repo_module):
+def test_every_repository_normalizes_where_a_row_becomes_a_report(row_to_report):
     """The boundary, not the presentation site.
 
     Applied per-reader this is a discipline every future consumer must opt into,
@@ -125,28 +129,10 @@ def test_every_repository_normalizes_where_a_row_becomes_a_report(repo_module):
     Applied here it is a property of any report loaded from storage, which is
     what makes the download path correct without knowing about it.
 
-    ``_row_to_report`` is a module function of SQLite's package (it reads no
-    instance state) but still a method of PostgreSQL's class, so this resolves
-    either shape rather than assuming one.
+    Each repository package turns a row into a report in its ``rows.py``
+    (``_row_to_report`` reads no instance state, so it is a module function).
     """
-    import importlib
-
-    module = importlib.import_module(repo_module)
-    repo_cls = next(
-        obj
-        for name, obj in vars(module).items()
-        if isinstance(obj, type)
-        and name.endswith("CaseRepository")
-        and obj.__module__ == module.__name__
-    )
-
-    if hasattr(repo_cls, "_row_to_report"):
-        report = repo_cls._row_to_report(repo_cls.__new__(repo_cls), _Row())
-    else:
-        rows_module = importlib.import_module(
-            module.__name__.rsplit(".", 1)[0] + ".rows"
-        )
-        report = rows_module._row_to_report(_Row())
+    report = row_to_report(_Row())
 
     assert "ev_a9f662e1c86f" not in report.content
     assert "gone⇒gone" not in report.content

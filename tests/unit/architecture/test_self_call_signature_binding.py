@@ -58,7 +58,7 @@ _MODULES_UNDER_GUARD = {
     # tenancy-carrying self-call, and adding a required parameter ahead of a
     # defaulted one is exactly how the campaign moved these signatures.
     "faultmaven.core.investigation.milestone_engine.engine": "MilestoneEngine",
-    "faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository": (
+    "faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository": (
         "PostgreSQLHybridCaseRepository"
     ),
     "faultmaven.modules.case.infrastructure.sqlite_case_repository.repository": (

@@ -3082,7 +3082,7 @@ def test_every_data_type_writer_retires_the_question():
     assert {
         service_module,
         "modules/case/infrastructure/sqlite_case_repository/repository.py",
-        "modules/case/infrastructure/postgresql_hybrid_case_repository.py",
+        "modules/case/infrastructure/postgresql_hybrid_case_repository/repository.py",
     } <= parsed, f"the token filter excluded a module holding a known writer: {parsed}"
 
     assert found == {
@@ -3133,7 +3133,7 @@ def test_every_data_type_writer_retires_the_question():
             "constructor",
         ),
         (
-            "modules/case/infrastructure/postgresql_hybrid_case_repository.py",
+            "modules/case/infrastructure/postgresql_hybrid_case_repository/repository.py",
             "PostgreSQLHybridCaseRepository.find_uploaded_file_by_content_hash",
             "constructor",
         ),

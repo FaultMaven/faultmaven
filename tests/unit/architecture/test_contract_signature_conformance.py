@@ -498,7 +498,7 @@ def _build_registry() -> Dict[str, RegistryEntry]:
     from faultmaven.modules.case.infrastructure.case_repository import (
         InMemoryCaseRepository,
     )
-    from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (  # noqa: E501
+    from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
         PostgreSQLHybridCaseRepository,
     )
     from faultmaven.modules.case.infrastructure.sessionless_case_repository import (

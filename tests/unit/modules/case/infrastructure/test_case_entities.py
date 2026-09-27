@@ -3,7 +3,7 @@
 Covers ``upsert_case_entities`` / ``find_entity`` / ``list_top_entities``
 on both ``InMemoryCaseRepository`` and ``SQLiteCaseRepository``. The
 PostgreSQL repo uses the same SQL shape (see
-``postgresql_hybrid_case_repository.py``) — its semantics are mirrored
+``postgresql_hybrid_case_repository/repository.py``) — its semantics are mirrored
 by the SQLite suite and verified in staging.
 
 Why two backends: the in-memory impl scans Python dicts, the SQLite

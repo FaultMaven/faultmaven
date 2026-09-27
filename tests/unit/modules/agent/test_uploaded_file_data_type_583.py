@@ -465,7 +465,9 @@ _SQLITE = "modules/case/infrastructure/sqlite_case_repository/repository.py"
 _SQLITE_LOADING = "modules/case/infrastructure/sqlite_case_repository/loading.py"
 _SQLITE_SAVING = "modules/case/infrastructure/sqlite_case_repository/saving.py"
 _SQLITE_ROWS = "modules/case/infrastructure/sqlite_case_repository/rows.py"
-_PG = "modules/case/infrastructure/postgresql_hybrid_case_repository.py"
+_PG = "modules/case/infrastructure/postgresql_hybrid_case_repository/repository.py"
+_PG_LOADING = "modules/case/infrastructure/postgresql_hybrid_case_repository/loading.py"
+_PG_SAVING = "modules/case/infrastructure/postgresql_hybrid_case_repository/saving.py"
 
 #: ``(module, scope, shape, receiver) -> (category, count)``. Categories:
 #:
@@ -585,15 +587,15 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
         "construct_kw",
         "row[15]",
     ): ("passthrough", 1),
-    (_PG, "PostgreSQLHybridCaseRepository._upsert_uploaded_files", "sql", "<sql>"): (
+    (_PG_SAVING, "_upsert_uploaded_files", "sql", "<sql>"): (
         "passthrough",
         2,
     ),
-    (_PG, "PostgreSQLHybridCaseRepository._upsert_uploaded_files", "attr", "file"): (
+    (_PG_SAVING, "_upsert_uploaded_files", "attr", "file"): (
         "passthrough",
         1,
     ),
-    (_PG, "PostgreSQLHybridCaseRepository._row_to_case", "construct_spread", "f"): (
+    (_PG_LOADING, "_row_to_case", "construct_spread", "f"): (
         "passthrough",
         1,
     ),

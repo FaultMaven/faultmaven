@@ -146,16 +146,16 @@ _ALLOWED = {
             "_upsert_messages",
         ): "binds the case's rows into the upsert's parameters",
         (
-            "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository.py",
+            "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository/repository.py",
             "PostgreSQLHybridCaseRepository.add_message",
         ): "binds the caller's row into the INSERT's parameters",
         (
-            "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository.py",
+            "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository/repository.py",
             "PostgreSQLHybridCaseRepository.get_messages",
         ): "hydrates rows read from case_messages",
         (
-            "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository.py",
-            "PostgreSQLHybridCaseRepository._upsert_messages",
+            "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository/saving.py",
+            "_upsert_messages",
         ): "binds the case's rows into the upsert's parameters",
         # Not a row of this table at all.
         (
@@ -195,12 +195,12 @@ _ALLOWED = {
             "_upsert_messages",
         ): "the aggregate save",
         (
-            "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository.py",
+            "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository/repository.py",
             "PostgreSQLHybridCaseRepository.add_message",
         ): "the repository's row-at-a-time write",
         (
-            "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository.py",
-            "PostgreSQLHybridCaseRepository._upsert_messages",
+            "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository/saving.py",
+            "_upsert_messages",
         ): "the aggregate save",
     },
 }

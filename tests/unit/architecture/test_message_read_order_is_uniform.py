@@ -29,7 +29,7 @@ _REPOS = Path(__file__).resolve().parents[3] / "faultmaven/modules/case/infrastr
 _FILES = (
     "sqlite_case_repository/repository.py",
     "sqlite_case_repository/loading.py",
-    "postgresql_hybrid_case_repository.py",
+    "postgresql_hybrid_case_repository/repository.py",
 )
 
 #: How many SELECT-from-case_messages readers we expect. A positive control:
