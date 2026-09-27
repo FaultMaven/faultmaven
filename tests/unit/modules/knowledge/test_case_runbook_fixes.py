@@ -15,7 +15,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     CaseConversionRequest,
     _resolve_domain,
 )
-from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
+from faultmaven.modules.knowledge.domain.services.conversion_service.failure_modes import (
     _force_frontmatter_id,
 )
 

@@ -37,11 +37,13 @@ from faultmaven.modules.knowledge.domain.models.suggestion import (
 # are the conversion path's, reused rather than re-declared (#1226): a second
 # copy of the template is a second thing to keep in step with the validator, and
 # ``test_cause_grammar_vocab`` pins exactly one of them against ``cause_grammar``.
-from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
+from faultmaven.modules.knowledge.domain.services.conversion_service.failure_modes import (
+    _force_frontmatter_id,
+)
+from faultmaven.modules.knowledge.domain.services.conversion_service.prompts import (
     CONVERSION_SYSTEM_PROMPT,
     RUNBOOK_MAX_TOKENS,
     RUNBOOK_MAX_TOKENS_CEILING,
-    _force_frontmatter_id,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     VALID_DOMAINS,

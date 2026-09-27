@@ -25,7 +25,7 @@ from faultmaven.modules.knowledge.domain.services.cause_grammar import (
     QUADRANT_ALTERNATION,
     REQUIRED_CAUSE_SUBFIELDS,
 )
-from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
+from faultmaven.modules.knowledge.domain.services.conversion_service.prompts import (
     CONVERSION_SYSTEM_PROMPT,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (

@@ -38,7 +38,7 @@ from faultmaven.modules.knowledge.domain.models.suggestion import (
     KnowledgeSuggestion,
     PIIScanStatus,
 )
-from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
+from faultmaven.modules.knowledge.domain.services.conversion_service.prompts import (
     CONVERSION_SYSTEM_PROMPT,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (

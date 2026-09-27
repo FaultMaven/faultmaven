@@ -53,12 +53,16 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     generate_draft_id,
     generate_runbook_id,
 )
-from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
+from faultmaven.modules.knowledge.domain.services.conversion_service.errors import (
+    ConversionRejectedError,
+)
+from faultmaven.modules.knowledge.domain.services.conversion_service.prompts import (
     ANALYSIS_SYSTEM_PROMPT,
     CONVERSION_SYSTEM_PROMPT,
-    DEFAULT_ENTERPRISE_ID,
     RUNBOOK_MAX_TOKENS_CEILING,
-    ConversionRejectedError,
+)
+from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
+    DEFAULT_ENTERPRISE_ID,
     ConversionService,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
@@ -1522,7 +1526,7 @@ class TestConversionPromptIsV4:
     Resolution). Regression guard for the v3->v4 template migration."""
 
     def test_conversion_system_prompt_is_v4(self):
-        from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
+        from faultmaven.modules.knowledge.domain.services.conversion_service.prompts import (
             CONVERSION_SYSTEM_PROMPT as p,
         )
 

@@ -344,7 +344,9 @@ class TestTheGuardCoversEveryNewDraftWritePath:
         """
         import inspect
 
-        from faultmaven.modules.knowledge.domain.services import conversion_service
+        from faultmaven.modules.knowledge.domain.services.conversion_service import (
+            service as conversion_service,
+        )
 
         src = pathlib.Path(inspect.getfile(conversion_service)).read_text()
         # Split into top-level method bodies and check each that writes.
