@@ -56,6 +56,12 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
 from faultmaven.modules.knowledge.domain.services.conversion_service.errors import (
     ConversionRejectedError,
 )
+from faultmaven.modules.knowledge.domain.services.conversion_service.job_persistence import (
+    _persist_job,
+)
+from faultmaven.modules.knowledge.domain.services.conversion_service.pipeline import (
+    _analyze_document,
+)
 from faultmaven.modules.knowledge.domain.services.conversion_service.prompts import (
     ANALYSIS_SYSTEM_PROMPT,
     CONVERSION_SYSTEM_PROMPT,
@@ -431,7 +437,9 @@ class TestAnalysisPhase:
         """Analysis parses JSON response into AnalysisResult with correct fields."""
         mock_llm_router.route.return_value = _make_llm_response(mock_analysis_response)
 
-        result = await service._analyze_document("sample text", "test.md")
+        result = await _analyze_document(
+            service._llm_router, service._settings, "sample text", "test.md"
+        )
 
         assert isinstance(result, AnalysisResult)
         assert result.is_actionable is True
@@ -454,7 +462,9 @@ class TestAnalysisPhase:
         """Source assessment is parsed from the response."""
         mock_llm_router.route.return_value = _make_llm_response(mock_analysis_response)
 
-        result = await service._analyze_document("sample text", "test.md")
+        result = await _analyze_document(
+            service._llm_router, service._settings, "sample text", "test.md"
+        )
 
         assert result.source_assessment.content_type == "troubleshooting_guide"
         assert result.source_assessment.actionability_rating == "high"
@@ -471,7 +481,9 @@ class TestAnalysisPhase:
             ConversionRejectedError,
             match="LLM analysis response could not be parsed",
         ) as exc:
-            await service._analyze_document("sample text", "test.md")
+            await _analyze_document(
+                service._llm_router, service._settings, "sample text", "test.md"
+            )
 
         assert exc.value.error_code == ConversionErrorCode.LLM_PARSE_ERROR
 
@@ -1875,7 +1887,9 @@ class TestPersistJobLiveCaseKey:
     @pytest.mark.asyncio
     async def test_case_job_with_live_draft_sets_key(self, live_case_session_factory):
         svc = _make_live_case_service(live_case_session_factory)
-        await svc._persist_job(
+        await _persist_job(
+            svc._db_session_factory,
+            svc._share_repo,
             conversion_id="conv-case-live",
             user_id="u1",
             enterprise_id=DEFAULT_ENTERPRISE_ID,
@@ -1897,7 +1911,9 @@ class TestPersistJobLiveCaseKey:
     @pytest.mark.asyncio
     async def test_document_job_leaves_key_null(self, live_case_session_factory):
         svc = _make_live_case_service(live_case_session_factory)
-        await svc._persist_job(
+        await _persist_job(
+            svc._db_session_factory,
+            svc._share_repo,
             conversion_id="conv-doc",
             user_id="u1",
             enterprise_id=DEFAULT_ENTERPRISE_ID,
@@ -1919,7 +1935,9 @@ class TestPersistJobLiveCaseKey:
         self, live_case_session_factory
     ):
         svc = _make_live_case_service(live_case_session_factory)
-        await svc._persist_job(
+        await _persist_job(
+            svc._db_session_factory,
+            svc._share_repo,
             conversion_id="conv-failed",
             user_id="u1",
             enterprise_id=DEFAULT_ENTERPRISE_ID,
@@ -2643,7 +2661,9 @@ class TestPersistJobOrgStamp:
 
     @staticmethod
     async def _run_persist(service, conversion_id: str, enterprise_id, tmp_path):
-        await service._persist_job(
+        await _persist_job(
+            service._db_session_factory,
+            service._share_repo,
             conversion_id=conversion_id,
             user_id="u1",
             enterprise_id=enterprise_id,

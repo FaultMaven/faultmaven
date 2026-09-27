@@ -55,6 +55,9 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     PreprocessingResult,
     SourceAssessment,
 )
+from faultmaven.modules.knowledge.domain.services.conversion_service.draft_slots import (
+    _raise_if_runbook_id_taken,
+)
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
@@ -468,10 +471,14 @@ class TestTheGuardCoversEveryNewDraftWritePath:
             await session.commit()
 
         with pytest.raises(ConflictError) as excinfo:
-            await service._raise_if_runbook_id_taken(ENTERPRISE_ID, [""])
+            await _raise_if_runbook_id_taken(
+                service._db_session_factory, ENTERPRISE_ID, [""]
+            )
         assert excinfo.value.resource_id == "draft_legacy"
         # ... and a list of only ``None`` still short-circuits.
-        await service._raise_if_runbook_id_taken(ENTERPRISE_ID, [None])
+        await _raise_if_runbook_id_taken(
+            service._db_session_factory, ENTERPRISE_ID, [None]
+        )
 
 
 class TestTheCaseRaceStillReturnsTheWinner:
@@ -518,8 +525,8 @@ class TestTheCaseRaceStillReturnsTheWinner:
             **TEMPLATE_ARGS,
         )
         with pytest.raises(ConflictError):
-            await service._raise_if_runbook_id_taken(
-                ENTERPRISE_ID, [first["draft"].runbook_id]
+            await _raise_if_runbook_id_taken(
+                service._db_session_factory, ENTERPRISE_ID, [first["draft"].runbook_id]
             )
 
 
@@ -621,9 +628,8 @@ Alert on the used_memory to maxmemory ratio.
         service._llm_router.route = AsyncMock(
             return_value=SimpleNamespace(content=self.RUNBOOK, is_truncated=False)
         )
-        with patch.object(
-            ConversionService,
-            "_analyze_document",
+        with patch(
+            "faultmaven.modules.knowledge.domain.services.conversion_service.service._analyze_document",
             AsyncMock(
                 return_value=AnalysisResult(
                     is_actionable=True,
@@ -902,9 +908,8 @@ class TestAPathEscapeIsNeverLaunderedIntoAResponse:
                 is_truncated=False,
             )
         )
-        with patch.object(
-            ConversionService,
-            "refuse_if_draft_slot_taken",
+        with patch(
+            "faultmaven.modules.knowledge.domain.services.conversion_service.service.refuse_if_draft_slot_taken",
             AsyncMock(
                 side_effect=RunbookPathEscape(
                     "/srv/secret/etc/passwd is outside /srv/kb"
