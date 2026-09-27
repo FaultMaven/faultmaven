@@ -73,14 +73,14 @@ def get_repository_for_session(session):
         logger.warning(f"Failed to detect database dialect, defaulting to SQLite: {e}")
 
     if dialect_name == "postgresql":
-        from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
+        from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
             PostgreSQLHybridCaseRepository,
         )
 
         return PostgreSQLHybridCaseRepository(session)
     else:
         # SQLite or any other dialect - use SQLite-compatible repository
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 

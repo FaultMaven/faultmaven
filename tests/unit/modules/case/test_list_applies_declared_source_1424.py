@@ -63,13 +63,13 @@ from faultmaven.modules.case.infrastructure.case_repository import (
     CaseRepository,
     InMemoryCaseRepository,
 )
-from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
+from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
     PostgreSQLHybridCaseRepository,
 )
 from faultmaven.modules.case.infrastructure.sessionless_case_repository import (
     SessionlessCaseRepository,
 )
-from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     SQLiteCaseRepository,
 )
 
