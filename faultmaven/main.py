@@ -526,59 +526,36 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
             "503 for this process."
         )
 
-    # Document-to-runbook conversion service
-    try:
-        from .config.settings import get_settings as _get_settings
-        from .infrastructure.persistence.database import (
-            get_db_session,
-            get_engine,
-        )
-        from .infrastructure.persistence.models import (
-            ConversionDraftModel,
-            ConversionJobModel,
-        )
-        from .modules.knowledge.domain.services.conversion_service import (
-            ConversionService,
-        )
-
-        # Ensure conversion tables exist (safe no-op if already present)
-        _conv_engine = get_engine()
-        async with _conv_engine.begin() as _conn:
-            await _conn.run_sync(
-                ConversionJobModel.__table__.create,
-                checkfirst=True,
-            )
-            await _conn.run_sync(
-                ConversionDraftModel.__table__.create,
-                checkfirst=True,
+    # Document-to-runbook conversion service. Composed in the container,
+    # before the engine that calls it (#1722); the lifespan only ensures its
+    # tables exist (a no-op when the baseline migration created them). A
+    # failure here disables the conversion routes, as it always has.
+    app.state.conversion_service = getattr(container, "conversion_service", None)
+    if app.state.conversion_service is not None:
+        try:
+            from .infrastructure.persistence.database import get_engine
+            from .infrastructure.persistence.models import (
+                ConversionDraftModel,
+                ConversionJobModel,
             )
 
-        _settings = _get_settings()
-        _llm_provider = container.get_llm_provider()
-
-        app.state.conversion_service = ConversionService(
-            llm_router=_llm_provider,
-            settings=_settings,
-            db_session_factory=get_db_session,
-            knowledge_service=app.state.knowledge_service,
-            # Source both collaborators from the CONTAINER, not
-            # app.state — the app.state copies are assigned further
-            # down this lifespan, so reading them here yields None
-            # and silently disables team publishing (share rows never
-            # minted, membership gate #854 unreachable). Pinned by
-            # test_conversion_service_composition_root_wiring.
-            share_repository=getattr(container, "share_repository", None),
-            # Membership resolver for the team publish target (#854);
-            # absent (standalone) → team-scoped publish is refused.
-            team_service=container.get_team_service(),
-        )
-        logger.info("✅ Document conversion service initialized")
-    except Exception as conv_err:
-        logger.warning(
-            f"Document conversion service not available: {conv_err}",
-            exc_info=True,
-        )
-        app.state.conversion_service = None
+            _conv_engine = get_engine()
+            async with _conv_engine.begin() as _conn:
+                await _conn.run_sync(
+                    ConversionJobModel.__table__.create,
+                    checkfirst=True,
+                )
+                await _conn.run_sync(
+                    ConversionDraftModel.__table__.create,
+                    checkfirst=True,
+                )
+            logger.info("✅ Document conversion service initialized")
+        except Exception as conv_err:
+            logger.warning(
+                f"Document conversion service not available: {conv_err}",
+                exc_info=True,
+            )
+            app.state.conversion_service = None
 
     # The composed web-search tool, or None when the registry did not register
     # one (disabled by ENABLE_WEB_SEARCH, no provider key, or construction
@@ -616,12 +593,6 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
     app.state.tracer = container.get_tracer()
     app.state.llm_provider = container.get_llm_provider()
     logger.info("✅ Services attached to app.state (Composition Root)")
-
-    # Late-bind conversion_service into milestone engine (avoids circular DI)
-    _milestone_engine = getattr(container, "milestone_engine", None)
-    _conversion_svc = getattr(app.state, "conversion_service", None)
-    if _milestone_engine and _conversion_svc:
-        _milestone_engine.conversion_service = _conversion_svc
 
     # Check LLM provider configuration and warn if none configured
     _check_llm_configuration(app.state.llm_provider, settings=settings)

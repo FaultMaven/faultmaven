@@ -98,12 +98,12 @@ def test_capabilities_endpoint_feature_flags(booted_app_client):
 def test_conversion_service_composition_root_wiring(booted_app_client):
     """ConversionService gets the SAME collaborators the rest of the app uses.
 
-    The lifespan constructs ConversionService before it copies the container's
-    team_service/share_repository onto app.state, so sourcing them from
-    app.state at construction time yields None — team share rows are never
-    minted and the #854 membership gate is unreachable while the rest of the
-    app (capabilities endpoint, retrieval allowlist) sees the real services.
-    Pin identity with the CONTAINER-sourced values app.state ends up holding.
+    It was once built in the lifespan from app.state before the lifespan had
+    copied the container's team_service/share_repository there, which yielded
+    None: team share rows were never minted and the #854 membership gate was
+    unreachable while the rest of the app (capabilities endpoint, retrieval
+    allowlist) saw the real services. It is now composed in the container
+    (#1722). Pin identity with the values app.state ends up holding.
     """
     from faultmaven.infrastructure.persistence.database import get_db_session
     from faultmaven.modules.knowledge.domain.services.knowledge_service import (
@@ -132,6 +132,26 @@ def test_conversion_service_composition_root_wiring(booted_app_client):
         ks, KnowledgeService
     ), f"lifespan published a {type(ks).__name__}, not a real KnowledgeService"
     assert ks._db_session_factory is get_db_session
+
+
+def test_milestone_engine_holds_the_services_the_app_publishes(booted_app_client):
+    """The engine is built with the same services app.state holds (#1722).
+
+    Five of them used to be assigned onto the engine after it was built
+    (report, knowledge, team, share and conversion). The container now builds
+    those services first and passes them to the constructor. This pins the
+    outcome: the engine calls the very objects the routes call, so a report,
+    a runbook draft or a team-KB read cannot silently go to a different, or a
+    missing, instance.
+    """
+    engine = app.state.investigation_service.engine
+    assert app.state.conversion_service is not None
+    assert engine.conversion_service is app.state.conversion_service
+    assert engine.knowledge_service is app.state.knowledge_service
+    assert engine.report_service is app.state.report_generation_service
+    assert engine.share_repository is app.state.share_repository
+    # None in standalone; identity still pins that both read one source.
+    assert engine.team_service is app.state.team_service
 
 
 def test_suggestion_service_composition_root_wiring(booted_app_client):

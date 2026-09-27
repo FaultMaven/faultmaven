@@ -128,6 +128,11 @@ def _make_case(*, established: bool = True) -> Case:
 
 def _make_engine() -> MilestoneEngine:
     eng = MilestoneEngine.__new__(MilestoneEngine)
+    # Attributes __init__ always sets and the engine reads directly (#1722).
+    eng.llm_provider = None
+    eng.team_service = None
+    eng.share_repository = None
+    eng.conversion_service = None
     eng._apply_chain_emission = lambda *a, **k: None
     eng._nudge_ambiguous_orphan_chains = lambda *a, **k: None
     return eng
