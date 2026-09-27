@@ -30,7 +30,7 @@ import pytest
 
 from faultmaven.exceptions import ConflictError
 from faultmaven.modules.knowledge.domain.models.conversion import DraftStatus
-from faultmaven.modules.knowledge.domain.services.conversion_service import (
+from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
@@ -507,9 +507,8 @@ class TestTheAssembledDraftPathIsGuardedToo:
         # running before the check is half of the defect this replaces, and it
         # materialises attacker-chosen directories even when no file is written.
         monkeypatch.setattr(
-            ConversionService,
-            "_scope_dir",
-            lambda self, scope, team_id=None, user_id=None: tmp_path
+            "faultmaven.modules.knowledge.domain.services.conversion_service.service._scope_dir",
+            lambda data_dir, scope, team_id=None, user_id=None: tmp_path
             / "data"
             / "knowledge"
             / ".."
@@ -741,7 +740,7 @@ class TestDeleteDraftSurvivesAnUnlinkError:
         # Make the resolved path's ``unlink`` raise, leaving ``exists()`` True —
         # a read-only FS / permission / TOCTOU vanish. Patch the symbol the
         # service module imported, not the helper module.
-        import faultmaven.modules.knowledge.domain.services.conversion_service as cs
+        import faultmaven.modules.knowledge.domain.services.conversion_service.service as cs
         from faultmaven.utils.runbook_id import resolve_runbook_path as _real
 
         def _boom(path, *, source, root):

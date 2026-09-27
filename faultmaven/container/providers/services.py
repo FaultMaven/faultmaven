@@ -1558,7 +1558,7 @@ def register_services(container: BaseDIContainer) -> None:
     # does not abort the registrations after it.
     try:
         from faultmaven.infrastructure.persistence.database import get_db_session
-        from faultmaven.modules.knowledge.domain.services.conversion_service import (
+        from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
             ConversionService,
         )
 

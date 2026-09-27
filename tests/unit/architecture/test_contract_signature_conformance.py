@@ -513,7 +513,7 @@ def _build_registry() -> Dict[str, RegistryEntry]:
         ISuggestionRepository,
         ISuggestionService,
     )
-    from faultmaven.modules.knowledge.domain.services.conversion_service import (
+    from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
         ConversionService,
     )
     from faultmaven.modules.knowledge.domain.services.knowledge_service import (

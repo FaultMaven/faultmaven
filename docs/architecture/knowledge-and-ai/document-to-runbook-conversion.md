@@ -122,7 +122,7 @@ The conversion feature is a **domain service** within the knowledge module. It d
 faultmaven/modules/knowledge/
     domain/
         services/
-            conversion_service.py      # NEW -- orchestrates the pipeline
+            conversion_service/        # NEW -- orchestrates the pipeline
             document_parser.py         # NEW -- text extraction from file formats
         models/
             conversion.py             # NEW -- ConversionJob, ConversionDraft models
@@ -739,19 +739,19 @@ There is no section-header pre-chunking step: because the preprocessor hard-reje
 
 ### 5.3 ID Generation
 
-Runbook IDs are generated deterministically from the failure mode analysis:
+Runbook IDs are minted deterministically from a failure mode's service and title. There is one mint point, `runbook_id_from_parts(service, title)` in `faultmaven/utils/runbook_id.py`, and both paths that write an id use it:
 
-```python
-def _generate_runbook_id(self, failure_mode: FailureMode) -> str:
-    """Generate kebab-case ID from service and failure description."""
-    # e.g., "pg-connection-pool-exhaustion"
-    base = f"{failure_mode.service}-{failure_mode.title}"
-    slug = re.sub(r'[^a-z0-9]+', '-', base.lower()).strip('-')
-    # Truncate to 60 chars, ensure uniqueness with short hash if needed
-    if len(slug) > 60:
-        slug = slug[:55] + '-' + hashlib.md5(slug.encode()).hexdigest()[:4]
-    return slug
-```
+- the LLM conversion path, through `generate_runbook_id(failure_mode)` in `faultmaven/modules/knowledge/domain/models/conversion.py`;
+- the manual path, `ConversionService.create_runbook_from_template`.
+
+The rules:
+
+- **Slug.** `service-title` is lowercased, and each run of characters outside `[a-z0-9]` becomes one `-`.
+- **Over-length.** A slug over 60 characters becomes its first 55 characters, a hyphen, and the first 4 characters of an md5 of the full slug, so two long titles that share a prefix still get distinct ids.
+- **Empty slug.** A slug with no allowlisted characters becomes `runbook-` plus the first 8 characters of an md5 of the `(service, title)` pair, rather than an empty id.
+- **Invariant.** The result always matches `^[a-z0-9]+(-[a-z0-9]+)*$`.
+
+The value is persisted in `conversion_drafts.runbook_id` and in runbook frontmatter, so its output is pinned by a differential test. Changing the rule would orphan rows that already exist.
 
 ### 5.4 Handling Edge Cases
 

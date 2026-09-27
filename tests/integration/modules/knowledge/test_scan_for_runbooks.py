@@ -38,7 +38,7 @@ from faultmaven.infrastructure.persistence.models import (
     OrganizationModel,
     UploadedFileModel,
 )
-from faultmaven.modules.knowledge.domain.services.conversion_service import (
+from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
 

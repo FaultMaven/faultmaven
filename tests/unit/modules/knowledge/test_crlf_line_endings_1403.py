@@ -480,7 +480,7 @@ async def test_update_draft_writes_lf_to_disk(_session_factory, tmp_path, monkey
         ConversionJobModel,
         UploadedFileModel,
     )
-    from faultmaven.modules.knowledge.domain.services.conversion_service import (
+    from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
         ConversionService,
     )
 
@@ -559,7 +559,7 @@ async def test_create_runbook_from_template_writes_lf(
     added after a mutation run showed the site had NO guard while the other four
     layer-3 sites did.
     """
-    from faultmaven.modules.knowledge.domain.services.conversion_service import (
+    from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
         ConversionService,
     )
 
