@@ -17,7 +17,7 @@ from faultmaven.modules.case.contracts import (
 
 from .stage_gates import CATEGORY_MILESTONE_MAP
 
-logger = logging.getLogger("faultmaven.core.investigation.milestone_engine")
+logger = logging.getLogger(__name__)
 
 
 def _apply_symptom_retraction(

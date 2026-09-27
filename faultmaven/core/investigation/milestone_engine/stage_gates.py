@@ -33,7 +33,7 @@ from faultmaven.modules.case.contracts import (
     WorkingConclusion,
 )
 
-logger = logging.getLogger("faultmaven.core.investigation.milestone_engine")
+logger = logging.getLogger(__name__)
 
 
 def _matches_gate_token(msg: str, tokens: list[str]) -> bool:

@@ -27,7 +27,7 @@ from .stage_gates import (
 )
 from .terminal_replies import _resolution_confirmation_suggestions
 
-logger = logging.getLogger("faultmaven.core.investigation.milestone_engine")
+logger = logging.getLogger(__name__)
 
 
 def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:

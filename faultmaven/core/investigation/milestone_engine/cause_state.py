@@ -39,7 +39,7 @@ from .stage_gates import (
     _withdraw_unlicensed_solution_offers,
 )
 
-logger = logging.getLogger("faultmaven.core.investigation.milestone_engine")
+logger = logging.getLogger(__name__)
 
 
 NO_ROOT_CAUSE_ESTABLISHED = "No root cause established"

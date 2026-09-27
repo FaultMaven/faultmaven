@@ -7,7 +7,7 @@ from faultmaven.infrastructure.llm.providers import (
 )
 from faultmaven.modules.case.contracts import Case, CaseState
 
-logger = logging.getLogger("faultmaven.core.investigation.milestone_engine")
+logger = logging.getLogger(__name__)
 
 
 _DISPOSITION_GATE_ANSWERED_KEY = "disposition_gate_answered_this_turn"
