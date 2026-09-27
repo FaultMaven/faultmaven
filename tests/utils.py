@@ -531,7 +531,8 @@ def case_repository_holding(
 ) -> CaseReadDouble:
     """A :class:`CaseReadDouble` holding one real ``Case`` with one user row."""
     from faultmaven.modules.case.contracts import MessageRowKind, append_message_row
-    from faultmaven.modules.case.domain.models import Case, CaseState
+    from faultmaven.modules.case.domain.models.case import Case
+    from faultmaven.modules.case.domain.models.lifecycle import CaseState
 
     case = Case(
         case_id=case_id,

@@ -30,7 +30,7 @@ from faultmaven.modules.case.contracts import (
     HypothesisState,
     InvestigationProgress,
 )
-from faultmaven.modules.case.domain.models import CauseState
+from faultmaven.modules.case.domain.models.progress import CauseState
 
 logger = logging.getLogger(__name__)
 

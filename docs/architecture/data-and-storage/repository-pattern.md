@@ -367,7 +367,7 @@ CHROMADB_COLLECTION=faultmaven_kb
 ```python
 from abc import ABC, abstractmethod
 from typing import List, Optional, Dict, Any
-from faultmaven.models.case import Case, CaseState
+from faultmaven.modules.case.domain.models import Case, CaseState
 
 
 class CaseRepository(ABC):

@@ -16,7 +16,7 @@ import pytest
 
 from faultmaven.modules.agent.tools.base import ToolContext
 from faultmaven.modules.agent.tools.find_entity_tool import FindEntityTool
-from faultmaven.modules.case.domain.models import CaseEntity, EntityType
+from faultmaven.modules.case.domain.models.evidence import CaseEntity, EntityType
 
 
 def _ctx() -> ToolContext:

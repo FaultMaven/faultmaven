@@ -30,14 +30,14 @@ that needs no precondition: it is always honourable, and the user is the only
 one who can make it.
 
 The full legality graph is ``LEGAL_TRANSITIONS`` in
-``modules/case/domain/models.py``.
+``modules/case/domain/models/lifecycle.py``.
 """
 
 from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any, Dict, Mapping, Optional
 
-from faultmaven.modules.case.domain.models import CaseState
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.utils.serialization import to_json_compatible
 
 #: What a user may PICK from the status menu. A strict subset of

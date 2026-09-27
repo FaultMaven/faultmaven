@@ -12,12 +12,9 @@ from faultmaven.exceptions import (
     PermissionDeniedException,
     ServiceException,
 )
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
-    TurnOutcome,
-    TurnProgress,
-)
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 
 if TYPE_CHECKING:
     from faultmaven.core.investigation.milestone_engine import MilestoneEngine
@@ -32,12 +29,12 @@ def create_sample_case(
     message_count: int = 0,
 ) -> Case:
     """Create a sample Case for testing."""
-    from faultmaven.modules.case.domain.models import (
-        InvestigationProgress,
+    from faultmaven.modules.case.domain.models.problem import (
         ProblemVerification,
         TemporalState,
         UrgencyLevel,
     )
+    from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 
     case_id = case_id or f"case_{uuid4().hex[:12]}"
     user_id = user_id or str(uuid4())
@@ -302,7 +299,7 @@ def make_uploaded_file(
     upload_source: str = "file_upload",
 ):
     """UploadedFile with the reclassify suites' shared defaults."""
-    from faultmaven.modules.case.domain.models import UploadedFile
+    from faultmaven.modules.case.domain.models.evidence import UploadedFile
 
     return UploadedFile(
         file_id=file_id,
@@ -323,7 +320,7 @@ def make_evidence(
     source_type=None,
 ):
     """Evidence row with LLM-authored claim fields the handlers must not touch."""
-    from faultmaven.modules.case.domain.models import (
+    from faultmaven.modules.case.domain.models.evidence import (
         Evidence,
         EvidenceCategory,
         EvidenceSourceType,

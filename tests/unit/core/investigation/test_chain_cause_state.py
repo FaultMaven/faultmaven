@@ -1200,7 +1200,7 @@ def test_cause_assurance_rides_the_progress_blob():
     import json
 
     from faultmaven.modules.case.contracts import CauseAssuranceGrade
-    from faultmaven.modules.case.domain.models import InvestigationProgress
+    from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 
     p = InvestigationProgress(cause_assurance=CauseAssuranceGrade.CONFIRMED)
     blob = json.loads(p.model_dump_json())

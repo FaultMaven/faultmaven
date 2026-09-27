@@ -27,20 +27,22 @@ from sqlalchemy.ext.asyncio import (
 
 from faultmaven.core.investigation.milestone_engine import CATEGORY_MILESTONE_MAP
 from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
-    EvidenceNeed,
     EvidenceSourceType,
-    InquiryData,
+    UploadedFile,
+)
+from faultmaven.modules.case.domain.models.evidence_needs import (
+    EvidenceNeed,
     NeedObtainability,
     NeedPriority,
     NeedPurpose,
     NeedState,
-    UploadedFile,
 )
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import InquiryData
 from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
     SQLiteCaseRepository,
 )

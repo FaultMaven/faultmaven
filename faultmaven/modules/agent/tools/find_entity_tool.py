@@ -20,7 +20,7 @@ from typing import Any, Dict, Optional
 
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
-from faultmaven.modules.case.domain.models import EntityType
+from faultmaven.modules.case.domain.models.evidence import EntityType
 
 logger = logging.getLogger(__name__)
 

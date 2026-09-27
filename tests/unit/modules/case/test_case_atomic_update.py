@@ -11,13 +11,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import (
     InquiryData,
-    InvestigationProgress,
     ProblemVerification,
 )
+from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 
 
 def _make_investigating_case() -> Case:

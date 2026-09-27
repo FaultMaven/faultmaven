@@ -22,7 +22,7 @@ from fastapi.routing import APIRoute
 
 from faultmaven.api.routes.sessions import require_case_access, router
 from faultmaven.exceptions import NotFoundError
-from faultmaven.modules.case.domain.models import Case
+from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.services.case_service import CaseService
 
 SHARED_ORG = "org_beta_group"

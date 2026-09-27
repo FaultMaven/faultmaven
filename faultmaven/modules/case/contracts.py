@@ -430,7 +430,7 @@ class ICaseRepository(Protocol):
 class CaseStateDTO(str, Enum):
     """Public case state enum for cross-module use.
 
-    MUST mirror ``domain.models.CaseState``, which is the single authority on
+    MUST mirror ``domain.models.lifecycle.CaseState``, which is the single authority on
     the lifecycle; the persistence enum mirrors it too. Adding a state means
     changing all three plus a migration. Parity is enforced by
     ``tests/unit/modules/case/test_case_state_dto_parity.py``.
@@ -463,79 +463,99 @@ class CaseDTO:
 # Re-export domain models so other modules can import them from
 # ``case.contracts`` instead of reaching into ``case.domain.models``
 # directly (per the layer-boundary import-linter contract).
-from faultmaven.modules.case.domain.models import (  # noqa: E402
-    CONFIRMED_ESTABLISHED_BY,
-    NON_INVESTIGATIVE_OUTCOMES,
-    TERMINAL_HYPOTHESIS_STATES,
-    ActionAttempt,
-    Case,
-    CaseAction,
-    CaseEntity,
-    CaseSeverity,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.causal import (
     CausalEdge,
     CausalNode,
-    CauseAssuranceGrade,
-    CauseState,
+    InterventionQuadrant,
+    NodeEvidenceLink,
+    NodeState,
+    NodeType,
+    ValidationMethod,
+)
+from faultmaven.modules.case.domain.models.conclusion import (
+    CONFIRMED_ESTABLISHED_BY,
     ConfidenceLevel,
+    RootCauseConclusion,
+    WorkingConclusion,
+    established_by_for_display,
+    mechanism_for_display,
+    normalize_stored_report_content,
+)
+from faultmaven.modules.case.domain.models.documentation import (
     DocumentationData,
     DocumentType,
-    EntityType,
     EscalationState,
     EscalationType,
+    GeneratedDocument,
+    JournalEntry,
+)
+from faultmaven.modules.case.domain.models.evidence import (
+    CaseEntity,
+    EntityType,
     Evidence,
     EvidenceCategory,
-    EvidenceNeed,
     EvidenceSourceType,
     EvidenceStance,
-    GeneratedDocument,
+    UploadedFile,
+    is_default_case_title,
+    is_minted_filename,
+    minted_filename_phrase,
+)
+from faultmaven.modules.case.domain.models.evidence_needs import (
+    EvidenceNeed,
+    NeedObtainability,
+    NeedPriority,
+    NeedPurpose,
+    NeedState,
+)
+from faultmaven.modules.case.domain.models.hypothesis import (
+    TERMINAL_HYPOTHESIS_STATES,
     Hypothesis,
     HypothesisCategory,
     HypothesisEvidenceLink,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
-    InterventionQuadrant,
-    InvestigationActionType,
-    InvestigationMomentum,
-    InvestigationProgress,
-    InvestigationStage,
+)
+from faultmaven.modules.case.domain.models.lifecycle import (
+    CaseAction,
+    CaseSeverity,
+    CaseState,
     InvestigationStrategy,
-    JournalEntry,
+)
+from faultmaven.modules.case.domain.models.problem import (
+    InquiryData,
+    InvestigationStage,
     KnowledgeMatch,
     KnowledgeResolution,
-    MitigationRecord,
-    NeedObtainability,
-    NeedPriority,
-    NeedPurpose,
-    NeedState,
-    NodeEvidenceLink,
-    NodeState,
-    NodeType,
     PreliminaryUrgency,
     ProblemVerification,
-    ProposedAction,
-    RootCauseConclusion,
-    Solution,
-    SolutionFeasible,
-    SolutionOutcome,
-    SolutionState,
-    SolutionType,
     TemporalState,
+    UrgencyLevel,
+)
+from faultmaven.modules.case.domain.models.progress import (
+    CauseAssuranceGrade,
+    CauseState,
+    InvestigationProgress,
+    MitigationRecord,
+    SolutionFeasible,
+    SolutionState,
+    VerificationStatus,
+)
+from faultmaven.modules.case.domain.models.solution import (
+    ActionAttempt,
+    InvestigationActionType,
+    ProposedAction,
+    Solution,
+    SolutionOutcome,
+    SolutionType,
+    classify_solution_outcome,
+)
+from faultmaven.modules.case.domain.models.turn import (
+    NON_INVESTIGATIVE_OUTCOMES,
+    InvestigationMomentum,
     TurnOutcome,
     TurnProgress,
-    UploadedFile,
-    UrgencyLevel,
-    ValidationMethod,
-    VerificationStatus,
-    WorkingConclusion,
-    classify_solution_outcome,
-    established_by_for_display,
-    is_default_case_title,
-    is_minted_filename,
-    mechanism_for_display,
-    minted_filename_phrase,
-    normalize_stored_report_content,
 )
 
 # ============================================================

@@ -15,14 +15,16 @@ from datetime import UTC, datetime
 
 import pytest
 
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
-    InquiryData,
+    RootCauseConclusion,
+)
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import InquiryData
+from faultmaven.modules.case.domain.models.solution import (
     InvestigationActionType,
     ProposedAction,
-    RootCauseConclusion,
     Solution,
     SolutionType,
 )

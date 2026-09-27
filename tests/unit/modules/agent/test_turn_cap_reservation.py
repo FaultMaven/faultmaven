@@ -83,7 +83,7 @@ def bound_tenant():
 
 def _case(**overrides):
     from faultmaven.modules.case.contracts import CaseState
-    from faultmaven.modules.case.domain.models import Case
+    from faultmaven.modules.case.domain.models.case import Case
 
     defaults = dict(
         case_id=CASE_ID,

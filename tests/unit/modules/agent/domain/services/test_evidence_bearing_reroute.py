@@ -14,7 +14,7 @@ from faultmaven.modules.agent.domain.services.investigation_service import (
     _PreprocessedAttachment,
     _turn_delivers_evidence_bearing_attachment,
 )
-from faultmaven.modules.case.domain.models import UploadedFile
+from faultmaven.modules.case.domain.models.evidence import UploadedFile
 
 
 def _preprocessed(
