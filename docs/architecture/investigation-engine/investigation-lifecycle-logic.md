@@ -332,9 +332,8 @@ correctives and is asked to restate a problem it has already confirmed resolved.
 
 It is a backstop and not a fourth proposer by three rules:
 
-- **Last.** It runs at step 4c of `_apply_turn_response` (the phase
-  `_process_turn_impl` split off in #1707 wave 3 to apply the turn's
-  response), after `_check_automatic_transitions`, and bails on any
+- **Last.** It runs at step 4c of `_apply_turn_response` (the
+  `_process_turn_impl` phase that applies the turn's response), after `_check_automatic_transitions`, and bails on any
   `pending_transition` an earlier opener left standing.
 - **Same bar.** Its trigger is `assess_resolution_readiness` READY — a
   qualifying `causal_absence_evidence` row — not a looser reading of "looks

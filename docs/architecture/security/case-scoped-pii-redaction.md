@@ -130,9 +130,8 @@ reading `_should_redact()` from `core/investigation/milestone_engine/redaction.p
 The `StructuredOutputGenerator` collaborator (`generation.py`) redacts the
 prompt and tool results within the shape it owns.
 
-The engine manages the redaction lifecycle across `_process_turn_impl()`'s
-phases (#1707 wave 3 split the turn path into private phase methods, then
-sibling-module functions — the lifecycle now spans three of them):
+The engine manages the redaction lifecycle across `_process_turn_impl()` and its
+phases:
 
 1. **Create context** — after case loading, before prompt generation, in `_generate_turn_response` (`turn_generation.py`)
 2. **Redact prompt** — at the entry to `StructuredOutputGenerator.generate_structured_output()`, covering both DA (tool-augmented) and single-shot paths

@@ -1,4 +1,4 @@
-"""Rebuild the pre-#1707-wave-3 statement order of ``_process_turn_impl``.
+"""Rebuild ``_process_turn_impl``'s turn path in execution order, every phase inlined.
 
 Wave 3 step A split ``MilestoneEngine._process_turn_impl`` into private
 phase methods of the same class; step B moved those phase methods out as
