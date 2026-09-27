@@ -331,3 +331,252 @@ def _reclassified_collections(
     retired_suggestions = drop_clarifications_for_file(case.last_suggestions, file_id)
 
     return new_files_list, new_evidence_list, retired_suggestions
+
+
+import logging
+from typing import Any, Dict, List, Optional
+
+from faultmaven.core.investigation.turn_uploads import report_turn_uploads
+from faultmaven.core.preprocessing.models import unified_data_type_of
+from faultmaven.exceptions import (
+    ServiceException,
+    ValidationException,
+)
+from faultmaven.infrastructure.observability.evidence_metrics import (
+    EVIDENCE_RECLASSIFICATION_TOTAL,
+)
+from faultmaven.models.api import DataType
+from faultmaven.modules.agent.domain.services.investigation_service.attachments import (
+    _binary_placeholder,
+    _is_binary_content,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.clarification import (
+    _CLARIFICATION_FRIENDLY_NAMES,
+    _upload_subject,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
+    _infer_source_type,
+)
+
+logger = logging.getLogger(__name__)
+
+
+async def _handle_file_reclassification(
+    file_storage_service,
+    preprocessing_service,
+    case: "Case",
+    file_id: Optional[str],
+    data_type_value: Optional[str],
+    attachments: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Resolve a classification_failed upload by reclassifying its file.
+
+    Engine-owned resolution for the classification-clarification
+    suggestions (see ``_build_classification_clarification``):
+    the user's click/typed choice arrives as a ``file_reclassification``
+    intent carrying the UploadedFile ID and the target DataType. The
+    handler re-runs preprocessing under ``user_override`` and updates the
+    file's artifacts — mechanically, with no LLM call, so the choice can
+    never be misread as an analysis request.
+
+    Post-010: preprocessing artifacts (data_type, summary,
+    structural_index) land on the UploadedFile. Any Evidence rows already
+    backed by this file get their ``source_type`` re-aligned; usually
+    there are none at clarification time (Evidence is born later, during
+    INVESTIGATING).
+
+    Returns:
+        Result dict with deterministic agent response and updated case.
+
+    Raises:
+        ValidationException: terminal case, missing/unknown intent
+            fields, or the file has no stored raw bytes to re-extract
+            (→ 422).
+        NotFoundError: file_id not in this case, or the stored blob is
+            gone from storage (→ 404).
+        ServiceException: storage/preprocessing service unavailable
+            (→ 500).
+    """
+    # Terminal guard. The other SERVICE intents inherit terminal
+    # protection by delegating to engine.process_turn (which
+    # short-circuits terminal cases to Q&A); this handler never reaches
+    # the engine, so it must refuse mutation itself — a stale
+    # clarification button or a direct POST must not rewrite a closed
+    # case's files/evidence.
+    if case.is_terminal:
+        raise ValidationException(
+            "Cannot reclassify files on a closed case — the "
+            "investigation is terminal; only questions about the case "
+            "are accepted.",
+            {"case_state": case.state.value},
+        )
+    if not file_id or not data_type_value:
+        raise ValidationException(
+            "file_id and data_type required for file_reclassification intent",
+            {"field": "file_id" if not file_id else "data_type"},
+        )
+    try:
+        data_type = DataType(data_type_value)
+    except ValueError:
+        valid = ", ".join(t.value for t in DataType)
+        raise ValidationException(
+            f"Unknown data_type '{data_type_value}'. Valid: {valid}",
+            {"field": "data_type"},
+        )
+
+    logger.info(
+        f"Processing file reclassification: {file_id} → {data_type.value} "
+        f"for case {case.case_id}"
+    )
+
+    file_index = next(
+        (i for i, uf in enumerate(case.uploaded_files or []) if uf.file_id == file_id),
+        None,
+    )
+    if file_index is None:
+        raise NotFoundError("UploadedFile", file_id)
+    file_meta = case.uploaded_files[file_index]
+
+    if not file_meta.storage_ref:
+        raise ValidationException(
+            f"Uploaded file {file_id} has no stored raw content — "
+            "reclassification requires re-running the extractor over "
+            "the original bytes.",
+            {"field": "file_id"},
+        )
+    # NotFoundError from storage (blob missing) passes through process_turn
+    # unwrapped → 404, never a 5xx on a clicked suggestion.
+    preprocessing_result, new_source_type = await _reextract_under_override(
+        file_storage_service, preprocessing_service, file_meta, data_type
+    )
+    # Folded for the metric label, whose ``to_type`` is the 6-valued
+    # ``preprocessing_result.data_type``: the row may hold either
+    # vocabulary (#583), and a label mixing the two would split one
+    # transition across series.
+    previous = unified_data_type_of(file_meta.data_type)
+    previous_type = previous.value if previous else "unknown"
+
+    # One seam (#1470): the file row, EVERY Evidence row backed by it,
+    # and the retirement of the question this answers. Claim content —
+    # the LLM-authored summary/extract — stays untouched.
+    (
+        new_files_list,
+        new_evidence_list,
+        retired_suggestions,
+    ) = _reclassified_collections(case, file_id, preprocessing_result, new_source_type)
+
+    # Shallow copy with the replaced collections. ``messages`` gets a
+    # fresh list because process_turn appends the agent message to the
+    # returned case; every other field is only ever reassigned, never
+    # mutated in place, so sharing by reference is safe — and skips
+    # deep-copying the whole case (messages, hypotheses, causal graph)
+    # on a mechanical click path.
+    updated_case = case.model_copy(
+        update={
+            "uploaded_files": new_files_list,
+            "evidence": new_evidence_list,
+            # Retired at the seam as well as by the ``resolved_file_id``
+            # round-trip below; the two predicates are complements, so
+            # this is idempotent (see the seam).
+            "last_suggestions": retired_suggestions,
+            "messages": list(case.messages),
+        }
+    )
+
+    EVIDENCE_RECLASSIFICATION_TOTAL.labels(
+        from_type=str(previous_type),
+        to_type=preprocessing_result.data_type.value,
+        trigger="clarification",
+    ).inc()
+
+    subject = _upload_subject(file_meta)
+    friendly = _CLARIFICATION_FRIENDLY_NAMES.get(data_type.value, {}).get(
+        "long"
+    ) or data_type.value.replace("_", " ")
+    agent_response = f"Got it — I've recorded {subject} as {friendly}."
+    if preprocessing_result.summary:
+        agent_response += f"\n\n{preprocessing_result.summary}"
+
+    return {
+        "agent_response": agent_response,
+        "suggested_follow_ups": [
+            {
+                "label": "Analyze it now",
+                "action_type": "DECIDE",
+                # The identifier, not ``subject``: this payload is
+                # replayed as a standalone turn, where "the text you
+                # pasted" has no antecedent. The sentence above it is in
+                # conversation and keeps the prose form.
+                "payload": f'Analyze "{file_meta.display_name}".',
+                "body": "Run the analysis with the corrected classification.",
+            }
+        ],
+        "case_updated": updated_case,
+        "metadata": {
+            "progress_made": False,
+            "milestones_completed": [],
+            "file_reclassified": {
+                "file_id": file_id,
+                "from_type": str(previous_type),
+                "to_type": new_source_type.value,
+            },
+            **report_turn_uploads(case.case_id, case.current_turn, attachments),
+        },
+    }
+
+
+async def _reextract_under_override(
+    file_storage_service,
+    preprocessing_service,
+    file_meta: "UploadedFile",
+    data_type: DataType,
+    previous_metadata: Optional[Dict[str, Any]] = None,
+):
+    """Retrieve the stored raw bytes behind *file_meta* and re-run
+    preprocessing under ``user_override=data_type``.
+
+    Shared mechanics of both reclassification paths — the PATCH /
+    agent-tool ``reclassify_evidence`` and the clarification-intent
+    ``_handle_file_reclassification``. Callers own target lookup,
+    authorization, terminal/conflict policy, persistence, and
+    response shape.
+
+    Returns:
+        ``(preprocessing_result, new_source_type)`` where the source
+        type is inferred from the result's fine-grained
+        ``detailed_data_type`` (the coarse UnifiedDataType in
+        ``data_type`` never matches the source-type map's keys).
+
+    Raises:
+        ServiceException: storage/preprocessing service unavailable.
+        NotFoundError: stored blob missing from storage.
+    """
+    if not file_storage_service:
+        raise ServiceException("File storage service unavailable; cannot re-extract")
+    if not preprocessing_service:
+        raise ServiceException("Preprocessing service unavailable; cannot reclassify")
+
+    # Fetch raw bytes + decode. Storage returns bytes; extractors
+    # operate on strings (UTF-8 is the convention per the upload path).
+    # Skip the destructive decode for binary content (see
+    # _is_binary_content).
+    raw_bytes = await file_storage_service.retrieve_file(file_meta.storage_ref)
+    filename = file_meta.filename or "the uploaded file"
+    if _is_binary_content(filename, file_meta.content_type, raw_bytes):
+        content = _binary_placeholder(filename, file_meta.content_type, len(raw_bytes))
+        logger.info(
+            "binary content: skipping UTF-8 decode on reclassify",
+            extra={"filename": filename, "size_bytes": len(raw_bytes)},
+        )
+    else:
+        content = raw_bytes.decode("utf-8", errors="replace")
+
+    preprocessing_result = await preprocessing_service.reclassify_evidence(
+        content=content,
+        filename=filename,
+        user_override=data_type,
+        previous_metadata=previous_metadata,
+    )
+    return preprocessing_result, _infer_source_type(
+        preprocessing_result.detailed_data_type
+    )

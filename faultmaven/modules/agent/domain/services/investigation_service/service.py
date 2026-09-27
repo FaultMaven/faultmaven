@@ -12,7 +12,7 @@ This service wraps the MilestoneEngine and provides:
 
 import copy
 import logging
-from datetime import UTC, datetime, timezone
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -23,13 +23,9 @@ from faultmaven.core.investigation.case_telemetry import (
     collect_progress_arms,
     emit_case_turn,
 )
-from faultmaven.core.investigation.coverage_trust import CALLER_DECLARED_COVERAGE_SOURCE
 from faultmaven.core.investigation.intent_resolver import IntentResolver
-from faultmaven.core.investigation.milestone_engine.affordances import (
-    gate1_statement_is_confirmable,
-)
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
-from faultmaven.core.investigation.schemas import Attachment, TurnPayload
+from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.core.investigation.suggestion_liveness import (
     entry_file_id,
     live_suggestions,
@@ -39,7 +35,6 @@ from faultmaven.core.investigation.turn_pipeline import (
     submitted_name,
 )
 from faultmaven.core.investigation.turn_uploads import report_turn_uploads
-from faultmaven.core.preprocessing.models import unified_data_type_of
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
@@ -49,7 +44,6 @@ from faultmaven.exceptions import (
     ValidationException,
 )
 from faultmaven.infrastructure.observability.evidence_metrics import (
-    EVIDENCE_DEDUP_HITS_TOTAL,
     EVIDENCE_RECLASSIFICATION_TOTAL,
 )
 from faultmaven.infrastructure.observability.tracing import trace
@@ -68,29 +62,29 @@ from faultmaven.models.api_models import (
 )
 from faultmaven.modules.agent.domain.services.investigation_service.attachments import (
     _attachment_reroute,
-    _binary_placeholder,
     _engine_attachment_metadata,
-    _is_binary_content,
+    _preprocess_attachment,
     _PreprocessedAttachment,
     _turn_delivers_evidence_bearing_attachment,
 )
 from faultmaven.modules.agent.domain.services.investigation_service.clarification import (
-    _CLARIFICATION_FRIENDLY_NAMES,
     _build_classification_clarification,
     _carry_forward_unresolved_clarifications,
     _stored_suggestions,
-    _upload_subject,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.intent_gates import (
+    _minted_intent_swallows_gate_consent,
 )
 from faultmaven.modules.agent.domain.services.investigation_service.reclassification import (
+    _handle_file_reclassification,
     _reclassified_collections,
+    _reextract_under_override,
 )
 from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
     _backfill_consumed_turn,
-    _infer_source_type,
     _kb_context_sources,
     _published_source_type,
     _record_composed_reply,
-    _record_mark_linked_failure,
 )
 from faultmaven.modules.agent.domain.services.orientation import (
     OUT_OF_BAND_MARKER,
@@ -113,7 +107,6 @@ from faultmaven.modules.agent.domain.services.query_classifier import (
 from faultmaven.modules.case.contracts import (
     MESSAGE_METADATA_AGENT_SYNTHESIZED,
     Case,
-    CaseState,
     MessageRowKind,
     TurnOutcome,
     VerificationStatus,
@@ -411,7 +404,10 @@ class InvestigationService:
             preprocess_results: List[_PreprocessedAttachment] = []
             if payload.has_attachments:
                 for attachment in payload.attachments:
-                    result = await self._preprocess_attachment(
+                    result = await _preprocess_attachment(
+                        self.file_storage_service,
+                        self.preprocessing_service,
+                        self.repository,
                         case,
                         attachment,
                         user_id,
@@ -665,7 +661,7 @@ class InvestigationService:
                 if resolved_intent:
                     try:
                         resolved_qi = QueryIntent(**resolved_intent)
-                        if self._minted_intent_swallows_gate_consent(
+                        if _minted_intent_swallows_gate_consent(
                             case, resolved_qi, query
                         ):
                             # INV-26 guard (#721, widened by fm#918): the
@@ -854,7 +850,9 @@ class InvestigationService:
                         kind=orientation_kind or OrientationKind.GREETING,
                     )
                 elif intent_type == IntentType.FILE_RECLASSIFICATION:
-                    result = await self._handle_file_reclassification(
+                    result = await _handle_file_reclassification(
+                        self.file_storage_service,
+                        self.preprocessing_service,
                         case=case,
                         file_id=intent.file_id if intent else None,
                         data_type_value=intent.data_type if intent else None,
@@ -1378,389 +1376,6 @@ class InvestigationService:
     # Attachment Preprocessing
     # ============================================================
 
-    async def _preprocess_attachment(
-        self,
-        case: "Case",
-        attachment: Attachment,
-        user_id: str,
-        turn_number: int,
-        processing_mode: str = "triage",
-    ) -> _PreprocessedAttachment:
-        """Preprocess a single attachment through classification and extraction.
-
-        Args:
-            case: Case entity (for case_id context)
-            attachment: Raw attachment from turn payload
-            user_id: User who submitted the attachment
-            turn_number: Current turn number
-            processing_mode: Processing mode from query classification
-                (triage or directed_analysis)
-
-        Returns:
-            ``_PreprocessedAttachment`` wrapping the persisted
-            ``UploadedFile`` plus optional dedup metadata. Post-010
-            strict evidence model: NO Evidence row is created at this
-            intake step. On content-hash duplicate within the same
-            case, the returned UploadedFile is the existing row and
-            ``duplicate_of`` / ``duplicate_turn`` are populated; no
-            new UploadedFile is created and no raw file is re-stored.
-
-        Raises:
-            ServiceException: If preprocessing or storage fails
-        """
-        from uuid import uuid4
-
-        # Skip destructive UTF-8 decode for known-binary content (images,
-        # PDFs, video, etc.). The classifier still sees a metadata string
-        # (filename, MIME, size) so it can route to VISUAL_EVIDENCE; the
-        # raw bytes are preserved in attachment.content / file storage for
-        # multimodal/binary-aware extractors downstream.
-        if _is_binary_content(
-            attachment.filename, attachment.content_type, attachment.content
-        ):
-            content = _binary_placeholder(
-                attachment.filename,
-                attachment.content_type,
-                len(attachment.content),
-            )
-            logger.info(
-                "binary attachment: skipping UTF-8 decode",
-                extra={
-                    "attachment_filename": attachment.filename,
-                    "content_type": attachment.content_type,
-                    "size_bytes": len(attachment.content),
-                },
-            )
-        else:
-            content = attachment.content.decode("utf-8", errors="replace")
-
-        # Convert dict source_metadata to SourceMetadata for classifier compatibility
-        source_meta = None
-        if attachment.source_metadata:
-            from faultmaven.models.api import SourceMetadata
-
-            source_meta = SourceMetadata(**attachment.source_metadata)
-
-        # Classify and extract structural index.
-        # COLD START ORIENTATION: This extractor pass runs for EVERY file
-        # regardless of processing mode. In Triage mode, the structural index
-        # IS the user-facing answer. In Directed Analysis mode, it serves as
-        # internal orientation — a map of the file's contents (time range,
-        # services, error distribution) so the DA's LLM can formulate targeted
-        # search strategies instead of searching blind. Do NOT skip this step
-        # for DA-mode files.
-        preprocessing_result = await self.preprocessing_service.classify_and_extract(
-            content=content,
-            filename=attachment.filename,
-            source_metadata=source_meta,
-        )
-
-        # Per-case content-hash dedup short-circuit. Post-010: dedup is
-        # a file-level concern (uploaded_files), since uploads no longer
-        # create an Evidence row at intake. An attachment whose
-        # content_hash already exists on this case returns the existing
-        # UploadedFile instead of creating a new one. No raw file
-        # re-storage either — storage already has the bytes.
-        #
-        # ``dedup_ran`` records whether the lookup actually produced an answer.
-        # It is what separates "ran and found nothing" (novel) from "never ran"
-        # (undetermined) downstream; without it both look like
-        # ``duplicate_of is None`` and a re-submission is reported as new data
-        # (#1210 round 2). Both skip paths log, because a permanently skipped
-        # lookup means per-case dedup is not working at all.
-        existing_file = None
-        dedup_ran = False
-        if not preprocessing_result.content_hash:
-            logger.warning(
-                "No content_hash for '%s' on case %s — per-case dedup could not "
-                "run and novelty is UNDETERMINED for this attachment; the turn "
-                "is scored conservatively (#1136's upload progress arm will not "
-                "arm on it).",
-                attachment.filename,
-                case.case_id,
-            )
-        else:
-            try:
-                existing_file = (
-                    await self.repository.find_uploaded_file_by_content_hash(
-                        case.case_id, preprocessing_result.content_hash
-                    )
-                )
-                dedup_ran = True
-            except AttributeError as e:
-                # Two very different things land here: a repository that does
-                # not implement the lookup at all (test doubles), and a real
-                # implementation raising AttributeError from inside its own
-                # body. Neither can be told apart from the outside, and in both
-                # the answer is the same — dedup did not run — so this stays a
-                # degradation rather than a failure. It is no longer SILENT:
-                # swallowing it and reporting the attachment novel is how a
-                # broken repository would quietly re-arm the stall net.
-                logger.warning(
-                    "Per-case dedup lookup unavailable on %s for case %s (%s) — "
-                    "novelty is UNDETERMINED for '%s'; the turn is scored "
-                    "conservatively and duplicate uploads will not be detected.",
-                    type(self.repository).__name__,
-                    case.case_id,
-                    e,
-                    attachment.filename,
-                )
-        if existing_file is not None:
-            logger.info(
-                "Duplicate upload detected: file '%s' matches %s (turn %s) "
-                "in case %s — reusing existing UploadedFile",
-                attachment.filename,
-                existing_file.file_id,
-                existing_file.uploaded_at_turn,
-                case.case_id,
-            )
-            EVIDENCE_DEDUP_HITS_TOTAL.inc()
-            return _PreprocessedAttachment(
-                uploaded_file=existing_file,
-                duplicate_of=existing_file.file_id,
-                duplicate_turn=existing_file.uploaded_at_turn,
-                dedup_ran=True,
-            )
-
-        # Post-010 strict evidence model: file upload creates only an
-        # UploadedFile row (with preprocessing artifacts attached).
-        # 1. Store raw content; storage_result.storage_key becomes the
-        #    UploadedFile.storage_ref the backend uses to retrieve.
-        # 2. Construct UploadedFile carrying file-level metadata
-        #    (filename, size, hash, mime, upload provenance).
-        # 3. Attach the preprocessing artifacts (summary,
-        #    structural_index, data_type, coverage timestamps) — these
-        #    describe the file, not any claim about it.
-        # 4. No Evidence row is created here; Evidence is born only
-        #    when the LLM emits evidence_to_add during INVESTIGATING.
-        upload_source = "file_upload"
-        if attachment.source_metadata:
-            upload_source = attachment.source_metadata.get("source_type", "file_upload")
-
-        storage_ref: Optional[str] = None
-        if self.file_storage_service:
-            storage_result = await self.file_storage_service.store_file(
-                file_data=attachment.content,
-                original_filename=attachment.filename,
-                enterprise_id=case.enterprise_id,
-                case_id=case.case_id,
-                mime_type=attachment.content_type,
-            )
-            storage_ref = storage_result.get("storage_key")
-
-        uploaded_file = UploadedFile(
-            file_id=f"file_{uuid4().hex[:12]}",
-            filename=attachment.filename,
-            size_bytes=len(attachment.content),
-            content_type=attachment.content_type,
-            content_hash=preprocessing_result.content_hash,
-            uploaded_at_turn=turn_number,
-            uploaded_at=datetime.now(UTC),
-            uploaded_by=user_id,
-            upload_source=upload_source,
-            storage_ref=storage_ref,
-        )
-        case.uploaded_files.append(uploaded_file)
-
-        # Best-effort sidecar "linked" flag for orphan cleanup. Skipped
-        # when storage_ref is None (no storage service or store_file
-        # returned nothing); storage services without mark_linked (test
-        # doubles, minimal stubs) are handled gracefully.
-        #
-        # Failing here USED to put the file at risk of reclamation: the row
-        # exists and the case references it, but the sidecar still says
-        # linked=False, and the nightly sweep decided from the sidecar alone.
-        # Since #1232 the sweep cross-checks uploaded_files.storage_ref, so a
-        # stale flag is now HARMLESS, and self-healing rather than merely
-        # tolerated: the object is protected exactly while its row exists, and
-        # once the case is deleted the row goes with it (uploaded_files.case_id
-        # is ON DELETE CASCADE, enforced on both backends — SQLite runs with
-        # PRAGMA foreign_keys=ON), leaving an ordinary unreferenced orphan the
-        # sweep reclaims normally. Nothing leaks and nothing is lost.
-        #
-        # Still worth counting. The consequence is gone; the CAUSE is not — a
-        # failure here means the storage backend erred on a small write, which
-        # is worth surfacing on its own. And the count is the input to deciding
-        # whether retrying this call is ever justified (issue #1232 direction 3,
-        # deliberately not taken: it would add latency to the user-facing turn
-        # path to narrow a window that no longer leads anywhere). The warning
-        # alone was discoverable only by grep. This counter is emitted from the
-        # API process, which Prometheus scrapes — unlike the sweep's own
-        # counters, which die with the CronJob pod.
-        mark_linked = (
-            getattr(self.file_storage_service, "mark_linked", None)
-            if self.file_storage_service
-            else None
-        )
-        if mark_linked is not None and storage_ref:
-            try:
-                # Check the result, don't just call it: mark_linked reports
-                # failure by returning False rather than raising, so without
-                # this neither the warning nor the counter below could fire and
-                # the drift would be entirely invisible.
-                if not await mark_linked(storage_ref):
-                    _record_mark_linked_failure("returned_false")
-                    logger.warning(
-                        "mark_linked returned False for %s (non-fatal; the "
-                        "orphan sweep asks the database, so the file is safe "
-                        "— but a sidecar write just failed)",
-                        storage_ref,
-                    )
-            except Exception as e:
-                _record_mark_linked_failure("raised")
-                logger.warning(
-                    "mark_linked failed for %s (non-fatal; the orphan sweep "
-                    "asks the database, so the file is safe — but a sidecar "
-                    "write just failed): %s",
-                    storage_ref,
-                    e,
-                )
-
-        # Post-010 strict evidence model: write preprocessing artifacts
-        # to the UploadedFile row where they semantically belong (they
-        # describe the FILE, not any claim about it). NO Evidence row
-        # is created at this intake step — Evidence is born only when
-        # the LLM extracts a claim-anchored slice via evidence_to_add
-        # during INVESTIGATING.
-        uploaded_file.summary = preprocessing_result.summary
-        uploaded_file.structural_index = preprocessing_result.structural_index
-        # The fine-grained ``DataType`` (#583) — see
-        # ``_file_row_with_reclassification`` for why, and
-        # ``unified_data_type_of`` for how both vocabularies are read.
-        uploaded_file.data_type = preprocessing_result.detailed_data_type.value
-        uploaded_file.coverage_start_ts = preprocessing_result.coverage_start_ts
-        uploaded_file.coverage_end_ts = preprocessing_result.coverage_end_ts
-        # WHICH pattern produced that span, carried with it. Consumers state the
-        # span as an absolute observation time; this is how they know whether
-        # they may. Computed by ``extract_time_range_ts`` and, until #1274, put
-        # in a metadata object nobody persisted.
-        uploaded_file.coverage_source = preprocessing_result.coverage_source
-
-        # Fall back to the caller's declared observation time when the content
-        # carries no parseable timestamps of its own. Alert notifications are
-        # the motivating case: an Alertmanager Slack message is one prose line
-        # with no embedded timestamp, so the extractor finds nothing and the
-        # file's coverage is NULL — leaving ingestion time as the only temporal
-        # signal anywhere on the evidence, which reads a two-hour-old alert as
-        # current.
-        #
-        # Parsed content ALWAYS wins: it describes what the data actually
-        # spans, while `observed_at` is only the caller's statement about when
-        # it saw the content. Both-or-neither, never a half-open span — a start
-        # without an end would make the row look like it covers up to now.
-        if (
-            attachment.observed_at is not None
-            and uploaded_file.coverage_start_ts is None
-            and uploaded_file.coverage_end_ts is None
-        ):
-            uploaded_file.coverage_start_ts = attachment.observed_at
-            uploaded_file.coverage_end_ts = attachment.observed_at
-            # Named distinctly from every parsed source: this instant was not
-            # read out of the content at all. It is the strongest provenance
-            # available — a client that watched the content arrive, validated
-            # by ``_parse_observed_at`` — and it is also the one case a
-            # metadata blob written during extraction could never express,
-            # because it is applied here, afterwards.
-            uploaded_file.coverage_source = CALLER_DECLARED_COVERAGE_SOURCE
-            logger.info(
-                "Seeded coverage for %s from caller-declared observed_at %s "
-                "(content had no parseable timestamps)",
-                uploaded_file.file_id,
-                attachment.observed_at.isoformat(),
-            )
-
-        # Preprocessor diagnostics (classifier confidence, extractor
-        # attempts, entity overflow markers) have no claim-anchored
-        # Evidence to land on at intake; their natural home is
-        # ``uploaded_files.metadata`` (JSON blob). Tracked as a follow-up
-        # — no currently-shipping feature regresses.
-
-        # ``case_entities`` population is deferred. Entities should either
-        # anchor to the UploadedFile (schema change) or be populated lazily
-        # when the LLM creates ``evidence_to_add`` rows referencing this
-        # file. The data is still in ``preprocessing_result.entities`` for
-        # any reader that wants it.
-
-        # Surface classification clarification hints when the heuristic
-        # classifier produced a low-confidence result. Suggested types are
-        # propagated by PreprocessingService via extraction_metadata as a
-        # list of DataType string values.
-        is_classification_failed = (
-            preprocessing_result.extraction_method == "classification_failed"
-        )
-        suggested_types: Optional[List[str]] = None
-        if is_classification_failed:
-            suggested_types = (
-                preprocessing_result.extraction_metadata.get("suggested_types") or []
-            )
-
-        # Commit the row NOW, on its own, rather than letting it ride along on
-        # the end-of-turn ``save(case)``.
-        #
-        # An upload is a user-initiated fact: the bytes are already in storage
-        # (``store_file`` above), and whether this turn's LLM later succeeds has
-        # no bearing on whether the user uploaded the file. When the row waited
-        # for the aggregate save, a turn that raised left the bytes stored with
-        # nothing referencing them — and ``mark_linked`` had already exempted
-        # them from TTL reclaim, so the orphan was permanent rather than
-        # self-clearing. The retry then stored a second copy, because
-        # ``find_uploaded_file_by_content_hash`` cannot dedup against a row that
-        # was never written.
-        #
-        # Committed here, at the end, so the row carries its preprocessing
-        # artifacts and seeded coverage rather than a bare stub. Scoped rather
-        # than ``save(case)`` because the aggregate save commits the whole case,
-        # and mid-turn that would make the half-built turn durable — the very
-        # thing deferring the save exists to avoid. The underlying
-        # ``_upsert_uploaded_files`` is purely additive, so the end-of-turn
-        # aggregate save re-upserts this row rather than removing it.
-        add_uploaded_file = getattr(self.repository, "add_uploaded_file", None)
-        if add_uploaded_file is not None:
-            try:
-                await add_uploaded_file(
-                    case.case_id,
-                    uploaded_file,
-                    case.enterprise_id,
-                    case.organization_id,
-                )
-            except Exception as e:
-                # Degrade to the previous behaviour (the row rides the
-                # end-of-turn save) rather than failing the upload outright —
-                # but say so. Silence here would turn a durability regression
-                # into an invisible one.
-                logger.warning(
-                    "Scoped commit of uploaded_file %s on case %s failed: %s. "
-                    "The row now depends on the end-of-turn save; if this turn "
-                    "fails, the stored bytes are orphaned.",
-                    uploaded_file.file_id,
-                    case.case_id,
-                    e,
-                )
-        else:
-            # WARNING, not DEBUG. `add_uploaded_file` is an @abstractmethod on
-            # CaseRepository and a member of the ICaseRepository Protocol, so in
-            # production this branch is unreachable — reaching it means either a
-            # test double or that the contract method was renamed without
-            # updating this call site. Both revert every upload to the orphaning
-            # behaviour this code exists to prevent, which is not a debug-level
-            # event. (`test_service_calls_the_contract_method_name` pins the
-            # name against a silent rename.)
-            logger.warning(
-                "Repository %s has no add_uploaded_file — uploads fall back to "
-                "the end-of-turn save and are orphaned if the turn fails. "
-                "uploaded_file=%s",
-                type(self.repository).__name__,
-                uploaded_file.file_id,
-            )
-
-        return _PreprocessedAttachment(
-            uploaded_file=uploaded_file,
-            dedup_ran=dedup_ran,
-            classification_failed=is_classification_failed,
-            suggested_types=suggested_types,
-            attachment_filename=attachment.filename,
-        )
-
     # ============================================================
     # Intent-Based Query Handlers
     # ============================================================
@@ -1848,135 +1463,6 @@ class InvestigationService:
         )
 
         return result
-
-    @staticmethod
-    def _minted_intent_swallows_gate_consent(
-        case: "Case", minted: QueryIntent, user_message: str
-    ) -> bool:
-        """INV-26 guard for resolver-minted intents (#721, widened by fm#918).
-
-        True when adopting ``minted`` would let a SUBSTANTIVE typed message
-        COMMIT A GATE. The IntentResolver's classifier tier semantically
-        matches typed text against the previous turn's DECIDE suggestions and
-        can mint ``confirmation``/``status_transition`` intents — but the
-        engine treats those intents as deterministic consent (the DECIDE-click
-        path) and consults them BEFORE its INV-26 bare-token guards. A click
-        IS deterministic consent; an inference from typed text is not. So a
-        minted intent that would commit a gate must pass the same substance
-        test the typed-confirmation matcher applies (``is_substantive_reply``
-        — shared single source of truth): "yes but what about the replication
-        lag?" is substantive input, never consent.
-
-        **Two gates, not one.** Until fm#918 this returned False whenever the
-        case had no ``pending_transition``, justified as "mints with no
-        pending transition (e.g. Gate 1 problem-statement confirmation) …
-        adopt as before — none of them can execute a terminal transition".
-        The premise holds; the conclusion did not follow. A minted
-        ``confirmation`` with no pending transition reaches the engine's
-        section 0c, which on an INQUIRY case carrying a proposed problem
-        statement commits **Gate 1** (``problem_statement_confirmed``), and
-        ``_check_automatic_transitions`` then
-        fires INQUIRY → INVESTIGATING. Measured: "correct — is the problem
-        statement about the replica or the primary?" started the
-        investigation off a statement the user was in the middle of
-        questioning. Gate 1 is reversible where RESOLVED is not, which is why
-        it is a P1 and not a P0 — but INV-26 is a rule about what an
-        INFERENCE may answer, not about which gate it lands on.
-
-        What is deliberately NOT guarded stays unguarded, because neither
-        commits anything: a **decline**, and a **contradicting** status
-        transition. Both only cancel a standing proposal, and the message is
-        processed as a normal turn either way.
-
-        The Gate-1 arm reads ``confirmation_value`` as of #1464, and the
-        decline it no longer guards is the change #1464's own note predicted.
-        Until then the engine's 0c branch was value-blind, so a minted
-        ``confirmation_value=False`` committed Gate 1 exactly as True did and
-        guarding both arms was what "would commit a gate" MEANT. 0c now
-        commits on an explicit True alone
-        (``tests/unit/core/investigation/test_gate_one_decline_1464.py``
-        drives that through the real path), so a declining mint commits
-        nothing and the broad arm was over-broad by exactly the one case that
-        used to justify it.
-
-        Narrowed rather than left broad, for two reasons beyond the name
-        being true again. The broad arm caught a decline only on the Gate-1
-        SHAPE — INQUIRY, statement proposed — and nowhere else: a declining
-        mint on an INVESTIGATING case with a pending transition was never
-        guarded, so "an inferred no is not trusted" was never the rule this
-        predicate held, only an accident of where the commit happened to be.
-        And keeping it would now cost the user's own answer: an adopted
-        decline reaches 0b/0c as a decline, where a rejected mint leaves the
-        outcome to the typed-decline pattern matcher instead.
-
-        One structural consequence, so nobody re-derives it as a hole: with
-        the Gate-1 arm affirmative-only, any mint it matches while a
-        ``pending_transition`` exists is matched by ``confirms_pending_-
-        transition`` too (that arm accepts CONFIRMATION+True for any pending
-        row). The fm#918 if/else hole therefore cannot reopen through a
-        pending case — but the arm is still written independently of
-        ``pending``, because 0c is reached with one or without one and the
-        no-pending shape is the arm's own.
-        """
-        from faultmaven.core.investigation.terminal_transitions import (
-            is_substantive_reply,
-        )
-
-        # OR, not if/else. The two gates are not alternatives — a case can
-        # carry a pending transition AND be an INQUIRY case with a proposed
-        # problem statement, and writing the Gate-1 arm as the ``else`` of
-        # ``if pending`` made it unreachable exactly there. Measured on that
-        # shape with a substantive DECLINE
-        # ("no - but is the problem statement about the replica or the
-        # primary?"): the pending arm only matches ``confirmation_value is
-        # True``, so the mint was adopted, 0b cancelled the pending and fell
-        # through, and 0c committed Gate 1 — the exposure the arm exists to
-        # close, reached through the one door the if/else left open. A
-        # ``needs_info`` pending is worse still: 0b is skipped wholesale
-        # (``elif not case.pending_transition.get("needs_info")``) and the
-        # mint lands in 0c directly.
-        pending = getattr(case, "pending_transition", None)
-
-        # The pending TERMINAL gate. Requires a pending row by definition.
-        confirms_pending_transition = bool(pending) and (
-            (
-                minted.type == IntentType.CONFIRMATION
-                and minted.confirmation_value is True
-            )
-            or (
-                minted.type == IntentType.STATUS_TRANSITION
-                and minted.to_state is not None
-                and minted.to_state.value == pending.get("to_state")
-            )
-        )
-
-        # Gate 1. The same conditions the engine's 0c branch checks before it
-        # commits, read in the same order — a fourth condition added there
-        # without one here would make this guard silently miss the commit it
-        # exists to intercept. ``confirmation_value is True`` is 0c's newest
-        # one (#1464): a declining mint commits nothing there, so it commits
-        # nothing to guard here. Deliberately says NOTHING about ``pending``:
-        # 0c is reached with one or without one.
-        # The SAME predicate the engine's two consent sites use. Both arguments
-        # are the standing statement because this site runs before any of this
-        # turn's updates are applied — nothing can have revised it yet, so the
-        # rule degrades to "a statement stands, and it is not just whitespace".
-        # That is deliberately NOT a claim to detect the revise-and-confirm
-        # shape here: no turn-start snapshot exists at this site to compare
-        # against. What routing through the shared predicate buys is that the
-        # three sites cannot come to disagree about what counts as a statement.
-        _standing_statement = getattr(
-            getattr(case, "inquiry", None), "proposed_problem_statement", None
-        )
-        commits_gate_one = (
-            minted.type == IntentType.CONFIRMATION
-            and minted.confirmation_value is True
-            and case.state == CaseState.INQUIRY
-            and gate1_statement_is_confirmable(_standing_statement)
-        )
-
-        commits_gate = confirms_pending_transition or commits_gate_one
-        return commits_gate and is_substantive_reply(user_message)
 
     async def _handle_confirmation(
         self,
@@ -2115,174 +1601,6 @@ class InvestigationService:
             verification_status=verification_status,
             cause_assurance=cause_assurance,
         )
-
-    async def _handle_file_reclassification(
-        self,
-        case: "Case",
-        file_id: Optional[str],
-        data_type_value: Optional[str],
-        attachments: Optional[List[Dict[str, Any]]] = None,
-    ) -> Dict[str, Any]:
-        """Resolve a classification_failed upload by reclassifying its file.
-
-        Engine-owned resolution for the classification-clarification
-        suggestions (see ``_build_classification_clarification``):
-        the user's click/typed choice arrives as a ``file_reclassification``
-        intent carrying the UploadedFile ID and the target DataType. The
-        handler re-runs preprocessing under ``user_override`` and updates the
-        file's artifacts — mechanically, with no LLM call, so the choice can
-        never be misread as an analysis request.
-
-        Post-010: preprocessing artifacts (data_type, summary,
-        structural_index) land on the UploadedFile. Any Evidence rows already
-        backed by this file get their ``source_type`` re-aligned; usually
-        there are none at clarification time (Evidence is born later, during
-        INVESTIGATING).
-
-        Returns:
-            Result dict with deterministic agent response and updated case.
-
-        Raises:
-            ValidationException: terminal case, missing/unknown intent
-                fields, or the file has no stored raw bytes to re-extract
-                (→ 422).
-            NotFoundError: file_id not in this case, or the stored blob is
-                gone from storage (→ 404).
-            ServiceException: storage/preprocessing service unavailable
-                (→ 500).
-        """
-        # Terminal guard. The other SERVICE intents inherit terminal
-        # protection by delegating to engine.process_turn (which
-        # short-circuits terminal cases to Q&A); this handler never reaches
-        # the engine, so it must refuse mutation itself — a stale
-        # clarification button or a direct POST must not rewrite a closed
-        # case's files/evidence.
-        if case.is_terminal:
-            raise ValidationException(
-                "Cannot reclassify files on a closed case — the "
-                "investigation is terminal; only questions about the case "
-                "are accepted.",
-                {"case_state": case.state.value},
-            )
-        if not file_id or not data_type_value:
-            raise ValidationException(
-                "file_id and data_type required for file_reclassification intent",
-                {"field": "file_id" if not file_id else "data_type"},
-            )
-        try:
-            data_type = DataType(data_type_value)
-        except ValueError:
-            valid = ", ".join(t.value for t in DataType)
-            raise ValidationException(
-                f"Unknown data_type '{data_type_value}'. Valid: {valid}",
-                {"field": "data_type"},
-            )
-
-        logger.info(
-            f"Processing file reclassification: {file_id} → {data_type.value} "
-            f"for case {case.case_id}"
-        )
-
-        file_index = next(
-            (
-                i
-                for i, uf in enumerate(case.uploaded_files or [])
-                if uf.file_id == file_id
-            ),
-            None,
-        )
-        if file_index is None:
-            raise NotFoundError("UploadedFile", file_id)
-        file_meta = case.uploaded_files[file_index]
-
-        if not file_meta.storage_ref:
-            raise ValidationException(
-                f"Uploaded file {file_id} has no stored raw content — "
-                "reclassification requires re-running the extractor over "
-                "the original bytes.",
-                {"field": "file_id"},
-            )
-        # NotFoundError from storage (blob missing) passes through process_turn
-        # unwrapped → 404, never a 5xx on a clicked suggestion.
-        preprocessing_result, new_source_type = await self._reextract_under_override(
-            file_meta, data_type
-        )
-        # Folded for the metric label, whose ``to_type`` is the 6-valued
-        # ``preprocessing_result.data_type``: the row may hold either
-        # vocabulary (#583), and a label mixing the two would split one
-        # transition across series.
-        previous = unified_data_type_of(file_meta.data_type)
-        previous_type = previous.value if previous else "unknown"
-
-        # One seam (#1470): the file row, EVERY Evidence row backed by it,
-        # and the retirement of the question this answers. Claim content —
-        # the LLM-authored summary/extract — stays untouched.
-        (
-            new_files_list,
-            new_evidence_list,
-            retired_suggestions,
-        ) = _reclassified_collections(
-            case, file_id, preprocessing_result, new_source_type
-        )
-
-        # Shallow copy with the replaced collections. ``messages`` gets a
-        # fresh list because process_turn appends the agent message to the
-        # returned case; every other field is only ever reassigned, never
-        # mutated in place, so sharing by reference is safe — and skips
-        # deep-copying the whole case (messages, hypotheses, causal graph)
-        # on a mechanical click path.
-        updated_case = case.model_copy(
-            update={
-                "uploaded_files": new_files_list,
-                "evidence": new_evidence_list,
-                # Retired at the seam as well as by the ``resolved_file_id``
-                # round-trip below; the two predicates are complements, so
-                # this is idempotent (see the seam).
-                "last_suggestions": retired_suggestions,
-                "messages": list(case.messages),
-            }
-        )
-
-        EVIDENCE_RECLASSIFICATION_TOTAL.labels(
-            from_type=str(previous_type),
-            to_type=preprocessing_result.data_type.value,
-            trigger="clarification",
-        ).inc()
-
-        subject = _upload_subject(file_meta)
-        friendly = _CLARIFICATION_FRIENDLY_NAMES.get(data_type.value, {}).get(
-            "long"
-        ) or data_type.value.replace("_", " ")
-        agent_response = f"Got it — I've recorded {subject} as {friendly}."
-        if preprocessing_result.summary:
-            agent_response += f"\n\n{preprocessing_result.summary}"
-
-        return {
-            "agent_response": agent_response,
-            "suggested_follow_ups": [
-                {
-                    "label": "Analyze it now",
-                    "action_type": "DECIDE",
-                    # The identifier, not ``subject``: this payload is
-                    # replayed as a standalone turn, where "the text you
-                    # pasted" has no antecedent. The sentence above it is in
-                    # conversation and keeps the prose form.
-                    "payload": f'Analyze "{file_meta.display_name}".',
-                    "body": "Run the analysis with the corrected classification.",
-                }
-            ],
-            "case_updated": updated_case,
-            "metadata": {
-                "progress_made": False,
-                "milestones_completed": [],
-                "file_reclassified": {
-                    "file_id": file_id,
-                    "from_type": str(previous_type),
-                    "to_type": new_source_type.value,
-                },
-                **report_turn_uploads(case.case_id, case.current_turn, attachments),
-            },
-        }
 
     async def _handle_greeting(
         self,
@@ -2559,8 +1877,12 @@ class InvestigationService:
                 conflict_reason="no_backing_file",
             )
         # storage_ref non-None (checked above) implies file_meta is present.
-        preprocessing_result, new_source_type = await self._reextract_under_override(
-            file_meta, data_type, previous_metadata=evidence.metadata
+        preprocessing_result, new_source_type = await _reextract_under_override(
+            self.file_storage_service,
+            self.preprocessing_service,
+            file_meta,
+            data_type,
+            previous_metadata=evidence.metadata,
         )
 
         # Lift the updated evidence_metadata block from the result.
@@ -2713,64 +2035,3 @@ class InvestigationService:
         )
 
         return updated_evidence
-
-    async def _reextract_under_override(
-        self,
-        file_meta: "UploadedFile",
-        data_type: DataType,
-        previous_metadata: Optional[Dict[str, Any]] = None,
-    ):
-        """Retrieve the stored raw bytes behind *file_meta* and re-run
-        preprocessing under ``user_override=data_type``.
-
-        Shared mechanics of both reclassification paths — the PATCH /
-        agent-tool ``reclassify_evidence`` and the clarification-intent
-        ``_handle_file_reclassification``. Callers own target lookup,
-        authorization, terminal/conflict policy, persistence, and
-        response shape.
-
-        Returns:
-            ``(preprocessing_result, new_source_type)`` where the source
-            type is inferred from the result's fine-grained
-            ``detailed_data_type`` (the coarse UnifiedDataType in
-            ``data_type`` never matches the source-type map's keys).
-
-        Raises:
-            ServiceException: storage/preprocessing service unavailable.
-            NotFoundError: stored blob missing from storage.
-        """
-        if not self.file_storage_service:
-            raise ServiceException(
-                "File storage service unavailable; cannot re-extract"
-            )
-        if not self.preprocessing_service:
-            raise ServiceException(
-                "Preprocessing service unavailable; cannot reclassify"
-            )
-
-        # Fetch raw bytes + decode. Storage returns bytes; extractors
-        # operate on strings (UTF-8 is the convention per the upload path).
-        # Skip the destructive decode for binary content (see
-        # _is_binary_content).
-        raw_bytes = await self.file_storage_service.retrieve_file(file_meta.storage_ref)
-        filename = file_meta.filename or "the uploaded file"
-        if _is_binary_content(filename, file_meta.content_type, raw_bytes):
-            content = _binary_placeholder(
-                filename, file_meta.content_type, len(raw_bytes)
-            )
-            logger.info(
-                "binary content: skipping UTF-8 decode on reclassify",
-                extra={"filename": filename, "size_bytes": len(raw_bytes)},
-            )
-        else:
-            content = raw_bytes.decode("utf-8", errors="replace")
-
-        preprocessing_result = await self.preprocessing_service.reclassify_evidence(
-            content=content,
-            filename=filename,
-            user_override=data_type,
-            previous_metadata=previous_metadata,
-        )
-        return preprocessing_result, _infer_source_type(
-            preprocessing_result.detailed_data_type
-        )
