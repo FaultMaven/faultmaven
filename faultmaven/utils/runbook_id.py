@@ -18,8 +18,8 @@ Id derivation:
 
 Shared single source of truth so the startup KB bootstrap
 (``faultmaven.bootstrap.kb_init``) and the on-disk scan
-(``faultmaven.modules.knowledge.domain.services.conversion_service``) agree on
-the id a given runbook file maps to. The scan uses it to recognize files the
+(``faultmaven.modules.knowledge.domain.services.conversion_service.runbook_scan``)
+agree on the id a given runbook file maps to. The scan uses it to recognize files the
 bootstrap already published directly into ``knowledge_items`` (which never get
 a ``conversion_drafts`` row), so it doesn't manufacture phantom drafts for
 already-ingested runbooks.

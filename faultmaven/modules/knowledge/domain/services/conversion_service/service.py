@@ -12,35 +12,26 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
-from uuid import uuid4
+from typing import Dict, List, Optional, Tuple
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.config.tenant_context import (
-    get_current_billing_organization_id,
-    writable_enterprise_id,
-)
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
     NotFoundError,
     ValidationException,
 )
-from faultmaven.infrastructure.llm.json_response import loads_llm_json
 from faultmaven.infrastructure.llm.truncation import generate_with_truncation_retry
 from faultmaven.infrastructure.persistence.models import (
     ConversionDraftModel,
     ConversionJobModel,
-    KnowledgeItemModel,
     UploadedFileModel,
 )
 from faultmaven.modules.auth.contracts import is_team_member
 from faultmaven.modules.knowledge.domain.global_authoring import (
     ensure_global_authoring_allowed,
-    is_global_authoring_allowed,
 )
 from faultmaven.modules.knowledge.domain.models.conversion import (
     AnalysisResult,
@@ -62,6 +53,10 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     generate_draft_id,
     generate_runbook_id,
 )
+from faultmaven.modules.knowledge.domain.services.conversion_service.draft_slots import (
+    _refuse_modes_whose_id_is_taken,
+    refuse_if_draft_slot_taken,
+)
 from faultmaven.modules.knowledge.domain.services.conversion_service.errors import (
     ConversionRejectedError,
 )
@@ -69,14 +64,24 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.failure_mod
     _force_frontmatter_id,
     _partition_failure_modes,
 )
+from faultmaven.modules.knowledge.domain.services.conversion_service.job_persistence import (
+    _persist_job,
+)
+from faultmaven.modules.knowledge.domain.services.conversion_service.pipeline import (
+    _analyze_document,
+    _knowledge_route_kwargs,
+    _scope_dir,
+)
 from faultmaven.modules.knowledge.domain.services.conversion_service.prompts import (
-    ANALYSIS_MAX_TOKENS,
-    ANALYSIS_MAX_TOKENS_CEILING,
-    ANALYSIS_SYSTEM_PROMPT,
     CONVERSION_SYSTEM_PROMPT,
     PARALLEL_THRESHOLD,
     RUNBOOK_MAX_TOKENS,
     RUNBOOK_MAX_TOKENS_CEILING,
+)
+from faultmaven.modules.knowledge.domain.services.conversion_service.runbook_scan import (
+    QUALITY_WARNING_THRESHOLD,
+    _release_live_case_key_if_drained,
+    _scan_for_runbooks_impl,
 )
 from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
     DocumentPreprocessor,
@@ -93,7 +98,6 @@ from faultmaven.utils.runbook_id import (
     knowledge_root,
     resolve_runbook_path,
     runbook_id_from_parts,
-    safe_path_component,
     write_runbook_file,
 )
 
@@ -107,8 +111,6 @@ logger = logging.getLogger(__name__)
 # :func:`writable_enterprise_id` instead. No production code reads this any more;
 # it stays exported because the tests name the single-tenant enterprise by it.
 DEFAULT_ENTERPRISE_ID = SingleTenantProvider.DEFAULT_ENTERPRISE_ID
-
-QUALITY_WARNING_THRESHOLD = 50.0
 
 
 # =============================================================================
@@ -192,26 +194,6 @@ class ConversionService:
             resource_id=draft_id,
             conflict_reason=self.PATH_ESCAPE_CONFLICT_REASON,
         )
-
-    def _scope_dir(self, scope: str, team_id: str = None, user_id: str = None) -> Path:
-        """Scope directory for a draft, with both id components sanitised.
-
-        #1213: these are interpolated into a directory NAME. They come from the
-        auth context rather than a request body, so they are a lower-risk source
-        than a title — but the same shape bit ``KnowledgeService.upload_document``,
-        where a ``user_id`` of ``../../../../escaped`` sent the write outside
-        ``data/knowledge`` entirely. ``safe_path_component`` reduces each to one
-        segment, so the layout (``global/``, ``team_*/``, ``user_*/``) that the
-        scan pass infers scope from is preserved while an escape is
-        unconstructible.
-        """
-        if scope == "global":
-            return self._data_dir / "global"
-        elif scope == "team" and team_id:
-            return self._data_dir / f"team_{safe_path_component(team_id)}"
-        elif scope == "personal" and user_id:
-            return self._data_dir / f"user_{safe_path_component(user_id)}"
-        return self._data_dir / "global"
 
     async def _ensure_team_publish_allowed(
         self, scope: str, team_id: Optional[str], user_id: str
@@ -309,8 +291,11 @@ class ConversionService:
         )
 
         # Step 3: Analyze for failure modes
-        analysis = await self._analyze_document(
-            preprocessing.extracted_text, original_filename
+        analysis = await _analyze_document(
+            self._llm_router,
+            self._settings,
+            preprocessing.extracted_text,
+            original_filename,
         )
 
         if not analysis.is_actionable or len(analysis.failure_modes) == 0:
@@ -347,7 +332,9 @@ class ConversionService:
             status = ConversionStatus.COMPLETED
 
         # Step 5: Persist to database
-        await self._persist_job(
+        await _persist_job(
+            self._db_session_factory,
+            self._share_repo,
             conversion_id=conversion_id,
             user_id=user_id,
             enterprise_id=enterprise_id,
@@ -612,7 +599,9 @@ class ConversionService:
         # so a genuine duplicate from a DIFFERENT case still surfaces as its
         # 409.
         try:
-            await self._persist_job(
+            await _persist_job(
+                self._db_session_factory,
+                self._share_repo,
                 conversion_id=conversion_id,
                 user_id=user_id,
                 enterprise_id=enterprise_id,
@@ -661,96 +650,6 @@ class ConversionService:
     # Analysis Phase
     # =========================================================================
 
-    def _knowledge_route_kwargs(self) -> dict:
-        """``{"provider_override": <name>}`` when KNOWLEDGE_PROVIDER is set,
-        else ``{}`` — the kwarg is added only when the role provider is
-        explicitly configured, so the unset case is byte-identical to before
-        role routing and duck-typed routers without the parameter keep
-        working."""
-        override = self._settings.llm.explicit_role_provider("knowledge")
-        return {"provider_override": override} if override else {}
-
-    async def _analyze_document(self, text: str, filename: str) -> AnalysisResult:
-        """Analyze document for failure modes using KNOWLEDGE_PROVIDER."""
-        knowledge_model = self._settings.llm.get_knowledge_model()
-
-        async def _analyze(cap: int):
-            return await self._llm_router.route(
-                messages=[
-                    {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
-                    {"role": "user", "content": f"Analyze this document:\n\n{text}"},
-                ],
-                model=knowledge_model,
-                max_tokens=cap,
-                temperature=0.2,
-                response_format={"type": "json_object"},
-                # Land on KNOWLEDGE_PROVIDER when the operator set one — the
-                # model alone doesn't route (kwarg only when set, so
-                # duck-typed routers keep working).
-                **self._knowledge_route_kwargs(),
-            )
-
-        # A document with many failure modes can genuinely outgrow the budget.
-        # This path already failed LOUDLY on a cut body — the JSON does not
-        # parse — which was the right shape but the wrong recovery: it reported
-        # "could not be parsed" for a document that simply needed more room, and
-        # a retry with the same cap could never differ. Raise the cap once, and
-        # say what actually happened if it is still cut (#1094).
-        response = await generate_with_truncation_retry(
-            _analyze,
-            max_tokens=ANALYSIS_MAX_TOKENS,
-            ceiling=ANALYSIS_MAX_TOKENS_CEILING,
-            label=f"document analysis ({filename})",
-        )
-
-        if response.is_truncated:
-            raise ConversionRejectedError(
-                "LLM analysis response was truncated at the output limit "
-                f"({ANALYSIS_MAX_TOKENS_CEILING} tokens); the document may "
-                "contain too many failure modes for a single analysis pass",
-                error_code=ConversionErrorCode.LLM_PARSE_ERROR,
-            )
-
-        try:
-            # Tolerant of a markdown fence: `response_format` is an
-            # OpenAI-shaped parameter and a provider that cannot express it
-            # drops it, so the body arrives as fenced prose-JSON. A bare
-            # A bare `json.loads` made every conversion fail under such a provider
-            # (#1380) with LLM_PARSE_ERROR, whose user-facing advice is "try a
-            # different document" — advice that can never work, because the
-            # document was never the problem.
-            data = loads_llm_json(response.content, strict=True)
-            return AnalysisResult(
-                is_actionable=data.get("is_actionable", False),
-                failure_modes=[
-                    FailureModeAnalysis(**fm) for fm in data.get("failure_modes", [])
-                ],
-                source_assessment=SourceAssessment(
-                    **data.get(
-                        "source_assessment",
-                        {
-                            "content_type": "unknown",
-                            "actionability_rating": "low",
-                            "missing_information": [],
-                        },
-                    )
-                ),
-            )
-        except Exception as e:
-            logger.error(f"Failed to parse analysis response: {e}")
-            raise ConversionRejectedError(
-                # Static. ``ConversionRejectedError`` is serialized to the
-                # caller by ``conversion_routes`` as ``detail=str(e)``, on the
-                # strength of every other construction being a hand-written
-                # caller-facing sentence. This arm is a broad ``except`` over a
-                # JSON decode and a Pydantic construction, so the text is a
-                # decoder message or a ValidationError echoing the model's raw
-                # output — the one place that promise was not kept (#1400).
-                # Already logged immediately above.
-                "LLM analysis response could not be parsed",
-                error_code=ConversionErrorCode.LLM_PARSE_ERROR,
-            ) from e
-
     # =========================================================================
     # Conversion Phase
     # =========================================================================
@@ -791,8 +690,8 @@ class ConversionService:
         # which is exactly the cross-replica race migration 046 backstops. This
         # is a cost pre-filter in front of it, and the two agree because both
         # ask ``_find_live_draft_owning``.
-        unique_modes, taken_errors = await self._refuse_modes_whose_id_is_taken(
-            unique_modes, enterprise_id
+        unique_modes, taken_errors = await _refuse_modes_whose_id_is_taken(
+            self._db_session_factory, unique_modes, enterprise_id
         )
         errors.extend(taken_errors)
 
@@ -916,7 +815,7 @@ class ConversionService:
                     max_tokens=cap,
                     temperature=0.3,
                     # Same KNOWLEDGE_PROVIDER routing as _analyze_document.
-                    **self._knowledge_route_kwargs(),
+                    **_knowledge_route_kwargs(self._settings),
                 )
 
             response = await generate_with_truncation_retry(
@@ -996,16 +895,16 @@ class ConversionService:
             # from an allowlist so an escape is unconstructible today — the
             # guard is what keeps that true if the mint rule is loosened or a
             # new caller assembles its own name (#1213 follow-up).
-            draft_path = self._scope_dir(scope, team_id, user_id) / draft_filename(
-                runbook_id
-            )
+            draft_path = _scope_dir(
+                self._data_dir, scope, team_id, user_id
+            ) / draft_filename(runbook_id)
 
             # BEFORE the write. The path is derived from ``runbook_id``, so a
             # duplicate lands on the EXISTING draft's file and would replace
             # its content on the way to an INSERT migration 046 rejects. See
             # ``refuse_if_draft_slot_taken``.
-            await self.refuse_if_draft_slot_taken(
-                enterprise_id, runbook_id, str(draft_path)
+            await refuse_if_draft_slot_taken(
+                self._db_session_factory, enterprise_id, runbook_id, str(draft_path)
             )
 
             write_runbook_file(
@@ -1076,419 +975,6 @@ class ConversionService:
     # =========================================================================
     # Persistence
     # =========================================================================
-
-    async def _persist_job(
-        self,
-        conversion_id: str,
-        user_id: str,
-        enterprise_id: str,
-        scope: str,
-        team_id: str,
-        status: ConversionStatus,
-        source_file: SourceFileInfo,
-        analysis: AnalysisResult,
-        drafts: List[ConversionDraft],
-        created_at: datetime,
-        source_type: str = "document",
-        case_id: str = None,
-        warnings: Optional[List[str]] = None,
-    ) -> None:
-        """Persist conversion job and drafts to database."""
-        if not self._db_session_factory:
-            return
-
-        enterprise_id = writable_enterprise_id(enterprise_id)
-
-        try:
-            await self._persist_job_rows(
-                enterprise_id=enterprise_id,
-                conversion_id=conversion_id,
-                user_id=user_id,
-                scope=scope,
-                status=status,
-                source_file=source_file,
-                analysis=analysis,
-                drafts=drafts,
-                created_at=created_at,
-                source_type=source_type,
-                case_id=case_id,
-                warnings=warnings,
-            )
-        except IntegrityError:
-            # Classified AFTER the session block has exited, never inside it:
-            # the classifier opens a SECOND session, and holding both at once
-            # deadlocks a deployment pooled at one connection.
-            await self._raise_if_runbook_id_taken(
-                enterprise_id, [d.runbook_id for d in drafts]
-            )
-            raise
-
-        # Team publish target: record it as a share row on the conversion_job
-        # (source of truth, ADR-013 §D4). On verify, it is transferred to the
-        # promoted knowledge_item. Outside the session block — the share repo is
-        # sessionless. Inert (no-op) when no share repo is wired.
-        if scope == "team" and team_id and self._share_repo:
-            await self._share_repo.share(
-                resource_type="conversion_job",
-                resource_id=conversion_id,
-                scope_type="team",
-                scope_id=team_id,
-                enterprise_id=enterprise_id,
-                created_by=user_id,
-            )
-
-    async def _persist_job_rows(
-        self,
-        *,
-        enterprise_id: str,
-        conversion_id: str,
-        user_id: str,
-        scope: str,
-        status: ConversionStatus,
-        source_file: SourceFileInfo,
-        analysis: AnalysisResult,
-        drafts: List[ConversionDraft],
-        created_at: datetime,
-        source_type: str,
-        case_id: Optional[str],
-        warnings: Optional[List[str]] = None,
-    ) -> None:
-        """The upload + job + drafts write, as ONE transaction and one session.
-
-        Split out of ``_persist_job`` only so its caller can classify an
-        ``IntegrityError`` after this session has been returned to the pool.
-        """
-        async with self._db_session_factory() as session:
-            # Billing attribution for every row this writes (ADR-017 D2), read
-            # from the request binding exactly as ``CaseService.create_case``
-            # and the audit writer read it. ``None`` is the ordinary answer —
-            # nobody pays for this account — and it decides nothing about
-            # visibility, which is why it comes from a different binding than
-            # ``enterprise_id`` and is never a predicate anywhere below.
-            organization_id = get_current_billing_organization_id()
-
-            # ``conversion_jobs`` carries a single ``source_file_id`` FK to
-            # ``uploaded_files`` (ON DELETE RESTRICT). Create the upload row
-            # first; the conversion_jobs row references it. Both tables
-            # require enterprise_id NOT NULL.
-            source_file_id = f"file_{uuid4().hex[:12]}"
-            upload = UploadedFileModel(
-                file_id=source_file_id,
-                enterprise_id=enterprise_id,
-                organization_id=organization_id,
-                case_id=None,  # KB-bound, not case-bound
-                uploaded_by=user_id,
-                filename=source_file.filename,
-                size_bytes=source_file.size_bytes,
-                content_type=source_file.content_type,
-                storage_ref=source_file.retained_path or None,
-                upload_source="conversion_source",
-                uploaded_at_turn=0,
-            )
-            session.add(upload)
-            await session.flush()  # ensure upload row exists before FK ref
-
-            # ``live_case_id`` holds the case only while this case-source job has
-            # a live (non-discarded) draft; it is the value the unique index
-            # dedups on. Freshly generated drafts are DRAFT (live), a failed
-            # conversion persists zero drafts (never blocks regeneration), and
-            # document jobs carry no case — all three resolve to NULL here.
-            live_case_id = (
-                case_id
-                if source_type == "case"
-                and case_id
-                and any(d.status != DraftStatus.DISCARDED for d in drafts)
-                else None
-            )
-
-            job = ConversionJobModel(
-                id=conversion_id,
-                user_id=user_id,
-                enterprise_id=enterprise_id,
-                organization_id=organization_id,
-                scope=scope,
-                status=status.value,
-                source_file_id=source_file_id,
-                source_type=source_type,
-                case_id=case_id,
-                live_case_id=live_case_id,
-                failure_modes_detected=len(analysis.failure_modes),
-                analysis_result=analysis.model_dump(),
-                # ``None`` rather than ``[]`` when there is nothing to say, so a
-                # job with no warnings and a pre-048 job are not conflated at
-                # the storage layer (migration 048).
-                warnings=list(warnings) if warnings else None,
-                created_at=created_at,
-                completed_at=datetime.now(timezone.utc),
-            )
-            session.add(job)
-
-            for draft in drafts:
-                draft_model = ConversionDraftModel(
-                    id=draft.draft_id,
-                    enterprise_id=enterprise_id,
-                    organization_id=organization_id,
-                    conversion_id=conversion_id,
-                    runbook_id=draft.runbook_id,
-                    title=draft.title,
-                    file_path=draft.file_path,
-                    status=draft.status.value,
-                    source_type=source_type,
-                    validation_passed=draft.validation.passed,
-                    validation_errors=draft.validation.errors,
-                    validation_warnings=draft.validation.warnings,
-                    quality_score=draft.quality_score.overall,
-                    quality_details=draft.quality_score.model_dump(),
-                    created_at=created_at,
-                )
-                session.add(draft_model)
-
-            await session.commit()
-
-    async def _find_live_draft_owning(
-        self,
-        enterprise_id: str,
-        runbook_ids: Sequence[Optional[str]],
-        file_path: str = None,
-    ) -> Optional[Tuple[str, str, str]]:
-        """``(runbook_id, file_path, draft_id)`` of a live draft already holding
-        one of these ids OR this file, in this tenant. ``None`` if the slot is
-        free.
-
-        Two keys, one query, because a draft occupies two slots and losing
-        either one loses a runbook:
-
-        - its ``runbook_id``, which migration 046 makes unique per tenant; and
-        - its ``file_path``, which is NOT in that index and does not follow
-          from the id. ``draft_filename`` runs the id back through ``_slug``,
-          so ``"foo--bar"`` and ``"foo-bar"`` resolve to one ``foo-bar.md``.
-          A legacy row holding the double-hyphen form — which the mint could
-          produce before #1243 — is invisible to an id lookup, and the write would
-          clobber its file while the INSERT sailed past the index. Measured on
-          the dev database: 0 rows of that shape today, so this is a guard
-          against a state I could not reproduce rather than one I observed —
-          which is exactly the case for keying on the resolved slot rather than
-          on the id that was supposed to imply it.
-
-        Ordered, and deliberately not ``LIMIT 1`` on an unordered scan: the
-        message names a specific row, and naming a different row on each call
-        makes it unactionable.
-        """
-        if not self._db_session_factory:
-            return None
-        # ``is not None``, NOT truthiness: an empty ``runbook_id`` is a real
-        # (legacy) value that collides with every other empty one — the very
-        # shape #1230 reported — and dropping it here let the raw
-        # ``IntegrityError`` escape past every caller written to catch the
-        # typed refusal.
-        ids = [rid for rid in runbook_ids if rid is not None]
-        if not ids and file_path is None:
-            return None
-        conditions = []
-        if ids:
-            conditions.append(ConversionDraftModel.runbook_id.in_(ids))
-        if file_path is not None:
-            conditions.append(ConversionDraftModel.file_path == file_path)
-        async with self._db_session_factory() as probe:
-            result = await probe.execute(
-                select(
-                    ConversionDraftModel.runbook_id,
-                    ConversionDraftModel.file_path,
-                    ConversionDraftModel.id,
-                )
-                .where(ConversionDraftModel.enterprise_id == enterprise_id)
-                .where(or_(*conditions))
-                .where(ConversionDraftModel.status != "discarded")
-                .order_by(ConversionDraftModel.created_at, ConversionDraftModel.id)
-                .limit(1)
-            )
-            return result.first()
-
-    @staticmethod
-    def _duplicate_draft_conflict(taken: Tuple[str, str, str]) -> ConflictError:
-        """The 409 for a slot already held. One wording, both call sites."""
-        runbook_id, file_path, draft_id = taken
-        return ConflictError(
-            f"A runbook draft with id '{runbook_id}' already exists in this "
-            f"enterprise (draft {draft_id}, {file_path}). Discard it before "
-            "creating another with the same service and title — verifying it "
-            "does not release the id.",
-            resource_type="conversion_draft",
-            resource_id=draft_id,
-            conflict_reason="duplicate_runbook_id",
-        )
-
-    async def _refuse_modes_whose_id_is_taken(
-        self,
-        failure_modes: List[FailureModeAnalysis],
-        enterprise_id: Optional[str],
-    ) -> Tuple[List[FailureModeAnalysis], List[ConversionError]]:
-        """Drop the modes whose minted id a LIVE draft already holds, in ONE query.
-
-        The cost pre-filter described at the call site. ``refuse_if_draft_slot_taken``
-        asks the same question one id at a time, from inside the per-mode
-        coroutine — i.e. after that mode's generation has already been paid for.
-        Both remain: this one saves the call, that one is the authoritative
-        pre-write guard and closes the race this query cannot.
-
-        Degrades per mode, exactly like the committed-duplicate branch in
-        ``_convert_single_failure_mode``: a taken id is a fact about ONE failure
-        mode, and a document analysed into five of them should still yield the
-        other four. The wording is ``_duplicate_draft_conflict``'s, so a
-        duplicate refused here and one refused at the write site read the same.
-
-        Returns ``(survivors, errors)``. Inert with no database (nothing is
-        written, so nothing can be taken) — the same early return
-        ``refuse_if_draft_slot_taken`` and ``_persist_job`` make, and for the
-        same reason: ``writable_enterprise_id`` raises on an unscoped context, which
-        must not become a failure on a path that writes nothing.
-        """
-        if not self._db_session_factory or not failure_modes:
-            return list(failure_modes), []
-
-        minted = {fm.id: generate_runbook_id(fm) for fm in failure_modes}
-        taken = await self._find_live_drafts_owning(
-            writable_enterprise_id(enterprise_id), list(minted.values())
-        )
-        if not taken:
-            return list(failure_modes), []
-
-        survivors: List[FailureModeAnalysis] = []
-        errors: List[ConversionError] = []
-        for fm in failure_modes:
-            row = taken.get(minted[fm.id])
-            if row is None:
-                survivors.append(fm)
-                continue
-            logger.warning(
-                "conversion_draft_id_taken",
-                extra={"failure_mode_id": fm.id, "runbook_id": minted[fm.id]},
-            )
-            errors.append(
-                ConversionError(
-                    failure_mode_id=fm.id,
-                    error=str(self._duplicate_draft_conflict(row)),
-                    retryable=False,
-                )
-            )
-        return survivors, errors
-
-    async def _find_live_drafts_owning(
-        self, enterprise_id: str, runbook_ids: Sequence[Optional[str]]
-    ) -> Dict[str, Tuple[str, str, str]]:
-        """``{runbook_id: (runbook_id, file_path, draft_id)}`` for every live
-        draft in this tenant holding one of these ids.
-
-        The batch form of ``_find_live_draft_owning``. That one answers "is this
-        ONE slot free" and stops at the first row, which is right for a
-        pre-write guard and wrong for a pre-flight over a whole batch: five
-        taken ids would need five queries, or one query that names only one of
-        them.
-
-        Ordered, and the FIRST row per id wins, so the draft this names is the
-        same one ``_find_live_draft_owning`` would name for that id — the two
-        refusals must not point at different rows for the same collision.
-        """
-        ids = [rid for rid in runbook_ids if rid is not None]
-        if not ids:
-            return {}
-        async with self._db_session_factory() as probe:
-            result = await probe.execute(
-                select(
-                    ConversionDraftModel.runbook_id,
-                    ConversionDraftModel.file_path,
-                    ConversionDraftModel.id,
-                )
-                .where(ConversionDraftModel.enterprise_id == enterprise_id)
-                .where(ConversionDraftModel.runbook_id.in_(ids))
-                .where(ConversionDraftModel.status != "discarded")
-                .order_by(ConversionDraftModel.created_at, ConversionDraftModel.id)
-            )
-            found: Dict[str, Tuple[str, str, str]] = {}
-            for row in result.all():
-                found.setdefault(row[0], (row[0], row[1], row[2]))
-            return found
-
-    async def refuse_if_draft_slot_taken(
-        self, enterprise_id: Optional[str], runbook_id: str, draft_path: str
-    ) -> None:
-        """Refuse BEFORE writing, on every path that mints a NEW draft file.
-
-        The draft file is named after ``runbook_id``, so a duplicate resolves
-        to the SAME path. Writing first and letting migration 046 reject the
-        INSERT leaves the EXISTING draft's row pointing at the new author's
-        content — a worse state than the duplicate rows the index removes,
-        because the surviving row then lies about its own file.
-
-        Both new-draft write paths call this: the LLM conversion
-        (``_generate_runbook_draft``) and the manual template create. The edit
-        path (``update_draft``) does NOT and must not — it rewrites the file
-        its own row already owns, so the row it would "conflict" with is
-        itself.
-
-        This is the ordinary case; the index stays the backstop for the genuine
-        cross-replica race, which is what an index is for.
-
-        Takes the RAW ``enterprise_id`` and resolves it here, after the
-        factory check — unlike ``_raise_if_runbook_id_taken``, whose only caller
-        has already resolved it. ``writable_enterprise_id`` raises on an unscoped
-        context, and evaluating it at the call site would make that a failure on
-        a path with no database, which writes nothing and has no index to
-        honour. Mirrors ``_persist_job``'s own early return.
-        """
-        if not self._db_session_factory:
-            return
-        taken = await self._find_live_draft_owning(
-            writable_enterprise_id(enterprise_id), [runbook_id], file_path=draft_path
-        )
-        if taken:
-            raise self._duplicate_draft_conflict(taken)
-
-    async def _raise_if_runbook_id_taken(
-        self, enterprise_id: str, runbook_ids: Sequence[Optional[str]]
-    ) -> None:
-        """Translate the 046 unique-index violation into a 409, or return.
-
-        ``uq_conversion_drafts_enterprise_runbook_id`` (migration 046) admits one LIVE
-        draft per ``(enterprise_id, runbook_id)``. Two drafts reaching the
-        same id is ordinary — ``runbook_id_from_parts`` is deterministic on
-        ``(service, title)``, deliberately, because the disk scan reconciles a
-        file to its row by that id — so a user converting the same source
-        twice, or two cases about the same failure, lands here. Without this
-        the whole commit surfaces as an unhandled ``IntegrityError``, i.e. a
-        500 that says nothing.
-
-        This is the BACKSTOP. ``refuse_if_draft_slot_taken`` catches the
-        ordinary case before anything is written; what reaches here is a race,
-        or a shape the pre-check could not see.
-
-        Classification is by a **confirming re-read**, never by matching the
-        exception's message: the same commit also carries
-        ``uq_conversion_jobs_live_case_id``. That one is NOT distinguishable
-        from a runbook_id duplicate by re-read alone — two replicas converting
-        the same case produce the same ``(service, title)`` pairs and therefore
-        the same ids, so this re-read finds the winner's drafts and raises a
-        409 for what is really the live-case race. ``convert_from_case``
-        therefore catches ``ConflictError`` as well as ``IntegrityError`` and
-        resolves it with ITS OWN confirming re-read
-        (``get_conversion_by_case``), which is the discriminator that actually
-        distinguishes the two. Anything it cannot confirm it re-raises.
-
-        Two drafts in ONE job colliding with each other no longer reaches here
-        (#1258), and could never have been resolved here: nothing is committed,
-        so the re-read finds nothing, this returns, and the caller re-raises the
-        bare ``IntegrityError`` — a 500 that says nothing, after the second
-        draft's write has already replaced the first one's file (both ids
-        resolve to one ``draft_filename``). It is refused where the duplicate is
-        produced instead: ``_partition_failure_modes`` mints every id in the
-        batch before any conversion runs and degrades each repeat to that
-        failure mode's ``ConversionError``, so every draft list reaching
-        ``_persist_job`` carries distinct ids and what arrives here is a
-        cross-job duplicate or the live-case race.
-        """
-        taken = await self._find_live_draft_owning(enterprise_id, runbook_ids)
-        if taken:
-            raise self._duplicate_draft_conflict(taken)
 
     async def _resolve_job_team_id(self, conversion_id: str) -> Optional[str]:
         """Return the team a conversion job is shared to, or None.
@@ -2439,16 +1925,16 @@ status: draft
 
         # Write to disk through the shared containment-checked helper — same
         # anchor, same before-mkdir ordering as every other runbook write.
-        draft_path = self._scope_dir(scope, team_id, user_id) / draft_filename(
-            runbook_id
-        )
+        draft_path = _scope_dir(
+            self._data_dir, scope, team_id, user_id
+        ) / draft_filename(runbook_id)
 
         # BEFORE the write, for the reason on ``refuse_if_draft_slot_taken``.
         # Unlike the LLM path this does NOT degrade to a per-mode error: a
         # manual create is one runbook, so refusing it IS the answer, and the
         # caller gets the 409.
-        await self.refuse_if_draft_slot_taken(
-            enterprise_id, runbook_id, str(draft_path)
+        await refuse_if_draft_slot_taken(
+            self._db_session_factory, enterprise_id, runbook_id, str(draft_path)
         )
 
         write_runbook_file(
@@ -2486,7 +1972,9 @@ status: draft
 
         # Persist to database using a synthetic conversion job
         conversion_id = generate_conversion_id()
-        await self._persist_job(
+        await _persist_job(
+            self._db_session_factory,
+            self._share_repo,
             conversion_id=conversion_id,
             user_id=user_id,
             enterprise_id=enterprise_id,
@@ -2551,474 +2039,14 @@ status: draft
             {"discovered": N, "skipped": N, "errors": [...], "drafts": [...]}
         """
         async with self._scan_lock:
-            return await self._scan_for_runbooks_impl(
-                user_id, enterprise_id, is_platform_admin
+            return await _scan_for_runbooks_impl(
+                self._data_dir,
+                self._db_session_factory,
+                self._share_repo,
+                user_id,
+                enterprise_id,
+                is_platform_admin,
             )
-
-    async def _scan_for_runbooks_impl(
-        self,
-        user_id: str,
-        enterprise_id: Optional[str] = None,
-        is_platform_admin: bool = False,
-    ) -> dict:
-        import yaml
-
-        # Whether this caller may mint global-scope drafts. Computed once (the
-        # policy is per-caller, not per-file); global-inferred files are skipped
-        # below when this is False.
-        global_authoring_allowed = is_global_authoring_allowed(is_platform_admin)
-
-        discovered = []
-        skipped = 0
-        errors = []
-
-        from faultmaven.utils.runbook_id import item_id_from_runbook_id
-
-        # Reconcile DB state before scanning disk
-        tracked_paths: set[str] = set()
-        # item_ids already published into knowledge_items — e.g. by the
-        # startup KB bootstrap, which ingests shipped runbooks DIRECTLY
-        # (bypassing conversion_drafts entirely, per kb_init's design). Such
-        # files have no draft row, so without this set the disk walk below
-        # would treat them as "untracked" and manufacture a phantom draft for
-        # every already-published runbook.
-        ingested_item_ids: set[str] = set()
-        if self._db_session_factory:
-            async with self._db_session_factory() as session:
-                ingested_result = await session.execute(
-                    select(KnowledgeItemModel.item_id)
-                )
-                ingested_item_ids = set(ingested_result.scalars().all())
-
-                all_drafts_result = await session.execute(select(ConversionDraftModel))
-                all_draft_models = all_drafts_result.scalars().all()
-
-                non_discarded_count = sum(
-                    1
-                    for d in all_draft_models
-                    if d.status != DraftStatus.DISCARDED.value
-                )
-                pending_discard_ids: list[str] = []
-                # Discards for drafts whose runbook is ALREADY published in
-                # knowledge_items. Kept separate from pending_discard_ids so
-                # they do NOT feed the "would discard ALL active drafts ⇒
-                # storage failure" abort guard below — clearing redundant
-                # phantom drafts is legitimate cleanup even if it empties the
-                # Drafts tab, not a wiped-data-dir signal.
-                redundant_discard_ids: list[str] = []
-
-                for draft_model in all_draft_models:
-                    # Cheap status check FIRST: an already-discarded row is not
-                    # reconciled at all, so probing its path was two wasted
-                    # resolve() walks per scan and made a discarded escaping row
-                    # log a refusal on every scan, forever.
-                    if draft_model.status == DraftStatus.DISCARDED.value:
-                        continue
-
-                    # A row whose path is not inside the tree is SKIPPED — not
-                    # discarded, not counted, not touched (#1213 follow-up).
-                    #
-                    # It was treated as "absent" in the first version of this
-                    # change, and that was wrong in two measurable ways. A
-                    # deployment whose only active drafts have escaping paths
-                    # discards all of them, trips the "would discard ALL active
-                    # drafts" abort guard, and gets a deterministic "Restore
-                    # from backup" RuntimeError on EVERY scan — so the repair
-                    # this was supposed to perform never runs. And a knowledge
-                    # tree assembled with symlinks (``team_x -> /mnt/share``)
-                    # worked before containment existed; treating it as absent
-                    # soft-discards every draft under it on the first scan after
-                    # the upgrade.
-                    #
-                    # Refusing to TOUCH such a path is the security posture and
-                    # it stands. Refusing to touch it while deleting the row
-                    # that points at it is just data loss. Skip and warn: an
-                    # operator loses access to those drafts, not the drafts.
-                    try:
-                        file_exists = resolve_runbook_path(
-                            draft_model.file_path,
-                            source=(
-                                "conversion_drafts.file_path "
-                                f"(draft_id={draft_model.id})"
-                            ),
-                            root=self._data_dir,
-                        ).exists()
-                    except RunbookPathEscape as exc:
-                        # NOT counted in ``skipped``: that number is returned to
-                        # the client and means "files skipped during the disk
-                        # walk". An escaping DB row is a bad ROW, not a walked
-                        # file, so folding it in (as round 2 did) made "N files
-                        # skipped" stop meaning walk skips. The bad row is
-                        # surfaced by this WARNING, which names it for the
-                        # operator repair it needs (#1213 follow-up).
-                        logger.warning(
-                            "skipping draft %s during scan reconciliation "
-                            "(not discarded): %s",
-                            draft_model.id,
-                            exc,
-                        )
-                        continue
-
-                    if not file_exists:
-                        draft_model.status = DraftStatus.DISCARDED.value
-                        pending_discard_ids.append(draft_model.id)
-                        continue
-
-                    # If this draft has already been activated (has a
-                    # knowledge_item_id linking it to a KB entry), it's a
-                    # verified draft that should not be shown as pending.
-                    # Do NOT delete drafts based on title matching against
-                    # ChromaDB — stale data from previous sessions causes
-                    # false positives that remove un-activated drafts.
-                    if draft_model.status == "draft" and getattr(
-                        draft_model, "knowledge_item_id", None
-                    ):
-                        draft_model.status = DraftStatus.DISCARDED.value
-                        pending_discard_ids.append(draft_model.id)
-                        logger.info(
-                            f"Removed duplicate draft {draft_model.id} "
-                            f"(already has knowledge_item_id)"
-                        )
-                        continue
-
-                    # Redundant phantom draft: this runbook is already
-                    # published in knowledge_items (typically by the startup
-                    # bootstrap, which never sets knowledge_item_id on a
-                    # draft because it bypasses the drafts table). Discard so
-                    # it stops showing as pending in the Drafts tab.
-                    if (
-                        draft_model.status == "draft"
-                        and draft_model.runbook_id
-                        and item_id_from_runbook_id(draft_model.runbook_id)
-                        in ingested_item_ids
-                    ):
-                        draft_model.status = DraftStatus.DISCARDED.value
-                        redundant_discard_ids.append(draft_model.id)
-                        logger.info(
-                            f"Discarded phantom draft {draft_model.id} "
-                            f"(runbook '{draft_model.runbook_id}' already "
-                            f"published in knowledge_items)"
-                        )
-                        continue
-
-                    if draft_model.status == "verified":
-                        # Trust SQLite: if knowledge_item_id is set, the
-                        # document was activated.
-                        # If status=verified but knowledge_item_id is missing,
-                        # this is a legacy half-state row from the pre-atomic
-                        # verify_draft path. The current verify_draft only
-                        # commits VERIFIED after successful ingestion, so new
-                        # rows should never reach this branch. Warn loudly
-                        # rather than silently downgrading — a silent revert
-                        # is what corrupted live data in the incident this
-                        # path was rewritten to prevent.
-                        if not getattr(draft_model, "knowledge_item_id", None):
-                            logger.warning(
-                                f"Draft {draft_model.id} has status=verified "
-                                f"but no knowledge_item_id (legacy half-state). "
-                                f"Leaving as-is; investigate and clean up via "
-                                f"explicit admin action if needed."
-                            )
-
-                    tracked_paths.add(draft_model.file_path)
-
-                # Guard: abort if the scan would discard every active draft.
-                # This signals a storage-layer failure (data directory missing/
-                # wiped), not legitimate cleanup. Raising here skips the commit
-                # so DB state is fully preserved for manual recovery.
-                if (
-                    non_discarded_count > 0
-                    and len(pending_discard_ids) >= non_discarded_count
-                ):
-                    preview = pending_discard_ids[:20]
-                    suffix = "..." if len(pending_discard_ids) > 20 else ""
-                    raise RuntimeError(
-                        f"Scan aborted: would discard all {non_discarded_count} active runbook "
-                        f"draft(s). Runbook files appear to be missing from the knowledge "
-                        f"data directory. DB state is unchanged. "
-                        f"Affected draft IDs: {preview}{suffix}. "
-                        "Restore data/knowledge/ from backup, then retry the scan."
-                    )
-
-                # Release the live-conversion claim of any case job whose last
-                # live draft this sweep discarded — same transaction, same rule
-                # as the explicit discard paths: a held unique slot on
-                # conversion_jobs.live_case_id with no live draft behind it
-                # would block that case's regeneration forever. Flush first so
-                # the drained-count sees every status flipped above, even when
-                # one job lost several drafts in this sweep.
-                discarded_ids = pending_discard_ids + redundant_discard_ids
-                if discarded_ids:
-                    await session.flush()
-                    drafts_by_id = {d.id: d for d in all_draft_models}
-                    released_job_ids: set[str] = set()
-                    for draft_id in discarded_ids:
-                        job_id = drafts_by_id[draft_id].conversion_id
-                        if job_id in released_job_ids:
-                            continue
-                        released_job_ids.add(job_id)
-                        job = await session.get(ConversionJobModel, job_id)
-                        if job is not None:
-                            await self._release_live_case_key_if_drained(
-                                session, job, draft_id
-                            )
-
-                await session.commit()
-
-        # Walk all scope directories
-        knowledge_dir = self._data_dir
-        if not knowledge_dir.exists():
-            return {
-                "discovered": 0,
-                "skipped": 0,
-                "errors": [],
-                "drafts": [],
-            }
-
-        for md_file in sorted(knowledge_dir.rglob("*.md")):
-            # Skip sources directory (retained original uploads)
-            if "sources" in md_file.parts:
-                continue
-
-            # The walk starts inside the tree, but ``rglob`` follows symlinks:
-            # a link planted at ``data/knowledge/global/innocent.md`` pointing
-            # at ``/etc/anything`` is yielded here, and before this check it was
-            # read and minted into a draft row — the exact shape every other
-            # path in this service refuses. Both halves of the module must agree
-            # on whether a file is a runbook, so the walk asks the same guard
-            # (#1213 follow-up).
-            try:
-                resolve_runbook_path(
-                    md_file,
-                    source=f"scanned file ({md_file.name})",
-                    root=knowledge_dir,
-                )
-            except RunbookPathEscape as exc:
-                logger.warning("skipping a scanned file outside the tree: %s", exc)
-                skipped += 1
-                continue
-
-            file_path_str = str(md_file)
-
-            # Skip if already tracked in drafts DB (in-memory set from
-            # reconciliation) or discovered earlier in this scan run.
-            # Concurrent scans are serialized by _scan_lock.
-            if file_path_str in tracked_paths:
-                skipped += 1
-                continue
-
-            # Read and validate
-            try:
-                content = md_file.read_text(encoding="utf-8")
-            except Exception as e:
-                errors.append(f"{md_file.name}: cannot read ({e})")
-                continue
-
-            if len(content.strip()) < 100:
-                errors.append(f"{md_file.name}: too short ({len(content)} chars)")
-                continue
-
-            # Extract metadata from frontmatter
-            fm_match = match_frontmatter(content)
-            metadata = {}
-            if fm_match:
-                try:
-                    metadata = yaml.safe_load(fm_match.group(1)) or {}
-                except Exception:
-                    pass
-
-            title = metadata.get("title", md_file.stem.replace("-", " ").title())
-            runbook_id = metadata.get("id", md_file.stem)
-
-            # Skip files already published into knowledge_items (e.g. by the
-            # startup bootstrap, which ingests directly and never creates a
-            # draft). Without this the scan manufactures a phantom draft for
-            # every already-published runbook.
-            if item_id_from_runbook_id(runbook_id) in ingested_item_ids:
-                skipped += 1
-                continue
-
-            # Infer scope from directory path
-            scope = "global"
-            relative = md_file.relative_to(knowledge_dir)
-            scope_dir_name = relative.parts[0] if len(relative.parts) > 1 else ""
-            if scope_dir_name.startswith("personal_") or scope_dir_name.startswith(
-                "user_"
-            ):
-                scope = "personal"
-            elif scope_dir_name.startswith("team_"):
-                scope = "team"
-
-            # Global-tier authoring gate: a global-inferred file mints a draft
-            # into the platform corpus (verified → readable by every tenant,
-            # retrieved for every tenant). A caller who may not author global scope (any
-            # tenant session under multi, or a non-admin single-tenant) skips it
-            # rather than minting an ungated global draft; personal/team files
-            # discovered in the same scan still proceed (#770, R4).
-            if scope == "global" and not global_authoring_allowed:
-                logger.info(
-                    "Scan skipped global-scope file %s: caller not permitted to "
-                    "author global (platform corpus) knowledge",
-                    md_file.name,
-                )
-                skipped += 1
-                continue
-
-            # Off the event loop, and validating ONCE (#1417). The scan
-            # walks every runbook on disk, so this is the site where the
-            # duplicated validation pass cost the most in aggregate.
-            validation, quality = await avalidate_and_score(content)
-
-            draft_id = generate_draft_id()
-            quality_warning = None
-            if quality.overall < QUALITY_WARNING_THRESHOLD:
-                quality_warning = (
-                    "Quality score is below 50. Review and edit before verifying."
-                )
-
-            draft = ConversionDraft(
-                draft_id=draft_id,
-                runbook_id=runbook_id,
-                title=title if isinstance(title, str) else str(title),
-                scope=scope,
-                status=DraftStatus.DRAFT,
-                validation=validation,
-                quality_score=quality,
-                file_path=file_path_str,
-                content_preview=content[:500],
-                content=content,
-                quality_warning=quality_warning,
-            )
-
-            # Extract metadata from frontmatter for dashboard filters
-            from faultmaven.utils.frontmatter import extract_frontmatter_metadata
-
-            fm_meta = extract_frontmatter_metadata(content)
-            raw_tags = metadata.get("tags", [])
-            # ConversionDraftModel.tags is a TagsArray TypeDecorator that
-            # expects a list[str] — the decorator handles cross-dialect
-            # serialization (TEXT[] on PG, comma-joined TEXT on SQLite).
-            # Don't pre-join; pass the list shape directly.
-            if isinstance(raw_tags, list):
-                tags_list: Optional[List[str]] = [str(t) for t in raw_tags] or None
-            elif raw_tags:
-                tags_list = [str(raw_tags)]
-            else:
-                tags_list = None
-
-            # Persist as a synthetic conversion job.
-            #
-            # A ``ConflictError`` here means another live draft in this tenant
-            # already holds this file's ``runbook_id`` (migration 046) — two
-            # on-disk runbooks carrying the same frontmatter ``id``. The scan
-            # SKIPS what it cannot take, the way it does for a path it cannot
-            # contain: one unmintable file must not abort the walk over the
-            # rest, and the operator needs the filename to fix it.
-            conversion_id = generate_conversion_id()
-            try:
-                await self._persist_job(
-                    conversion_id=conversion_id,
-                    user_id=user_id,
-                    enterprise_id=enterprise_id,
-                    scope=scope,
-                    team_id=None,
-                    status=ConversionStatus.COMPLETED,
-                    source_file=SourceFileInfo(
-                        filename=md_file.name,
-                        size_bytes=md_file.stat().st_size,
-                        content_type="text/markdown",
-                        retained_path=str(md_file),
-                    ),
-                    analysis=AnalysisResult(
-                        is_actionable=True,
-                        failure_modes=[],
-                        source_assessment=SourceAssessment(
-                            content_type="file_scan",
-                            actionability_rating="unknown",
-                            missing_information=[],
-                        ),
-                    ),
-                    drafts=[draft],
-                    created_at=datetime.now(timezone.utc),
-                )
-            except ConflictError as exc:
-                logger.warning(
-                    "skipping a scanned runbook whose id is already taken: %s (%s)",
-                    md_file.name,
-                    exc,
-                )
-                errors.append(
-                    f"{md_file.name}: runbook id {runbook_id!r} is already held "
-                    f"by another live draft in this enterprise"
-                )
-                continue
-
-            # Set metadata columns on the draft record
-            if self._db_session_factory:
-                async with self._db_session_factory() as session:
-                    result = await session.execute(
-                        select(ConversionDraftModel).where(
-                            ConversionDraftModel.id == draft_id
-                        )
-                    )
-                    dm = result.scalar_one_or_none()
-                    if dm:
-                        dm.domain = fm_meta.get("domain")
-                        dm.service = fm_meta.get("service")
-                        dm.severity = fm_meta.get("severity")
-                        dm.tags = tags_list
-                        dm.document_type = "runbook"
-                        await session.commit()
-
-            tracked_paths.add(file_path_str)
-            discovered.append(
-                {
-                    "conversion_id": conversion_id,
-                    "draft_id": draft_id,
-                    "title": draft.title,
-                    "runbook_id": runbook_id,
-                    "scope": scope,
-                    "validation_passed": validation.passed,
-                    "quality_score": quality.overall,
-                    "file_path": file_path_str,
-                }
-            )
-
-        return {
-            "discovered": len(discovered),
-            "skipped": skipped,
-            "errors": errors,
-            "drafts": discovered,
-        }
-
-    async def _release_live_case_key_if_drained(
-        self,
-        session: AsyncSession,
-        job: "ConversionJobModel",
-        discarded_draft_id: str,
-    ) -> None:
-        """Clear ``job.live_case_id`` once the job holds no more live drafts.
-
-        The unique-index slot on ``conversion_jobs.live_case_id`` is the case's
-        one live-conversion claim; it must be released in the same transaction
-        as the last live draft leaving so a later regeneration can take it. The
-        clearing is general (count the OTHER non-discarded drafts of this job) so
-        a job carrying more than one live draft keeps the key until the last one
-        is gone. No-op for jobs that never held the key (document jobs, failed
-        no-draft jobs)."""
-        if job.live_case_id is None:
-            return
-        remaining_live = await session.execute(
-            select(func.count())
-            .select_from(ConversionDraftModel)
-            .where(
-                ConversionDraftModel.conversion_id == job.id,
-                ConversionDraftModel.id != discarded_draft_id,
-                ConversionDraftModel.status != DraftStatus.DISCARDED.value,
-            )
-        )
-        if remaining_live.scalar_one() == 0:
-            job.live_case_id = None
 
     async def discard_by_knowledge_item_id(self, knowledge_item_id: str) -> bool:
         """Discard the draft that was activated into the given knowledge item.
@@ -3052,7 +2080,7 @@ status: draft
             dm.knowledge_item_id = None
             job = await session.get(ConversionJobModel, dm.conversion_id)
             if job is not None:
-                await self._release_live_case_key_if_drained(session, job, dm.id)
+                await _release_live_case_key_if_drained(session, job, dm.id)
             await session.commit()
             return True
 
@@ -3143,7 +2171,7 @@ status: draft
 
             # Soft delete in database
             dm.status = DraftStatus.DISCARDED.value
-            await self._release_live_case_key_if_drained(session, job, dm.id)
+            await _release_live_case_key_if_drained(session, job, dm.id)
             await session.commit()
 
             return True
