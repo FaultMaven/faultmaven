@@ -721,7 +721,7 @@ def test_restatement_block_counted_once_per_event():
         hyps=_INCIDENT_HYPS,
     )
     with patch(
-        "faultmaven.core.investigation.causal_graph."
+        "faultmaven.core.investigation.causal_graph.derivation."
         "root_validation_blocked_restatement_total"
     ) as counter:
         derive_node_states(case)  # blocks: CANDIDATE -> INCONCLUSIVE (1 event)
@@ -738,7 +738,7 @@ def test_non_restating_validation_never_touches_the_counter():
         "Database connection pool max_size set below concurrent request demand"
     )
     with patch(
-        "faultmaven.core.investigation.causal_graph."
+        "faultmaven.core.investigation.causal_graph.derivation."
         "root_validation_blocked_restatement_total"
     ) as counter:
         derive_node_states(case)
@@ -939,7 +939,7 @@ def test_support_count_block_counted_once_per_event():
 
     case, root = _single_support_root_case()
     with patch(
-        "faultmaven.core.investigation.causal_graph."
+        "faultmaven.core.investigation.causal_graph.derivation."
         "root_validation_blocked_support_count_total"
     ) as counter:
         derive_node_states(case)  # blocks: CANDIDATE -> INCONCLUSIVE (1 event)
@@ -963,7 +963,7 @@ def test_support_block_requires_a_real_causal_link():
     )
     case = _case([root], evidence=[ev])
     with patch(
-        "faultmaven.core.investigation.causal_graph."
+        "faultmaven.core.investigation.causal_graph.derivation."
         "root_validation_blocked_support_count_total"
     ) as counter:
         derive_node_states(case)
@@ -978,7 +978,7 @@ def test_two_independent_supports_never_touch_the_support_counter():
         "Database connection pool max_size set below concurrent request demand"
     )
     with patch(
-        "faultmaven.core.investigation.causal_graph."
+        "faultmaven.core.investigation.causal_graph.derivation."
         "root_validation_blocked_support_count_total"
     ) as counter:
         derive_node_states(case)
@@ -1004,11 +1004,11 @@ def test_undersupported_restating_root_attributed_to_support_counter():
     case = _case([d, root], evidence=[ev])
     with (
         patch(
-            "faultmaven.core.investigation.causal_graph."
+            "faultmaven.core.investigation.causal_graph.derivation."
             "root_validation_blocked_support_count_total"
         ) as support_counter,
         patch(
-            "faultmaven.core.investigation.causal_graph."
+            "faultmaven.core.investigation.causal_graph.derivation."
             "root_validation_blocked_restatement_total"
         ) as restatement_counter,
     ):
@@ -1209,7 +1209,7 @@ def test_hedged_only_block_labeled_and_annotated_distinctly():
     )
     case = _case([root], evidence=evs)
     with patch(
-        "faultmaven.core.investigation.causal_graph."
+        "faultmaven.core.investigation.causal_graph.derivation."
         "root_validation_blocked_support_count_total"
     ) as counter:
         derive_node_states(case)

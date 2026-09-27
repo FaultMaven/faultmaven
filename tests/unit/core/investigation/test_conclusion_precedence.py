@@ -543,7 +543,7 @@ def test_replaced_conclusion_is_not_restored_when_the_root_demotes():
 
 def _inversions():
     return patch(
-        "faultmaven.core.investigation.causal_graph.rcc_precedence_inversion_total"
+        "faultmaven.core.investigation.causal_graph.rcc.rcc_precedence_inversion_total"
     )
 
 

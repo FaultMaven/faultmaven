@@ -872,7 +872,7 @@ def test_undatable_legacy_acceptance_is_labeled_apart_from_no_fix_applied():
         )
     )
     with patch(
-        "faultmaven.core.investigation.causal_graph.m6_demotion_refused_total"
+        "faultmaven.core.investigation.causal_graph.disconfirmation.m6_demotion_refused_total"
     ) as counter:
         assert m6_disconfirmation_basis(legacy) is None
     counter.labels.assert_called_once_with(reason="undatable_acceptance")
@@ -880,7 +880,7 @@ def test_undatable_legacy_acceptance_is_labeled_apart_from_no_fix_applied():
     # ...and a case where nothing was ever tried keeps the benign label.
     untouched = _case()
     with patch(
-        "faultmaven.core.investigation.causal_graph.m6_demotion_refused_total"
+        "faultmaven.core.investigation.causal_graph.disconfirmation.m6_demotion_refused_total"
     ) as counter:
         assert m6_disconfirmation_basis(untouched) is None
     counter.labels.assert_called_once_with(reason="no_fix_applied")
@@ -909,7 +909,7 @@ def test_undatable_label_ignores_mitigations_and_pending_offers():
         )
     )
     with patch(
-        "faultmaven.core.investigation.causal_graph.m6_demotion_refused_total"
+        "faultmaven.core.investigation.causal_graph.disconfirmation.m6_demotion_refused_total"
     ) as counter:
         assert m6_disconfirmation_basis(case) is None
     counter.labels.assert_called_once_with(reason="no_fix_applied")

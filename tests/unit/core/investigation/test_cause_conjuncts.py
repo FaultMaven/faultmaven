@@ -704,7 +704,9 @@ def test_a_late_grouping_over_validated_rivals_is_counted():
     # They are rivals, and the engine is holding identification.
     assert mece_contested_root_ids(case) == {_A, _B}
 
-    with patch.object(causal_graph, "causal_and_set_late_grouping_total") as ctr:
+    with patch.object(
+        causal_graph.clusters, "causal_and_set_late_grouping_total"
+    ) as ctr:
         ingest_emitted_chain(
             case,
             nodes_to_add=[],
@@ -727,7 +729,9 @@ def test_a_conjunction_modelled_up_front_is_not_counted():
 
     from faultmaven.core.investigation import causal_graph
 
-    with patch.object(causal_graph, "causal_and_set_late_grouping_total") as ctr:
+    with patch.object(
+        causal_graph.clusters, "causal_and_set_late_grouping_total"
+    ) as ctr:
         case, _d = _conjunction_case()  # grouped at construction
         _recompute_cause_state_from_chain(case)
         ctr.inc.assert_not_called()
@@ -747,7 +751,9 @@ def test_a_late_grouping_of_unvalidated_causes_is_not_counted():
     _recompute_cause_state_from_chain(case)
     assert case.causal_nodes[_A].node_state != NodeState.VALIDATED
 
-    with patch.object(causal_graph, "causal_and_set_late_grouping_total") as ctr:
+    with patch.object(
+        causal_graph.clusters, "causal_and_set_late_grouping_total"
+    ) as ctr:
         ingest_emitted_chain(
             case,
             nodes_to_add=[],
@@ -767,7 +773,9 @@ def test_a_refused_regroup_leaves_a_witness():
     from faultmaven.core.investigation import causal_graph
 
     case, _d = _conjunction_case()  # standing group "g1"
-    with patch.object(causal_graph, "causal_and_group_regroup_refused_total") as ctr:
+    with patch.object(
+        causal_graph.ingestion, "causal_and_group_regroup_refused_total"
+    ) as ctr:
         ingest_emitted_chain(
             case,
             nodes_to_add=[],

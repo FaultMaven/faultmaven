@@ -152,7 +152,7 @@ def _llm_rcc(
 
 def _counters():
     return patch.multiple(
-        "faultmaven.core.investigation.causal_graph",
+        "faultmaven.core.investigation.causal_graph.rcc",
         llm_rcc_cause_named_total=DEFAULT,
         llm_rcc_cause_linked_total=DEFAULT,
     )

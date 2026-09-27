@@ -424,7 +424,7 @@ observable facts** matching its predicted state (an exact log/stack trace, a
 return code, a reproducer's output). Assumption, inference, and secondary
 correlation are not validation. Engine-side, a node reaches VALIDATED only on
 **causally-grounding SUPPORTS** link(s) (`derive_node_states` →
-`_node_evidence_tally`, `causal_graph.py`), net of refutations and behind the
+`_node_evidence_tally`, `causal_graph/`), net of refutations and behind the
 M7 AND-gate.
 
 A SUPPORTS link is causally grounding **only** when its backing datum is
