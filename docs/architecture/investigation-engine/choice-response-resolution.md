@@ -261,7 +261,7 @@ last_suggestions: Optional[List[Dict[str, Any]]] = Field(
 )
 ```
 
-**Updated after each turn** in `investigation_service/turn_results.py`'s `_absorb_engine_result`, called by `process_turn` *before* `turn_response.py`'s `_build_turn_response` builds `suggested_actions` from the result (#1707 wave 3: this used to be inline in `process_turn` itself). As shipped this is not a plain rebuild from the turn's own output — see P6 — but an assembly of this turn's clarification choices, the still-live ones carried from earlier turns, and this turn's engine follow-ups, each stamped with the offering turn:
+**Updated after each turn** in `investigation_service/turn_results.py`'s `_absorb_engine_result`, which `process_turn` calls *before* `turn_response.py`'s `_build_turn_response` builds `suggested_actions` from the result. As shipped this is not a plain rebuild from the turn's own output — see P6 — but an assembly of this turn's clarification choices, the still-live ones carried from earlier turns, and this turn's engine follow-ups, each stamped with the offering turn:
 
 ```python
 next_read_turn = updated_case.effective_current_turn + 1   # what NEXT turn computes

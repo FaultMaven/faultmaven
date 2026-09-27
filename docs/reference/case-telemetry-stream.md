@@ -42,8 +42,8 @@ Recording the decision where it is **made** is the point of this stream.
   easier than investigating.
 - **Not in the turn response.** The engine's arm counts cross the call boundary
   under a reserved key which `InvestigationService.process_turn` **pops** (in
-  the `_absorb_engine_result` phase, `investigation_service/turn_results.py`
-  since #1707 wave 3) before the returned metadata is persisted onto the
+  its `_absorb_engine_result` phase, `investigation_service/turn_results.py`)
+  before the returned metadata is persisted onto the
   assistant `case_messages` row. That row is readable through the transcript
   API; this is monitoring data.
 - **Not Prometheus.** `case_id` as a label is unbounded cardinality. Fleet-level
@@ -57,7 +57,7 @@ Recording the decision where it is **made** is the point of this stream.
 | logger | `faultmaven.telemetry.case` |
 | level | `INFO`, **pinned on the logger itself** |
 | rendering | root structlog handler (`ProcessorFormatter` + `ExtraAdder`) — fields render as top-level JSON keys |
-| point | `InvestigationService.process_turn`'s `_save_and_emit_turn` phase (`investigation_service/turn_messages.py` since #1707 wave 3), after the case is saved |
+| point | `InvestigationService.process_turn`'s `_save_and_emit_turn` phase (`investigation_service/turn_messages.py`), after the case is saved |
 | cardinality | exactly **one row per consumed turn**, every route |
 
 The level is pinned so a deployment running the root logger above INFO cannot

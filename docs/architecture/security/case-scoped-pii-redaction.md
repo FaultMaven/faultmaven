@@ -30,7 +30,7 @@ This creates three requirements:
 
 **Before:** The LLM responded with `<IP_ADDRESS_1>` placeholders. These were returned to the user as-is. Users saw placeholders instead of real values.
 
-**After:** `InvestigationService.process_turn()` calls `redaction_ctx.reverse()` on the agent response before returning it to the user, via the `_absorb_engine_result` phase in `investigation_service/turn_results.py` (#1707 wave 3: moved out of `process_turn`'s own body). The user sees original values.
+**After:** `InvestigationService.process_turn()` calls `redaction_ctx.reverse()` on the agent response before returning it to the user, in its `_absorb_engine_result` phase (`investigation_service/turn_results.py`). The user sees original values.
 
 ## Architecture
 
@@ -159,7 +159,7 @@ await redaction_context.save()  # Persist to Redis for engine
 
 `_create_redaction_context()` loads the context from Redis (picks up any mappings from prior turns), and `classify_and_extract()` uses it instead of `DataSanitizer.sanitize()`. After all attachments are processed, the registry is saved so the engine picks up extraction-layer mappings.
 
-**2. Response reverse-substitution** — after the engine returns. #1707 wave 3 moved this out of `process_turn`'s own body into the `_absorb_engine_result` phase, `modules/agent/domain/services/investigation_service/turn_results.py`:
+**2. Response reverse-substitution** — after the engine returns, in `process_turn`'s `_absorb_engine_result` phase (`modules/agent/domain/services/investigation_service/turn_results.py`):
 
 ```python
 redaction_ctx = result.get("redaction_ctx")
