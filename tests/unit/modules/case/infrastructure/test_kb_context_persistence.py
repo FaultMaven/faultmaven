@@ -27,7 +27,7 @@ import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import AsyncGenerator
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -36,9 +36,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
+    rows as pg_rows,
+)
+from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.loading import (
+    _row_to_case,
+)
+from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
     PostgreSQLHybridCaseRepository,
 )
 from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+    rows as sqlite_rows,
+)
+from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     SQLiteCaseRepository,
 )
 
@@ -166,11 +175,10 @@ class TestPostgresKBContextPersistence:
     """The half that had no coverage at all."""
 
     def test_record_params_serialize_kb_context(self):
-        repo = _pg_repo()
         case = _make_case()
         case.kb_context = list(KB_CONTEXT)
 
-        params = repo._case_record_params(case, datetime.now(timezone.utc))
+        params = pg_rows._case_record_params(case, datetime.now(timezone.utc))
         metadata = json.loads(params["metadata"])
 
         assert metadata.get("kb_context") == KB_CONTEXT
@@ -185,8 +193,7 @@ class TestPostgresKBContextPersistence:
         reads back the same — but if the write were additive instead of a
         replace, a cleared push would keep citing stale runbooks.
         """
-        repo = _pg_repo()
-        params = repo._case_record_params(_make_case(), datetime.now(timezone.utc))
+        params = pg_rows._case_record_params(_make_case(), datetime.now(timezone.utc))
         metadata = json.loads(params["metadata"])
 
         assert "kb_context" not in metadata
@@ -194,9 +201,12 @@ class TestPostgresKBContextPersistence:
     @pytest.mark.asyncio
     async def test_row_to_case_reads_kb_context(self):
         repo = _pg_repo()
-        repo._load_case_actions = AsyncMock(return_value=[])
-
-        case = await repo._row_to_case(_pg_row({"kb_context": KB_CONTEXT}))
+        with patch(
+            "faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository"
+            ".loading._load_case_actions",
+            AsyncMock(return_value=[]),
+        ):
+            case = await _row_to_case(repo.db, _pg_row({"kb_context": KB_CONTEXT}))
 
         assert case.kb_context == KB_CONTEXT
 
@@ -204,9 +214,12 @@ class TestPostgresKBContextPersistence:
     async def test_row_to_case_without_the_key_reads_none(self):
         """A row written before fm#1360 loads as no context, not as a crash."""
         repo = _pg_repo()
-        repo._load_case_actions = AsyncMock(return_value=[])
-
-        case = await repo._row_to_case(_pg_row({}))
+        with patch(
+            "faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository"
+            ".loading._load_case_actions",
+            AsyncMock(return_value=[]),
+        ):
+            case = await _row_to_case(repo.db, _pg_row({}))
 
         assert not case.kb_context
 
@@ -227,9 +240,9 @@ class TestBothBackendsAgree:
         stamp = datetime.now(timezone.utc)
 
         sqlite_meta = json.loads(
-            repository._case_record_params(case, stamp)["metadata"]
+            sqlite_rows._case_record_params(case, stamp)["metadata"]
         )
-        pg_meta = json.loads(_pg_repo()._case_record_params(case, stamp)["metadata"])
+        pg_meta = json.loads(pg_rows._case_record_params(case, stamp)["metadata"])
 
         assert sqlite_meta.get("kb_context") == KB_CONTEXT
         assert pg_meta.get("kb_context") == KB_CONTEXT

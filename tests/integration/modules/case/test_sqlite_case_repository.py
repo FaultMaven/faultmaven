@@ -90,7 +90,7 @@ class TestSQLiteCaseRepository:
         from faultmaven.modules.case.domain.models.lifecycle import CaseState
         from faultmaven.modules.case.domain.models.problem import InquiryData
         from faultmaven.modules.case.domain.models.progress import InvestigationProgress
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -140,7 +140,7 @@ class TestSQLiteCaseRepository:
         from faultmaven.modules.case.domain.models.lifecycle import CaseState
         from faultmaven.modules.case.domain.models.problem import InquiryData
         from faultmaven.modules.case.domain.models.progress import InvestigationProgress
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -184,7 +184,7 @@ class TestSQLiteCaseRepository:
         from faultmaven.modules.case.domain.models.lifecycle import CaseState
         from faultmaven.modules.case.domain.models.problem import InquiryData
         from faultmaven.modules.case.domain.models.progress import InvestigationProgress
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -230,7 +230,7 @@ class TestSQLiteCaseRepository:
         from faultmaven.modules.case.domain.models.lifecycle import CaseState
         from faultmaven.modules.case.domain.models.problem import InquiryData
         from faultmaven.modules.case.domain.models.progress import InvestigationProgress
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -275,7 +275,7 @@ class TestSQLiteCaseRepository:
         from faultmaven.modules.case.domain.models.lifecycle import CaseState
         from faultmaven.modules.case.domain.models.problem import InquiryData
         from faultmaven.modules.case.domain.models.progress import InvestigationProgress
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -349,7 +349,7 @@ class TestSQLiteCaseRepository:
         from faultmaven.modules.case.domain.models.lifecycle import CaseState
         from faultmaven.modules.case.domain.models.problem import InquiryData
         from faultmaven.modules.case.domain.models.progress import InvestigationProgress
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -442,7 +442,7 @@ class TestSQLiteCaseRepository:
         from faultmaven.modules.case.domain.models.lifecycle import CaseState
         from faultmaven.modules.case.domain.models.problem import InquiryData
         from faultmaven.modules.case.domain.models.progress import InvestigationProgress
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -495,7 +495,7 @@ class TestSQLiteCaseRepository:
         from faultmaven.modules.case.domain.models.lifecycle import CaseState
         from faultmaven.modules.case.domain.models.problem import InquiryData
         from faultmaven.modules.case.domain.models.progress import InvestigationProgress
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -547,7 +547,7 @@ class TestSQLiteCaseRepository:
         from faultmaven.modules.case.domain.models.lifecycle import CaseState
         from faultmaven.modules.case.domain.models.problem import InquiryData
         from faultmaven.modules.case.domain.models.progress import InvestigationProgress
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -585,7 +585,7 @@ class TestSQLiteCaseRepository:
         from faultmaven.modules.case.domain.models.lifecycle import CaseState
         from faultmaven.modules.case.domain.models.problem import InquiryData
         from faultmaven.modules.case.domain.models.progress import InvestigationProgress
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -626,7 +626,7 @@ class TestSQLiteCaseRepository:
 
         This bug affected 6 repository files:
         - sqlite_case_repository.py (line 1300)
-        - postgresql_hybrid_case_repository.py (line 1115)
+        - postgresql_hybrid_case_repository/repository.py (line 1115)
         - database_case_repository.py
         - modules/case/infrastructure/case_repository.py
         - infrastructure/case_repository.py
@@ -655,7 +655,7 @@ class TestSQLiteCaseRepository:
         from faultmaven.modules.case.domain.models.lifecycle import CaseState
         from faultmaven.modules.case.domain.models.problem import InquiryData
         from faultmaven.modules.case.domain.models.progress import InvestigationProgress
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -787,7 +787,7 @@ class TestDialectDetection:
         from faultmaven.modules.case.infrastructure.sessionless_case_repository import (
             get_repository_for_session,
         )
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -819,7 +819,7 @@ class TestUploadedFilePreprocessingRoundtrip:
         from faultmaven.modules.case.domain.models.lifecycle import CaseState
         from faultmaven.modules.case.domain.models.problem import InquiryData
         from faultmaven.modules.case.domain.models.progress import InvestigationProgress
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -897,7 +897,7 @@ class TestUploadedFilePreprocessingRoundtrip:
         from faultmaven.modules.case.domain.models.lifecycle import CaseState
         from faultmaven.modules.case.domain.models.problem import InquiryData
         from faultmaven.modules.case.domain.models.progress import InvestigationProgress
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -1033,7 +1033,7 @@ class TestScopedAddUploadedFile:
         This is the mutation-sensitive one: drop the commit and the fresh
         session finds nothing.
         """
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -1064,7 +1064,7 @@ class TestScopedAddUploadedFile:
         content hash from a later, independent transaction — that is what stops
         a retried turn storing a second copy.
         """
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -1095,7 +1095,7 @@ class TestScopedAddUploadedFile:
         snapshot, that save would destroy the upload. It does not —
         `_upsert_uploaded_files` is purely additive.
         """
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -1137,7 +1137,7 @@ class TestScopedAddUploadedFile:
         the branch, and it is also the real case: a re-commit after a failed
         re-extraction carries no artifacts.
         """
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -1213,7 +1213,7 @@ class TestKBContextRoundTrip:
     async def test_prefetched_runbooks_survive_the_turn_boundary(
         self, sqlite_session, sqlite_engine
     ):
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -1252,7 +1252,7 @@ class TestKBContextRoundTrip:
         self, sqlite_session, sqlite_engine
     ):
         """The empty case, so the writer cannot pass by storing a placeholder."""
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -1332,7 +1332,7 @@ class TestMessageRowNormalisation:
         return row
 
     def _repo(self, session):
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -1657,7 +1657,7 @@ class TestSearchStateReachesTheWhereClause:
         from sqlalchemy import text
 
         from faultmaven.modules.case.domain.models.lifecycle import CaseState
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -1757,7 +1757,7 @@ class TestSearchStateReachesTheWhereClause:
         """A new predicate composes with the existing ones; it does not replace
         them. A stranger's INVESTIGATING case stays invisible."""
         from faultmaven.modules.case.domain.models.lifecycle import CaseState
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -1869,7 +1869,7 @@ class TestMessageReadOrderAgrees:
         )
 
     def _repo(self, session):
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 

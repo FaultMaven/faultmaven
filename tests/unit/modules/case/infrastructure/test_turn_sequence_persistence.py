@@ -23,7 +23,7 @@ from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
 )
-from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     SQLiteCaseRepository,
 )
 

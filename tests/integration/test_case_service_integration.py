@@ -33,7 +33,7 @@ from faultmaven.models.investigation_session import InvestigationSession, Sessio
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseSeverity, CaseState
 from faultmaven.modules.case.domain.services.api_case_service import APICaseService
-from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     SQLiteCaseRepository,
 )
 from faultmaven.services.service_factory import ServiceFactory
