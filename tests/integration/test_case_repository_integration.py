@@ -59,7 +59,7 @@ from faultmaven.modules.case.infrastructure.case_repository import (
     CaseRepository,
     InMemoryCaseRepository,
 )
-from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     SQLiteCaseRepository,
 )
 from tests.utils import seed_enterprises, seed_users

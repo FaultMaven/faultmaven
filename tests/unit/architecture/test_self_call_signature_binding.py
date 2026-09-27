@@ -61,7 +61,7 @@ _MODULES_UNDER_GUARD = {
     "faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository": (
         "PostgreSQLHybridCaseRepository"
     ),
-    "faultmaven.modules.case.infrastructure.sqlite_case_repository": (
+    "faultmaven.modules.case.infrastructure.sqlite_case_repository.repository": (
         "SQLiteCaseRepository"
     ),
     "faultmaven.modules.knowledge.domain.services.knowledge_service": (

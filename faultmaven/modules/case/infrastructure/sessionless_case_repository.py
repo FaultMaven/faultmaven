@@ -80,7 +80,7 @@ def get_repository_for_session(session):
         return PostgreSQLHybridCaseRepository(session)
     else:
         # SQLite or any other dialect - use SQLite-compatible repository
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 

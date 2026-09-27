@@ -791,7 +791,7 @@ def test_the_tripwire_still_drives_something_real():
     is a plain red test.
     """
     from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
-    from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+    from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
         SQLiteCaseRepository,
     )
 
@@ -836,7 +836,7 @@ async def test_uploaded_at_turn_is_immutable_across_a_deduped_reupload():
     from faultmaven.core.investigation.schemas import InquiryResponse
     from faultmaven.infrastructure.persistence.models import Base
     from faultmaven.modules.case.contracts import Case, CaseState
-    from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+    from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
         SQLiteCaseRepository,
     )
 

@@ -79,7 +79,7 @@ modules/auth/
 ```
 modules/case/infrastructure/
 ├── case_repository.py                    # Abstract base repository
-├── sqlite_case_repository.py             # SQLite implementation (default)
+├── sqlite_case_repository/               # SQLite implementation (default): repository.py, rows.py, loading.py, saving.py
 ├── postgresql_hybrid_case_repository.py  # PostgreSQL implementation
 ├── sessionless_case_repository.py        # Sessionless repository variant
 ├── case_scope.py                         # Read-scope SQL: the owned ∪ shared-to-my-teams visible-id allowlist

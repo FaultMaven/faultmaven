@@ -306,7 +306,7 @@ class TestThePersistedConsequence:
         )
 
         from faultmaven.infrastructure.persistence.models import Base
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
