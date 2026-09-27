@@ -15,13 +15,12 @@ Key Endpoints:
 """
 
 import asyncio
-import hashlib
 import logging
 import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Literal, Optional, Sequence, Union
+from typing import Any, Dict, List, Literal, Optional, Sequence
 
 from fastapi import (
     APIRouter,
@@ -44,8 +43,6 @@ from faultmaven.api.exception_handlers import (
     llm_service_error_http_exception,
 )
 from faultmaven.api.v1.auth_dependencies import (
-    get_current_user_id,
-    get_current_user_optional,
     require_actor_enterprise,
     require_authentication,
 )
@@ -53,11 +50,7 @@ from faultmaven.api.v1.dependencies import (
     SUGGESTION_QUEUE_FULL,
     get_case_repository,  # TD-001: use case_repository for reports
     get_case_service,
-    get_case_vector_store,
-    get_data_service,
     get_investigation_service,  # V2.0 milestone-based
-    get_preprocessing_service,
-    get_session_service,
     get_suggestion_service,
 )
 from faultmaven.config.tenant_context import get_current_enterprise_id
@@ -84,32 +77,20 @@ from faultmaven.infrastructure.protection.tenant_turn_cap import (
 
 # TD-001: IReportStore removed - reports now accessed via CaseRepository
 from faultmaven.models.api import (
-    AgentResponse,
     Case,
     CaseMessagesResponse,
-    CaseResponse,
     DataType,
     ErrorDetail,
     ErrorResponse,
     Message,
-    ProcessingStatus,
-    QueryJobStatus,
-    QueryRequest,
-    ResponseType,
-    TitleGenerateResponse,
     TitleResponse,
-    User,
-    ViewState,
 )
 from faultmaven.models.api_models import (  # Phase 2: Evidence-to-File Linkage
-    AttachmentResult,
     CaseCreateRequest,
     CaseDetail,
     CaseEvidenceListResponse,
     CaseListFilter,
     CaseListResponse,
-    CaseMessage,
-    CaseParticipant,
     CaseSearchRequest,
     CaseSummary,
     CaseUpdateRequest,
@@ -120,7 +101,6 @@ from faultmaven.models.api_models import (  # Phase 2: Evidence-to-File Linkage
     RelatedHypothesis,
     SourceFileReference,
     TurnResponse,
-    UploadedFileDetails,
     UploadedFileDetailsResponse,
     UploadedFileMetadata,
     UploadedFilesList,
@@ -132,9 +112,7 @@ from faultmaven.models.interfaces_case import ICaseService
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.auth.contracts import ISessionService, UserDTO
-from faultmaven.modules.case.domain.models import Case as CaseEntity
 from faultmaven.modules.case.domain.models import CaseState, is_default_case_title
-from faultmaven.modules.case.domain.services.case_converter import CaseConverter
 from faultmaven.modules.case.domain.services.case_ui_adapter import (
     transform_case_for_ui,
 )
@@ -158,44 +136,10 @@ from faultmaven.utils.serialization import to_json_compatible
 # a design that leaned on it would have no guard at all.
 _is_default_case_title = is_default_case_title
 
-from .title_generation import (
-    _MIN_PROBLEM_STATEMENT_LEN_FOR_TITLE,
-    _TITLE_EDGE_PUNCT,
-    _TITLE_TRAILING_REPAIR,
-    AUTO_TITLE_TIMEOUT_SECONDS,
-    BANNED_GENERIC_WORDS,
-    CONTEXT_MESSAGE_LIMIT,
-    CONVERSATIONAL_FILLER,
-    EXTRACTIVE_MAX_CONTENT_LENGTH,
-    INCOMPLETE_ENDINGS,
-    LLM_TITLE_MAX_TOKENS,
-    LLM_TITLE_TEMPERATURE,
-    LLM_TITLE_TOP_P,
-    LY_NOT_ADVERB,
+from faultmaven.modules.case.api.title_generation import (
     MAX_TITLE_WORDS_DEFAULT,
-    MAX_USER_MESSAGES_FOR_CONTEXT,
-    MIN_CONTENT_LENGTH_FOR_TITLE,
-    MIN_EXTRACTIVE_WORDS,
-    MIN_MESSAGE_WORD_COUNT,
-    MIN_TITLE_LENGTH,
-    MIN_TITLE_WORDS,
-    TITLE_CASE_LOWERCASE_WORDS,
     _auto_title_case_if_default,
-    _case_problem_statement,
-    _extract_user_signals_from_context,
     _generate_and_persist_title,
-    _generate_smart_extractive_title,
-    _generate_title_with_llm,
-    _has_problem_statement,
-    _is_manner_adverb,
-    _sanitize_title_content,
-    _titleable_substance,
-    _TitleSubstanceTooThin,
-    _word_can_end_title,
-    apply_title_case,
-    get_extractive_fallback_title,
-    is_title_valid,
-    truncate_title_at_phrase_boundary,
 )
 
 # Create router

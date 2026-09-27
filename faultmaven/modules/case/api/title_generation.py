@@ -18,12 +18,12 @@ from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.models.interfaces_case import ICaseService
 
 # ``_is_default_case_title``: the alias and why it bounds auto-titling are
-# documented where the route package binds it, in ``routes/__init__.py``.
+# documented where the route module binds it, in ``routes.py``.
 from faultmaven.modules.case.domain.models import (
     is_default_case_title as _is_default_case_title,
 )
 
-logger = logging.getLogger("faultmaven.modules.case.api.routes")
+logger = logging.getLogger(__name__)
 
 
 # Configurable banned words list - minimal but extensible
