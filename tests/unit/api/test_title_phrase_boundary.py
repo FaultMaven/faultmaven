@@ -20,7 +20,7 @@ import logging
 
 import pytest
 
-from faultmaven.modules.case.api.routes import (
+from faultmaven.modules.case.api.title_generation import (
     EXTRACTIVE_MAX_CONTENT_LENGTH,
     MAX_TITLE_WORDS_DEFAULT,
     MIN_EXTRACTIVE_WORDS,
@@ -219,7 +219,7 @@ async def test_the_llm_path_does_not_persist_a_mid_phrase_clip():
     from unittest.mock import AsyncMock
 
     from faultmaven.infrastructure.llm.providers.base import StopReason
-    from faultmaven.modules.case.api.routes import _generate_title_with_llm
+    from faultmaven.modules.case.api.title_generation import _generate_title_with_llm
 
     class _Resp:
         content = (
@@ -311,7 +311,7 @@ async def test_the_llm_over_cap_refusal_is_observable(caplog):
     from unittest.mock import AsyncMock
 
     from faultmaven.infrastructure.llm.providers.base import StopReason
-    from faultmaven.modules.case.api.routes import _generate_title_with_llm
+    from faultmaven.modules.case.api.title_generation import _generate_title_with_llm
 
     class _Resp:
         # Over the cap, and every word past the first is a connective, so the
@@ -324,7 +324,9 @@ async def test_the_llm_over_cap_refusal_is_observable(caplog):
     provider.generate = AsyncMock(return_value=_Resp())
     long_signals = _RUN_1 + " " + _RUN_2 + " " + _RUN_1
 
-    with caplog.at_level(logging.INFO, logger="faultmaven.modules.case.api.routes"):
+    with caplog.at_level(
+        logging.INFO, logger="faultmaven.modules.case.api.title_generation"
+    ):
         title, source = await _generate_title_with_llm(
             context_text=_RUN_1,
             case=None,
