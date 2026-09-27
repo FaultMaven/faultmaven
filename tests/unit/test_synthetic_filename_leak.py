@@ -34,6 +34,15 @@ import pytest
 
 from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.generation import (
+    StructuredOutputGenerator,
+)
+from faultmaven.core.investigation.milestone_engine.response_application import (
+    ResponseApplier,
+)
+from faultmaven.core.investigation.milestone_engine.tool_messages import (
+    _build_da_system_instruction,
+)
 from faultmaven.core.investigation.prompts.context_builder.evidence import (
     _build_evidence_context,
 )
@@ -456,7 +465,7 @@ class TestCitationInstructions:
     context at all (#1198 review)."""
 
     def _da_instruction(self) -> str:
-        return MilestoneEngine._build_da_system_instruction(
+        return _build_da_system_instruction(
             ["search_file", "deep_analysis", "kb_qa"], "record_investigation"
         )
 
@@ -518,7 +527,7 @@ class TestCitationInstructions:
                 "results": [{"line": 20, "content": "ERROR CrashLoopBackOff"}],
             },
         )
-        content = MilestoneEngine._format_tool_result(result, "search_file")
+        content = StructuredOutputGenerator._format_tool_result(result, "search_file")
         assert "CITATION" in content
         assert "In pasted text (turn 3), line 42" in content
 
@@ -529,7 +538,7 @@ class TestCitationInstructions:
             success=True,
             data={"label": "app.log", "results_count": 1, "results": []},
         )
-        content = MilestoneEngine._format_tool_result(result, "search_file")
+        content = StructuredOutputGenerator._format_tool_result(result, "search_file")
         assert "unknown" not in content
         body = content.split("\n\n", 1)[1]
         assert json.loads(body)["label"] == "app.log"
@@ -553,11 +562,13 @@ class TestCitationInstructions:
                 "results": big,
             },
         )
-        content = MilestoneEngine._format_tool_result(result, "search_file")
+        content = StructuredOutputGenerator._format_tool_result(result, "search_file")
         assert (
-            len(content) > MilestoneEngine.TOOL_RESULT_MAX_CHARS
+            len(content) > StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS
         ), "fixture must exceed the cap or it proves nothing"
-        cut, _dropped = MilestoneEngine._truncate_tool_result(content, "search_file")
+        cut, _dropped = StructuredOutputGenerator._truncate_tool_result(
+            content, "search_file"
+        )
         assert "CITATION" in cut
         assert "In pasted text (turn 3), line 42" in cut
 
@@ -791,7 +802,9 @@ def test_the_tripwire_still_drives_something_real():
     die by ``AttributeError`` rather than assert. Checked here so that a break
     is a plain red test.
     """
-    from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+    from faultmaven.core.investigation.milestone_engine.response_application import (
+        ResponseApplier,
+    )
     from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
         SQLiteCaseRepository,
     )
@@ -801,8 +814,10 @@ def test_the_tripwire_still_drives_something_real():
         "test_uploaded_at_turn_is_immutable_across_a_deduped_reupload can no "
         "longer detect a #1207 regression; re-point it before deleting this"
     )
+    # #1707: moved to ResponseApplier and lost its leading underscore (called
+    # from outside the collaborator as engine.responses.process_response_structured).
     assert callable(
-        getattr(MilestoneEngine, "_process_response_structured", None)
+        getattr(ResponseApplier, "process_response_structured", None)
     ), "the engine entry point that produced the duplicate is gone -- re-point"
     # The column the identifier is keyed on.
     assert "uploaded_at_turn" in UploadedFile.model_fields
@@ -866,7 +881,8 @@ async def test_uploaded_at_turn_is_immutable_across_a_deduped_reupload():
     }
     engine = MilestoneEngine.__new__(MilestoneEngine)
     engine.deps = EngineDeps()
-    await engine._process_response_structured(
+    engine.responses = ResponseApplier(deps=engine.deps, kb_prefetcher=None)
+    await engine.responses.process_response_structured(
         case,
         "same content again",
         InquiryResponse(

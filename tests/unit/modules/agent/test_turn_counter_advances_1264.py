@@ -133,6 +133,9 @@ class TestTheTerminalShortCircuit:
         from faultmaven.core.investigation.milestone_engine.engine import (
             MilestoneEngine,
         )
+        from faultmaven.core.investigation.milestone_engine.terminal_turns import (
+            TerminalTurnHandler,
+        )
 
         case = sample_case
         case.inquiry.problem_statement_confirmed = True
@@ -168,6 +171,9 @@ class TestTheTerminalShortCircuit:
         engine.deps.llm_provider = MagicMock()
         engine.deps.repository = recording_case_repository
         engine._case_locks = defaultdict(asyncio.Lock)
+        engine.terminal = TerminalTurnHandler(
+            deps=engine.deps, generator=None, runbooks=None
+        )
 
         # Returns the case it was HANDED, not a closure over the outer one:
         # the service increments the reloaded object, and returning the stale
@@ -180,7 +186,7 @@ class TestTheTerminalShortCircuit:
             }
 
         answered = AsyncMock(side_effect=answer)
-        engine._process_terminal_qa = answered
+        engine.terminal._process_terminal_qa = answered
 
         service = InvestigationService(
             milestone_engine=engine, case_repository=recording_case_repository

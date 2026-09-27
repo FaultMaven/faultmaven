@@ -46,9 +46,19 @@ from faultmaven.core.investigation.confidence_repair import (
     count as count_confidence_repair,
 )
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
-from faultmaven.core.investigation.milestone_engine import engine as me
+from faultmaven.core.investigation.milestone_engine import (
+    structured_output as structured_output_module,
+)
 from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.hypothesis_updates import (
+    _apply_deferred_likelihood_updates,
+    _apply_hypothesis_evidence_links,
+    _apply_hypothesis_updates,
+)
+from faultmaven.core.investigation.milestone_engine.structured_output import (
+    _validate_with_degradation,
+)
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
@@ -562,10 +572,10 @@ def _ladder(body: dict, schema: type):
     engine = MilestoneEngine.__new__(MilestoneEngine)
     engine.deps = EngineDeps()
     with (
-        patch.object(me, "schema_validation_total") as outcomes,
+        patch.object(structured_output_module, "schema_validation_total") as outcomes,
         patch.object(reliability_metrics, "schema_field_repairs_total") as fields,
     ):
-        parsed = engine._validate_with_degradation(body, schema)
+        parsed = _validate_with_degradation(body, schema)
     return (
         parsed,
         [c.kwargs["outcome"] for c in outcomes.labels.call_args_list],
@@ -929,7 +939,9 @@ def _apply_links(case: Case, links: list):
     engine.deps.hypothesis_manager = HypothesisManager()
     metadata: dict = {}
     with patch.object(reliability_metrics, "schema_field_repairs_total") as fields:
-        engine._apply_hypothesis_evidence_links(case, links, metadata)
+        _apply_hypothesis_evidence_links(
+            engine.deps.hypothesis_manager, case, links, metadata
+        )
     return metadata, [c.kwargs for c in fields.labels.call_args_list]
 
 
@@ -1171,10 +1183,16 @@ def test_a_dropped_likelihood_leaves_the_stored_value_and_the_progress_counter(r
     h.iterations_without_progress = 2
     engine = _update_engine()
     metadata: dict = {}
-    engine._apply_hypothesis_updates(
-        case, [_parsed_update(raw)], metadata, case.current_turn
+    _apply_hypothesis_updates(
+        engine.deps.hypothesis_manager,
+        case,
+        [_parsed_update(raw)],
+        metadata,
+        case.current_turn,
     )
-    engine._apply_deferred_likelihood_updates(case, metadata, case.current_turn)
+    _apply_deferred_likelihood_updates(
+        engine.deps.hypothesis_manager, case, metadata, case.current_turn
+    )
     assert h.likelihood == 0.85
     assert h.iterations_without_progress == 2
 
@@ -1186,7 +1204,8 @@ def test_a_refutation_is_not_lost_to_its_own_bad_likelihood(raw):
     to the number beside it."""
     case, h = _hyp_case()
     engine = _update_engine()
-    engine._apply_hypothesis_updates(
+    _apply_hypothesis_updates(
+        engine.deps.hypothesis_manager,
         case,
         [_parsed_update(raw, state="refuted", refutation_reason="ev contradicts it")],
         {},
@@ -1235,7 +1254,7 @@ async def test_the_schema_tool_path_keeps_the_repairs_on_the_response(answer):
     engine = MilestoneEngine(
         llm_provider=provider, repository=repo, investigation_tools=registry
     )
-    parsed = await engine._tool_augmented_generate(
+    parsed = await engine.generator._tool_augmented_generate(
         prompt="p",
         schema_model=D,
         investigation_tools=[

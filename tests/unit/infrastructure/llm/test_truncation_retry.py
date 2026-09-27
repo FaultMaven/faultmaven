@@ -10,6 +10,9 @@ and on a safety block.
 
 import pytest
 
+from faultmaven.core.investigation.milestone_engine.generation import (
+    StructuredOutputGenerator,
+)
 from faultmaven.infrastructure.llm.providers import LLMResponse, StopReason
 from faultmaven.infrastructure.llm.truncation import (
     TRUNCATION_NOTICE,
@@ -142,16 +145,13 @@ class TestAnnotation:
         to the wrapper or the cap re-checks this rather than silently
         invalidating it.
         """
-        from faultmaven.core.investigation.milestone_engine.engine import (
-            MilestoneEngine,
-        )
         from faultmaven.core.investigation.milestone_engine.text_budget import (
             KB_QA_RELAY_PREFIX,
             KB_QA_RELAY_SUFFIX,
         )
 
         budget = (
-            MilestoneEngine.TOOL_RESULT_MAX_CHARS
+            StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS
             - len(KB_QA_RELAY_PREFIX)
             - len(KB_QA_RELAY_SUFFIX)
         )
@@ -177,9 +177,6 @@ class TestAnnotation:
         an answer flagged MAX_TOKENS filled its budget by definition, so it is
         always over the relay allowance.
         """
-        from faultmaven.core.investigation.milestone_engine.engine import (
-            MilestoneEngine,
-        )
         from faultmaven.models.interfaces import ToolResult
 
         # ~8060 chars: a full 2000-token answer at the 4.03 chars/token
@@ -189,11 +186,11 @@ class TestAnnotation:
             answer, _response(StopReason.MAX_TOKENS, answer)
         )
 
-        relayed = MilestoneEngine._format_tool_result(
+        relayed = StructuredOutputGenerator._format_tool_result(
             ToolResult(success=True, data=annotated), tool_name="kb_qa"
         )
 
-        assert len(annotated) > MilestoneEngine.TOOL_RESULT_MAX_CHARS - 590, (
+        assert len(annotated) > StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS - 590, (
             "the premise stopped holding: this answer no longer overflows the "
             "relay budget, so the test would pass even with a tail notice"
         )

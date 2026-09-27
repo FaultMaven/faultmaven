@@ -11,6 +11,8 @@ writes the markers any more, so every seed here is PLANTED the way the seeder
 left it. Delete this file with the module at its sunset.
 """
 
+import asyncio
+from collections import defaultdict
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
@@ -20,6 +22,9 @@ import pytest
 from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
 from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.runbook_creation import (
+    RunbookCreator,
+)
 from faultmaven.core.investigation.seeded_provenance import (
     SEEDED_FROM_RUNBOOK_KEY,
     SEEDED_INTERVENTIONS_KEY,
@@ -271,6 +276,9 @@ def _engine(knowledge_service) -> MilestoneEngine:
     engine.deps.knowledge_service = knowledge_service
     engine.deps.hypothesis_manager = create_hypothesis_manager()
     engine.deps.runbook_kb = None
+    engine.runbooks = RunbookCreator(
+        case_locks=defaultdict(asyncio.Lock), deps=engine.deps
+    )
     return engine
 
 
@@ -286,7 +294,7 @@ async def test_action_short_circuits_when_confirmed_cause_seeded(monkeypatch):
     ks = _TitleKnowledgeStub({"rb_cover": "ArgoCD sync failure"})
     engine = _engine(ks)
     engine.deps.conversion_service = None  # must not be reached — no draft created
-    result = await engine._handle_runbook_creation(_case(), {})
+    result = await engine.runbooks.handle_runbook_creation(_case(), {})
     assert ks.title_calls == ["rb_cover"]
     assert "ArgoCD sync failure" in result["agent_response"]
     assert result["suggested_follow_ups"] == []
@@ -298,7 +306,7 @@ async def test_action_message_degrades_when_title_unavailable(monkeypatch):
     ks = _TitleKnowledgeStub({})
     engine = _engine(ks)
     engine.deps.conversion_service = None
-    result = await engine._handle_runbook_creation(_case(), {})
+    result = await engine.runbooks.handle_runbook_creation(_case(), {})
     assert "an existing runbook" in result["agent_response"]
 
 
@@ -319,7 +327,7 @@ async def test_action_proceeds_when_cause_self_discovered(monkeypatch):
     ks = _TitleKnowledgeStub({"rb_cover": "should not be used"})
     engine = _engine(ks)
     engine.deps.conversion_service = None
-    result = await engine._handle_runbook_creation(_case(), {})
+    result = await engine.runbooks.handle_runbook_creation(_case(), {})
     assert result["agent_response"] == "not ready"
     assert ks.title_calls == []
 

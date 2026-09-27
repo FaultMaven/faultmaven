@@ -37,6 +37,9 @@ from faultmaven.core.investigation.causal_graph.ingestion import (
 )
 from faultmaven.core.investigation.cause_assurance import ENGINE_EVIDENCE_AUTHOR
 from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
+from faultmaven.core.investigation.milestone_engine.hypothesis_updates import (
+    _apply_hypothesis_evidence_links,
+)
 from faultmaven.modules.case.contracts import (
     CONFIRMED_ESTABLISHED_BY,
     Case,
@@ -207,8 +210,8 @@ def test_hypothesis_axis_refuses_any_llm_stance_on_an_absence_row(stance):
     # trips over missing wiring proves the call site is reached; it does not
     # prove the gate is what refuses the link.
     engine.deps.hypothesis_manager = create_hypothesis_manager()
-    MilestoneEngine._apply_hypothesis_evidence_links(
-        engine,
+    _apply_hypothesis_evidence_links(
+        engine.deps.hypothesis_manager,
         case,
         [
             SimpleNamespace(
@@ -259,8 +262,8 @@ def test_both_axes_still_accept_ordinary_causal_evidence():
     )
 
     engine.deps.hypothesis_manager = create_hypothesis_manager()
-    MilestoneEngine._apply_hypothesis_evidence_links(
-        engine,
+    _apply_hypothesis_evidence_links(
+        engine.deps.hypothesis_manager,
         case,
         [
             SimpleNamespace(
@@ -1034,7 +1037,7 @@ def _engine_for_incident(emission: dict):
     repo.save = AsyncMock(side_effect=lambda c: c)
     repo.get = AsyncMock(side_effect=lambda cid: None)
     engine = MilestoneEngine(llm, repo, investigation_tools=MagicMock())
-    engine._generate_structured_output = AsyncMock(
+    engine.generator.generate_structured_output = AsyncMock(
         return_value=InvestigationResponse_Diagnosis.model_validate(emission)
     )
     return engine

@@ -46,6 +46,9 @@ from faultmaven.core.investigation.causal_graph.projection import (
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.turn_records import (
+    _perform_hypothesis_housekeeping,
+)
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
@@ -183,7 +186,9 @@ def _housekeep(
     as Step 5.8 moves it, so a run of turns that did not advance stalls the
     case here exactly as it would on the turn path."""
     case.current_turn = turn
-    eng._perform_hypothesis_housekeeping(case, {}, investigation_advanced=advanced)
+    _perform_hypothesis_housekeeping(
+        eng.deps.hypothesis_manager, case, {}, investigation_advanced=advanced
+    )
     case.turns_without_progress = 0 if advanced else case.turns_without_progress + 1
 
 

@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.core.investigation.milestone_engine import engine as engine_module
+from faultmaven.core.investigation.milestone_engine import turn_records
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.response_synthesis import (
     _NARRATION_OVERCLAIM_NOTICE,
@@ -89,7 +90,7 @@ def _make_engine(prose: str) -> MilestoneEngine:
     llm.provider_name = "test-provider"
     llm.config.default_model = "test-model"
     engine = MilestoneEngine(llm, _make_repo(), investigation_tools=MagicMock())
-    engine._generate_structured_output = AsyncMock(
+    engine.generator.generate_structured_output = AsyncMock(
         return_value=InvestigationResponse_Diagnosis.model_validate(
             {"agent_response": prose, "state_updates": {}}
         )
@@ -133,7 +134,7 @@ async def test_overclaim_with_pending_transition_uses_pending_variant():
     withdrawn by the escape lane before the guard runs). Must apply the
     PENDING wording to both surfaces."""
     engine = _make_engine(_OVERCLAIM_PROSE)
-    engine._generate_structured_output = AsyncMock(
+    engine.generator.generate_structured_output = AsyncMock(
         return_value=InvestigationResponse_Diagnosis.model_validate(
             {
                 "agent_response": _OVERCLAIM_PROSE,
@@ -165,11 +166,16 @@ async def test_clean_narration_leaves_turn_summary_as_raw_text():
     engine = _make_engine(_CLEAN_PROSE)
     case = _make_investigating_case()
 
-    with patch.object(
-        engine_module,
-        "summarize_for_turn_record",
-        MagicMock(wraps=engine_module.summarize_for_turn_record),
-    ) as spy:
+    # #1707: the function has two readers now — turn_records.py's
+    # _create_turn_record (the initial write, Step 6) and engine.py's
+    # _process_turn_impl (the narration-overclaim re-record, R7 whole-function
+    # move). Same shared spy on both bindings, so the aggregate count still
+    # answers "did an extra re-record fire on a clean turn".
+    spy = MagicMock(wraps=turn_records.summarize_for_turn_record)
+    with (
+        patch.object(turn_records, "summarize_for_turn_record", spy),
+        patch.object(engine_module, "summarize_for_turn_record", spy),
+    ):
         result = await engine.process_turn(
             case=case, user_message="What should we look at next?"
         )

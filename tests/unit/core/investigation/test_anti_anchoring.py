@@ -26,9 +26,10 @@ from faultmaven.core.investigation.hypothesis_manager import (
     HypothesisManager,
 )
 from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
-from faultmaven.core.investigation.milestone_engine.engine import (
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.turn_records import (
     _ANTI_ANCHORING_COOLDOWN_TURNS,
-    MilestoneEngine,
+    _perform_hypothesis_housekeeping,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -138,7 +139,9 @@ def test_anchoring_retires_flagged_stalled_hypotheses_and_marks_the_turn():
     eng, case = _engine(), _flooded_case()
     meta: dict = {}
 
-    eng._perform_hypothesis_housekeeping(case, meta, investigation_advanced=True)
+    _perform_hypothesis_housekeeping(
+        eng.deps.hypothesis_manager, case, meta, investigation_advanced=True
+    )
 
     retired = {
         h.hypothesis_id
@@ -161,7 +164,9 @@ def test_recent_outstanding_need_suppresses():
     case.evidence_needs = [_pending_need(case, created_at_turn=case.current_turn)]
     meta: dict = {}
 
-    eng._perform_hypothesis_housekeeping(case, meta, investigation_advanced=True)
+    _perform_hypothesis_housekeeping(
+        eng.deps.hypothesis_manager, case, meta, investigation_advanced=True
+    )
 
     assert all(h.state == HypothesisState.ACTIVE for h in case.hypotheses.values())
     assert case.progress.last_anti_anchoring_turn == 0  # never fired
@@ -177,7 +182,9 @@ def test_stale_outstanding_need_does_not_permanently_suppress():
     ]
     meta: dict = {}
 
-    eng._perform_hypothesis_housekeeping(case, meta, investigation_advanced=True)
+    _perform_hypothesis_housekeeping(
+        eng.deps.hypothesis_manager, case, meta, investigation_advanced=True
+    )
 
     retired = {
         h.hypothesis_id
@@ -193,7 +200,9 @@ def test_cooldown_marker_suppresses_then_expires():
     eng, case = _engine(), _flooded_case(current_turn=10)
     case.progress.last_anti_anchoring_turn = case.current_turn - 1
     meta: dict = {}
-    eng._perform_hypothesis_housekeeping(case, meta, investigation_advanced=True)
+    _perform_hypothesis_housekeeping(
+        eng.deps.hypothesis_manager, case, meta, investigation_advanced=True
+    )
     assert all(h.state == HypothesisState.ACTIVE for h in case.hypotheses.values())
     assert not meta.get("system_feedback")
 
@@ -203,7 +212,9 @@ def test_cooldown_marker_suppresses_then_expires():
         case2.current_turn - _ANTI_ANCHORING_COOLDOWN_TURNS
     )
     meta2: dict = {}
-    eng2._perform_hypothesis_housekeeping(case2, meta2, investigation_advanced=True)
+    _perform_hypothesis_housekeeping(
+        eng2.deps.hypothesis_manager, case2, meta2, investigation_advanced=True
+    )
     assert any(h.state == HypothesisState.RETIRED for h in case2.hypotheses.values())
 
 
@@ -219,7 +230,9 @@ def test_retire_zero_still_marks_the_turn_so_it_does_not_renag_every_turn():
     }
     meta: dict = {}
 
-    eng._perform_hypothesis_housekeeping(case, meta, investigation_advanced=True)
+    _perform_hypothesis_housekeeping(
+        eng.deps.hypothesis_manager, case, meta, investigation_advanced=True
+    )
 
     assert all(h.state == HypothesisState.ACTIVE for h in case.hypotheses.values())
     # Nothing retired, but the turn is marked and the message claims no retirement.
@@ -249,7 +262,9 @@ def test_grounding_validated_root_hypothesis_is_not_retired():
     case.hypotheses = {h.hypothesis_id: h for h in [grounded, *others]}
     meta: dict = {}
 
-    eng._perform_hypothesis_housekeeping(case, meta, investigation_advanced=True)
+    _perform_hypothesis_housekeeping(
+        eng.deps.hypothesis_manager, case, meta, investigation_advanced=True
+    )
 
     # The grounded (validated-root) hypothesis survives; the others are retired.
     assert case.hypotheses["hyp_0000000000f0"].state == HypothesisState.ACTIVE
@@ -311,7 +326,9 @@ def test_count_held_root_hypothesis_is_not_retired():
     case.hypotheses = {h.hypothesis_id: h for h in [held, *others]}
     meta: dict = {}
 
-    eng._perform_hypothesis_housekeeping(case, meta, investigation_advanced=True)
+    _perform_hypothesis_housekeeping(
+        eng.deps.hypothesis_manager, case, meta, investigation_advanced=True
+    )
 
     assert case.hypotheses["hyp_0000000000f1"].state == HypothesisState.ACTIVE
     assert all(
@@ -373,7 +390,9 @@ def test_retirement_reason_distinguishes_grounded_from_never_tested():
     others = [_hyp(f"hyp_0000000000a{i}", iters=3) for i in range(2)]
     case.hypotheses = {h.hypothesis_id: h for h in [grounded, untested, *others]}
 
-    eng._perform_hypothesis_housekeeping(case, {}, investigation_advanced=True)
+    _perform_hypothesis_housekeeping(
+        eng.deps.hypothesis_manager, case, {}, investigation_advanced=True
+    )
 
     # The retirement DECISION is unchanged: every stalled flagged id is retired.
     assert all(h.state == HypothesisState.RETIRED for h in case.hypotheses.values())
@@ -396,7 +415,9 @@ def test_chain_only_grounded_hypothesis_is_not_labelled_never_tested():
     others = [_hyp(f"hyp_0000000000a{i}", iters=3) for i in range(3)]
     case.hypotheses = {h.hypothesis_id: h for h in [chain_only, *others]}
 
-    eng._perform_hypothesis_housekeeping(case, {}, investigation_advanced=True)
+    _perform_hypothesis_housekeeping(
+        eng.deps.hypothesis_manager, case, {}, investigation_advanced=True
+    )
 
     assert case.hypotheses["hyp_0000000000c1"].state == HypothesisState.RETIRED
     assert (
@@ -438,7 +459,9 @@ def test_undetermined_grounding_is_recorded_as_undetermined():
     others = [_hyp(f"hyp_0000000000a{i}", iters=3) for i in range(3)]
     case.hypotheses = {h.hypothesis_id: h for h in [unknown, *others]}
 
-    eng._perform_hypothesis_housekeeping(case, {}, investigation_advanced=True)
+    _perform_hypothesis_housekeeping(
+        eng.deps.hypothesis_manager, case, {}, investigation_advanced=True
+    )
 
     assert case.hypotheses["hyp_0000000000d3"].state == HypothesisState.RETIRED
     assert (

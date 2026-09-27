@@ -31,6 +31,9 @@ from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _route_toolless_turn_single_shot,
     _should_force_tools,
 )
+from faultmaven.core.investigation.milestone_engine.tool_messages import (
+    _build_da_system_instruction,
+)
 from faultmaven.core.investigation.prompts.templates.assembly import get_prompt_for_case
 from faultmaven.core.investigation.prompts.templates.blocks import (
     _DIAGNOSTIC_REASONING_BLOCK,
@@ -246,7 +249,7 @@ class TestEngineRouting:
         )
 
     def test_tool_loop_instruction_has_a_type_for_the_assistant(self):
-        instruction = MilestoneEngine._build_da_system_instruction(
+        instruction = _build_da_system_instruction(
             ["search_file", "deep_analysis", "kb_qa"], "submit_investigation_response"
         )
         assert "TYPE D — ABOUT FAULTMAVEN" in instruction
@@ -292,7 +295,7 @@ class TestEngineRouting:
             "Only the FaultMaven part of the message is exempt"
             in AGENT_META_INSTRUCTIONS
         )
-        instruction = MilestoneEngine._build_da_system_instruction(
+        instruction = _build_da_system_instruction(
             ["search_file", "deep_analysis", "kb_qa"], "submit_investigation_response"
         )
         assert "that part is Type A/B/C" in instruction

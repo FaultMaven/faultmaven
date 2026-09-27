@@ -38,6 +38,9 @@ from faultmaven.core.investigation.coverage_trust import (
     is_vouched,
 )
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.generation import (
+    StructuredOutputGenerator,
+)
 from faultmaven.core.investigation.milestone_engine.milestone_inference import (
     _evidence_coverage,
 )
@@ -619,7 +622,7 @@ class TestATerminalCaseIsNotMutable:
 
         registry = AgentToolRegistry()
         registry.register(ReclassifyEvidenceTool(investigation_service=MagicMock()))
-        schemas = MilestoneEngine._build_da_tool_schemas(
+        schemas = StructuredOutputGenerator.build_da_tool_schemas(
             SimpleNamespace(deps=SimpleNamespace(investigation_tools=registry))
         )
         assert "reclassify_evidence" in [s["function"]["name"] for s in schemas], (

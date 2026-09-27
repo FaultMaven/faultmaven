@@ -432,7 +432,7 @@ class TestSystemNoticeRow:
             description=case.description,
             scope="global",
         )
-        await engine._run_runbook_conversion(
+        await engine.runbooks._run_runbook_conversion(
             conversion_service, request, USER_ID, ENTERPRISE
         )
         live = spy.saved[-1]
@@ -559,7 +559,7 @@ class TestNewRowsGoLast:
         llm = MagicMock()
         llm.generate = AsyncMock(return_value=MagicMock())
         engine = MilestoneEngine(llm, repository, investigation_tools=MagicMock())
-        await engine._run_runbook_conversion(
+        await engine.runbooks._run_runbook_conversion(
             conversion,
             CaseConversionRequest(
                 case_id=case.case_id,

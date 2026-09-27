@@ -396,8 +396,8 @@ class TestInvestigationLifecycle:
         await case_repo.save(case)
 
         with patch.object(
-            engine,
-            "_generate_structured_output",
+            engine.generator,
+            "generate_structured_output",
             return_value=_inquiry_response_low_urgency(),
         ):
             result = await engine.process_turn(
@@ -428,8 +428,8 @@ class TestInvestigationLifecycle:
         await case_repo.save(case)
 
         with patch.object(
-            engine,
-            "_generate_structured_output",
+            engine.generator,
+            "generate_structured_output",
             return_value=_inquiry_response_with_evidence(),
         ):
             result = await engine.process_turn(
@@ -463,8 +463,8 @@ class TestInvestigationLifecycle:
         # Turn 1: LLM confirms problem AND emits urgency signals. Gate 1
         # closes; case transitions immediately to INVESTIGATING.
         with patch.object(
-            engine,
-            "_generate_structured_output",
+            engine.generator,
+            "generate_structured_output",
             return_value=_inquiry_response_high_urgency_with_confirmation(),
         ):
             result = await engine.process_turn(
@@ -479,8 +479,8 @@ class TestInvestigationLifecycle:
 
         # Turn 2: agent verifies the symptom from real evidence.
         with patch.object(
-            engine,
-            "_generate_structured_output",
+            engine.generator,
+            "generate_structured_output",
             return_value=_investigation_verification_response(),
         ):
             result = await engine.process_turn(
@@ -503,8 +503,8 @@ class TestInvestigationLifecycle:
         await case_repo.save(case)
 
         with patch.object(
-            engine,
-            "_generate_structured_output",
+            engine.generator,
+            "generate_structured_output",
             return_value=_investigation_verification_response(),
         ):
             result = await engine.process_turn(case, "Here are the metrics: p99=5200ms")
@@ -533,8 +533,8 @@ class TestInvestigationLifecycle:
         await case_repo.save(case)
 
         with patch.object(
-            engine,
-            "_generate_structured_output",
+            engine.generator,
+            "generate_structured_output",
             return_value=_investigation_verification_response(),
         ):
             result = await engine.process_turn(case, "Here are the metrics: p99=5200ms")
@@ -556,8 +556,8 @@ class TestInvestigationLifecycle:
 
         # === Turn 1: User describes problem (LOW urgency, stays in INQUIRY) ===
         with patch.object(
-            engine,
-            "_generate_structured_output",
+            engine.generator,
+            "generate_structured_output",
             return_value=_inquiry_response_low_urgency(),
         ):
             result = await engine.process_turn(
@@ -572,8 +572,8 @@ class TestInvestigationLifecycle:
         # enters INVESTIGATING with symptom_verified=False.
         case.current_turn = 2
         with patch.object(
-            engine,
-            "_generate_structured_output",
+            engine.generator,
+            "generate_structured_output",
             return_value=_inquiry_response_high_urgency_with_confirmation(),
         ):
             result = await engine.process_turn(
@@ -587,8 +587,8 @@ class TestInvestigationLifecycle:
         # === Turn 3: Agent verifies symptom from real evidence ===
         case.current_turn = 3
         with patch.object(
-            engine,
-            "_generate_structured_output",
+            engine.generator,
+            "generate_structured_output",
             return_value=_investigation_verification_response(),
         ):
             result = await engine.process_turn(case, "Here are the metrics: p99=5200ms")
@@ -598,8 +598,8 @@ class TestInvestigationLifecycle:
         # === Turn 4: Agent proposes resolution ===
         case.current_turn = 4
         with patch.object(
-            engine,
-            "_generate_structured_output",
+            engine.generator,
+            "generate_structured_output",
             return_value=_investigation_propose_resolved_response(),
         ):
             result = await engine.process_turn(
@@ -638,8 +638,8 @@ class TestInvestigationLifecycle:
 
         # Turn 1: HIGH urgency + is_ongoing=True → stays in INQUIRY (waits for confirmation)
         with patch.object(
-            engine,
-            "_generate_structured_output",
+            engine.generator,
+            "generate_structured_output",
             return_value=_inquiry_response_high_urgency(),
         ):
             result1 = await engine.process_turn(case, "Our API is down in production!")
@@ -651,8 +651,8 @@ class TestInvestigationLifecycle:
         # Turn 2: User confirms → Gate 1 closes → case transitions immediately
         # to INVESTIGATING with symptom_verified=False.
         with patch.object(
-            engine,
-            "_generate_structured_output",
+            engine.generator,
+            "generate_structured_output",
             return_value=_inquiry_response_user_confirms(),
         ):
             result2 = await engine.process_turn(
@@ -666,8 +666,8 @@ class TestInvestigationLifecycle:
 
         # Turn 3: Agent verifies symptom from real evidence.
         with patch.object(
-            engine,
-            "_generate_structured_output",
+            engine.generator,
+            "generate_structured_output",
             return_value=_investigation_verification_response(),
         ):
             result3 = await engine.process_turn(
@@ -740,8 +740,8 @@ class TestCheckpointing:
         # Turn 1: Gate 1 close via dropdown intent → transition fires;
         # checkpoint is created inside _transition_to_investigating.
         with patch.object(
-            engine,
-            "_generate_structured_output",
+            engine.generator,
+            "generate_structured_output",
             return_value=_inquiry_response_high_urgency_with_confirmation(),
         ):
             result = await engine.process_turn(
@@ -796,8 +796,8 @@ class TestCheckpointing:
 
         # Turn 1: the agent proposes — does NOT execute
         with patch.object(
-            engine,
-            "_generate_structured_output",
+            engine.generator,
+            "generate_structured_output",
             return_value=_investigation_propose_resolved_response(),
         ):
             result = await engine.process_turn(
@@ -867,8 +867,8 @@ class TestConcurrentTurnLocking:
         engine._process_turn_impl = tracking_impl
 
         with patch.object(
-            engine,
-            "_generate_structured_output",
+            engine.generator,
+            "generate_structured_output",
             return_value=_inquiry_response_low_urgency(),
         ):
             task1 = asyncio.create_task(engine.process_turn(case, "Message A - first"))
@@ -910,8 +910,8 @@ class TestConcurrentTurnLocking:
         engine._process_turn_impl = tracking_impl
 
         with patch.object(
-            engine,
-            "_generate_structured_output",
+            engine.generator,
+            "generate_structured_output",
             return_value=_inquiry_response_low_urgency(),
         ):
             task1 = asyncio.create_task(engine.process_turn(case_a, "Turn for case A"))
@@ -941,8 +941,8 @@ class TestEvidenceAccumulation:
 
         # Turn 3: First evidence (metrics)
         with patch.object(
-            engine,
-            "_generate_structured_output",
+            engine.generator,
+            "generate_structured_output",
             return_value=_investigation_verification_response(),
         ):
             result = await engine.process_turn(case, "Here are the metrics")
@@ -989,7 +989,7 @@ class TestEvidenceAccumulation:
         )
 
         with patch.object(
-            engine, "_generate_structured_output", return_value=response_turn4
+            engine.generator, "generate_structured_output", return_value=response_turn4
         ):
             result = await engine.process_turn(case, "Deployment was at 14:00")
         case = result["case_updated"]
@@ -1010,8 +1010,8 @@ class TestEvidenceAccumulation:
         await case_repo.save(case)
 
         with patch.object(
-            engine,
-            "_generate_structured_output",
+            engine.generator,
+            "generate_structured_output",
             return_value=_investigation_verification_response(),
         ):
             result = await engine.process_turn(case, "Here are the metrics")
@@ -1043,8 +1043,8 @@ class TestTurnHistoryAndProgress:
         await case_repo.save(case)
 
         with patch.object(
-            engine,
-            "_generate_structured_output",
+            engine.generator,
+            "generate_structured_output",
             return_value=_inquiry_response_low_urgency(),
         ):
             result = await engine.process_turn(case, "Our API is experiencing latency")
@@ -1063,8 +1063,8 @@ class TestTurnHistoryAndProgress:
         await case_repo.save(case)
 
         with patch.object(
-            engine,
-            "_generate_structured_output",
+            engine.generator,
+            "generate_structured_output",
             return_value=_investigation_no_progress_response(),
         ):
             result = await engine.process_turn(case, "Can you help?")
@@ -1080,8 +1080,8 @@ class TestTurnHistoryAndProgress:
         original_updated_at = case.updated_at
 
         with patch.object(
-            engine,
-            "_generate_structured_output",
+            engine.generator,
+            "generate_structured_output",
             return_value=_inquiry_response_low_urgency(),
         ):
             result = await engine.process_turn(case, "Our API is having issues")
@@ -1125,8 +1125,8 @@ class TestWorkingConclusion:
         await case_repo.save(case)
 
         with patch.object(
-            engine,
-            "_generate_structured_output",
+            engine.generator,
+            "generate_structured_output",
             return_value=_investigation_verification_response(),
         ):
             result = await engine.process_turn(case, "Here are the metrics")

@@ -25,8 +25,14 @@ from faultmaven.core.investigation.milestone_engine.affordances import (
 )
 from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.hypothesis_updates import (
+    _apply_hypothesis_evidence_links,
+)
 from faultmaven.core.investigation.milestone_engine.progress import (
     check_if_progress_made,
+)
+from faultmaven.core.investigation.milestone_engine.response_application import (
+    ResponseApplier,
 )
 from faultmaven.core.investigation.schemas import EvidenceToAdd, SolutionToAdd
 from faultmaven.core.investigation.turn_outcome import determine_turn_outcome
@@ -61,6 +67,7 @@ def engine():
     eng.deps.team_service = None
     eng.deps.share_repository = None
     eng.deps.conversion_service = None
+    eng.responses = ResponseApplier(deps=eng.deps, kb_prefetcher=None)
     return eng
 
 
@@ -459,7 +466,7 @@ def test_novel_keys_reach_the_progress_predicate_through_the_real_apply_path(eng
             "status_transitioned": False,
         }
         asyncio.run(
-            engine._apply_investigation_updates(
+            engine.responses._apply_investigation_updates(
                 case,
                 updates,
                 metadata,
@@ -546,8 +553,8 @@ def test_the_caller_counts_only_material_links(engine):
         )
 
     first = {}
-    engine._apply_hypothesis_evidence_links(
-        case, [emit(EvidenceStance.SUPPORTS)], first
+    _apply_hypothesis_evidence_links(
+        engine.deps.hypothesis_manager, case, [emit(EvidenceStance.SUPPORTS)], first
     )
     assert first.get("hypothesis_evidence_links_applied") == 1
     assert check_if_progress_made({**first, "outcome": TurnOutcome.CONVERSATION})
@@ -556,8 +563,11 @@ def test_the_caller_counts_only_material_links(engine):
     for turn in range(2, 6):
         case.current_turn = turn
         repeat = {}
-        engine._apply_hypothesis_evidence_links(
-            case, [emit(EvidenceStance.SUPPORTS)], repeat
+        _apply_hypothesis_evidence_links(
+            engine.deps.hypothesis_manager,
+            case,
+            [emit(EvidenceStance.SUPPORTS)],
+            repeat,
         )
         assert not repeat.get("hypothesis_evidence_links_applied"), turn
         assert (
@@ -568,8 +578,8 @@ def test_the_caller_counts_only_material_links(engine):
     # A revised stance counts again.
     case.current_turn = 6
     revised = {}
-    engine._apply_hypothesis_evidence_links(
-        case, [emit(EvidenceStance.REFUTES)], revised
+    _apply_hypothesis_evidence_links(
+        engine.deps.hypothesis_manager, case, [emit(EvidenceStance.REFUTES)], revised
     )
     assert revised.get("hypothesis_evidence_links_applied") == 1
 

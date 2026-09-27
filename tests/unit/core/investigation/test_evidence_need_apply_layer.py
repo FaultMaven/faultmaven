@@ -29,6 +29,9 @@ import pytest
 
 from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.evidence_need_updates import (
+    _apply_evidence_need_updates,
+)
 from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
     _supersede_needs_on_terminal_hypothesis,
     _sweep_needs_for_terminal_hypotheses,
@@ -187,7 +190,7 @@ class TestEvidenceNeedUpdateApplyLayer:
         engine = _make_engine()
         meta = _empty_metadata()
 
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case=case,
             updates_list=[_make_update()],
             metadata=meta,
@@ -207,9 +210,7 @@ class TestEvidenceNeedUpdateApplyLayer:
         case = _make_case()
         engine = _make_engine()
         meta = _empty_metadata()
-        engine._apply_evidence_need_updates(
-            case, [_make_update()], meta, case.current_turn
-        )
+        _apply_evidence_need_updates(case, [_make_update()], meta, case.current_turn)
         assert case.evidence_needs[0].created_at_turn == case.current_turn
 
     def test_update_existing_need_merges_motivators(self):
@@ -228,7 +229,7 @@ class TestEvidenceNeedUpdateApplyLayer:
 
         engine = _make_engine()
         meta = _empty_metadata()
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case,
             [
                 _make_update(
@@ -261,7 +262,7 @@ class TestEvidenceNeedUpdateApplyLayer:
 
         engine = _make_engine()
         meta = _empty_metadata()
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case,
             [
                 _make_update(
@@ -295,7 +296,7 @@ class TestEvidenceNeedUpdateApplyLayer:
 
         engine = _make_engine()
         meta = _empty_metadata()
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case,
             [
                 _make_update(
@@ -321,7 +322,7 @@ class TestEvidenceNeedUpdateApplyLayer:
         case = _make_case()
         engine = _make_engine()
         meta = _empty_metadata()
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case,
             [
                 _make_update(
@@ -343,7 +344,7 @@ class TestEvidenceNeedUpdateApplyLayer:
         case = _make_case()
         engine = _make_engine()
         meta = _empty_metadata()
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case,
             [
                 _make_update(
@@ -377,7 +378,7 @@ class TestNewIndexResolution:
         meta = _empty_metadata()
         meta["hypotheses_generated"] = [h_new.hypothesis_id]
 
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case,
             [
                 _make_update(
@@ -397,7 +398,7 @@ class TestNewIndexResolution:
         meta = _empty_metadata()
         meta["evidence_added"] = [ev_new.evidence_id]
 
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case,
             [
                 _make_update(
@@ -415,7 +416,7 @@ class TestNewIndexResolution:
         case = _make_case()
         engine = _make_engine()
         meta = _empty_metadata()
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case,
             [
                 # Create
@@ -457,7 +458,7 @@ class TestCausalNeedCreationWithMotivator:
         h = _make_hypothesis(case)
         engine = _make_engine()
         meta = _empty_metadata()
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case,
             [
                 _make_update(
@@ -615,7 +616,7 @@ class TestFulfilledDemotionOnEmptyFulfillments:
         engine = _make_engine()
         meta = _empty_metadata()
 
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case,
             [
                 _make_update(
@@ -649,7 +650,7 @@ class TestFulfilledDemotionOnEmptyFulfillments:
         engine = _make_engine()
         meta = _empty_metadata()
 
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case,
             [
                 _make_update(
@@ -687,7 +688,7 @@ class TestFulfilledDemotionOnEmptyFulfillments:
         engine = _make_engine()
         meta = _empty_metadata()
 
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case,
             [
                 _make_update(
@@ -728,7 +729,7 @@ class TestPriorTurnTerminalMotivatorFiltered:
         engine = _make_engine()
         meta = _empty_metadata()
 
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case,
             [
                 _make_update(
@@ -766,7 +767,7 @@ class TestPriorTurnTerminalMotivatorFiltered:
         engine = _make_engine()
         meta = _empty_metadata()
 
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case,
             [
                 _make_update(
@@ -792,7 +793,7 @@ class TestPriorTurnTerminalMotivatorFiltered:
         engine = _make_engine()
         meta = _empty_metadata()
 
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case,
             [
                 _make_update(
@@ -820,7 +821,7 @@ class TestPriorTurnTerminalMotivatorFiltered:
         engine = _make_engine()
         meta = _empty_metadata()
 
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case,
             [
                 _make_update(
@@ -852,7 +853,7 @@ class TestPriorTurnTerminalMotivatorFiltered:
         engine = _make_engine()
         meta = _empty_metadata()
 
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case,
             [
                 _make_update(
@@ -1069,7 +1070,7 @@ class TestApplyLayerSeedsMetadataKey:
         assert "evidence_needs_updated" not in meta  # production shape
 
         # Must not raise KeyError.
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case=case,
             updates_list=[_make_update()],
             metadata=meta,
@@ -1095,7 +1096,7 @@ class TestApplyLayerSeedsMetadataKey:
         case.evidence_needs.append(existing)
 
         meta = _process_response_metadata()
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case=case,
             updates_list=[
                 _make_update(
@@ -1156,7 +1157,7 @@ class TestFulfillUpdateOmittedCreateOnlyFields:
         meta = _empty_metadata()
         # Exactly what a validated EvidenceNeedUpdate carries on a fulfill:
         # need_id + state + fulfilling_evidence_ids; everything else None.
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case=case,
             updates_list=[
                 _make_update(
@@ -1199,7 +1200,7 @@ class TestFulfillUpdateOmittedCreateOnlyFields:
 
         engine = _make_engine()
         meta = _empty_metadata()
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case=case,
             updates_list=[
                 _make_update(
@@ -1228,7 +1229,7 @@ class TestFulfillUpdateOmittedCreateOnlyFields:
         case = _make_case()
         engine = _make_engine()
         meta = _empty_metadata()
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case=case,
             updates_list=[_make_update(priority=None)],
             metadata=meta,
@@ -1244,7 +1245,7 @@ class TestFulfillUpdateOmittedCreateOnlyFields:
 
         engine = _make_engine()
         meta = _empty_metadata()
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case=case,
             updates_list=[
                 _make_update(
@@ -1279,7 +1280,7 @@ class TestFulfillUpdateOmittedCreateOnlyFields:
 
         engine = _make_engine()
         meta = _empty_metadata()
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case=case,
             updates_list=[
                 _make_update(
@@ -1388,7 +1389,7 @@ class TestObtainability:
         # apply layer rejects an orphan causal need — the LLM-need vs engine-need
         # distinction; see issue #630).
         h = _make_hypothesis(case)
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case=case,
             updates_list=[
                 _make_update(
@@ -1408,7 +1409,7 @@ class TestObtainability:
         case = _make_case()
         engine = _make_engine()
         need = _causal_need(case)
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case=case,
             updates_list=[
                 _make_update(
@@ -1426,7 +1427,7 @@ class TestObtainability:
         case = _make_case()
         engine = _make_engine()
         need = _causal_need(case, purpose=NeedPurpose.SYMPTOM_VERIFICATION)
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case=case,
             updates_list=[
                 _make_update(
@@ -1443,7 +1444,7 @@ class TestObtainability:
         case = _make_case()
         engine = _make_engine()
         need = _causal_need(case, obtainability=NeedObtainability.UNOBTAINABLE)
-        engine._apply_evidence_need_updates(
+        _apply_evidence_need_updates(
             case=case,
             updates_list=[
                 _make_update(

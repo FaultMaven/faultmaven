@@ -34,6 +34,9 @@ from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngin
 from faultmaven.core.investigation.milestone_engine.terminal_replies import (
     _resolution_confirmation_suggestions,
 )
+from faultmaven.core.investigation.milestone_engine.transitions import (
+    TransitionManager,
+)
 from faultmaven.core.investigation.terminal_transitions import (
     ClosureReadiness,
     assess_closure_readiness,
@@ -223,10 +226,13 @@ async def test_check_automatic_transitions_surfaces_resolve_confirmation_on_pivo
     eng = MilestoneEngine.__new__(MilestoneEngine)
     eng.deps = EngineDeps()
     eng.deps.checkpoint_service = None
+    eng.transitions = TransitionManager(deps=eng.deps, kb_prefetcher=None)
     metadata: dict = {}
 
     with patch.object(terminal_transitions, "close_pivoted_to_resolve_total"):
-        updated = await eng._check_automatic_transitions(case, metadata, "yes")
+        updated = await eng.transitions.check_automatic_transitions(
+            case, metadata, "yes"
+        )
 
     # No terminal transition; the case stays INVESTIGATING with a RESOLVED
     # proposal pending.

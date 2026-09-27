@@ -29,9 +29,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine.engine import (
-    MilestoneEngine,
-    MilestoneEngineError,
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.errors import MilestoneEngineError
+from faultmaven.core.investigation.milestone_engine.transition_consent import (
+    _user_confirms_transition,
+    _user_declines_transition,
 )
 from faultmaven.core.investigation.terminal_transitions import (
     closure_verdict,
@@ -76,7 +78,7 @@ def _make_repo():
 
 def _engine():
     engine = MilestoneEngine(MagicMock(), _make_repo(), investigation_tools=MagicMock())
-    engine._generate_structured_output = AsyncMock(side_effect=_SeamReached())
+    engine.generator.generate_structured_output = AsyncMock(side_effect=_SeamReached())
     return engine
 
 
@@ -157,7 +159,7 @@ async def _run_expecting_fall_through(engine, case, message):
     assert case.pending_transition is None, (
         "the non-answer must withdraw the pending proposal before normal " "processing"
     )
-    assert engine._generate_structured_output.called
+    assert engine.generator.generate_structured_output.called
 
 
 @pytest.mark.asyncio
@@ -184,7 +186,7 @@ async def test_short_ambiguous_reply_re_presents_once_without_llm():
     assert "Please select one of the options above" in result["agent_response"]
     assert case.pending_transition is not None
     assert case.pending_transition.get("re_presented") is True
-    assert not engine._generate_structured_output.called
+    assert not engine.generator.generate_structured_output.called
 
 
 @pytest.mark.asyncio
@@ -251,7 +253,7 @@ async def test_whitespace_only_message_never_reaches_llm():
 
     result = await engine.process_turn(case=case, user_message="   ")
 
-    assert not engine._generate_structured_output.called
+    assert not engine.generator.generate_structured_output.called
     assert case.pending_transition is not None
     assert "Please select one of the options above" in result["agent_response"]
 
@@ -410,7 +412,7 @@ class TestGateAnswerMatchers:
     def test_confirm_matcher_accepts_bare_confirmations(self):
         engine = _engine()
         for msg in ("yes", "ok", "yes, it's resolved, the error is gone"):
-            assert engine._user_confirms_transition(msg), msg
+            assert _user_confirms_transition(msg), msg
 
     def test_confirm_matcher_rejects_substantive_or_prefix_matches(self):
         engine = _engine()
@@ -420,12 +422,12 @@ class TestGateAnswerMatchers:
             "yesterday the pod restarted",
             "yes?",
         ):
-            assert not engine._user_confirms_transition(msg), msg
+            assert not _user_confirms_transition(msg), msg
 
     def test_decline_matcher_accepts_bare_declines(self):
         engine = _engine()
         for msg in ("no", "no.", "no way", "not yet", "nope!"):
-            assert engine._user_declines_transition(msg), msg
+            assert _user_declines_transition(msg), msg
 
     def test_decline_matcher_rejects_prefix_sharing_words(self):
         engine = _engine()
@@ -434,7 +436,7 @@ class TestGateAnswerMatchers:
             "nothing in the logs",
             "stopped the pod",
         ):
-            assert not engine._user_declines_transition(msg), msg
+            assert not _user_declines_transition(msg), msg
 
 
 @pytest.mark.asyncio
@@ -453,7 +455,7 @@ async def test_bare_decline_keeps_cheap_canned_acknowledgment():
 
     assert case.pending_transition is None
     assert "remains open" in result["agent_response"]
-    assert not engine._generate_structured_output.called
+    assert not engine.generator.generate_structured_output.called
 
 
 @pytest.mark.asyncio

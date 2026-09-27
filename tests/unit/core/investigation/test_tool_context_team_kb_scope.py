@@ -44,11 +44,15 @@ pytestmark = [pytest.mark.unit, pytest.mark.security]
 def _engine(team_ids=None, shared_ids=None, *, wired=True):
     """A MilestoneEngine with just enough wiring to build a tool context."""
     from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+    from faultmaven.core.investigation.milestone_engine.generation import (
+        StructuredOutputGenerator,
+    )
 
     engine = MilestoneEngine.__new__(MilestoneEngine)
     engine.deps = EngineDeps()
     engine.deps.repository = MagicMock()
     engine.deps.investigation_tools = None
+    engine.generator = StructuredOutputGenerator(deps=engine.deps, vectorizer=None)
 
     if wired:
         engine.deps.team_service = MagicMock()
@@ -86,7 +90,7 @@ async def test_team_shared_ids_reach_the_scope_filter():
     """The widening case: a shared item must be readable by the tool."""
     engine = _engine(team_ids=["team_a"], shared_ids=["kb_shared_1", "kb_shared_2"])
 
-    context = await engine._build_tool_context(_case(), user_id="user_a")
+    context = await engine.generator.build_tool_context(_case(), user_id="user_a")
 
     # The filter kb_qa will build from this context, exactly as kb_tool_adapter
     # passes it through.
@@ -109,7 +113,7 @@ async def test_the_team_arm_is_keyed_on_the_session_user():
     case = _case()
     case.user_id = "case_owner"  # deliberately different from the session user
 
-    await engine._build_tool_context(case, user_id="session_user")
+    await engine.generator.build_tool_context(case, user_id="session_user")
 
     engine.deps.team_service.list_all_user_team_ids.assert_awaited_once_with(
         "session_user"
@@ -123,7 +127,9 @@ async def test_the_enterprise_is_threaded_into_the_share_lookup():
     requester is entitled to; scoping it by nothing would cross the wall."""
     engine = _engine(team_ids=["team_a"], shared_ids=["kb_1"])
 
-    await engine._build_tool_context(_case(enterprise_id="ent_xyz"), user_id="user_a")
+    await engine.generator.build_tool_context(
+        _case(enterprise_id="ent_xyz"), user_id="user_a"
+    )
 
     _, kwargs = engine.deps.share_repository.list_resource_ids.await_args
     assert (
@@ -138,7 +144,7 @@ async def test_no_principal_means_no_team_arm(user_id):
     """``system`` is not a user; it must not resolve anyone's team allowlist."""
     engine = _engine(team_ids=["team_a"], shared_ids=["kb_1"])
 
-    context = await engine._build_tool_context(_case(), user_id=user_id)
+    context = await engine.generator.build_tool_context(_case(), user_id=user_id)
 
     assert context.shared_kb_ids == []
     engine.deps.team_service.list_all_user_team_ids.assert_not_awaited()
@@ -151,7 +157,7 @@ async def test_standalone_without_team_services_collapses_to_owned_and_global():
     """Missing collaborators narrow the allowlist; they never widen it."""
     engine = _engine(wired=False)
 
-    context = await engine._build_tool_context(_case(), user_id="user_a")
+    context = await engine.generator.build_tool_context(_case(), user_id="user_a")
 
     assert context.shared_kb_ids == []
     assert _team_arm(build_kb_scope_filter(context.user_id, context.shared_kb_ids)) is (
@@ -166,7 +172,7 @@ async def test_a_failed_resolution_narrows_rather_than_raising():
         side_effect=RuntimeError("share table unavailable")
     )
 
-    context = await engine._build_tool_context(_case(), user_id="user_a")
+    context = await engine.generator.build_tool_context(_case(), user_id="user_a")
 
     assert context.shared_kb_ids == []
     assert _team_arm(build_kb_scope_filter(context.user_id, context.shared_kb_ids)) is (
@@ -222,19 +228,24 @@ def _call_sites(module, attr_path: tuple[str, ...]) -> list[ast.Call]:
 
 
 def test_the_principal_reaches_every_tool_context_build():
-    """Hop 2: engine → ``_build_tool_context``.
+    """Hop 2: engine → ``build_tool_context``.
 
     A call site that omits ``user_id`` silently gets the ``"system"`` sentinel,
     which owns nothing and belongs to no team — the KB tool then reads the
     global corpus only, with no error anywhere.
+
+    #1707: the method moved to ``StructuredOutputGenerator`` and lost its
+    leading underscore (called from outside the collaborator), so every call
+    site is now two hops — ``self.generator.build_tool_context`` — rather than
+    one.
     """
     from faultmaven.core.investigation import milestone_engine
 
-    calls = _call_sites(milestone_engine, ("self", "_build_tool_context"))
-    assert calls, "no _build_tool_context call sites found — did it get renamed?"
+    calls = _call_sites(milestone_engine, ("self", "generator", "build_tool_context"))
+    assert calls, "no build_tool_context call sites found — did it get renamed?"
     for call in calls:
         assert any(kw.arg == "user_id" for kw in call.keywords), (
-            f"milestone_engine/engine.py:{call.lineno} builds a ToolContext without "
+            f"milestone_engine builds a ToolContext at line {call.lineno} without "
             "passing user_id; its KB tool would read global-only"
         )
 
@@ -264,8 +275,11 @@ async def test_the_principal_is_not_taken_from_the_client_intent_payload():
     engine = _engine(team_ids=["team_a"], shared_ids=["kb_1"])
 
     # The shape a client could forge if the principal came from the payload.
-    context = await engine._build_tool_context(_case(), user_id=None)
+    context = await engine.generator.build_tool_context(_case(), user_id=None)
 
     assert context.user_id == "system"
     assert context.shared_kb_ids == []
-    assert "intent_data" not in inspect.signature(engine._build_tool_context).parameters
+    assert (
+        "intent_data"
+        not in inspect.signature(engine.generator.build_tool_context).parameters
+    )

@@ -615,6 +615,8 @@ class TestTheRuntimeRecoveryPathIsFencedToo:
     async def test_the_recovery_prompt_carries_the_rule_and_one_token(self):
         from faultmaven.core.investigation.milestone_engine.engine import (
             MilestoneEngine,
+        )
+        from faultmaven.core.investigation.milestone_engine.errors import (
             MilestoneEngineError,
         )
         from faultmaven.exceptions import TOKEN_LIMIT
@@ -638,12 +640,12 @@ class TestTheRuntimeRecoveryPathIsFencedToo:
         # the only test covering the second caller that justified putting the
         # mint in ``get_fallback_prompt_for_case`` (#1254 review).
         with patch.object(
-            engine,
+            engine.generator,
             "_generate_structured_output_inner",
             autospec=True,
             side_effect=inner,
         ):
-            result = await engine._generate_structured_output(
+            result = await engine.generator.generate_structured_output(
                 prompt="A very large prompt " * 5000,
                 schema_model=MagicMock(),
                 case=_case(description=PLANTED_DECLARATION),

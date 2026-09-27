@@ -33,6 +33,12 @@ from types import SimpleNamespace
 import pytest
 
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.terminal_turns import (
+    TerminalTurnHandler,
+)
+from faultmaven.core.investigation.milestone_engine.turn_records import (
+    _flatten_follow_ups,
+)
 
 
 def _make_engine() -> MilestoneEngine:
@@ -70,7 +76,7 @@ class TestRealNeedIdPassthrough:
         engine = _make_engine()
         real_id = "eneed_aabbccdd1234"
         follow_ups = [_make_follow_up(evidence_need_id=real_id)]
-        out = engine._flatten_follow_ups(follow_ups, _empty_metadata())
+        out = _flatten_follow_ups(follow_ups, _empty_metadata())
         assert len(out) == 1
         assert out[0]["evidence_need_id"] == real_id
 
@@ -82,7 +88,7 @@ class TestRealNeedIdPassthrough:
         engine = _make_engine()
         real_id = "eneed_aabbccdd1234"
         follow_ups = [_make_follow_up(evidence_need_id=real_id)]
-        out = engine._flatten_follow_ups(follow_ups, {"evidence_needs_updated": []})
+        out = _flatten_follow_ups(follow_ups, {"evidence_needs_updated": []})
         assert out[0]["evidence_need_id"] == real_id
 
 
@@ -98,7 +104,7 @@ class TestNewIndexResolution:
         created = ["eneed_aaaa11112222", "eneed_bbbb33334444"]
         meta = {"evidence_needs_updated": created}
         follow_ups = [_make_follow_up(evidence_need_id="new_index_0")]
-        out = engine._flatten_follow_ups(follow_ups, meta)
+        out = _flatten_follow_ups(follow_ups, meta)
         assert out[0]["evidence_need_id"] == "eneed_aaaa11112222"
 
     def test_new_index_1_resolves_to_second_created_need(self):
@@ -106,7 +112,7 @@ class TestNewIndexResolution:
         created = ["eneed_aaaa11112222", "eneed_bbbb33334444"]
         meta = {"evidence_needs_updated": created}
         follow_ups = [_make_follow_up(evidence_need_id="new_index_1")]
-        out = engine._flatten_follow_ups(follow_ups, meta)
+        out = _flatten_follow_ups(follow_ups, meta)
         assert out[0]["evidence_need_id"] == "eneed_bbbb33334444"
 
     def test_bare_int_string_coercion_handled_by_schema_not_helper(self):
@@ -120,7 +126,7 @@ class TestNewIndexResolution:
         engine = _make_engine()
         meta = {"evidence_needs_updated": ["eneed_aaaa11112222"]}
         follow_ups = [_make_follow_up(evidence_need_id=0)]  # bypassing schema
-        out = engine._flatten_follow_ups(follow_ups, meta)
+        out = _flatten_follow_ups(follow_ups, meta)
         # ``0`` is falsy → the helper's `if f.evidence_need_id:` guard
         # skips it. Documented behavior: the schema is responsible for
         # coercing bare ints to strings BEFORE this helper runs.
@@ -143,7 +149,7 @@ class TestUnresolvableRefDropped:
         engine = _make_engine()
         meta = {"evidence_needs_updated": ["eneed_aaaa11112222"]}  # only index 0
         follow_ups = [_make_follow_up(evidence_need_id="new_index_5")]
-        out = engine._flatten_follow_ups(follow_ups, meta)
+        out = _flatten_follow_ups(follow_ups, meta)
         # Field dropped; other fields preserved.
         assert "evidence_need_id" not in out[0]
         assert out[0]["label"] == "Upload metrics"
@@ -152,7 +158,7 @@ class TestUnresolvableRefDropped:
         engine = _make_engine()
         meta = {"evidence_needs_updated": []}
         follow_ups = [_make_follow_up(evidence_need_id="new_index_0")]
-        out = engine._flatten_follow_ups(follow_ups, meta)
+        out = _flatten_follow_ups(follow_ups, meta)
         assert "evidence_need_id" not in out[0]
 
     def test_new_index_missing_metadata_key_dropped(self):
@@ -162,7 +168,7 @@ class TestUnresolvableRefDropped:
         empty list."""
         engine = _make_engine()
         follow_ups = [_make_follow_up(evidence_need_id="new_index_0")]
-        out = engine._flatten_follow_ups(follow_ups, {})
+        out = _flatten_follow_ups(follow_ups, {})
         assert "evidence_need_id" not in out[0]
 
 
@@ -188,11 +194,11 @@ class TestDropCounterObservability:
 
         mock_counter = MagicMock()
         with patch(
-            "faultmaven.core.investigation.milestone_engine.engine."
+            "faultmaven.core.investigation.milestone_engine.turn_records."
             "evidence_need_id_dropped_total",
             mock_counter,
         ):
-            engine._flatten_follow_ups(follow_ups, meta)
+            _flatten_follow_ups(follow_ups, meta)
 
         mock_counter.labels.assert_called_once_with(reason="out_of_range")
         mock_counter.labels.return_value.inc.assert_called_once()
@@ -205,11 +211,11 @@ class TestDropCounterObservability:
 
         mock_counter = MagicMock()
         with patch(
-            "faultmaven.core.investigation.milestone_engine.engine."
+            "faultmaven.core.investigation.milestone_engine.turn_records."
             "evidence_need_id_dropped_total",
             mock_counter,
         ):
-            engine._flatten_follow_ups(follow_ups, {})
+            _flatten_follow_ups(follow_ups, {})
 
         mock_counter.labels.assert_called_once_with(reason="missing_metadata")
         mock_counter.labels.return_value.inc.assert_called_once()
@@ -228,11 +234,11 @@ class TestDropCounterObservability:
 
         mock_counter = MagicMock()
         with patch(
-            "faultmaven.core.investigation.milestone_engine.engine."
+            "faultmaven.core.investigation.milestone_engine.turn_records."
             "evidence_need_id_dropped_total",
             mock_counter,
         ):
-            engine._flatten_follow_ups(follow_ups, meta)
+            _flatten_follow_ups(follow_ups, meta)
 
         mock_counter.labels.assert_not_called()
 
@@ -251,7 +257,7 @@ class TestExistingFieldsFlattenedUnchanged:
     def test_label_type_payload_required_fields(self):
         engine = _make_engine()
         follow_ups = [_make_follow_up(label="L", action_type="DECIDE", payload="P")]
-        out = engine._flatten_follow_ups(follow_ups, _empty_metadata())
+        out = _flatten_follow_ups(follow_ups, _empty_metadata())
         assert out[0]["label"] == "L"
         assert out[0]["action_type"] == "DECIDE"
         assert out[0]["payload"] == "P"
@@ -259,24 +265,24 @@ class TestExistingFieldsFlattenedUnchanged:
     def test_body_propagated_when_present(self):
         engine = _make_engine()
         follow_ups = [_make_follow_up(body="extra context")]
-        out = engine._flatten_follow_ups(follow_ups, _empty_metadata())
+        out = _flatten_follow_ups(follow_ups, _empty_metadata())
         assert out[0]["body"] == "extra context"
 
     def test_body_omitted_when_none(self):
         engine = _make_engine()
         follow_ups = [_make_follow_up(body=None)]
-        out = engine._flatten_follow_ups(follow_ups, _empty_metadata())
+        out = _flatten_follow_ups(follow_ups, _empty_metadata())
         assert "body" not in out[0]
 
     def test_hints_propagated_when_present(self):
         engine = _make_engine()
         follow_ups = [_make_follow_up(hints=["timeline", "symptoms"])]
-        out = engine._flatten_follow_ups(follow_ups, _empty_metadata())
+        out = _flatten_follow_ups(follow_ups, _empty_metadata())
         assert out[0]["hints"] == ["timeline", "symptoms"]
 
     def test_empty_input_returns_empty_list(self):
         engine = _make_engine()
-        assert engine._flatten_follow_ups([], _empty_metadata()) == []
+        assert _flatten_follow_ups([], _empty_metadata()) == []
 
 
 # ============================================================
@@ -293,7 +299,7 @@ class TestMixedSuggestionList:
             _make_follow_up(label="prior need", evidence_need_id="eneed_aaaa11112222"),
             _make_follow_up(label="this turn", evidence_need_id="new_index_0"),
         ]
-        out = engine._flatten_follow_ups(follow_ups, meta)
+        out = _flatten_follow_ups(follow_ups, meta)
         assert len(out) == 2
         assert out[0]["evidence_need_id"] == "eneed_aaaa11112222"
         assert out[1]["evidence_need_id"] == "eneed_cccc55556666"
@@ -306,7 +312,7 @@ class TestMixedSuggestionList:
             _make_follow_up(label="b", evidence_need_id="new_index_99"),
             _make_follow_up(label="c", evidence_need_id=None),  # no field
         ]
-        out = engine._flatten_follow_ups(follow_ups, meta)
+        out = _flatten_follow_ups(follow_ups, meta)
         assert out[0]["evidence_need_id"] == "eneed_aaaa11112222"
         assert "evidence_need_id" not in out[1]
         assert "evidence_need_id" not in out[2]
@@ -333,15 +339,18 @@ class TestBothCallSitesUseFlattener:
             MilestoneEngine,
         )
 
-        src_terminal = inspect.getsource(MilestoneEngine._process_terminal_qa)
+        src_terminal = inspect.getsource(TerminalTurnHandler._process_terminal_qa)
         src_turn = inspect.getsource(MilestoneEngine._process_turn_impl)
-        assert "self._flatten_follow_ups(" in src_terminal, (
+        # #1707: _flatten_follow_ups moved out of the engine into a module
+        # function (turn_records.py), called directly rather than through
+        # self, from both seams.
+        assert "_flatten_follow_ups(" in src_terminal, (
             "_process_terminal_qa no longer calls _flatten_follow_ups — a "
             "partial revert has re-introduced the duplicated flattening "
             "loop. Either restore the call or update this pin to match a "
             "deliberate redesign."
         )
-        assert "self._flatten_follow_ups(" in src_turn, (
+        assert "_flatten_follow_ups(" in src_turn, (
             "_process_turn_impl no longer calls _flatten_follow_ups — a "
             "partial revert has re-introduced the duplicated flattening "
             "loop. Either restore the call or update this pin to match a "

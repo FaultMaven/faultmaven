@@ -21,6 +21,12 @@ import pytest
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.hypothesis_updates import (
+    _apply_hypothesis_action_intent,
+)
+from faultmaven.core.investigation.milestone_engine.turn_records import (
+    _perform_hypothesis_housekeeping,
+)
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
@@ -99,7 +105,8 @@ def _retired_hyp() -> Hypothesis:
 
 def _apply(eng, case, hypothesis_id, action, user_message="user says so"):
     metadata: dict = {}
-    eng._apply_hypothesis_action_intent(
+    _apply_hypothesis_action_intent(
+        eng.deps.hypothesis_manager,
         case,
         {"hypothesis_id": hypothesis_id, "action": action},
         user_message,
@@ -246,7 +253,9 @@ def test_validate_records_progress_so_the_same_turn_does_not_decay_it():
     case.hypotheses = {h.hypothesis_id: h}
 
     _apply(eng, case, h.hypothesis_id, "validate")
-    eng._perform_hypothesis_housekeeping(case, {}, investigation_advanced=True)
+    _perform_hypothesis_housekeeping(
+        eng.deps.hypothesis_manager, case, {}, investigation_advanced=True
+    )
 
     assert h.likelihood == 1.0
     assert h.iterations_without_progress == 0

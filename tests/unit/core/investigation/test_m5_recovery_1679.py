@@ -21,13 +21,18 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from faultmaven.core.investigation import milestone_engine
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
+from faultmaven.core.investigation.milestone_engine import response_application
 from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.response_application import (
+    ResponseApplier,
+)
 from faultmaven.core.investigation.schemas import MilestoneUpdates, SolutionToAdd
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.conclusion import WorkingConclusion
@@ -78,8 +83,25 @@ def _meta() -> dict:
     }
 
 
+@pytest.fixture(autouse=True)
+def _stub_chain_emission(monkeypatch):
+    """The chain-emission tail stubbed, as the M5 gate tests do.
+
+    #1707 moved both functions out of the engine into module scope; the
+    caller (``ResponseApplier._apply_investigation_updates``) reads them from
+    its OWN module namespace, which is therefore the one binding a stub must
+    patch.
+    """
+    monkeypatch.setattr(
+        response_application, "_apply_chain_emission", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        response_application, "_nudge_ambiguous_orphan_chains", lambda *a, **k: None
+    )
+
+
 def _make_engine() -> MilestoneEngine:
-    """Bare engine with the chain-emission tail stubbed, as the M5 gate tests do."""
+    """Bare engine, wired only enough for ``responses._apply_investigation_updates``."""
     eng = MilestoneEngine.__new__(MilestoneEngine)
     eng.deps = EngineDeps()
     # Attributes __init__ always sets and the engine reads directly (#1722).
@@ -87,8 +109,10 @@ def _make_engine() -> MilestoneEngine:
     eng.deps.team_service = None
     eng.deps.share_repository = None
     eng.deps.conversion_service = None
-    eng._apply_chain_emission = lambda *a, **k: None
-    eng._nudge_ambiguous_orphan_chains = lambda *a, **k: None
+    eng.responses = ResponseApplier(
+        deps=eng.deps,
+        kb_prefetcher=SimpleNamespace(prefetch_kb_context=AsyncMock()),
+    )
     return eng
 
 
@@ -183,7 +207,7 @@ class TestLicenseReadsThisTurn:
         """Turn 4 of case_0e35b59ddb9d: 0.65 now, nothing in the field yet."""
         case = _case(leading_likelihood=0.65, stale_wc=None)
 
-        await _make_engine()._apply_investigation_updates(
+        await _make_engine().responses._apply_investigation_updates(
             case, _Updates(solutions_to_add=_fix()), _meta()
         )
 
@@ -196,7 +220,7 @@ class TestLicenseReadsThisTurn:
     async def test_the_bar_is_unchanged_below_threshold(self):
         case = _case(leading_likelihood=0.55, stale_wc=None)
 
-        await _make_engine()._apply_investigation_updates(
+        await _make_engine().responses._apply_investigation_updates(
             case, _Updates(solutions_to_add=_fix()), _meta()
         )
 
@@ -209,7 +233,7 @@ class TestLicenseReadsThisTurn:
         the leading hypothesis stands at 0.55 this turn."""
         case = _case(leading_likelihood=0.55, stale_wc=0.65)
 
-        await _make_engine()._apply_investigation_updates(
+        await _make_engine().responses._apply_investigation_updates(
             case, _Updates(solutions_to_add=_fix()), _meta()
         )
 
@@ -231,7 +255,9 @@ class TestLicenseReadsThisTurn:
         )
         metadata = _meta()
 
-        await _make_engine()._apply_investigation_updates(case, _Updates(), metadata)
+        await _make_engine().responses._apply_investigation_updates(
+            case, _Updates(), metadata
+        )
 
         (offer,) = _actions(case, InvestigationActionType.SOLUTION)
         assert offer.state == "superseded"
@@ -263,7 +289,7 @@ class TestLicenseReadsTheSettledTurn:
         the same response, proposes the fix and marks it accepted."""
         case = _case(leading_likelihood=0.65, stale_wc=0.45)
 
-        await _engine_with_manager()._apply_investigation_updates(
+        await _engine_with_manager().responses._apply_investigation_updates(
             case,
             _Updates(
                 solutions_to_add=_fix(),
@@ -286,7 +312,7 @@ class TestLicenseReadsTheSettledTurn:
         hypothesis = case.hypotheses["hyp_000000000001"]
         hypothesis.initial_likelihood = 0.2
 
-        await _engine_with_manager()._apply_investigation_updates(
+        await _engine_with_manager().responses._apply_investigation_updates(
             case, _Updates(solutions_to_add=_fix()), _pending(0.85)
         )
 
@@ -298,7 +324,7 @@ class TestLicenseReadsTheSettledTurn:
     async def test_a_pending_raise_does_not_withhold_a_license_already_held(self):
         case = _case(leading_likelihood=0.65, stale_wc=None, supported=True)
 
-        await _engine_with_manager()._apply_investigation_updates(
+        await _engine_with_manager().responses._apply_investigation_updates(
             case,
             _Updates(
                 solutions_to_add=_fix(),
@@ -315,7 +341,7 @@ class TestLicenseReadsTheSettledTurn:
         max(0.55, prior cap), so M5 must not score it at 0.8."""
         case = _case(leading_likelihood=0.55, stale_wc=None)
 
-        await _engine_with_manager()._apply_investigation_updates(
+        await _engine_with_manager().responses._apply_investigation_updates(
             case, _Updates(solutions_to_add=_fix()), _pending(0.8)
         )
 
@@ -353,7 +379,9 @@ class TestLicenseReadsTheSettledTurn:
             _recompute_with_m6,
         )
 
-        await _make_engine()._apply_investigation_updates(case, _Updates(), _meta())
+        await _make_engine().responses._apply_investigation_updates(
+            case, _Updates(), _meta()
+        )
 
         (offer,) = _actions(case, InvestigationActionType.SOLUTION)
         assert offer.state == "superseded"
@@ -395,7 +423,9 @@ class TestAppliedFixRecovery:
         )
         metadata = _meta()
 
-        await _make_engine()._apply_investigation_updates(case, updates, metadata)
+        await _make_engine().responses._apply_investigation_updates(
+            case, updates, metadata
+        )
 
         assert case.progress.solution_accepted is True
         assert case.progress.solution_proposed is True
@@ -408,7 +438,7 @@ class TestAppliedFixRecovery:
     async def test_the_downgrade_note_names_that_path(self):
         case = _case(leading_likelihood=0.4)
 
-        await _make_engine()._apply_investigation_updates(
+        await _make_engine().responses._apply_investigation_updates(
             case, _Updates(solutions_to_add=_fix()), _meta()
         )
 
@@ -430,7 +460,7 @@ class TestAppliedFixRecovery:
         case = _downgraded_case()
         metadata = _meta()
 
-        await _make_engine()._apply_investigation_updates(
+        await _make_engine().responses._apply_investigation_updates(
             case,
             _Updates(milestones=MilestoneUpdates(solution_accepted=True)),
             metadata,

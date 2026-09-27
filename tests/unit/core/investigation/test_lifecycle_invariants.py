@@ -20,6 +20,9 @@ from pydantic import ValidationError
 
 from faultmaven.core.investigation.cause_assurance import CauseAssuranceGrade
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.response_application import (
+    ResponseApplier,
+)
 from faultmaven.core.investigation.terminal_transitions import (
     _execute_resolved_transition,
     cancel_pending_transition,
@@ -627,7 +630,7 @@ class TestINV06_KBResolutionUsesPendingTransition:
         in milestone_engine/engine.py ("Standard ProposedTransition
         handshake handles disposition").
         """
-        source = inspect.getsource(MilestoneEngine._apply_investigation_updates)
+        source = inspect.getsource(ResponseApplier._apply_investigation_updates)
 
         # Find the knowledge_resolution handling block. The comment
         # immediately above the if-statement (line 4673-4681 at time of
@@ -694,7 +697,7 @@ class TestINV06_KBResolutionUsesPendingTransition:
             "knowledge_resolution_signalled": True,
         }
 
-        result = await engine._check_automatic_transitions(case, metadata)
+        result = await engine.transitions.check_automatic_transitions(case, metadata)
 
         assert result.state == CaseState.INVESTIGATING, (
             "Same-turn confirm fired on the KB-resolution turn. #722 "
@@ -739,7 +742,7 @@ class TestINV06_KBResolutionUsesPendingTransition:
         metadata = {"transition_proposed_this_turn": True}
 
         # The triggering message pattern-matches as a bare confirmation.
-        result = await engine._check_automatic_transitions(
+        result = await engine.transitions.check_automatic_transitions(
             case, metadata, user_message="yes, stable now"
         )
 
@@ -1098,7 +1101,7 @@ class TestINV07_NoEvidenceDuringInquiry:
         The design states that the evidence-creation branch was REMOVED
         from _apply_inquiry_updates. This test pins that removal.
         """
-        source = inspect.getsource(MilestoneEngine._apply_inquiry_updates)
+        source = inspect.getsource(ResponseApplier._apply_inquiry_updates)
 
         # Forbidden mutations / creations:
         #   - case.evidence.append(...) / case.evidence = ...
@@ -1127,7 +1130,7 @@ class TestINV07_NoEvidenceDuringInquiry:
 #   no transitions, no milestone updates. Only text Q&A, report regeneration,
 #   and runbook creation are permitted.
 # Enforcement: API-level (``require_case_not_terminal()`` rejects mutating
-#   endpoints) + Code-guarded (``_process_terminal_turn`` short-circuits the
+#   endpoints) + Code-guarded (``process_terminal_turn`` short-circuits the
 #   milestone engine).
 #
 # Drift surfaced during verification:
@@ -1219,7 +1222,7 @@ class TestINV09_TerminalCasesImmutable:
 
     def test_inv09_milestone_engine_short_circuits_on_terminal_case(self):
         """Static check: ``_process_turn_impl`` short-circuits to
-        ``_process_terminal_turn`` when the case is terminal. The
+        ``process_terminal_turn`` when the case is terminal. The
         normal investigation pipeline (which mutates state, advances
         milestones, etc.) is bypassed entirely.
 
@@ -1233,12 +1236,14 @@ class TestINV09_TerminalCasesImmutable:
         assert "case.is_terminal" in source, (
             "INV-09 violation: _process_turn_impl no longer checks "
             "case.is_terminal. The engine must short-circuit terminal "
-            "cases to _process_terminal_turn so they can't be mutated "
+            "cases to process_terminal_turn so they can't be mutated "
             "via the normal milestone pipeline."
         )
-        assert "_process_terminal_turn" in source, (
+        # #1707: the method moved to TerminalTurnHandler and lost its leading
+        # underscore (called from outside the collaborator).
+        assert "process_terminal_turn" in source, (
             "INV-09 violation: _process_turn_impl no longer routes to "
-            "_process_terminal_turn. Terminal cases must short-circuit "
+            "process_terminal_turn. Terminal cases must short-circuit "
             "to the Q&A handler instead of running the full pipeline."
         )
 
@@ -1302,7 +1307,7 @@ class TestINV10_SubmitTurnRejectionRules:
     def test_inv10_submit_turn_does_not_reject_text_only_query_on_terminal(self):
         """Static check: the terminal-state guard in ``submit_turn`` does
         NOT reject text-only queries. The Q&A route through
-        ``_process_terminal_turn`` depends on text queries being passed
+        ``process_terminal_turn`` depends on text queries being passed
         through.
 
         The rejection branches are gated on ``files or pasted_content``
@@ -1354,7 +1359,7 @@ class TestINV10_SubmitTurnRejectionRules:
 class TestINV12_FreeTextRoutesToQA:
     """INV-12: only exact-match DECIDE payloads produce persisted side effects.
 
-    The dispatcher in ``_process_terminal_turn`` routes by exact-match
+    The dispatcher in ``process_terminal_turn`` routes by exact-match
     against ``_REPORT_REGEN_PATTERNS`` / ``_RUNBOOK_CREATION_PATTERNS``.
     Anything else falls through to ``_process_terminal_qa`` (no persisted
     side effect).
@@ -1372,7 +1377,7 @@ class TestINV12_FreeTextRoutesToQA:
         object.__setattr__(case, "state", CaseState.RESOLVED)
 
         # Mock the three dispatch handlers
-        engine._handle_report_regeneration = AsyncMock(
+        engine.terminal._handle_report_regeneration = AsyncMock(
             return_value={
                 "agent_response": "regenerated",
                 "suggested_follow_ups": [],
@@ -1380,19 +1385,19 @@ class TestINV12_FreeTextRoutesToQA:
                 "metadata": {},
             }
         )
-        engine._handle_runbook_creation = AsyncMock()
-        engine._process_terminal_qa = AsyncMock()
+        engine.runbooks.handle_runbook_creation = AsyncMock()
+        engine.terminal._process_terminal_qa = AsyncMock()
 
         # Exact-match the precomposed payload
-        await engine._process_terminal_turn(
+        await engine.terminal.process_terminal_turn(
             case,
             "Regenerate the resolution summary report for this case",
             {},
         )
 
-        engine._handle_report_regeneration.assert_called_once()
-        engine._handle_runbook_creation.assert_not_called()
-        engine._process_terminal_qa.assert_not_called()
+        engine.terminal._handle_report_regeneration.assert_called_once()
+        engine.runbooks.handle_runbook_creation.assert_not_called()
+        engine.terminal._process_terminal_qa.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_inv12_free_typed_recap_paraphrase_routes_to_qa(self):
@@ -1405,9 +1410,9 @@ class TestINV12_FreeTextRoutesToQA:
         case = _make_investigating_case()
         object.__setattr__(case, "state", CaseState.RESOLVED)
 
-        engine._handle_report_regeneration = AsyncMock()
-        engine._handle_runbook_creation = AsyncMock()
-        engine._process_terminal_qa = AsyncMock(
+        engine.terminal._handle_report_regeneration = AsyncMock()
+        engine.runbooks.handle_runbook_creation = AsyncMock()
+        engine.terminal._process_terminal_qa = AsyncMock(
             return_value={
                 "agent_response": "Q&A",
                 "suggested_follow_ups": [],
@@ -1427,11 +1432,11 @@ class TestINV12_FreeTextRoutesToQA:
             "regenerate the summary",  # missing "report for this case"
         ]
         for msg in paraphrases:
-            engine._handle_report_regeneration.reset_mock()
-            engine._process_terminal_qa.reset_mock()
-            await engine._process_terminal_turn(case, msg, {})
-            engine._handle_report_regeneration.assert_not_called()
-            engine._process_terminal_qa.assert_called_once()
+            engine.terminal._handle_report_regeneration.reset_mock()
+            engine.terminal._process_terminal_qa.reset_mock()
+            await engine.terminal.process_terminal_turn(case, msg, {})
+            engine.terminal._handle_report_regeneration.assert_not_called()
+            engine.terminal._process_terminal_qa.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_inv12_runbook_paraphrase_routes_to_qa(self):
@@ -1444,8 +1449,8 @@ class TestINV12_FreeTextRoutesToQA:
         case = _make_investigating_case()
         object.__setattr__(case, "state", CaseState.RESOLVED)
 
-        engine._handle_runbook_creation = AsyncMock()
-        engine._process_terminal_qa = AsyncMock(
+        engine.runbooks.handle_runbook_creation = AsyncMock()
+        engine.terminal._process_terminal_qa = AsyncMock(
             return_value={
                 "agent_response": "Q&A",
                 "suggested_follow_ups": [],
@@ -1462,11 +1467,11 @@ class TestINV12_FreeTextRoutesToQA:
             "i want a runbook",
         ]
         for msg in paraphrases:
-            engine._handle_runbook_creation.reset_mock()
-            engine._process_terminal_qa.reset_mock()
-            await engine._process_terminal_turn(case, msg, {})
-            engine._handle_runbook_creation.assert_not_called()
-            engine._process_terminal_qa.assert_called_once()
+            engine.runbooks.handle_runbook_creation.reset_mock()
+            engine.terminal._process_terminal_qa.reset_mock()
+            await engine.terminal.process_terminal_turn(case, msg, {})
+            engine.runbooks.handle_runbook_creation.assert_not_called()
+            engine.terminal._process_terminal_qa.assert_called_once()
 
     def test_inv12_patterns_match_cooperative_suggestion_payloads(self):
         """The dispatcher's exact-match tuples must equal the precomposed
@@ -1480,10 +1485,15 @@ class TestINV12_FreeTextRoutesToQA:
             REGENERATE_CLOSURE_SUMMARY_PAYLOAD,
             REGENERATE_RESOLUTION_SUMMARY_PAYLOAD,
         )
+        from faultmaven.core.investigation.milestone_engine.terminal_turns import (
+            TerminalTurnHandler,
+        )
 
-        # Patterns are stored on the class (lowercased)
-        regen_patterns = MilestoneEngine._REPORT_REGEN_PATTERNS
-        runbook_patterns = MilestoneEngine._RUNBOOK_CREATION_PATTERNS
+        # Patterns are stored on the class (lowercased). #1707: moved from
+        # MilestoneEngine to TerminalTurnHandler, the collaborator that reads
+        # them.
+        regen_patterns = TerminalTurnHandler._REPORT_REGEN_PATTERNS
+        runbook_patterns = TerminalTurnHandler._RUNBOOK_CREATION_PATTERNS
 
         # Every DECIDE payload must appear in the dispatcher's tuple
         # (lowercased, since user_message is lower-cased before matching)
@@ -1890,7 +1900,7 @@ class TestINV16_LLMSoleAuthorityForMilestoneAdvancement:
 # Statement: Runbook generation rejects non-RESOLVED cases at the
 #   chat-side dispatcher — the only case→runbook trigger.
 # Enforcement: **Code-guarded at the engine layer**:
-#   Engine: _process_terminal_turn computes
+#   Engine: process_terminal_turn computes
 #      is_runbook_eligible = case.state == CaseState.RESOLVED and
 #      refuses to dispatch the runbook-creation handler otherwise.
 #   (The former API endpoint POST /knowledge/convert-from-case was
@@ -1919,8 +1929,8 @@ class TestINV18_RunbookEligibilityResolvedOnly:
         case = _make_investigating_case()
         object.__setattr__(case, "state", CaseState.CLOSED)
 
-        engine._handle_runbook_creation = AsyncMock()
-        engine._process_terminal_qa = AsyncMock(
+        engine.runbooks.handle_runbook_creation = AsyncMock()
+        engine.terminal._process_terminal_qa = AsyncMock(
             return_value={
                 "agent_response": "Q&A",
                 "suggested_follow_ups": [],
@@ -1930,12 +1940,12 @@ class TestINV18_RunbookEligibilityResolvedOnly:
         )
 
         # Submit the exact DECIDE runbook payload on a CLOSED case
-        await engine._process_terminal_turn(case, GENERATE_RUNBOOK_PAYLOAD, {})
+        await engine.terminal.process_terminal_turn(case, GENERATE_RUNBOOK_PAYLOAD, {})
 
         # Runbook handler NOT called — eligibility gate refused the dispatch
-        engine._handle_runbook_creation.assert_not_called()
+        engine.runbooks.handle_runbook_creation.assert_not_called()
         # Falls through to Q&A
-        engine._process_terminal_qa.assert_called_once()
+        engine.terminal._process_terminal_qa.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_inv18_engine_runbook_dispatch_fires_on_resolved(self):
@@ -1954,7 +1964,7 @@ class TestINV18_RunbookEligibilityResolvedOnly:
         case = _make_investigating_case()
         object.__setattr__(case, "state", CaseState.RESOLVED)
 
-        engine._handle_runbook_creation = AsyncMock(
+        engine.runbooks.handle_runbook_creation = AsyncMock(
             return_value={
                 "agent_response": "runbook",
                 "suggested_follow_ups": [],
@@ -1962,12 +1972,12 @@ class TestINV18_RunbookEligibilityResolvedOnly:
                 "metadata": {},
             }
         )
-        engine._process_terminal_qa = AsyncMock()
+        engine.terminal._process_terminal_qa = AsyncMock()
 
-        await engine._process_terminal_turn(case, GENERATE_RUNBOOK_PAYLOAD, {})
+        await engine.terminal.process_terminal_turn(case, GENERATE_RUNBOOK_PAYLOAD, {})
 
-        engine._handle_runbook_creation.assert_called_once()
-        engine._process_terminal_qa.assert_not_called()
+        engine.runbooks.handle_runbook_creation.assert_called_once()
+        engine.terminal._process_terminal_qa.assert_not_called()
 
 
 # ============================================================================
@@ -2090,7 +2100,7 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
         case = self._make_inquiry_case()
         metadata = {"response_obj": self._response_obj_with_proposed("resolved")}
 
-        result = await engine._check_automatic_transitions(case, metadata)
+        result = await engine.transitions.check_automatic_transitions(case, metadata)
 
         # No pending transition was set — the rejection happened BEFORE
         # propose_transition could run.
@@ -2118,7 +2128,7 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
         case = self._make_inquiry_case()
         metadata = {"response_obj": self._response_obj_with_proposed("resolved")}
 
-        await engine._check_automatic_transitions(case, metadata)
+        await engine.transitions.check_automatic_transitions(case, metadata)
 
         repairs = metadata.get("validation_repairs", [])
         assert any("Rejected proposed_transition" in r for r in repairs), (
@@ -2138,7 +2148,7 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
         case = self._make_inquiry_case()
         metadata = {"response_obj": self._response_obj_with_proposed("closed")}
 
-        result = await engine._check_automatic_transitions(case, metadata)
+        result = await engine.transitions.check_automatic_transitions(case, metadata)
 
         # Valid edge → pending transition WAS set.
         assert result.pending_transition is not None, (
@@ -2163,7 +2173,7 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
         case = _make_investigating_case()
         metadata = {"response_obj": self._response_obj_with_proposed("resolved")}
 
-        result = await engine._check_automatic_transitions(case, metadata)
+        result = await engine.transitions.check_automatic_transitions(case, metadata)
 
         # No INVALID TRANSITION ERROR — the validation passed; whatever
         # happens downstream (SUGGEST_CLOSE pivot, NEEDS_INFO, or READY

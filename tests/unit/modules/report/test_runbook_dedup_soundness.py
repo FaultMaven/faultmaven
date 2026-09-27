@@ -28,7 +28,9 @@ decision) — a strong match is surfaced by title and score for the user to
 judge. Both are pinned here.
 """
 
+import asyncio
 import inspect
+from collections import defaultdict
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -354,9 +356,9 @@ async def test_a_similar_match_stops_creation_and_offers_generate_anyway(
     engine.deps.runbook_kb = _similar_match_kb()
 
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
-        result = await engine._handle_runbook_creation(ready_case, metadata={})
+        result = await engine.runbooks.handle_runbook_creation(ready_case, metadata={})
 
-    engine._run_runbook_conversion.assert_not_called()
+    engine.runbooks._run_runbook_conversion.assert_not_called()
     assert "OOMKilled recovery" in result["agent_response"]
     assert "Creating your runbook draft" not in result["agent_response"]
     payloads = [s.get("payload") for s in result["suggested_follow_ups"]]
@@ -382,7 +384,7 @@ async def test_generate_anyway_proceeds_past_the_similar_match(ready_case, monke
     )
 
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
-        result = await engine._handle_runbook_creation(
+        result = await engine.runbooks.handle_runbook_creation(
             ready_case, metadata={}, dedup_confirmed=True
         )
 
@@ -395,23 +397,35 @@ async def test_the_confirm_payload_dispatches_with_dedup_confirmed():
     into creation with ``dedup_confirmed=True`` — same click-only side-effect
     policy as every other terminal action."""
     from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+    from faultmaven.core.investigation.milestone_engine.runbook_creation import (
+        RunbookCreator,
+    )
     from faultmaven.core.investigation.milestone_engine.terminal_replies import (
         GENERATE_RUNBOOK_ANYWAY_PAYLOAD,
+    )
+    from faultmaven.core.investigation.milestone_engine.terminal_turns import (
+        TerminalTurnHandler,
     )
     from faultmaven.modules.case.contracts import CaseState
 
     engine = MilestoneEngine.__new__(MilestoneEngine)
     engine.deps = EngineDeps()
-    engine._handle_runbook_creation = AsyncMock(return_value={"routed": True})
+    engine.runbooks = RunbookCreator(
+        case_locks=defaultdict(asyncio.Lock), deps=engine.deps
+    )
+    engine.runbooks.handle_runbook_creation = AsyncMock(return_value={"routed": True})
+    engine.terminal = TerminalTurnHandler(
+        deps=engine.deps, generator=None, runbooks=engine.runbooks
+    )
     case = MagicMock()
     case.state = CaseState.RESOLVED
 
-    result = await engine._process_terminal_turn(
+    result = await engine.terminal.process_terminal_turn(
         case, GENERATE_RUNBOOK_ANYWAY_PAYLOAD, metadata={}
     )
 
     assert result == {"routed": True}
-    engine._handle_runbook_creation.assert_awaited_once_with(
+    engine.runbooks.handle_runbook_creation.assert_awaited_once_with(
         case, {}, dedup_confirmed=True
     )
 
@@ -440,11 +454,11 @@ async def test_the_plain_generate_payload_still_stops_on_a_similar_match(
     ready_case.state = CaseState.RESOLVED
 
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
-        result = await engine._process_terminal_turn(
+        result = await engine.terminal.process_terminal_turn(
             ready_case, GENERATE_RUNBOOK_PAYLOAD, metadata={}
         )
 
-    engine._run_runbook_conversion.assert_not_called()
+    engine.runbooks._run_runbook_conversion.assert_not_called()
     assert "OOMKilled recovery" in result["agent_response"]
     assert "Creating your runbook draft" not in result["agent_response"]
 
@@ -509,6 +523,9 @@ def ready_case(monkeypatch):
 
 def _engine_for_creation() -> "object":
     from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+    from faultmaven.core.investigation.milestone_engine.runbook_creation import (
+        RunbookCreator,
+    )
 
     engine = MilestoneEngine.__new__(MilestoneEngine)
     engine.deps = EngineDeps()
@@ -518,8 +535,21 @@ def _engine_for_creation() -> "object":
     engine.deps.share_repository = None
     engine.deps.conversion_service = MagicMock()
     engine.deps.conversion_service.get_conversion_by_case = AsyncMock(return_value=None)
-    engine._run_runbook_conversion = AsyncMock()
-    engine._remaining_regens_for = AsyncMock(return_value=3)
+    # report_service/repository stay unset (None): _remaining_regens_for, now
+    # a plain function, returns its documented default (MAX_REGENERATIONS)
+    # when either is unavailable rather than reaching a real repository --
+    # no test here asserts on the exact count, only that creation succeeds.
+    engine.runbooks = RunbookCreator(
+        case_locks=defaultdict(asyncio.Lock), deps=engine.deps
+    )
+    engine.runbooks._run_runbook_conversion = AsyncMock()
+    from faultmaven.core.investigation.milestone_engine.terminal_turns import (
+        TerminalTurnHandler,
+    )
+
+    engine.terminal = TerminalTurnHandler(
+        deps=engine.deps, generator=None, runbooks=engine.runbooks
+    )
     return engine
 
 
@@ -545,7 +575,7 @@ async def test_the_dedup_caveat_reaches_the_user_visible_turn(ready_case, monkey
     )
 
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=None)):
-        result = await engine._handle_runbook_creation(ready_case, metadata={})
+        result = await engine.runbooks.handle_runbook_creation(ready_case, metadata={})
 
     assert "could not check" in result["agent_response"], (
         "the dedup caveat never reached the user — the turn claims a draft is "
@@ -565,7 +595,7 @@ async def test_a_clean_dedup_turn_carries_no_caveat(ready_case, monkeypatch):
     )
 
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
-        result = await engine._handle_runbook_creation(ready_case, metadata={})
+        result = await engine.runbooks.handle_runbook_creation(ready_case, metadata={})
 
     assert "could not check" not in result["agent_response"]
 

@@ -35,9 +35,13 @@ from datetime import datetime, timezone
 
 import pytest
 
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.progress import (
     check_if_progress_made,
+)
+from faultmaven.core.investigation.milestone_engine.response_application import (
+    ResponseApplier,
 )
 from faultmaven.core.investigation.schemas import InquiryResponse
 from faultmaven.modules.case.contracts import Case, CaseState, TurnOutcome, UploadedFile
@@ -50,7 +54,10 @@ TURN = 5
 
 @pytest.fixture
 def engine():
-    return MilestoneEngine.__new__(MilestoneEngine)
+    eng = MilestoneEngine.__new__(MilestoneEngine)
+    eng.deps = EngineDeps()
+    eng.responses = ResponseApplier(deps=eng.deps, kb_prefetcher=None)
+    return eng
 
 
 def _row(file_id: str = FILE_ID, turn: int = TURN) -> UploadedFile:
@@ -113,7 +120,7 @@ async def _run(engine, case, attachments):
         agent_response="ack",
         state_updates=InquiryResponse.InquiryStateUpdate(),
     )
-    _, metadata = await engine._process_response_structured(
+    _, metadata = await engine.responses.process_response_structured(
         case, "here are the logs", response, attachments
     )
     return metadata

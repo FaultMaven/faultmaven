@@ -31,6 +31,9 @@ from faultmaven.core.investigation.milestone_engine.cause_state import (
 from faultmaven.core.investigation.milestone_engine.progress import (
     check_if_progress_made,
 )
+from faultmaven.core.investigation.milestone_engine.response_application import (
+    ResponseApplier,
+)
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
@@ -375,7 +378,7 @@ def test_identification_is_not_attributed_to_this_turns_evidence():
         llm_claimable_milestones,
     )
 
-    src = inspect.getsource(MilestoneEngine._apply_investigation_updates)
+    src = inspect.getsource(ResponseApplier._apply_investigation_updates)
     assert "ev.advances_milestones.extend(attributable)" in src
     assert "ev.advances_milestones.extend(metadata[" not in src
     assert src.count("llm_claimable_milestones(") == 2

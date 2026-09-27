@@ -128,7 +128,7 @@ class TestZonePendingEmphasis:
 class TestTreatmentDoesNotRenderPendingEmphasis:
     async def _accepted_case(self):
         case = _make_case()
-        await _make_engine()._apply_investigation_updates(
+        await _make_engine().responses._apply_investigation_updates(
             case, _solution_updates(), _meta()
         )
         offer = _pending_solutions(case)[0]
@@ -161,7 +161,7 @@ class TestTreatmentDoesNotRenderPendingEmphasis:
 class TestPendingActionHygiene:
     async def _case_with_offer(self):
         case = _make_case()
-        await _make_engine()._apply_investigation_updates(
+        await _make_engine().responses._apply_investigation_updates(
             case, _solution_updates(), _meta()
         )
         assert case.progress.solution_proposed is True
@@ -199,8 +199,12 @@ class TestPendingActionHygiene:
         # solution withdrawal even though it predates the offer.
         case = _make_case()
         eng = _make_engine()
-        await eng._apply_investigation_updates(case, _workaround_updates(), _meta())
-        await eng._apply_investigation_updates(case, _solution_updates(), _meta())
+        await eng.responses._apply_investigation_updates(
+            case, _workaround_updates(), _meta()
+        )
+        await eng.responses._apply_investigation_updates(
+            case, _solution_updates(), _meta()
+        )
         case.root_cause_conclusion = None
         _recompute_assessment_state(case, metadata={})
 
@@ -268,7 +272,7 @@ class TestPendingActionRenderPrefersComplianceBearing:
         # and drop the solution_accepted compliance cue. The render prefers the
         # compliance-bearing SOLUTION even though the diagnostic is newer.
         case = _make_case()
-        await _make_engine()._apply_investigation_updates(
+        await _make_engine().responses._apply_investigation_updates(
             case, _solution_updates(), _meta()
         )
         assert case.progress.solution_proposed is True

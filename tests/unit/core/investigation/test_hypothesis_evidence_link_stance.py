@@ -25,6 +25,9 @@ import pytest
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.hypothesis_updates import (
+    _apply_hypothesis_evidence_links,
+)
 from faultmaven.core.investigation.prompts import templates
 from faultmaven.modules.case.contracts import (
     Case,
@@ -146,8 +149,11 @@ class TestApplyLayerStanceFidelity:
         ev = _make_evidence(case)
         engine = _make_engine()
 
-        engine._apply_hypothesis_evidence_links(
-            case, [_make_link(h.hypothesis_id, ev.evidence_id, stance)], {}
+        _apply_hypothesis_evidence_links(
+            engine.deps.hypothesis_manager,
+            case,
+            [_make_link(h.hypothesis_id, ev.evidence_id, stance)],
+            {},
         )
 
         assert len(h.evidence_links) == 1
@@ -162,8 +168,11 @@ class TestApplyLayerStanceFidelity:
         ev = _make_evidence(case)
         engine = _make_engine()
 
-        engine._apply_hypothesis_evidence_links(
-            case, [_make_link(h.hypothesis_id, ev.evidence_id, stance)], {}
+        _apply_hypothesis_evidence_links(
+            engine.deps.hypothesis_manager,
+            case,
+            [_make_link(h.hypothesis_id, ev.evidence_id, stance)],
+            {},
         )
 
         assert h.likelihood == pytest.approx(0.6 + EXPECTED_DELTA[stance])
@@ -176,7 +185,8 @@ class TestApplyLayerStanceFidelity:
         engine = _make_engine()
         meta: dict = {}
 
-        engine._apply_hypothesis_evidence_links(
+        _apply_hypothesis_evidence_links(
+            engine.deps.hypothesis_manager,
             case,
             [
                 _make_link(h.hypothesis_id, ev1.evidence_id, EvidenceStance.NEUTRAL),
@@ -193,7 +203,8 @@ class TestApplyLayerStanceFidelity:
         engine = _make_engine()
         meta: dict = {}
 
-        engine._apply_hypothesis_evidence_links(
+        _apply_hypothesis_evidence_links(
+            engine.deps.hypothesis_manager,
             case,
             [_make_link("hyp_missing000000", ev.evidence_id, EvidenceStance.SUPPORTS)],
             meta,
@@ -207,7 +218,8 @@ class TestApplyLayerStanceFidelity:
         engine = _make_engine()
         meta: dict = {}
 
-        engine._apply_hypothesis_evidence_links(
+        _apply_hypothesis_evidence_links(
+            engine.deps.hypothesis_manager,
             case,
             [_make_link(h.hypothesis_id, "ev_missing0000000", EvidenceStance.SUPPORTS)],
             meta,
@@ -226,7 +238,8 @@ class TestApplyLayerStanceFidelity:
             "evidence_added": [ev.evidence_id],
         }
 
-        engine._apply_hypothesis_evidence_links(
+        _apply_hypothesis_evidence_links(
+            engine.deps.hypothesis_manager,
             case,
             [_make_link("new_index_0", "new_index_0", EvidenceStance.NEUTRAL)],
             meta,
@@ -246,14 +259,16 @@ class TestApplyLayerStanceFidelity:
         ev = _make_evidence(case)
         engine = _make_engine()
 
-        engine._apply_hypothesis_evidence_links(
+        _apply_hypothesis_evidence_links(
+            engine.deps.hypothesis_manager,
             case,
             [_make_link(h.hypothesis_id, ev.evidence_id, EvidenceStance.SUPPORTS)],
             {},
         )
         assert h.likelihood == pytest.approx(0.75)
 
-        engine._apply_hypothesis_evidence_links(
+        _apply_hypothesis_evidence_links(
+            engine.deps.hypothesis_manager,
             case,
             [_make_link(h.hypothesis_id, ev.evidence_id, EvidenceStance.NEUTRAL)],
             {},

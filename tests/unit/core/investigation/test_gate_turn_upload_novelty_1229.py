@@ -100,7 +100,7 @@ def _engine() -> MilestoneEngine:
     repo.save = AsyncMock(side_effect=lambda c: c)
     repo.get = AsyncMock(side_effect=lambda cid: None)
     engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
-    engine._generate_structured_output = AsyncMock(side_effect=_SeamReached())
+    engine.generator.generate_structured_output = AsyncMock(side_effect=_SeamReached())
     return engine
 
 
@@ -142,7 +142,7 @@ async def _gate_turn(engine: MilestoneEngine, case: Case, attachments) -> dict:
     result = await engine.process_turn(
         case=case, user_message="hmm", attachments=attachments
     )
-    assert not engine._generate_structured_output.called, (
+    assert not engine.generator.generate_structured_output.called, (
         "this turn must short-circuit on the deterministic gate branch — if it "
         "reached the LLM, the test is no longer exercising the #1229 path"
     )
@@ -295,7 +295,7 @@ class TestTheDropdownTransitionBranch:
             intent_data={"to_state": "closed"},
         )
 
-        assert not engine._generate_structured_output.called
+        assert not engine.generator.generate_structured_output.called
         assert result["metadata"]["novel_files_uploaded"] == ["file_aaaaaaaaaaaa"]
         assert result["metadata"]["progress_made"] is True
         assert case.turns_without_progress == 0
@@ -350,7 +350,7 @@ class TestTheTerminalShortCircuit:
             seen.update(metadata)
             return {"agent_response": "", "case_updated": case, "metadata": metadata}
 
-        engine._process_terminal_turn = spy
+        engine.terminal.process_terminal_turn = spy
 
         await engine.process_turn(
             case=case, user_message="what happened here?", attachments=[_novel()]
@@ -377,7 +377,7 @@ class TestTheTerminalShortCircuit:
             seen.update(metadata)
             return {"agent_response": "", "case_updated": case, "metadata": metadata}
 
-        engine._process_terminal_turn = spy
+        engine.terminal.process_terminal_turn = spy
 
         await engine.process_turn(
             case=case, user_message="what happened here?", attachments=[_novel()]
@@ -393,7 +393,7 @@ class TestTheTerminalShortCircuit:
         async def spy(case, user_message, metadata, user_id=None):
             return {"agent_response": "", "case_updated": case, "metadata": metadata}
 
-        engine._process_terminal_turn = spy
+        engine.terminal.process_terminal_turn = spy
 
         await engine.process_turn(
             case=case, user_message="what happened here?", attachments=[_novel()]
@@ -409,7 +409,7 @@ def _generating_engine() -> MilestoneEngine:
     repo.save = AsyncMock(side_effect=lambda c: c)
     repo.get = AsyncMock(side_effect=lambda cid: None)
     engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
-    engine._generate_structured_output = AsyncMock(
+    engine.generator.generate_structured_output = AsyncMock(
         return_value=InvestigationResponse_Diagnosis(
             agent_response="Looking at the new log now.",
             state_updates={},
@@ -431,7 +431,7 @@ class TestTheGenerationPathReturnBoundary:
             case=case, user_message="here is a brand new log", attachments=[_novel()]
         )
 
-        assert engine._generate_structured_output.called, (
+        assert engine.generator.generate_structured_output.called, (
             "this turn must take the GENERATION path — if it short-circuited, "
             "the test is not exercising the return boundary"
         )
@@ -512,7 +512,7 @@ class TestBothPathsAgree:
             user_message="here is a log",
             attachments=[attachment],
         )
-        assert engine._generate_structured_output.called
+        assert engine.generator.generate_structured_output.called
         return result["metadata"]
 
     async def test_a_novel_upload_reads_the_same_on_both_paths(self):

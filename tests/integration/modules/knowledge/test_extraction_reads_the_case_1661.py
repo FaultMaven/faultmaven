@@ -43,7 +43,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.redaction import _should_redact
 from faultmaven.core.investigation.prompts.context_builder.evidence import (
     _evidence_recency_key,
 )
@@ -504,7 +504,7 @@ def _investigation_path_redaction(case_id: str, sanitizer) -> CaseRedactionConte
         case_id=case_id,
         sanitizer=sanitizer,
         redis_client=None,
-        enabled=MilestoneEngine._should_redact(SimpleNamespace(sanitizer=sanitizer)),
+        enabled=_should_redact(sanitizer),
     )
 
 

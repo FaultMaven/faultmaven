@@ -13,9 +13,18 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 import pytest
 from pydantic import BaseModel, Field
 
-from faultmaven.core.investigation.milestone_engine.engine import (
-    MilestoneEngine,
-    MilestoneEngineError,
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.errors import MilestoneEngineError
+from faultmaven.core.investigation.milestone_engine.generation import (
+    StructuredOutputGenerator,
+)
+from faultmaven.core.investigation.milestone_engine.structured_output import (
+    _fix_enum_violations,
+    _parse_nested_json,
+)
+from faultmaven.core.investigation.milestone_engine.tool_messages import (
+    _build_assistant_message,
+    _build_da_system_instruction,
 )
 from faultmaven.infrastructure.llm.providers.base import LLMResponse, ToolCall
 from faultmaven.models.interfaces import ToolResult
@@ -197,7 +206,7 @@ class TestToolAugmentedGenerate:
         tool_context = MagicMock()
 
         # Act
-        result = await engine._tool_augmented_generate(
+        result = await engine.generator._tool_augmented_generate(
             prompt="Investigate SSH issues",
             schema_model=SampleResponse,
             investigation_tools=investigation_tools,
@@ -252,7 +261,7 @@ class TestToolAugmentedGenerate:
         ]
 
         # Act
-        result = await engine._tool_augmented_generate(
+        result = await engine.generator._tool_augmented_generate(
             prompt="Investigate",
             schema_model=SampleResponse,
             investigation_tools=investigation_tools,
@@ -310,7 +319,7 @@ class TestToolAugmentedGenerate:
         ]
 
         # Act
-        result = await engine._tool_augmented_generate(
+        result = await engine.generator._tool_augmented_generate(
             prompt="Analyze",
             schema_model=SampleResponse,
             investigation_tools=investigation_tools,
@@ -337,7 +346,7 @@ class TestToolAugmentedGenerate:
         )
 
         # Return a tool result exceeding TOOL_RESULT_MAX_CHARS
-        long_result = "x" * (MilestoneEngine.TOOL_RESULT_MAX_CHARS + 1000)
+        long_result = "x" * (StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS + 1000)
         mock_registry = _make_mock_registry()
         mock_registry.execute_tool.return_value = ToolResult(
             success=True, data=long_result
@@ -351,7 +360,7 @@ class TestToolAugmentedGenerate:
         ]
 
         # Act
-        result = await engine._tool_augmented_generate(
+        result = await engine.generator._tool_augmented_generate(
             prompt="Search",
             schema_model=SampleResponse,
             investigation_tools=investigation_tools,
@@ -363,9 +372,9 @@ class TestToolAugmentedGenerate:
         second_call = mock_provider.generate.call_args_list[1]
         messages = second_call.kwargs.get("messages") or second_call[1].get("messages")
         tool_msg = [m for m in messages if m.get("role") == "tool"][0]
-        assert len(tool_msg["content"]) <= MilestoneEngine.TOOL_RESULT_MAX_CHARS + len(
-            "\n[truncated]"
-        )
+        assert len(
+            tool_msg["content"]
+        ) <= StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS + len("\n[truncated]")
         assert tool_msg["content"].endswith("[truncated]")
 
     async def test_tool_execution_error_returns_error_string(self):
@@ -395,7 +404,7 @@ class TestToolAugmentedGenerate:
         ]
 
         # Act
-        result = await engine._tool_augmented_generate(
+        result = await engine.generator._tool_augmented_generate(
             prompt="Search",
             schema_model=SampleResponse,
             investigation_tools=investigation_tools,
@@ -430,7 +439,7 @@ class TestToolAugmentedGenerate:
         ]
 
         # Act
-        result = await engine._tool_augmented_generate(
+        result = await engine.generator._tool_augmented_generate(
             prompt="Search",
             schema_model=SampleResponse,
             investigation_tools=investigation_tools,
@@ -462,7 +471,7 @@ class TestToolAugmentedGenerate:
 
         # Act & Assert
         with pytest.raises(ToolCallingUnsupportedError):
-            await engine._tool_augmented_generate(
+            await engine.generator._tool_augmented_generate(
                 prompt="Search",
                 schema_model=SampleResponse,
                 investigation_tools=investigation_tools,
@@ -499,7 +508,7 @@ class TestToolAugmentedGenerate:
         ]
 
         # Act
-        result = await engine._tool_augmented_generate(
+        result = await engine.generator._tool_augmented_generate(
             prompt="Search",
             schema_model=SampleResponse,
             investigation_tools=investigation_tools,
@@ -528,7 +537,7 @@ class TestToolAugmentedGenerate:
             {"type": "function", "function": {"name": "search_file", "parameters": {}}},
         ]
 
-        await engine._tool_augmented_generate(
+        await engine.generator._tool_augmented_generate(
             prompt="Search",
             schema_model=SampleResponse,
             investigation_tools=investigation_tools,
@@ -579,7 +588,7 @@ class TestToolAugmentedGenerate:
         # propagated. The caller's catch handler will then run the
         # non-tool fallback path.
         with pytest.raises(ToolCallingUnsupportedError):
-            await engine._tool_augmented_generate(
+            await engine.generator._tool_augmented_generate(
                 prompt="Search",
                 schema_model=SampleResponse,
                 investigation_tools=investigation_tools,
@@ -623,7 +632,7 @@ class TestToolAugmentedGenerate:
         ]
 
         with pytest.raises(ToolCallingUnsupportedError):
-            await engine._tool_augmented_generate(
+            await engine.generator._tool_augmented_generate(
                 prompt="Search",
                 schema_model=SampleResponse,
                 investigation_tools=investigation_tools,
@@ -653,14 +662,14 @@ class TestGenerateStructuredOutputRouting:
 
         # Patch _tool_augmented_generate to detect if it's called
         tool_augmented_called = False
-        original_tag = engine._tool_augmented_generate
+        original_tag = engine.generator._tool_augmented_generate
 
         async def track_tool_augmented(*args, **kwargs):
             nonlocal tool_augmented_called
             tool_augmented_called = True
             return await original_tag(*args, **kwargs)
 
-        engine._tool_augmented_generate = track_tool_augmented
+        engine.generator._tool_augmented_generate = track_tool_augmented
 
         # Also patch the single-shot LLM call path to return valid data
         from faultmaven.infrastructure.llm.structured_output_capability import (
@@ -703,7 +712,7 @@ class TestGenerateStructuredOutputRouting:
         engine.deps.llm_provider.generate = AsyncMock(return_value=schema_response)
 
         # Act - no investigation_tools or tool_context
-        result = await engine._generate_structured_output(
+        result = await engine.generator.generate_structured_output(
             prompt="Test prompt",
             schema_model=SampleResponse,
         )
@@ -734,7 +743,7 @@ class TestGenerateStructuredOutputRouting:
         tool_context = MagicMock()
 
         # Act
-        result = await engine._generate_structured_output(
+        result = await engine.generator.generate_structured_output(
             prompt="Test prompt",
             schema_model=SampleResponse,
             investigation_tools=investigation_tools,
@@ -798,7 +807,7 @@ class TestGenerateStructuredOutputRouting:
         )
 
         engine = _make_engine(mock_provider=mock_provider)
-        engine._tool_augmented_generate = AsyncMock(
+        engine.generator._tool_augmented_generate = AsyncMock(
             side_effect=ToolCallingUnsupportedError(
                 message="provider ignored tool_choice=required",
                 provider="test",
@@ -812,7 +821,7 @@ class TestGenerateStructuredOutputRouting:
         tool_context = MagicMock()
 
         # Act
-        result = await engine._generate_structured_output(
+        result = await engine.generator.generate_structured_output(
             prompt="Test prompt",
             schema_model=SampleResponse,
             investigation_tools=investigation_tools,
@@ -823,7 +832,7 @@ class TestGenerateStructuredOutputRouting:
         # valid response from the non-tool single-shot route.
         assert isinstance(result, SampleResponse)
         assert result.agent_response == "fell back ok"
-        engine._tool_augmented_generate.assert_awaited_once()
+        engine.generator._tool_augmented_generate.assert_awaited_once()
         mock_provider.generate.assert_awaited()
 
 
@@ -853,7 +862,7 @@ class TestBuildDaToolSchemas:
         registry.get_all_tools.return_value = [mock_tool]
 
         engine = _make_engine(mock_registry=registry)
-        result = engine._build_da_tool_schemas()
+        result = engine.generator.build_da_tool_schemas()
 
         assert len(result) == 1
         assert result[0]["type"] == "function"
@@ -863,7 +872,7 @@ class TestBuildDaToolSchemas:
         """Without investigation_tools, returns empty list."""
         engine = _make_engine()
         engine.deps.investigation_tools = None
-        result = engine._build_da_tool_schemas()
+        result = engine.generator.build_da_tool_schemas()
         assert result == []
 
 
@@ -883,7 +892,9 @@ class TestBuildToolContext:
         mock_case.case_id = "case_001"
         mock_case.enterprise_id = "ent_123"
 
-        result = await engine._build_tool_context(mock_case, user_id="user_abc")
+        result = await engine.generator.build_tool_context(
+            mock_case, user_id="user_abc"
+        )
 
         assert result.session_id == "case_001"
         assert result.case_id == "case_001"
@@ -899,7 +910,7 @@ class TestBuildToolContext:
         mock_case.case_id = "case_002"
         mock_case.enterprise_id = "ent_456"
 
-        result = await engine._build_tool_context(mock_case, user_id=None)
+        result = await engine.generator.build_tool_context(mock_case, user_id=None)
 
         assert result.user_id == "system"
 
@@ -926,7 +937,7 @@ class TestBuildAssistantMessage:
             ],
         )
 
-        result = MilestoneEngine._build_assistant_message(response)
+        result = _build_assistant_message(response)
 
         assert result["role"] == "assistant"
         assert result["content"] == "Let me search."
@@ -946,7 +957,7 @@ class TestBuildAssistantMessage:
             tool_calls=None,
         )
 
-        result = MilestoneEngine._build_assistant_message(response)
+        result = _build_assistant_message(response)
 
         assert result["role"] == "assistant"
         assert result["content"] == "Just text"
@@ -970,7 +981,7 @@ class TestBuildAssistantMessage:
             ],
         )
 
-        result = MilestoneEngine._build_assistant_message(response)
+        result = _build_assistant_message(response)
 
         assert result["content"] == ""
 
@@ -982,31 +993,31 @@ class TestFormatToolResult:
     def test_success_with_string_data(self):
         """Success result with string data returns data directly."""
         result = ToolResult(success=True, data="Found 3 errors")
-        formatted = MilestoneEngine._format_tool_result(result)
+        formatted = StructuredOutputGenerator._format_tool_result(result)
         assert formatted == "Found 3 errors"
 
     def test_success_with_dict_data(self):
         """Success result with dict data returns JSON string."""
         result = ToolResult(success=True, data={"matches": 3, "file": "syslog"})
-        formatted = MilestoneEngine._format_tool_result(result)
+        formatted = StructuredOutputGenerator._format_tool_result(result)
         assert json.loads(formatted) == {"matches": 3, "file": "syslog"}
 
     def test_success_with_none_data(self):
         """Success result with None data returns default message."""
         result = ToolResult(success=True, data=None)
-        formatted = MilestoneEngine._format_tool_result(result)
+        formatted = StructuredOutputGenerator._format_tool_result(result)
         assert formatted == "Success (no data returned)"
 
     def test_error_result_formatted_with_prefix(self):
         """Error result formatted with 'Error: ' prefix."""
         result = ToolResult(success=False, data=None, error="File not found")
-        formatted = MilestoneEngine._format_tool_result(result)
+        formatted = StructuredOutputGenerator._format_tool_result(result)
         assert formatted == "Error: File not found"
 
     def test_error_result_no_error_message(self):
         """Error result without error message uses default."""
         result = ToolResult(success=False, data=None, error=None)
-        formatted = MilestoneEngine._format_tool_result(result)
+        formatted = StructuredOutputGenerator._format_tool_result(result)
         assert formatted == "Error: Unknown error"
 
 
@@ -1021,7 +1032,7 @@ class TestParseNestedJson:
             "plain": "not json",
         }
 
-        result = MilestoneEngine._parse_nested_json(obj)
+        result = _parse_nested_json(obj)
 
         assert result["outer"] == {"inner_key": "inner_value"}
         assert result["plain"] == "not json"
@@ -1032,7 +1043,7 @@ class TestParseNestedJson:
             "level1": '{"level2": "{\\"level3\\": \\"deep\\"}"}',
         }
 
-        result = MilestoneEngine._parse_nested_json(obj)
+        result = _parse_nested_json(obj)
 
         assert result["level1"]["level2"] == {"level3": "deep"}
 
@@ -1040,7 +1051,7 @@ class TestParseNestedJson:
         """JSON strings in lists are parsed."""
         obj = ['{"key": "value"}', "plain text", 42]
 
-        result = MilestoneEngine._parse_nested_json(obj)
+        result = _parse_nested_json(obj)
 
         assert result[0] == {"key": "value"}
         assert result[1] == "plain text"
@@ -1049,13 +1060,13 @@ class TestParseNestedJson:
     def test_non_json_string_preserved(self):
         """Non-JSON strings are left as-is."""
         obj = {"key": "just a normal string"}
-        result = MilestoneEngine._parse_nested_json(obj)
+        result = _parse_nested_json(obj)
         assert result["key"] == "just a normal string"
 
     def test_non_string_types_preserved(self):
         """Ints, floats, bools, None are preserved."""
         obj = {"int": 42, "float": 3.14, "bool": True, "none": None}
-        result = MilestoneEngine._parse_nested_json(obj)
+        result = _parse_nested_json(obj)
         assert result == obj
 
 
@@ -1071,7 +1082,7 @@ class TestFixEnumViolations:
             },
         }
         obj = {"status": "active"}
-        result = MilestoneEngine._fix_enum_violations(obj, schema)
+        result = _fix_enum_violations(obj, schema)
         assert result["status"] == "active"
 
     def test_invalid_enum_corrected_to_close_match(self):
@@ -1082,7 +1093,7 @@ class TestFixEnumViolations:
             },
         }
         obj = {"status": "actve"}  # typo
-        result = MilestoneEngine._fix_enum_violations(obj, schema)
+        result = _fix_enum_violations(obj, schema)
         assert result["status"] == "active"
 
     def test_no_close_match_uses_fallback(self):
@@ -1093,7 +1104,7 @@ class TestFixEnumViolations:
             },
         }
         obj = {"status": "completely_wrong_value_xyz"}
-        result = MilestoneEngine._fix_enum_violations(obj, schema)
+        result = _fix_enum_violations(obj, schema)
         assert result["status"] == "active"  # first enum value
 
     def test_non_enum_fields_preserved(self):
@@ -1105,7 +1116,7 @@ class TestFixEnumViolations:
             },
         }
         obj = {"name": "test", "count": 42}
-        result = MilestoneEngine._fix_enum_violations(obj, schema)
+        result = _fix_enum_violations(obj, schema)
         assert result == {"name": "test", "count": 42}
 
     def test_unknown_fields_preserved(self):
@@ -1116,7 +1127,7 @@ class TestFixEnumViolations:
             },
         }
         obj = {"known": "value", "unknown_field": "extra"}
-        result = MilestoneEngine._fix_enum_violations(obj, schema)
+        result = _fix_enum_violations(obj, schema)
         assert result["unknown_field"] == "extra"
 
     def test_nested_object_enums_fixed(self):
@@ -1134,7 +1145,7 @@ class TestFixEnumViolations:
             },
         }
         obj = {"nested": {"level": "hi"}}  # should match "high"
-        result = MilestoneEngine._fix_enum_violations(obj, schema)
+        result = _fix_enum_violations(obj, schema)
         assert result["nested"]["level"] == "high"
 
     def test_list_items_enums_fixed(self):
@@ -1154,7 +1165,7 @@ class TestFixEnumViolations:
             },
         }
         obj = {"items": [{"priority": "lo"}, {"priority": "medium"}]}
-        result = MilestoneEngine._fix_enum_violations(obj, schema)
+        result = _fix_enum_violations(obj, schema)
         assert result["items"][0]["priority"] == "low"
         assert result["items"][1]["priority"] == "medium"
 
@@ -1169,13 +1180,13 @@ class TestToolLoopConstants:
     """Tests for tool loop constants."""
 
     def test_max_tool_iterations_is_4(self):
-        assert MilestoneEngine.MAX_TOOL_ITERATIONS == 4
+        assert StructuredOutputGenerator.MAX_TOOL_ITERATIONS == 4
 
     def test_tool_result_max_chars_is_8000(self):
-        assert MilestoneEngine.TOOL_RESULT_MAX_CHARS == 8000
+        assert StructuredOutputGenerator.TOOL_RESULT_MAX_CHARS == 8000
 
     def test_max_deep_analysis_is_1(self):
-        assert MilestoneEngine.MAX_DEEP_ANALYSIS == 1
+        assert StructuredOutputGenerator.MAX_DEEP_ANALYSIS == 1
 
 
 # =========================================================================
@@ -1217,7 +1228,7 @@ class TestToolLoopSpendBound:
         obs = _shipped_default(PromptBudgetSettings, "tool_observation_max_tokens")
         ceiling = _shipped_default(PromptBudgetSettings, "turn_token_ceiling")
         assert (target, obs, ceiling) == (32_000, 16_000, 150_000)
-        assert MilestoneEngine.MAX_TOOL_ITERATIONS == 4
+        assert StructuredOutputGenerator.MAX_TOOL_ITERATIONS == 4
 
     @pytest.mark.parametrize(
         "window, reserve, hard_at_8k, hard_at_16k",
@@ -1255,7 +1266,7 @@ class TestToolLoopSpendBound:
                 return_value=fake_settings,
             ),
         ):
-            caps = engine._resolve_tool_loop_budget("openai")
+            caps = engine.generator._resolve_tool_loop_budget("openai")
         assert caps.soft == 32_000 + 17_000
         assert caps.window == window
         assert (caps.hard(8_000), caps.hard(16_000)) == (hard_at_8k, hard_at_16k)
@@ -1302,7 +1313,7 @@ class TestToolLoopSpendBound:
 
         token = active_token_tracker.set(tracker)
         try:
-            await engine._tool_augmented_generate(
+            await engine.generator._tool_augmented_generate(
                 prompt="Investigate",
                 schema_model=SampleResponse,
                 investigation_tools=[
@@ -1326,7 +1337,7 @@ class TestToolLoopSpendBound:
         """The first n-1 calls meter EXACTLY the ceiling: not over it, so all
         tool rounds run. The n-th call crosses it — and the ceiling does fire
         there — but the iteration it would force schema-only is already final."""
-        n = MilestoneEngine.MAX_TOOL_ITERATIONS
+        n = StructuredOutputGenerator.MAX_TOOL_ITERATIONS
         early = self._split(_TEST_CEILING, n - 1)
         buckets = [{"input_tokens": t} for t in early] + [
             {"input_tokens": _TEST_CEILING}
@@ -1344,7 +1355,7 @@ class TestToolLoopSpendBound:
         """One token over across the first n-1 calls and the ceiling takes the
         last tool round away. This is what makes the case above a measurement
         rather than a no-op."""
-        n = MilestoneEngine.MAX_TOOL_ITERATIONS
+        n = StructuredOutputGenerator.MAX_TOOL_ITERATIONS
         early = self._split(_TEST_CEILING + 1, n - 1)
         buckets = [{"input_tokens": t} for t in early] + [{"input_tokens": 1}]
 
@@ -1358,7 +1369,7 @@ class TestToolLoopSpendBound:
         """Cache reads count at 0.25. The early calls are raw-over (by 4x) but
         cost-weighted exactly at the ceiling, so no round is cut — a ceiling
         compared on ``total_tokens`` would cut one."""
-        n = MilestoneEngine.MAX_TOOL_ITERATIONS
+        n = StructuredOutputGenerator.MAX_TOOL_ITERATIONS
         early = self._split(_TEST_CEILING, n - 1)
         buckets = [{"cache_read_tokens": 4 * t} for t in early] + [
             {"input_tokens": _TEST_CEILING}
@@ -1665,7 +1676,7 @@ class TestToolLoopBoundSplitsSoftAndHardCaps:
             da_provider=provider if da else None,
             da_model=da_model,
         )
-        real_bound = engine._bound_tool_loop_messages
+        real_bound = engine.generator._bound_tool_loop_messages
         decisions: list = []
 
         def spy(messages, *args, **kwargs):
@@ -1675,12 +1686,12 @@ class TestToolLoopBoundSplitsSoftAndHardCaps:
             decisions.append((list(messages), list(out)))
             return out
 
-        engine._bound_tool_loop_messages = spy
+        engine.generator._bound_tool_loop_messages = spy
 
-        await engine._tool_augmented_generate(
+        await engine.generator._tool_augmented_generate(
             prompt="B" * (4 * 32_000),
             schema_model=InvestigationResponse_Diagnosis,
-            investigation_tools=engine._build_da_tool_schemas(),
+            investigation_tools=engine.generator.build_da_tool_schemas(),
             tool_context=MagicMock(),
         )
 
@@ -1689,7 +1700,11 @@ class TestToolLoopBoundSplitsSoftAndHardCaps:
         if resolved.prompt_budget is not None:
             main_budget = min(main_budget, resolved.prompt_budget)
         assert main_budget == 48_000
-        assert len(decisions) == len(calls) == MilestoneEngine.MAX_TOOL_ITERATIONS + 1
+        assert (
+            len(decisions)
+            == len(calls)
+            == StructuredOutputGenerator.MAX_TOOL_ITERATIONS + 1
+        )
         est_model = da_model
         for (history, sent), call in zip(decisions, calls):
             expected = _main_bound(history, main_budget, provider_name, est_model)
@@ -1727,16 +1742,16 @@ class TestToolLoopBoundSplitsSoftAndHardCaps:
         )
         window = 5_000
         # The soft cap is far away: only the window can bind here.
-        engine._resolve_tool_loop_budget = lambda _name: _caps(10**6, window)
+        engine.generator._resolve_tool_loop_budget = lambda _name: _caps(10**6, window)
 
-        await engine._tool_augmented_generate(
+        await engine.generator._tool_augmented_generate(
             prompt="BASE " + "b" * 400,
             schema_model=SampleResponse,
             investigation_tools=[heavy],
             tool_context=MagicMock(),
         )
 
-        tool_calls = calls[: MilestoneEngine.MAX_TOOL_ITERATIONS]
+        tool_calls = calls[: StructuredOutputGenerator.MAX_TOOL_ITERATIONS]
         assert all(len(c["tools"]) == 2 for c in tool_calls)
         for c in calls:
             assert _sent_tokens(c) <= window
@@ -1760,12 +1775,12 @@ class TestToolLoopBoundSplitsSoftAndHardCaps:
         assert messages_only + _tools_tokens(tools) > cap
 
         assert (
-            engine._bound_tool_loop_messages(
+            engine.generator._bound_tool_loop_messages(
                 msgs, cap, "local", tools=tools, window_tokens=None
             )
             is msgs
         )
-        out = engine._bound_tool_loop_messages(
+        out = engine.generator._bound_tool_loop_messages(
             msgs, 10**6, "local", tools=tools, window_tokens=cap
         )
         assert out is not msgs
@@ -1782,9 +1797,9 @@ class TestToolLoopBoundSplitsSoftAndHardCaps:
             mock_provider=provider, mock_registry=_registry_returning(2_000)
         )
         window = 5_000
-        engine._resolve_tool_loop_budget = lambda _name: _caps(10**6, window)
+        engine.generator._resolve_tool_loop_budget = lambda _name: _caps(10**6, window)
 
-        await engine._tool_augmented_generate(
+        await engine.generator._tool_augmented_generate(
             prompt="BASE " + "b" * 400,
             schema_model=SampleResponse,
             investigation_tools=[heavy],
@@ -1792,7 +1807,7 @@ class TestToolLoopBoundSplitsSoftAndHardCaps:
         )
 
         final = calls[-1]
-        n = MilestoneEngine.MAX_TOOL_ITERATIONS
+        n = StructuredOutputGenerator.MAX_TOOL_ITERATIONS
         assert len(calls) == n + 1
         schema_only = final["tools"]
         all_tools = calls[0]["tools"]
@@ -1821,15 +1836,17 @@ class TestToolLoopBoundSplitsSoftAndHardCaps:
         msgs = [{"role": "system", "content": "S"}, {"role": "user", "content": "B"}]
         # Positive control: stating "no tools, window unknown" is accepted.
         assert (
-            engine._bound_tool_loop_messages(
+            engine.generator._bound_tool_loop_messages(
                 msgs, 100, "local", tools=None, window_tokens=None
             )
             is msgs
         )
         with pytest.raises(TypeError):
-            engine._bound_tool_loop_messages(msgs, 100, "local", window_tokens=None)
+            engine.generator._bound_tool_loop_messages(
+                msgs, 100, "local", window_tokens=None
+            )
         with pytest.raises(TypeError):
-            engine._bound_tool_loop_messages(msgs, 100, "local", tools=None)
+            engine.generator._bound_tool_loop_messages(msgs, 100, "local", tools=None)
 
     async def test_a_request_past_the_window_is_refused_a_soft_overrun_is_not(self):
         """The window is the hard limit: a head that overflows it beside this
@@ -1845,20 +1862,20 @@ class TestToolLoopBoundSplitsSoftAndHardCaps:
         ]
         head = sum(_msg_tokens(m) for m in msgs)
         assert (
-            engine._bound_tool_loop_messages(
+            engine.generator._bound_tool_loop_messages(
                 msgs, head - 100, "local", tools=tools, window_tokens=None
             )
             is msgs
         )
         # Positive control: without the tools the same head fits the window.
         assert (
-            engine._bound_tool_loop_messages(
+            engine.generator._bound_tool_loop_messages(
                 msgs, 10**6, "local", tools=None, window_tokens=head + 100
             )
             is msgs
         )
         with pytest.raises(ToolCallingUnsupportedError, match=_BOUND_REFUSAL):
-            engine._bound_tool_loop_messages(
+            engine.generator._bound_tool_loop_messages(
                 msgs, 10**6, "local", tools=tools, window_tokens=head + 100
             )
 
@@ -1871,7 +1888,7 @@ class TestToolLoopBoundSplitsSoftAndHardCaps:
         engine = _make_engine()
         msgs = _groups_history(3)
         cache: dict = {}
-        out = engine._bound_tool_loop_messages(
+        out = engine.generator._bound_tool_loop_messages(
             msgs, 1_000, "local", cache, tools=None, window_tokens=None
         )
         # Positive control: an elision happened, so a marker was counted.
@@ -1948,7 +1965,7 @@ class TestToolLoopBaseFitsTheReceivingModel:
 
     async def test_a_smaller_da_window_gets_a_head_that_fits(self, monkeypatch):
         engine, provider, calls = _da_engine(20_000, 2_000, monkeypatch)
-        caps = engine._resolve_tool_loop_budget(_DA_PROVIDER)
+        caps = engine.generator._resolve_tool_loop_budget(_DA_PROVIDER)
         # The window less the first attempt's 8,000-token completion.
         assert caps.hard(8_000) == 12_000 < caps.soft
         budget = caps.hard(8_000)
@@ -1959,10 +1976,10 @@ class TestToolLoopBaseFitsTheReceivingModel:
             seen.append((target_tokens, provider_name, model_name))
             return _sized_text("RESIZED", target_tokens - 200)
 
-        await engine._tool_augmented_generate(
+        await engine.generator._tool_augmented_generate(
             prompt=base,
             schema_model=SampleResponse,
-            investigation_tools=engine._build_da_tool_schemas(),
+            investigation_tools=engine.generator.build_da_tool_schemas(),
             tool_context=MagicMock(),
             base_prompt_builder=builder,
         )
@@ -1988,10 +2005,10 @@ class TestToolLoopBaseFitsTheReceivingModel:
         engine, provider, calls = _da_engine(20_000, 2_000, monkeypatch)
         builder = MagicMock()
 
-        await engine._tool_augmented_generate(
+        await engine.generator._tool_augmented_generate(
             prompt="BASE small",
             schema_model=SampleResponse,
-            investigation_tools=engine._build_da_tool_schemas(),
+            investigation_tools=engine.generator.build_da_tool_schemas(),
             tool_context=MagicMock(),
             base_prompt_builder=builder,
         )
@@ -2013,10 +2030,10 @@ class TestToolLoopBaseFitsTheReceivingModel:
 
         builder = {"none": None, "still_too_big": too_big, "raises": broken}[rebuild]
         with pytest.raises(ToolCallingUnsupportedError, match=_FIT_REFUSAL):
-            await engine._tool_augmented_generate(
+            await engine.generator._tool_augmented_generate(
                 prompt=_chat_sized_base(20_000),
                 schema_model=SampleResponse,
-                investigation_tools=engine._build_da_tool_schemas(),
+                investigation_tools=engine.generator.build_da_tool_schemas(),
                 tool_context=MagicMock(),
                 base_prompt_builder=builder,
             )
@@ -2040,15 +2057,15 @@ class TestToolLoopBaseFitsTheReceivingModel:
         def exact(*, target_tokens, provider_name, model_name):
             return "R" * (4 * target_tokens)  # exactly target_tokens tokens
 
-        await engine._tool_augmented_generate(
+        await engine.generator._tool_augmented_generate(
             prompt="B" * 4 * 20_000,
             schema_model=SampleResponse,
-            investigation_tools=engine._build_da_tool_schemas(),
+            investigation_tools=engine.generator.build_da_tool_schemas(),
             tool_context=MagicMock(),
             base_prompt_builder=exact,
         )
 
-        budget = engine._resolve_tool_loop_budget("local").hard(8_000)
+        budget = engine.generator._resolve_tool_loop_budget("local").hard(8_000)
         assert len(calls) == 3
         # Positive control: the room was filled, so observations were elided
         # and the marker had to fit in what the fit reserved for it.
@@ -2072,10 +2089,10 @@ class TestToolLoopBaseFitsTheReceivingModel:
             seen.append(target_tokens)
             return _sized_text("RESIZED", target_tokens - 200)
 
-        result = await engine._generate_structured_output(
+        result = await engine.generator.generate_structured_output(
             _chat_sized_base(20_000),
             SampleResponse,
-            investigation_tools=engine._build_da_tool_schemas(),
+            investigation_tools=engine.generator.build_da_tool_schemas(),
             tool_context=MagicMock(),
             base_prompt_builder=builder,
         )
@@ -2088,7 +2105,7 @@ class TestToolLoopBaseFitsTheReceivingModel:
 
     @staticmethod
     def _spy_on_the_bound(engine) -> list:
-        real_bound = engine._bound_tool_loop_messages
+        real_bound = engine.generator._bound_tool_loop_messages
         decisions: list = []
 
         def spy(messages, *args, **kwargs):
@@ -2096,7 +2113,7 @@ class TestToolLoopBaseFitsTheReceivingModel:
             decisions.append((list(messages), list(out)))
             return out
 
-        engine._bound_tool_loop_messages = spy
+        engine.generator._bound_tool_loop_messages = spy
         return decisions
 
     async def test_an_unknown_window_sends_the_base_as_main_did(self, monkeypatch):
@@ -2117,21 +2134,19 @@ class TestToolLoopBaseFitsTheReceivingModel:
             mock_provider=provider, mock_registry=_registry_returning(2_000)
         )
         decisions = self._spy_on_the_bound(engine)
-        caps = engine._resolve_tool_loop_budget("LLMRouter")
+        caps = engine.generator._resolve_tool_loop_budget("LLMRouter")
         assert caps.window is None and caps.soft == 33_000
         system_tokens = _est(
-            MilestoneEngine._build_da_system_instruction(
-                ["search_file"], "SampleResponse"
-            ),
+            _build_da_system_instruction(["search_file"], "SampleResponse"),
             "LLMRouter",
         )
         base = "B" * (4 * (caps.soft - system_tokens + 500))
         builder = MagicMock()
 
-        await engine._tool_augmented_generate(
+        await engine.generator._tool_augmented_generate(
             prompt=base,
             schema_model=SampleResponse,
-            investigation_tools=engine._build_da_tool_schemas(),
+            investigation_tools=engine.generator.build_da_tool_schemas(),
             tool_context=MagicMock(),
             base_prompt_builder=builder,
         )
@@ -2160,15 +2175,15 @@ class TestToolLoopBaseFitsTheReceivingModel:
             da_model="gpt-4o",
         )
         decisions = self._spy_on_the_bound(engine)
-        caps = engine._resolve_tool_loop_budget("openai")
+        caps = engine.generator._resolve_tool_loop_budget("openai")
         assert caps.window == 128_000
         base = _chat_sized_base(caps.soft + 5_000)
         builder = MagicMock()
 
-        await engine._tool_augmented_generate(
+        await engine.generator._tool_augmented_generate(
             prompt=base,
             schema_model=SampleResponse,
-            investigation_tools=engine._build_da_tool_schemas(),
+            investigation_tools=engine.generator.build_da_tool_schemas(),
             tool_context=MagicMock(),
             base_prompt_builder=builder,
         )
@@ -2198,7 +2213,7 @@ class TestToolLoopBaseFitsTheReceivingModel:
             provider_name="local",
             result_chars=6_000,
         )
-        caps = engine._resolve_tool_loop_budget("local")
+        caps = engine.generator._resolve_tool_loop_budget("local")
         assert (caps.window, caps.response_reserve) == (window, 6_000)
         seen: list = []
 
@@ -2206,10 +2221,10 @@ class TestToolLoopBaseFitsTheReceivingModel:
             seen.append(target_tokens)
             return "R" * (4 * target_tokens)  # len // 4: exactly the target
 
-        await engine._tool_augmented_generate(
+        await engine.generator._tool_augmented_generate(
             prompt="B" * (4 * 32_000),  # the chat path's full-size base
             schema_model=SampleResponse,
-            investigation_tools=engine._build_da_tool_schemas(),
+            investigation_tools=engine.generator.build_da_tool_schemas(),
             tool_context=MagicMock(),
             base_prompt_builder=exact,
         )
@@ -2284,10 +2299,10 @@ class TestToolLoopBaseFitsTheReceivingModel:
         window = 24_000
         engine, calls = self._truncation_engine(monkeypatch, window, result_after=4)
 
-        await engine._tool_augmented_generate(
+        await engine.generator._tool_augmented_generate(
             prompt="BASE small",
             schema_model=SampleResponse,
-            investigation_tools=engine._build_da_tool_schemas(),
+            investigation_tools=engine.generator.build_da_tool_schemas(),
             tool_context=MagicMock(),
         )
 
@@ -2311,13 +2326,11 @@ class TestToolLoopBaseFitsTheReceivingModel:
         window = 24_000
         engine, calls = self._truncation_engine(monkeypatch, window, result_after=0)
         # A base filling the room the window leaves beside an 8,000 completion.
-        caps = engine._resolve_tool_loop_budget("local")
-        tools = engine._build_da_tool_schemas()
+        caps = engine.generator._resolve_tool_loop_budget("local")
+        tools = engine.generator.build_da_tool_schemas()
         fixed = (
             _est(
-                MilestoneEngine._build_da_system_instruction(
-                    ["search_file"], "SampleResponse"
-                ),
+                _build_da_system_instruction(["search_file"], "SampleResponse"),
                 "local",
             )
             + _est(_MARKER_TEXT, "local")
@@ -2326,7 +2339,7 @@ class TestToolLoopBaseFitsTheReceivingModel:
         base = "B" * (4 * (caps.hard(8_000) - fixed))
 
         with pytest.raises(ToolCallingUnsupportedError):
-            await engine._tool_augmented_generate(
+            await engine.generator._tool_augmented_generate(
                 prompt=base,
                 schema_model=SampleResponse,
                 investigation_tools=tools,
@@ -2342,15 +2355,15 @@ class TestToolLoopBaseFitsTheReceivingModel:
         its count must go with it, or a later message dict allocated at its
         address reads a ~20,000-token count."""
         engine, _provider, _calls = _da_engine(20_000, 2_000, monkeypatch)
-        caps = engine._resolve_tool_loop_budget(_DA_PROVIDER)
+        caps = engine.generator._resolve_tool_loop_budget(_DA_PROVIDER)
         head = [
             {"role": "system", "content": "SYS"},
             {"role": "user", "content": _chat_sized_base(20_000)},
         ]
         cache: dict = {}
-        out = await engine._fit_tool_loop_base(
+        out = await engine.generator._fit_tool_loop_base(
             head,
-            engine._build_da_tool_schemas(),
+            engine.generator.build_da_tool_schemas(),
             caps,
             _DA_PROVIDER,
             8_000,
@@ -2376,10 +2389,10 @@ class TestToolLoopBaseFitsTheReceivingModel:
         def builder(*, target_tokens, provider_name, model_name):
             return "RESIZED alice@example.com " + _sized_text("", target_tokens - 300)
 
-        await engine._tool_augmented_generate(
+        await engine.generator._tool_augmented_generate(
             prompt=_chat_sized_base(20_000),
             schema_model=SampleResponse,
-            investigation_tools=engine._build_da_tool_schemas(),
+            investigation_tools=engine.generator.build_da_tool_schemas(),
             tool_context=MagicMock(),
             redaction_ctx=redaction_ctx,
             base_prompt_builder=builder,
@@ -2409,15 +2422,15 @@ class TestToolLoopBaseFitsTheReceivingModel:
         # A 26K per-call budget: under the chat-sized head, over the ~22K the
         # investigation template needs before it falls to the fallback.
         engine, provider, calls = _da_engine(34_000, 4_000, monkeypatch)
-        budget = engine._resolve_tool_loop_budget(_DA_PROVIDER).hard(8_000)
+        budget = engine.generator._resolve_tool_loop_budget(_DA_PROVIDER).hard(8_000)
 
         def builder(**kw):
             return get_prompt_for_case(case, "why slow?", **kw)
 
-        await engine._tool_augmented_generate(
+        await engine.generator._tool_augmented_generate(
             prompt=chat_base,
             schema_model=SampleResponse,
-            investigation_tools=engine._build_da_tool_schemas(),
+            investigation_tools=engine.generator.build_da_tool_schemas(),
             tool_context=MagicMock(),
             base_prompt_builder=builder,
         )
@@ -2548,8 +2561,8 @@ class TestBothCallSitesWireTheBaseBuilder:
             intent_data={"query_mode": "directed_analysis"},
         )
 
-        kwargs = engine._generate_structured_output.call_args.kwargs
-        turn_prompt = engine._generate_structured_output.call_args.args[0]
+        kwargs = engine.generator.generate_structured_output.call_args.kwargs
+        turn_prompt = engine.generator.generate_structured_output.call_args.args[0]
         assert kwargs.get("investigation_tools") is not None
         sized = self._assert_builder_sizes_for_the_receiver(
             kwargs["base_prompt_builder"]
@@ -2572,19 +2585,21 @@ class TestBothCallSitesWireTheBaseBuilder:
         engine = _make_engine(
             mock_provider=SimpleNamespace(), mock_registry=_make_mock_registry()
         )
-        engine._generate_structured_output = AsyncMock(
+        engine.generator.generate_structured_output = AsyncMock(
             return_value=TerminalResponse(agent_response="ok", state_updates={})
         )
-        engine._remaining_regens_for = AsyncMock(return_value=0)
-        engine._case_has_runbook_draft = AsyncMock(return_value=False)
+        # _remaining_regens_for is now a plain function (no engine binding to
+        # stub); report_service stays unset, so it short-circuits to its
+        # documented default without touching the repository.
+        engine.runbooks.case_has_runbook_draft = AsyncMock(return_value=False)
         case = _dense_case()
         # Past the RESOLVED validator (resolved_at etc.), as the INV-12 tests
         # do: only the state the Q&A prompt renders from matters here.
         object.__setattr__(case, "state", CaseState.RESOLVED)
 
-        await engine._process_terminal_qa(case, "what fixed it?", metadata={})
+        await engine.terminal._process_terminal_qa(case, "what fixed it?", metadata={})
 
-        kwargs = engine._generate_structured_output.call_args.kwargs
+        kwargs = engine.generator.generate_structured_output.call_args.kwargs
         assert kwargs.get("investigation_tools") is not None
         sized = self._assert_builder_sizes_for_the_receiver(
             kwargs["base_prompt_builder"]
@@ -2620,10 +2635,10 @@ class TestDaProviderRouting:
             da_provider=da_prov,
         )
 
-        tool_defs = engine._build_da_tool_schemas()
+        tool_defs = engine.generator.build_da_tool_schemas()
         tool_ctx = MagicMock()
 
-        await engine._tool_augmented_generate(
+        await engine.generator._tool_augmented_generate(
             prompt="test",
             schema_model=SampleResponse,
             investigation_tools=tool_defs,
@@ -2651,10 +2666,10 @@ class TestDaProviderRouting:
             da_provider=None,
         )
 
-        tool_defs = engine._build_da_tool_schemas()
+        tool_defs = engine.generator.build_da_tool_schemas()
         tool_ctx = MagicMock()
 
-        await engine._tool_augmented_generate(
+        await engine.generator._tool_augmented_generate(
             prompt="test",
             schema_model=SampleResponse,
             investigation_tools=tool_defs,
@@ -2689,7 +2704,7 @@ class TestProactiveVectorizationGate:
             mock_registry=_make_mock_registry(),
         )
         # Spy on the proactive entrypoint — return empty dict like the real one
-        engine._start_proactive_vectorization = AsyncMock(return_value={})
+        engine.vectorizer.start_proactive_vectorization = AsyncMock(return_value={})
 
         case = MagicMock()
         case.evidence = []
@@ -2698,7 +2713,7 @@ class TestProactiveVectorizationGate:
     async def test_da_mode_triggers_proactive_vectorization(self):
         engine, case = await self._setup_engine_with_case()
 
-        await engine._tool_augmented_generate(
+        await engine.generator._tool_augmented_generate(
             prompt="test",
             schema_model=SampleResponse,
             investigation_tools=[],
@@ -2707,12 +2722,12 @@ class TestProactiveVectorizationGate:
             force_tool_use=True,
         )
 
-        engine._start_proactive_vectorization.assert_awaited_once()
+        engine.vectorizer.start_proactive_vectorization.assert_awaited_once()
 
     async def test_non_da_mode_skips_proactive_vectorization(self):
         engine, case = await self._setup_engine_with_case()
 
-        await engine._tool_augmented_generate(
+        await engine.generator._tool_augmented_generate(
             prompt="test",
             schema_model=SampleResponse,
             investigation_tools=[],
@@ -2721,7 +2736,7 @@ class TestProactiveVectorizationGate:
             force_tool_use=False,
         )
 
-        engine._start_proactive_vectorization.assert_not_called()
+        engine.vectorizer.start_proactive_vectorization.assert_not_called()
 
 
 @pytest.mark.unit
@@ -2775,7 +2790,7 @@ class TestVectorizedFlagPersistence:
         engine, repo = await self._make_engine_with_tool(tool_success=True)
         ctx, case, ev = self._make_ctx_with_evidence("ev_abc")
 
-        result = await engine._vectorize_evidence("ev_abc", ctx)
+        result = await engine.vectorizer._vectorize_evidence("ev_abc", ctx)
 
         assert result is True
         assert ev.vectorized is True, (
@@ -2796,7 +2811,7 @@ class TestVectorizedFlagPersistence:
         engine, repo = await self._make_engine_with_tool(tool_success=False)
         ctx, _, ev = self._make_ctx_with_evidence("ev_xyz")
 
-        result = await engine._vectorize_evidence("ev_xyz", ctx)
+        result = await engine.vectorizer._vectorize_evidence("ev_xyz", ctx)
 
         assert result is False
         assert ev.vectorized is False, (
@@ -2829,7 +2844,7 @@ class TestVectorizedFlagPersistence:
         )
         ctx, _, ev = self._make_ctx_with_evidence("ev_empty")
 
-        result = await engine._vectorize_evidence("ev_empty", ctx)
+        result = await engine.vectorizer._vectorize_evidence("ev_empty", ctx)
 
         assert result is False, (
             "an empty index was reported to the caller as a completed one, "
@@ -2860,7 +2875,7 @@ class TestVectorizedFlagPersistence:
         )
         ctx, _, ev = self._make_ctx_with_evidence("ev_x")
 
-        assert await engine._vectorize_evidence("ev_x", ctx) is False
+        assert await engine.vectorizer._vectorize_evidence("ev_x", ctx) is False
         assert ev.vectorized is False
         repo.update_evidence_vectorized.assert_not_called()
 
@@ -2873,7 +2888,7 @@ class TestVectorizedFlagPersistence:
         )
         ctx, _, ev = self._make_ctx_with_evidence("ev_real")
 
-        result = await engine._vectorize_evidence("ev_real", ctx)
+        result = await engine.vectorizer._vectorize_evidence("ev_real", ctx)
 
         assert result is True
         assert ev.vectorized is True
@@ -2901,7 +2916,7 @@ class TestVectorizedFlagPersistence:
 
         engine, _ = await self._make_engine_with_tool(tool_success=True)
         # _vectorize_evidence shouldn't be called at all when the flag is True
-        engine._vectorize_evidence = AsyncMock(return_value=True)
+        engine.vectorizer._vectorize_evidence = AsyncMock(return_value=True)
 
         # Size well above the default min threshold so the size gate
         # isn't what's suppressing the task.
@@ -2917,7 +2932,7 @@ class TestVectorizedFlagPersistence:
         ]
         case.find_uploaded_file = MagicMock(side_effect=lambda fid: files.get(fid))
 
-        tasks = await engine._start_proactive_vectorization(case, MagicMock())
+        tasks = await engine.vectorizer.start_proactive_vectorization(case, MagicMock())
 
         assert (
             "ev_already" not in tasks
@@ -2939,7 +2954,7 @@ class TestInflightVectorizeDedup:
     N's task — the stacking pattern that drove every task past the
     60s wait_for bound on 2026-04-21.
 
-    MilestoneEngine is a DI singleton, so self._inflight_vectorize
+    MilestoneEngine is a DI singleton, so self.vectorizer._inflight_vectorize
     survives across turns and lets turn N+1 reuse turn N's task.
     """
 
@@ -2953,7 +2968,7 @@ class TestInflightVectorizeDedup:
             repository=repo,
             investigation_tools=mock_registry,
         )
-        assert engine._inflight_vectorize == {}
+        assert engine.vectorizer._inflight_vectorize == {}
         return engine
 
     @staticmethod
@@ -2996,11 +3011,15 @@ class TestInflightVectorizeDedup:
             await gate.wait()
             return True
 
-        engine._vectorize_evidence = _never_finishes
+        engine.vectorizer._vectorize_evidence = _never_finishes
 
         case = self._case_with("ev_pending", vectorized=False)
-        tasks_turn_1 = await engine._start_proactive_vectorization(case, MagicMock())
-        tasks_turn_2 = await engine._start_proactive_vectorization(case, MagicMock())
+        tasks_turn_1 = await engine.vectorizer.start_proactive_vectorization(
+            case, MagicMock()
+        )
+        tasks_turn_2 = await engine.vectorizer.start_proactive_vectorization(
+            case, MagicMock()
+        )
 
         try:
             assert "ev_pending" in tasks_turn_1
@@ -3008,7 +3027,7 @@ class TestInflightVectorizeDedup:
             assert (
                 tasks_turn_2["ev_pending"] is tasks_turn_1["ev_pending"]
             ), "Second turn must reuse the first turn's task"
-            assert len(engine._inflight_vectorize) == 1
+            assert len(engine.vectorizer._inflight_vectorize) == 1
         finally:
             gate.set()
             await tasks_turn_1["ev_pending"]
@@ -3019,16 +3038,16 @@ class TestInflightVectorizeDedup:
         import asyncio
 
         engine = self._make_engine()
-        engine._vectorize_evidence = AsyncMock(return_value=True)
+        engine.vectorizer._vectorize_evidence = AsyncMock(return_value=True)
 
         case = self._case_with("ev_x", vectorized=False)
-        tasks = await engine._start_proactive_vectorization(case, MagicMock())
+        tasks = await engine.vectorizer.start_proactive_vectorization(case, MagicMock())
         await tasks["ev_x"]
         # done_callback runs on the event loop; yield so it fires.
         await asyncio.sleep(0)
 
         assert (
-            "ev_x" not in engine._inflight_vectorize
+            "ev_x" not in engine.vectorizer._inflight_vectorize
         ), "Registry must be cleaned up after task settles"
 
 
@@ -3066,7 +3085,7 @@ class TestReactiveVectorizeTimeout:
             await asyncio.sleep(10)
             return True
 
-        engine._vectorize_evidence = _slow
+        engine.vectorizer._vectorize_evidence = _slow
 
         # Force a very small reactive timeout so the test is fast.
         settings = get_settings()
@@ -3097,7 +3116,7 @@ class TestReactiveVectorizeTimeout:
         ctx.case_id = "case_test"
         ctx.case_repository = None
 
-        result_text = await engine._reactive_vectorize(
+        result_text = await engine.vectorizer._reactive_vectorize(
             "ev_slow", ctx, "before", "low_confidence"
         )
 
@@ -3170,7 +3189,7 @@ class TestAdvisoryIsNotEmittedForAnIndexThatWasNeverWritten:
         engine = self._engine({"evidence_id": "ev_1", "indexed": indexed})
         ctx, _ = self._ctx()
 
-        result_text = await engine._reactive_vectorize(
+        result_text = await engine.vectorizer._reactive_vectorize(
             "ev_1", ctx, "before", "low_confidence"
         )
 
@@ -3191,10 +3210,10 @@ class TestAdvisoryIsNotEmittedForAnIndexThatWasNeverWritten:
         engine = self._engine({"evidence_id": "ev_1", "indexed": indexed})
         ctx, case = self._ctx()
 
-        task = asyncio.create_task(engine._vectorize_evidence("ev_1", ctx))
+        task = asyncio.create_task(engine.vectorizer._vectorize_evidence("ev_1", ctx))
         await task
 
-        result_text = await engine._track_da_result(
+        result_text = await engine.vectorizer.track_da_result(
             func_name="search_file",
             evidence_id="ev_1",
             tool_result=ToolResult(success=True, data="{}"),
@@ -3246,7 +3265,7 @@ class TestToolLoopTruncationLadder:
         ]
 
     async def test_a_truncated_call_is_retried_at_a_doubled_cap(self):
-        from faultmaven.core.investigation.milestone_engine.engine import (
+        from faultmaven.core.investigation.milestone_engine.generation import (
             STRUCTURED_OUTPUT_MAX_TOKENS,
         )
         from faultmaven.infrastructure.llm.providers import StopReason
@@ -3263,7 +3282,7 @@ class TestToolLoopTruncationLadder:
             mock_provider=mock_provider, mock_registry=_make_mock_registry()
         )
 
-        result = await engine._tool_augmented_generate(
+        result = await engine.generator._tool_augmented_generate(
             prompt="Investigate",
             schema_model=SampleResponse,
             investigation_tools=self._tools(),
@@ -3287,7 +3306,7 @@ class TestToolLoopTruncationLadder:
             mock_provider=mock_provider, mock_registry=_make_mock_registry()
         )
 
-        await engine._tool_augmented_generate(
+        await engine.generator._tool_augmented_generate(
             prompt="Investigate",
             schema_model=SampleResponse,
             investigation_tools=self._tools(),
@@ -3316,9 +3335,9 @@ class TestToolLoopTruncationLadder:
         )
 
         with patch(
-            "faultmaven.core.investigation.milestone_engine.engine.record_provider_call"
+            "faultmaven.core.investigation.milestone_engine.generation.record_provider_call"
         ) as record:
-            await engine._tool_augmented_generate(
+            await engine.generator._tool_augmented_generate(
                 prompt="Investigate",
                 schema_model=SampleResponse,
                 investigation_tools=self._tools(),

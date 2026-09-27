@@ -27,6 +27,10 @@ import pytest
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.hypothesis_updates import (
+    _apply_hypothesis_evidence_links,
+)
+from faultmaven.core.investigation.milestone_engine.turn_records import _resolve_id_ref
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
@@ -127,25 +131,22 @@ class TestIdRefNormalisation:
         ],
     )
     def test_real_id_survives_brackets_and_whitespace(self, raw):
-        assert _engine()._resolve_id_ref(raw, [], "hyp") == "hyp_abc123abc123"
+        assert _resolve_id_ref(raw, [], "hyp") == "hyp_abc123abc123"
 
     @pytest.mark.parametrize("raw", ["new_index_0", "[new_index_0]", " new_index_0"])
     def test_placeholder_resolves_through_the_same_normalisation(self, raw):
-        assert (
-            _engine()._resolve_id_ref(raw, ["hyp_created0000"], "hyp")
-            == "hyp_created0000"
-        )
+        assert _resolve_id_ref(raw, ["hyp_created0000"], "hyp") == "hyp_created0000"
 
     def test_unresolvable_placeholder_still_returns_a_probeable_value(self):
         """Callers probe ``startswith("new_index_")`` on the return; the
         normalisation must not break that contract."""
-        out = _engine()._resolve_id_ref("[new_index_7]", ["hyp_created0000"], "hyp")
+        out = _resolve_id_ref("[new_index_7]", ["hyp_created0000"], "hyp")
         assert out.startswith("new_index_")
 
     def test_none_and_empty_pass_through(self):
         eng = _engine()
-        assert eng._resolve_id_ref(None, [], "hyp") is None
-        assert eng._resolve_id_ref("", [], "hyp") == ""
+        assert _resolve_id_ref(None, [], "hyp") is None
+        assert _resolve_id_ref("", [], "hyp") == ""
 
     def test_bracketed_refs_link_end_to_end(self):
         """The prompt's exact rendering, echoed back on both refs, lands."""
@@ -154,8 +155,11 @@ class TestIdRefNormalisation:
         ev = _evidence(case)
         metadata: dict = {}
 
-        _engine()._apply_hypothesis_evidence_links(
-            case, [_link(f"[{h.hypothesis_id}]", f"[{ev.evidence_id}]")], metadata
+        _apply_hypothesis_evidence_links(
+            _engine().deps.hypothesis_manager,
+            case,
+            [_link(f"[{h.hypothesis_id}]", f"[{ev.evidence_id}]")],
+            metadata,
         )
 
         assert [link.evidence_id for link in h.evidence_links] == [ev.evidence_id]
@@ -173,8 +177,11 @@ class TestTerminalHypothesisRefusesLinks:
         ev = _evidence(case)
         metadata: dict = {}
 
-        _engine()._apply_hypothesis_evidence_links(
-            case, [_link(h.hypothesis_id, ev.evidence_id)], metadata
+        _apply_hypothesis_evidence_links(
+            _engine().deps.hypothesis_manager,
+            case,
+            [_link(h.hypothesis_id, ev.evidence_id)],
+            metadata,
         )
 
         assert h.evidence_links == []
@@ -196,7 +203,8 @@ class TestTerminalHypothesisRefusesLinks:
         ev = _evidence(case)
         metadata: dict = {}
 
-        _engine()._apply_hypothesis_evidence_links(
+        _apply_hypothesis_evidence_links(
+            _engine().deps.hypothesis_manager,
             case,
             [
                 _link(dead.hypothesis_id, ev.evidence_id),

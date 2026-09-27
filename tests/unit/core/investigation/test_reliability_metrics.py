@@ -20,8 +20,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import BaseModel
 
-from faultmaven.core.investigation.milestone_engine import engine as me
+from faultmaven.core.investigation.milestone_engine import generation
+from faultmaven.core.investigation.milestone_engine import structured_output as me
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.structured_output import (
+    _validate_with_degradation,
+)
 from faultmaven.core.investigation.reliability_metrics import (
     SCHEMA_VALIDATION_OUTCOMES,
     TOOL_CALL_OUTCOMES,
@@ -83,7 +87,7 @@ def _engine(first_response: LLMResponse, tool_result: ToolResult):
 
 
 async def _run(engine):
-    return await engine._tool_augmented_generate(
+    return await engine.generator._tool_augmented_generate(
         prompt="Search",
         schema_model=SampleResponse,
         investigation_tools=SEARCH_FILE_TOOL,
@@ -102,7 +106,7 @@ class TestToolCallAttempts:
             _response_with_calls(_tool_call("search_file", json.dumps({"q": "x"}))),
             ToolResult(success=True, data="found"),
         )
-        with patch.object(me, "tool_call_attempts_total") as attempts:
+        with patch.object(generation, "tool_call_attempts_total") as attempts:
             await _run(engine)
         assert _attempt_labels(attempts) == [{"tool": "search_file", "outcome": "ok"}]
 
@@ -115,7 +119,7 @@ class TestToolCallAttempts:
             ),
             ToolResult(success=False, data=None, error="Tool not found"),
         )
-        with patch.object(me, "tool_call_attempts_total") as attempts:
+        with patch.object(generation, "tool_call_attempts_total") as attempts:
             await _run(engine)
         assert _attempt_labels(attempts) == [
             {"tool": "unknown", "outcome": "unknown_tool"}
@@ -126,7 +130,7 @@ class TestToolCallAttempts:
             _response_with_calls(_tool_call("search_file", '{"q": broken')),
             ToolResult(success=True, data="ran with {} args"),
         )
-        with patch.object(me, "tool_call_attempts_total") as attempts:
+        with patch.object(generation, "tool_call_attempts_total") as attempts:
             await _run(engine)
         assert _attempt_labels(attempts) == [
             {"tool": "search_file", "outcome": "invalid_args"}
@@ -139,7 +143,7 @@ class TestToolCallAttempts:
             _response_with_calls(_tool_call("search_file", json.dumps({"q": "x"}))),
             ToolResult(success=False, data=None, error="evidence store down"),
         )
-        with patch.object(me, "tool_call_attempts_total") as attempts:
+        with patch.object(generation, "tool_call_attempts_total") as attempts:
             await _run(engine)
         assert _attempt_labels(attempts) == [
             {"tool": "search_file", "outcome": "execution_error"}
@@ -158,7 +162,7 @@ class TestToolCallAttempts:
         engine = MilestoneEngine(
             llm_provider=provider, repository=repo, investigation_tools=registry
         )
-        with patch.object(me, "tool_call_attempts_total") as attempts:
+        with patch.object(generation, "tool_call_attempts_total") as attempts:
             await _run(engine)
         attempts.labels.assert_not_called()
 
@@ -190,7 +194,7 @@ class TestSchemaValidationLadder:
         engine = _bare_engine()
         with patch.object(me, "schema_validation_total") as validations:
             try:
-                engine._validate_with_degradation(content_obj, _LadderSchema)
+                _validate_with_degradation(content_obj, _LadderSchema)
             except Exception:
                 pass
         return [c.kwargs for c in validations.labels.call_args_list]
@@ -267,7 +271,7 @@ class TestAttemptSurvivesDispatchFailure:
         engine.deps.investigation_tools.execute_tool = AsyncMock(
             side_effect=RuntimeError("provider socket closed")
         )
-        with patch.object(me, "tool_call_attempts_total") as attempts:
+        with patch.object(generation, "tool_call_attempts_total") as attempts:
             with pytest.raises(RuntimeError):
                 await _run(engine)
         assert _attempt_labels(attempts) == [
@@ -285,7 +289,7 @@ class TestAttemptSurvivesDispatchFailure:
         engine.deps.investigation_tools.execute_tool = AsyncMock(
             side_effect=RuntimeError("boom")
         )
-        with patch.object(me, "tool_call_attempts_total") as attempts:
+        with patch.object(generation, "tool_call_attempts_total") as attempts:
             with pytest.raises(RuntimeError):
                 await _run(engine)
         assert _attempt_labels(attempts) == [
@@ -297,29 +301,39 @@ def test_outcome_vocabularies_match_the_engine_call_sites():
     """The tuples are the label contract, and nothing enforced it: every
     outcome is re-spelled as a literal at its call site, so a typo mints a new
     Prometheus label silently and the tuples drift stale unnoticed. Read the
-    literals out of the engine's AST and require exact agreement in both
-    directions."""
+    literals out of the two homes these call sites moved to (#1707:
+    ``_record_schema_validation`` in ``structured_output.py``,
+    ``_attempt_outcome`` in ``generation.py``'s tool loop) and require exact
+    agreement in both directions."""
     import ast
     import pathlib as _pathlib
 
-    tree = ast.parse(_pathlib.Path(me.__file__).read_text())
+    trees = [
+        ast.parse(_pathlib.Path(me.__file__).read_text()),
+        ast.parse(_pathlib.Path(generation.__file__).read_text()),
+    ]
 
     recorded: set[str] = set()
     attempted: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
-            if name in ("_record", "_record_schema_validation"):
-                for arg in node.args:
-                    for sub in ast.walk(arg):
-                        if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
-                            recorded.add(sub.value)
-        elif isinstance(node, ast.Assign):
-            if any(
-                isinstance(t, ast.Name) and t.id == "_attempt_outcome"
-                for t in node.targets
-            ) and isinstance(node.value, ast.Constant):
-                attempted.add(node.value.value)
+    for tree in trees:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                name = getattr(node.func, "id", None) or getattr(
+                    node.func, "attr", None
+                )
+                if name in ("_record", "_record_schema_validation"):
+                    for arg in node.args:
+                        for sub in ast.walk(arg):
+                            if isinstance(sub, ast.Constant) and isinstance(
+                                sub.value, str
+                            ):
+                                recorded.add(sub.value)
+            elif isinstance(node, ast.Assign):
+                if any(
+                    isinstance(t, ast.Name) and t.id == "_attempt_outcome"
+                    for t in node.targets
+                ) and isinstance(node.value, ast.Constant):
+                    attempted.add(node.value.value)
 
     # Non-empty first: a refactor that renames the recorder or the variable
     # must fail loudly here rather than make this test vacuously true.
@@ -380,7 +394,9 @@ class TestNonToolStructuredPathIsCounted:
     async def test_valid_body_counts_clean(self):
         engine = self._engine_for(json.dumps({"agent_response": "hi"}))
         with patch.object(me, "schema_validation_total") as validations:
-            await engine._generate_structured_output_inner("p", SampleResponse)
+            await engine.generator._generate_structured_output_inner(
+                "p", SampleResponse
+            )
         assert [c.kwargs for c in validations.labels.call_args_list] == [
             {"schema": "SampleResponse", "outcome": "clean"}
         ]
@@ -393,7 +409,9 @@ class TestNonToolStructuredPathIsCounted:
         # own label — instead of failing the turn.
         engine = self._engine_for(json.dumps({"agent_response": 123}))
         with patch.object(me, "schema_validation_total") as validations:
-            parsed = await engine._generate_structured_output_inner("p", SampleResponse)
+            parsed = await engine.generator._generate_structured_output_inner(
+                "p", SampleResponse
+            )
         assert isinstance(parsed, SampleResponse)
         assert [c.kwargs for c in validations.labels.call_args_list] == [
             {"schema": "SampleResponse", "outcome": "response_synthesized"}
@@ -405,7 +423,9 @@ class TestNonToolStructuredPathIsCounted:
         engine = self._engine_for(json.dumps([1, 2, 3]))
         with patch.object(me, "schema_validation_total") as validations:
             with pytest.raises(Exception):
-                await engine._generate_structured_output_inner("p", SampleResponse)
+                await engine.generator._generate_structured_output_inner(
+                    "p", SampleResponse
+                )
         assert [c.kwargs for c in validations.labels.call_args_list] == [
             {"schema": "SampleResponse", "outcome": "failed"}
         ]
