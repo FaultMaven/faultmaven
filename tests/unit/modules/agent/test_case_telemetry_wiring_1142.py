@@ -37,6 +37,9 @@ from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngin
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import IntentType, QueryIntent
+from faultmaven.modules.agent.domain.services.investigation_service.reclassification import (
+    _handle_file_reclassification,
+)
 from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
 )
@@ -315,7 +318,7 @@ class TestTheErrorPathIsARowNotAGap:
         async def explode(*_args, **_kwargs):
             raise RuntimeError("extractor died on the raw bytes")
 
-        monkeypatch.setattr(mod.InvestigationService, "_preprocess_attachment", explode)
+        monkeypatch.setattr(mod, "_preprocess_attachment", explode)
 
         with caplog.at_level(logging.INFO, logger=TELEMETRY_LOGGER_NAME):
             with pytest.raises(Exception):
@@ -473,7 +476,7 @@ class TestPathCoverageIsExhaustive:
             IntentType.CONFIRMATION: InvestigationService._handle_confirmation,
             IntentType.HYPOTHESIS_ACTION: InvestigationService._handle_hypothesis_action,
             IntentType.GREETING: InvestigationService._handle_greeting,
-            IntentType.FILE_RECLASSIFICATION: InvestigationService._handle_file_reclassification,
+            IntentType.FILE_RECLASSIFICATION: _handle_file_reclassification,
         }
         service_routed = {
             intent

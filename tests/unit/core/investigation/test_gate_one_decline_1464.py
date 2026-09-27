@@ -58,6 +58,9 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
 )
 from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.models.interfaces import ILLMProvider
+from faultmaven.modules.agent.domain.services.investigation_service.intent_gates import (
+    _minted_intent_swallows_gate_consent,
+)
 from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
 )
@@ -296,7 +299,7 @@ class TestGateOneCommitsOnConsentOnly:
         """
         case = _inquiry_case_awaiting_gate_one()
         assert (
-            InvestigationService._minted_intent_swallows_gate_consent(
+            _minted_intent_swallows_gate_consent(
                 case,
                 QueryIntent(type=IntentType.CONFIRMATION, confirmation_value=False),
                 "not quite - is the problem statement about the replica or the primary?",

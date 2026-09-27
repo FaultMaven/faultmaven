@@ -421,7 +421,7 @@ class TestMarkLinkedFailureIsCounted:
         storage.mark_linked = mark_linked
 
         with patch(
-            "faultmaven.modules.agent.domain.services.investigation_service.service"
+            "faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping"
             ".EVIDENCE_MARK_LINKED_FAILURES_TOTAL"
         ) as counter:
             await self._upload(storage)
@@ -438,7 +438,7 @@ class TestMarkLinkedFailureIsCounted:
         storage.mark_linked = AsyncMock(return_value=True)
 
         with patch(
-            "faultmaven.modules.agent.domain.services.investigation_service.service"
+            "faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping"
             ".EVIDENCE_MARK_LINKED_FAILURES_TOTAL"
         ) as counter:
             await self._upload(storage)
@@ -461,7 +461,7 @@ class TestMarkLinkedFailureIsCounted:
         storage.mark_linked = AsyncMock(return_value=False)
 
         with patch(
-            "faultmaven.modules.agent.domain.services.investigation_service.service"
+            "faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping"
             ".EVIDENCE_MARK_LINKED_FAILURES_TOTAL"
         ) as counter:
             counter.labels.side_effect = RuntimeError("registry exploded")

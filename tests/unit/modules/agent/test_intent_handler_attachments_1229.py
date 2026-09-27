@@ -32,6 +32,12 @@ from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngin
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import IntentType, QueryIntent
+from faultmaven.modules.agent.domain.services.investigation_service import (
+    service as _service_module,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.reclassification import (
+    _handle_file_reclassification,
+)
 from faultmaven.modules.agent.domain.services.investigation_service.service import (
     _INTENT_DISPATCH,
     InvestigationService,
@@ -308,25 +314,27 @@ class TestTheNonEngineHandlersStillReportUploads:
         assert "files_uploaded" not in result["metadata"]
 
     async def test_the_reclassification_handler_is_told_about_the_attachment(
-        self, service, repo, case
+        self, service, repo, case, monkeypatch
     ):
         """The wiring, pinned at the seam: the dispatch built
         ``attachment_metadata`` and then discarded it for this handler.
 
-        ``create_autospec`` of the REAL bound method, so a call naming a
+        ``create_autospec`` of the REAL function, so a call naming a
         parameter the handler does not have fails here rather than being
-        silently accepted by a permissive Mock.
+        silently accepted by a permissive Mock. Patched on ``service.py``'s
+        own module namespace — the one reader, since ``process_turn`` calls
+        ``_handle_file_reclassification`` as a bare module-global name.
         """
         await repo.save(case)
         spy = create_autospec(
-            service._handle_file_reclassification,
+            _handle_file_reclassification,
             return_value={
                 "agent_response": "ok",
                 "case_updated": case,
                 "metadata": {"progress_made": False, "milestones_completed": []},
             },
         )
-        service._handle_file_reclassification = spy
+        monkeypatch.setattr(_service_module, "_handle_file_reclassification", spy)
 
         await service.process_turn(
             case_id=case.case_id,
@@ -378,7 +386,13 @@ class TestEverySeriveRoutedHandlerCanReceiveUploads:
     def test_each_handler_accepts_attachments(self, service):
         missing = []
         for intent in self._service_intents():
-            handler = getattr(service, f"_handle_{intent.value}", None)
+            # file_reclassification's handler moved to a module function
+            # (reclassification.py) rather than a bound method — the naming
+            # convention still holds, just not as an attribute of `service`.
+            if intent.value == "file_reclassification":
+                handler = _handle_file_reclassification
+            else:
+                handler = getattr(service, f"_handle_{intent.value}", None)
             assert handler is not None, (
                 f"{intent.value} is SERVICE-routed but has no "
                 f"_handle_{intent.value}; if the handler was renamed, teach "

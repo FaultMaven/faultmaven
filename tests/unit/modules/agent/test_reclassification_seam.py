@@ -50,6 +50,7 @@ from faultmaven.exceptions import NotFoundError, ValidationException
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import IntentType
 from faultmaven.modules.agent.domain.services.investigation_service.reclassification import (
+    _handle_file_reclassification,
     _reclassified_collections,
 )
 from faultmaven.modules.agent.domain.services.investigation_service.service import (
@@ -190,7 +191,9 @@ async def _out_of_band(rig, evidence_id=EV_1):
 
 async def _turn_seam(rig):
     """The clarification-click path. Returns the case it hands back."""
-    result = await rig.service._handle_file_reclassification(
+    result = await _handle_file_reclassification(
+        rig.service.file_storage_service,
+        rig.service.preprocessing_service,
         case=rig.case,
         file_id=FILE_A,
         data_type_value=DataType.LOGS_AND_ERRORS.value,
@@ -966,7 +969,9 @@ class TestTheQuestionIsRetiredAtTheSeam:
     @pytest.mark.asyncio
     async def test_the_turn_seam_retires_through_the_seam_too(self):
         rig = _build(armed=True)
-        result = await rig.service._handle_file_reclassification(
+        result = await _handle_file_reclassification(
+            rig.service.file_storage_service,
+            rig.service.preprocessing_service,
             case=rig.case,
             file_id=FILE_A,
             data_type_value=DataType.LOGS_AND_ERRORS.value,

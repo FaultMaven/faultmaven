@@ -215,7 +215,7 @@ class TestReclassificationMetricLabel:
     @pytest.mark.parametrize("stored", ["structured_config", "configuration"])
     async def test_from_type_is_folded(self, stored, monkeypatch):
         from faultmaven.modules.agent.domain.services.investigation_service import (
-            service as investigation_service,
+            reclassification as investigation_service,
         )
 
         metric = MagicMock()
@@ -460,6 +460,13 @@ def _is_str_literal(node) -> bool:
 _PARSES = _ONE_VOCABULARY_PARSERS | {"get", "[]", "==literal"}
 
 _SVC = "modules/agent/domain/services/investigation_service/service.py"
+_ATTACHMENTS = "modules/agent/domain/services/investigation_service/attachments.py"
+_RECLASSIFICATION = (
+    "modules/agent/domain/services/investigation_service/reclassification.py"
+)
+_TURN_BOOKKEEPING = (
+    "modules/agent/domain/services/investigation_service/turn_bookkeeping.py"
+)
 _INGEST = "modules/case/domain/services/case_data_ingestion_service.py"
 _SQLITE = "modules/case/infrastructure/sqlite_case_repository.py"
 _PG = "modules/case/infrastructure/postgresql_hybrid_case_repository.py"
@@ -494,9 +501,12 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
         "file_meta",
     ): ("boundary", 1),
     # AttachmentResult.source_type, published as the 6-valued vocabulary.
-    (_SVC, "_published_source_type", "attr", "uploaded_file"): ("boundary", 1),
+    (_TURN_BOOKKEEPING, "_published_source_type", "attr", "uploaded_file"): (
+        "boundary",
+        1,
+    ),
     # ``previous_type`` → EVIDENCE_RECLASSIFICATION_TOTAL.from_type.
-    (_SVC, "InvestigationService._handle_file_reclassification", "attr", "file_meta"): (
+    (_RECLASSIFICATION, "_handle_file_reclassification", "attr", "file_meta"): (
         "boundary",
         1,
     ),
@@ -523,7 +533,7 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
     ): ("opaque", 1),
     # The engine attachment dict's ``data_type`` key. No engine code reads it
     # (``turn_uploads`` reads ``file_id`` / ``is_novel``).
-    (_SVC, "_engine_attachment_metadata", "attr", "uf"): ("opaque", 1),
+    (_ATTACHMENTS, "_engine_attachment_metadata", "attr", "uf"): ("opaque", 1),
     # --- repositories: the string between row and model (9 functions) ------
     (_SQLITE, "SQLiteCaseRepository._load_uploaded_files", "sql", "<sql>"): (
         "passthrough",
@@ -616,8 +626,8 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
     ): ("other", 1),
     # ``preprocessing_result.data_type`` / a classifier result.
     (
-        _SVC,
-        "InvestigationService._handle_file_reclassification",
+        _RECLASSIFICATION,
+        "_handle_file_reclassification",
         "attr",
         "preprocessing_result",
     ): ("other", 1),
