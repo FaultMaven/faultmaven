@@ -23,7 +23,7 @@ from .progress import InvestigationProgress
 from .solution import ActionAttempt, ProposedAction, Solution
 from .turn import InvestigationMomentum, TurnOutcome, TurnProgress
 
-logger = logging.getLogger("faultmaven.modules.case.domain.models")
+logger = logging.getLogger(__name__)
 
 # Cap synthetic SKIPPED inserts per turn_history gap; a larger gap signals
 # corruption, not a normal one-turn interruption, so we renumber instead.
