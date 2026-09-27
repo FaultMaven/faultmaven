@@ -23,7 +23,7 @@ from faultmaven.models.api_models import (
     QueryIntent,
     TurnResponse,
 )
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
 )
 from faultmaven.modules.case.domain.models.case import Case
@@ -421,7 +421,7 @@ class TestMarkLinkedFailureIsCounted:
         storage.mark_linked = mark_linked
 
         with patch(
-            "faultmaven.modules.agent.domain.services.investigation_service"
+            "faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping"
             ".EVIDENCE_MARK_LINKED_FAILURES_TOTAL"
         ) as counter:
             await self._upload(storage)
@@ -438,7 +438,7 @@ class TestMarkLinkedFailureIsCounted:
         storage.mark_linked = AsyncMock(return_value=True)
 
         with patch(
-            "faultmaven.modules.agent.domain.services.investigation_service"
+            "faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping"
             ".EVIDENCE_MARK_LINKED_FAILURES_TOTAL"
         ) as counter:
             await self._upload(storage)
@@ -461,7 +461,7 @@ class TestMarkLinkedFailureIsCounted:
         storage.mark_linked = AsyncMock(return_value=False)
 
         with patch(
-            "faultmaven.modules.agent.domain.services.investigation_service"
+            "faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping"
             ".EVIDENCE_MARK_LINKED_FAILURES_TOTAL"
         ) as counter:
             counter.labels.side_effect = RuntimeError("registry exploded")
@@ -1187,7 +1187,9 @@ class TestInvestigationServiceIntentDispatch:
         """
         from unittest.mock import patch
 
-        from faultmaven.modules.agent.domain.services import investigation_service
+        from faultmaven.modules.agent.domain.services.investigation_service import (
+            service as investigation_service,
+        )
 
         # Simulate a developer who added a new IntentType without updating
         # the dispatch table.

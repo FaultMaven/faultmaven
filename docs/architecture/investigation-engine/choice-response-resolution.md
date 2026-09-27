@@ -82,7 +82,7 @@ So the adoption site matches against the **live** entries, not the raw field: a 
 
 The terminal rule is also what covers the mid-turn-save window above, and the age bound is **not**: the two saves that can commit a row mid-turn (`milestone_engine`'s "persist terminal state before synthesis", at both confirm branches) run *before* `_finish_deterministic_turn` records the turn, so such a row carries N-1 in the persisted counter **and** a stamp of N-1 — the retry asks at N, the age is 1, and a one-turn window does not expire it. What those two saves do have in common is that both commit a **terminal** case (fm#918).
 
-Both sides of that seam filter at the same number, and the number is `effective_current_turn + 1` — the counter both repositories persist. Since #1264 that agrees with the in-flight `case.current_turn` on every route, because `investigation_service._backfill_consumed_turn` records a turn for every route that consumes one; before it, only the engine appended `turn_history` (milestone_engine Step 6) and the stored counter stood still across a SERVICE-dispatched turn (a clarification click, a greeting). The writer keeps deriving from the persisted counter anyway, so the seam stays correct by construction rather than by the two happening to match — and a route that stops recording again shows up as a clock bug rather than as silently dropped questions.
+Both sides of that seam filter at the same number, and the number is `effective_current_turn + 1` — the counter both repositories persist. Since #1264 that agrees with the in-flight `case.current_turn` on every route, because `investigation_service.turn_bookkeeping._backfill_consumed_turn` records a turn for every route that consumes one; before it, only the engine appended `turn_history` (milestone_engine Step 6) and the stored counter stood still across a SERVICE-dispatched turn (a clarification click, a greeting). The writer keeps deriving from the persisted counter anyway, so the seam stays correct by construction rather than by the two happening to match — and a route that stops recording again shows up as a clock bug rather than as silently dropped questions.
 
 ### P7: An answer that could mean two things means neither
 
@@ -191,7 +191,7 @@ Single token: `1`, `2`, ..., `N`, or `none`.
 
 A resolver match is an **inference** from typed text, not a deterministic click — but the engine treats adopted intents as click-equivalent consent and consults them *before* its INV-26 bare-token guards. Unguarded, the classifier could match `"yes but what about the replication lag?"` to "Yes, mark as resolved" and irreversibly resolve the case — consuming substantive input as consent, exactly what INV-26 forbids.
 
-So the adoption site (`InvestigationService._minted_intent_swallows_gate_consent`) rejects a minted intent when it **would commit a gate** and the message is **substantive** per `terminal_transitions.is_substantive_reply` — the same predicate `_user_confirms_transition` uses (>100 chars, contains `?`, or a contrastive `" but "`), so the confirm lanes cannot drift.
+So the adoption site (`intent_gates._minted_intent_swallows_gate_consent`) rejects a minted intent when it **would commit a gate** and the message is **substantive** per `terminal_transitions.is_substantive_reply` — the same predicate `_user_confirms_transition` uses (>100 chars, contains `?`, or a contrastive `" but "`), so the confirm lanes cannot drift.
 
 There are two gates, and #721 guarded only the first:
 
@@ -224,8 +224,8 @@ The rejected message falls back to conversation: where a pending transition exis
 | Layer | Location | Responsibility |
 |---|---|---|
 | Type definition | `api_models.py` `QueryIntent` | Declares `hypothesis_action` as a valid intent type |
-| Service dispatch | [`investigation_service.py:528`](../../../faultmaven/modules/agent/domain/services/investigation_service.py) | Routes typed intent to the per-intent handler |
-| Service handler | [`investigation_service.py:1026`](../../../faultmaven/modules/agent/domain/services/investigation_service.py) (`_handle_hypothesis_action`) | Validates payload shape, forwards to the engine with `intent_data` |
+| Service dispatch | [`investigation_service/service.py:506`](../../../faultmaven/modules/agent/domain/services/investigation_service/service.py) | Routes typed intent to the per-intent handler |
+| Service handler | [`investigation_service/service.py:1504`](../../../faultmaven/modules/agent/domain/services/investigation_service/service.py) (`_handle_hypothesis_action`) | Validates payload shape, forwards to the engine with `intent_data` |
 | Engine handler | [`milestone_engine/engine.py`](../../../faultmaven/core/investigation/milestone_engine/engine.py) `MilestoneEngine._process_turn_impl` (`elif intent_type == "hypothesis_action" and intent_data:`) | Applies the state change on `case.hypotheses[...]` and sets `metadata["hypothesis_action_applied"] = True` |
 
 ### 5.2 State Transitions Applied by the Engine

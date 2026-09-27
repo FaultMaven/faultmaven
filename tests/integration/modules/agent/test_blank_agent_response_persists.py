@@ -37,7 +37,7 @@ from faultmaven.infrastructure.protection.tenant_turn_cap import (
     InMemoryTurnLedger,
     TurnCapService,
 )
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
 )
 from faultmaven.modules.case.contracts import (

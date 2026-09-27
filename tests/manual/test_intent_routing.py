@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.exceptions import ValidationException
 from faultmaven.models.api_models import IntentType, QueryIntent
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
 )
 from faultmaven.modules.case.contracts import Case, CaseState

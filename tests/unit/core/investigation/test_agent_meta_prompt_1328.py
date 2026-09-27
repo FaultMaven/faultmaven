@@ -40,7 +40,7 @@ from faultmaven.core.investigation.prompts.templates.blocks import (
     AGENT_META_INSTRUCTIONS,
     KNOWLEDGE_QUERY_INSTRUCTIONS,
 )
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.attachments import (
     _EVIDENCE_REROUTE_MODES,
     _attachment_reroute,
 )

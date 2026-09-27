@@ -36,8 +36,10 @@ from faultmaven.core.investigation.case_telemetry import (
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.models.api import DataType
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
     _backfill_consumed_turn,
 )
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
@@ -322,7 +324,7 @@ def test_no_backstopped_route_seeds_an_unsupported_progress_true():
     import inspect
     import re
 
-    from faultmaven.modules.agent.domain.services.investigation_service import (
+    from faultmaven.modules.agent.domain.services.investigation_service.service import (
         InvestigationService,
     )
 

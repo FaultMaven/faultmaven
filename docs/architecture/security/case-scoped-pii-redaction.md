@@ -137,7 +137,7 @@ The `_should_redact()` helper checks `SANITIZE_PII` setting. When `False`, `Case
 
 ### InvestigationService Integration
 
-**File:** `modules/agent/domain/services/investigation_service.py`
+**File:** `modules/agent/domain/services/investigation_service/service.py`
 
 The service manages two integration points:
 
@@ -204,7 +204,7 @@ If a user types `<IP_ADDRESS_1>` in their message, `reverse()` would replace it 
 | `infrastructure/security/case_redaction.py` | New file | None |
 | `infrastructure/security/redaction.py` | Added `sanitize_text_with_registry()`, wired Presidio config to settings, `\b` word boundary on password regex, removed dead code | Low |
 | `core/investigation/milestone_engine/engine.py` | Redaction lifecycle in turn processing + tool loop | Medium |
-| `modules/agent/domain/services/investigation_service.py` | Extraction-layer context creation + reverse-substitution | Low |
+| `modules/agent/domain/services/investigation_service/service.py` | Extraction-layer context creation + reverse-substitution | Low |
 | `modules/preprocessing/preprocessing_service.py` | `redaction_context` param on all 3 sanitize paths | Low |
 | `container/providers/services.py` | Pass sanitizer + redis_client to engine | Low |
 | `config/settings.py` | Added `redaction_registry_ttl_hours`, updated `entities_to_protect` defaults (removed false-positive-prone entities), raised `min_score_threshold` to 0.85 | Low |

@@ -32,8 +32,10 @@ from faultmaven.core.investigation.prompts.fence import PromptFence, mint_token
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.core.preprocessing.models import UnifiedDataType
 from faultmaven.models.api import DataType
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
     _record_composed_reply,
 )
 from faultmaven.modules.case.contracts import MESSAGE_METADATA_AGENT_SYNTHESIZED

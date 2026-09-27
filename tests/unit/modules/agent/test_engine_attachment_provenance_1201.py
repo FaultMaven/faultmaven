@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.attachments import (
     _engine_attachment_metadata,
     _PreprocessedAttachment,
 )

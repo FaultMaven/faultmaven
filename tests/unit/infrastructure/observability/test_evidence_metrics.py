@@ -20,7 +20,7 @@ from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.infrastructure.observability import evidence_metrics as m
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import IntentType, QueryIntent
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
 )
 from faultmaven.modules.case.domain.models.evidence import (

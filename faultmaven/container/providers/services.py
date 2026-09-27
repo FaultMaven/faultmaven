@@ -267,7 +267,7 @@ def create_investigation_service(
         return None
 
     try:
-        from faultmaven.modules.agent.domain.services.investigation_service import (
+        from faultmaven.modules.agent.domain.services.investigation_service.service import (
             InvestigationService,
         )
 

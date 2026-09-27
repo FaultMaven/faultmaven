@@ -25,7 +25,7 @@ from faultmaven.infrastructure.protection.tenant_turn_cap import (
     utc_day,
 )
 from faultmaven.models.api_models import IntentType, QueryIntent
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
 )
 from faultmaven.modules.case.contracts import (

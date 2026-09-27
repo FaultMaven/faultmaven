@@ -62,7 +62,7 @@ class InvestigationStateUpdate(BaseModel):
 ```
 
 **Dispatch** (in
-[`investigation_service.py`](../../../faultmaven/modules/agent/domain/services/investigation_service.py)):
+[`investigation_service.py`](../../../faultmaven/modules/agent/domain/services/investigation_service/service.py)):
 
 ```python
 IntentType.EVIDENCE_REQUEST: _IntentDispatchKind.NOT_IMPLEMENTED,
