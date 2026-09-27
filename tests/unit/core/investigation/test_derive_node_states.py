@@ -12,10 +12,8 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.core.investigation.causal_graph import (
-    derive_node_states,
-    is_chain_root_validated,
-)
+from faultmaven.core.investigation.causal_graph.derivation import derive_node_states
+from faultmaven.core.investigation.causal_graph.queries import is_chain_root_validated
 from faultmaven.core.investigation.cause_assurance import (
     CauseAssuranceGrade,
     grade_cause_assurance,
@@ -1107,7 +1105,9 @@ def test_llm_absence_supports_via_ingest_never_completes_the_bar():
     # INCONCLUSIVE (the bypass is engine-stamp-only).
     from types import SimpleNamespace
 
-    from faultmaven.core.investigation.causal_graph import ingest_emitted_chain
+    from faultmaven.core.investigation.causal_graph.ingestion import (
+        ingest_emitted_chain,
+    )
 
     ev = _evidence("ev_one1", EvidenceCategory.CAUSAL_EVIDENCE)
     absence = _evidence("ev_gone1", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
@@ -1141,10 +1141,12 @@ def test_validated_root_survives_a_bridging_corroboration_row():
     # summary row) — adding corroborating evidence can never retract a
     # validated conclusion (maximum-independent-set counting; connected
     # components regressed here).
-    from faultmaven.core.investigation.causal_graph import (
+    from faultmaven.core.investigation.causal_graph.similarity import _mutual_mirror
+    from faultmaven.core.investigation.causal_graph.support import (
         _EVIDENCE_MIRROR_JACCARD,
-        _content_tokens,
-        _mutual_mirror,
+    )
+    from faultmaven.core.investigation.cause_assurance import (
+        content_tokens as _content_tokens,
     )
 
     # Controlled tokens (verified in the calibration file): A={w1..w10},
@@ -1190,7 +1192,7 @@ def test_hedged_only_block_labeled_and_annotated_distinctly():
     # observation).
     from unittest.mock import patch
 
-    from faultmaven.core.investigation.causal_graph import (
+    from faultmaven.core.investigation.causal_graph.support import (
         BLOCK_REASON_HEDGED,
         root_support_block_reasons,
     )
@@ -1224,7 +1226,7 @@ def test_hedged_counterfactual_does_not_evict_root_from_block_classifier():
     by the count bar stays block-classified (count-held-eligible → the
     RESOLVED handshake may later complete it). A DECISIVE counterfactual
     still evicts it."""
-    from faultmaven.core.investigation.causal_graph import (
+    from faultmaven.core.investigation.causal_graph.support import (
         BLOCK_REASON_COUNT,
         root_support_block_reasons,
     )
@@ -1394,7 +1396,9 @@ def test_fm1122_incident_shape_now_validates():
     The §7.1 attribution test is what releases it: the problem anchors plus that
     ONE hypothesis already account for everything the root says, which makes the
     pair a duplicate rather than a root restating the case frame."""
-    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+    from faultmaven.core.investigation.causal_graph.support import (
+        restatement_held_root_ids,
+    )
 
     case, root = _fm1122_incident_case()
     derive_node_states(case)
@@ -1409,7 +1413,9 @@ def test_fm1137_hold_is_reported_as_a_standing_signal():
     state TRANSITIONS, so a root already INCONCLUSIVE when the guard took over
     is never counted — fm#1137 read 0.0 on it live throughout the nine turns,
     which is what sent the investigation after the wrong bar."""
-    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+    from faultmaven.core.investigation.causal_graph.support import (
+        restatement_held_root_ids,
+    )
 
     case, root = _fm1137_case()
     derive_node_states(case)
@@ -1421,7 +1427,7 @@ def test_restatement_held_root_is_not_count_held():
     """The standing restatement signal must never leak into the count-held set
     — that set feeds the resolution confirm-stamp and the anti-anchoring
     exemption, and a confirmation does not supply a missing mechanism."""
-    from faultmaven.core.investigation.causal_graph import (
+    from faultmaven.core.investigation.causal_graph.support import (
         support_count_held_root_ids,
     )
 
@@ -1440,7 +1446,9 @@ def test_restatement_held_root_is_not_count_held():
 def test_and_gate_blocked_root_is_not_reported_as_restatement_held():
     """Held by the M7 AND-gate, not by the guard — more evidence (validating
     the AND-member) IS the recovery, so the note would be actively wrong."""
-    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+    from faultmaven.core.investigation.causal_graph.support import (
+        restatement_held_root_ids,
+    )
 
     case, root = _fm1137_case()
     root.statement = (
@@ -1464,7 +1472,9 @@ def test_and_gate_blocked_root_is_not_reported_as_restatement_held():
 def test_net_refuted_and_tied_roots_are_not_reported_as_restatement_held():
     """Refuted territory, and the support/refute TIE that derive_node_states
     treats as INCONCLUSIVE rather than validation-eligible."""
-    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+    from faultmaven.core.investigation.causal_graph.support import (
+        restatement_held_root_ids,
+    )
 
     for extra in (2, 3):  # tie (2 supports vs 2 refutes), then net-refuted
         case, root = _fm1137_case()
@@ -1482,7 +1492,9 @@ def test_net_refuted_and_tied_roots_are_not_reported_as_restatement_held():
 
 def test_settled_roots_are_not_reported_as_restatement_held():
     """A VALIDATED (grandfathered) or REFUTED root is settled — no live hold."""
-    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+    from faultmaven.core.investigation.causal_graph.support import (
+        restatement_held_root_ids,
+    )
 
     case, root = _fm1137_case()
     root.statement = (
@@ -1508,7 +1520,9 @@ def test_settled_roots_are_not_reported_as_restatement_held():
 def test_ungrounded_root_is_not_reported_as_restatement_held():
     """Held by the §7.1 grounding bar as well — that arm owns it, and its
     recovery IS another observation. The two annotations must not collide."""
-    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+    from faultmaven.core.investigation.causal_graph.support import (
+        restatement_held_root_ids,
+    )
 
     case, root = _fm1137_case()
     root.statement = (
@@ -1526,7 +1540,9 @@ def test_counterfactually_confirmed_restating_root_is_still_reported():
     the restatement guard the hold is real and must be reported. Mirrors the
     same disjunct in derive_node_states — dropping it there silently drops this
     population from the annotation."""
-    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+    from faultmaven.core.investigation.causal_graph.support import (
+        restatement_held_root_ids,
+    )
 
     case, root = _fm1137_case()
     root.statement = (
@@ -1550,7 +1566,9 @@ def test_a_settled_root_elsewhere_does_not_suppress_a_live_hold():
     it (bail when any settled root exists) silently recreates the fm#1137
     bare-line stall for every case where a settled root coexists with a held
     one — and passed the whole suite until this pin."""
-    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+    from faultmaven.core.investigation.causal_graph.support import (
+        restatement_held_root_ids,
+    )
 
     case, root = _fm1137_case()
     root.statement = (
@@ -1575,7 +1593,9 @@ def test_a_settled_root_elsewhere_does_not_suppress_a_live_hold():
 def test_every_held_root_is_reported_not_just_one():
     """Two roots restating the same frame are two separate stalls; annotating
     only one leaves the other rendering as a bare line."""
-    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+    from faultmaven.core.investigation.causal_graph.support import (
+        restatement_held_root_ids,
+    )
 
     case, root = _fm1137_case()
     frame_echo = (
@@ -1604,7 +1624,9 @@ def test_mirror_collapsed_supports_are_not_reported_as_restatement_held():
     mutually mirror are ONE observation, so such a root is held by the
     grounding bar too — its recovery is a second independent observation, and
     claiming supporting evidence cannot help it would be false."""
-    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+    from faultmaven.core.investigation.causal_graph.support import (
+        restatement_held_root_ids,
+    )
 
     case, root = _fm1137_case()
     root.statement = (
@@ -1642,14 +1664,22 @@ def test_released_duplicate_pair_moves_the_block_from_restatement_to_mece():
     split, so only ONE member clears the §7.1 grounding bar (the #699
     terse-only fragmentation). Absence there is not evidence it cannot happen,
     which is why it is pinned from a constructed graph."""
-    from faultmaven.core.investigation.causal_graph import (
+    from faultmaven.core.investigation.causal_graph.clusters import (
         _ROOT_DISTINCT_JACCARD,
-        _content_tokens,
-        any_chain_root_validated,
         mece_contested_root_ids,
+    )
+    from faultmaven.core.investigation.causal_graph.projection import (
+        any_chain_root_validated,
         project_hypothesis_states_from_roots,
-        root_restates_case_frame,
+    )
+    from faultmaven.core.investigation.causal_graph.rcc import (
         synthesize_rcc_from_validated_root,
+    )
+    from faultmaven.core.investigation.causal_graph.support import (
+        root_restates_case_frame,
+    )
+    from faultmaven.core.investigation.cause_assurance import (
+        content_tokens as _content_tokens,
     )
 
     symptom = (

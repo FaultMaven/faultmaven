@@ -18,11 +18,11 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.core.investigation.causal_graph import (
-    derive_node_states,
-    link_llm_rcc_to_cause,
+from faultmaven.core.investigation.causal_graph.derivation import derive_node_states
+from faultmaven.core.investigation.causal_graph.ingestion import (
     mirror_hypothesis_support_to_root_nodes,
 )
+from faultmaven.core.investigation.causal_graph.rcc import link_llm_rcc_to_cause
 from faultmaven.core.investigation.cause_assurance import (
     CauseAssuranceGrade,
     grade_cause_assurance,

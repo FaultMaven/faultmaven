@@ -24,12 +24,14 @@ from unittest.mock import patch
 
 import pytest
 
-from faultmaven.core.investigation.causal_graph import (
+from faultmaven.core.investigation.causal_graph.disconfirmation import (
     _attach_engine_refutation,
     demote_disconfirmed_cause_via_evidence,
+)
+from faultmaven.core.investigation.causal_graph.ingestion import seed_problem_node
+from faultmaven.core.investigation.causal_graph.rcc import (
     link_llm_rcc_to_cause,
     retract_disconfirmed_rcc,
-    seed_problem_node,
 )
 from faultmaven.core.investigation.milestone_engine import (
     _recompute_cause_state_from_chain,

@@ -16,11 +16,13 @@ from datetime import datetime, timezone
 
 import pytest
 
-from faultmaven.core.investigation.causal_graph import (
-    conjuncts_for_chain,
-    incoming_and_groups,
+from faultmaven.core.investigation.causal_graph.ingestion import (
     ingest_emitted_chain,
     seed_problem_node,
+)
+from faultmaven.core.investigation.causal_graph.queries import (
+    conjuncts_for_chain,
+    incoming_and_groups,
     validated_and_conjuncts,
 )
 from faultmaven.core.investigation.milestone_engine import (
@@ -249,7 +251,9 @@ def test_a_blank_and_group_is_not_a_conjunction():
     """``and_group`` is an unconstrained Optional[str] end to end. A model
     emitting "" on independent alternatives must not have them published as
     conditions the cause required."""
-    from faultmaven.core.investigation.causal_graph import ingest_emitted_chain
+    from faultmaven.core.investigation.causal_graph.ingestion import (
+        ingest_emitted_chain,
+    )
 
     case, d = _conjunction_case(and_group=None)
     case.causal_edges = [e for e in case.causal_edges if e.cause_node_id != _B]
@@ -316,7 +320,7 @@ def test_a_conjunct_refresh_does_not_swap_the_published_cause():
     stand. A conjunct-driven re-mint is a refresh for a reason unrelated to the
     cause: it must keep the cause the standing mirror already names, or the
     published root_cause changes because a conjunct validated."""
-    from faultmaven.core.investigation.causal_graph import (
+    from faultmaven.core.investigation.causal_graph.rcc import (
         synthesize_rcc_from_validated_root,
     )
 
@@ -454,7 +458,7 @@ def test_co_necessary_conjuncts_are_not_a_mece_contest():
     """Both conditions proven is the CORRECT end state for a conjunction, not
     the "several simultaneously-proven exclusive causes" a hold exists to catch.
     Without this the engine held identification on the very shape it asks for."""
-    from faultmaven.core.investigation.causal_graph import (
+    from faultmaven.core.investigation.causal_graph.clusters import (
         distinct_cause_clusters,
         mece_contested_root_ids,
     )
@@ -518,7 +522,9 @@ def test_independent_alternatives_still_contest():
     """The guard this must not blunt: without ``and_group`` the two roots are
     competing explanations, and two of them simultaneously validated is exactly
     the coherence violation §7.1.2 holds identification on."""
-    from faultmaven.core.investigation.causal_graph import mece_contested_root_ids
+    from faultmaven.core.investigation.causal_graph.clusters import (
+        mece_contested_root_ids,
+    )
 
     case, d = _conjunction_case(and_group=None)
     _hypothesis_for(case, d, _B, _LIMIT, "hyp_0000000000bb")
@@ -532,7 +538,9 @@ def test_a_blank_and_group_does_not_fuse_competing_causes():
     """Legacy rows carry ``and_group=""`` (unreachable by the ingest guard). A
     blank key names no group, so it must not merge a real differential into one
     cluster and silently retire the hold."""
-    from faultmaven.core.investigation.causal_graph import mece_contested_root_ids
+    from faultmaven.core.investigation.causal_graph.clusters import (
+        mece_contested_root_ids,
+    )
 
     case, d = _conjunction_case(and_group=None)
     for edge in case.causal_edges:
@@ -547,7 +555,7 @@ def test_a_blank_and_group_does_not_fuse_competing_causes():
 def test_an_and_set_beside_an_independent_alternative_still_contests():
     """The merge is of the CONJUNCTS only. "A and B together" versus "C" is a
     genuine differential, and the engine must still refuse to pick."""
-    from faultmaven.core.investigation.causal_graph import (
+    from faultmaven.core.investigation.causal_graph.clusters import (
         distinct_cause_clusters,
         mece_contested_root_ids,
     )
@@ -669,7 +677,7 @@ def test_the_fold_does_not_merge_distinct_long_keys():
     group — the silent M7 strengthening the blank-key guard exists to prevent,
     by another route. The fold is also a pure function of the key, so the same
     logical group emitted a turn later normalizes to the same token."""
-    from faultmaven.core.investigation.causal_graph import _normalize_and_group
+    from faultmaven.core.investigation.causal_graph.clusters import _normalize_and_group
 
     a = "memory-exhaustion-requires-unbounded-cache-and-reduced-memory-limit"
     b = "memory-exhaustion-requires-unbounded-cache-and-reduced-cpu-quota-only"
@@ -696,7 +704,9 @@ def test_a_late_grouping_over_validated_rivals_is_counted():
     from unittest.mock import patch
 
     from faultmaven.core.investigation import causal_graph
-    from faultmaven.core.investigation.causal_graph import mece_contested_root_ids
+    from faultmaven.core.investigation.causal_graph.clusters import (
+        mece_contested_root_ids,
+    )
 
     case, d = _conjunction_case(and_group=None)
     _hypothesis_for(case, d, _B, _LIMIT, "hyp_0000000000bb")
@@ -797,7 +807,7 @@ def test_only_a_string_names_a_group():
     the normaliser matches that boundary: a number or a bool names no group.
     (Numbers were honoured while the KB cause seeder could hand them in
     directly; that caller went in fm#1295.)"""
-    from faultmaven.core.investigation.causal_graph import _normalize_and_group
+    from faultmaven.core.investigation.causal_graph.clusters import _normalize_and_group
 
     assert _normalize_and_group("g1") == "g1"
     assert _normalize_and_group(1) is None

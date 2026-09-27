@@ -23,7 +23,7 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import List, Optional, Tuple
 
-from faultmaven.core.investigation.causal_graph import is_chain_root_validated
+from faultmaven.core.investigation.causal_graph.queries import is_chain_root_validated
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,

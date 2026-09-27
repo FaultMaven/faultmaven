@@ -51,7 +51,7 @@ from uuid import uuid4
 import pytest
 
 from faultmaven.core.investigation import cause_assurance, milestone_engine
-from faultmaven.core.investigation.causal_graph import (
+from faultmaven.core.investigation.causal_graph.support import (
     restatement_held_root_ids,
     summarize_restatement_hold,
 )

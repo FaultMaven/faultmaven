@@ -46,27 +46,41 @@ from faultmaven.core.investigation.case_telemetry import (
     TurnPath,
     collect_progress_arms,
 )
-from faultmaven.core.investigation.causal_graph import (
-    any_chain_root_inconclusive,
-    any_chain_root_validated,
-    chain_path_to_problem,
-    demote_disconfirmed_cause_via_evidence,
+from faultmaven.core.investigation.causal_graph.clusters import mece_contested_root_ids
+from faultmaven.core.investigation.causal_graph.derivation import (
     derive_node_states,
-    find_duplicate_hypothesis,
-    hypothesis_statements_duplicate,
+    validate_by_exclusion,
+)
+from faultmaven.core.investigation.causal_graph.disconfirmation import (
+    any_chain_root_inconclusive,
+    demote_disconfirmed_cause_via_evidence,
+)
+from faultmaven.core.investigation.causal_graph.ingestion import (
+    chain_path_to_problem,
     ingest_emitted_chain,
-    is_chain_root_validated,
-    link_llm_rcc_to_cause,
-    mece_contested_root_ids,
     mirror_hypothesis_support_to_root_nodes,
+)
+from faultmaven.core.investigation.causal_graph.projection import (
+    any_chain_root_validated,
     project_hypothesis_states_from_roots,
+)
+from faultmaven.core.investigation.causal_graph.pruning import (
     prune_abandoned_nodes,
     resolve_orphan_chains,
+)
+from faultmaven.core.investigation.causal_graph.queries import is_chain_root_validated
+from faultmaven.core.investigation.causal_graph.rcc import (
+    link_llm_rcc_to_cause,
     retract_disconfirmed_rcc,
     retract_stale_engine_rcc,
-    support_count_held_root_ids,
     synthesize_rcc_from_validated_root,
-    validate_by_exclusion,
+)
+from faultmaven.core.investigation.causal_graph.similarity import (
+    find_duplicate_hypothesis,
+    hypothesis_statements_duplicate,
+)
+from faultmaven.core.investigation.causal_graph.support import (
+    support_count_held_root_ids,
 )
 from faultmaven.core.investigation.cause_assurance import (
     CauseAssuranceGrade,

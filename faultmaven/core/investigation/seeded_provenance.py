@@ -153,7 +153,9 @@ def _confirmed_cause_cluster_members(case: "Case") -> list[str]:
     ALL live roots (not just the confirmed ones) so a seeded *candidate* duplicate
     that never itself validated still collapses onto the confirmed root.
     """
-    from faultmaven.core.investigation.causal_graph import distinct_cause_clusters
+    from faultmaven.core.investigation.causal_graph.clusters import (
+        distinct_cause_clusters,
+    )
     from faultmaven.core.investigation.cause_assurance import (
         evidence_category_map,
         root_counterfactually_confirmed,
