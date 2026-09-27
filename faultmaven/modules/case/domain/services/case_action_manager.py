@@ -30,7 +30,7 @@ that needs no precondition: it is always honourable, and the user is the only
 one who can make it.
 
 The full legality graph is ``LEGAL_TRANSITIONS`` in
-``modules/case/domain/models.py``.
+``modules/case/domain/models/lifecycle.py``.
 """
 
 from datetime import datetime, timezone
