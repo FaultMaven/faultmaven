@@ -76,7 +76,7 @@ _ASSISTANT = "is_server_written_assistant_row"
 _BOTH = frozenset({_USER, _ASSISTANT})
 _FLAG = frozenset({"agent_response_synthesized"})
 
-_CTX = "faultmaven/core/investigation/prompts/context_builder.py"
+_CTX = "faultmaven/core/investigation/prompts/context_builder/history.py"
 _CASE_SERVICE = "faultmaven/modules/case/domain/services/case_service.py"
 _INVESTIGATION = "faultmaven/modules/agent/domain/services/investigation_service.py"
 

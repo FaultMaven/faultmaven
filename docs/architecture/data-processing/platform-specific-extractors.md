@@ -29,7 +29,7 @@ For the canonical enumeration of Stage 1 behaviour and its interaction with Tier
 
 ### Stage 2 — Implemented: Query-Time Section Reranking
 
-Stage 2 is backend query-time reranking of page-capture sections against the user's query, implemented in `_rerank_page_capture_sections()` (`faultmaven/core/investigation/prompts/context_builder.py`). When assembling Tier A evidence for an LLM call, page-capture structural indexes are split on `\n##` headings, each section scored by normalised keyword overlap against the user's query (stopwords excluded), and reassembled in descending relevance order. The `[captured_at: …]` preamble is pinned at position 0. Reranking runs **before** the per-item character cap so query-relevant sections survive truncation.
+Stage 2 is backend query-time reranking of page-capture sections against the user's query, implemented in `_rerank_page_capture_sections()` (`faultmaven/core/investigation/prompts/context_builder/text_shaping.py`). When assembling Tier A evidence for an LLM call, page-capture structural indexes are split on `\n##` headings, each section scored by normalised keyword overlap against the user's query (stopwords excluded), and reassembled in descending relevance order. The `[captured_at: …]` preamble is pinned at position 0. Reranking runs **before** the per-item character cap so query-relevant sections survive truncation.
 
 Stage 2 complements Stage 1 by surfacing the most relevant portion of a long page capture within the evidence budget, without changing the frontend extractor.
 
@@ -272,6 +272,6 @@ structured = llm.extract_structured_data(prompt)
 | Stage | State | Summary |
 | --- | --- | --- |
 | Stage 1 — Semantic DOM extraction | **Implemented** | `htmlToStructuredText()` with error-first ordering, stat/label/value detection, ARIA alert promotion, `[captured_at]` preamble. Backend pass-through via `page_capture_passthrough`. See §"What We Have Now". |
-| Stage 2 — Query-time section reranking | **Implemented** | `_rerank_page_capture_sections()` in `context_builder.py`. Preamble pinned at position 0; runs before per-item char cap. See §"Stage 2 — Implemented". |
+| Stage 2 — Query-time section reranking | **Implemented** | `_rerank_page_capture_sections()` in `context_builder/text_shaping.py`. Preamble pinned at position 0; runs before per-item char cap. See §"Stage 2 — Implemented". |
 | Stage 3 — Platform-aware parsing | **Deferred** | Precision extractors per platform (Datadog, Grafana, PagerDuty, GitHub, …). See §"Proposed Stage 3 Enhancement" and §"Decision: Why Stage 3 is Deferred". |
 | Stage 4 — Viewport sync / real-time capture | **Deferred** | Live-dashboard capture for auto-refreshing platforms. See §"Stage 4 (Deferred)". |

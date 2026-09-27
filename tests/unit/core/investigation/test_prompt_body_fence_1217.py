@@ -38,9 +38,11 @@ import re
 import pytest
 
 from faultmaven.core.investigation.prompts import fence as fence_mod
-from faultmaven.core.investigation.prompts.context_builder import (
-    _build_evidence_context,
+from faultmaven.core.investigation.prompts.context_builder.assembly import (
     build_investigation_context,
+)
+from faultmaven.core.investigation.prompts.context_builder.evidence import (
+    _build_evidence_context,
 )
 from faultmaven.core.investigation.prompts.fence import (
     TERMINATOR_NOTE,
@@ -582,7 +584,7 @@ class TestEveryCallerControlledStringIsInTheCorpus:
 
         import faultmaven.core.investigation.prompts.context_builder as cb
 
-        monkeypatch.setattr(cb, "_confidence_marker", fake_marker)
+        monkeypatch.setattr(cb.evidence, "_confidence_marker", fake_marker)
 
         seen_tokens = []
         real_mint = fence_mod.mint_token

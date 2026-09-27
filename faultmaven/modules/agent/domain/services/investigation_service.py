@@ -35,7 +35,7 @@ from faultmaven.core.investigation.milestone_engine import (
     score_progress,
     summarize_for_turn_record,
 )
-from faultmaven.core.investigation.prompts.context_builder import (
+from faultmaven.core.investigation.prompts.context_builder.budget import (
     structural_index_is_searchable,
 )
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload

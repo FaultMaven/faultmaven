@@ -15,11 +15,17 @@ from datetime import UTC, datetime
 
 import pytest
 
-from faultmaven.core.investigation.prompts.context_builder import (
-    STATE_SUMMARY_TURN_THRESHOLD,
-    _build_causal_graph_block,
-    _build_state_summary,
+from faultmaven.core.investigation.prompts.context_builder.assembly import (
     build_investigation_context,
+)
+from faultmaven.core.investigation.prompts.context_builder.budget import (
+    STATE_SUMMARY_TURN_THRESHOLD,
+)
+from faultmaven.core.investigation.prompts.context_builder.causal_graph_block import (
+    _build_causal_graph_block,
+)
+from faultmaven.core.investigation.prompts.context_builder.history import (
+    _build_state_summary,
 )
 from faultmaven.core.investigation.prompts.templates.fallback import (
     get_fallback_prompt_for_case,

@@ -25,8 +25,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from faultmaven.core.investigation.milestone_engine import RESPONSE_WITHHELD_TEXT
-from faultmaven.core.investigation.prompts import context_builder as cb
-from faultmaven.core.investigation.prompts.fence import mint_token
+from faultmaven.core.investigation.prompts.context_builder import history as cb
+from faultmaven.core.investigation.prompts.fence import PromptFence, mint_token
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.core.preprocessing.models import UnifiedDataType
 from faultmaven.models.api import DataType
@@ -161,7 +161,7 @@ async def test_the_record_and_the_row_agree(answer, note, records):
 
     # And therefore the two fidelities of the next prompt say the same thing.
     earlier = cb._build_turn_summary(record)
-    recent = cb._build_verbatim_history(saved.messages, cb.PromptFence(mint_token()))
+    recent = cb._build_verbatim_history(saved.messages, PromptFence(mint_token()))
     assert (cb.NO_ANSWER_LINE in earlier) is (cb.NO_ANSWER_LINE in recent)
 
 
@@ -177,7 +177,7 @@ async def test_a_note_on_a_blank_answer_is_the_reply_everywhere(records):
     assert record.agent_response_summary.startswith(NOTE_OPENING)
 
     earlier = cb._build_turn_summary(record)
-    recent = cb._build_verbatim_history(saved.messages, cb.PromptFence(mint_token()))
+    recent = cb._build_verbatim_history(saved.messages, PromptFence(mint_token()))
     assert f"| Agent: {NOTE_OPENING}" in earlier
     assert NOTE_OPENING in recent
     assert cb.NO_ANSWER_LINE not in earlier + recent

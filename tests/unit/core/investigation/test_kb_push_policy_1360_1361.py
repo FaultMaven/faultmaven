@@ -504,11 +504,11 @@ class TestTheOffStateIsCoherentAcrossEveryConsumer:
         import inspect
 
         from faultmaven.core.investigation import case_telemetry
-        from faultmaven.core.investigation.prompts import context_builder
+        from faultmaven.core.investigation.prompts.context_builder import assembly
         from faultmaven.modules.agent.domain.services import investigation_service
 
         for module, func in (
-            (context_builder, "build_investigation_context"),
+            (assembly, "build_investigation_context"),
             (case_telemetry, "_kb_retrieval"),
             (investigation_service, "_kb_context_sources"),
         ):

@@ -204,7 +204,7 @@ def test_progress_indicator_no_longer_reports_a_bare_flag_when_stale():
     """The named defect: the indicator stated a conclusion while withholding
     everything needed to weigh it, so it read as settled fact."""
 
-    from faultmaven.core.investigation.prompts.context_builder import (
+    from faultmaven.core.investigation.prompts.context_builder.evidence import (
         _symptom_currency_note,
     )
 
@@ -216,7 +216,7 @@ def test_progress_indicator_no_longer_reports_a_bare_flag_when_stale():
 
 
 def test_undated_is_reported_as_unknown_not_as_recent():
-    from faultmaven.core.investigation.prompts.context_builder import (
+    from faultmaven.core.investigation.prompts.context_builder.evidence import (
         _symptom_currency_note,
     )
 
@@ -226,7 +226,7 @@ def test_undated_is_reported_as_unknown_not_as_recent():
 
 
 def test_other_indicators_are_untouched():
-    from faultmaven.core.investigation.prompts.context_builder import (
+    from faultmaven.core.investigation.prompts.context_builder.evidence import (
         _symptom_currency_note,
     )
 
@@ -236,7 +236,7 @@ def test_other_indicators_are_untouched():
 
 
 def test_inquiry_case_gets_no_note_at_all():
-    from faultmaven.core.investigation.prompts.context_builder import (
+    from faultmaven.core.investigation.prompts.context_builder.evidence import (
         _symptom_currency_note,
     )
 

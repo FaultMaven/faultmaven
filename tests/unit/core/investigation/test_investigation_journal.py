@@ -9,7 +9,7 @@ Design Reference:
 
 import pytest
 
-from faultmaven.core.investigation.prompts.context_builder import (
+from faultmaven.core.investigation.prompts.context_builder.assembly import (
     build_investigation_context,
 )
 from faultmaven.core.investigation.schemas import (

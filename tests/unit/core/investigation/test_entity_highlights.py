@@ -19,12 +19,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.core.investigation.prompts.context_builder import (
+from faultmaven.core.investigation.prompts.context_builder.assembly import (
+    build_investigation_context,
+)
+from faultmaven.core.investigation.prompts.context_builder.entity_highlights import (
     _ENTITY_HIGHLIGHTS_PREAMBLE,
     EntityHighlightGroup,
     EntityHighlightRow,
     _render_entity_highlights,
-    build_investigation_context,
     fetch_entity_highlights,
 )
 from faultmaven.core.investigation.prompts.fence import render_fenced

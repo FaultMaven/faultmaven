@@ -1350,7 +1350,7 @@ When a case reaches a terminal state, the system synchronously generates a light
 **Generation approach**:
 
 - Single LLM call using SYNTHESIS capability (Fireworks/Groq for speed and cost).
-- Input assembled via `context_builder.py`: case messages, evidence list, hypothesis states, action_history, milestone progress.
+- Input assembled via `context_builder/` (`build_investigation_context`): case messages, evidence list, hypothesis states, action_history, milestone progress.
 - Stored as `Report` with `auto_generated=True` (distinguishes from user-requested reports).
 - **Synchronous**: the closure-turn agent reply waits for generation to complete and then embeds the rendered markdown inline. The state transition itself does not depend on LLM availability — generation exceptions are caught and the closure still commits, but the chat reply embeds a status-aware failure note (*"Resolution summary generation did not complete..."* / *"Closure summary generation did not complete..."*) and the regen affordance is offered **on the same ack-turn** for immediate retry. The "regen would be noise next to the inline summary" rationale only applies on the success path; on the failure path there is no inline summary, so offering regen alongside the failure note is the right UX. See *Where it's offered* below.
 - One report per case — regeneration overwrites the existing row.

@@ -14,7 +14,7 @@ docs/architecture/investigation-engine/two-dimensional-hypothesis-methodology.md
 import pytest
 
 from faultmaven.core.investigation.causal_graph.ingestion import seed_problem_node
-from faultmaven.core.investigation.prompts.context_builder import (
+from faultmaven.core.investigation.prompts.context_builder.causal_graph_block import (
     _build_causal_graph_block,
 )
 from faultmaven.modules.case.contracts import (

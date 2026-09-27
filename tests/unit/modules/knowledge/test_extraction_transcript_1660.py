@@ -28,7 +28,7 @@ from faultmaven.core.investigation.milestone_engine import (
     RESPONSE_TRUNCATED_TEXT,
     RESPONSE_WITHHELD_TEXT,
 )
-from faultmaven.core.investigation.prompts.context_builder import NO_ANSWER_LINE
+from faultmaven.core.investigation.prompts.context_builder.history import NO_ANSWER_LINE
 from faultmaven.modules.case.contracts import (
     EMPTY_AGENT_RESPONSE_TEXT,
     EMPTY_TURN_TEXT,

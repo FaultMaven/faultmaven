@@ -473,7 +473,7 @@ _PG = "modules/case/infrastructure/postgresql_hybrid_case_repository.py"
 #:   and unchecked by construction — which is why the RECEIVER is in the key:
 #:   a read of ``res.uploaded_file`` beside an ``other`` read of ``intent``
 #:   is a different site, not the same entry.
-_CB = "core/investigation/prompts/context_builder.py"
+_CB = "core/investigation/prompts/context_builder/evidence.py"
 _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
     # --- UploadedFile.data_type, needs the 6-valued type (4 functions) -----
     # Both reads sit in ``data_type_str = (… if … else …)``, which is parsed.

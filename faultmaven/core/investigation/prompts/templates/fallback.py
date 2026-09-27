@@ -3,10 +3,10 @@ import functools
 import logging
 from typing import Optional
 
-from faultmaven.core.investigation.prompts.context_builder import (
-    _label_attr,
+from faultmaven.core.investigation.prompts.context_builder.assembly import (
     system_feedback_block,
 )
+from faultmaven.core.investigation.prompts.context_builder.evidence import _label_attr
 from faultmaven.core.investigation.prompts.fence import PromptFence, render_fenced
 from faultmaven.modules.case.contracts import Case, CaseState
 from faultmaven.modules.case.domain.models.progress import CauseState

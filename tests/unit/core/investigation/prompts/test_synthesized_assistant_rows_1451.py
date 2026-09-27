@@ -32,8 +32,8 @@ from faultmaven.core.investigation.milestone_engine import (
     RESPONSE_TRUNCATED_TEXT,
     RESPONSE_WITHHELD_TEXT,
 )
-from faultmaven.core.investigation.prompts import context_builder as cb
-from faultmaven.core.investigation.prompts.fence import mint_token
+from faultmaven.core.investigation.prompts.context_builder import history as cb
+from faultmaven.core.investigation.prompts.fence import PromptFence, mint_token
 from faultmaven.modules.case.contracts import (
     EMPTY_AGENT_RESPONSE_TEXT,
     MESSAGE_METADATA_AGENT_SYNTHESIZED,
@@ -67,7 +67,7 @@ def _synthesized(turn: int, content: str) -> dict:
 
 
 def _fence():
-    return cb.PromptFence(mint_token())
+    return PromptFence(mint_token())
 
 
 def _record(turn: int, summary: str, *, synthesized: bool) -> TurnProgress:

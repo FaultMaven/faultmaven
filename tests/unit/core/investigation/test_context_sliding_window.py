@@ -19,11 +19,15 @@ from unittest.mock import patch
 
 import pytest
 
-from faultmaven.core.investigation.prompts.context_builder import (
+from faultmaven.core.investigation.prompts.context_builder.budget import (
     EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM,
     EVIDENCE_CONTEXT_MAX_TOTAL_CHARS,
     EVIDENCE_CONTEXT_RECENT_COUNT,
+)
+from faultmaven.core.investigation.prompts.context_builder.evidence import (
     _build_evidence_context,
+)
+from faultmaven.core.investigation.prompts.context_builder.text_shaping import (
     _rerank_page_capture_sections,
 )
 from faultmaven.modules.case.contracts import (
@@ -534,7 +538,7 @@ class TestRelevanceOrder:
 
     @_LOAD_ORDERS
     def test_budget_downgrade_evicts_the_least_relevant_not_the_oldest(self, order):
-        from faultmaven.core.investigation.prompts.context_builder import (
+        from faultmaven.core.investigation.prompts.context_builder.evidence import (
             _score_evidence_for_tier_a,
         )
 
@@ -932,7 +936,7 @@ class TestTierDOrphanUploads:
         case.uploaded_files.extend([oldest, middle, newest])
 
         with patch(
-            "faultmaven.core.investigation.prompts.context_builder."
+            "faultmaven.core.investigation.prompts.context_builder.evidence."
             "EVIDENCE_CONTEXT_MAX_TOTAL_CHARS",
             squeezed_budget,
         ):
@@ -2072,7 +2076,7 @@ class TestCurrentTurnFloor:
         )
 
         with patch(
-            "faultmaven.core.investigation.prompts.context_builder."
+            "faultmaven.core.investigation.prompts.context_builder.evidence."
             "EVIDENCE_CONTEXT_MAX_TOTAL_CHARS",
             8000,
         ):
@@ -2111,7 +2115,7 @@ class TestCurrentTurnFloor:
         # ordering tries the big (turn 9) first; `continue` must let the small
         # (turn 2) still render.
         with patch(
-            "faultmaven.core.investigation.prompts.context_builder."
+            "faultmaven.core.investigation.prompts.context_builder.evidence."
             "EVIDENCE_CONTEXT_MAX_TOTAL_CHARS",
             3000,
         ):
@@ -2173,7 +2177,7 @@ class TestCurrentTurnFloor:
             )
 
         with patch(
-            "faultmaven.core.investigation.prompts.context_builder."
+            "faultmaven.core.investigation.prompts.context_builder.evidence."
             "EVIDENCE_CONTEXT_MAX_TOTAL_CHARS",
             4000,
         ):

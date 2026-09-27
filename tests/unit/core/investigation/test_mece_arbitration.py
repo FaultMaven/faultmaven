@@ -27,7 +27,7 @@ from faultmaven.core.investigation.causal_graph.rcc import retract_stale_engine_
 from faultmaven.core.investigation.milestone_engine import (
     _recompute_cause_state_from_chain,
 )
-from faultmaven.core.investigation.prompts.context_builder import (
+from faultmaven.core.investigation.prompts.context_builder.causal_graph_block import (
     _build_causal_graph_block,
 )
 from faultmaven.modules.case.contracts import (
@@ -917,7 +917,7 @@ def test_working_conclusion_block_carries_contested_note():
     pick over the contested hypotheses — rendered on a contested case it must
     carry the discrimination note, or the model anchors on the arbitrary pick
     beside a graph block saying identification is held."""
-    from faultmaven.core.investigation.prompts.context_builder import (
+    from faultmaven.core.investigation.prompts.context_builder.assembly import (
         build_investigation_context,
     )
     from faultmaven.modules.case.contracts import WorkingConclusion
@@ -936,7 +936,7 @@ def test_working_conclusion_block_carries_contested_note():
 
 
 def test_working_conclusion_block_clean_when_uncontested():
-    from faultmaven.core.investigation.prompts.context_builder import (
+    from faultmaven.core.investigation.prompts.context_builder.assembly import (
         build_investigation_context,
     )
     from faultmaven.modules.case.contracts import WorkingConclusion

@@ -9,8 +9,8 @@
 > assembled through this allocator.
 >
 > **Authoritative source:**
-> `faultmaven/core/investigation/prompts/context_builder.py`
-> (`build_investigation_context`, `TokenBudget`) and
+> `faultmaven/core/investigation/prompts/context_builder/`
+> (`build_investigation_context` in `__init__.py`, `TokenBudget` in `budget.py`) and
 > `faultmaven/core/investigation/prompts/templates/assembly.py` (`get_prompt_for_case`,
 > `_budgeted_prompt`).
 >
@@ -594,7 +594,7 @@ These are properties of the allocator's structure, asserted by tests (§14):
 |---|---|
 | Budget number + model context-window registry | Implemented |
 | Resolved budget as allocator input (§3) | Implemented |
-| Top-down priority-greedy allocator with floors + caps (§4–§5) | Implemented — `context_builder._allocate_sections` |
+| Top-down priority-greedy allocator with floors + caps (§4–§5) | Implemented — `context_builder.assembly._allocate_sections` |
 | Pressure-driven compaction (§5.2) | Implemented (conversation fidelity by fit; caps replace turn-count triggers) |
 | Reserve bounding incl. current-turn floor (§6, INV-1/INV-2) | Implemented (continuity via compact-history floor; INV-1 via evidence floor + fallback slot) |
 | Overflow **and starvation** backstop (§7) | Implemented — `templates.assembly._assemble_allocated` |

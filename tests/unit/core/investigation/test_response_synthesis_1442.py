@@ -624,8 +624,8 @@ async def test_engine_prose_on_a_placeholder_turn_is_the_whole_reply(site):
     """
     from unittest.mock import patch
 
-    from faultmaven.core.investigation.prompts import context_builder as cb
-    from faultmaven.core.investigation.prompts.fence import mint_token
+    from faultmaven.core.investigation.prompts.context_builder import history as cb
+    from faultmaven.core.investigation.prompts.fence import PromptFence, mint_token
     from faultmaven.core.investigation.schemas import InquiryResponse
     from faultmaven.modules.case.contracts import MESSAGE_METADATA_AGENT_SYNTHESIZED
     from faultmaven.modules.case.domain.models.evidence import EvidenceCategory
@@ -694,7 +694,7 @@ async def test_engine_prose_on_a_placeholder_turn_is_the_whole_reply(site):
             "metadata": result["metadata"],
         },
     ]
-    history = cb._build_verbatim_history(rows, cb.PromptFence(mint_token()))
+    history = cb._build_verbatim_history(rows, PromptFence(mint_token()))
     summary = cb._build_turn_summary(record)
     for rendered in (history, summary):
         assert RESPONSE_WITHHELD_TEXT not in rendered

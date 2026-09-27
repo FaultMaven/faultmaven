@@ -4,9 +4,11 @@ import dataclasses
 import logging
 from typing import Any, Dict, List, Optional, Sequence
 
-from faultmaven.core.investigation.prompts.context_builder import (
-    EntityHighlightGroup,
+from faultmaven.core.investigation.prompts.context_builder.assembly import (
     build_investigation_context,
+)
+from faultmaven.core.investigation.prompts.context_builder.entity_highlights import (
+    EntityHighlightGroup,
 )
 from faultmaven.modules.case.contracts import (
     Case,

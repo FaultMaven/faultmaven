@@ -32,7 +32,7 @@ from faultmaven.core.investigation.milestone_engine import (
     MilestoneEngine,
     MilestoneEngineError,
 )
-from faultmaven.core.investigation.prompts.context_builder import (
+from faultmaven.core.investigation.prompts.context_builder.assembly import (
     system_feedback_block,
 )
 from faultmaven.core.investigation.prompts.fence import TERMINATOR_NOTE

@@ -30,7 +30,7 @@ import re
 
 import pytest
 
-from faultmaven.core.investigation.prompts.context_builder import (
+from faultmaven.core.investigation.prompts.context_builder.evidence import (
     _build_evidence_context,
 )
 from faultmaven.modules.case.contracts import (
