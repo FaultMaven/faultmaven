@@ -42,7 +42,8 @@ Version floors: `pyproject.toml`. The pins CI installs: `requirements/dev.txt` (
 
 ```text
 faultmaven/
-├── main.py                 # FastAPI entry point; composition root in the lifespan
+├── main.py                 # FastAPI entry point: the app object, router inclusion, exception handlers,
+│                           # app-bound routes (health/metrics/meta/debug), import-time side effects
 ├── api/                    # Shared middleware (middleware/), v1/auth_dependencies.py (require_authentication), exception handlers, admin routes (routes/)
 ├── modules/                # Feature modules — the primary code organisation
 │   ├── auth/ case/ knowledge/                  # VERTICAL MODULES: own tables, contracts.py, infrastructure/
@@ -55,7 +56,8 @@ faultmaven/
 ├── infrastructure/         # Shared adapters: llm/ (providers/, router.py, cache.py, truncation.py, pricing.py),
 │                           # persistence/ (models.py = every ORM table), knowledge/ (ChromaDB), auth/, security/ (Presidio),
 │                           # protection/, storage/ (local, S3, Azure), logging/, observability/, health/, jobs/, tasks/, caching/, shims/, concurrency/
-├── bootstrap/              # Startup: startup.py, data_init.py (bootstrap admin), kb_init.py + kb_pack.py (KB pack ingestion)
+├── bootstrap/              # Startup: startup.py, data_init.py (bootstrap admin), kb_init.py + kb_pack.py (KB pack ingestion),
+│                           # composition.py (DI wiring + fail-fast gates), lifespan.py (app lifespan), middleware.py (middleware stack)
 ├── cli/                    # Operator console entrypoints (fm-*, `[project.scripts]`)
 ├── config/                 # settings.py, presets.py, feature_flags.py, protection.py, investigation_capability.py, llm_config_overrides.py
 ├── container/              # DI: base.py, registry.py, providers/ — implementation in faultmaven/_container_impl.py
@@ -168,7 +170,7 @@ alembic heads                                      # the only way to learn the c
 - Milestones are opportunistic — several can complete in one turn. Gate milestones (`mitigation_accepted`, `mitigation_verified`, `solution_accepted`, `solution_verified`) fire on user compliance; progress indicators (`symptom_verified` LLM-set, `solution_proposed` programmatic, `cause_state` ∈ `UNKNOWN | CANDIDATES | IDENTIFIED` engine-derived and never path-stripped) inform focus only.
 - Hypotheses: `CAPTURED → ACTIVE → VALIDATED | REFUTED | INCONCLUSIVE | RETIRED` (`HypothesisState`); stagnant likelihood decays ×0.85 per stagnant turn, and a hypothesis whose causal support stands is never aged by time alone; anchoring detection prevents fixation on weak theories.
 - Design docs are canonical and start at `docs/architecture/investigation-engine/README.md`; the `investigation-framework` skill applies to `modules/agent/` and `core/investigation/`. LLM-facing rules (structured output, stop reasons, turn budget, reasoning intent): `.claude/rules/llm-providers.md`.
-- DI: service-locator container (`faultmaven/container/`, implementation `faultmaven/_container_impl.py`), composed once in the `main.py` lifespan, resolved by interface. Async throughout: FastAPI endpoints, async drivers, concurrent LLM calls via `asyncio.gather()`.
+- DI: service-locator container (`faultmaven/container/`, implementation `faultmaven/_container_impl.py`), composed once in `bootstrap/composition.py`'s `_wire_composition_root`, called from `bootstrap/lifespan.py`'s `lifespan` (which `main.py` builds the app with), resolved by interface. Async throughout: FastAPI endpoints, async drivers, concurrent LLM calls via `asyncio.gather()`.
 
 ## Security Rules
 

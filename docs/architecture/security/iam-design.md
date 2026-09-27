@@ -1904,7 +1904,7 @@ class PostgresOAuthCodeRepository(IOAuthCodeRepository):
 ### Dependency Injection
 
 ```python
-# faultmaven/main.py (composition root)
+# faultmaven/bootstrap/composition.py (composition root)
 
 def create_app(config: AppConfig) -> FastAPI:
     app = FastAPI()
