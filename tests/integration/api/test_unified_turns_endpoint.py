@@ -175,7 +175,7 @@ class TestTurnPayloadConstruction:
 # ============================================================
 #
 # These tests cover the input-origin discrimination in the unified turns
-# endpoint at modules/case/api/routes.py:2140-2166. The route distinguishes
+# endpoint (``submit_turn`` in modules/case/api/routes/__init__.py). The route distinguishes
 # three submission origins so the classifier can apply the correct
 # confidence boost downstream:
 #

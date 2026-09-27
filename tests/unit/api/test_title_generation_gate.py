@@ -3,7 +3,7 @@
 Titleability is decided by **substance** and nothing else: a confirmed/proposed
 problem statement, or ``MIN_CONTENT_LENGTH_FOR_TITLE`` characters of evidence,
 file summaries and user chat. There is deliberately no second, turn-count gate —
-see the constants block in ``modules/case/api/routes.py`` for why the two ANDed
+see the constants block in ``modules/case/api/routes/title_generation.py`` for why the two ANDed
 gates that used to sit here were residue of an incomplete replacement rather
 than a policy.
 

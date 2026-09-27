@@ -2907,7 +2907,7 @@ class AgentSettings(BaseSettings):
     # Fireworks DeepSeek V4 Pro on log-heavy cases, local Ollama on CPU)
     # need more headroom but raising the global default hurts faster
     # providers. Mirrors LLMSettings.provider_timeout_overrides; resolved
-    # at call time in modules/case/api/routes.py.
+    # at call time in modules/case/api/routes/.
     #
     # Set via env as JSON, e.g.:
     #   AGENT_PROVIDER_TIMEOUT_OVERRIDES='{"fireworks": 300, "ollama": 900}'

@@ -45,7 +45,7 @@ owner. Bumping ``version`` makes that save miss and raise
 
 **The in-flight turn does not.** ``POST /cases/{id}/turns`` deliberately does
 not retry on an OCC conflict — "LLM turns are expensive and non-idempotent"
-(``modules/case/api/routes.py``) — it returns 409 and the caller decides. So the
+(``modules/case/api/routes/``) — it returns 409 and the caller decides. So the
 bump protects the migration by *discarding* a concurrent turn, which the Slack
 agent surfaces as "the case is busy" and the user re-sends. That makes running
 with the agent stopped a real instruction, not belt-and-braces.
