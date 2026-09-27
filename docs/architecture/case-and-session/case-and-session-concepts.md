@@ -279,8 +279,9 @@ class Case(BaseModel):
     Illustrative subset — see modules/case/domain/models/case.py for the canonical model."""
     case_id: str                       # Primary key - NOT nested under sessions
     title: str                         # Generated or user-provided title
-    user_id: str                       # Authorization reference (NOT FK to session)
-    organization_id: str               # Tenancy owner — every case belongs to an organization
+    user_id: Optional[str]             # Authorization reference (NOT FK to session); NULL after the creator is deleted
+    enterprise_id: str                 # Isolation owner (ADR-017) — every case belongs to an enterprise
+    organization_id: Optional[str]     # Billing attribution only (ADR-017) — never a visibility predicate
     source: Literal["copilot", "slack", "api"]  # Case origin (ADR-012), stamped at creation
     state: CaseState                 # INQUIRY | INVESTIGATING | RESOLVED | CLOSED
     closure_reason: Optional[str]      # Sub-categorizes a CLOSED disposition (e.g. inquiry_only)

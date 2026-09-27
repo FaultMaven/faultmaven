@@ -97,7 +97,7 @@ class CaseState(str, Enum):
     DISPOSITION: Case closed WITHOUT solution.
     Investigation completed without a verified fix, or inquiry-only.
 
-    closure_reason = inquiry_only | solution_deferred | closed_rca_infeasible | mitigation_sufficient | closed_insufficient_evidence
+    closure_reason = inquiry_only | solution_deferred | closed_rca_infeasible | mitigation_sufficient | closed_restatement_held | closed_insufficient_evidence
     Engine-derived via derive_closure_reason(). Never authored by the LLM.
     Note: a case stabilized by a verified mitigation closes as "mitigation_sufficient"
     (the former "mitigation_sufficient" reason was folded in — the documented
@@ -405,6 +405,12 @@ class TurnOutcome(str, Enum):
     OTHER = "other"
     """Doesn't fit standard outcomes"""
 
+    OUT_OF_BAND = "out_of_band"
+    """An aside (small talk, trivia, a question about FaultMaven itself) answered briefly with no investigation work. Recorded by the out-of-band handler, not the LLM"""
+
+    SKIPPED = "skipped"
+    """Turn not recorded: a placeholder the engine inserts when recovering after an interrupted turn. Turn-history analyses exclude it (TurnProgress.is_skipped)"""
+
     # NOTE: No "BLOCKED" - investigation stalls naturally via turns_without_progress
     # Progress monitor activates transparent mode at 5+ investigative turns without progress (prompt hints, not mode changes)
 ```
@@ -506,8 +512,9 @@ class Case(BaseModel):
     # Core Identity
     # ============================================================
     case_id: str = Field(default_factory=lambda: f"case_{uuid4().hex[:12]}")
-    user_id: str
-    organization_id: str
+    user_id: Optional[str]          # NULL after the creator is deleted
+    enterprise_id: str              # Isolation owner (ADR-017)
+    organization_id: Optional[str]  # Billing attribution only (ADR-017)
     title: str
 
     # ============================================================
@@ -522,7 +529,7 @@ class Case(BaseModel):
 
     closure_reason: Optional[str] = Field(
         default=None,
-        description="None for RESOLVED. For CLOSED: inquiry_only | solution_deferred | closed_rca_infeasible | mitigation_sufficient | closed_insufficient_evidence. Engine-derived via derive_closure_reason(); never set by the LLM."
+        description="None for RESOLVED. For CLOSED: inquiry_only | solution_deferred | closed_rca_infeasible | mitigation_sufficient | closed_restatement_held | closed_insufficient_evidence. Engine-derived via derive_closure_reason(); never set by the LLM."
     )
 
     # ============================================================
@@ -603,7 +610,7 @@ class Case(BaseModel):
     @property
     def current_stage(self) -> Optional[InvestigationStage]:
         """Investigation stage (only when INVESTIGATING)"""
-        if self.status != CaseState.INVESTIGATING:
+        if self.state != CaseState.INVESTIGATING:
             return None
         return self.progress.current_stage
 
@@ -613,7 +620,7 @@ class Case(BaseModel):
     @property
     def is_terminal(self) -> bool:
         """Check if case has reached a disposition (terminal)"""
-        return self.status in [CaseState.RESOLVED, CaseState.CLOSED]
+        return self.state in [CaseState.RESOLVED, CaseState.CLOSED]
 
     @property
     def time_to_resolution(self) -> Optional[timedelta]:
@@ -1672,32 +1679,9 @@ class HypothesisGenerationMode(str, Enum):
     OPPORTUNISTIC = "opportunistic"
     SYSTEMATIC = "systematic"
     FORCED_ALTERNATIVE = "forced_alternative"
-
-class EvidenceRequirement(BaseModel):
-    """
-    Evidence needed to test a hypothesis.
-    Part of hypothesis definition.
-    Agent uses this to request specific diagnostic data.
-    """
-
-    description: str = Field(
-        description="What evidence is needed"
-    )
-
-    evidence_type: str = Field(
-        description="log_file | metrics | config | code | trace | etc."
-    )
-
-    acquisition_guidance: Optional[str] = Field(
-        default=None,
-        description="How to collect this evidence (commands, tools, etc.)"
-    )
-
-    criticality: str = Field(
-        default="required",
-        description="required | preferred | optional"
-    )
 ```
+
+There is no per-hypothesis evidence-requirement model. The evidence an investigation needs is an `EvidenceNeed` in a flat pool on the case, not anchored to a hypothesis. See [Evidence Needs Design](./evidence-needs-design.md) §9.1, "`EvidenceNeed` over `EvidenceRequest`".
 
 ### 3.2 Anchoring Detection
 
