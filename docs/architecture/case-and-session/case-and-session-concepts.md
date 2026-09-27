@@ -276,7 +276,7 @@ class SessionContext(BaseModel):
 
 class Case(BaseModel):
     """Independent case resource with complete lifecycle.
-    Illustrative subset — see modules/case/domain/models.py for the canonical model."""
+    Illustrative subset — see modules/case/domain/models/case.py for the canonical model."""
     case_id: str                       # Primary key - NOT nested under sessions
     title: str                         # Generated or user-provided title
     user_id: str                       # Authorization reference (NOT FK to session)

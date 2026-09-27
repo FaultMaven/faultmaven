@@ -122,7 +122,7 @@ and **assessment variables** (engine-derived truth signals about what we know).
 The path enum is gone; the mitigation gate is a single forward-only record.
 
 ```python
-# Illustrative subset — see faultmaven/modules/case/domain/models.py for the canonical
+# Illustrative subset — see faultmaven/modules/case/domain/models/progress.py for the canonical
 # InvestigationProgress (additionally exposes verification_completed_at,
 # investigation_completed_at, resolution_completed_at timestamp fields).
 class InvestigationProgress(BaseModel):
@@ -496,7 +496,7 @@ when an Axis-B (mitigation-gap) judgment fires, and the user accepts or declines
 
 ### 1.5 Complete Case Model
 
-> **Illustrative subset** — this snippet covers the investigation-engine-facing fields. The canonical model in `faultmaven/modules/case/domain/models.py` additionally exposes `description`, `is_archived`, `archived_at`, `last_activity_at`, `pending_transition`, `last_suggestions`, `kb_context`, `messages`, `message_count`, and `investigation_journal`.
+> **Illustrative subset** — this snippet covers the investigation-engine-facing fields. The canonical model in `faultmaven/modules/case/domain/models/case.py` additionally exposes `description`, `is_archived`, `archived_at`, `last_activity_at`, `pending_transition`, `last_suggestions`, `kb_context`, `messages`, `message_count`, and `investigation_journal`.
 
 ```python
 class Case(BaseModel):
@@ -966,7 +966,7 @@ class UrgencyLevel(str, Enum):
 
 ### 1.7 InquiryData
 
-> **Illustrative subset** — the canonical `InquiryData` in `faultmaven/modules/case/domain/models.py` additionally exposes `knowledge_matches: List[KnowledgeMatch]`, `knowledge_resolution: Optional[KnowledgeResolution]`, and `preliminary_urgency: Optional[PreliminaryUrgency]` (the KB-resolution sub-model).
+> **Illustrative subset** — the canonical `InquiryData` in `faultmaven/modules/case/domain/models/problem.py` additionally exposes `knowledge_matches: List[KnowledgeMatch]`, `knowledge_resolution: Optional[KnowledgeResolution]`, and `preliminary_urgency: Optional[PreliminaryUrgency]` (the KB-resolution sub-model).
 
 ```python
 class InquiryData(BaseModel):

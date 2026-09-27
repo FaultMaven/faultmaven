@@ -254,7 +254,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 ### 3.1 Core Case Structure
 
 ```python
-# Illustrative subset — see faultmaven/modules/case/domain/models.py for the canonical model.
+# Illustrative subset — see faultmaven/modules/case/domain/models/case.py for the canonical model.
 class Case(BaseModel):
     """Root case entity."""
 
