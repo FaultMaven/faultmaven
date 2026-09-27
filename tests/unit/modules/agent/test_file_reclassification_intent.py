@@ -35,14 +35,23 @@ from faultmaven.core.preprocessing.models import UnifiedDataType
 from faultmaven.exceptions import NotFoundError, ValidationException
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import IntentType, QueryIntent
-from faultmaven.modules.agent.domain.services.investigation_service import (
-    _DATA_TYPE_TO_SOURCE_TYPE,
-    InvestigationService,
+from faultmaven.modules.agent.domain.services.investigation_service.attachments import (
+    _PreprocessedAttachment,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.clarification import (
     _admit_clarification_entries,
     _build_classification_clarification,
     _carry_forward_unresolved_clarifications,
-    _PreprocessedAttachment,
     _sanitize_label_fragment,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.reclassification import (
+    _handle_file_reclassification,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
+    InvestigationService,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
+    _DATA_TYPE_TO_SOURCE_TYPE,
 )
 from faultmaven.modules.case.domain.models.evidence import (
     EvidenceSourceType,
@@ -1970,7 +1979,10 @@ def test_every_reader_of_a_stored_entry_tolerates_any_shape():
 
     liveness = "core/investigation/suggestion_liveness.py"
     resolver = "core/investigation/intent_resolver.py"
-    service = "modules/agent/domain/services/investigation_service.py"
+    service = "modules/agent/domain/services/investigation_service/service.py"
+    clarification = (
+        "modules/agent/domain/services/investigation_service/clarification.py"
+    )
     engine = "core/investigation/milestone_engine/engine.py"
 
     assert set(readers) == {
@@ -1984,12 +1996,12 @@ def test_every_reader_of_a_stored_entry_tolerates_any_shape():
         (resolver, "IntentResolver._build_prompt"),  # f-string: any shape
         (resolver, "IntentResolver.resolve"),  # truthiness only
         (resolver, "IntentResolver._parse_response"),  # truthiness only
-        (service, "_stored_suggestions"),  # truthiness only
+        (clarification, "_stored_suggestions"),  # truthiness only
         # ---- NOT stored-entry readers: they share a field NAME -------------
         # The re-render of THIS turn's engine follow-ups, not of a stored row.
         (service, "InvestigationService.process_turn"),
         # The clarification friendly-names table.
-        (service, "_clarification_suggestions_for_failed"),
+        (clarification, "_clarification_suggestions_for_failed"),
         # A tool result's own label.
         (engine, "MilestoneEngine._format_tool_result"),
         # HTTP request/response bodies, unrelated to this seam.
@@ -2159,15 +2171,21 @@ class TestHandlerValidation:
     async def test_missing_fields_raise_validation(self, service, repo_with_case):
         _, case = repo_with_case
         with pytest.raises(ValidationException):
-            await service._handle_file_reclassification(
-                case=case, file_id=None, data_type_value=None
+            await _handle_file_reclassification(
+                service.file_storage_service,
+                service.preprocessing_service,
+                case=case,
+                file_id=None,
+                data_type_value=None,
             )
 
     @pytest.mark.asyncio
     async def test_unknown_data_type_raises_validation(self, service, repo_with_case):
         _, case = repo_with_case
         with pytest.raises(ValidationException, match="Unknown data_type"):
-            await service._handle_file_reclassification(
+            await _handle_file_reclassification(
+                service.file_storage_service,
+                service.preprocessing_service,
                 case=case,
                 file_id="file_aaaaaaaaaaaa",
                 data_type_value="not_a_type",
@@ -2177,7 +2195,9 @@ class TestHandlerValidation:
     async def test_unknown_file_raises_not_found(self, service, repo_with_case):
         _, case = repo_with_case
         with pytest.raises(NotFoundError):
-            await service._handle_file_reclassification(
+            await _handle_file_reclassification(
+                service.file_storage_service,
+                service.preprocessing_service,
                 case=case,
                 file_id="file_zzzzzzzzzzzz",
                 data_type_value="logs_and_errors",
@@ -2190,7 +2210,9 @@ class TestHandlerValidation:
         _, case = repo_with_case
         case.uploaded_files = [make_uploaded_file(storage_ref=None)]
         with pytest.raises(ValidationException, match="no stored raw content"):
-            await service._handle_file_reclassification(
+            await _handle_file_reclassification(
+                service.file_storage_service,
+                service.preprocessing_service,
                 case=case,
                 file_id="file_aaaaaaaaaaaa",
                 data_type_value="logs_and_errors",
@@ -2597,7 +2619,9 @@ class TestTerminalCaseGuard:
             }
         )
         with pytest.raises(ValidationException, match="closed case"):
-            await service._handle_file_reclassification(
+            await _handle_file_reclassification(
+                service.file_storage_service,
+                service.preprocessing_service,
                 case=terminal,
                 file_id="file_aaaaaaaaaaaa",
                 data_type_value="logs_and_errors",
@@ -3075,12 +3099,19 @@ def test_every_data_type_writer_retires_the_question():
 
         _Walk(rel).visit(tree)
 
-    service_module = "modules/agent/domain/services/investigation_service.py"
+    service_module = "modules/agent/domain/services/investigation_service/service.py"
+    attachments_module = (
+        "modules/agent/domain/services/investigation_service/attachments.py"
+    )
+    reclassification_module = (
+        "modules/agent/domain/services/investigation_service/reclassification.py"
+    )
     # The filter did not exclude a file a known writer lives in. Without this,
     # a narrowed token list drops hits and the equality below still passes by
     # matching a smaller set against a smaller expectation.
     assert {
         service_module,
+        reclassification_module,
         "modules/case/infrastructure/sqlite_case_repository/repository.py",
         "modules/case/infrastructure/postgresql_hybrid_case_repository/repository.py",
     } <= parsed, f"the token filter excluded a module holding a known writer: {parsed}"
@@ -3088,8 +3119,8 @@ def test_every_data_type_writer_retires_the_question():
     assert found == {
         # Mints the question; does not answer one.
         (
-            service_module,
-            "InvestigationService._preprocess_attachment",
+            attachments_module,
+            "_preprocess_attachment",
             "attribute_write",
         ),
         # The row write itself. It is private to this module, which is why a
@@ -3098,17 +3129,21 @@ def test_every_data_type_writer_retires_the_question():
         # sake — the coverage half (#1471) is spread in from
         # ``_refreshed_coverage`` rather than assembled into a variable,
         # which is a shape this scan declares it cannot see.
-        (service_module, "_file_row_with_reclassification", "model_copy_update"),
+        (
+            reclassification_module,
+            "_file_row_with_reclassification",
+            "model_copy_update",
+        ),
         # The seam both paths cross (#1470): the file row AND every Evidence
         # row backed by it. Its own entry, because it is now the only caller
         # of the row writer above — the two paths below reach the write
         # THROUGH it, which is what stops them re-aligning Evidence two
         # different ways.
-        (service_module, "_reclassified_collections", "reclassification"),
+        (reclassification_module, "_reclassified_collections", "reclassification"),
         # The turn seam — retires by ``resolved_file_id``.
         (
-            service_module,
-            "InvestigationService._handle_file_reclassification",
+            reclassification_module,
+            "_handle_file_reclassification",
             "reclassification",
         ),
         # Out of band — retires by ``drop_clarifications_for_file`` (fm#918).
@@ -3274,7 +3309,10 @@ class TestATerminalCaseAnswersNothingStored:
             "core/investigation/milestone_engine/terminal_replies.py"
         )
         engine_stage_gates = "core/investigation/milestone_engine/stage_gates.py"
-        service = "modules/agent/domain/services/investigation_service.py"
+        service = "modules/agent/domain/services/investigation_service/service.py"
+        clarification = (
+            "modules/agent/domain/services/investigation_service/clarification.py"
+        )
         assert builders == {
             # The three engine GATE builders. Each is emitted beside a
             # ``propose_transition`` or an open Gate 1, so never on a terminal
@@ -3297,8 +3335,8 @@ class TestATerminalCaseAnswersNothingStored:
             # both carry ``intent`` by construction. A clarification IS
             # dropped on a terminal case, deliberately, and since before
             # fm#918 — see ``suggestion_is_live``.
-            (service, "_stored_suggestions"),
-            (service, "_clarification_suggestions_for_failed"),
+            (clarification, "_stored_suggestions"),
+            (clarification, "_clarification_suggestions_for_failed"),
             # Also not a producer: ``process_turn`` RE-RENDERS whatever the
             # engine returned into the response, forwarding ``f.get("intent")``
             # unchanged. It cannot originate an intent, so it cannot originate

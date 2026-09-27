@@ -30,7 +30,13 @@ faultmaven/modules/agent/
 │   ├── models/
 │   │   └── agentic.py          # Agentic framework models, QueryIntent, SuggestedAction
 │   └── services/
-│       ├── investigation_service.py  # Turn lifecycle around the MilestoneEngine
+│       ├── investigation_service/    # Turn lifecycle around the MilestoneEngine
+│       │   ├── service.py            # InvestigationService, _IntentDispatchKind
+│       │   ├── attachments.py        # Binary detection, _preprocess_attachment
+│       │   ├── clarification.py      # Classification-clarification cards
+│       │   ├── reclassification.py   # The reclassification seam, _handle_file_reclassification
+│       │   ├── turn_bookkeeping.py   # SERVICE-dispatched turn-record backstop
+│       │   └── intent_gates.py       # INV-26 guard for resolver-minted intents
 │       └── query_classifier.py       # Deterministic processing-mode classifier
 ├── jobs/
 │   └── storage_cleanup.py      # TTL-based orphan-file sweep

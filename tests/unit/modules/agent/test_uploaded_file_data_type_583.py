@@ -35,9 +35,11 @@ from faultmaven.core.preprocessing.models import (
 )
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import IntentType, QueryIntent
-from faultmaven.modules.agent.domain.services.investigation_service import (
-    _DATA_TYPE_TO_SOURCE_TYPE,
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
+    _DATA_TYPE_TO_SOURCE_TYPE,
     _published_source_type,
 )
 from faultmaven.modules.case.domain.models.evidence import (
@@ -212,7 +214,9 @@ class TestReclassificationMetricLabel:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("stored", ["structured_config", "configuration"])
     async def test_from_type_is_folded(self, stored, monkeypatch):
-        from faultmaven.modules.agent.domain.services import investigation_service
+        from faultmaven.modules.agent.domain.services.investigation_service import (
+            reclassification as investigation_service,
+        )
 
         metric = MagicMock()
         monkeypatch.setattr(
@@ -455,7 +459,14 @@ def _is_str_literal(node) -> bool:
 #: used (``_TYPE_MAP.get(stored)``).
 _PARSES = _ONE_VOCABULARY_PARSERS | {"get", "[]", "==literal"}
 
-_SVC = "modules/agent/domain/services/investigation_service.py"
+_SVC = "modules/agent/domain/services/investigation_service/service.py"
+_ATTACHMENTS = "modules/agent/domain/services/investigation_service/attachments.py"
+_RECLASSIFICATION = (
+    "modules/agent/domain/services/investigation_service/reclassification.py"
+)
+_TURN_BOOKKEEPING = (
+    "modules/agent/domain/services/investigation_service/turn_bookkeeping.py"
+)
 _INGEST = "modules/case/domain/services/case_data_ingestion_service.py"
 #: #1707 split SQLite's repository into a package: ``find_uploaded_file_by_content_hash``
 #: stayed on the owner in ``repository.py``; ``_load_*`` moved to module functions
@@ -499,9 +510,12 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
         "file_meta",
     ): ("boundary", 1),
     # AttachmentResult.source_type, published as the 6-valued vocabulary.
-    (_SVC, "_published_source_type", "attr", "uploaded_file"): ("boundary", 1),
+    (_TURN_BOOKKEEPING, "_published_source_type", "attr", "uploaded_file"): (
+        "boundary",
+        1,
+    ),
     # ``previous_type`` → EVIDENCE_RECLASSIFICATION_TOTAL.from_type.
-    (_SVC, "InvestigationService._handle_file_reclassification", "attr", "file_meta"): (
+    (_RECLASSIFICATION, "_handle_file_reclassification", "attr", "file_meta"): (
         "boundary",
         1,
     ),
@@ -528,7 +542,7 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
     ): ("opaque", 1),
     # The engine attachment dict's ``data_type`` key. No engine code reads it
     # (``turn_uploads`` reads ``file_id`` / ``is_novel``).
-    (_SVC, "_engine_attachment_metadata", "attr", "uf"): ("opaque", 1),
+    (_ATTACHMENTS, "_engine_attachment_metadata", "attr", "uf"): ("opaque", 1),
     # --- repositories: the string between row and model (9 functions) ------
     (_SQLITE_LOADING, "_load_uploaded_files", "sql", "<sql>"): (
         "passthrough",
@@ -621,8 +635,8 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
     ): ("other", 1),
     # ``preprocessing_result.data_type`` / a classifier result.
     (
-        _SVC,
-        "InvestigationService._handle_file_reclassification",
+        _RECLASSIFICATION,
+        "_handle_file_reclassification",
         "attr",
         "preprocessing_result",
     ): ("other", 1),

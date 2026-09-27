@@ -166,7 +166,7 @@ class TestObservabilityIntegration:
 
     def test_agent_has_tracing(self):
         """Verify agent service methods have trace decorators."""
-        from faultmaven.modules.agent.domain.services.investigation_service import (
+        from faultmaven.modules.agent.domain.services.investigation_service.service import (
             InvestigationService,
         )
         from faultmaven.modules.case.domain.services.case_service import CaseService

@@ -10,7 +10,7 @@ produced. Pure predicate — no LLM, no model variance.
 
 from __future__ import annotations
 
-from faultmaven.modules.agent.domain.services.investigation_service import (
+from faultmaven.modules.agent.domain.services.investigation_service.attachments import (
     _PreprocessedAttachment,
     _turn_delivers_evidence_bearing_attachment,
 )
