@@ -33,7 +33,7 @@ from datetime import UTC, datetime
 import pytest
 
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
-from faultmaven.core.investigation.prompts.context_builder import (
+from faultmaven.core.investigation.prompts.context_builder.evidence import (
     _build_evidence_context,
 )
 from faultmaven.core.investigation.prompts.fence import render_fenced

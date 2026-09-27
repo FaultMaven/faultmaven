@@ -22,7 +22,7 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.core.investigation.prompts.context_builder import (
+from faultmaven.core.investigation.prompts.context_builder.evidence import (
     _build_evidence_context,
     _coverage_overlaps_window,
     _extract_time_window_from_query,

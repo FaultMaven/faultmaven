@@ -38,9 +38,11 @@ import re
 import pytest
 
 from faultmaven.core.investigation.prompts import fence as fence_mod
-from faultmaven.core.investigation.prompts.context_builder import (
-    _build_evidence_context,
+from faultmaven.core.investigation.prompts.context_builder.assembly import (
     build_investigation_context,
+)
+from faultmaven.core.investigation.prompts.context_builder.evidence import (
+    _build_evidence_context,
 )
 from faultmaven.core.investigation.prompts.fence import (
     TERMINATOR_NOTE,

@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from faultmaven.core.investigation.milestone_engine import _evidence_coverage
-from faultmaven.core.investigation.prompts.context_builder import (
+from faultmaven.core.investigation.prompts.context_builder.evidence import (
     _file_observed_attr,
     _observed_attr,
     _render_orphan_file_block,
@@ -274,7 +274,7 @@ def test_prompt_states_the_current_time():
     """Without this the model cannot compute an age at all: its own sense of
     "now" is its training cutoff, and no timestamp in the prompt is anchored."""
 
-    from faultmaven.core.investigation.prompts.context_builder import (
+    from faultmaven.core.investigation.prompts.context_builder.assembly import (
         build_investigation_context,
     )
 

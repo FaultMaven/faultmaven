@@ -19,10 +19,10 @@ import test_context_sliding_window as t  # noqa: E402
 from faultmaven.core.investigation.milestone_engine import (  # noqa: E402
     _is_context_length_error,
 )
-from faultmaven.core.investigation.prompts.context_builder import (  # noqa: E402
-    TokenBudget,
+from faultmaven.core.investigation.prompts.context_builder.assembly import (
     build_investigation_context,
 )
+from faultmaven.core.investigation.prompts.context_builder.budget import TokenBudget
 from faultmaven.core.investigation.prompts.templates import (  # noqa: E402
     get_fallback_prompt_for_case,
     get_prompt_for_case,
@@ -330,7 +330,7 @@ def test_allocator_conversation_cap_does_not_starve_journal():
     case.current_turn = 25
     # Sanity: the raw conversation genuinely exceeds the cap, so the assertion
     # below actually exercises the cap (guards against a no-op test).
-    from faultmaven.core.investigation.prompts.context_builder import (
+    from faultmaven.core.investigation.prompts.context_builder.history import (
         _build_graduated_history,
     )
     from faultmaven.core.investigation.prompts.fence import PromptFence
@@ -369,7 +369,7 @@ _VARIABLE_KEYS = (
 
 
 def _allocate(budget, **variable):
-    from faultmaven.core.investigation.prompts.context_builder import (
+    from faultmaven.core.investigation.prompts.context_builder.assembly import (
         _allocate_sections,
     )
 
@@ -415,7 +415,7 @@ def test_a_non_empty_section_allotted_two_tokens_or_fewer_is_marked(room):
     allotted 0, 1 or 2 used to vanish unmarked — and absent engine state such
     as ``hypotheses`` reads to the model as "none exist". It now carries the
     same bare ``[...]`` ``_truncate_to`` emits, charged to the margin."""
-    from faultmaven.core.investigation.prompts.context_builder import (
+    from faultmaven.core.investigation.prompts.context_builder.budget import (
         _SECTION_DROPPED_MARKER,
     )
 
@@ -452,7 +452,7 @@ def test_a_non_empty_section_allotted_two_tokens_or_fewer_is_marked(room):
 def _entity_highlights_block() -> str:
     """A real ``entity_highlights`` section: renderer preamble, then a fenced
     element — the shape whose opening delimiter a head cut can land inside."""
-    from faultmaven.core.investigation.prompts.context_builder import (
+    from faultmaven.core.investigation.prompts.context_builder.entity_highlights import (
         EntityHighlightGroup,
         EntityHighlightRow,
         _render_entity_highlights,
@@ -484,7 +484,7 @@ def test_a_fenced_section_is_never_silently_empty_at_any_allotment():
     allotment from 0 to the section's full size must render real content or
     the marker. Swept one token at a time: the band is contiguous and a coarser
     step skips most of it."""
-    from faultmaven.core.investigation.prompts.context_builder import (
+    from faultmaven.core.investigation.prompts.context_builder.budget import (
         _SECTION_DROPPED_MARKER,
         _SILENT_DROP_MAX_TOKENS,
     )
@@ -518,7 +518,7 @@ def test_a_section_that_fits_a_tiny_allotment_renders_as_itself():
     """The marker replaces content that did NOT fit, never content that did: a
     one-token section granted its one token renders verbatim, and only the
     section behind it — which does not fit — is marked."""
-    from faultmaven.core.investigation.prompts.context_builder import (
+    from faultmaven.core.investigation.prompts.context_builder.budget import (
         _SECTION_DROPPED_MARKER,
     )
 
@@ -538,7 +538,7 @@ def test_truncate_to_is_empty_at_its_floor_and_marked_just_above():
     """``_truncate_to``'s own boundary: "" at the floor (where it cannot fit
     even its marker — the allocator marks that outcome itself), the bare marker
     one token above."""
-    from faultmaven.core.investigation.prompts.context_builder import (
+    from faultmaven.core.investigation.prompts.context_builder.budget import (
         _SECTION_DROPPED_MARKER,
         _SILENT_DROP_MAX_TOKENS,
     )
@@ -598,8 +598,8 @@ def test_no_section_vanishes_unmarked_on_the_assembled_prompt(monkeypatch):
     continuity content on every main-template prompt at the shipped settings.
     """
     from faultmaven.config.settings import get_settings
-    from faultmaven.core.investigation.prompts import context_builder as cb
     from faultmaven.core.investigation.prompts import templates as tp
+    from faultmaven.core.investigation.prompts.context_builder import assembly as cb
 
     settings = get_settings()
     real_allocate = cb._allocate_sections

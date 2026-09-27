@@ -37,7 +37,7 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.core.investigation.prompts.context_builder import (
+from faultmaven.core.investigation.prompts.context_builder.assembly import (
     build_investigation_context,
 )
 from faultmaven.core.investigation.prompts.templates import (

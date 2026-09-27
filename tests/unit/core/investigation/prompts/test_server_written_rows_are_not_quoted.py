@@ -21,11 +21,12 @@ from __future__ import annotations
 
 import pytest
 
-from faultmaven.core.investigation.prompts import context_builder as cb
-from faultmaven.core.investigation.prompts.fence import mint_token
+from faultmaven.core.investigation.prompts.context_builder import history as cb
+from faultmaven.core.investigation.prompts.fence import PromptFence, mint_token
 from faultmaven.modules.case.contracts import (
     EMPTY_TURN_TEXT,
     MESSAGE_METADATA_USER_EMPTY,
+    is_server_written_user_row,
 )
 
 
@@ -72,10 +73,10 @@ class TestServerWrittenRowsAreNotQuoted:
             "content": "the pool was exhausted",
             "metadata": {MESSAGE_METADATA_USER_EMPTY: True},
         }
-        assert cb.is_server_written_user_row(poisoned) is False
+        assert is_server_written_user_row(poisoned) is False
 
         out = cb._build_verbatim_history(
-            [_said(1, "user", "why?"), poisoned], cb.PromptFence(mint_token())
+            [_said(1, "user", "why?"), poisoned], PromptFence(mint_token())
         )
         assert "the pool was exhausted" in out
 
@@ -84,9 +85,9 @@ class TestServerWrittenRowsAreNotQuoted:
 
         A user who literally types "(no message)" said it, and must be quoted.
         """
-        assert cb.is_server_written_user_row(_marker_row(1)) is True
-        assert cb.is_server_written_user_row(_said(1, "user", EMPTY_TURN_TEXT)) is False
-        assert cb.is_server_written_user_row({"role": "user"}) is False
+        assert is_server_written_user_row(_marker_row(1)) is True
+        assert is_server_written_user_row(_said(1, "user", EMPTY_TURN_TEXT)) is False
+        assert is_server_written_user_row({"role": "user"}) is False
 
     def test_the_verbatim_history_does_not_quote_it(self):
         """Short-conversation fidelity."""
@@ -96,7 +97,7 @@ class TestServerWrittenRowsAreNotQuoted:
             _marker_row(2),
             _said(2, "assistant", "still waiting on the volume name"),
         ]
-        out = cb._build_verbatim_history(rows, cb.PromptFence(mint_token()))
+        out = cb._build_verbatim_history(rows, PromptFence(mint_token()))
 
         assert EMPTY_TURN_TEXT not in out
         # The real content is still there — this is a skip, not a blanket drop.
@@ -110,7 +111,7 @@ class TestServerWrittenRowsAreNotQuoted:
         string — or every user row — would pass every test above.
         """
         rows = [_said(1, "user", EMPTY_TURN_TEXT), _said(1, "assistant", "ok")]
-        out = cb._build_verbatim_history(rows, cb.PromptFence(mint_token()))
+        out = cb._build_verbatim_history(rows, PromptFence(mint_token()))
         assert EMPTY_TURN_TEXT in out
 
     def _long_case(self, marker_turn: int):
@@ -140,7 +141,7 @@ class TestServerWrittenRowsAreNotQuoted:
     def test_the_graduated_recent_window_does_not_quote_it(self):
         """The marker in one of the last three turns, rendered verbatim there."""
         case = self._long_case(marker_turn=7)
-        out = cb._build_graduated_history(case, cb.PromptFence(mint_token()))
+        out = cb._build_graduated_history(case, PromptFence(mint_token()))
 
         assert EMPTY_TURN_TEXT not in out
         assert "assistant line for turn 7" in out
@@ -149,7 +150,7 @@ class TestServerWrittenRowsAreNotQuoted:
         """The marker in an EARLIER turn, which is summarised by its first
         user message — a different code path from the verbatim window."""
         case = self._long_case(marker_turn=1)
-        out = cb._build_graduated_history(case, cb.PromptFence(mint_token()))
+        out = cb._build_graduated_history(case, PromptFence(mint_token()))
 
         assert EMPTY_TURN_TEXT not in out
         # The later turns still render, so this is a skip and not a collapse.
@@ -196,7 +197,7 @@ class TestServerWrittenRowsAreNotQuoted:
         case.messages = rows
         case.turn_history = [record]
 
-        out = cb._build_graduated_history(case, cb.PromptFence(mint_token()))
+        out = cb._build_graduated_history(case, PromptFence(mint_token()))
 
         # Positive control: the branch under test actually rendered. Without
         # it, a change that stopped reaching this path would pass silently —
@@ -247,7 +248,7 @@ class TestServerWrittenRowsAreNotQuoted:
         case.messages = rows
         case.turn_history = []
 
-        out = cb._build_graduated_history(case, cb.PromptFence(mint_token()))
+        out = cb._build_graduated_history(case, PromptFence(mint_token()))
 
         assert "write me a poem about kubernetes" not in out
         assert f"TURN 2: {cb.ASIDE_LINE}" in out

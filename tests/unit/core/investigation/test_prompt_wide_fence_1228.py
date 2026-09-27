@@ -37,10 +37,12 @@ from datetime import datetime, timezone
 import pytest
 
 from faultmaven.core.investigation.prompts import fence as fence_mod
-from faultmaven.core.investigation.prompts.context_builder import (
+from faultmaven.core.investigation.prompts.context_builder.assembly import (
+    build_investigation_context,
+)
+from faultmaven.core.investigation.prompts.context_builder.entity_highlights import (
     EntityHighlightGroup,
     EntityHighlightRow,
-    build_investigation_context,
 )
 from faultmaven.core.investigation.prompts.fence import (
     FENCE_ATTR,

@@ -218,7 +218,7 @@ def test_the_renderer_can_show_every_admitted_entry():
     pre-fetch), so this also covers the coupling the substring check said
     nothing about.
     """
-    from faultmaven.core.investigation.prompts.context_builder import (
+    from faultmaven.core.investigation.prompts.context_builder.assembly import (
         build_investigation_context,
     )
 
@@ -241,7 +241,7 @@ def test_two_chunks_of_one_runbook_are_distinguishable_in_the_prompt():
     which a model can read as two corroborating sources rather than two parts of
     one document. The chunk's own heading is what separates them.
     """
-    from faultmaven.core.investigation.prompts.context_builder import (
+    from faultmaven.core.investigation.prompts.context_builder.assembly import (
         build_investigation_context,
     )
 

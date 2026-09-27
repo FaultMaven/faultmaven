@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pytest
 
 from faultmaven.core.investigation.progress_monitor import ProgressMonitor
-from faultmaven.core.investigation.prompts.context_builder import (
+from faultmaven.core.investigation.prompts.context_builder.history import (
     ASIDE_LINE,
     _build_compact_history,
     _build_graduated_history,

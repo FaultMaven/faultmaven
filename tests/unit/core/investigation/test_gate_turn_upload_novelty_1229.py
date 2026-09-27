@@ -470,7 +470,7 @@ class TestTheGenerationPathReturnBoundary:
         about the value, not about that template.
         """
         seen: list[int] = []
-        original = context_builder._build_state_summary
+        original = context_builder.history._build_state_summary
 
         def _spy(case_arg, *a, **kw):
             seen.append(case_arg.turns_without_progress)

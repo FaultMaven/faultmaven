@@ -41,7 +41,9 @@ from faultmaven.core.investigation.milestone_engine import (
     MilestoneEngine,
     _evidence_coverage,
 )
-from faultmaven.core.investigation.prompts.context_builder import _confidence_marker
+from faultmaven.core.investigation.prompts.context_builder.text_shaping import (
+    _confidence_marker,
+)
 from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.core.investigation.suggestion_liveness import is_clarification_entry
 from faultmaven.exceptions import NotFoundError, ValidationException

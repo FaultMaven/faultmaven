@@ -11,12 +11,14 @@ import functools
 import logging
 from typing import Any, Dict, List, Optional, Sequence
 
-from faultmaven.core.investigation.prompts.context_builder import (
-    EntityHighlightGroup,
-    _label_attr,
+from faultmaven.core.investigation.prompts.context_builder.assembly import (
     build_investigation_context,
     system_feedback_block,
 )
+from faultmaven.core.investigation.prompts.context_builder.entity_highlights import (
+    EntityHighlightGroup,
+)
+from faultmaven.core.investigation.prompts.context_builder.evidence import _label_attr
 from faultmaven.core.investigation.prompts.fence import PromptFence, render_fenced
 from faultmaven.utils.model_context import MIN_PROMPT_BUDGET
 
@@ -1619,9 +1621,9 @@ Why: [diagnostic value]"
 # the cross-stage contract.
 #
 # The anti-anchoring framing ("unexpected findings are equally important")
-# is NOT restated here — context_builder.py renders it once at the top
-# of the <evidence_needs> block (design §6.1). Restating it would burn
-# tokens for no signal.
+# is NOT restated here — context_builder/evidence_needs.py renders it once
+# at the top of the <evidence_needs> block (design §6.1). Restating it would
+# burn tokens for no signal.
 _EVIDENCE_NEEDS_LIFECYCLE_BLOCK = """\
 **EVIDENCE NEEDS (demand-side pool):**
 The case carries a pool of needs — what data would advance the

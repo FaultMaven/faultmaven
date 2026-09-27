@@ -124,7 +124,7 @@ from faultmaven.core.investigation.llm_error_handler import (
     is_truncated_json_error,
 )
 from faultmaven.core.investigation.progress_monitor import ProgressMonitor
-from faultmaven.core.investigation.prompts.context_builder import (
+from faultmaven.core.investigation.prompts.context_builder.budget import (
     structural_index_is_searchable,
 )
 from faultmaven.core.investigation.prompts.templates import (
@@ -6806,7 +6806,7 @@ class MilestoneEngine:
             entity_highlight_groups: list = []
             try:
                 from faultmaven.config.settings import get_settings
-                from faultmaven.core.investigation.prompts.context_builder import (
+                from faultmaven.core.investigation.prompts.context_builder.entity_highlights import (
                     fetch_entity_highlights,
                 )
 

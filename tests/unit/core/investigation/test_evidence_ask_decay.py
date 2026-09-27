@@ -49,7 +49,7 @@ from faultmaven.core.investigation.evidence_need_surfacing import (
     is_ask_exhausted,
     select_surfaced_causal_needs,
 )
-from faultmaven.core.investigation.prompts.context_builder import (
+from faultmaven.core.investigation.prompts.context_builder.evidence_needs import (
     _build_evidence_needs_block,
 )
 from faultmaven.modules.case.contracts import (

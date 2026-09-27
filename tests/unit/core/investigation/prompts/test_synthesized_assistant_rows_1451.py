@@ -32,8 +32,8 @@ from faultmaven.core.investigation.milestone_engine import (
     RESPONSE_TRUNCATED_TEXT,
     RESPONSE_WITHHELD_TEXT,
 )
-from faultmaven.core.investigation.prompts import context_builder as cb
-from faultmaven.core.investigation.prompts.fence import mint_token
+from faultmaven.core.investigation.prompts.context_builder import history as cb
+from faultmaven.core.investigation.prompts.fence import PromptFence, mint_token
 from faultmaven.modules.case.contracts import (
     EMPTY_AGENT_RESPONSE_TEXT,
     MESSAGE_METADATA_AGENT_SYNTHESIZED,
@@ -67,7 +67,7 @@ def _synthesized(turn: int, content: str) -> dict:
 
 
 def _fence():
-    return cb.PromptFence(mint_token())
+    return PromptFence(mint_token())
 
 
 def _record(turn: int, summary: str, *, synthesized: bool) -> TurnProgress:
@@ -197,7 +197,7 @@ class TestTurnRecordSurfaces:
         # state; stub it so the <previous_turn> block is what renders.
         from unittest.mock import patch
 
-        with patch.object(cb.history, "_build_state_summary", return_value="STATE"):
+        with patch.object(cb, "_build_state_summary", return_value="STATE"):
             return cb._build_compact_history(case, "and now?", _fence())
 
     @pytest.mark.parametrize("placeholder", PLACEHOLDERS)
