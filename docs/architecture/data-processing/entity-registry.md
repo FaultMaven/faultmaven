@@ -200,7 +200,7 @@ Initial set — defined in `faultmaven.modules.case.domain.models.EntityType`:
 1. A design-doc edit here describing the extractor contribution and the retrieval intent.
 2. Adding the enum member to `EntityType`.
 3. Teaching at least one `EntityExtractor` to emit it.
-4. Deciding whether the context-builder highlights block should surface it (`_HIGHLIGHT_TYPES` in `prompts/context_builder.py`).
+4. Deciding whether the context-builder highlights block should surface it (`_HIGHLIGHT_TYPES` in `prompts/context_builder/entity_highlights.py`).
 
 ## Extractor contribution matrix
 
@@ -299,4 +299,4 @@ Failing any of the three isn't a rollback signal — it's a tuning signal.
 - Migration: `alembic/versions/20260423_1400_d4e5f6a70819_phase_4_case_entities_registry.py`.
 - Producer: `faultmaven/modules/preprocessing/entities/` + `preprocessing_service.py`.
 - Consumer (tools): `faultmaven/modules/agent/tools/{find_entity_tool,list_top_entities_tool}.py`.
-- Consumer (context): `faultmaven/core/investigation/prompts/context_builder.py:fetch_entity_highlights`.
+- Consumer (context): `faultmaven/core/investigation/prompts/context_builder/entity_highlights.py` `fetch_entity_highlights`.

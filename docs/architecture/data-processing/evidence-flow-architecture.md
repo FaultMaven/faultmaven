@@ -70,7 +70,7 @@ This document describes the complete evidence flow architecture in FaultMaven. A
       │
       │  ExtractResult JSON: {"v":1, "file_extract": "...", "search_map": "...",
       │                       "file_meta": {...}}
-      │  Stored as evidence.preprocessed_content. Parsed by context_builder.py
+      │  Stored as evidence.preprocessed_content. Parsed by context_builder/text_shaping.py
       │  into three separate XML elements: <file_extract>, <search_map>, <file_meta>.
       ↓
 ┌─────────────────────────────────────────────────────────────────────────┐

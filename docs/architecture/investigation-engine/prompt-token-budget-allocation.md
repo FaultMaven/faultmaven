@@ -9,8 +9,8 @@
 > assembled through this allocator.
 >
 > **Authoritative source:**
-> `faultmaven/core/investigation/prompts/context_builder.py`
-> (`build_investigation_context`, `TokenBudget`) and
+> `faultmaven/core/investigation/prompts/context_builder/`
+> (`build_investigation_context` in `__init__.py`, `TokenBudget` in `budget.py`) and
 > `faultmaven/core/investigation/prompts/templates.py` (`get_prompt_for_case`,
 > `_budgeted_prompt`).
 >

@@ -434,7 +434,7 @@ Four arrival shapes the LLM must handle:
 
 **No separate `<this_turn>` / `<uploads_this_turn>` block is needed.**
 The existing `<evidence_collected>` block in
-[`context_builder.py`](../../../faultmaven/core/investigation/prompts/context_builder.py)
+[`context_builder/evidence.py`](../../../faultmaven/core/investigation/prompts/context_builder/evidence.py)
 already partitions fresh-from-this-turn vs. prior items via the
 `fresh="true"` attribute on `<uploaded_file>` and `<evidence>` rows
 (PR #352 — fresh-vs-prior partition, duplicate signal, semantic
@@ -1258,7 +1258,7 @@ instructions it follows.
 | Phase | PR | What landed |
 |---|---|---|
 | 1–3 | #384 | Foundation: migration `014`, ORM models, `EvidenceNeed` domain model, `EvidenceNeedUpdate` LLM schema, engine apply-layer |
-| 4 | #385 | `<evidence_needs>` context block in `context_builder.py` |
+| 4 | #385 | `<evidence_needs>` context block in `context_builder/evidence_needs.py` |
 | 5 | #386 | Lifecycle directives in prompt templates (`_EVIDENCE_NEEDS_*_BLOCK`) |
 | 6 | #387 | `evidence_need_id` wire-level rendering (LLM schema field → API response, Copilot UI) |
 | — | #388 | `evidence_need_id_dropped_total` metric at the response-flattening seam |
@@ -1280,7 +1280,7 @@ Copilot is already live.
 | ~~Engine backstop (path-conditional rejection)~~ | **Removed in the flow redesign** — `_path_conditional_emission_restriction` / `_RESTRICTED_STATE_BLOCK_NAMES` deleted; causal-need gating is now prompt-guided by `cause_state` (§7.3). |
 | Terminal-hypothesis supersession | `milestone_engine.py:_supersede_needs_on_terminal_hypothesis` (+ `_TERMINAL_HYPOTHESIS_STATES`) |
 | Wire-flattening seam (`new_index_N` → real ID) | `milestone_engine.py:_flatten_follow_ups` ~`:7476`–`7530` |
-| Context block `<evidence_needs>` | `context_builder.py:_build_evidence_needs_block` ~`:1753`–`1892` (line render ~`:1737`) |
+| Context block `<evidence_needs>` | `context_builder/evidence_needs.py` `_build_evidence_needs_block` (line render `_render_need_line`) |
 | Prompt directives | `prompts/templates.py:_EVIDENCE_NEEDS_LIFECYCLE_BLOCK` ~`:1170`, `_..._SYMPTOM_ONLY_ADDENDUM` ~`:1206`, `_..._RCA_POOL_EVAL_BLOCK` ~`:1222`, `_..._REVERIFICATION_ADDENDUM` ~`:1253` |
 | Persistence (save/load) | `sqlite_case_repository.py:_upsert_evidence_needs` ~`:2320`, `_load_evidence_needs_for_case` ~`:633` |
 | Migration | `alembic/versions/20260526_1000_014_evidence_needs.py` |

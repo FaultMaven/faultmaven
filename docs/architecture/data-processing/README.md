@@ -113,7 +113,7 @@ Several topics appear in multiple documents in this domain. To prevent drift, ea
 | Evidence Form (Payload-driven) | **Implemented** | `_determine_evidence_form()` and `SubmissionClassification` deleted. Form set by payload context. |
 | Evidence Classification | **Implemented** | Single-phase creation with LLM evaluation |
 | Evidence Failure Modes | Design Complete | Async retry, orphan cleanup designed; deferred to post-MVP |
-| Page Capture Pipeline | **Implemented** | Stage 1: Semantic DOM extraction via `htmlToStructuredText` (copilot), backend pass-through for `source_type=page_capture`. Stage 2: Query-time section reranking in `context_builder.py` — scores page capture sections against user query, promotes relevant content before char-cap truncation. |
+| Page Capture Pipeline | **Implemented** | Stage 1: Semantic DOM extraction via `htmlToStructuredText` (copilot), backend pass-through for `source_type=page_capture`. Stage 2: Query-time section reranking in `context_builder/text_shaping.py` — scores page capture sections against user query, promotes relevant content before char-cap truncation. |
 | Platform-Specific Extractors | Planned | Future enhancement for SRE/DevOps tool parsing. Generic extraction (Stage 1) handles most dashboard patterns via tryKeyValue/tryStatValue. |
 | Coverage Metadata (Tier 1) | **Implemented** | Coverage data is now the `file_meta` field of `ExtractResult` — a structured dict returned alongside `file_extract` and `search_map`. The `--- COVERAGE METADATA ---` separator text is removed. |
 | Orchestration Hardening | **Implemented** | R3: coverage gap detection, R4: per-evidence DA failure tracking + auto-vectorization, R5: 30K char context budget with compression |

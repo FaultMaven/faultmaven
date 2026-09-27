@@ -232,7 +232,7 @@ persisted history — has three regimes, not one, and only the third is bounded:
 | response ≤ `HISTORY_AGENT_TRUNCATE_THRESHOLD` (600) | `_smart_truncate_agent_response` returns it unchanged | **identity** |
 | response > 600 on the graduated path | first + marker + last, trimmed | **bounded, ~≤900** |
 
-`_build_verbatim_history` (`context_builder.py:2039-2057`) appends
+`_build_verbatim_history` (`context_builder/history.py`) appends
 `f"{role}: {content}\n"` with no truncation of any kind, so a KB answer relayed
 on turn 1 is replayed at full length in the prompts for turns 2, 3 and 4. KB
 lookups concentrate in exactly those early turns — all five in the observed run
