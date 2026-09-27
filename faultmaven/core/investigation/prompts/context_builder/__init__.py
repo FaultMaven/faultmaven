@@ -22,23 +22,51 @@ Gap #9: Input Sanitization
 - Reference: Prompt Engineering Guide Section 16.2
 """
 
+import json
 import logging
-from datetime import datetime, timezone
+import re
+from dataclasses import dataclass
+from datetime import datetime, time, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from faultmaven.core.investigation.causal_graph import (
+    BLOCK_REASON_COUNT,
+    BLOCK_REASON_HEDGED,
+    BLOCK_REASON_MIRROR,
+    BLOCK_REASON_RESTATEMENT,
+    mece_contested_root_ids,
+    restatement_held_root_ids,
+    root_support_block_reasons,
+)
+from faultmaven.core.investigation.coverage_trust import is_inferred, is_vouched
+from faultmaven.core.investigation.evidence_need_surfacing import (
+    is_ask_exhausted,
+    select_surfaced_causal_needs,
+)
 from faultmaven.core.investigation.kb_push import visible_kb_context
 from faultmaven.core.investigation.prompts.fence import (
     PromptFence,
+    delimiter_overhead_chars,
     render_fenced,
     reseal,
     split_fenced,
     terminate_dangling,
 )
+from faultmaven.core.preprocessing.evidence_metadata import (
+    LOW_CONFIDENCE_THRESHOLD,
+    EvidenceMetadata,
+)
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
+    EntityType,
+    EvidenceCategory,
     InvestigationActionType,
     InvestigationStage,
+    NeedObtainability,
+    NeedPriority,
+    NeedPurpose,
+    NeedState,
     is_server_written_assistant_row,
     is_server_written_user_row,
 )
