@@ -498,13 +498,13 @@ def _build_registry() -> Dict[str, RegistryEntry]:
     from faultmaven.modules.case.infrastructure.case_repository import (
         InMemoryCaseRepository,
     )
-    from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (  # noqa: E501
+    from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
         PostgreSQLHybridCaseRepository,
     )
     from faultmaven.modules.case.infrastructure.sessionless_case_repository import (
         SessionlessCaseRepository,
     )
-    from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+    from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
         SQLiteCaseRepository,
     )
     from faultmaven.modules.knowledge.contracts import (
@@ -513,7 +513,7 @@ def _build_registry() -> Dict[str, RegistryEntry]:
         ISuggestionRepository,
         ISuggestionService,
     )
-    from faultmaven.modules.knowledge.domain.services.conversion_service import (
+    from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
         ConversionService,
     )
     from faultmaven.modules.knowledge.domain.services.knowledge_service import (

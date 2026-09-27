@@ -226,6 +226,11 @@ def test_find_duplicate_returns_none_for_distinct():
 
 def _engine() -> MilestoneEngine:
     eng = MilestoneEngine.__new__(MilestoneEngine)
+    # Attributes __init__ always sets and the engine reads directly (#1722).
+    eng.llm_provider = None
+    eng.team_service = None
+    eng.share_repository = None
+    eng.conversion_service = None
     eng.hypothesis_manager = HypothesisManager()
     return eng
 

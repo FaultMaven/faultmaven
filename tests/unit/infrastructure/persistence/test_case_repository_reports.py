@@ -43,7 +43,7 @@ from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
     RepositoryException,
 )
-from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
+from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
     PostgreSQLHybridCaseRepository,
 )
 from faultmaven.utils.serialization import to_json_compatible

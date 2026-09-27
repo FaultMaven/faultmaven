@@ -23,7 +23,7 @@ from faultmaven.exceptions import (
     ConflictError,
     NotFoundError,
 )
-from faultmaven.modules.knowledge.domain.services.conversion_service import (
+from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
 

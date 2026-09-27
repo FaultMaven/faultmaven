@@ -58,6 +58,9 @@ from faultmaven.modules.case.contracts import (
     UploadedFile,
 )
 from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.infrastructure.sqlite_case_repository.saving import (
+    _upsert_uploaded_files,
+)
 from faultmaven.modules.report.domain.services.report_generation_service import (
     ReportGenerationService,
 )
@@ -791,12 +794,12 @@ def test_the_tripwire_still_drives_something_real():
     is a plain red test.
     """
     from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
-    from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-        SQLiteCaseRepository,
+    from faultmaven.modules.case.infrastructure.sqlite_case_repository.saving import (
+        _upsert_uploaded_files,
     )
 
-    assert callable(getattr(SQLiteCaseRepository, "_upsert_uploaded_files", None)), (
-        "SQLiteCaseRepository._upsert_uploaded_files is gone -- "
+    assert callable(_upsert_uploaded_files), (
+        "sqlite_case_repository.saving._upsert_uploaded_files is gone -- "
         "test_uploaded_at_turn_is_immutable_across_a_deduped_reupload can no "
         "longer detect a #1207 regression; re-point it before deleting this"
     )
@@ -836,7 +839,7 @@ async def test_uploaded_at_turn_is_immutable_across_a_deduped_reupload():
     from faultmaven.core.investigation.schemas import InquiryResponse
     from faultmaven.infrastructure.persistence.models import Base
     from faultmaven.modules.case.contracts import Case, CaseState
-    from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+    from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
         SQLiteCaseRepository,
     )
 
@@ -881,8 +884,8 @@ async def test_uploaded_at_turn_is_immutable_across_a_deduped_reupload():
     try:
         async with factory() as session:
             repo = SQLiteCaseRepository(session)
-            await repo._upsert_uploaded_files(
-                case.case_id, case.uploaded_files, "ent_123", None
+            await _upsert_uploaded_files(
+                repo.db, case.case_id, case.uploaded_files, "ent_123", None
             )
             persisted = (
                 await session.execute(

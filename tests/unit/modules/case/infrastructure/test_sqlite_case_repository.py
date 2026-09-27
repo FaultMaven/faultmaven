@@ -63,7 +63,7 @@ from faultmaven.modules.case.domain.owned_models.report import (
     ReportStatus,
     ReportType,
 )
-from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     RepositoryException,
     SQLiteCaseRepository,
 )
@@ -2100,13 +2100,13 @@ class TestReferenceSetAcrossImplementations:
             CaseRepository,
             InMemoryCaseRepository,
         )
-        from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (  # noqa: E501
+        from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
             PostgreSQLHybridCaseRepository,
         )
         from faultmaven.modules.case.infrastructure.sessionless_case_repository import (
             SessionlessCaseRepository,
         )
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 
@@ -2134,10 +2134,10 @@ class TestReferenceSetAcrossImplementations:
         import inspect
         import re
 
-        from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (  # noqa: E501
+        from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
             PostgreSQLHybridCaseRepository,
         )
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
 

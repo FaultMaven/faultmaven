@@ -313,7 +313,7 @@ rather than forcing an invented refutation reason.
 | Prompt: REFUTED-vs-RETIRED distinction + pair-integrity requirement | `core/investigation/prompts/templates/diagnosis.py` | Done |
 | `hypothesis_manager` atomic assignment in auto-refute + user-driven refute paths | `core/investigation/hypothesis_manager.py` | Done |
 | UI DTO: `refutation_reason` on `HypothesisSummary` | `models/case_ui.py`, `modules/case/domain/services/case_ui_adapter.py` | Done |
-| Persistence: ORM column + migration + repository mapping | `infrastructure/persistence/models.py`, `alembic/versions/...`, `modules/case/infrastructure/sqlite_case_repository.py` | Done |
+| Persistence: ORM column + migration + repository mapping | `infrastructure/persistence/models.py`, `alembic/versions/...`, `modules/case/infrastructure/sqlite_case_repository/repository.py` | Done |
 | Tests | `tests/unit/modules/case/test_hypothesis_refutation_reason.py` | Done (15 invariant tests) |
 
 ---

@@ -37,6 +37,11 @@ def _engine() -> MilestoneEngine:
     """Bare engine — exercises the apply path with just the hypothesis manager
     wired (the matcher step skips gracefully without investigation_tools)."""
     eng = MilestoneEngine.__new__(MilestoneEngine)
+    # Attributes __init__ always sets and the engine reads directly (#1722).
+    eng.llm_provider = None
+    eng.team_service = None
+    eng.share_repository = None
+    eng.conversion_service = None
     eng.hypothesis_manager = HypothesisManager()
     return eng
 

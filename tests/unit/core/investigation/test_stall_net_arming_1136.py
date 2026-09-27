@@ -50,7 +50,13 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture
 def engine():
-    return MilestoneEngine.__new__(MilestoneEngine)
+    eng = MilestoneEngine.__new__(MilestoneEngine)
+    # Attributes __init__ always sets and the engine reads directly (#1722).
+    eng.llm_provider = None
+    eng.team_service = None
+    eng.share_repository = None
+    eng.conversion_service = None
+    return eng
 
 
 def _case(**overrides):

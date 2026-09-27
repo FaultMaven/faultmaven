@@ -43,8 +43,10 @@ from faultmaven.api.exception_handlers import (
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.api.v1.dependencies import get_investigation_service
 from faultmaven.models.api_models import TurnResponse
-from faultmaven.modules.case.api.routes import _di_get_case_service_dependency
-from faultmaven.modules.case.api.routes import router as case_router
+from faultmaven.modules.case.api.routes.dependencies import (
+    _di_get_case_service_dependency,
+)
+from faultmaven.modules.case.api.routes.router import router as case_router
 from faultmaven.modules.case.contracts import CaseState
 from faultmaven.modules.case.domain.models.case import Case
 

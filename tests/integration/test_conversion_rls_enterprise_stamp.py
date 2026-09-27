@@ -70,7 +70,10 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     SourceFileInfo,
     ValidationResult,
 )
-from faultmaven.modules.knowledge.domain.services.conversion_service import (
+from faultmaven.modules.knowledge.domain.services.conversion_service.job_persistence import (
+    _persist_job,
+)
+from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     DEFAULT_ENTERPRISE_ID,
     ConversionService,
 )
@@ -218,7 +221,9 @@ async def _persist(service, conversion_id: str, enterprise_id, tmp_path) -> None
     """Run the real ``_persist_job`` with the case-conversion argument shape."""
     draft_path = tmp_path / f"{conversion_id}.md"
     draft_path.write_text("# runbook", encoding="utf-8")
-    await service._persist_job(
+    await _persist_job(
+        service._db_session_factory,
+        service._share_repo,
         conversion_id=conversion_id,
         user_id=None,  # users are not seeded here; the FK is ON DELETE SET NULL
         enterprise_id=enterprise_id,

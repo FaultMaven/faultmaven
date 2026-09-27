@@ -22,7 +22,7 @@ from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.infrastructure.case_scope import case_scope_where
-from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     SQLiteCaseRepository,
 )
 

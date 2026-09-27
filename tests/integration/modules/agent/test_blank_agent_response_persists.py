@@ -47,7 +47,7 @@ from faultmaven.modules.case.contracts import (
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.problem import InquiryData
-from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     SQLiteCaseRepository,
 )
 from tests.utils import seed_enterprises, seed_users

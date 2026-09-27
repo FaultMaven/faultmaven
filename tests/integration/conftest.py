@@ -562,7 +562,7 @@ def mock_services_for_integration_tests(
         get_investigation_service,
     )
     from faultmaven.main import app
-    from faultmaven.modules.case.api.routes import (
+    from faultmaven.modules.case.api.routes.dependencies import (
         _di_get_case_service_dependency,
         _di_get_session_service_dependency,
     )
