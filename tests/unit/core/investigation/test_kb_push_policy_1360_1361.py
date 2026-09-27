@@ -77,8 +77,8 @@ def _engine(knowledge_service=None):
     from tests.unit.core.investigation.test_solution_offer_liveness import _make_engine
 
     engine = _make_engine()
-    engine.knowledge_service = knowledge_service
-    engine.runbook_kb = None
+    engine.deps.knowledge_service = knowledge_service
+    engine.deps.runbook_kb = None
     return engine
 
 

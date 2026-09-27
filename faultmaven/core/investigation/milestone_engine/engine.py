@@ -24,7 +24,6 @@ from faultmaven.core.investigation.case_telemetry import (
     TurnPath,
     collect_progress_arms,
 )
-from faultmaven.core.investigation.causal_graph.derivation import derive_node_states
 from faultmaven.core.investigation.causal_graph.ingestion import (
     chain_path_to_problem,
     ingest_emitted_chain,
@@ -83,6 +82,7 @@ from faultmaven.core.investigation.llm_error_handler import (
     is_output_truncation_error,
     is_truncated_json_error,
 )
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.progress_monitor import ProgressMonitor
 from faultmaven.core.investigation.prompts.templates.assembly import get_prompt_for_case
 from faultmaven.core.investigation.reliability_metrics import (
@@ -109,7 +109,7 @@ from faultmaven.core.investigation.verification_status import is_stalled
 from faultmaven.core.investigation.working_conclusion_generator import (
     calculate_progress_metrics,
 )
-from faultmaven.exceptions import TOKEN_LIMIT, LLMErrorCategory
+from faultmaven.exceptions import LLMErrorCategory
 from faultmaven.infrastructure.llm.json_response import (
     json_payload_text,
     loads_llm_json,
@@ -185,7 +185,6 @@ from .cause_state import (
     _resolve_chat_provider_name,
 )
 from .kb_prefetch import (
-    KB_CONTEXT_MAX_ENTRIES,
     KB_PREFETCH_FETCH_LIMIT,
     KB_PREFETCH_RELEVANCE_THRESHOLD,
     _admit_diverse,
@@ -207,7 +206,6 @@ from .progress import (
     summarize_for_turn_record,
 )
 from .response_synthesis import (
-    _COMPLETION_PHRASES,
     _DISPOSITION_GATE_ANSWERED_KEY,
     _NARRATION_OVERCLAIM_NOTICE,
     _NARRATION_OVERCLAIM_NOTICE_PENDING,
@@ -486,25 +484,27 @@ class MilestoneEngine:
                 unavailable; the runbook paths then report that no draft can
                 be created.
         """
-        self.llm_provider = llm_provider
-        self.repository = repository
-        self.knowledge_service = knowledge_service
-        self.trace_enabled = trace_enabled
-        self.checkpoint_service = checkpoint_service
-        self.investigation_tools = investigation_tools
-        self.da_provider = da_provider
-        self.da_model = da_model
-        self.sanitizer = sanitizer
-        self.redis_client = redis_client
-        self.report_service = report_service
-        self.team_service = team_service
-        self.share_repository = share_repository
-        self.runbook_kb = runbook_kb
-        self.conversion_service = conversion_service
-        self.hypothesis_manager = create_hypothesis_manager()
-        self.state_validator = StateValidator()
-        self.progress_monitor = ProgressMonitor()
-        self.llm_error_handler = LLMErrorHandler()
+        self.deps = EngineDeps(
+            llm_provider=llm_provider,
+            repository=repository,
+            knowledge_service=knowledge_service,
+            trace_enabled=trace_enabled,
+            checkpoint_service=checkpoint_service,
+            investigation_tools=investigation_tools,
+            da_provider=da_provider,
+            da_model=da_model,
+            sanitizer=sanitizer,
+            redis_client=redis_client,
+            report_service=report_service,
+            team_service=team_service,
+            share_repository=share_repository,
+            runbook_kb=runbook_kb,
+            conversion_service=conversion_service,
+            hypothesis_manager=create_hypothesis_manager(),
+            state_validator=StateValidator(),
+            progress_monitor=ProgressMonitor(),
+            llm_error_handler=LLMErrorHandler(),
+        )
 
         # G10: Per-case asyncio locks to prevent concurrent process_turn
         # calls on the same case from interleaving and corrupting state
@@ -539,8 +539,8 @@ class MilestoneEngine:
         """
         from faultmaven.modules.case.contracts import ReportType
 
-        if self.report_service is None or self.repository is None:
-            return getattr(self.report_service, "MAX_REGENERATIONS", 5)
+        if self.deps.report_service is None or self.deps.repository is None:
+            return getattr(self.deps.report_service, "MAX_REGENERATIONS", 5)
         if case.state == CaseState.RESOLVED:
             report_type = ReportType.RESOLUTION_SUMMARY
         elif case.state == CaseState.CLOSED:
@@ -548,14 +548,14 @@ class MilestoneEngine:
         else:
             # Non-terminal cases have no regen affordance at all; the
             # value is unused by callers but keep it self-consistent.
-            return getattr(self.report_service, "MAX_REGENERATIONS", 5)
+            return getattr(self.deps.report_service, "MAX_REGENERATIONS", 5)
         try:
-            count = await self.repository.count_reports(case.case_id, report_type)
+            count = await self.deps.repository.count_reports(case.case_id, report_type)
         except Exception:
             # Best-effort: if counting fails, don't strand the user
             # without an affordance. Fall back to the cap.
-            return getattr(self.report_service, "MAX_REGENERATIONS", 5)
-        max_regens = getattr(self.report_service, "MAX_REGENERATIONS", 5)
+            return getattr(self.deps.report_service, "MAX_REGENERATIONS", 5)
+        max_regens = getattr(self.deps.report_service, "MAX_REGENERATIONS", 5)
         return max(0, max_regens - count)
 
     async def _case_has_runbook_draft(self, case: "Case") -> bool:
@@ -570,7 +570,7 @@ class MilestoneEngine:
         behaviour of always offering the affordance when state is unknown,
         which is the safer default for a forward action.
         """
-        conversion_service = self.conversion_service
+        conversion_service = self.deps.conversion_service
         if conversion_service is None:
             return False
         try:
@@ -616,7 +616,7 @@ class MilestoneEngine:
             logger.info(f"Auto-summary skipped for case {case.case_id}: {skip}")
             return skip, False
 
-        if not self.report_service:
+        if not self.deps.report_service:
             logger.debug("No report service available — skipping auto-summary")
             return None, False
 
@@ -637,7 +637,9 @@ class MilestoneEngine:
         try:
             # generate_reports returns ReportGenerationResponse; its
             # .reports field is the list of newly-persisted CaseReports.
-            response = await self.report_service.generate_reports(case, [report_type])
+            response = await self.deps.report_service.generate_reports(
+                case, [report_type]
+            )
             logger.info(
                 f"Auto-generated {report_type.value} for case {case.case_id}",
                 extra={"case_id": case.case_id, "report_type": report_type.value},
@@ -774,7 +776,7 @@ class MilestoneEngine:
                 "metadata": metadata,
             }
 
-        if not self.report_service:
+        if not self.deps.report_service:
             return {
                 "agent_response": (
                     "Report generation is not available at the moment. "
@@ -788,7 +790,9 @@ class MilestoneEngine:
         try:
             # generate_reports returns ReportGenerationResponse; its
             # .reports field is the list of newly-persisted CaseReports.
-            response = await self.report_service.generate_reports(case, [report_type])
+            response = await self.deps.report_service.generate_reports(
+                case, [report_type]
+            )
             content = response.reports[0].content if response.reports else None
             agent_response = (
                 content
@@ -880,10 +884,10 @@ class MilestoneEngine:
         seed_origin = confirmed_root_seed_origin(case)
         if seed_origin:
             title = None
-            if self.knowledge_service and hasattr(
-                self.knowledge_service, "get_runbook_title"
+            if self.deps.knowledge_service and hasattr(
+                self.deps.knowledge_service, "get_runbook_title"
             ):
-                title = await self.knowledge_service.get_runbook_title(seed_origin)
+                title = await self.deps.knowledge_service.get_runbook_title(seed_origin)
             named = f"**{title}**" if title else "an existing runbook"
             return {
                 "agent_response": (
@@ -905,7 +909,7 @@ class MilestoneEngine:
         # honest "did not run" caveat.
         suggestion = await evaluate_runbook_suggestion(
             case,
-            self.runbook_kb,
+            self.deps.runbook_kb,
             scope_resolver=self._runbook_dedup_scope_resolver(case),
         )
 
@@ -937,7 +941,7 @@ class MilestoneEngine:
             }
 
         # Step 3: Create the draft
-        conversion_service = self.conversion_service
+        conversion_service = self.deps.conversion_service
         if not conversion_service:
             logger.warning(
                 f"Runbook creation requested for case {case.case_id} but "
@@ -1121,8 +1125,8 @@ class MilestoneEngine:
         async def _resolve() -> dict:
             owner_id = getattr(case, "user_id", None)
             shared_kb_ids: list[str] = []
-            team_service = self.team_service
-            share_repository = self.share_repository
+            team_service = self.deps.team_service
+            share_repository = self.deps.share_repository
             if owner_id and team_service and share_repository:
                 owner_team_ids = await team_service.list_all_user_team_ids(owner_id)
                 shared_kb_ids = await resolve_shared_kb_ids(
@@ -1235,7 +1239,7 @@ class MilestoneEngine:
         # interleaving with a concurrent Q&A turn.
         try:
             async with self._case_locks[request.case_id]:
-                case = await self.repository.get(request.case_id)
+                case = await self.deps.repository.get(request.case_id)
                 if case is None:
                     logger.warning(
                         f"Case {request.case_id} not found when writing "
@@ -1256,7 +1260,7 @@ class MilestoneEngine:
                     metadata={"source": "runbook_conversion_complete"},
                 )
                 case.message_count = len(case.messages)
-                await self.repository.save(case)
+                await self.deps.repository.save(case)
         except Exception as e:
             logger.warning(
                 f"Failed to write runbook completion notification for case "
@@ -1289,8 +1293,8 @@ class MilestoneEngine:
         redaction_settings = get_settings()
         redaction_ctx = CaseRedactionContext(
             case_id=case.case_id,
-            sanitizer=self.sanitizer,
-            redis_client=self.redis_client,
+            sanitizer=self.deps.sanitizer,
+            redis_client=self.deps.redis_client,
             enabled=self._should_redact(),
             ttl_hours=redaction_settings.protection.redaction_registry_ttl_hours,
         )
@@ -1300,10 +1304,10 @@ class MilestoneEngine:
         # size the budget and engage the overflow backstop on the terminal-QA
         # path too (previously this call supplied neither, so it fell back to
         # the static char cap and was never measured against the model window).
-        provider_name = getattr(self.llm_provider, "provider_name", None)
+        provider_name = getattr(self.deps.llm_provider, "provider_name", None)
         model_name = (
-            getattr(self.llm_provider.config, "default_model", None)
-            if hasattr(self.llm_provider, "config")
+            getattr(self.deps.llm_provider.config, "default_model", None)
+            if hasattr(self.deps.llm_provider, "config")
             else None
         )
         prompt = get_prompt_for_case(
@@ -1332,7 +1336,7 @@ class MilestoneEngine:
         # Pass tools with auto tool_choice — LLM decides whether to invoke
         # kb_qa, web_search, etc. based on the user's question.
         tools_kwargs: dict[str, Any] = {}
-        if self.investigation_tools:
+        if self.deps.investigation_tools:
             tools_kwargs["investigation_tools"] = self._build_da_tool_schemas()
             tools_kwargs["tool_context"] = await self._build_tool_context(
                 case, user_id=user_id
@@ -1400,7 +1404,7 @@ class MilestoneEngine:
         Checks SANITIZE_PII setting. Returns False when no sanitizer is
         configured (redaction disabled at DI level).
         """
-        if not self.sanitizer:
+        if not self.deps.sanitizer:
             return False
 
         from faultmaven.config.settings import get_settings
@@ -1717,11 +1721,11 @@ class MilestoneEngine:
                             confirm_pending_transition,
                         )
 
-                        if self.checkpoint_service:
+                        if self.deps.checkpoint_service:
                             to_state = case.pending_transition.get(
                                 "to_state", "unknown"
                             )
-                            await self.checkpoint_service.create_checkpoint(
+                            await self.deps.checkpoint_service.create_checkpoint(
                                 case,
                                 trigger="pre_case_action",
                                 metadata={
@@ -1756,7 +1760,7 @@ class MilestoneEngine:
                                 upload_report,
                                 progress_made=False,
                             )
-                            await self.repository.save(case)
+                            await self.deps.repository.save(case)
                             return {
                                 "agent_response": resolve_msg,
                                 "suggested_follow_ups": (
@@ -1768,7 +1772,7 @@ class MilestoneEngine:
 
                         # Persist the terminal status before generating the
                         # summary — the Report row FKs to case_id.
-                        await self.repository.save(case)
+                        await self.deps.repository.save(case)
 
                         # Synchronous summary generation. Returns rendered
                         # markdown on success, a skip note when the gate
@@ -1792,7 +1796,7 @@ class MilestoneEngine:
                             progress_made=True,
                             **confirmed_transition_arms(case, executed),
                         )
-                        await self.repository.save(case)
+                        await self.deps.repository.save(case)
 
                         # Closure-ack follow-ups depend on whether
                         # generation succeeded. Success: minimal
@@ -1844,7 +1848,7 @@ class MilestoneEngine:
                                 upload_report,
                                 progress_made=False,
                             )
-                            await self.repository.save(case)
+                            await self.deps.repository.save(case)
 
                             return {
                                 "agent_response": agent_response,
@@ -1931,7 +1935,7 @@ class MilestoneEngine:
                                 upload_report,
                                 progress_made=False,
                             )
-                            await self.repository.save(case)
+                            await self.deps.repository.save(case)
 
                             return {
                                 "agent_response": agent_response,
@@ -2027,7 +2031,7 @@ class MilestoneEngine:
                             upload_report,
                             progress_made=False,
                         )
-                        await self.repository.save(case)
+                        await self.deps.repository.save(case)
                         return {
                             "agent_response": closure.message,
                             "suggested_follow_ups": _resolution_confirmation_suggestions(),
@@ -2057,7 +2061,7 @@ class MilestoneEngine:
                         upload_report,
                         progress_made=False,
                     )
-                    await self.repository.save(case)
+                    await self.deps.repository.save(case)
                     return {
                         "agent_response": closure.message,
                         "suggested_follow_ups": _close_confirmation_suggestions(),
@@ -2213,8 +2217,8 @@ class MilestoneEngine:
             redaction_settings = get_settings()
             redaction_ctx = CaseRedactionContext(
                 case_id=case.case_id,
-                sanitizer=self.sanitizer,
-                redis_client=self.redis_client,
+                sanitizer=self.deps.sanitizer,
+                redis_client=self.deps.redis_client,
                 enabled=self._should_redact(),
                 ttl_hours=redaction_settings.protection.redaction_registry_ttl_hours,
             )
@@ -2222,10 +2226,10 @@ class MilestoneEngine:
 
             # Build prompt using the adaptive template system
             # Gap #6: Pass provider info for dynamic token budget calculation
-            provider_name = getattr(self.llm_provider, "provider_name", None)
+            provider_name = getattr(self.deps.llm_provider, "provider_name", None)
             model_name = (
-                getattr(self.llm_provider.config, "default_model", None)
-                if hasattr(self.llm_provider, "config")
+                getattr(self.deps.llm_provider.config, "default_model", None)
+                if hasattr(self.deps.llm_provider, "config")
                 else None
             )
 
@@ -2265,7 +2269,7 @@ class MilestoneEngine:
 
                 if get_settings().preprocessing.entity_registry_enabled:
                     entity_highlight_groups = await fetch_entity_highlights(
-                        self.repository, case.case_id
+                        self.deps.repository, case.case_id
                     )
             except Exception as exc:
                 logger.warning(
@@ -2326,11 +2330,11 @@ class MilestoneEngine:
             )
             force_tools = (
                 _should_force_tools(processing_mode, case, bool(has_pending))
-                if self.investigation_tools
+                if self.deps.investigation_tools
                 else False
             )
             route_single_shot = bool(
-                self.investigation_tools
+                self.deps.investigation_tools
             ) and _route_toolless_turn_single_shot(processing_mode, case, force_tools)
 
             prompt = _build_prompt(_tools_avail and not route_single_shot)
@@ -2398,7 +2402,7 @@ class MilestoneEngine:
                     reasoning_intent=ReasoningIntent.INFERENCE,
                     min_output_tokens=TOOLLESS_INFERENCE_OUTPUT_FLOOR,
                 )
-            elif self.investigation_tools:
+            elif self.deps.investigation_tools:
                 da_tools = self._build_da_tool_schemas()
                 da_context = await self._build_tool_context(case, user_id=user_id)
                 response_obj = await self._generate_structured_output(
@@ -2538,7 +2542,9 @@ class MilestoneEngine:
                 )
 
             # Step 5.7: Validate state consistency
-            is_valid, validation_issues = self.state_validator.is_valid(case_updated)
+            is_valid, validation_issues = self.deps.state_validator.is_valid(
+                case_updated
+            )
             validation_repairs: list[str] = []
             if validation_issues:
                 # Log validation issues and collect repairs
@@ -2569,7 +2575,7 @@ class MilestoneEngine:
             # Step 5.9: Progress monitoring (before recording turn)
             # Check if transparent mode should activate and/or repair
             # patterns are detected. Replaces the old stagnation detector.
-            progress_result = self.progress_monitor.check_progress(case_updated)
+            progress_result = self.deps.progress_monitor.check_progress(case_updated)
             stagnation_str: str | None = None
             if progress_result:
                 # Record repair pattern if detected
@@ -2737,7 +2743,7 @@ class MilestoneEngine:
             # Step 7: Save case (only if changes made, but turn history always updates)
             case_updated.updated_at = datetime.now(UTC)
             case_updated.last_activity_at = datetime.now(UTC)
-            await self.repository.save(case_updated)
+            await self.deps.repository.save(case_updated)
 
             # Step 7b: Auto-generate terminal summary synchronously on
             # terminal transition. The rendered summary (or skip / failure
@@ -3067,7 +3073,7 @@ class MilestoneEngine:
                     agent_response_text, _overclaim_notice
                 )
                 narration_overclaim_total.labels(
-                    provider=_resolve_chat_provider_name(self.llm_provider)
+                    provider=_resolve_chat_provider_name(self.deps.llm_provider)
                 ).inc()
                 logger.warning(
                     "narration_overclaim_corrected",
@@ -3293,7 +3299,7 @@ class MilestoneEngine:
             raise
         except Exception as e:
             # Use LLMErrorHandler's classification instead of duplicating patterns
-            is_external = self.llm_error_handler.is_retryable_error(e)
+            is_external = self.deps.llm_error_handler.is_retryable_error(e)
 
             if is_external:
                 logger.warning(
@@ -3389,7 +3395,7 @@ class MilestoneEngine:
             obs = 16_000
         try:
             pn = provider_name if isinstance(provider_name, str) else None
-            resolved = resolve_model_budget(pn, self.da_model)
+            resolved = resolve_model_budget(pn, self.deps.da_model)
             return _ToolLoopBudget(
                 soft=resolved.prompt_target + obs,
                 window=resolved.context_window,  # None: unknown, trust the target
@@ -3440,14 +3446,14 @@ class MilestoneEngine:
 
         def _tok(m: dict) -> int:
             return _tool_loop_message_tokens(
-                m, provider_name, self.da_model, token_cache
+                m, provider_name, self.deps.da_model, token_cache
             )
 
         msg_cap = budget_tokens
         tools_tokens = 0
         if window_tokens is not None:
             tools_tokens = _tool_payload_tokens(
-                tools, provider_name, self.da_model, token_cache
+                tools, provider_name, self.deps.da_model, token_cache
             )
             msg_cap = min(msg_cap, window_tokens - tools_tokens)
         total = sum(_tok(m) for m in messages)
@@ -3468,7 +3474,9 @@ class MilestoneEngine:
         # so once the returned list is dropped its address can be reused by a
         # later message dict — which would then read the marker's count from the
         # cache and be under-counted (#614).
-        marker_tokens = _tool_loop_message_tokens(marker, provider_name, self.da_model)
+        marker_tokens = _tool_loop_message_tokens(
+            marker, provider_name, self.deps.da_model
+        )
         head_tokens = sum(_tok(m) for m in head)
         avail = msg_cap - head_tokens - marker_tokens
         kept: list[list[dict]] = []
@@ -3502,7 +3510,7 @@ class MilestoneEngine:
                     f"{window_tokens}-token window budget; not sending."
                 ),
                 provider=provider_name if isinstance(provider_name, str) else None,
-                model=self.da_model,
+                model=self.deps.da_model,
             )
         return out
 
@@ -3559,17 +3567,19 @@ class MilestoneEngine:
 
         def _tok(m: dict) -> int:
             return _tool_loop_message_tokens(
-                m, provider_name, self.da_model, token_cache
+                m, provider_name, self.deps.da_model, token_cache
             )
 
         system_msg, base_msg = messages[0], messages[1]
         tools_tokens = _tool_payload_tokens(
-            tools, provider_name, self.da_model, token_cache
+            tools, provider_name, self.deps.da_model, token_cache
         )
         fixed = (
             _tok(system_msg)
             + _tool_loop_message_tokens(
-                {"content": _TOOL_LOOP_ELISION_MARKER}, provider_name, self.da_model
+                {"content": _TOOL_LOOP_ELISION_MARKER},
+                provider_name,
+                self.deps.da_model,
             )
             + tools_tokens
         )
@@ -3582,7 +3592,7 @@ class MilestoneEngine:
         # sends to, so the allocator counts with this estimator and clamps to
         # this model's window.
         sizing_provider = provider_name if isinstance(provider_name, str) else None
-        model = self.da_model if isinstance(self.da_model, str) else None
+        model = self.deps.da_model if isinstance(self.deps.da_model, str) else None
         logger.warning(
             "tool_loop_base_resized: base task prompt (%d tokens) does not fit the "
             "%d-token window of provider %s (model %s) beside a %d-token "
@@ -3624,7 +3634,7 @@ class MilestoneEngine:
                 f"sending the tool loop."
             ),
             provider=provider_name if isinstance(provider_name, str) else None,
-            model=self.da_model,
+            model=self.deps.da_model,
         )
 
     @staticmethod
@@ -3721,9 +3731,9 @@ class MilestoneEngine:
         """
         # Use dedicated DA provider (DA_PROVIDER from .env) if available,
         # otherwise fall back to the default router
-        provider = self.da_provider or self.llm_provider
+        provider = self.deps.da_provider or self.deps.llm_provider
         provider_name = getattr(provider, "provider_name", type(provider).__name__)
-        model_info = f", model: {self.da_model}" if self.da_model else ""
+        model_info = f", model: {self.deps.da_model}" if self.deps.da_model else ""
         logger.info(
             f"Tool-augmented generate using provider: {provider_name}{model_info}"
         )
@@ -3896,8 +3906,8 @@ class MilestoneEngine:
                 # iterations. Only Anthropic acts on this; other providers pop it.
                 cache_prompt=True,
             )
-            if self.da_model and self.da_provider:
-                generate_kwargs["model"] = self.da_model
+            if self.deps.da_model and self.deps.da_provider:
+                generate_kwargs["model"] = self.deps.da_model
 
             # Tier 2 — apply STRUCTURED_OUTPUT_PROVIDER override on the
             # tool-augmented path too. Tool-call iterations land Pydantic
@@ -3906,7 +3916,7 @@ class MilestoneEngine:
             # applies: force the LLM call onto a known-STRICT provider
             # when the operator has configured one. The override is only
             # applied when no da_model is set (DA gets first dibs).
-            if not (self.da_model and self.da_provider):
+            if not (self.deps.da_model and self.deps.da_provider):
                 try:
                     from faultmaven.config.settings import get_settings
 
@@ -3943,7 +3953,7 @@ class MilestoneEngine:
                         window_tokens=tool_loop_budget.hard(cap),
                     )
                 result = await provider.generate(**call_kwargs)
-                if self.da_provider is not None:
+                if self.deps.da_provider is not None:
                     # A dedicated DA provider is a concrete provider instance,
                     # so this call bypassed the registry metering chokepoint.
                     # Meter it here so DA-turn spend is still counted. (When no
@@ -4041,7 +4051,7 @@ class MilestoneEngine:
                         f"Falling back to non-tool path."
                     ),
                     provider=provider_name,
-                    model=self.da_model,
+                    model=self.deps.da_model,
                 ) from e
 
             # Check for tool calls in response
@@ -4083,7 +4093,7 @@ class MilestoneEngine:
                             f"as the only option. Falling back to non-tool path."
                         ),
                         provider=provider_name,
-                        model=self.da_model,
+                        model=self.deps.da_model,
                     )
 
                 logger.warning(
@@ -4217,7 +4227,7 @@ class MilestoneEngine:
                             "Use search_file for additional searches."
                         )
                     else:
-                        tool_result = await self.investigation_tools.execute_tool(
+                        tool_result = await self.deps.investigation_tools.execute_tool(
                             func_name,
                             args,
                             tool_context,
@@ -4481,7 +4491,7 @@ class MilestoneEngine:
         they do block the agent.
         """
         try:
-            result = await self.investigation_tools.execute_tool(
+            result = await self.deps.investigation_tools.execute_tool(
                 "vectorize_file",
                 {"evidence_id": evidence_id},
                 tool_context,
@@ -4540,7 +4550,7 @@ class MilestoneEngine:
         case_id = getattr(tool_context, "case_id", None)
         if case_id:
             try:
-                await self.repository.update_evidence_vectorized(
+                await self.deps.repository.update_evidence_vectorized(
                     case_id, evidence_id, True
                 )
             except Exception as e:
@@ -4801,8 +4811,8 @@ class MilestoneEngine:
         cannot drift. Absent capability info → assume capable (the runtime path
         then catches an actual failure and falls back).
         """
-        provider = self.da_provider or self.llm_provider
-        model = self.da_model if self.da_provider else None
+        provider = self.deps.da_provider or self.deps.llm_provider
+        model = self.deps.da_model if self.deps.da_provider else None
         supports = getattr(provider, "supports_tool_calling", None)
         if supports is None:
             return True
@@ -4822,15 +4832,17 @@ class MilestoneEngine:
         would be stranded with neither the data nor a working tool — the
         premature-conclusion failure FaultMaven guards against.
         """
-        return bool(self.investigation_tools) and self._da_provider_supports_tools()
+        return (
+            bool(self.deps.investigation_tools) and self._da_provider_supports_tools()
+        )
 
     def _build_da_tool_schemas(self) -> list[dict]:
         """Build OpenAI-format tool definitions for DA investigation tools."""
-        if not self.investigation_tools:
+        if not self.deps.investigation_tools:
             return []
 
         tools = []
-        for agent_tool in self.investigation_tools.get_all_tools():
+        for agent_tool in self.deps.investigation_tools.get_all_tools():
             schema = agent_tool.get_schema()
             tools.append(
                 {
@@ -5039,8 +5051,8 @@ class MilestoneEngine:
         if not user_id or user_id == "system":
             return []
 
-        team_service = self.team_service
-        share_repository = self.share_repository
+        team_service = self.deps.team_service
+        share_repository = self.deps.share_repository
         if not team_service or not share_repository:
             return []
 
@@ -5107,7 +5119,7 @@ class MilestoneEngine:
             enterprise_id=enterprise_id,
             user_id=user_id,
             shared_kb_ids=await self._resolve_shared_kb_ids(user_id, enterprise_id),
-            case_repository=self.repository,
+            case_repository=self.deps.repository,
             metadata=metadata,
             in_memory_case=case,
             kb_context_metadata=derive_kb_context_metadata(case),
@@ -6161,8 +6173,8 @@ class MilestoneEngine:
             # (shared capability check with the elision gate — see
             # _da_provider_supports_tools).
             if not self._da_provider_supports_tools():
-                provider = self.da_provider or self.llm_provider
-                model = self.da_model if self.da_provider else None
+                provider = self.deps.da_provider or self.deps.llm_provider
+                model = self.deps.da_model if self.deps.da_provider else None
                 logger.warning(
                     "Provider %s (model: %s) does not support tool calling. "
                     "Falling back to non-tool structured output path.",
@@ -6204,7 +6216,7 @@ class MilestoneEngine:
 
         # Get provider-specific structured output strategy
         schema = schema_model.model_json_schema()
-        strategy = self.llm_provider.get_structured_output_strategy(schema)
+        strategy = self.deps.llm_provider.get_structured_output_strategy(schema)
 
         # Conditionally include schema in prompt based on provider capability
         if strategy.include_schema_in_prompt:
@@ -6325,7 +6337,7 @@ class MilestoneEngine:
                     generate_params["response_format"] = strategy.response_format
 
             try:
-                response = await self.llm_provider.generate(**generate_params)
+                response = await self.deps.llm_provider.generate(**generate_params)
             except Exception as gen_exc:
                 # Some providers can see the cut themselves and raise before
                 # there is any body to parse — Gemini does this on
@@ -6480,7 +6492,7 @@ class MilestoneEngine:
                 raise
 
         # Execute with retry and error handling
-        result, error_result = await self.llm_error_handler.with_retry(
+        result, error_result = await self.deps.llm_error_handler.with_retry(
             operation=llm_operation
         )
 
@@ -6970,7 +6982,7 @@ class MilestoneEngine:
             )
         elif hypothesis:
             if action == "refute":
-                self.hypothesis_manager.refute_hypothesis(
+                self.deps.hypothesis_manager.refute_hypothesis(
                     hypothesis=hypothesis,
                     current_turn=case.current_turn,
                     refuting_evidence_ids=[],
@@ -7129,7 +7141,7 @@ class MilestoneEngine:
             # (no likelihood from the same entry — it was a disconfirmation).
             if upd.state == HypothesisState.REFUTED:
                 if upd.refutation_reason and upd.refutation_reason.strip():
-                    self.hypothesis_manager.refute_hypothesis(
+                    self.deps.hypothesis_manager.refute_hypothesis(
                         hypothesis=hypothesis,
                         current_turn=current_turn,
                         refuting_evidence_ids=[],
@@ -7206,7 +7218,7 @@ class MilestoneEngine:
                     f"(terminal states are immutable)."
                 )
                 continue
-            self.hypothesis_manager.update_hypothesis_likelihood(
+            self.deps.hypothesis_manager.update_hypothesis_likelihood(
                 hypothesis,
                 likelihood,
                 current_turn,
@@ -7829,7 +7841,7 @@ class MilestoneEngine:
                     # Re-rooting the canonical here would BYPASS that guard and
                     # could GC a validated hypothesis's existing chain.
                     continue
-                h = self.hypothesis_manager.create_hypothesis(
+                h = self.deps.hypothesis_manager.create_hypothesis(
                     statement=h_item.statement,
                     category=h_item.category,
                     initial_likelihood=h_item.likelihood,
@@ -8119,7 +8131,7 @@ class MilestoneEngine:
             exclusion_survivors=metadata.get("deductive_survivor_ids", frozenset()),
             rcc_authored_this_turn=metadata.get("rcc_authored_this_turn", False),
             metadata=metadata,
-            provider_name=_resolve_chat_provider_name(self.llm_provider),
+            provider_name=_resolve_chat_provider_name(self.deps.llm_provider),
         )
 
         # KB-remediation pre-fetch on the cause_state→IDENTIFIED edge (INV-35):
@@ -8284,7 +8296,7 @@ class MilestoneEngine:
             # the same restatement leak the ``novel_*`` keys close on the other
             # arms. ``link_evidence`` decides, because only it holds both the prior
             # link and the new one.
-            if self.hypothesis_manager.link_evidence(
+            if self.deps.hypothesis_manager.link_evidence(
                 case.hypotheses[h_id],
                 e_id,
                 link.stance,
@@ -8731,8 +8743,8 @@ class MilestoneEngine:
         logger.info(f"Transitioning case {case.case_id} to INVESTIGATING")
 
         # Gap #6: Checkpoint before status change
-        if self.checkpoint_service:
-            await self.checkpoint_service.create_checkpoint(
+        if self.deps.checkpoint_service:
+            await self.deps.checkpoint_service.create_checkpoint(
                 case,
                 trigger="pre_case_action",
                 metadata={
@@ -8828,7 +8840,7 @@ class MilestoneEngine:
         builder. Nothing consumes a return value since the KB cause seeder
         was removed (fm#1295).
         """
-        if not self.knowledge_service:
+        if not self.deps.knowledge_service:
             return None
 
         # Policy gate on the PUSH channel (fm#1360, Option B). Off means the
@@ -8879,8 +8891,8 @@ class MilestoneEngine:
             owner_id = getattr(case, "user_id", None)
             # team_service/share_repository are wired post-construction; use
             # None in standalone: the team arm then resolves empty.
-            team_service = self.team_service
-            share_repository = self.share_repository
+            team_service = self.deps.team_service
+            share_repository = self.deps.share_repository
             shared_kb_ids: list[str] = []
             if owner_id and team_service and share_repository:
                 try:
@@ -8908,7 +8920,7 @@ class MilestoneEngine:
             # rank 1 for the same query, and pure vector search cannot: the
             # fetch limit is applied to CHUNKS before any floor, so no
             # threshold value can admit a chunk ranked 369th.
-            results = await self.knowledge_service.search_knowledge(
+            results = await self.deps.knowledge_service.search_knowledge(
                 query=query,
                 limit=KB_PREFETCH_FETCH_LIMIT,
                 filters=scope_filter,
@@ -9145,9 +9157,9 @@ class MilestoneEngine:
                 # Use the user_message parameter directly, not from metadata
                 if self._user_confirms_transition(user_message):
                     # Gap #6: Checkpoint before terminal transition
-                    if self.checkpoint_service:
+                    if self.deps.checkpoint_service:
                         to_state = case.pending_transition.get("to_state", "unknown")
-                        await self.checkpoint_service.create_checkpoint(
+                        await self.deps.checkpoint_service.create_checkpoint(
                             case,
                             trigger="pre_case_action",
                             metadata={
@@ -9775,7 +9787,7 @@ class MilestoneEngine:
             # can trip anchoring the same as a repeatedly-tested one — never
             # validating or concluding, only lowering belief over time. A
             # hypothesis that causal evidence supports is not aged (#1678).
-            self.hypothesis_manager.advance_stagnation_if_ignored(
+            self.deps.hypothesis_manager.advance_stagnation_if_ignored(
                 h,
                 case.current_turn,
                 case,
@@ -9783,11 +9795,13 @@ class MilestoneEngine:
             )
             # One decay step if THIS turn left the hypothesis stagnant (touched
             # without progress); an untouched turn does not decay it.
-            self.hypothesis_manager.apply_likelihood_decay(h, case.current_turn)
+            self.deps.hypothesis_manager.apply_likelihood_decay(h, case.current_turn)
 
         # 2. Detect anchoring and add system feedback if necessary
-        is_anchored, reason, hypothesis_ids = self.hypothesis_manager.detect_anchoring(
-            active_hypotheses, case.current_turn
+        is_anchored, reason, hypothesis_ids = (
+            self.deps.hypothesis_manager.detect_anchoring(
+                active_hypotheses, case.current_turn
+            )
         )
 
         # 3. Age-out: an ignored prior past the stagnation horizon and below the
@@ -9810,7 +9824,7 @@ class MilestoneEngine:
                     and not is_chain_root_validated(h, case.causal_nodes)
                     and h.root_node_id not in count_held
                 ):
-                    self.hypothesis_manager.retire_if_aged_out(
+                    self.deps.hypothesis_manager.retire_if_aged_out(
                         h, case, case.current_turn
                     )
 
@@ -9850,7 +9864,7 @@ class MilestoneEngine:
                 and not is_chain_root_validated(case.hypotheses[hid], case.causal_nodes)
                 and case.hypotheses[hid].root_node_id not in count_held
             ]
-            retired = self.hypothesis_manager.force_alternative_generation(
+            retired = self.deps.hypothesis_manager.force_alternative_generation(
                 targets, active_hypotheses, case.current_turn, case
             )
             # Record that the intervention fired THIS turn — drives the cooldown

@@ -282,7 +282,7 @@ async def test_inner_raise_does_not_chain_provider_exception():
         agent_response: str = "x"
 
     engine = _make_engine()
-    engine.llm_provider.get_structured_output_strategy = MagicMock(
+    engine.deps.llm_provider.get_structured_output_strategy = MagicMock(
         return_value=MagicMock()
     )
 
@@ -297,7 +297,7 @@ async def test_inner_raise_does_not_chain_provider_exception():
     )
 
     with patch.object(
-        engine.llm_error_handler, "with_retry", AsyncMock(return_value=(None, err))
+        engine.deps.llm_error_handler, "with_retry", AsyncMock(return_value=(None, err))
     ):
         with pytest.raises(MilestoneEngineError) as exc_info:
             await engine._generate_structured_output_inner(

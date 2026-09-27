@@ -676,7 +676,7 @@ class TestGenerateStructuredOutputRouting:
             response_format=None,
             extra_config={},
         )
-        engine.llm_provider.get_structured_output_strategy = MagicMock(
+        engine.deps.llm_provider.get_structured_output_strategy = MagicMock(
             return_value=mock_strategy
         )
 
@@ -700,7 +700,7 @@ class TestGenerateStructuredOutputRouting:
                 )
             ],
         )
-        engine.llm_provider.generate = AsyncMock(return_value=schema_response)
+        engine.deps.llm_provider.generate = AsyncMock(return_value=schema_response)
 
         # Act - no investigation_tools or tool_context
         result = await engine._generate_structured_output(
@@ -862,7 +862,7 @@ class TestBuildDaToolSchemas:
     def test_no_investigation_tools_returns_empty(self):
         """Without investigation_tools, returns empty list."""
         engine = _make_engine()
-        engine.investigation_tools = None
+        engine.deps.investigation_tools = None
         result = engine._build_da_tool_schemas()
         assert result == []
 
@@ -889,7 +889,7 @@ class TestBuildToolContext:
         assert result.case_id == "case_001"
         assert result.enterprise_id == "ent_123"
         assert result.user_id == "user_abc"
-        assert result.case_repository is engine.repository
+        assert result.case_repository is engine.deps.repository
 
     async def test_default_user_id_when_no_principal(self):
         """Uses 'system' when the turn carries no authenticated principal."""

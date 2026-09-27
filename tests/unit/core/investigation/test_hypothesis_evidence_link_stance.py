@@ -23,6 +23,7 @@ from uuid import uuid4
 import pytest
 
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.prompts import templates
 from faultmaven.modules.case.contracts import (
@@ -122,7 +123,8 @@ def _make_link(hypothesis_id: str, evidence_id: str, stance: EvidenceStance):
 def _make_engine() -> MilestoneEngine:
     """Bare engine — only the apply helper is exercised."""
     eng = MilestoneEngine.__new__(MilestoneEngine)
-    eng.hypothesis_manager = HypothesisManager()
+    eng.deps = EngineDeps()
+    eng.deps.hypothesis_manager = HypothesisManager()
     return eng
 
 

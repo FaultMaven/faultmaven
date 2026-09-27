@@ -23,6 +23,7 @@ from faultmaven.core.investigation.milestone_engine.affordances import (
     _treatment_blocked_pending,
     engine_owned_affordances,
 )
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import EvidenceToAdd, SolutionToAdd
 from faultmaven.core.investigation.turn_outcome import determine_turn_outcome
@@ -51,11 +52,12 @@ pytestmark = pytest.mark.unit
 @pytest.fixture
 def engine():
     eng = MilestoneEngine.__new__(MilestoneEngine)
+    eng.deps = EngineDeps()
     # Attributes __init__ always sets and the engine reads directly (#1722).
-    eng.llm_provider = None
-    eng.team_service = None
-    eng.share_repository = None
-    eng.conversion_service = None
+    eng.deps.llm_provider = None
+    eng.deps.team_service = None
+    eng.deps.share_repository = None
+    eng.deps.conversion_service = None
     return eng
 
 
@@ -529,7 +531,7 @@ def test_the_caller_counts_only_material_links(engine):
     case = _case(current_turn=1)
     case.evidence = [_standing_evidence("OOMKilled exit 137", source="file_a")]
     hyp = next(iter(case.hypotheses.values()))
-    engine.hypothesis_manager = HypothesisManager.__new__(HypothesisManager)
+    engine.deps.hypothesis_manager = HypothesisManager.__new__(HypothesisManager)
 
     def emit(stance):
         return SimpleNamespace(

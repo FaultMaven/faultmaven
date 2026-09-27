@@ -164,8 +164,8 @@ def _turn_service(session, answer: str, extra_metadata: dict | None = None):
         return {"case_updated": case, "agent_response": answer, "metadata": metadata}
 
     engine.process_turn = AsyncMock(side_effect=_turn)
-    engine.llm_provider = MagicMock()
-    engine.llm_provider.route = AsyncMock(return_value=None)
+    engine.deps = SimpleNamespace(llm_provider=MagicMock())
+    engine.deps.llm_provider.route = AsyncMock(return_value=None)
 
     cap = TurnCapService(
         CapPolicyResolver(_Orgs(), default_limit=lambda: 30, multi_tenant=lambda: True),

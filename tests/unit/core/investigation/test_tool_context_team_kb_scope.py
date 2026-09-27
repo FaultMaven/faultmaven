@@ -33,6 +33,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     build_kb_scope_filter,
 )
@@ -45,21 +46,22 @@ def _engine(team_ids=None, shared_ids=None, *, wired=True):
     from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 
     engine = MilestoneEngine.__new__(MilestoneEngine)
-    engine.repository = MagicMock()
-    engine.investigation_tools = None
+    engine.deps = EngineDeps()
+    engine.deps.repository = MagicMock()
+    engine.deps.investigation_tools = None
 
     if wired:
-        engine.team_service = MagicMock()
-        engine.team_service.list_all_user_team_ids = AsyncMock(
+        engine.deps.team_service = MagicMock()
+        engine.deps.team_service.list_all_user_team_ids = AsyncMock(
             return_value=list(team_ids or [])
         )
-        engine.share_repository = MagicMock()
-        engine.share_repository.list_resource_ids = AsyncMock(
+        engine.deps.share_repository = MagicMock()
+        engine.deps.share_repository.list_resource_ids = AsyncMock(
             return_value=list(shared_ids or [])
         )
     else:
-        engine.team_service = None
-        engine.share_repository = None
+        engine.deps.team_service = None
+        engine.deps.share_repository = None
     return engine
 
 
@@ -109,7 +111,9 @@ async def test_the_team_arm_is_keyed_on_the_session_user():
 
     await engine._build_tool_context(case, user_id="session_user")
 
-    engine.team_service.list_all_user_team_ids.assert_awaited_once_with("session_user")
+    engine.deps.team_service.list_all_user_team_ids.assert_awaited_once_with(
+        "session_user"
+    )
 
 
 async def test_the_enterprise_is_threaded_into_the_share_lookup():
@@ -121,7 +125,7 @@ async def test_the_enterprise_is_threaded_into_the_share_lookup():
 
     await engine._build_tool_context(_case(enterprise_id="ent_xyz"), user_id="user_a")
 
-    _, kwargs = engine.share_repository.list_resource_ids.await_args
+    _, kwargs = engine.deps.share_repository.list_resource_ids.await_args
     assert (
         kwargs.get("enterprise_id") == "ent_xyz"
     ), f"share lookup was not scoped to the case's enterprise: {kwargs}"
@@ -137,7 +141,7 @@ async def test_no_principal_means_no_team_arm(user_id):
     context = await engine._build_tool_context(_case(), user_id=user_id)
 
     assert context.shared_kb_ids == []
-    engine.team_service.list_all_user_team_ids.assert_not_awaited()
+    engine.deps.team_service.list_all_user_team_ids.assert_not_awaited()
     assert _team_arm(build_kb_scope_filter(context.user_id, context.shared_kb_ids)) is (
         None
     )
@@ -158,7 +162,7 @@ async def test_standalone_without_team_services_collapses_to_owned_and_global():
 async def test_a_failed_resolution_narrows_rather_than_raising():
     """A share-table fault must not fail the turn, and must not widen the read."""
     engine = _engine(team_ids=["team_a"])
-    engine.share_repository.list_resource_ids = AsyncMock(
+    engine.deps.share_repository.list_resource_ids = AsyncMock(
         side_effect=RuntimeError("share table unavailable")
     )
 

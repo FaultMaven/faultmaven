@@ -122,7 +122,7 @@ def _service(session, agent_response: str, extra_metadata: dict | None = None):
         }
 
     engine.process_turn = AsyncMock(side_effect=_turn)
-    engine.llm_provider = MagicMock()
+    engine.deps = SimpleNamespace(llm_provider=MagicMock())
 
     cap = TurnCapService(
         CapPolicyResolver(_Orgs(), default_limit=lambda: 30, multi_tenant=lambda: True),

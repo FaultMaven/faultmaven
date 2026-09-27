@@ -21,6 +21,7 @@ from faultmaven.core.investigation.evidence_need_linking import (
     link_evidence_suggestions_to_needs,
     sweep_silent_inferred_needs,
 )
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.modules.case.contracts import (
     EvidenceNeed,
     NeedObtainability,
@@ -492,7 +493,7 @@ class TestEngineWiring:
     def test_linking_runs_before_the_save(self):
         src = self._source()
         assert src.index("link_evidence_suggestions_to_needs(") < src.index(
-            "await self.repository.save(case_updated)"
+            "await self.deps.repository.save(case_updated)"
         ), "linking must precede save() or created needs and the ask history are lost"
 
     def test_linking_runs_before_flattening(self):
@@ -525,6 +526,7 @@ class TestWireResponseCarriesTheNeedId:
         )
 
         engine = MilestoneEngine.__new__(MilestoneEngine)
+        engine.deps = EngineDeps()
         case = _Case()
         fu = SimpleNamespace(
             label="Share target provider details",
@@ -1092,7 +1094,7 @@ class TestSweepIsWiredBeforeLinking:
     def test_sweep_runs_before_the_save(self):
         src = self._source()
         assert src.index("sweep_silent_inferred_needs(") < src.index(
-            "await self.repository.save(case_updated)"
+            "await self.deps.repository.save(case_updated)"
         )
 
 

@@ -34,6 +34,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.core.investigation import terminal_transitions as tt
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.models.report import RunbookMatch
@@ -350,7 +351,7 @@ async def test_a_similar_match_stops_creation_and_offers_generate_anyway(
     )
 
     engine = _engine_for_creation()
-    engine.runbook_kb = _similar_match_kb()
+    engine.deps.runbook_kb = _similar_match_kb()
 
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
         result = await engine._handle_runbook_creation(ready_case, metadata={})
@@ -372,7 +373,7 @@ async def test_generate_anyway_proceeds_past_the_similar_match(ready_case, monke
     created. Without this the stop turn's question would be unanswerable —
     clicking the affordance would just re-run dedup and stop again."""
     engine = _engine_for_creation()
-    engine.runbook_kb = _similar_match_kb()
+    engine.deps.runbook_kb = _similar_match_kb()
 
     monkeypatch.setattr(
         "faultmaven.modules.knowledge.domain.models.conversion."
@@ -400,6 +401,7 @@ async def test_the_confirm_payload_dispatches_with_dedup_confirmed():
     from faultmaven.modules.case.contracts import CaseState
 
     engine = MilestoneEngine.__new__(MilestoneEngine)
+    engine.deps = EngineDeps()
     engine._handle_runbook_creation = AsyncMock(return_value={"routed": True})
     case = MagicMock()
     case.state = CaseState.RESOLVED
@@ -434,7 +436,7 @@ async def test_the_plain_generate_payload_still_stops_on_a_similar_match(
     from faultmaven.modules.case.contracts import CaseState
 
     engine = _engine_for_creation()
-    engine.runbook_kb = _similar_match_kb()
+    engine.deps.runbook_kb = _similar_match_kb()
     ready_case.state = CaseState.RESOLVED
 
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
@@ -509,12 +511,13 @@ def _engine_for_creation() -> "object":
     from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 
     engine = MilestoneEngine.__new__(MilestoneEngine)
-    engine.knowledge_service = MagicMock()
-    engine.runbook_kb = _kb()
-    engine.team_service = None
-    engine.share_repository = None
-    engine.conversion_service = MagicMock()
-    engine.conversion_service.get_conversion_by_case = AsyncMock(return_value=None)
+    engine.deps = EngineDeps()
+    engine.deps.knowledge_service = MagicMock()
+    engine.deps.runbook_kb = _kb()
+    engine.deps.team_service = None
+    engine.deps.share_repository = None
+    engine.deps.conversion_service = MagicMock()
+    engine.deps.conversion_service.get_conversion_by_case = AsyncMock(return_value=None)
     engine._run_runbook_conversion = AsyncMock()
     engine._remaining_regens_for = AsyncMock(return_value=3)
     return engine

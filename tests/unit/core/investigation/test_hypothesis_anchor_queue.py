@@ -13,6 +13,7 @@ from uuid import uuid4
 import pytest
 
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import (
     HypothesisToAdd,
@@ -37,12 +38,13 @@ def _engine() -> MilestoneEngine:
     """Bare engine — exercises the apply path with just the hypothesis manager
     wired (the matcher step skips gracefully without investigation_tools)."""
     eng = MilestoneEngine.__new__(MilestoneEngine)
+    eng.deps = EngineDeps()
     # Attributes __init__ always sets and the engine reads directly (#1722).
-    eng.llm_provider = None
-    eng.team_service = None
-    eng.share_repository = None
-    eng.conversion_service = None
-    eng.hypothesis_manager = HypothesisManager()
+    eng.deps.llm_provider = None
+    eng.deps.team_service = None
+    eng.deps.share_repository = None
+    eng.deps.conversion_service = None
+    eng.deps.hypothesis_manager = HypothesisManager()
     return eng
 
 

@@ -264,7 +264,7 @@ class TestAttemptSurvivesDispatchFailure:
             _response_with_calls(_tool_call("search_file", json.dumps({"q": "x"}))),
             ToolResult(success=True, data="found"),
         )
-        engine.investigation_tools.execute_tool = AsyncMock(
+        engine.deps.investigation_tools.execute_tool = AsyncMock(
             side_effect=RuntimeError("provider socket closed")
         )
         with patch.object(me, "tool_call_attempts_total") as attempts:
@@ -282,7 +282,7 @@ class TestAttemptSurvivesDispatchFailure:
             _response_with_calls(_tool_call("kubectl_delete_prod", "{}")),
             ToolResult(success=False, data=None, error="Tool not found"),
         )
-        engine.investigation_tools.execute_tool = AsyncMock(
+        engine.deps.investigation_tools.execute_tool = AsyncMock(
             side_effect=RuntimeError("boom")
         )
         with patch.object(me, "tool_call_attempts_total") as attempts:

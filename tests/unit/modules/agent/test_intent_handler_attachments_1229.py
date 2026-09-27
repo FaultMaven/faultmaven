@@ -94,7 +94,7 @@ def engine(seen):
     double = create_autospec(MilestoneEngine, instance=True)
     # Set in ``MilestoneEngine.__init__``, so class autospec does not carry it;
     # the service reads it to build its IntentResolver.
-    double.llm_provider = MagicMock()
+    double.deps = SimpleNamespace(llm_provider=MagicMock())
 
     async def spy(
         *,

@@ -702,7 +702,7 @@ def test_tool_loop_messages_bounded_elides_oldest_keeps_recent():
 
     from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 
-    fake = SimpleNamespace(da_model=None)
+    fake = SimpleNamespace(deps=SimpleNamespace(da_model=None))
     msgs = [
         {"role": "system", "content": "SYS " + "s" * 200},
         {"role": "user", "content": "BASE " + "x" * 400},
@@ -786,10 +786,12 @@ def test_tools_effectively_available_gates_on_capability():
 
     def eng(tools, provider):
         ns = SimpleNamespace(
-            investigation_tools=tools,
-            da_provider=None,
-            llm_provider=provider,
-            da_model=None,
+            deps=SimpleNamespace(
+                investigation_tools=tools,
+                da_provider=None,
+                llm_provider=provider,
+                da_model=None,
+            )
         )
         # _tools_effectively_available delegates to this method on self.
         ns._da_provider_supports_tools = (
@@ -913,7 +915,7 @@ def test_resolve_tool_loop_budget_is_bounded():
     from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 
     b = MilestoneEngine._resolve_tool_loop_budget(
-        SimpleNamespace(da_model=MODEL), PROVIDER
+        SimpleNamespace(deps=SimpleNamespace(da_model=MODEL)), PROVIDER
     )
     # Soft cap: prompt_target (32K default, clamped to the window) + observation
     # allowance (16K default), on messages alone. Hard cap: the window, known
@@ -942,7 +944,7 @@ def test_tool_loop_bound_counts_reasoning_artifacts(monkeypatch):
 
     from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 
-    fake = SimpleNamespace(da_model=None)
+    fake = SimpleNamespace(deps=SimpleNamespace(da_model=None))
     reasoning = "step " * 2000  # thousands of tokens of hidden reasoning
 
     msgs = [

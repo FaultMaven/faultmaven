@@ -15,6 +15,7 @@ from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_assessment_state,
 )
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import HypothesisUpdate
 from faultmaven.modules.case.contracts import (
@@ -40,7 +41,8 @@ def _make_engine() -> MilestoneEngine:
     """Bare engine — only the apply helper is exercised. __init__ takes many
     deps, so bypass it and wire just the hypothesis manager the helper uses."""
     eng = MilestoneEngine.__new__(MilestoneEngine)
-    eng.hypothesis_manager = HypothesisManager()
+    eng.deps = EngineDeps()
+    eng.deps.hypothesis_manager = HypothesisManager()
     return eng
 
 
@@ -486,7 +488,7 @@ def test_deferred_apply_respects_same_turn_refutation():
         case.current_turn,
     )
     # Step 4 (links pass) auto-refutes it.
-    eng.hypothesis_manager.refute_hypothesis(
+    eng.deps.hypothesis_manager.refute_hypothesis(
         hypothesis=h,
         current_turn=case.current_turn,
         refuting_evidence_ids=[],

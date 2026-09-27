@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.modules.case.contracts import TurnOutcome
 
 
@@ -22,6 +23,7 @@ class TestBroadenedProgressDefinition:
         )
 
         instance = MilestoneEngine.__new__(MilestoneEngine)
+        instance.deps = EngineDeps()
         return instance
 
     @pytest.fixture

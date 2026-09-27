@@ -26,6 +26,7 @@ import pytest
 
 from faultmaven.core.investigation import milestone_engine
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import MilestoneUpdates, SolutionToAdd
 from faultmaven.modules.case.domain.models.case import Case
@@ -80,11 +81,12 @@ def _meta() -> dict:
 def _make_engine() -> MilestoneEngine:
     """Bare engine with the chain-emission tail stubbed, as the M5 gate tests do."""
     eng = MilestoneEngine.__new__(MilestoneEngine)
+    eng.deps = EngineDeps()
     # Attributes __init__ always sets and the engine reads directly (#1722).
-    eng.llm_provider = None
-    eng.team_service = None
-    eng.share_repository = None
-    eng.conversion_service = None
+    eng.deps.llm_provider = None
+    eng.deps.team_service = None
+    eng.deps.share_repository = None
+    eng.deps.conversion_service = None
     eng._apply_chain_emission = lambda *a, **k: None
     eng._nudge_ambiguous_orphan_chains = lambda *a, **k: None
     return eng
@@ -238,7 +240,7 @@ class TestLicenseReadsThisTurn:
 
 def _engine_with_manager() -> MilestoneEngine:
     engine = _make_engine()
-    engine.hypothesis_manager = HypothesisManager()
+    engine.deps.hypothesis_manager = HypothesisManager()
     return engine
 
 

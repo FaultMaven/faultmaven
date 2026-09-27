@@ -32,6 +32,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.prompts.context_builder.evidence import (
     _build_evidence_context,
@@ -864,6 +865,7 @@ async def test_uploaded_at_turn_is_immutable_across_a_deduped_reupload():
         "storage_ref": row.storage_ref,
     }
     engine = MilestoneEngine.__new__(MilestoneEngine)
+    engine.deps = EngineDeps()
     await engine._process_response_structured(
         case,
         "same content again",

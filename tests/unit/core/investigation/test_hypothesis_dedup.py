@@ -31,6 +31,7 @@ from faultmaven.core.investigation.causal_graph.similarity import (
 )
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.milestone_engine import engine as milestone_engine
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import (
     HypothesisToAdd,
@@ -226,12 +227,13 @@ def test_find_duplicate_returns_none_for_distinct():
 
 def _engine() -> MilestoneEngine:
     eng = MilestoneEngine.__new__(MilestoneEngine)
+    eng.deps = EngineDeps()
     # Attributes __init__ always sets and the engine reads directly (#1722).
-    eng.llm_provider = None
-    eng.team_service = None
-    eng.share_repository = None
-    eng.conversion_service = None
-    eng.hypothesis_manager = HypothesisManager()
+    eng.deps.llm_provider = None
+    eng.deps.team_service = None
+    eng.deps.share_repository = None
+    eng.deps.conversion_service = None
+    eng.deps.hypothesis_manager = HypothesisManager()
     return eng
 
 

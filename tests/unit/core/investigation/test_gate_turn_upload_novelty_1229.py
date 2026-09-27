@@ -185,7 +185,7 @@ class TestAGateTurnCarryingANovelUpload:
         engine = _engine()
         case = _investigating_case(pending="closed")
         saved: list[int] = []
-        engine.repository.save = AsyncMock(
+        engine.deps.repository.save = AsyncMock(
             side_effect=lambda c: saved.append(c.turns_without_progress) or c
         )
 

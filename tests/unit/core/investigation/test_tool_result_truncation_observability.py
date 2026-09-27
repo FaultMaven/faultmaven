@@ -218,7 +218,7 @@ async def test_instrumentation_does_not_change_what_the_model_receives():
     engine = _engine_returning("x" * (MilestoneEngine.TOOL_RESULT_MAX_CHARS + 1000))
     await _run(engine)
 
-    second_call = engine.llm_provider.generate.call_args_list[1]
+    second_call = engine.deps.llm_provider.generate.call_args_list[1]
     messages = second_call.kwargs["messages"]
     tool_msg = [m for m in messages if m.get("role") == "tool"][0]
     assert tool_msg["content"] == (

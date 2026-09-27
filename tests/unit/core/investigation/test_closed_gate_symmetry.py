@@ -29,6 +29,7 @@ from unittest.mock import patch
 import pytest
 
 from faultmaven.core.investigation import terminal_transitions
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.terminal_replies import (
     _resolution_confirmation_suggestions,
@@ -220,7 +221,8 @@ async def test_check_automatic_transitions_surfaces_resolve_confirmation_on_pivo
     re-presented confirmation."""
     case = _resolvable_case_with_pending_close()
     eng = MilestoneEngine.__new__(MilestoneEngine)
-    eng.checkpoint_service = None
+    eng.deps = EngineDeps()
+    eng.deps.checkpoint_service = None
     metadata: dict = {}
 
     with patch.object(terminal_transitions, "close_pivoted_to_resolve_total"):

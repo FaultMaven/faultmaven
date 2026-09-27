@@ -25,6 +25,7 @@ from faultmaven.core.investigation.hypothesis_manager import (
     _RETIRED_STALLED,
     HypothesisManager,
 )
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import (
     _ANTI_ANCHORING_COOLDOWN_TURNS,
     MilestoneEngine,
@@ -57,7 +58,8 @@ pytestmark = pytest.mark.unit
 
 def _engine() -> MilestoneEngine:
     eng = MilestoneEngine.__new__(MilestoneEngine)
-    eng.hypothesis_manager = HypothesisManager()
+    eng.deps = EngineDeps()
+    eng.deps.hypothesis_manager = HypothesisManager()
     return eng
 
 

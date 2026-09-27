@@ -32,6 +32,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import (
     Attachment,
@@ -388,6 +389,7 @@ class TestWhenDedupCouldNotRun:
         await _run(service, repo, case_already_holding_it, sample_user_id)
 
         engine = MilestoneEngine.__new__(MilestoneEngine)
+        engine.deps = EngineDeps()
         case = Case(
             case_id="case_aabb11223344",
             enterprise_id="org_123",

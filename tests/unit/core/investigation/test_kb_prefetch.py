@@ -25,8 +25,8 @@ def _engine(knowledge_service=None):
     from tests.unit.core.investigation.test_solution_offer_liveness import _make_engine
 
     engine = _make_engine()
-    engine.knowledge_service = knowledge_service
-    engine.runbook_kb = None
+    engine.deps.knowledge_service = knowledge_service
+    engine.deps.runbook_kb = None
     return engine
 
 
@@ -237,10 +237,10 @@ class TestPrefetchFloorAndScope:
         # case.user_id, NOT the session user, and on the case's tenant (#879).
         ks = _SearchRecordingStub([_search_hit()])
         engine = _engine(ks)
-        engine.team_service = SimpleNamespace(
+        engine.deps.team_service = SimpleNamespace(
             list_all_user_team_ids=AsyncMock(return_value=["team_1"])
         )
-        engine.share_repository = SimpleNamespace(
+        engine.deps.share_repository = SimpleNamespace(
             list_resource_ids=AsyncMock(return_value=["rb_team_a"])
         )
         case = _case()
@@ -249,8 +249,10 @@ class TestPrefetchFloorAndScope:
         scope_filter = ks.filters_seen[0]
         assert {"parent_document_id": {"$in": ["rb_team_a"]}} in scope_filter["$or"]
         assert {"owner_id": "owner_b"} in scope_filter["$or"]
-        engine.team_service.list_all_user_team_ids.assert_awaited_once_with("owner_b")
-        engine.share_repository.list_resource_ids.assert_awaited_once_with(
+        engine.deps.team_service.list_all_user_team_ids.assert_awaited_once_with(
+            "owner_b"
+        )
+        engine.deps.share_repository.list_resource_ids.assert_awaited_once_with(
             resource_type="knowledge_item",
             scope_type="team",
             scope_ids=["team_1"],

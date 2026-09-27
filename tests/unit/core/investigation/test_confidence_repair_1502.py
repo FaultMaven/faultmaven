@@ -47,6 +47,7 @@ from faultmaven.core.investigation.confidence_repair import (
 )
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.milestone_engine import engine as me
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.modules.case.contracts import (
     Case,
@@ -559,6 +560,7 @@ def test_every_policy_field_has_a_driven_case():
 def _ladder(body: dict, schema: type):
     """Run the real ladder; return (parsed, outcomes, field-counter labels)."""
     engine = MilestoneEngine.__new__(MilestoneEngine)
+    engine.deps = EngineDeps()
     with (
         patch.object(me, "schema_validation_total") as outcomes,
         patch.object(reliability_metrics, "schema_field_repairs_total") as fields,
@@ -923,7 +925,8 @@ def _parsed_hyp_link(raw: Any = ..., stance: str = "refutes"):
 
 def _apply_links(case: Case, links: list):
     engine = MilestoneEngine.__new__(MilestoneEngine)
-    engine.hypothesis_manager = HypothesisManager()
+    engine.deps = EngineDeps()
+    engine.deps.hypothesis_manager = HypothesisManager()
     metadata: dict = {}
     with patch.object(reliability_metrics, "schema_field_repairs_total") as fields:
         engine._apply_hypothesis_evidence_links(case, links, metadata)
@@ -1148,7 +1151,8 @@ def test_an_omitted_node_stance_flip_is_unchanged_from_main():
 
 def _update_engine() -> MilestoneEngine:
     engine = MilestoneEngine.__new__(MilestoneEngine)
-    engine.hypothesis_manager = HypothesisManager()
+    engine.deps = EngineDeps()
+    engine.deps.hypothesis_manager = HypothesisManager()
     return engine
 
 

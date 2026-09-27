@@ -25,6 +25,7 @@ from uuid import uuid4
 import pytest
 
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.modules.case.contracts import (
     Case,
@@ -109,7 +110,8 @@ def _link(h_ref: str, e_ref: str, stance=EvidenceStance.SUPPORTS):
 
 def _engine() -> MilestoneEngine:
     eng = MilestoneEngine.__new__(MilestoneEngine)
-    eng.hypothesis_manager = HypothesisManager()
+    eng.deps = EngineDeps()
+    eng.deps.hypothesis_manager = HypothesisManager()
     return eng
 
 

@@ -404,9 +404,9 @@ class TestRunbookCreationFollowUps:
         conversion_service.convert_from_case = AsyncMock(
             return_value=MagicMock(drafts=[])
         )
-        engine.conversion_service = conversion_service
+        engine.deps.conversion_service = conversion_service
         # knowledge_service without runbook_kb → dedup is skipped
-        engine.knowledge_service = MagicMock(spec=[])
+        engine.deps.knowledge_service = MagicMock(spec=[])
 
         result = await engine._handle_runbook_creation(case, metadata={})
 
@@ -432,7 +432,7 @@ class TestRunbookCreationFollowUps:
         case = _make_resolved_case()  # No root_cause, no solutions → NOT_READY
 
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        engine.knowledge_service = MagicMock(spec=[])
+        engine.deps.knowledge_service = MagicMock(spec=[])
 
         result = await engine._handle_runbook_creation(case, metadata={})
         assert result["suggested_follow_ups"] == []
@@ -483,12 +483,12 @@ async def _run_creation_turn(mock_llm, mock_repo, monkeypatch, scenario: str) ->
         _make_runbook_ready(case)
 
     engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-    engine.knowledge_service = MagicMock(spec=[])
+    engine.deps.knowledge_service = MagicMock(spec=[])
 
     conversion_service = MagicMock()
     conversion_service.convert_from_case = AsyncMock(return_value=MagicMock(drafts=[]))
     conversion_service.get_conversion_by_case = AsyncMock(return_value=None)
-    engine.conversion_service = conversion_service
+    engine.deps.conversion_service = conversion_service
 
     # `runbook_kb=None` means dedup is skipped, not clean — the honest "could
     # not check" caveat. Scenarios that need a real verdict install a KB.
@@ -501,11 +501,11 @@ async def _run_creation_turn(mock_llm, mock_repo, monkeypatch, scenario: str) ->
         existing.has_live_draft.return_value = True
         conversion_service.get_conversion_by_case = AsyncMock(return_value=existing)
     elif scenario == "service-unavailable":
-        engine.conversion_service = None
+        engine.deps.conversion_service = None
     elif scenario == "start-failure":
         monkeypatch.setattr(_FROM_CASE, classmethod(_raise_from_case))
     elif scenario == "similar-found":
-        engine.runbook_kb = _dedup_kb(
+        engine.deps.runbook_kb = _dedup_kb(
             [
                 RunbookMatch(
                     item_id="kb-1",
@@ -517,7 +517,7 @@ async def _run_creation_turn(mock_llm, mock_repo, monkeypatch, scenario: str) ->
         )
         embed_patch = patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024))
     elif scenario == "kickoff-clean-dedup":
-        engine.runbook_kb = _dedup_kb([])
+        engine.deps.runbook_kb = _dedup_kb([])
         embed_patch = patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024))
 
     with embed_patch:
@@ -1125,8 +1125,8 @@ class TestRunbookConversionCarriesOrg:
         conversion_service.get_conversion_by_case = AsyncMock(return_value=None)
 
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        engine.conversion_service = conversion_service
-        engine.knowledge_service = MagicMock(spec=[])
+        engine.deps.conversion_service = conversion_service
+        engine.deps.knowledge_service = MagicMock(spec=[])
 
         # The kickoff fires the conversion as a fire-and-forget task, so capture
         # the coroutine and drive it here rather than racing the event loop.

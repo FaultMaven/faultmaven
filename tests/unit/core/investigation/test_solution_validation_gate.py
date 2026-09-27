@@ -25,6 +25,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _coerce_intervention_quadrant,
@@ -120,11 +121,12 @@ def _make_engine() -> MilestoneEngine:
     """Bare engine; stub the chain-emission tail (runs after the gate) so the
     test isolates the gate decision and needs no DI wiring."""
     eng = MilestoneEngine.__new__(MilestoneEngine)
+    eng.deps = EngineDeps()
     # Attributes __init__ always sets and the engine reads directly (#1722).
-    eng.llm_provider = None
-    eng.team_service = None
-    eng.share_repository = None
-    eng.conversion_service = None
+    eng.deps.llm_provider = None
+    eng.deps.team_service = None
+    eng.deps.share_repository = None
+    eng.deps.conversion_service = None
     eng._apply_chain_emission = lambda *a, **k: None
     eng._nudge_ambiguous_orphan_chains = lambda *a, **k: None
     return eng

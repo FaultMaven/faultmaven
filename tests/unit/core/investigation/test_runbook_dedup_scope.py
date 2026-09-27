@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.core.investigation import terminal_transitions as tt
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.models.report import RunbookMatch
@@ -213,8 +214,9 @@ async def test_a_kb_without_a_scope_resolver_skips_dedup_with_the_did_not_run_ca
 
 def _engine(**attrs) -> MilestoneEngine:
     engine = MilestoneEngine.__new__(MilestoneEngine)
-    engine.team_service = attrs.get("team_service")
-    engine.share_repository = attrs.get("share_repository")
+    engine.deps = EngineDeps()
+    engine.deps.team_service = attrs.get("team_service")
+    engine.deps.share_repository = attrs.get("share_repository")
     return engine
 
 
@@ -277,8 +279,8 @@ async def test_the_engine_passes_its_injected_kb_and_owner_resolver_to_dedup(
     ``hasattr(knowledge_service, "runbook_kb")`` probe) and the case-owner
     resolver into ``evaluate_runbook_suggestion``."""
     engine = _engine()
-    engine.knowledge_service = MagicMock()
-    engine.runbook_kb = _RecordingKB()
+    engine.deps.knowledge_service = MagicMock()
+    engine.deps.runbook_kb = _RecordingKB()
 
     captured = {}
 
@@ -297,6 +299,6 @@ async def test_the_engine_passes_its_injected_kb_and_owner_resolver_to_dedup(
 
     await engine._handle_runbook_creation(_case(), metadata={})
 
-    assert captured["runbook_kb"] is engine.runbook_kb
+    assert captured["runbook_kb"] is engine.deps.runbook_kb
     assert captured["scope_resolver"] is not None
     assert (await captured["scope_resolver"]())["$or"][1] == {"owner_id": OWNER}

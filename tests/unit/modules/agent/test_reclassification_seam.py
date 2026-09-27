@@ -165,7 +165,7 @@ def _build(
     storage.retrieve_file = AsyncMock(return_value=b"line1\nline2 ERROR\n")
 
     engine = create_autospec(MilestoneEngine, instance=True)
-    engine.llm_provider = MagicMock()
+    engine.deps = SimpleNamespace(llm_provider=MagicMock())
     service = InvestigationService(
         milestone_engine=engine,
         case_repository=repo,
@@ -620,7 +620,7 @@ class TestATerminalCaseIsNotMutable:
         registry = AgentToolRegistry()
         registry.register(ReclassifyEvidenceTool(investigation_service=MagicMock()))
         schemas = MilestoneEngine._build_da_tool_schemas(
-            SimpleNamespace(investigation_tools=registry)
+            SimpleNamespace(deps=SimpleNamespace(investigation_tools=registry))
         )
         assert "reclassify_evidence" in [s["function"]["name"] for s in schemas], (
             "_build_da_tool_schemas applies no name filter, so every "

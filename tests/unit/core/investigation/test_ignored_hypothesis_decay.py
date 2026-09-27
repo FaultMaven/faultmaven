@@ -26,6 +26,7 @@ from faultmaven.core.investigation.hypothesis_manager import (
     IGNORED_STAGNATION_TURN_THRESHOLD,
     HypothesisManager,
 )
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.modules.case.contracts import (
     Case,
@@ -51,7 +52,8 @@ _SELF_RATIONALE = "Model-proposed theory: undersized pool"
 
 def _engine() -> MilestoneEngine:
     eng = MilestoneEngine.__new__(MilestoneEngine)
-    eng.hypothesis_manager = HypothesisManager()
+    eng.deps = EngineDeps()
+    eng.deps.hypothesis_manager = HypothesisManager()
     return eng
 
 

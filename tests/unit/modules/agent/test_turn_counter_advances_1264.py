@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.modules.agent.domain.services.investigation_service import (
@@ -163,8 +164,9 @@ class TestTheTerminalShortCircuit:
         from collections import defaultdict
 
         engine = MilestoneEngine.__new__(MilestoneEngine)
-        engine.llm_provider = MagicMock()
-        engine.repository = recording_case_repository
+        engine.deps = EngineDeps()
+        engine.deps.llm_provider = MagicMock()
+        engine.deps.repository = recording_case_repository
         engine._case_locks = defaultdict(asyncio.Lock)
 
         # Returns the case it was HANDED, not a closure over the outer one:

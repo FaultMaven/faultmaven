@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from faultmaven.core.investigation.milestone_engine import engine as me
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.response_synthesis import (
     RESPONSE_EMPTY_TEXT,
@@ -274,6 +275,7 @@ def test_the_text_recovery_path_still_rejects_an_empty_answer():
     let a missing answer through this path.
     """
     engine = MilestoneEngine.__new__(MilestoneEngine)
+    engine.deps = EngineDeps()
     with pytest.raises(ValueError, match="empty agent_response"):
         engine._parse_text_as_schema(json.dumps({"note": "x"}), _Resp)
 
@@ -296,6 +298,7 @@ def _synthesized_diagnosis(reason: StopReason):
 
     blank = InvestigationResponse_Diagnosis(agent_response="", state_updates={})
     engine = MilestoneEngine.__new__(MilestoneEngine)
+    engine.deps = EngineDeps()
     return engine._synthesize_agent_response(blank, reason)
 
 

@@ -17,6 +17,7 @@ something.
 import pytest
 
 from faultmaven.core.investigation import schemas as s
+from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 
 pytestmark = pytest.mark.unit
 
@@ -121,6 +122,7 @@ def test_a_non_string_justification_survives_the_real_backstop():
     from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 
     engine = MilestoneEngine.__new__(MilestoneEngine)
+    engine.deps = EngineDeps()
     parsed = engine._validate_with_degradation(
         {
             "agent_response": "Symptom confirmed.",

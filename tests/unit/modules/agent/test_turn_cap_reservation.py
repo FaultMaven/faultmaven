@@ -104,7 +104,7 @@ def _service(ledger, *, case=None, default=30):
     )
 
     engine = MagicMock()
-    engine.llm_provider = MagicMock()
+    engine.deps.llm_provider = MagicMock()
     repository = MagicMock()
     repository.get = AsyncMock(return_value=case)
 
@@ -195,7 +195,7 @@ def _unconfigured_service():
     )
 
     engine = MagicMock()
-    engine.llm_provider = MagicMock()
+    engine.deps.llm_provider = MagicMock()
     return InvestigationService(milestone_engine=engine, case_repository=MagicMock())
 
 

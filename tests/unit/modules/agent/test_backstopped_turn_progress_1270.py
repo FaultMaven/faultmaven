@@ -85,7 +85,7 @@ def engine():
     which makes every assertion below unfailable.
     """
     double = create_autospec(MilestoneEngine, instance=True)
-    double.llm_provider = MagicMock()
+    double.deps = SimpleNamespace(llm_provider=MagicMock())
 
     async def terminal_shaped(
         *,
