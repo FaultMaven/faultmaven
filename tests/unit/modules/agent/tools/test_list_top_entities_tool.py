@@ -15,7 +15,7 @@ from faultmaven.modules.agent.tools.list_top_entities_tool import (
     _MAX_LIMIT,
     ListTopEntitiesTool,
 )
-from faultmaven.modules.case.domain.models import CaseEntity, EntityType
+from faultmaven.modules.case.domain.models.evidence import CaseEntity, EntityType
 
 
 def _ctx() -> ToolContext:

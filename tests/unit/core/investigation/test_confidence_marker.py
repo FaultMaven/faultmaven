@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 import pytest
 
-from faultmaven.core.investigation.prompts.context_builder import (
+from faultmaven.core.investigation.prompts.context_builder.evidence import (
     _build_evidence_context,
 )
 from faultmaven.modules.case.contracts import (
@@ -30,7 +30,7 @@ from faultmaven.modules.case.contracts import (
     InquiryData,
     UploadedFile,
 )
-from faultmaven.modules.case.domain.models import Case
+from faultmaven.modules.case.domain.models.case import Case
 
 _EV_COUNTER = 0
 

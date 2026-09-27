@@ -78,7 +78,7 @@ a `(first_ts, last_ts)` tuple of `datetime` objects (not strings) from the first
 parseable timestamps in the file. Used by `_build_entity_profile()` for duration calculation
 and per-event span tracking.
 
-**Agent routing rules** (`templates.py`, `_EVIDENCE_GROUNDING_BLOCK`):
+**Agent routing rules** (`templates/blocks.py`, `_EVIDENCE_GROUNDING_BLOCK`):
 
 Replaced the gray-zone "general characterisation questions" carve-out with a four-category
 routing rule:
@@ -93,7 +93,7 @@ Added IP-count disambiguation example to the routing rule (the 867-line-occurren
 for OpenSSH files). Added file-specific identifier rule prohibiting asserting technical meanings
 of internal error codes from training data.
 
-**Intake instruction** (`templates.py`, INQUIRY phase): When the user submits a file without a
+**Intake instruction** (`templates/inquiry.py`, INQUIRY phase): When the user submits a file without a
 question, the agent now uses the file extract for the orientation response (not `search_file`),
 leading with FILE SUMMARY pattern/finding, naming key entities and anomalies.
 
@@ -192,7 +192,7 @@ Three changes close a class of first-request cold-start incidents where a 225 KB
 | **Evidence form** | `USER_TEXT` / `SUBMITTED_DATA` (classification-driven via `submission_classification`) | Payload-driven: attachments → `DOCUMENT`, agent tools → `SUBMITTED_DATA`. `_determine_evidence_form()` and `SubmissionClassification` deleted. |
 | **Pipeline** | Preprocessing triggered by LLM classification for pasted text | Two-step: preprocess all attachments (Step 1, before LLM) → LLM inference (Step 2) |
 | **Context** | Evidence summaries only in LLM context | Context Sliding Window: structural indexes included for recent evidence (Tier A/B/C) |
-| **Config** | `TIER2_*` config names | Renamed to `DEEP_ANALYSIS_*`. New `EVIDENCE_CONTEXT_*` constants in `context_builder.py`. |
+| **Config** | `TIER2_*` config names | Renamed to `DEEP_ANALYSIS_*`. New `EVIDENCE_CONTEXT_*` constants in `context_builder/budget.py`. |
 | **Pasted text** | Routed through Tier 0+1 (designed but endpoint-agnostic) | Submitted as `pasted_content` form field on `/turns`, preprocessed as attachment in Step 1 |
 
 ### v3.2 → v4.0
@@ -1195,7 +1195,7 @@ automatically index large files for semantic search — you do not need to manag
 **Note:** The per-turn routing rule in `_EVIDENCE_GROUNDING_BLOCK` (injected via
 `evidence_grounding=`) provides finer-grained routing guidance that supersedes the
 `DATA_ACCESS_DIRECTED_ANALYSIS` defaults for specific question types. See Section 1 of
-`templates.py` for the four-category rule (characterization / retrieval / count /
+`templates/blocks.py` for the four-category rule (characterization / retrieval / count /
 temporal distribution). The DA mode prompt governs tool selection strategy; the
 evidence grounding block governs what source to answer from.
 
@@ -1454,7 +1454,7 @@ These items are out of scope for the initial v4.0 implementation but are documen
 | **Evidence failure modes** | Orphan-file cleanup (M1) and monitoring scaffolding (M2) **done**. Scenario 2 (async LLM timeout recovery at turn processing) **deferred** — current error-path UX already provides specific error codes + `Retry-After` headers; revisit only if production telemetry shows user harm. See [evidence-failure-modes.md](./evidence-failure-modes.md). | Partial done / revisit on telemetry signal |
 | **DIFF_PATCH extractor** | Parse unified diffs / git patches — files changed, lines added/removed | When deployment-change investigations are common |
 | **THREAD_DUMP extractor** | JVM thread dump parsing — deadlock detection, lock contention | When Java-heavy user base emerges |
-| ~~**Page Capture Stage 2: Query-Time Reranking**~~ | **Implemented in v5.2.** `_rerank_page_capture_sections()` in `context_builder.py` splits page capture structural indexes on `\n##` headings, scores each section against user query via normalised keyword overlap (stopwords excluded), reorders so query-relevant content appears first. Preamble (`[captured_at: …]` + page title) pinned at position 0. Runs before per-item char cap so relevant sections survive truncation. Triggered only for `extraction_method="page_capture_passthrough"` evidence. | ~~Post-v5.1~~ Done |
+| ~~**Page Capture Stage 2: Query-Time Reranking**~~ | **Implemented in v5.2.** `_rerank_page_capture_sections()` in `context_builder/text_shaping.py` splits page capture structural indexes on `\n##` headings, scores each section against user query via normalised keyword overlap (stopwords excluded), reorders so query-relevant content appears first. Preamble (`[captured_at: …]` + page title) pinned at position 0. Runs before per-item char cap so relevant sections survive truncation. Triggered only for `extraction_method="page_capture_passthrough"` evidence. | ~~Post-v5.1~~ Done |
 | **Page Capture Stage 3: Platform-Specific Extraction** | Tool-specific DOM heuristics for Grafana, Datadog, PagerDuty, etc. CSS-in-JS makes CSS-selector-based extraction fragile — prefer DOM structure + ARIA attribute heuristics. Generic `htmlToStructuredText` already handles most dashboards via tryKeyValue/tryStatValue; platform extractors would add precision, not coverage. Related to `platform-specific-extractors.md`. | Post-v5.1 |
 | **Page Capture Stage 4: Viewport Sync / Real-Time Capture** | Current capture is one-shot snapshot — stale for live dashboards (Grafana auto-refresh). Options: periodic re-capture, MutationObserver for DOM changes, or explicit "refresh capture" button. Trade-off: bandwidth vs freshness. | Post-v5.1 |
 

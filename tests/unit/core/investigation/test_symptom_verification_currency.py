@@ -204,7 +204,7 @@ def test_progress_indicator_no_longer_reports_a_bare_flag_when_stale():
     """The named defect: the indicator stated a conclusion while withholding
     everything needed to weigh it, so it read as settled fact."""
 
-    from faultmaven.core.investigation.prompts.context_builder import (
+    from faultmaven.core.investigation.prompts.context_builder.evidence import (
         _symptom_currency_note,
     )
 
@@ -216,7 +216,7 @@ def test_progress_indicator_no_longer_reports_a_bare_flag_when_stale():
 
 
 def test_undated_is_reported_as_unknown_not_as_recent():
-    from faultmaven.core.investigation.prompts.context_builder import (
+    from faultmaven.core.investigation.prompts.context_builder.evidence import (
         _symptom_currency_note,
     )
 
@@ -226,7 +226,7 @@ def test_undated_is_reported_as_unknown_not_as_recent():
 
 
 def test_other_indicators_are_untouched():
-    from faultmaven.core.investigation.prompts.context_builder import (
+    from faultmaven.core.investigation.prompts.context_builder.evidence import (
         _symptom_currency_note,
     )
 
@@ -236,7 +236,7 @@ def test_other_indicators_are_untouched():
 
 
 def test_inquiry_case_gets_no_note_at_all():
-    from faultmaven.core.investigation.prompts.context_builder import (
+    from faultmaven.core.investigation.prompts.context_builder.evidence import (
         _symptom_currency_note,
     )
 
@@ -250,7 +250,7 @@ def test_zone2_emphasis_anchors_the_window_without_calling_the_case_dead():
     with nothing to say about WHERE to look. It must now name the window — and
     must not imply a non-firing problem is not worth investigating."""
 
-    from faultmaven.core.investigation.prompts.templates import (
+    from faultmaven.core.investigation.prompts.templates.assembly import (
         _get_diagnosis_focus_emphasis,
     )
 
@@ -264,7 +264,7 @@ def test_zone2_emphasis_anchors_the_window_without_calling_the_case_dead():
 
 
 def test_zone2_emphasis_is_unchanged_when_current():
-    from faultmaven.core.investigation.prompts.templates import (
+    from faultmaven.core.investigation.prompts.templates.assembly import (
         _get_diagnosis_focus_emphasis,
     )
 
@@ -276,7 +276,7 @@ def test_zone2_emphasis_is_unchanged_when_current():
 def test_progress_only_callers_keep_working():
     """The optional ``case`` parameter must not change existing call sites."""
 
-    from faultmaven.core.investigation.prompts.templates import (
+    from faultmaven.core.investigation.prompts.templates.assembly import (
         _get_diagnosis_focus_emphasis,
     )
 
@@ -379,7 +379,9 @@ class TestClosureReasonsAreReasons:
         assert self._derive(case) == "inquiry_only"
 
     def test_every_derivable_reason_passes_the_case_validator(self):
-        from faultmaven.modules.case.domain.models import VALID_CLOSURE_REASONS
+        from faultmaven.modules.case.domain.models.lifecycle import (
+            VALID_CLOSURE_REASONS,
+        )
 
         for reason in (
             "inquiry_only",
@@ -393,7 +395,9 @@ class TestClosureReasonsAreReasons:
         """No legacy, no back-compat: the system is still under development, so
         an obsolete value is removed rather than carried."""
 
-        from faultmaven.modules.case.domain.models import VALID_CLOSURE_REASONS
+        from faultmaven.modules.case.domain.models.lifecycle import (
+            VALID_CLOSURE_REASONS,
+        )
 
         assert "closed_after_investigation" not in VALID_CLOSURE_REASONS
 
@@ -617,7 +621,7 @@ class TestReviewFindingsResidual:
         than treat the question as settled. Every currency surface is gated on
         symptom_verified, so suppressing it there kept them all dormant."""
 
-        from faultmaven.core.investigation.prompts.templates import (
+        from faultmaven.core.investigation.prompts.templates.assembly import (
             _get_diagnosis_focus_emphasis,
         )
 

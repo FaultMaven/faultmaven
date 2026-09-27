@@ -40,7 +40,7 @@ from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
     _backfill_consumed_turn,
 )
-from faultmaven.modules.case.domain.models import CaseState
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
 
 pytestmark = pytest.mark.unit
 
@@ -342,7 +342,7 @@ def test_an_already_recorded_turn_is_left_alone(sample_case):
     ``progress_made`` is already the engine's authoritative reading.
     """
     from faultmaven.core.investigation.turn_outcome import TurnOutcome
-    from faultmaven.modules.case.domain.models import TurnProgress
+    from faultmaven.modules.case.domain.models.turn import TurnProgress
 
     sample_case.current_turn = 2
     sample_case.turn_history = [

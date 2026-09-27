@@ -15,27 +15,35 @@ from datetime import UTC, datetime
 
 import pytest
 
-from faultmaven.core.investigation.prompts.context_builder import (
-    STATE_SUMMARY_TURN_THRESHOLD,
-    _build_causal_graph_block,
-    _build_state_summary,
+from faultmaven.core.investigation.prompts.context_builder.assembly import (
     build_investigation_context,
 )
-from faultmaven.core.investigation.prompts.templates import (
+from faultmaven.core.investigation.prompts.context_builder.budget import (
+    STATE_SUMMARY_TURN_THRESHOLD,
+)
+from faultmaven.core.investigation.prompts.context_builder.causal_graph_block import (
+    _build_causal_graph_block,
+)
+from faultmaven.core.investigation.prompts.context_builder.history import (
+    _build_state_summary,
+)
+from faultmaven.core.investigation.prompts.templates.fallback import (
     get_fallback_prompt_for_case,
 )
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.hypothesis import (
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
+)
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import (
     InquiryData,
     InvestigationStage,
-    MitigationRecord,
     ProblemVerification,
 )
+from faultmaven.modules.case.domain.models.progress import MitigationRecord
 
 
 def _case_with_hypotheses(

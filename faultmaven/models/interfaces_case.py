@@ -9,7 +9,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
-from faultmaven.modules.case.domain.models import Case, ParticipantRole
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import ParticipantRole
 
 from .api import CaseMessagesResponse
 from .api_models import (

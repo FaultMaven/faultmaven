@@ -28,7 +28,9 @@ from faultmaven.core.investigation.milestone_engine.response_synthesis import (
     _narration_asserts_disposition,
 )
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
-from faultmaven.modules.case.domain.models import Case, CaseState, InquiryData
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import InquiryData
 
 pytestmark = pytest.mark.unit
 

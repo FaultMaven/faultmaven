@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from faultmaven.infrastructure.llm.providers import LLMResponse, StopReason
-from faultmaven.modules.case.api.routes import _generate_title_with_llm
+from faultmaven.modules.case.api.title_generation import _generate_title_with_llm
 
 pytestmark = [pytest.mark.unit, pytest.mark.api]
 

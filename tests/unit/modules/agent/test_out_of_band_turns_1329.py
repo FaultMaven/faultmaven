@@ -46,7 +46,8 @@ from faultmaven.modules.agent.domain.services.out_of_band import (
     reads_as_continuation,
 )
 from faultmaven.modules.agent.domain.services.query_classifier import classify_query
-from faultmaven.modules.case.domain.models import CaseState, TurnOutcome, TurnProgress
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 
 pytestmark = pytest.mark.unit
 

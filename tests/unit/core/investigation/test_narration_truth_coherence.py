@@ -27,10 +27,9 @@ from faultmaven.core.investigation.milestone_engine.response_synthesis import (
     _narration_asserts_disposition,
     _prose_with_gate_notice,
 )
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseSeverity,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseSeverity, CaseState
+from faultmaven.modules.case.domain.models.problem import (
     InquiryData,
     ProblemVerification,
 )

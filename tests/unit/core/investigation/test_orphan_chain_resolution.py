@@ -12,12 +12,12 @@ is attached to exactly one hypothesis.
 
 import pytest
 
-from faultmaven.core.investigation.causal_graph import (
+from faultmaven.core.investigation.causal_graph.ingestion import seed_problem_node
+from faultmaven.core.investigation.causal_graph.pruning import resolve_orphan_chains
+from faultmaven.core.investigation.causal_graph.similarity import (
     RESTATEMENT_AMBIGUOUS,
     RESTATEMENT_STRONG,
-    resolve_orphan_chains,
     restatement_score,
-    seed_problem_node,
 )
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.modules.case.contracts import (
@@ -143,7 +143,7 @@ def test_restatement_score_thresholds_bracket_expectations():
 def test_stemming_matches_morphological_variants():
     """Gate 2: inflectional variants of the same words now match (the leaks≠leak /
     connections≠connection brittleness that left a validated chain orphaned)."""
-    from faultmaven.core.investigation.causal_graph import _stem
+    from faultmaven.core.investigation.cause_assurance import _stem
 
     assert _stem("leaks") == _stem("leaking") == _stem("leak") == "leak"
     assert _stem("connections") == _stem("connection") == "connection"
@@ -399,7 +399,7 @@ def test_t2a_does_not_clobber_a_hypothesis_already_on_a_real_chain():
     # The hypothesis already owns a real multi-rung chain; an orphan that
     # restates it is a separate representation, surfaced for a nudge — never an
     # auto re-root that would destroy the existing chain.
-    from faultmaven.core.investigation.causal_graph import (
+    from faultmaven.core.investigation.causal_graph.ingestion import (
         chain_path_to_problem,
         seed_problem_node,
     )

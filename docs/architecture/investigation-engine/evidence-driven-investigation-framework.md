@@ -206,7 +206,7 @@ preprocessing artifacts and is visible to the agent via the
 structural index. No Evidence row is created until a slice is
 extracted in support of a specific claim.
 
-**Ordering constraint**: A hypothesis must exist before evidence can be classified as `causal_evidence`. If the cause is immediately obvious, the agent creates a hypothesis AND classifies causal evidence in the same turn. This is **prompt guidance** (no Python validator rejects orphan `causal_evidence`). The runtime prompt-side guidance lives in `_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK` (in `templates.py`), composed into the single unified DIAGNOSIS block (`_RCA_DIAGNOSIS_BLOCK`) reached by all INVESTIGATING turns. Under the unified opportunistic flow (the path fork and its emission bans are retired — see [Investigation Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-mitigation-as-an-insert) and the retirement note on INV-17/INV-21 in the [Invariant Enforcement Matrix](./investigation-invariants.md#invariant-enforcement-matrix)), there is no longer a pre-mitigation block that forbids `hypotheses_to_add` / `causal_evidence` emission; the diagnostic machinery runs whenever the cause is uncertain (`cause_state ∈ {UNKNOWN, CANDIDATES}`).
+**Ordering constraint**: A hypothesis must exist before evidence can be classified as `causal_evidence`. If the cause is immediately obvious, the agent creates a hypothesis AND classifies causal evidence in the same turn. This is **prompt guidance** (no Python validator rejects orphan `causal_evidence`). The runtime prompt-side guidance lives in `_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK` (in `templates/diagnosis.py`), composed into the single unified DIAGNOSIS block (`_RCA_DIAGNOSIS_BLOCK`) reached by all INVESTIGATING turns. Under the unified opportunistic flow (the path fork and its emission bans are retired — see [Investigation Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-mitigation-as-an-insert) and the retirement note on INV-17/INV-21 in the [Invariant Enforcement Matrix](./investigation-invariants.md#invariant-enforcement-matrix)), there is no longer a pre-mitigation block that forbids `hypotheses_to_add` / `causal_evidence` emission; the diagnostic machinery runs whenever the cause is uncertain (`cause_state ∈ {UNKNOWN, CANDIDATES}`).
 
 **Exit conditions** (inference-based — action over words):
 
@@ -795,7 +795,7 @@ def get_stage_instructions(case: Case) -> str:
         return MITIGATION_INSTRUCTIONS
     else:
         # Single unified DIAGNOSIS block — see _select_diagnosis_block in
-        # templates.py. The path fork is retired: this is now a thin wrapper
+        # templates/__init__.py. The path fork is retired: this is now a thin wrapper
         # returning focus_emphasis + _RCA_DIAGNOSIS_BLOCK (it kept its old
         # name but no longer selects a path). The hypothesis-emission-under-
         # uncertainty mandate lives in _HYPOTHESIS_EVIDENCE_ORDERING_BLOCK
@@ -1224,7 +1224,7 @@ The old STAGE_INSTRUCTIONS dictionary and prompt templates remain in the codebas
 
 ### 13.2 Implementation Sequence
 
-1. **Add new stage instructions** (DONE) — `_RCA_DIAGNOSIS_BLOCK`, `MITIGATION_INSTRUCTIONS`, `TREATMENT_INSTRUCTIONS` in templates.py. The DIAGNOSIS-stage prompt is a single unified block assembled by `_select_diagnosis_block(case)` (`focus_emphasis + _RCA_DIAGNOSIS_BLOCK`); the path fork and its blocks (`_SYMPTOM_VALIDATION_BLOCK`, `_GATE3_PENDING_BLOCK`, `_POST_MITIGATION_RCA_PREFIX`) were retired in the flow redesign.
+1. **Add new stage instructions** (DONE) — `_RCA_DIAGNOSIS_BLOCK`, `MITIGATION_INSTRUCTIONS`, `TREATMENT_INSTRUCTIONS` in the templates package. The DIAGNOSIS-stage prompt is a single unified block assembled by `_select_diagnosis_block(case)` (`focus_emphasis + _RCA_DIAGNOSIS_BLOCK`); the path fork and its blocks (`_SYMPTOM_VALIDATION_BLOCK`, `_GATE3_PENDING_BLOCK`, `_POST_MITIGATION_RCA_PREFIX`) were retired in the flow redesign.
 2. **Update InvestigationStage enum** — Add DIAGNOSIS, MITIGATION, TREATMENT values
 3. **Update InvestigationProgress model** — Gate milestones + retained progress milestones
 4. **Add ProposedAction model** — action_type, expected_command, description (Section 10.5)
@@ -1232,7 +1232,7 @@ The old STAGE_INSTRUCTIONS dictionary and prompt templates remain in the codebas
 6. **Update EvidenceCategory enum** — Final shape is the presence/absence quartet: `symptom_evidence`, `causal_evidence`, `symptom_absence_evidence`, `causal_absence_evidence` (§10.3; the interim `mitigation_evidence`/`solution_evidence` categories were removed)
 7. **Update evidence_processor.py** — Validation rules for new evidence categories
 8. **Update milestone_engine/** — Stage dispatch, compliance detection (post-LLM), progress monitoring
-9. **Update context_builder.py** (DONE) — Stage-specific context loading (hypothesis condensing per stage), ProposedAction in prompt context.
+9. **Update context_builder/** (DONE) — Stage-specific context loading (hypothesis condensing per stage), ProposedAction in prompt context.
 10. **Update LLM response schemas** — ProposedAction output, gate milestones, progress milestones
 11. **Update tests** — All test files referencing old milestones/stages
 

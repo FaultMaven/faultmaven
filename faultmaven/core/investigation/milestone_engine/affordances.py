@@ -1,9 +1,13 @@
 import json
 from typing import Any
 
-from faultmaven.core.investigation.causal_graph import hypothesis_statements_duplicate
+from faultmaven.core.investigation.causal_graph.similarity import (
+    hypothesis_statements_duplicate,
+)
 from faultmaven.core.investigation.cause_assurance import evidence_datum_key
-from faultmaven.core.investigation.prompts.templates import SCHEMA_INSTRUCTIONS
+from faultmaven.core.investigation.prompts.templates.investigation import (
+    SCHEMA_INSTRUCTIONS,
+)
 from faultmaven.core.investigation.verification_status import (
     VerificationStatus,
     assess_verification_status,

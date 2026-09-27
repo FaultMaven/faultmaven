@@ -33,7 +33,8 @@ from faultmaven.modules.case.contracts import (
     EMPTY_TURN_TEXT,
     MESSAGE_METADATA_AGENT_SYNTHESIZED,
 )
-from faultmaven.modules.case.domain.models import CaseState, TurnOutcome, TurnProgress
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 
 pytestmark = pytest.mark.unit
 

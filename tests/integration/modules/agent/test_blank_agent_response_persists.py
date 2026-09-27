@@ -44,7 +44,9 @@ from faultmaven.modules.case.contracts import (
     EMPTY_AGENT_RESPONSE_TEXT,
     MESSAGE_METADATA_AGENT_SYNTHESIZED,
 )
-from faultmaven.modules.case.domain.models import Case, CaseState, InquiryData
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import InquiryData
 from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
     SQLiteCaseRepository,
 )
@@ -222,10 +224,10 @@ class TestSynthesizedAnswerRoundTrip:
         return await service.repository.get(case.case_id)
 
     async def _prompt_history(self, case) -> str:
-        from faultmaven.core.investigation.prompts import context_builder as cb
-        from faultmaven.core.investigation.prompts.fence import mint_token
+        from faultmaven.core.investigation.prompts.context_builder import history as cb
+        from faultmaven.core.investigation.prompts.fence import PromptFence, mint_token
 
-        return cb._build_verbatim_history(case.messages, cb.PromptFence(mint_token()))
+        return cb._build_verbatim_history(case.messages, PromptFence(mint_token()))
 
     async def test_an_engine_placeholder_is_persisted_flagged(self, session):
         placeholder = "[Response withheld by safety filter]"
@@ -239,7 +241,7 @@ class TestSynthesizedAnswerRoundTrip:
         assert assistant["metadata"].get(MESSAGE_METADATA_AGENT_SYNTHESIZED) is True
         assert reloaded.turn_history[-1].agent_response_synthesized is True
 
-        from faultmaven.core.investigation.prompts.context_builder import (
+        from faultmaven.core.investigation.prompts.context_builder.history import (
             NO_ANSWER_LINE,
         )
 

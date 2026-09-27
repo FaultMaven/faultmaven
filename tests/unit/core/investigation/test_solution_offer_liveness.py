@@ -38,36 +38,44 @@ from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _supersede_pending_solution_offers,
     _withdraw_unlicensed_solution_offers,
 )
-from faultmaven.core.investigation.prompts.context_builder import (
+from faultmaven.core.investigation.prompts.context_builder.assembly import (
     build_investigation_context,
 )
-from faultmaven.core.investigation.prompts.templates import (
+from faultmaven.core.investigation.prompts.templates.assembly import (
     _get_diagnosis_focus_emphasis,
 )
 from faultmaven.core.investigation.schemas import MilestoneUpdates, SolutionToAdd
 from faultmaven.core.investigation.terminal_transitions import (
     derive_solution_surface,
 )
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
-    CauseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
+    RootCauseConclusion,
+    WorkingConclusion,
+)
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
+)
+from faultmaven.modules.case.domain.models.hypothesis import (
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
-    InvestigationActionType,
+)
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import InquiryData
+from faultmaven.modules.case.domain.models.progress import (
+    CauseState,
     MitigationRecord,
-    ProposedAction,
-    RootCauseConclusion,
     SolutionState,
+)
+from faultmaven.modules.case.domain.models.solution import (
+    InvestigationActionType,
+    ProposedAction,
     SolutionType,
-    WorkingConclusion,
 )
 
 pytestmark = pytest.mark.unit

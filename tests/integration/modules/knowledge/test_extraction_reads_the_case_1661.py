@@ -44,7 +44,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
-from faultmaven.core.investigation.prompts.context_builder import (
+from faultmaven.core.investigation.prompts.context_builder.evidence import (
     _evidence_recency_key,
 )
 from faultmaven.exceptions import ConfigurationException, NotFoundError
@@ -56,13 +56,13 @@ from faultmaven.infrastructure.security.redaction import (
     RedactionUnavailableError,
 )
 from faultmaven.modules.case.contracts import MessageRowKind, append_message_row
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
 )
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
 )

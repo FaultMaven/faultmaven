@@ -31,9 +31,11 @@ from uuid import uuid4
 import pytest
 
 from faultmaven.core.investigation.evidence_need_surfacing import _SURFACED_CAUSAL_CAP
-from faultmaven.core.investigation.prompts.context_builder import (
-    _build_evidence_needs_block,
+from faultmaven.core.investigation.prompts.context_builder.assembly import (
     build_investigation_context,
+)
+from faultmaven.core.investigation.prompts.context_builder.evidence_needs import (
+    _build_evidence_needs_block,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -362,7 +364,7 @@ class TestPriorityOrdering:
 @pytest.mark.unit
 class TestRenderCap:
     def test_overflow_marker_appears_when_pool_exceeds_cap(self):
-        from faultmaven.core.investigation.prompts.context_builder import (
+        from faultmaven.core.investigation.prompts.context_builder.history import (
             _EVIDENCE_NEEDS_RENDER_CAP,
         )
 
@@ -551,7 +553,7 @@ class TestRequestTextTruncation:
         assert "…" not in out
 
     def test_long_request_text_truncated_with_ellipsis(self):
-        from faultmaven.core.investigation.prompts.context_builder import (
+        from faultmaven.core.investigation.prompts.context_builder.history import (
             _REQUEST_TEXT_RENDER_CAP,
         )
 
@@ -568,7 +570,7 @@ class TestRequestTextTruncation:
         assert prefix in out
 
     def test_at_exact_cap_no_truncation(self):
-        from faultmaven.core.investigation.prompts.context_builder import (
+        from faultmaven.core.investigation.prompts.context_builder.history import (
             _REQUEST_TEXT_RENDER_CAP,
         )
 
@@ -633,7 +635,7 @@ class TestCausalSurfaceCap:
         from faultmaven.core.investigation.evidence_need_surfacing import (
             select_surfaced_causal_needs,
         )
-        from faultmaven.core.investigation.prompts.context_builder import (
+        from faultmaven.core.investigation.prompts.context_builder.history import (
             _EVIDENCE_NEEDS_RENDER_CAP,
         )
 

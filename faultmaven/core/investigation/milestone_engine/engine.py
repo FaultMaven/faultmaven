@@ -24,15 +24,21 @@ from faultmaven.core.investigation.case_telemetry import (
     TurnPath,
     collect_progress_arms,
 )
-from faultmaven.core.investigation.causal_graph import (
+from faultmaven.core.investigation.causal_graph.derivation import derive_node_states
+from faultmaven.core.investigation.causal_graph.ingestion import (
     chain_path_to_problem,
-    derive_node_states,
-    find_duplicate_hypothesis,
     ingest_emitted_chain,
-    is_chain_root_validated,
     mirror_hypothesis_support_to_root_nodes,
+)
+from faultmaven.core.investigation.causal_graph.pruning import (
     prune_abandoned_nodes,
     resolve_orphan_chains,
+)
+from faultmaven.core.investigation.causal_graph.queries import is_chain_root_validated
+from faultmaven.core.investigation.causal_graph.similarity import (
+    find_duplicate_hypothesis,
+)
+from faultmaven.core.investigation.causal_graph.support import (
     support_count_held_root_ids,
 )
 from faultmaven.core.investigation.cause_assurance import absence_row_link_refused
@@ -78,7 +84,7 @@ from faultmaven.core.investigation.llm_error_handler import (
     is_truncated_json_error,
 )
 from faultmaven.core.investigation.progress_monitor import ProgressMonitor
-from faultmaven.core.investigation.prompts.templates import get_prompt_for_case
+from faultmaven.core.investigation.prompts.templates.assembly import get_prompt_for_case
 from faultmaven.core.investigation.reliability_metrics import (
     schema_validation_total,
     tool_call_attempts_total,
@@ -2247,7 +2253,7 @@ class MilestoneEngine:
             entity_highlight_groups: list = []
             try:
                 from faultmaven.config.settings import get_settings
-                from faultmaven.core.investigation.prompts.context_builder import (
+                from faultmaven.core.investigation.prompts.context_builder.entity_highlights import (
                     fetch_entity_highlights,
                 )
 
@@ -6052,7 +6058,7 @@ class MilestoneEngine:
                 and case is not None
                 and _is_context_length_error(exc)
             ):
-                from faultmaven.core.investigation.prompts.templates import (
+                from faultmaven.core.investigation.prompts.templates.fallback import (
                     DEGRADED_NO_TOOLS_NOTICE,
                     get_fallback_prompt_for_case,
                 )
@@ -6713,7 +6719,7 @@ class MilestoneEngine:
 
         # Convert and store problem_confirmation from LLM schema to domain model
         if updates.problem_confirmation:
-            from faultmaven.modules.case.domain.models import (
+            from faultmaven.modules.case.domain.models.problem import (
                 ProblemConfirmation as DomainProblemConfirmation,
             )
 
@@ -6724,10 +6730,10 @@ class MilestoneEngine:
 
         # Convert and store preliminary_urgency from LLM schema to domain model
         if updates.preliminary_urgency:
-            from faultmaven.modules.case.domain.models import (
+            from faultmaven.modules.case.domain.models.problem import (
                 PreliminaryUrgency as DomainPreliminaryUrgency,
             )
-            from faultmaven.modules.case.domain.models import UrgencyLevel
+            from faultmaven.modules.case.domain.models.problem import UrgencyLevel
 
             case.inquiry.preliminary_urgency = DomainPreliminaryUrgency(
                 level=UrgencyLevel(
@@ -9218,7 +9224,7 @@ class MilestoneEngine:
                     assess_resolution_readiness,
                     propose_transition,
                 )
-                from faultmaven.modules.case.domain.models import (
+                from faultmaven.modules.case.domain.models.lifecycle import (
                     LEGAL_TRANSITIONS,
                 )
 

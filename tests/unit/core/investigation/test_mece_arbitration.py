@@ -19,15 +19,15 @@ from unittest.mock import patch
 
 import pytest
 
-from faultmaven.core.investigation.causal_graph import (
+from faultmaven.core.investigation.causal_graph.clusters import (
     distinct_cause_clusters,
     mece_contested_root_ids,
-    retract_stale_engine_rcc,
 )
+from faultmaven.core.investigation.causal_graph.rcc import retract_stale_engine_rcc
 from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_cause_state_from_chain,
 )
-from faultmaven.core.investigation.prompts.context_builder import (
+from faultmaven.core.investigation.prompts.context_builder.causal_graph_block import (
     _build_causal_graph_block,
 )
 from faultmaven.modules.case.contracts import (
@@ -652,8 +652,8 @@ def test_negation_blind_merge_is_the_accepted_lexical_limit():
 def test_synthesize_refuses_to_mint_while_contested():
     """Defense in depth: a direct (non-recompute) caller of the mirror
     synthesis never gets an arbitrary pick minted on a contested case."""
-    from faultmaven.core.investigation.causal_graph import (
-        derive_node_states,
+    from faultmaven.core.investigation.causal_graph.derivation import derive_node_states
+    from faultmaven.core.investigation.causal_graph.rcc import (
         synthesize_rcc_from_validated_root,
     )
 
@@ -917,7 +917,7 @@ def test_working_conclusion_block_carries_contested_note():
     pick over the contested hypotheses — rendered on a contested case it must
     carry the discrimination note, or the model anchors on the arbitrary pick
     beside a graph block saying identification is held."""
-    from faultmaven.core.investigation.prompts.context_builder import (
+    from faultmaven.core.investigation.prompts.context_builder.assembly import (
         build_investigation_context,
     )
     from faultmaven.modules.case.contracts import WorkingConclusion
@@ -936,7 +936,7 @@ def test_working_conclusion_block_carries_contested_note():
 
 
 def test_working_conclusion_block_clean_when_uncontested():
-    from faultmaven.core.investigation.prompts.context_builder import (
+    from faultmaven.core.investigation.prompts.context_builder.assembly import (
         build_investigation_context,
     )
     from faultmaven.modules.case.contracts import WorkingConclusion

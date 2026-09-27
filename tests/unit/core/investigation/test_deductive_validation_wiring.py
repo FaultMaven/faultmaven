@@ -23,10 +23,12 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.core.investigation.causal_graph import (
-    DEDUCTIVE_EXCLUSION_MAX_BELIEF,
+from faultmaven.core.investigation.causal_graph.derivation import (
     derive_node_states,
     validate_by_exclusion,
+)
+from faultmaven.core.investigation.causal_graph.queries import (
+    DEDUCTIVE_EXCLUSION_MAX_BELIEF,
 )
 from faultmaven.core.investigation.cause_assurance import (
     CauseAssuranceGrade,

@@ -40,7 +40,10 @@ from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
     _published_source_type,
 )
-from faultmaven.modules.case.domain.models import EvidenceSourceType, UploadedFile
+from faultmaven.modules.case.domain.models.evidence import (
+    EvidenceSourceType,
+    UploadedFile,
+)
 
 from .conftest import MockMilestoneEngine, RecordingCaseRepository, create_sample_case
 from .test_file_reclassification_intent import (
@@ -470,7 +473,7 @@ _PG = "modules/case/infrastructure/postgresql_hybrid_case_repository.py"
 #:   and unchecked by construction — which is why the RECEIVER is in the key:
 #:   a read of ``res.uploaded_file`` beside an ``other`` read of ``intent``
 #:   is a different site, not the same entry.
-_CB = "core/investigation/prompts/context_builder.py"
+_CB = "core/investigation/prompts/context_builder/evidence.py"
 _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
     # --- UploadedFile.data_type, needs the 6-valued type (4 functions) -----
     # Both reads sit in ``data_type_str = (… if … else …)``, which is parsed.
@@ -595,7 +598,12 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
         "other",
         1,
     ),
-    ("modules/case/api/routes.py", "reclassify_evidence", "get", "body"): ("other", 1),
+    (
+        "modules/case/api/routes.py",
+        "reclassify_evidence",
+        "get",
+        "body",
+    ): ("other", 1),
     (
         "modules/agent/tools/reclassify_evidence_tool.py",
         "ReclassifyEvidenceTool.execute_with_context",
@@ -649,11 +657,21 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
     # block's is ``ev.source_type``.
     (_CB, "_render_orphan_file_block", "name_arg", "_attr('data_type')"): ("other", 1),
     (_CB, "_render_evidence_block", "name_arg", "_attr('data_type')"): ("other", 1),
-    # Prompt prose that happens to contain "update"/"select" and the word.
-    ("core/investigation/prompts/templates.py", "<module>", "sql", "<sql>"): (
-        "other",
-        2,
-    ),
+    # Prompt prose that happens to contain "update"/"select" and the word —
+    # one site in each submodule that now holds it (blocks.py:
+    # _EVIDENCE_GROUNDING_BLOCK; investigation.py: INVESTIGATION_BASE).
+    (
+        "core/investigation/prompts/templates/blocks.py",
+        "<module>",
+        "sql",
+        "<sql>",
+    ): ("other", 1),
+    (
+        "core/investigation/prompts/templates/investigation.py",
+        "<module>",
+        "sql",
+        "<sql>",
+    ): ("other", 1),
     # The legacy data-ingestion service's own in-memory classification
     # results; it never touches ``uploaded_files``.
     (_INGEST, "CaseDataIngestionService._calculate_confidence_score", "attr", "data"): (

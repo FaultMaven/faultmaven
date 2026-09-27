@@ -128,7 +128,7 @@ class JournalEntryOutput(BaseModel):
         return v
 ```
 
-> The LLM-facing `JournalEntryOutput` schema truncates over-length content rather than rejecting it, because structured-output rejections from a single chatty turn would corrupt the whole response. The persisted `JournalEntry` domain model in `modules/case/domain/models.py` keeps a strict `max_length=200` — by the time content lands there it has already been normalized.
+> The LLM-facing `JournalEntryOutput` schema truncates over-length content rather than rejecting it, because structured-output rejections from a single chatty turn would corrupt the whole response. The persisted `JournalEntry` domain model in `modules/case/domain/models/documentation.py` keeps a strict `max_length=200` — by the time content lands there it has already been normalized.
 
 ### Prompt Injection
 
@@ -196,7 +196,7 @@ When creating evidence records, the summary MUST include specific values:
 - Error identifiers: "OOM killed, exit code 137" not "crash errors"
 ```
 
-This is a prompt change in `templates.py` — no model changes needed. The TRIAGE SUMMARY QUALITY section in the INQUIRY template already has this guidance; it should be replicated in the INVESTIGATING template for evidence creation.
+This is a prompt change in `templates/` — no model changes needed. The TRIAGE SUMMARY QUALITY section in the INQUIRY template already has this guidance; it should be replicated in the INVESTIGATING template for evidence creation.
 
 **Implementation:** Add to INVESTIGATION_BASE after the CREATING EVIDENCE RECORDS section:
 
@@ -213,7 +213,7 @@ Include: counts, entity names, time ranges, error codes, version numbers.
 
 **Problem:** Working conclusion reasoning is truncated to 500 chars in the context builder. For complex investigations with multiple competing hypotheses, 500 chars can't capture the reasoning chain.
 
-**Fix:** Increase from 500 to 1000 chars in `context_builder.py`:
+**Fix:** Increase from 500 to 1000 chars in `context_builder/assembly.py`:
 
 ```python
 # Current:
@@ -269,8 +269,8 @@ No model changes, no schema changes. Implemented in commit `a4b8924d`.
 
 | Change | File | Status |
 |---|---|---|
-| Evidence summary quality prompt | `templates.py` (INVESTIGATION_BASE) | Done |
-| Working conclusion reasoning cap 500→1000 | `context_builder.py` | Done |
+| Evidence summary quality prompt | `templates/investigation.py` (INVESTIGATION_BASE) | Done |
+| Working conclusion reasoning cap 500→1000 | `context_builder/assembly.py` | Done |
 
 ### Phase 2: Investigation Journal — DONE
 
@@ -278,13 +278,13 @@ The core feature. Model change, schema change, context builder change, and promp
 
 | Change | File | Status |
 |---|---|---|
-| `JournalEntry` model | `modules/case/domain/models.py` | Done |
-| `investigation_journal` field on Case | `modules/case/domain/models.py` | Done |
+| `JournalEntry` model | `modules/case/domain/models/documentation.py` | Done |
+| `investigation_journal` field on Case | `modules/case/domain/models/case.py` | Done |
 | Export from contracts | `modules/case/contracts.py` | Done |
 | `JournalEntryOutput` in LLM schema | `core/investigation/schemas.py` | Done |
 | Journal extraction in milestone engine | `core/investigation/milestone_engine/` | Done |
-| Journal section in context builder | `core/investigation/prompts/context_builder.py` | Done |
-| Journal prompt instructions | `core/investigation/prompts/templates.py` | Done |
+| Journal section in context builder | `core/investigation/prompts/context_builder/assembly.py` | Done |
+| Journal prompt instructions | `core/investigation/prompts/templates/investigation.py` | Done |
 | Persistence (metadata blob) | `infrastructure/persistence/database_case_repository.py` | Done |
 | Tests (24 tests) | `tests/unit/core/investigation/test_investigation_journal.py` | Done |
 
@@ -307,10 +307,10 @@ rather than forcing an invented refutation reason.
 
 | Change | File | Status |
 |---|---|---|
-| `refutation_reason` on Hypothesis (+ `@model_validator` pair check) | `modules/case/domain/models.py` | Done |
+| `refutation_reason` on Hypothesis (+ `@model_validator` pair check) | `modules/case/domain/models/hypothesis.py` | Done |
 | Schema field on `HypothesisUpdate` (dormant: no consumer yet, future-ready) | `core/investigation/schemas.py` | Done |
-| Context builder: inline rendering of refutation reason under REFUTED hypotheses | `core/investigation/prompts/context_builder.py` | Done |
-| Prompt: REFUTED-vs-RETIRED distinction + pair-integrity requirement | `core/investigation/prompts/templates.py` | Done |
+| Context builder: inline rendering of refutation reason under REFUTED hypotheses | `core/investigation/prompts/context_builder/causal_graph_block.py` | Done |
+| Prompt: REFUTED-vs-RETIRED distinction + pair-integrity requirement | `core/investigation/prompts/templates/diagnosis.py` | Done |
 | `hypothesis_manager` atomic assignment in auto-refute + user-driven refute paths | `core/investigation/hypothesis_manager.py` | Done |
 | UI DTO: `refutation_reason` on `HypothesisSummary` | `models/case_ui.py`, `modules/case/domain/services/case_ui_adapter.py` | Done |
 | Persistence: ORM column + migration + repository mapping | `infrastructure/persistence/models.py`, `alembic/versions/...`, `modules/case/infrastructure/sqlite_case_repository.py` | Done |

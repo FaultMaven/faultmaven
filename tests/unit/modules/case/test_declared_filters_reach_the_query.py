@@ -102,7 +102,9 @@ from faultmaven.api.routes import admin_cases
 from faultmaven.infrastructure.persistence import database as database_module
 from faultmaven.models.api_models import CaseListFilter, CaseSearchRequest
 from faultmaven.modules.case.api import routes as case_routes
-from faultmaven.modules.case.domain.models import Case, CaseState, InquiryData
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import InquiryData
 from faultmaven.modules.case.domain.services.case_service import CaseService
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,

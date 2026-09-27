@@ -574,7 +574,7 @@ class ResponseParser:
 
 ### 3.2 System Feedback Loop
 
-Validation errors from multiple sources are merged into `system_feedback` on the turn record. The next prompt reads it from the last record, `turn_history[-1]`, through `context_builder.system_feedback_block()`, which the main prompt and the minimal fallback both use:
+Validation errors from multiple sources are merged into `system_feedback` on the turn record. The next prompt reads it from the last record, `turn_history[-1]`, through `context_builder.assembly.system_feedback_block()`, which the main prompt and the minimal fallback both use:
 
 | Source | Feedback Key | Content |
 |--------|-------------|---------|

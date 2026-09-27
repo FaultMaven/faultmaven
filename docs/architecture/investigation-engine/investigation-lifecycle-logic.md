@@ -565,7 +565,7 @@ propose_transition(
     to_status="closed",
     summary=closure.message,
     # closure_reason derived by engine via derive_closure_reason():
-    # inquiry_only | solution_deferred | closed_rca_infeasible | mitigation_sufficient | closed_insufficient_evidence
+    # inquiry_only | solution_deferred | closed_rca_infeasible | mitigation_sufficient | closed_restatement_held | closed_insufficient_evidence
 )
 # User confirms → _execute_closed_transition(case, user_id, closure_reason)
 ```
@@ -1350,7 +1350,7 @@ When a case reaches a terminal state, the system synchronously generates a light
 **Generation approach**:
 
 - Single LLM call using SYNTHESIS capability (Fireworks/Groq for speed and cost).
-- Input assembled via `context_builder.py`: case messages, evidence list, hypothesis states, action_history, milestone progress.
+- Input assembled via `context_builder/` (`build_investigation_context`): case messages, evidence list, hypothesis states, action_history, milestone progress.
 - Stored as `Report` with `auto_generated=True` (distinguishes from user-requested reports).
 - **Synchronous**: the closure-turn agent reply waits for generation to complete and then embeds the rendered markdown inline. The state transition itself does not depend on LLM availability — generation exceptions are caught and the closure still commits, but the chat reply embeds a status-aware failure note (*"Resolution summary generation did not complete..."* / *"Closure summary generation did not complete..."*) and the regen affordance is offered **on the same ack-turn** for immediate retry. The "regen would be noise next to the inline summary" rationale only applies on the success path; on the failure path there is no inline summary, so offering regen alongside the failure note is the right UX. See *Where it's offered* below.
 - One report per case — regeneration overwrites the existing row.
@@ -1951,14 +1951,17 @@ The retrospective shape is **direct** vs **mitigated**, derived from
 
 `closure_reason` is `None` for all RESOLVED cases — resolution itself is the
 categorization. Only CLOSED cases carry a `closure_reason` value (`inquiry_only`,
-`closed_rca_infeasible`, `mitigation_sufficient`, or `closed_insufficient_evidence`).
-`derive_closure_reason` (in `terminal_transitions.py`) returns `inquiry_only`
-when the case never left INQUIRY, `closed_insufficient_evidence` when the case
-is closed from INVESTIGATING while in the `INSUFFICIENT_EVIDENCE`
-verification-status cell (see
+`solution_deferred`, `closed_rca_infeasible`, `mitigation_sufficient`,
+`closed_restatement_held`, or `closed_insufficient_evidence`).
+`derive_closure_reason` (in `terminal_transitions.py`) picks the most specific
+reason first: `inquiry_only` when the case never left INQUIRY; `solution_deferred`
+when a fix is documented but was never applied; `closed_rca_infeasible` when RCA
+was declared infeasible with a rationale; `mitigation_sufficient` when a
+mitigation is verified; `closed_restatement_held` when the restatement guard held
+every unsettled root (#1195); otherwise `closed_insufficient_evidence`. It no
+longer keys on the `INSUFFICIENT_EVIDENCE` verification-status cell (see
 [Insufficient-Evidence Handling §3.5](./insufficient-evidence-handling.md)),
-and otherwise `closed_insufficient_evidence` — `mitigation_sufficient`
-reason was folded into the latter.
+which a case stuck at symptom verification never reaches.
 
 ---
 

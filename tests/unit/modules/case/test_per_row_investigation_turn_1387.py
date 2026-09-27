@@ -27,12 +27,9 @@ from faultmaven.models.case_ui import (
     CaseUIResponse_Investigating,
     CaseUIResponse_Resolved,
 )
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
-    TurnOutcome,
-    TurnProgress,
-)
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 from faultmaven.modules.case.domain.services import case_service as case_service_module
 from faultmaven.modules.case.domain.services.case_service import CaseService
 from faultmaven.modules.case.domain.services.case_ui_adapter import (

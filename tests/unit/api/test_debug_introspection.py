@@ -10,16 +10,18 @@ from types import SimpleNamespace
 import pytest
 
 from faultmaven.api.debug_introspection import build_causal_graph_debug_payload
-from faultmaven.modules.case.domain.models import (
+from faultmaven.modules.case.domain.models.causal import (
     CausalEdge,
     CausalNode,
-    CauseState,
+    NodeType,
+)
+from faultmaven.modules.case.domain.models.hypothesis import (
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    NodeType,
 )
+from faultmaven.modules.case.domain.models.progress import CauseState
 
 pytestmark = pytest.mark.unit
 

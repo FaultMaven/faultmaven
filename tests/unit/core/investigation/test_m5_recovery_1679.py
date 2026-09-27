@@ -28,23 +28,27 @@ from faultmaven.core.investigation import milestone_engine
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import MilestoneUpdates, SolutionToAdd
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.conclusion import WorkingConclusion
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
     EvidenceStance,
+)
+from faultmaven.modules.case.domain.models.hypothesis import (
     Hypothesis,
     HypothesisCategory,
     HypothesisEvidenceLink,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
+)
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import InquiryData
+from faultmaven.modules.case.domain.models.solution import (
     InvestigationActionType,
     ProposedAction,
     SolutionType,
-    WorkingConclusion,
 )
 
 pytestmark = pytest.mark.unit

@@ -31,7 +31,7 @@ from faultmaven.api.models import (
     ValidationErrorResponse,
 )
 from faultmaven.models.investigation_session import SessionState
-from faultmaven.modules.case.domain.models import CaseSeverity, CaseState
+from faultmaven.modules.case.domain.models.lifecycle import CaseSeverity, CaseState
 
 # ============================================================
 # CaseCreateRequest Tests

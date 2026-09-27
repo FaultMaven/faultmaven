@@ -525,7 +525,7 @@ One primary ask per turn. Stack only when items are genuinely parallel (e.g., tw
 
 ## §5 Prompt Injection Map
 
-Each section of this playbook maps to a concrete injection point in `templates.py`. The agent duties, anti-patterns, and gate conditions in each stage section above are the spec; the blocks below are where they live in code.
+Each section of this playbook maps to a concrete injection point in `templates/`. The agent duties, anti-patterns, and gate conditions in each stage section above are the spec; the blocks below are where they live in code.
 
 ### Assembly Map
 

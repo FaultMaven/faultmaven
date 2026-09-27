@@ -21,9 +21,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-from faultmaven.core.investigation.causal_graph import (
+from faultmaven.core.investigation.causal_graph.ingestion import seed_problem_node
+from faultmaven.core.investigation.causal_graph.projection import (
     project_hypothesis_states_from_roots,
-    seed_problem_node,
 )
 from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_assessment_state,

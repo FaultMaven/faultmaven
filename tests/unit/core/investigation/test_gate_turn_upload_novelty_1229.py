@@ -46,12 +46,10 @@ from faultmaven.core.investigation.milestone_engine import engine as engine_modu
 from faultmaven.core.investigation.milestone_engine import progress as progress_module
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
-    InvestigationProgress,
-    ProblemVerification,
-)
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import ProblemVerification
+from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 
 pytestmark = pytest.mark.unit
 
@@ -471,13 +469,13 @@ class TestTheGenerationPathReturnBoundary:
         about the value, not about that template.
         """
         seen: list[int] = []
-        original = context_builder._build_state_summary
+        original = context_builder.history._build_state_summary
 
         def _spy(case_arg, *a, **kw):
             seen.append(case_arg.turns_without_progress)
             return original(case_arg, *a, **kw)
 
-        monkeypatch.setattr(context_builder, "_build_state_summary", _spy)
+        monkeypatch.setattr(context_builder.history, "_build_state_summary", _spy)
 
         engine = _generating_engine()
         case = _investigating_case()

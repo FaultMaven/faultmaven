@@ -490,7 +490,7 @@ def _identity_rules(kind: OutOfBandKind, established: bool) -> str:
 
 def build_answer_prompt(case: Any, message: str, kind: OutOfBandKind) -> str:
     """The small fixed-size prompt an out-of-band reply is generated from."""
-    from faultmaven.core.investigation.prompts.templates import (
+    from faultmaven.core.investigation.prompts.templates.blocks import (
         ABOUT_FAULTMAVEN_PROFILE,
     )
     from faultmaven.modules.agent.domain.services.orientation import case_subject

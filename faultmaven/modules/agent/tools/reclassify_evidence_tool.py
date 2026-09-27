@@ -4,7 +4,7 @@ Gives the agent a way to correct the classifier's data-type decision on
 an existing evidence row without the user leaving the conversation.
 Triggered by corrective-intent phrases ("that's actually a log file",
 "treat server.log as config") — see the prompt rule in
-``core/investigation/prompts/templates.py``.
+``core/investigation/prompts/templates/blocks.py``.
 
 The tool delegates to ``InvestigationService.reclassify_evidence`` which
 handles auth, storage fetch, preprocessing re-run, and persistence. This

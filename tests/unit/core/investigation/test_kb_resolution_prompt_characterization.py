@@ -19,11 +19,13 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.core.investigation.prompts.templates import (
+from faultmaven.core.investigation.prompts.templates.assembly import (
     _KB_MATCHED_CAUSE_FLAT,
     _KB_MATCHED_CAUSE_SEEDED,
-    _RCA_DIAGNOSIS_BLOCK,
     _select_diagnosis_block,
+)
+from faultmaven.core.investigation.prompts.templates.diagnosis import (
+    _RCA_DIAGNOSIS_BLOCK,
 )
 from faultmaven.core.investigation.seeded_provenance import SEEDED_FROM_RUNBOOK_KEY
 from faultmaven.modules.case.contracts import (

@@ -20,8 +20,8 @@ from faultmaven.core.investigation.milestone_engine.stage_gates import (
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
 from faultmaven.infrastructure.llm.providers import ReasoningIntent
 from faultmaven.infrastructure.llm.providers.base import LLMResponse
-from faultmaven.modules.case.domain.models import (
-    Case,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
@@ -168,11 +168,9 @@ def test_floor_sits_under_the_structured_output_cap():
 # ---------------------------------------------------------------------------
 # Turn level: process_turn on an engine WITH tools registered
 # ---------------------------------------------------------------------------
-from faultmaven.modules.case.domain.models import (  # noqa: E402
-    CaseState,
-    InvestigationProgress,
-    ProblemVerification,
-)
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import ProblemVerification
+from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 
 
 def _investigating_case() -> Case:

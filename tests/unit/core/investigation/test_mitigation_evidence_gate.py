@@ -24,11 +24,13 @@ from datetime import datetime, timezone
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _case_has_symptom_evidence,
 )
-from faultmaven.modules.case.domain.models import (
-    Case,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
+)
+from faultmaven.modules.case.domain.models.solution import (
     InvestigationActionType,
     ProposedAction,
 )

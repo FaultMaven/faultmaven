@@ -3,7 +3,7 @@
 Titleability is decided by **substance** and nothing else: a confirmed/proposed
 problem statement, or ``MIN_CONTENT_LENGTH_FOR_TITLE`` characters of evidence,
 file summaries and user chat. There is deliberately no second, turn-count gate —
-see the constants block in ``modules/case/api/routes.py`` for why the two ANDed
+see the constants block in ``modules/case/api/title_generation.py`` for why the two ANDed
 gates that used to sit here were residue of an incomplete replacement rather
 than a policy.
 
@@ -28,13 +28,11 @@ import pytest
 from faultmaven.exceptions import ValidationException
 from faultmaven.infrastructure.llm.providers.base import LLMResponse
 from faultmaven.modules.auth.contracts import UserDTO
-from faultmaven.modules.case.api.routes import (
-    MIN_CONTENT_LENGTH_FOR_TITLE,
-    generate_case_title,
-)
+from faultmaven.modules.case.api.routes import generate_case_title
+from faultmaven.modules.case.api.title_generation import MIN_CONTENT_LENGTH_FOR_TITLE
 from faultmaven.modules.case.contracts import CaseState
-from faultmaven.modules.case.domain.models import (
-    Case,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,

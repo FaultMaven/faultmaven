@@ -1,7 +1,8 @@
 # Evidence Context Assembly
 
-> **Authoritative source:** `faultmaven/core/investigation/prompts/context_builder.py`
-> (`_build_evidence_context`, `_score_evidence_for_tier_a`, `get_token_budget_for_provider`).
+> **Authoritative source:** `faultmaven/core/investigation/prompts/context_builder/`
+> (`_build_evidence_context`, `_score_evidence_for_tier_a` in `evidence.py`;
+> `get_token_budget_for_provider` in `budget.py`).
 >
 > This document specifies how the `<evidence_collected>` block presented to the
 > LLM each turn is assembled from a case's `Evidence` rows and `UploadedFile`

@@ -24,7 +24,7 @@ from faultmaven.models.common import SessionContext
 from faultmaven.modules.auth.domain.services.auth_session_service import (
     AuthSessionService as SessionService,
 )
-from faultmaven.modules.case.domain.models import Case
+from faultmaven.modules.case.domain.models.case import Case
 
 # Legacy services/domain/* was removed; use extracted module path.
 from faultmaven.modules.case.domain.services.case_service import CaseService

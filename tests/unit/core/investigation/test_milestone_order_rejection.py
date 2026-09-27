@@ -103,10 +103,12 @@ def _mitigation_case() -> Case:
     """
     from datetime import UTC, datetime
 
-    from faultmaven.modules.case.domain.models import (
+    from faultmaven.modules.case.domain.models.evidence import (
         Evidence,
         EvidenceCategory,
         EvidenceSourceType,
+    )
+    from faultmaven.modules.case.domain.models.solution import (
         InvestigationActionType,
         ProposedAction,
     )
@@ -312,7 +314,7 @@ class TestPrerequisiteSatisfiedPasses:
         """When ``mitigation_accepted`` was set on a prior turn, a
         verified-only update on a later turn passes the ordering check
         cleanly — no rejection, no system_feedback noise."""
-        from faultmaven.modules.case.domain.models import MitigationRecord
+        from faultmaven.modules.case.domain.models.progress import MitigationRecord
 
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
         case = _mitigation_case()

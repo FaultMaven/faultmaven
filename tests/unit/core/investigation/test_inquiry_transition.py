@@ -804,7 +804,7 @@ class TestContextBuilderConfirmationInjection:
 
     def test_engine_presents_rule_injected_when_unconfirmed(self):
         """An unconfirmed statement gets the engine-presents directive."""
-        from faultmaven.core.investigation.prompts.context_builder import (
+        from faultmaven.core.investigation.prompts.context_builder.assembly import (
             build_investigation_context,
         )
 
@@ -838,7 +838,7 @@ class TestContextBuilderConfirmationInjection:
         Confirmation DETECTION lives in the static TWO-STEP CONFIRMATION prose
         and the ``user_confirmed_investigation`` schema field, not here.
         """
-        from faultmaven.core.investigation.prompts.context_builder import (
+        from faultmaven.core.investigation.prompts.context_builder.assembly import (
             build_investigation_context,
         )
 
@@ -867,7 +867,7 @@ class TestContextBuilderConfirmationInjection:
 
     def test_no_injection_when_confirmed(self):
         """A confirmed statement gets no directive — Gate 1 is closed."""
-        from faultmaven.core.investigation.prompts.context_builder import (
+        from faultmaven.core.investigation.prompts.context_builder.assembly import (
             build_investigation_context,
         )
 

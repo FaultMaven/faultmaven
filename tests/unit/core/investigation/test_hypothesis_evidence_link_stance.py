@@ -16,7 +16,7 @@ Run:
 
 from __future__ import annotations
 
-import inspect
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -273,5 +273,8 @@ class TestNoLegacyStanceLabelInPrompts:
         """The stance vocabulary shown to the LLM must match the
         EvidenceStance enum (supports/neutral/refutes). CONTRADICTS is
         not a member and misleads stance emission."""
-        src = inspect.getsource(templates)
+        pkg_dir = Path(templates.__file__).parent
+        src = "".join(
+            p.read_text(encoding="utf-8") for p in sorted(pkg_dir.glob("*.py"))
+        )
         assert "CONTRADICTS" not in src

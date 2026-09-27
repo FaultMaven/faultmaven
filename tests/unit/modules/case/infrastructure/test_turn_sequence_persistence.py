@@ -17,12 +17,9 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
-    TurnOutcome,
-    TurnProgress,
-)
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
 )

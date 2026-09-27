@@ -75,8 +75,8 @@ greenfield.
 
 ### 4.1 The per-call jar (goal 1) — the allocator is the only assembly path
 
-The allocator (`context_builder._allocate_sections`,
-`templates._assemble_allocated`) is now the **single** prompt-assembly path — the
+The allocator (`context_builder.assembly._allocate_sections`,
+`templates.assembly._assemble_allocated`) is now the **single** prompt-assembly path — the
 obsolete first-draft ("legacy") char-based assembly and its
 `PROMPT_ALLOCATOR_ENABLED` / `PROMPT_ALLOCATOR_SHADOW` gate flags have been
 deleted (pre-production system, no users, no backward-compat). Two dormant defects

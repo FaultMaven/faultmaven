@@ -31,14 +31,13 @@ from faultmaven.modules.case.contracts import (
     EvidenceSourceType,
     InquiryData,
 )
-from faultmaven.modules.case.domain.models import (
+from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
-    Evidence,
-    InvestigationProgress,
     RootCauseConclusion,
-    Solution,
-    SolutionType,
 )
+from faultmaven.modules.case.domain.models.evidence import Evidence
+from faultmaven.modules.case.domain.models.progress import InvestigationProgress
+from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
 
 
 def _make_investigating_case() -> Case:

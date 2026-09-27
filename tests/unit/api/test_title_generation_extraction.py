@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from faultmaven.modules.case.api.routes import (
+from faultmaven.modules.case.api.title_generation import (
     MIN_CONTENT_LENGTH_FOR_TITLE,
     _extract_user_signals_from_context,
     _has_problem_statement,

@@ -37,12 +37,12 @@ from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
     _IntentDispatchKind,
 )
-from faultmaven.modules.case.domain.models import (
-    CaseState,
+from faultmaven.modules.case.domain.models.hypothesis import (
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
 )
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
 
 pytestmark = pytest.mark.unit
 

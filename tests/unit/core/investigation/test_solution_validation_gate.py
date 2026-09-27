@@ -31,22 +31,28 @@ from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _solution_cause_validated,
 )
 from faultmaven.core.investigation.schemas import SolutionToAdd
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.causal import (
     CausalNode,
-    CauseState,
+    InterventionQuadrant,
+    NodeType,
+)
+from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
+    RootCauseConclusion,
+    WorkingConclusion,
+)
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
-    InquiryData,
-    InterventionQuadrant,
+)
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import InquiryData
+from faultmaven.modules.case.domain.models.progress import CauseState
+from faultmaven.modules.case.domain.models.solution import (
     InvestigationActionType,
-    NodeType,
-    RootCauseConclusion,
     SolutionType,
-    WorkingConclusion,
 )
 
 

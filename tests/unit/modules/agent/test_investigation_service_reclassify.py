@@ -19,7 +19,7 @@ from faultmaven.models.api import DataType
 from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
 )
-from faultmaven.modules.case.domain.models import EvidenceSourceType
+from faultmaven.modules.case.domain.models.evidence import EvidenceSourceType
 
 from .conftest import (
     MockCaseRepository,

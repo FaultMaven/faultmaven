@@ -18,27 +18,33 @@ from faultmaven.core.investigation.causal_map import (
     MAX_NODES,
     render_causal_map,
 )
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.causal import (
     CausalEdge,
     CausalNode,
+    NodeEvidenceLink,
+    NodeState,
+    NodeType,
+    ValidationMethod,
+)
+from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
+    RootCauseConclusion,
+)
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
     EvidenceStance,
+)
+from faultmaven.modules.case.domain.models.hypothesis import (
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
-    InquiryData,
-    NodeEvidenceLink,
-    NodeState,
-    NodeType,
-    RootCauseConclusion,
-    ValidationMethod,
 )
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.problem import InquiryData
 
 pytestmark = pytest.mark.unit
 

@@ -9,7 +9,7 @@ For understanding the investigation system, read in this order:
 1. **[Evidence-Driven Investigation Framework](./evidence-driven-investigation-framework.md)** — The framework: philosophy, milestones, opportunistic completion
 2. **[Investigation Lifecycle Logic](./investigation-lifecycle-logic.md)** — State transitions, stage routing, case actions, turn tracking
 3. **[Investigation Data Models](./investigation-data-models.md)** — CaseState, Evidence, Hypothesis, Solution, and related structures
-4. **[Prompt Assembly Architecture](./prompt-assembly-architecture.md)** — How prompts are assembled: the three-template system, shared constants, dispatch (`get_prompt_for_case`), and audit invariants. (Prompt *text* lives in `templates.py`; stage duties in `agent-stage-playbook.md`, behavioral rules in `agent-behavioral-rules.md`.)
+4. **[Prompt Assembly Architecture](./prompt-assembly-architecture.md)** — How prompts are assembled: the three-template system, shared constants, dispatch (`get_prompt_for_case`), and audit invariants. (Prompt *text* lives in `templates/`; stage duties in `agent-stage-playbook.md`, behavioral rules in `agent-behavioral-rules.md`.)
 5. **[Agent Behavioral Rules](./agent-behavioral-rules.md)** — 8 prompt-injected rules that constrain agent output and shape input reading
 
 > The unified opportunistic flow (formerly proposed as "Investigation Flow Redesign") shipped 2026-06-05 and is folded into [Investigation Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-mitigation-as-an-insert) — design rationale, assessment-vs-gate variables, and resolved decisions (§2.5) included.

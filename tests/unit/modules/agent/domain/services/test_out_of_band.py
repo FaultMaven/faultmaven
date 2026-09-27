@@ -552,7 +552,7 @@ class TestAnswer:
         2. Reading missing KB coverage as missing scope. Plenty of in-domain
            work has no runbook behind it.
         """
-        from faultmaven.core.investigation.prompts.templates import (
+        from faultmaven.core.investigation.prompts.templates.blocks import (
             ABOUT_FAULTMAVEN_PROFILE,
         )
 

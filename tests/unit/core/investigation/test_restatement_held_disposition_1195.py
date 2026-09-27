@@ -51,7 +51,7 @@ from uuid import uuid4
 import pytest
 
 from faultmaven.core.investigation import cause_assurance, milestone_engine
-from faultmaven.core.investigation.causal_graph import (
+from faultmaven.core.investigation.causal_graph.support import (
     restatement_held_root_ids,
     summarize_restatement_hold,
 )
@@ -981,7 +981,9 @@ class TestRestatementHeldClosure:
         assert "never stated distinctly" in line
 
     def test_the_reason_is_in_the_valid_vocabulary(self):
-        from faultmaven.modules.case.domain.models import VALID_CLOSURE_REASONS
+        from faultmaven.modules.case.domain.models.lifecycle import (
+            VALID_CLOSURE_REASONS,
+        )
 
         assert "closed_restatement_held" in VALID_CLOSURE_REASONS
 

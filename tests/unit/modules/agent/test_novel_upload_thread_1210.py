@@ -43,7 +43,9 @@ from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
 )
-from faultmaven.modules.case.domain.models import Case, CaseState, UploadedFile
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.evidence import UploadedFile
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
 
 pytestmark = pytest.mark.unit
 

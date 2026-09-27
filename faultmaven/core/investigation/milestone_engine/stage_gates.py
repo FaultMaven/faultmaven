@@ -15,7 +15,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     pending_action_superseded_stale_total,
     solution_offer_superseded_total,
 )
-from faultmaven.core.investigation.prompts.context_builder import (
+from faultmaven.core.investigation.prompts.context_builder.budget import (
     structural_index_is_searchable,
 )
 from faultmaven.core.investigation.working_conclusion_generator import (

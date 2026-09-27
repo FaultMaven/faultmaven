@@ -43,7 +43,7 @@ from faultmaven.modules.case.contracts import (
     SolutionType,
     TurnOutcome,
 )
-from faultmaven.modules.case.domain.models import TurnProgress
+from faultmaven.modules.case.domain.models.turn import TurnProgress
 
 pytestmark = pytest.mark.unit
 

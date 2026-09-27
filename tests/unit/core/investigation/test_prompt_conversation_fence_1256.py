@@ -43,8 +43,10 @@ import re
 import pytest
 
 from faultmaven.core.investigation.prompts import fence as fence_mod
-from faultmaven.core.investigation.prompts.context_builder import (
+from faultmaven.core.investigation.prompts.context_builder.assembly import (
     build_investigation_context,
+)
+from faultmaven.core.investigation.prompts.context_builder.text_shaping import (
     sanitize_user_input,
 )
 from faultmaven.core.investigation.prompts.fence import (
@@ -56,13 +58,13 @@ from faultmaven.core.investigation.prompts.fence import (
     split_fenced,
     terminate_dangling,
 )
-from faultmaven.core.investigation.prompts.templates import (
-    _PROMPT_FENCE_RULE,
-    INQUIRY_TEMPLATE,
+from faultmaven.core.investigation.prompts.templates.assembly import get_prompt_for_case
+from faultmaven.core.investigation.prompts.templates.blocks import _PROMPT_FENCE_RULE
+from faultmaven.core.investigation.prompts.templates.inquiry import INQUIRY_TEMPLATE
+from faultmaven.core.investigation.prompts.templates.investigation import (
     INVESTIGATION_BASE,
-    TERMINAL_TEMPLATE,
-    get_prompt_for_case,
 )
+from faultmaven.core.investigation.prompts.templates.terminal import TERMINAL_TEMPLATE
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
@@ -619,7 +621,7 @@ class TestBothFidelitiesAreFenced:
         ``max_tokens`` — so an assertion over emitted slots would either be
         vacuous or would fail on behaviour this change never touched.
         """
-        from faultmaven.core.investigation.prompts import context_builder as cb
+        from faultmaven.core.investigation.prompts.context_builder import assembly as cb
 
         real = cb._shrink_fenced_tail
         returns: list[str] = []
@@ -667,9 +669,11 @@ class TestBothFidelitiesAreFenced:
         reach reliably: every allotment yields either a complete fenced element
         or the non-silent ``[...]`` marker — never a dropped section and never
         a half-written delimiter."""
-        from faultmaven.core.investigation.prompts.context_builder import (
-            TokenBudget,
+        from faultmaven.core.investigation.prompts.context_builder.assembly import (
             _shrink_fenced_tail,
+        )
+        from faultmaven.core.investigation.prompts.context_builder.budget import (
+            TokenBudget,
         )
 
         token = "aaaaaaaa"

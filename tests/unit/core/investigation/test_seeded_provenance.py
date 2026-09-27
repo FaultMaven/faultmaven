@@ -223,7 +223,7 @@ def test_confirmed_cause_interventions_via_cluster_duplicate():
 
 
 def test_candidate_solutions_block_renders_only_when_confirmed():
-    from faultmaven.core.investigation.prompts.context_builder import (
+    from faultmaven.core.investigation.prompts.context_builder.evidence_needs import (
         _build_candidate_solutions_block,
     )
 
@@ -237,7 +237,7 @@ def test_candidate_solutions_block_renders_only_when_confirmed():
 
 
 def test_candidate_solutions_block_empty_off_investigating():
-    from faultmaven.core.investigation.prompts.context_builder import (
+    from faultmaven.core.investigation.prompts.context_builder.evidence_needs import (
         _build_candidate_solutions_block,
     )
 

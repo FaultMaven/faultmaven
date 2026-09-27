@@ -8,7 +8,8 @@ impact).
 
 import pytest
 
-from faultmaven.modules.case.domain.models import Case, TurnOutcome, TurnProgress
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 
 
 def _tp(n: int, outcome: TurnOutcome = TurnOutcome.CONVERSATION) -> TurnProgress:

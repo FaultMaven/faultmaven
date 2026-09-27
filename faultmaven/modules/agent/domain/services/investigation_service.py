@@ -39,7 +39,7 @@ from faultmaven.core.investigation.milestone_engine.progress import (
     score_progress,
     summarize_for_turn_record,
 )
-from faultmaven.core.investigation.prompts.context_builder import (
+from faultmaven.core.investigation.prompts.context_builder.budget import (
     structural_index_is_searchable,
 )
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
@@ -116,7 +116,7 @@ from faultmaven.modules.case.contracts import (
     append_message_row,
 )
 from faultmaven.modules.case.contracts import ICaseRepository as CaseRepository
-from faultmaven.modules.case.domain.models import (
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceSourceType,
     UploadedFile,

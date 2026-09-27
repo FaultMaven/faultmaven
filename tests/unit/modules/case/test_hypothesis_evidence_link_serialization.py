@@ -16,8 +16,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from faultmaven.modules.case.domain.models import (
-    EvidenceStance,
+from faultmaven.modules.case.domain.models.evidence import EvidenceStance
+from faultmaven.modules.case.domain.models.hypothesis import (
     Hypothesis,
     HypothesisCategory,
     HypothesisEvidenceLink,

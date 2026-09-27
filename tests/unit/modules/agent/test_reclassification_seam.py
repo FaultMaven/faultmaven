@@ -41,7 +41,9 @@ from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngin
 from faultmaven.core.investigation.milestone_engine.milestone_inference import (
     _evidence_coverage,
 )
-from faultmaven.core.investigation.prompts.context_builder import _confidence_marker
+from faultmaven.core.investigation.prompts.context_builder.text_shaping import (
+    _confidence_marker,
+)
 from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.core.investigation.suggestion_liveness import is_clarification_entry
 from faultmaven.exceptions import NotFoundError, ValidationException
@@ -55,7 +57,8 @@ from faultmaven.modules.agent.tools.base import ToolContext
 from faultmaven.modules.agent.tools.reclassify_evidence_tool import (
     ReclassifyEvidenceTool,
 )
-from faultmaven.modules.case.domain.models import CaseState, EvidenceSourceType
+from faultmaven.modules.case.domain.models.evidence import EvidenceSourceType
+from faultmaven.modules.case.domain.models.lifecycle import CaseState
 
 from .conftest import (
     MockCaseRepository,

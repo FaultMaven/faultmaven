@@ -23,17 +23,20 @@ from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_assessment_state,
     _resolve_chat_provider_name,
 )
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseSeverity,
-    CaseState,
+from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
+)
+from faultmaven.modules.case.domain.models.hypothesis import (
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
+)
+from faultmaven.modules.case.domain.models.lifecycle import CaseSeverity, CaseState
+from faultmaven.modules.case.domain.models.problem import (
     InquiryData,
     ProblemVerification,
 )
@@ -233,7 +236,7 @@ def test_latch_survives_progress_blob_round_trip():
     _recompute_assessment_state(case, provider_name="gemini")
     dumped = case.progress.model_dump()
     assert dumped["work_gate_crossed"] is True
-    from faultmaven.modules.case.domain.models import InvestigationProgress
+    from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 
     restored = InvestigationProgress.model_validate(dumped)
     assert restored.work_gate_crossed is True
