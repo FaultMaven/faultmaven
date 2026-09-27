@@ -18,15 +18,6 @@ from faultmaven.infrastructure.observability.tracing import init_opik_tracing
 
 logger = logging.getLogger(__name__)
 
-# ``lifespan`` is this module's only reference to ``_app_settings`` and its
-# only writer (``global _app_settings; _app_settings = settings`` below), so
-# unlike ``bootstrap.composition`` this module declares no ``_app_settings =
-# None`` of its own: the `global` statement binds the name into THIS module's
-# namespace on first assignment regardless, and nothing here ever reads it, so
-# a pre-declaration would exist only to be a second copy of the one canonical
-# slot in ``bootstrap.composition`` (see the comment beside it there, and in
-# ``faultmaven/main.py``).
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -167,10 +158,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Configuration initialization failed: {e}")
         raise
-
-    # Store settings in module scope for helper functions
-    global _app_settings
-    _app_settings = settings
 
     # Container initialization and the composition root. Failures are refused
     # or tolerated there, per deployment mode — not here.

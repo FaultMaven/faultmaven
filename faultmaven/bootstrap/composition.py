@@ -29,18 +29,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Module-level settings cache (set during lifespan startup) — the one
-# canonical slot; ``faultmaven.main`` imports it (for ``_is_debug_enabled``)
-# rather than declaring its own. ``bootstrap.lifespan.lifespan`` — the only
-# writer — does NOT set this copy: a `global` statement always binds to the
-# function's defining module, so its write lands on its own module's
-# namespace instead (see the comment in bootstrap/lifespan.py). That split is
-# not observable in practice: every production call into this module's
-# functions passes ``settings`` explicitly, so this slot only ever feeds the
-# cold-start fallback (a direct call with no ``settings`` argument), which
-# resolves the identical singleton via ``get_settings()`` either way.
-_app_settings = None
-
 
 def _is_test_environment(settings=None) -> bool:
     """Detect if we're running in a test environment (pytest or skip_service_checks)."""
@@ -48,24 +36,21 @@ def _is_test_environment(settings=None) -> bool:
     if "pytest" in " ".join(sys.argv) or any("test" in arg.lower() for arg in sys.argv):
         return True
 
-    # Get settings (from parameter, module cache, or environment)
+    # Get settings (from the parameter, else the process singleton)
     if settings is None:
-        settings = _app_settings
-        if settings is None:
-            # Lazy load from get_settings() — handles calls before lifespan
-            # runs. If construction itself raises (e.g. an env-var validator
-            # rejects an input), degrade to reading the two test-env hints
-            # directly so pytest collection doesn't crash on broken envs.
-            try:
-                from faultmaven.config.settings import get_settings
+        # If settings construction itself raises (e.g. an env-var validator
+        # rejects an input), degrade to reading the two test-env hints
+        # directly so pytest collection doesn't crash on broken envs.
+        try:
+            from faultmaven.config.settings import get_settings
 
-                settings = get_settings()
-            except Exception:
-                if os.getenv("SKIP_SERVICE_CHECKS", "").lower() == "true":
-                    return True
-                if os.getenv("PYTEST_CURRENT_TEST"):
-                    return True
-                return False
+            settings = get_settings()
+        except Exception:
+            if os.getenv("SKIP_SERVICE_CHECKS", "").lower() == "true":
+                return True
+            if os.getenv("PYTEST_CURRENT_TEST"):
+                return True
+            return False
 
     # Use settings (deployment-agnostic)
     if settings.server.skip_service_checks:
@@ -85,15 +70,13 @@ def _check_llm_configuration(llm_provider, settings=None) -> None:
     """Check if any LLM provider is configured and print warning if not."""
     # Get settings if not provided
     if settings is None:
-        settings = _app_settings
-        if settings is None:
-            try:
-                from faultmaven.config.settings import get_settings
+        try:
+            from faultmaven.config.settings import get_settings
 
-                settings = get_settings()
-            except Exception:
-                # If settings unavailable, skip check
-                return
+            settings = get_settings()
+        except Exception:
+            # If settings unavailable, skip check
+            return
 
     # Skip check in test environments
     if _is_test_environment(settings=settings):

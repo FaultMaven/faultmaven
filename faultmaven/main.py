@@ -65,7 +65,6 @@ from .api.routes.admin_config import router as admin_config_router
 from .api.routes.admin_grants import router as admin_grants_router
 from .api.routes.sessions import router as investigation_sessions_router
 from .api.v1.auth_dependencies import require_authentication, require_platform_admin
-from .bootstrap.composition import _app_settings
 
 # The application lifespan (startup fail-fast gates, background tasks,
 # shutdown) moved to bootstrap/lifespan.py (fm#1707 wave 2), alongside the
@@ -298,19 +297,17 @@ def _is_debug_enabled(settings=None) -> bool:
     """Check if debug endpoints should be enabled based on environment."""
     # Get settings if not provided
     if settings is None:
-        settings = _app_settings
-        if settings is None:
-            try:
-                from .config.settings import get_settings
+        try:
+            from .config.settings import get_settings
 
-                settings = get_settings()
-            except Exception:
-                # Fallback to environment check if settings unavailable
-                env = os.getenv("ENVIRONMENT", "development").lower()
-                return (
-                    env in ("development", "testing", "test")
-                    or os.getenv("ENABLE_DEBUG_ENDPOINTS", "").lower() == "true"
-                )
+            settings = get_settings()
+        except Exception:
+            # Fallback to environment check if settings unavailable
+            env = os.getenv("ENVIRONMENT", "development").lower()
+            return (
+                env in ("development", "testing", "test")
+                or os.getenv("ENABLE_DEBUG_ENDPOINTS", "").lower() == "true"
+            )
 
     # Use settings (deployment-agnostic)
     env = settings.server.environment.value.lower()
