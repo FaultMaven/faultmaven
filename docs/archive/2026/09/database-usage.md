@@ -1,3 +1,11 @@
+> **Archived 2026-09-27 — superseded, do not follow.** This guide described a persistence
+> layer that no longer exists: six of the eight modules its examples import
+> (`faultmaven.dependencies`, `faultmaven.infrastructure.database.*`, `faultmaven.models.case`,
+> `faultmaven.models.llm_schemas`) are gone, and the `milestone_engine` and test paths it names
+> never existed. For how repositories work today, read
+> [Repository Pattern](../../../architecture/data-and-storage/repository-pattern.md) and the
+> case module's `contracts.py` (`ICaseRepository`). Kept here only as history (fm#1707 docs audit).
+
 # Developer Guide: Database Usage for Investigation Implementation
 
 **Audience**: Developers implementing milestone-based investigation (Layers 1-5)
