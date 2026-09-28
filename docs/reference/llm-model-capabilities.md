@@ -290,6 +290,72 @@ classic shape measured working end-to-end there).
 per 1M in/out; standard $1.50/$7.50 from 2027-01-01) — see the dated comment
 in `infrastructure/llm/pricing.py`.
 
+### Anthropic request shape (version-gated in the adapter)
+
+The newest Claude models reject two parts of the request `AnthropicProvider`
+used to send every model (#1695). Measured live 2026-09-28, one request per
+cell, no other parameter varied:
+
+| model | `temperature` (0.7, 0.3 or 0.0) | `tool_choice: any` | `tool_choice: auto` |
+|---|---|---|---|
+| `claude-sonnet-4-6` | ok | ok | ok |
+| `claude-haiku-4-5` | ok | ok | ok |
+| `claude-sonnet-4-5` | (docs: ok) | ok | ok |
+| `claude-opus-4-8` | **400** "`temperature` is deprecated for this model." | ok | ok |
+| `claude-opus-5` | **400** | ok | ok |
+| `claude-sonnet-5` | **400** | ok | ok |
+| `claude-opus-5-5` | **400** | **400** "tool_choice: type "tool" and "any" are not supported for this model." | ok |
+| `claude-fable-5-1` | **400** | **400** | ok |
+
+Anthropic's model docs list `claude-mythos-5-1` with Opus 5.5 and Fable 5.1
+as rejecting forced tool use. The Models API reports neither property: its
+`capabilities` cover batch, citations, effort, structured_outputs and
+thinking. So the gate is a model-family rule, as it is for Gemini above.
+
+The adapter parses `claude-<family>-<major>[-<minor>][-<yyyymmdd>]`
+(`_claude_version`; `claude-opus-4-20250514` is 4.0,
+`claude-haiku-4-5-20251001` is 4.5) and holds, per family, the **last version
+measured to accept** each property:
+
+| property | opus | sonnet | haiku | fable | mythos |
+|---|---|---|---|---|---|
+| `temperature` sent (`_SAMPLING_ACCEPTED_THROUGH`) | 4.6 | 4.6 | 4.5 | — | — |
+| forced `tool_choice` sent (`_FORCED_TOOL_CHOICE_ACCEPTED_THROUGH`) | 5.0 | 5.0 | 4.5 | 5.0 | 5.0 |
+
+A model accepts a property only when its family has an entry and its version
+is at or below it. Otherwise:
+
+- **`temperature` is omitted** from the request.
+- **Forcing is put into words.** A `tool_choice="required"` (or a native
+  `{"type": "any"}` / `{"type": "tool", "name": X}`) is sent as
+  `{"type": "auto"}`, plus one fixed sentence as a separate trailing text
+  block of `system`: ``Respond by calling the `<name>` tool.`` when one tool
+  is offered or the forcing names one, else `Respond by calling one of the
+  provided tools; do not reply in plain text.` The block trails the cached
+  system block, so the cached prefix is unchanged. It sits in `system` rather
+  than in a message because the tool loop resends its message list on every
+  iteration. A reply that still carries no tool call reaches the engine's
+  existing handling: the tool loop's "provider ignored
+  `tool_choice=required`" path, or the single-shot path's text-JSON parse.
+- **Thinking is not refused.** With `ANTHROPIC_THINKING_MODE=adaptive`, the
+  "thinking refused under forced tool use" rule applies only where forcing is
+  actually sent. A model above the forcing ceiling runs `auto` and carries
+  thinking.
+
+**Default for an unknown id.** An unparseable id (`claude-mythos-preview`)
+or a version above its family's ceiling (`claude-opus-6`) takes the current
+shape: no temperature, and `auto` plus the instruction. Every measured model
+accepts that shape, so an unknown model never 400s on these two parameters.
+The cost is losing sampling and forcing on an unknown *old* model. Raise a
+ceiling only after measuring the property on the new version.
+
+`strict: true` is not sent on the schema tool. Strict tool use requires
+`additionalProperties: false` on every object and rejects
+`minimum`/`maximum`/`maxLength`. Of the six engine schemas as
+`pydantic_to_openai_tools` builds them, none carries `additionalProperties:
+false` and five carry those constraints. Making them compatible is part of
+#1116's structured-output decision.
+
 ### HuggingFace Inference API
 - Does not support OpenAI-compatible tool calling
 - `supports_tool_calling()` always returns `False`

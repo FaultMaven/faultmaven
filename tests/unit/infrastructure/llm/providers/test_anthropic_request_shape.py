@@ -1,0 +1,411 @@
+"""Per-model Anthropic request shape (#1695).
+
+The newest Claude models reject two parts of the request this provider used
+to send every model: any ``temperature`` (opus-4-8 onward) and forced tool use,
+``tool_choice`` of type ``any``/``tool`` (opus-5-5 and fable-5-1 measured live
+on 2026-09-28; mythos-5-1 per the model docs). The provider gates each part on a
+per-family version ceiling. An id it cannot parse, or a version above the
+ceiling, takes the current shape: no temperature, and ``auto`` plus a trailing
+system instruction that names the tool.
+
+Every assertion is on the OUTGOING JSON body handed to aiohttp, driven through
+``generate()``.
+"""
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from faultmaven.infrastructure.llm.providers.anthropic import AnthropicProvider
+from faultmaven.infrastructure.llm.providers.base import ProviderConfig
+
+ONE_TOOL_INSTRUCTION = "Respond by calling the `{name}` tool."
+ANY_TOOL_INSTRUCTION = (
+    "Respond by calling one of the provided tools; do not reply in plain text."
+)
+
+# (model id, accepts sampling, accepts forced tool_choice)
+MODEL_ROWS = [
+    ("claude-sonnet-4-6", True, True),
+    ("claude-haiku-4-5-20251001", True, True),
+    ("claude-sonnet-4-5", True, True),
+    ("claude-opus-4-20250514", True, True),
+    ("claude-opus-4-8", False, True),
+    ("claude-opus-5", False, True),
+    ("claude-sonnet-5", False, True),
+    ("claude-fable-5", False, True),
+    ("claude-opus-5-5", False, False),
+    ("claude-fable-5-1", False, False),
+    ("claude-mythos-5-1", False, False),
+    # An unknown future version and an unparseable id take the current shape.
+    ("claude-opus-6", False, False),
+    ("claude-mythos-preview", False, False),
+]
+MODEL_IDS = [row[0] for row in MODEL_ROWS]
+
+
+def _config(model: str, thinking_mode=None) -> ProviderConfig:
+    return ProviderConfig(
+        name="anthropic",
+        api_key="test-key",
+        base_url="https://api.anthropic.com/v1",
+        models=[model],
+        default_model=model,
+        timeout=30,
+        confidence_score=0.9,
+        thinking_mode=thinking_mode,
+    )
+
+
+def _tool(name: str) -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": f"{name} tool",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+            },
+        },
+    }
+
+
+SCHEMA_TOOL = _tool("InvestigationResponse_Diagnosis")
+SEARCH_TOOL = _tool("search_file")
+
+_TOOL_USE_RESP = {
+    "content": [
+        {
+            "type": "tool_use",
+            "id": "toolu_01",
+            "name": "InvestigationResponse_Diagnosis",
+            "input": {"query": "x"},
+        }
+    ],
+    "stop_reason": "tool_use",
+    "usage": {"input_tokens": 10, "output_tokens": 5},
+}
+
+
+def _mock_aiohttp_session(response_data: dict):
+    mock_response = AsyncMock()
+    mock_response.status = 200
+    mock_response.json = AsyncMock(return_value=response_data)
+    mock_response.text = AsyncMock(return_value="")
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=False)
+    mock_session = MagicMock()
+    mock_session.post = MagicMock(return_value=mock_response)
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    return mock_session
+
+
+async def _sent_body(model: str, thinking_mode=None, **generate_kwargs) -> dict:
+    """Run generate() on *model* against a mocked transport; return the body."""
+    provider = AnthropicProvider(_config(model, thinking_mode=thinking_mode))
+    mock_session = _mock_aiohttp_session(_TOOL_USE_RESP)
+    generate_kwargs.setdefault("max_tokens", 8000)
+    generate_kwargs.setdefault("temperature", 0.2)
+    with patch("aiohttp.ClientSession", return_value=mock_session):
+        await provider.generate("Test prompt", **generate_kwargs)
+    call = mock_session.post.call_args
+    return call.kwargs.get("json") or call[1].get("json")
+
+
+# =========================================================================
+# The model-id parse
+# =========================================================================
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "model,expected",
+    [
+        ("claude-sonnet-4-6", ("sonnet", (4, 6))),
+        ("claude-opus-4-20250514", ("opus", (4, 0))),
+        ("claude-haiku-4-5-20251001", ("haiku", (4, 5))),
+        ("claude-opus-5", ("opus", (5, 0))),
+        ("claude-opus-5-5", ("opus", (5, 5))),
+        ("claude-fable-5-1", ("fable", (5, 1))),
+        ("claude-mythos-5-1", ("mythos", (5, 1))),
+        ("claude-opus-4-10", ("opus", (4, 10))),
+        ("CLAUDE-OPUS-5-5", ("opus", (5, 5))),
+        ("claude-mythos-preview", None),
+        ("claude-3-5-sonnet-20241022", None),
+        ("claude-opus-5-5-latest", None),
+        ("claude-opus-4-123", None),
+        ("gpt-5.6-luna", None),
+        ("", None),
+    ],
+)
+def test_claude_version_parses_family_and_version(model, expected):
+    assert AnthropicProvider._claude_version(model) == expected
+
+
+# =========================================================================
+# The per-model table: temperature, tool_choice and the instruction block
+# =========================================================================
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestRequestShapeTable:
+    @pytest.mark.parametrize(
+        "model,accepts_sampling,_forcing", MODEL_ROWS, ids=MODEL_IDS
+    )
+    async def test_temperature_sent_only_when_model_accepts_sampling(
+        self, model, accepts_sampling, _forcing
+    ):
+        plain = await _sent_body(model)
+        structured = await _sent_body(
+            model, tools=[SCHEMA_TOOL], tool_choice="required"
+        )
+
+        for body in (plain, structured):
+            if accepts_sampling:
+                assert body["temperature"] == 0.2
+            else:
+                assert "temperature" not in body
+
+    @pytest.mark.parametrize(
+        "model,_sampling,accepts_forcing", MODEL_ROWS, ids=MODEL_IDS
+    )
+    async def test_required_with_one_tool(self, model, _sampling, accepts_forcing):
+        body = await _sent_body(model, tools=[SCHEMA_TOOL], tool_choice="required")
+
+        if accepts_forcing:
+            assert body["tool_choice"] == {"type": "any"}
+            assert "system" not in body
+        else:
+            assert body["tool_choice"] == {"type": "auto"}
+            assert body["system"] == [
+                {
+                    "type": "text",
+                    "text": ONE_TOOL_INSTRUCTION.format(
+                        name="InvestigationResponse_Diagnosis"
+                    ),
+                }
+            ]
+
+    @pytest.mark.parametrize(
+        "model,_sampling,accepts_forcing", MODEL_ROWS, ids=MODEL_IDS
+    )
+    async def test_required_with_several_tools(self, model, _sampling, accepts_forcing):
+        body = await _sent_body(
+            model, tools=[SEARCH_TOOL, SCHEMA_TOOL], tool_choice="required"
+        )
+
+        if accepts_forcing:
+            assert body["tool_choice"] == {"type": "any"}
+            assert "system" not in body
+        else:
+            assert body["tool_choice"] == {"type": "auto"}
+            assert body["system"] == [{"type": "text", "text": ANY_TOOL_INSTRUCTION}]
+
+    @pytest.mark.parametrize("model,_sampling,_forcing", MODEL_ROWS, ids=MODEL_IDS)
+    async def test_auto_is_sent_as_auto_without_an_instruction(
+        self, model, _sampling, _forcing
+    ):
+        body = await _sent_body(
+            model, tools=[SEARCH_TOOL, SCHEMA_TOOL], tool_choice="auto"
+        )
+
+        assert body["tool_choice"] == {"type": "auto"}
+        assert "system" not in body
+
+    @pytest.mark.parametrize(
+        "model,_sampling,accepts_forcing", MODEL_ROWS, ids=MODEL_IDS
+    )
+    async def test_native_tool_dict_names_its_tool(
+        self, model, _sampling, accepts_forcing
+    ):
+        """{"type": "tool", "name": X} with several tools offered: the
+        instruction names X, not the generic sentence."""
+        choice = {"type": "tool", "name": "search_file"}
+        body = await _sent_body(
+            model, tools=[SEARCH_TOOL, SCHEMA_TOOL], tool_choice=choice
+        )
+
+        if accepts_forcing:
+            assert body["tool_choice"] == {"type": "tool", "name": "search_file"}
+            assert "system" not in body
+        else:
+            assert body["tool_choice"] == {"type": "auto"}
+            assert body["system"] == [
+                {
+                    "type": "text",
+                    "text": ONE_TOOL_INSTRUCTION.format(name="search_file"),
+                }
+            ]
+
+    @pytest.mark.parametrize(
+        "model,_sampling,accepts_forcing", MODEL_ROWS, ids=MODEL_IDS
+    )
+    async def test_native_any_dict_maps_like_required(
+        self, model, _sampling, accepts_forcing
+    ):
+        body = await _sent_body(
+            model, tools=[SEARCH_TOOL, SCHEMA_TOOL], tool_choice={"type": "any"}
+        )
+
+        if accepts_forcing:
+            assert body["tool_choice"] == {"type": "any"}
+            assert "system" not in body
+        else:
+            assert body["tool_choice"] == {"type": "auto"}
+            assert body["system"] == [{"type": "text", "text": ANY_TOOL_INSTRUCTION}]
+
+
+# =========================================================================
+# Where the instruction goes relative to the system prompt and the cache
+# =========================================================================
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestInstructionPlacement:
+    async def test_cached_system_block_is_unchanged_and_instruction_trails(self):
+        system_prompt = "You are an SRE investigator. " * 20
+
+        body = await _sent_body(
+            "claude-opus-5-5",
+            system=system_prompt,
+            cache_prompt=True,
+            tools=[SCHEMA_TOOL],
+            tool_choice="required",
+        )
+
+        assert body["system"][0] == {
+            "type": "text",
+            "text": system_prompt,
+            "cache_control": {"type": "ephemeral"},
+        }
+        assert body["system"][-1] == {
+            "type": "text",
+            "text": ONE_TOOL_INSTRUCTION.format(name="InvestigationResponse_Diagnosis"),
+        }
+        assert len(body["system"]) == 2
+
+    async def test_cached_prefix_matches_a_model_that_accepts_forcing(self):
+        """The cached block is byte-identical to what a forcing-capable model
+        is sent: the instruction is added after it, never folded into it."""
+        common = dict(
+            system="Stable system prompt.",
+            cache_prompt=True,
+            tools=[SCHEMA_TOOL],
+            tool_choice="required",
+        )
+        forcing = await _sent_body("claude-sonnet-4-6", **common)
+        instructed = await _sent_body("claude-opus-5-5", **common)
+
+        assert instructed["system"][: len(forcing["system"])] == forcing["system"]
+        assert instructed["tools"] == forcing["tools"]
+
+    async def test_system_from_messages_becomes_text_blocks(self):
+        """The tool-loop shape: the system prompt arrives as a system message."""
+        messages = [
+            {"role": "system", "content": "Investigate carefully."},
+            {"role": "user", "content": "Pods are crashlooping."},
+        ]
+
+        body = await _sent_body(
+            "claude-fable-5-1",
+            messages=messages,
+            tools=[SEARCH_TOOL, SCHEMA_TOOL],
+            tool_choice="required",
+        )
+
+        assert body["system"] == [
+            {"type": "text", "text": "Investigate carefully."},
+            {"type": "text", "text": ANY_TOOL_INSTRUCTION},
+        ]
+        # The engine's messages are sent as converted, with nothing injected.
+        assert body["messages"] == [
+            {"role": "user", "content": "Pods are crashlooping."}
+        ]
+
+    async def test_caller_system_list_is_extended_not_mutated(self):
+        caller_system = [{"type": "text", "text": "Caller block."}]
+
+        body = await _sent_body(
+            "claude-opus-5-5",
+            system=caller_system,
+            tools=[SCHEMA_TOOL],
+            tool_choice="required",
+        )
+
+        assert caller_system == [{"type": "text", "text": "Caller block."}]
+        assert body["system"] == [
+            {"type": "text", "text": "Caller block."},
+            {
+                "type": "text",
+                "text": ONE_TOOL_INSTRUCTION.format(
+                    name="InvestigationResponse_Diagnosis"
+                ),
+            },
+        ]
+
+    async def test_instruction_is_identical_across_iterations(self):
+        """The tool loop resends its message list each iteration; the
+        instruction must be the same block every time it is asked for."""
+        first = await _sent_body(
+            "claude-opus-5-5",
+            messages=[
+                {"role": "system", "content": "S"},
+                {"role": "user", "content": "u1"},
+            ],
+            tools=[SEARCH_TOOL, SCHEMA_TOOL],
+            tool_choice="required",
+        )
+        second = await _sent_body(
+            "claude-opus-5-5",
+            messages=[
+                {"role": "system", "content": "S"},
+                {"role": "user", "content": "u1"},
+                {"role": "assistant", "content": "a1"},
+                {"role": "user", "content": "u2"},
+            ],
+            tools=[SEARCH_TOOL, SCHEMA_TOOL],
+            tool_choice="required",
+        )
+
+        assert first["system"] == second["system"]
+
+
+# =========================================================================
+# Thinking: refused under forcing only where forcing is actually sent
+# =========================================================================
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestThinkingAcrossTheForcingCeiling:
+    async def test_adaptive_on_model_above_ceiling_carries_thinking(self, caplog):
+        with caplog.at_level("WARNING"):
+            body = await _sent_body(
+                "claude-opus-5-5",
+                thinking_mode="adaptive",
+                tools=[SCHEMA_TOOL],
+                tool_choice="required",
+            )
+
+        assert body["thinking"] == {"type": "adaptive"}
+        assert body["tool_choice"] == {"type": "auto"}
+        assert "temperature" not in body
+        assert not any("thinking refused" in r.message for r in caplog.records)
+
+    async def test_adaptive_on_forcing_model_still_refuses_thinking(self, caplog):
+        with caplog.at_level("WARNING"):
+            body = await _sent_body(
+                "claude-sonnet-4-6",
+                thinking_mode="adaptive",
+                tools=[SCHEMA_TOOL],
+                tool_choice="required",
+            )
+
+        assert "thinking" not in body
+        assert body["tool_choice"] == {"type": "any"}
+        assert body["temperature"] == 0.2
+        assert any("thinking refused" in r.message for r in caplog.records)

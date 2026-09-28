@@ -7,6 +7,7 @@ reasoning and analysis tasks using the Claude API.
 
 import asyncio
 import json
+import re
 import time
 from typing import List, Optional
 
@@ -45,9 +46,91 @@ class AnthropicProvider(BaseLLMProvider):
     # Fallback budget for "enabled" mode when ProviderConfig carries none.
     _THINKING_DEFAULT_BUDGET_TOKENS = 4096
 
+    # --- Per-model request shape (#1695) ------------------------------------
+    # The newest Claude models reject two parts of the one request shape this
+    # provider used to send every model. Measured live 2026-09-28, one request
+    # per cell and no other parameter varied (the matrix is in
+    # docs/reference/llm-model-capabilities.md §"Anthropic request shape"):
+    #   - any `temperature` (0.7, 0.3 or 0.0) -> 400 "`temperature` is
+    #     deprecated for this model." on opus-4-8, opus-5, sonnet-5, opus-5-5
+    #     and fable-5-1;
+    #   - forced tool use (`tool_choice` any/tool) -> 400 "tool_choice: type
+    #     "tool" and "any" are not supported for this model." on opus-5-5 and
+    #     fable-5-1, and per the model docs on mythos-5-1.
+    # The Models API reports neither property (its `capabilities` cover batch,
+    # citations, effort, structured_outputs and thinking), so the gate is a
+    # model-family rule, as it is for Gemini's 3.7+ surface. Each table holds,
+    # per family, the LAST version measured to accept the property; a model
+    # accepts it only when its family has an entry and its version is at or
+    # below that entry.
+    #
+    # Default: an unparseable id, an unlisted family or a version above its
+    # ceiling takes the CURRENT shape (no temperature; `auto` plus an
+    # instruction naming the tool). Every measured model accepts that shape,
+    # so an unknown model never 400s on these two parameters. The cost is
+    # losing sampling and forcing on an unknown OLD model.
+    _SAMPLING_ACCEPTED_THROUGH = {"opus": (4, 6), "sonnet": (4, 6), "haiku": (4, 5)}
+    _FORCED_TOOL_CHOICE_ACCEPTED_THROUGH = {
+        "opus": (5, 0),
+        "sonnet": (5, 0),
+        "haiku": (4, 5),
+        "fable": (5, 0),
+        "mythos": (5, 0),
+    }
+    # claude-<family>-<major>[-<minor>][-<yyyymmdd>]. The minor is 1-2 digits
+    # and the date 8, so claude-opus-4-20250514 is (4, 0) and
+    # claude-haiku-4-5-20251001 is (4, 5).
+    _CLAUDE_MODEL_ID = re.compile(
+        r"claude-(opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?"
+    )
+
     @property
     def provider_name(self) -> str:
         return "anthropic"
+
+    @classmethod
+    def _claude_version(cls, model: str) -> tuple[str, tuple[int, int]] | None:
+        """(family, (major, minor)) from a Claude model id, or None if the id
+        does not follow ``claude-<family>-<major>[-<minor>][-<yyyymmdd>]``."""
+        m = cls._CLAUDE_MODEL_ID.fullmatch((model or "").strip().lower())
+        if m is None:
+            return None
+        return m.group(1), (int(m.group(2)), int(m.group(3) or 0))
+
+    @classmethod
+    def _accepted_through(cls, model: str, ceilings: dict) -> bool:
+        """True when *model*'s family has a ceiling in *ceilings* and its
+        version is at or below it (see the #1695 block above)."""
+        parsed = cls._claude_version(model)
+        if parsed is None:
+            return False
+        family, version = parsed
+        ceiling = ceilings.get(family)
+        return ceiling is not None and version <= ceiling
+
+    @classmethod
+    def _accepts_sampling(cls, model: str) -> bool:
+        return cls._accepted_through(model, cls._SAMPLING_ACCEPTED_THROUGH)
+
+    @classmethod
+    def _accepts_forced_tool_choice(cls, model: str) -> bool:
+        return cls._accepted_through(model, cls._FORCED_TOOL_CHOICE_ACCEPTED_THROUGH)
+
+    @staticmethod
+    def _tool_use_instruction(forced_choice: dict, tools: list) -> str:
+        """The fixed sentence that stands in for forcing on a model that
+        rejects it: names the tool when the forcing names one or only one is
+        offered, else asks for any of them."""
+        name = (
+            forced_choice.get("name") if forced_choice.get("type") == "tool" else None
+        )
+        if not name and len(tools) == 1:
+            name = tools[0].get("name")
+        if name:
+            return f"Respond by calling the `{name}` tool."
+        return (
+            "Respond by calling one of the provided tools; do not reply in plain text."
+        )
 
     def _resolve_thinking(self, max_tokens: int) -> Optional[dict]:
         """Thinking parameter for this call, or None to send none at all.
@@ -186,8 +269,11 @@ class AnthropicProvider(BaseLLMProvider):
         request_body = {
             "model": selected_model,
             "max_tokens": max_tokens,
-            "temperature": temperature,
         }
+        # Sampling is sent only to a model that accepts it: newer models 400
+        # on ANY temperature, including 0.0 (#1695, table above).
+        if self._accepts_sampling(selected_model):
+            request_body["temperature"] = temperature
 
         # Handle messages for multi-turn conversations
         messages = kwargs.pop("messages", None)
@@ -265,16 +351,49 @@ class AnthropicProvider(BaseLLMProvider):
             if anthropic_tools:
                 request_body["tools"] = anthropic_tools
 
-                # Handle tool_choice parameter
+                # Handle tool_choice parameter: "required" is Anthropic's
+                # {"type": "any"}; a dict is already in Anthropic format.
                 tool_choice = kwargs.get("tool_choice")
                 if tool_choice == "required":
-                    # Force tool use - use "any" type for Anthropic
-                    request_body["tool_choice"] = {"type": "any"}
+                    tool_choice = {"type": "any"}
                 elif tool_choice == "auto":
-                    request_body["tool_choice"] = {"type": "auto"}
-                elif isinstance(tool_choice, dict):
-                    # Already in Anthropic format
-                    request_body["tool_choice"] = tool_choice
+                    tool_choice = {"type": "auto"}
+                if isinstance(tool_choice, dict):
+                    forces = tool_choice.get("type") in ("any", "tool")
+                    if forces and not self._accepts_forced_tool_choice(selected_model):
+                        # The model 400s on forced tool use (#1695): send
+                        # "auto", and put the forcing into words as a
+                        # separate TRAILING system block. System, not the
+                        # messages: the tool loop resends the engine's message
+                        # list each iteration, so text injected into a message
+                        # would be gone on the next call, a history edit that
+                        # invalidates the preceding thinking blocks. Trailing,
+                        # so the cached prefix above stays byte-identical. The
+                        # sentence is fixed, so every iteration that asks for
+                        # forcing sends the same block. A reply that still
+                        # carries no tool call reaches the engine's existing
+                        # handling: the tool loop's "provider ignored
+                        # tool_choice=required" path, or the single-shot
+                        # path's text-JSON parse.
+                        request_body["tool_choice"] = {"type": "auto"}
+                        instruction = {
+                            "type": "text",
+                            "text": self._tool_use_instruction(
+                                tool_choice, anthropic_tools
+                            ),
+                        }
+                        system = request_body.get("system")
+                        if isinstance(system, list):
+                            request_body["system"] = [*system, instruction]
+                        elif isinstance(system, str) and system:
+                            request_body["system"] = [
+                                {"type": "text", "text": system},
+                                instruction,
+                            ]
+                        else:
+                            request_body["system"] = [instruction]
+                    else:
+                        request_body["tool_choice"] = tool_choice
 
         # Extended thinking (#1116) — applied ONLY to tool-calling
         # (structured-output) requests, mirroring Gemini's structured-only
@@ -284,25 +403,30 @@ class AnthropicProvider(BaseLLMProvider):
         if request_body.get("tools"):
             thinking_param = self._resolve_thinking(max_tokens)
             # Thinking supports only tool_choice auto/none — forced tool use
-            # ({"type": "any"} / {"type": "tool"}) is rejected with a 400. We
-            # FAIL CLOSED here: the caller's forcing is left exactly as it set
-            # it and thinking is refused for this call.
+            # ({"type": "any"} / {"type": "tool"}) is rejected with a 400. On
+            # a model that ACCEPTS forcing we FAIL CLOSED here: the caller's
+            # forcing is left exactly as it set it and thinking is refused
+            # for this call. A model above the forcing ceiling (#1695) never
+            # reaches this refusal: it rejects forcing outright, so its
+            # forcing was already sent as "auto" plus the instruction above,
+            # and it can carry thinking.
             #
-            # The alternative — silently downgrading the forcing to "auto" —
-            # trades a soundness property for an experiment knob, in two ways:
-            #   1. On the SINGLE-SHOT structured path (milestone_engine
-            #      ~:8163 sets tool_choice="required" for FUNCTION_CALLING
-            #      providers, which is every Anthropic call) there is NO
-            #      prose→schema recovery: an "auto" answer in prose leaves
-            #      tool_calls empty, model_validate_json raises, with_retry
-            #      exhausts and the turn fails. The nudge-retry loop is
-            #      tool-loop-only.
+            # On a model that accepts forcing, the alternative — silently
+            # downgrading the forcing to "auto" — trades a soundness property
+            # for an experiment knob, in two ways:
+            #   1. On the SINGLE-SHOT structured path
+            #      (milestone_engine/generation.py ~:1737 sets
+            #      tool_choice="required" for FUNCTION_CALLING providers,
+            #      which is every Anthropic call) there is NO prose→schema
+            #      recovery: an "auto" answer in prose leaves tool_calls
+            #      empty, model_validate_json raises, with_retry exhausts and
+            #      the turn fails. The nudge-retry loop is tool-loop-only.
             #   2. On DA turns, force_tool_use exists to enforce "gather
             #      evidence before concluding". Dropping it re-opens the
             #      premature-conclusion failure mode the startup tool-calling
             #      gate is built to prevent.
-            # Consequence, stated deliberately: forced-schema turns on
-            # Anthropic cannot carry thinking at all under this PR. Making
+            # Consequence, stated deliberately: forced-schema turns on a
+            # model that accepts forcing cannot carry thinking at all. Making
             # them able to would require prose→schema recovery on the
             # single-shot path — an engine-wide change affecting every
             # provider, and an owner decision (#1116).

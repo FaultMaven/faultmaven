@@ -172,6 +172,17 @@ Reasoning here is **routed**, not suppressed: the provider's minimum where the
 model is transforming supplied context, its default where the model is
 reasoning over candidates.
 
+The **Anthropic** adapter gates its request shape on the model the same way
+(#1695, measured live 2026-09-28). Newer Claude models 400 on any
+`temperature` (from `claude-opus-4-8`), and the newest also 400 on forced
+tool use (`claude-opus-5-5`, `claude-fable-5-1`, `claude-mythos-5-1`). So
+`temperature` is sent only up to a per-family ceiling. Above the forcing
+ceiling, `tool_choice="required"` is sent as `auto`, plus a fixed trailing
+`system` block naming the tool. There the thinking-under-forcing refusal
+does not apply. An unparseable id or a version above its ceiling takes
+that newest shape, which every measured model accepts. Matrix and ceilings:
+`docs/reference/llm-model-capabilities.md` §"Anthropic request shape".
+
 ## Stop reasons and truncation
 
 **Every response carries a normalised stop reason.** `LLMResponse.stop_reason`
