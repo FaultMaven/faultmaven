@@ -257,6 +257,42 @@ class TestRequestShapeTable:
             assert body["tool_choice"] == {"type": "auto"}
             assert body["system"] == [{"type": "text", "text": ANY_TOOL_INSTRUCTION}]
 
+    @pytest.mark.parametrize(
+        "model,_sampling,accepts_forcing", MODEL_ROWS, ids=MODEL_IDS
+    )
+    async def test_forced_dict_keeps_its_other_keys(
+        self, model, _sampling, accepts_forcing
+    ):
+        """A caller's keys other than type and name (disable_parallel_tool_use
+        is valid with auto) survive the mapping to auto."""
+        choice = {
+            "type": "tool",
+            "name": "search_file",
+            "disable_parallel_tool_use": True,
+        }
+        body = await _sent_body(
+            model, tools=[SEARCH_TOOL, SCHEMA_TOOL], tool_choice=choice
+        )
+
+        if accepts_forcing:
+            assert body["tool_choice"] == {
+                "type": "tool",
+                "name": "search_file",
+                "disable_parallel_tool_use": True,
+            }
+            assert "system" not in body
+        else:
+            assert body["tool_choice"] == {
+                "type": "auto",
+                "disable_parallel_tool_use": True,
+            }
+            assert body["system"] == [
+                {
+                    "type": "text",
+                    "text": ONE_TOOL_INSTRUCTION.format(name="search_file"),
+                }
+            ]
+
 
 # =========================================================================
 # Where the instruction goes relative to the system prompt and the cache

@@ -374,8 +374,17 @@ class AnthropicProvider(BaseLLMProvider):
                         # carries no tool call reaches the engine's existing
                         # handling: the tool loop's "provider ignored
                         # tool_choice=required" path, or the single-shot
-                        # path's text-JSON parse.
-                        request_body["tool_choice"] = {"type": "auto"}
+                        # path's text-JSON parse. Keys other than type and
+                        # name (e.g. disable_parallel_tool_use, valid with
+                        # auto) are the caller's, and are carried over.
+                        request_body["tool_choice"] = {
+                            **{
+                                k: v
+                                for k, v in tool_choice.items()
+                                if k not in ("type", "name")
+                            },
+                            "type": "auto",
+                        }
                         instruction = {
                             "type": "text",
                             "text": self._tool_use_instruction(

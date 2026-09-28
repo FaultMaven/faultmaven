@@ -328,7 +328,8 @@ is at or below it. Otherwise:
 - **`temperature` is omitted** from the request.
 - **Forcing is put into words.** A `tool_choice="required"` (or a native
   `{"type": "any"}` / `{"type": "tool", "name": X}`) is sent as
-  `{"type": "auto"}`, plus one fixed sentence as a separate trailing text
+  `{"type": "auto"}`, keeping a native dict's other keys such as
+  `disable_parallel_tool_use`, plus one fixed sentence as a separate trailing text
   block of `system`: ``Respond by calling the `<name>` tool.`` when one tool
   is offered or the forcing names one, else `Respond by calling one of the
   provided tools; do not reply in plain text.` The block trails the cached
