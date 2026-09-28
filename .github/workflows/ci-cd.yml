@@ -9,6 +9,22 @@ on:
     branches:
       - main
       - develop
+  # The merge queue tests each pull request merged onto the latest main and
+  # requires the checks below to report on that commit. Without this trigger no
+  # required check would ever report on it, and every queued merge would wait
+  # until the queue timed out.
+  merge_group:
+
+# One run per pull request: a push that supersedes an earlier one cancels it,
+# since only the newest head's verdict is ever read. Every other event is keyed
+# on its own run id and never shares a group. A group would still replace a
+# PENDING run with a newer one even with cancel-in-progress off, and every push
+# to main must keep its verdict: publish-docker.yml gates `:latest` on it, and
+# a merge base is read by commit. So is every merge-queue group, whose run is
+# that merge's only verdict.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Default-deny for the GITHUB_TOKEN. No job below reads a secret, posts a
 # comment, uploads SARIF or pushes an image -- they check out and run. A job
@@ -37,7 +53,10 @@ jobs:
   # Pull requests only. A push to main still runs everything, because
   # publish-docker.yml gates `:latest` on "CI/CD Pipeline" succeeding there and
   # its comment says that gate covers the Dockerfile build; narrowing what main
-  # runs would quietly narrow that gate too.
+  # runs would quietly narrow that gate too. A merge-queue group runs
+  # everything for the same reason: it is the last check before main, and the
+  # fail-closed arm below (any event but `pull_request` resolves nothing) is
+  # what makes it do so.
   # ============================================================================
   changes:
     runs-on: ubuntu-latest
@@ -771,9 +790,16 @@ jobs:
       # against the branch it targets, while a push (main is not protected, so
       # direct ones happen) is compared against its own parent. Comparing a
       # push against origin/main would compare the commit with itself — a check
-      # that cannot fail. The checkout is shallow either way, hence the fetch;
-      # the script exits 2 rather than passing blind if it still cannot read
-      # the base contract.
+      # that cannot fail. A merge-queue group takes the push arm too, since
+      # `base_ref` is set only for pull requests. With the queue's squash
+      # merge method each queued pull request is one commit on top of the
+      # state just ahead of it (main, or the pull request queued before it),
+      # so its parent is the right base, and two queued pull requests that
+      # both bump the version to the same number fail here. A merge method
+      # that keeps a pull request's own commits would break that, so change
+      # this step with the method. The checkout is shallow either way, hence
+      # the fetch; the script exits 2 rather than passing blind if it still
+      # cannot read the base contract.
       - name: Contract changes are published deliberately
         run: |
           if [ -n "${{ github.base_ref }}" ]; then
