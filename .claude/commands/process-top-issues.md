@@ -342,22 +342,23 @@ gh pr view <n> --json state,mergedAt      # for each PR that round named
 ```
 
 Any of them still open means this round does not start — but first,
-**refresh** each open one that cannot be merged as it stands: behind
+**refresh** each open one that cannot be merged as it stands, starting with
+any open repair of a red `main`, which the result need not name: behind
 `origin/main`, in conflict with it, carrying a required context that is not
 green, or with a head that is not the one its newest `## Merge-ready`
 comment names. That is step 4's *Merge-ready* again on the same pull
 request, and its *vouched head* test decides how much of it: commits after
-the named head that are only clean merges of `main` need CI and a new
-comment; anything else is code, and goes through *Review*'s fix path first —
-its lane a fresh `full` one that does not count as the item's second. One
-that cannot be refreshed is pulled — closed, placed as the `pulled` row
-below places an item, what stopped it recorded on its issue, and its row in
-the result edited to `pulled` (`gh api -X PATCH` on that comment, read
-back), so the settlement never reads your close as the owner's. Then, if any
-is still open, report it and stop; otherwise settle. An open pull request
-from anything else — a change to this procedure, another person's branch —
-is not this check's business. Do not run a bare `gh pr list` and refuse on
-whatever it finds.
+the named head that are only clean merges of `main`, or commits that change
+no file, need CI and a new comment; anything else is code, and goes through
+*Review*'s fix path first — its lane a fresh `full` one that does not count
+as the item's second. One that cannot be refreshed is pulled — closed,
+placed as the `pulled` row below places an item, what stopped it recorded on
+its issue, and its row in the result edited to `pulled` (`gh api -X PATCH`
+on that comment, read back), so the settlement never reads your close as the
+owner's. Then, if any is still open, report it and stop; otherwise settle.
+An open pull request from anything else — a change to this procedure,
+another person's branch — is not this check's business. Do not run a bare
+`gh pr list` and refuse on whatever it finds.
 
 Then settle. That check is per pull request; **the settlement is per
 issue** — one pull request may carry several. Take the issue↔pull-request
@@ -561,6 +562,11 @@ Listed, never re-asked — and never omitted, or they leave every pile. The
 exception is one under *Nothing can check*: that is a question, because its
 only exit is the owner — build the measurement, re-rule, or close.
 
+A feature ranked into *Building* brings rows of its own: the choices about
+what a user sees that its plan will have to make, each with a
+recommendation, so approving the round answers them and the plan makes none
+itself. One found only while planning pulls the item, as for any plan.
+
 ### Yours to run (never ranked into a round)
 | # | what only you can do |
 
@@ -741,10 +747,11 @@ If you find more than the proposal saw, raise the item's tier on the plan's
 first line — unless the owner set it, which governs the first lane; say in
 the result that you would have raised it. A second lane is always `full`.
 **An item you cannot plan is pulled before any lane is spent on it** — the
-root will not hold still, it needs a ruling, or it is several rounds of
-work that will not slice. One that slices is planned as its first slice,
-which ships on its own, with the rest filed as issues the pull request's
-`Refs` comment names — *Root before scope* in *Building*.
+root will not hold still, it needs a ruling, or it is several rounds of work
+that will not slice. One that slices is planned as its first slice, which
+ships on its own, with the rest filed as issues — by you, as you plan —
+which the pull request's `Refs` comment names: *Root before scope* in
+*Building*.
 
 One lane per item that has one — or per seam, where approved items share
 one, at the highest of their tiers — each with a self-contained prompt
@@ -799,7 +806,8 @@ Mechanics the prompt adds:
   Before pushing: `black`, `ruff`, `lint-imports`, the tests that cover the
   change, and `python scripts/check_contract_version.py` if
   `docs/reference/api/` moved. **Not the whole suite** — see *Read CI for the
-  regression check* below. A docs-only diff runs no tests at all. `Closes #<n>` — in the pull
+  regression check* below. A diff `.github/scripts/classify_docs_only.py` calls docs-only runs no tests
+  at all; a document a test names is not docs-only there. `Closes #<n>` — in the pull
   request's body, never in its title or a commit message, which a squash or
   rebase merge carries to `main` — only if the issue as written is
   delivered; otherwise `Refs #<n>`, plus a comment on #<n> naming what the
@@ -906,9 +914,41 @@ Then per returned lane, in order:
 
    (`gh pr checks --json` does not exist here, and `gh --jq` takes no
    `--argjson`.) A regression CI finds is an on-seam defect: back through
-   *Review*'s fix path, and review again on the new head. When all four of the
-   procedure's *Land* conditions hold and nothing in the pull request waits on
-   the owner, comment on it:
+   *Review*'s fix path, and review again on the new head.
+
+   **Not every red is the lane's.** Where CI skipped the tests as docs-only,
+   `ci_verdict` reads `skipped` on the head and there is nothing to compare:
+   the required contexts are the whole check. A context that is red or
+   cancelled for a reason the pull request did not cause — a flake, a timeout,
+   a concurrency cancel — is re-run once (`gh run rerun <id> --failed`). One
+   that is missing has no run to re-run: re-trigger it once by pushing an empty
+   commit (`git commit --allow-empty -m "ci: re-trigger checks"`) — one push,
+   so no state lies between two mutations, and a commit that changes no file is
+   not code (*The vouched head*). One still red that the merge base fails too —
+   *Building*'s comparison, re-running the base's run where its verdict
+   predates the failure — is `main`'s, and the pull request **waits on
+   `main`**: it is never pulled for a failure it did not cause.
+
+   **A red `main` is repaired before anything merges.** Its issue is titled
+   `main red: <check> at <sha>`; look for an open one with the list below
+   before filing, so a re-entry finds the issue and its pull request and brings
+   that pull request through this step again rather than starting a second
+   repair. Plan the fix yourself and send it a `full` lane on that issue's
+   branch. The repair is not a round item and needs no proposal, because
+   nothing can merge until it lands; and it is the one pull request whose base
+   is red by definition, so for it *Land*'s third condition reads: its head
+   turns the base's failure green and adds none of its own. A failure whose fix
+   you cannot plan — one whose fix trips any of the four triggers under *What
+   escalates* included — is reported with its issue, not built: what waits on
+   it is the owner's to unblock.
+
+   ```bash
+   gh issue list --state open --limit 500 --json number,title \
+     --jq 'map(select(.title | startswith("main red:")))'
+   ```
+
+   When all four of the procedure's *Land* conditions hold and nothing in the
+   pull request waits on the owner or on `main`, comment on it:
 
    ```
    ## Merge-ready — <final head, 9 characters>
@@ -921,17 +961,21 @@ Then per returned lane, in order:
    its current head is reported rather than reviewed again, as a merged one is;
    one whose head has only fallen behind `main` repeats *Merge-ready*, not the
    review. A head that differs from the named one needs only CI and a new
-   comment when every commit after the named head is a clean merge of `main` —
-   a two-parent commit whose second parent is on `main` and whose tree is what
-   `git merge-tree` makes of its parents. Anything else, a conflict's
-   resolution or a merge of another branch included, is code and goes through
-   *Review*'s fix path:
+   comment when every commit after the named head is a commit that changes no
+   file, or a clean merge of `main` — a two-parent commit whose second parent
+   is on `main` and whose tree is what `git merge-tree` makes of its parents.
+   Anything else, a conflict's resolution or a merge of another branch
+   included, is code and goes through *Review*'s fix path:
 
    ```bash
    git fetch -q origin main
    git merge-base --is-ancestor <named> <head> 2>/dev/null || { echo "code: <named> is not an ancestor of <head>"; exit 1; }
    for c in $(git rev-list --first-parent <named>..<head>); do
      set -- $(git rev-list --parents -n1 "$c")
+     if [ $# -eq 2 ]; then   # one parent: passes only if it changes no file
+       [ "$(git rev-parse "$c^{tree}")" = "$(git rev-parse "$2^{tree}")" ] || { echo "code: $c"; exit 1; }
+       continue
+     fi
      [ $# -eq 3 ] && git merge-base --is-ancestor "$3" origin/main \
        && t=$(git merge-tree --write-tree "$2" "$3") \
        && [ "$(printf '%s\n' "$t" | head -1)" = "$(git rev-parse "$c^{tree}")" ] \
@@ -949,8 +993,9 @@ Then per returned lane, in order:
 
 ## 5. Report and hand back
 
-Report when every item is merge-ready, closed by its verification, or
-pulled. Nothing is handed over half-way. Comment on the round's proposal:
+Report when every item is merge-ready, closed by its verification, pulled,
+or waiting on a red `main` whose repair is merge-ready or reported. Nothing
+is handed over half-way. Comment on the round's proposal:
 
 ```
 ## Round <N> — result
@@ -972,6 +1017,7 @@ next proposal's *Measurement* counts the second lanes.
 
 Pulled: #N — <the question, or what stopped the lane>
 Filed on the way: …
+Waiting on main: #<pr>, … — main red at <sha> on <check>; merge the repair #<n> first, then run `/process-top-issues` once.
 Waiting on you: merge the pull requests above. Each is merge-ready at the head its
 comment names — merge it while every required check is green and its head is that
 one, or differs only by an *Update branch* you pressed yourself. Otherwise — a
@@ -992,11 +1038,13 @@ Then stop. The round ends when the owner merges.
 
 - **Never merge** — not on green CI, not on a clean review, not on a
   merge-ready comment. The owner presses merge unless they authorize you in as
-  many words for the session in hand; that authorization ends with the session,
-  never carries into another, and is never read into a round approval. A
-  delegated merge still needs all four: review clean on the final head, every
-  required context green on that head, the merge base green by commit, and the
-  head unchanged since the review but for a clean merge of `main`.
+  many words for the session in hand; that authorization ends with the
+  session, never carries into another, and is never read into a round
+  approval. A delegated merge still needs all four: review clean on the final
+  head, every required context green on that head, the merge base green by
+  commit — save for the repair of a red `main` (step 4's *Merge-ready*) — and
+  the head unchanged since the review but for clean merges of `main` and
+  commits that change no file.
 - **Never poll CI in the foreground, and never from a lane or a
   `/code-review`.** The CI verdict is yours, read once per final head in the
   background (step 4's *Merge-ready*). A reviewer reports findings and says

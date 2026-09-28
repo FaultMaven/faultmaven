@@ -507,24 +507,24 @@ level down, which is why that gate's condition is "cannot clear" rather than
 to deliver; this is the general case.
 
 **The owning agent does the thinking; a lane builds.** Investigation,
-planning and the verdict on quality stay with the agent that owns the
-round. Most of *Building*'s gates are judgements — where the root is, how
-many places a rule lives, who reads a value that is changing, whether a
-guard reaches what it claims to, whether a finding is real — and each was
-written after one went wrong. They belong to the strongest model in the
-round and the one agent that sees every item in it, and taking them out of
-the lane is also what lets a lane run on a smaller model at all. So the
-plan — root, change, consumers, the tests that prove it — is written
-before any lane starts and posted on the issue, where the owner can read
-it. A feature item's plan is its spec, and a lane builds it like any
-other; a verification or an investigation is run by the owning agent,
-with a lane only packaging what survives or what was measured. Features
-used to get a round for the spec alone. It asked the owner nothing the
-escalation triggers do not already put in front of them — a choice about
-what a user sees pulls the item with the question either way — and it
-left an item with no pull request, which no settlement row could read. A lane whose code disagrees with its plan stops rather
-than re-planning, because a second planner is how an item drifts from
-what was approved.
+planning and the verdict on quality stay with the agent that owns the round.
+Most of *Building*'s gates are judgements — where the root is, how many
+places a rule lives, who reads a value that is changing, whether a guard
+reaches what it claims to, whether a finding is real — and each was written
+after one went wrong. They belong to the strongest model in the round and
+the one agent that sees every item in it, and taking them out of the lane is
+also what lets a lane run on a smaller model at all. So the plan — root,
+change, consumers, the tests that prove it — is written before any lane
+starts and posted on the issue, where the owner can read it. A feature
+item's plan is its spec, and a lane builds it like any other; a verification
+or an investigation is run by the owning agent, with a lane only packaging
+what survives or what was measured. Features used to get a round for the
+spec alone. It asked the owner nothing the escalation triggers do not
+already put in front of them — a choice about what a user sees pulls the
+item with the question either way — and it left an item with no pull
+request, which no settlement row could read. A lane whose code disagrees
+with its plan stops rather than re-planning, because a second planner is how
+an item drifts from what was approved.
 
 **Planning spends the budget review does.** One agent now thinks through
 every item twice — before its lane and after it — so a round's size counts
@@ -574,8 +574,17 @@ carries into another; approving a *round* is not approving its merges, and
 an agent that widens one into the other is deciding something that was not
 given to it. Delegated or not, a merge needs all four: review clean on the
 final head, every required context green on that head, the merge base green
-by commit, and the head unchanged since the review but for a clean merge of
-`main`, which changes nothing in the diff the review read.
+by commit, and the head unchanged since the review but for clean merges of
+`main` and commits that change no file, neither of which changes anything in
+the diff the review read.
+
+The third condition has one exception: the pull request that repairs a red
+`main`, whose base is red by definition. For it, the condition is that its
+head turns the base's failure green and adds none of its own. It goes first,
+and a failure the other pull requests did not cause never pulls them — they
+wait on `main`. Without the exception a red `main` would leave every pull
+request in the round unmergeable, and since no round starts while one is
+open, nothing inside the procedure would ever repair it.
 
 **Merging one pull request can leave the next behind `main`.** The branch
 rules do not require a pull request to be up to date, so CI's verdict on a
@@ -589,11 +598,12 @@ a value the pull request changed, a new caller of a function whose contract
 it changed, the class *Enumerate the consumers* exists for — and that is
 CI's to catch on the merged head, with the plan's consumer searches re-run
 there whenever the agent brings a head up to date. The comment vouches for
-one head, and a commit after it that is not a clean merge of `main` is code
-nobody reviewed: a conflict's resolution has the same shape as *Update
-branch*, so the test is the tree, not the commit message. What *Update
-branch* cannot do — resolve a conflict, or turn a red check green — is the
-next invocation's to repair, in *Settle the last round*, before it stops.
+one head, and a commit after it that is neither a clean merge of `main` nor
+a commit that changes no file is code nobody reviewed: a conflict's
+resolution has the same shape as *Update branch*, so the test is the tree,
+not the commit message. What *Update branch* cannot do — resolve a conflict,
+or turn a red check green — is the next invocation's to repair, in *Settle
+the last round*, before it stops.
 
 A round is not over until every one is merged or explicitly abandoned —
 abandoned meaning the owner closed it unmerged, which *Settle the last
@@ -855,7 +865,8 @@ reads them all:
   different pages, so the grep form reports "no run" for commits that have one.
 
   ```bash
-  ci_verdict() {   # green on BOTH sides = no regression. Anything else is not a pass.
+  ci_verdict() {   # green on BOTH sides = no regression; skipped on a docs-only head =
+                   # nothing to regress. Anything else is not a pass.
     gh api "repos/FaultMaven/faultmaven/commits/$(git rev-parse "$1")/check-runs" --paginate --jq '
       [.check_runs[] | select(.name | test("^Test (Standalone|Cloud)$"))]
       | group_by(.name) | map(max_by(.started_at))
