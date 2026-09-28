@@ -160,8 +160,9 @@ PER-TURN TAIL (dynamic, ~2-5K+ tokens)
   CONVERSATION HISTORY, system feedback, CURRENT USER MESSAGE
 
 CLOSING RULES (static, read last)
-  "Compose your answer under the ASSISTANT ROLE, ACTION IMPACT, CONCISENESS,
-   DIAGNOSTIC REASONING and REASONING-FIRST rules above."
+  "Compose your answer under the ASSISTANT ROLE, ACTION IMPACT, CONCISENESS and
+   REASONING-FIRST rules above, and DIAGNOSTIC REASONING where this prompt
+   includes it."
   <security_constraints>                          (7 immutable rules)
   CRITICAL: Do NOT restate or summarize...        (anti-padding closer)
 ```
@@ -243,7 +244,7 @@ Provider behaviour is pinned in `tests/unit/infrastructure/llm/providers/test_an
 When `processing_mode == "knowledge_query"`, the user is asking a general technical question rather than progressing the investigation; when it is `"agent_meta"` (#1328), the user is asking about FaultMaven itself. The dispatcher (shown for `knowledge_query`; `agent_meta` substitutes `AGENT_META_INSTRUCTIONS`, and in INQUIRY renders the same block through the `{agent_meta_instructions}` slot, empty for every other mode):
 
 1. Sets `adaptive_instructions = KNOWLEDGE_QUERY_INSTRUCTIONS`. This block waives evidence-grounding and diagnostic-reasoning expectations: *"The DIAGNOSTIC REASONING REQUIREMENTS and EVIDENCE GROUNDING rules do not apply. Connect to the case context when relevant — but this is optional."*
-2. Sets `evidence_grounding = ""` so `_EVIDENCE_GROUNDING_BLOCK` is absent from the rendered prompt.
+2. Sets `evidence_grounding = _OBSERVATION_TIME_BLOCK`, so `_EVIDENCE_GROUNDING_BLOCK` is absent from the rendered prompt and only the observation-time definition stays: `<evidence_collected>` still renders `fresh_this_turn` on these turns, and a standing rule reads it (#512).
 3. Sets `diagnostic_reasoning = ""` so `_DIAGNOSTIC_REASONING_BLOCK` is absent from the rendered prompt.
 
 **Why suppress rather than exempt:** earlier versions kept the rule blocks present and stated "the above rules don't apply." The result was ~4KB of waived rule text alongside a waiver — high signal/noise. The current design omits the waived blocks entirely. The waiver line in `KNOWLEDGE_QUERY_INSTRUCTIONS` remains as a hint that the rules exist in other modes, but the bulk doesn't.

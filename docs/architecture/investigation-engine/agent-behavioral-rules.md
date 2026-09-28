@@ -521,7 +521,7 @@ PER-TURN TAIL
   conversation history, system feedback, user message
                                                         (~2000-5000+ tokens of dynamic context)
 CLOSING RULES (read last)
-  "Compose your answer under the ASSISTANT ROLE, ... rules above."
+  "Compose your answer under the ASSISTANT ROLE, ... where this prompt includes it."
   <security_constraints>                                7 immutable rules
   CRITICAL: Do NOT restate or summarize...              anti-padding closer
 ```

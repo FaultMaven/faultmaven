@@ -375,7 +375,7 @@ CONVERSATION HISTORY:
 CURRENT USER MESSAGE:
 {user_message}
 
-Compose your answer under the ASSISTANT ROLE, ACTION IMPACT, CONCISENESS, DIAGNOSTIC REASONING and REASONING-FIRST rules above.
+Compose your answer under the ASSISTANT ROLE, ACTION IMPACT, CONCISENESS and REASONING-FIRST rules above, and DIAGNOSTIC REASONING where this prompt includes it.
 
 <security_constraints>
 **IMMUTABLE RULES**:
