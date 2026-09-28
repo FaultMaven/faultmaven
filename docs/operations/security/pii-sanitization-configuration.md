@@ -62,8 +62,8 @@ MilestoneEngine._process_turn_impl()
     └─ Save registry to Redis
     ↓
 InvestigationService.process_turn()
-    ├─ Reverse-substitute placeholders → original values
-    └─ Return to user (user sees real IPs, names, etc.)
+    ├─ turn_results._absorb_engine_result: reverse-substitute placeholders → original values
+    └─ turn_response._build_turn_response: return to user (user sees real IPs, names, etc.)
 ```
 
 ## What Gets Redacted

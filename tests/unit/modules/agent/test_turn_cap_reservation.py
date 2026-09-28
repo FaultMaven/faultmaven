@@ -100,7 +100,7 @@ def _case(**overrides):
 
 def _service(ledger, monkeypatch, *, case=None, default=30):
     from faultmaven.modules.agent.domain.services.investigation_service import (
-        service as _service_module,
+        attachments as _attachments_module,
     )
     from faultmaven.modules.agent.domain.services.investigation_service.service import (
         InvestigationService,
@@ -122,11 +122,12 @@ def _service(ledger, monkeypatch, *, case=None, default=30):
         turn_cap=_cap_service(ledger, default=default),
     )
     # Everything past the reservation is out of scope here; the cases below all
-    # end at or before it. Patched on service.py's own module namespace --
-    # the one reader, since process_turn calls _preprocess_attachment as a
-    # bare module-global name.
+    # end at or before it. #1707 wave 3: ``_preprocess_attachment`` is called
+    # from ``attachments._preprocess_turn_uploads`` now (moved off the class),
+    # which reads it as a bare module-global name of attachments.py itself --
+    # patched there, the one reader.
     monkeypatch.setattr(
-        _service_module,
+        _attachments_module,
         "_preprocess_attachment",
         AsyncMock(side_effect=AssertionError("preprocessing ran for a capped turn")),
     )

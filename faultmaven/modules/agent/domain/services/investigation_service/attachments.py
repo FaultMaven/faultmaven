@@ -9,21 +9,31 @@ per-attachment dict handed to ``engine.process_turn``, and the processing-mode
 reroute a turn carrying evidence forces.
 """
 
+import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import List, Optional
 
+from faultmaven.core.investigation.coverage_trust import CALLER_DECLARED_COVERAGE_SOURCE
 from faultmaven.core.investigation.prompts.context_builder.budget import (
     structural_index_is_searchable,
 )
+from faultmaven.core.investigation.schemas import Attachment
+from faultmaven.core.investigation.turn_pipeline import generate_implicit_query
+from faultmaven.infrastructure.observability.evidence_metrics import (
+    EVIDENCE_DEDUP_HITS_TOTAL,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
+    _record_mark_linked_failure,
+)
 from faultmaven.modules.agent.domain.services.query_classifier import (
     ProcessingMode,
+    QueryClassification,
 )
-from faultmaven.modules.case.contracts import (
-    CaseState,
-)
-from faultmaven.modules.case.domain.models.evidence import (
-    UploadedFile,
-)
+from faultmaven.modules.case.contracts import Case, CaseState
+from faultmaven.modules.case.domain.models.evidence import UploadedFile
+
+logger = logging.getLogger(__name__)
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 
@@ -322,29 +332,6 @@ def _turn_delivers_evidence_bearing_attachment(
         if structural_index_is_searchable(r.uploaded_file.structural_index):
             return True
     return False
-
-
-import logging
-from datetime import UTC, datetime
-from typing import List, Optional
-
-from faultmaven.core.investigation.coverage_trust import CALLER_DECLARED_COVERAGE_SOURCE
-from faultmaven.core.investigation.schemas import Attachment
-from faultmaven.infrastructure.observability.evidence_metrics import (
-    EVIDENCE_DEDUP_HITS_TOTAL,
-)
-from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
-    _record_mark_linked_failure,
-)
-from faultmaven.modules.case.contracts import (
-    Case,
-    CaseState,
-)
-from faultmaven.modules.case.domain.models.evidence import (
-    UploadedFile,
-)
-
-logger = logging.getLogger(__name__)
 
 
 async def _preprocess_attachment(
@@ -729,3 +716,88 @@ async def _preprocess_attachment(
         suggested_types=suggested_types,
         attachment_filename=attachment.filename,
     )
+
+
+async def _preprocess_turn_uploads(
+    file_storage_service,
+    preprocessing_service,
+    repository,
+    *,
+    case,
+    case_id,
+    classification,
+    next_turn,
+    payload,
+    processing_mode,
+    user_id,
+):
+    """Preprocess each attachment, re-route the classification for a fresh evidence-bearing upload, and derive the query."""
+    uploaded_files_this_turn: List["UploadedFile"] = []
+    preprocess_results: List[_PreprocessedAttachment] = []
+    if payload.has_attachments:
+        for attachment in payload.attachments:
+            result = await _preprocess_attachment(
+                file_storage_service,
+                preprocessing_service,
+                repository,
+                case,
+                attachment,
+                user_id,
+                next_turn,
+                processing_mode=processing_mode,
+            )
+            preprocess_results.append(result)
+            uploaded_files_this_turn.append(result.uploaded_file)
+
+    # #708: a fresh evidence-bearing upload must drive Directed
+    # Analysis even when the accompanying message is a generic cover
+    # note. classify_query only sees the message text, so a cover note
+    # ("here's the logs") with no inline entities routes to TRIAGE —
+    # and a knowledge-phrased cover ("what causes connection resets?")
+    # routes to KNOWLEDGE_QUERY — either of which lets the agent skip
+    # the freshly uploaded evidence. Re-route both to DA using the
+    # attachment signal the preprocessor already produced. This is
+    # channel-agnostic (Copilot pasted-content and Slack file uploads
+    # flow through the same path) and composes with the Slack agent's
+    # message_to_text alert-flattening, which already carries alert
+    # entities in the query text. query_mode threads to the engine and
+    # drives force_tools (tool_choice=required); DA subsumes triage.
+    #
+    # Scoped to INVESTIGATING: on INQUIRY the goal is to frame the
+    # problem, and a fresh upload is characterized via the structural
+    # index, not forced into directed analysis before the problem
+    # statement is confirmed. (Terminal turns never reach the engine's
+    # generation path — they short-circuit to _process_terminal_turn.)
+    # (The INQUIRY exception is AGENT_META → TRIAGE, #1328 — see
+    # ``_attachment_reroute``.)
+    rerouted = _attachment_reroute(case.state, classification.mode)
+    if rerouted is not None and _turn_delivers_evidence_bearing_attachment(
+        preprocess_results
+    ):
+        prior_mode = classification.mode.value
+        classification = QueryClassification(
+            mode=rerouted,
+            detected_entities=classification.detected_entities,
+            confidence=0.8,
+        )
+        # ``classification.mode.value`` threads to the engine via
+        # intent_data["query_mode"] below; the ``processing_mode`` local
+        # is only consumed by preprocessing (already run above), so it
+        # is intentionally not reassigned here.
+        logger.info(
+            "Query re-routed %s→%s on case %s turn %s: "
+            "fresh evidence-bearing attachment (#708/#1328)",
+            prior_mode,
+            rerouted.value.upper(),
+            case_id,
+            next_turn,
+        )
+
+    # Determine query (explicit or implicit)
+    query = payload.query
+    if not payload.has_query and payload.has_attachments:
+        query = generate_implicit_query(
+            uploaded_files_this_turn,
+            [a.filename for a in payload.attachments],
+        )
+    return classification, preprocess_results, query, uploaded_files_this_turn
