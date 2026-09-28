@@ -343,11 +343,19 @@ gh pr view <n> --json state,mergedAt      # for each PR that round named
 
 Any of them still open means this round does not start — but first,
 **refresh** each open one that cannot be merged as it stands, starting with
-any open repair of a red `main`, which the result need not name: behind
-`origin/main`, in conflict with it, carrying a required context that is not
-green, or with a head that is not the one its newest `## Merge-ready`
-comment names. That is step 4's *Merge-ready* again on the same pull
-request, and its *vouched head* test decides how much of it: commits after
+any open repair of a red `main`, which the result need not name. One that is
+in the merge queue (`isInMergeQueue`, the query below) is left alone and
+reported as queued: its group's checks are its verdict, and any push would
+take it out of the queue. Of the rest, refresh each that was removed from
+the queue since its newest `## Merge-ready` comment, is in conflict with
+`main`, carries a required context that is not green, or has a head that is
+not the one that comment names. Quote a removal's `reason` verbatim in the
+report — it is free text — and an owner who dequeued one on purpose simply
+does not queue it again. A pull request merely behind `main` is not one of
+them: the queue brings it up to date. That is step 4's *Merge-ready* again
+on the same pull request, with `main` merged in first when the queue removed
+it or it conflicts — what the queue tested it on top of has landed on `main`
+since — and its *vouched head* test decides how much of it: commits after
 the named head that are only clean merges of `main`, or commits that change
 no file, need CI and a new comment; anything else is code, and goes through
 *Review*'s fix path first — its lane a fresh `full` one that does not count
@@ -359,6 +367,12 @@ owner's. Then, if any is still open, report it and stop; otherwise settle.
 An open pull request from anything else — a change to this procedure,
 another person's branch — is not this check's business. Do not run a bare
 `gh pr list` and refuse on whatever it finds.
+
+```bash
+gh api graphql -f query='{repository(owner:"FaultMaven",name:"faultmaven"){pullRequest(number:<n>){
+  isInMergeQueue timelineItems(last:5,itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT]){
+    nodes{... on RemovedFromMergeQueueEvent{createdAt reason}}}}}}'
+```
 
 Then settle. That check is per pull request; **the settlement is per
 issue** — one pull request may carry several. Take the issue↔pull-request
@@ -846,7 +860,10 @@ per review round and the `## Merge-ready — <head>` comment. Bring the head
 up to `origin/main` as the lane returns — merged in by you when it applies
 cleanly, a conflict resolved by the lane from your plan — before
 verification, so verification, the first review and CI all see the code as
-it will merge; step 4 merges again only if `main` has moved since.
+it will merge, re-running the plan's consumer and N-count searches when
+`main` has moved since you planned. After that the merge queue keeps it
+current: nothing merges `main` in again unless a conflict or a queue removal
+calls for it.
 
 1. **Verify.** Re-run the lane's test command yourself from its worktree — the
    focused command, once per head; CI runs the suite — and confirm the output
@@ -909,32 +926,15 @@ it will merge; step 4 merges again only if `main` has moved since.
    git diff "$(printf '%s\n' "$out" | head -1)" <head> || { echo "error: diff failed"; exit 1; }
    ```
 
-   Never take the delta from the *vouched head* test: that loop is a gate that
-   stops at the first commit it rejects, not a list of what changed. A finding
-   surviving two rounds is escalated, not iterated — unless it **blocks the
-   merge**, in which case it goes back for as many rounds as the lane can clear
-   it in, because escalating it would hand the owner a pull request you know is
-   broken. **If the lane cannot clear it — for any reason, not only a ruling —
-   pull it**: close the pull request — or, on a shared one, apply the lane
-   paragraph's rule — record on the issue either the question or that the lane
-   could not clear it, return the item to the blocked pile (the two label
-   edits, as in the pull above), and give it a result row with outcome
-   `pulled`, which is what keeps the next round's settlement from reading your
-   close as the owner's abandonment. That is the loop's only other exit, and
-   without it the round cannot reach step 5 at all. Blocking means the change
-   is worse than the bug it fixes for someone who has not hit it. Say in the
-   result how many findings you filed rather than fixed.
-4. **Merge-ready.** If `main` has moved since the head was brought up to date,
-   bring it up again to `origin/main` fetched now. One that does not contain it
-   (`git merge-base --is-ancestor origin/main <head>` fails) gets `main` merged
-   in — by you when it applies cleanly, which changes nothing in the diff
-   review read, after which you re-run the plan's consumer and N-count searches
-   on the merged head, because what `main` brought in can read what the diff
-   changed; a conflict's resolution is code, and goes through *Review*'s fix
-   path above. Then read CI, started in the background when the review ends and
-   never polled in the foreground: every required context on the head must read
-   `SUCCESS` or `SKIPPED`, and `ci_verdict` from *Building* compares the head
-   with its merge base.
+4. **Merge-ready.** Do not chase `main` here: the merge queue tests each pull
+   request merged onto the latest `main` and onto those queued ahead of it
+   before it lands, so the head brought up to date as the lane returned is
+   current enough. Merge `main` in again only when the pull request conflicts
+   with it, which the queue cannot resolve; the resolution is code, and goes
+   through *Review*'s fix path above. Then read CI, started in the background
+   when the review ends and never polled in the foreground: every required
+   context on the head must read `SUCCESS` or `SKIPPED`, and `ci_verdict` from
+   *Building* compares the head with its merge base.
 
    ```bash
    req=$(gh api repos/FaultMaven/faultmaven/rules/branches/main --jq \
@@ -959,17 +959,21 @@ it will merge; step 4 merges again only if `main` has moved since.
    so no state lies between two mutations, and a commit that changes no file is
    not code (*The vouched head*). A failure outside the repository — the log
    names a host other than the runner's own (`localhost`, `testserver` and any
-   address the suite starts are the pull request's), and your own request to
-   each URL the failed runs named fails the same way — is neither the pull
-   request's nor `main`'s: wait it out, checking those URLs every few minutes
-   in the background, re-run once per outage when all of them answer, and never
-   file a `main red` issue for it. If they have not answered by the time the
-   rest of the round is ready, report the pull request as waiting on that
-   service and stop; step 1's refresh re-runs it the next invocation. One still
-   red that the merge base fails too — *Building*'s comparison, re-running the
-   base's run where its verdict predates the failure — is `main`'s, and the
-   pull request **waits on `main`**: it is never pulled for a failure it did
-   not cause.
+   address the suite starts are the pull request's), and the service's status
+   page reports an incident or maintenance (PyPI: `status.python.org`; GitHub:
+   `githubstatus.com`) — or, where it has none, your own request to each URL
+   the failed runs named fails the same way — is neither the pull request's nor
+   `main`'s: wait it out, checking the status page every few minutes in the
+   background, and re-run once per outage when it reports the service
+   operational (or, with no page, when all those URLs answer); never file a
+   `main red` issue for it. A service that fails one request at a time answers
+   some URLs mid-outage, so a URL that answers is not a recovery while its page
+   says otherwise. If it has not recovered by the time the rest of the round is
+   ready, report the pull request as waiting on that service and stop; step 1's
+   refresh re-runs it the next invocation. One still red that the merge base
+   fails too — *Building*'s comparison, re-running the base's run where its
+   verdict predates the failure — is `main`'s, and the pull request **waits on
+   `main`**: it is never pulled for a failure it did not cause.
 
    **A red `main` is repaired before anything merges.** Its issue is titled
    `main red: <check> at <sha>`; look for an open one with the list below
@@ -1001,13 +1005,14 @@ it will merge; step 4 merges again only if `main` has moved since.
 
    **The vouched head.** A pull request whose newest merge-ready comment names
    its current head is reported rather than reviewed again, as a merged one is;
-   one whose head has only fallen behind `main` repeats *Merge-ready*, not the
-   review. A head that differs from the named one needs only CI and a new
-   comment when every commit after the named head is a commit that changes no
-   file, or a clean merge of `main` — a two-parent commit whose second parent
-   is on `main` and whose tree is what `git merge-tree` makes of its parents.
-   Anything else, a conflict's resolution or a merge of another branch
-   included, is code and goes through *Review*'s fix path:
+   one whose head has only fallen behind `main` is reported as it stands, and
+   not reviewed again, since the queue brings it up to date. A head that
+   differs from the named one needs only CI and a new comment when every commit
+   after the named head is a commit that changes no file, or a clean merge of
+   `main` — a two-parent commit whose second parent is on `main` and whose tree
+   is what `git merge-tree` makes of its parents. Anything else, a conflict's
+   resolution or a merge of another branch included, is code and goes through
+   *Review*'s fix path:
 
    ```bash
    git fetch -q origin main
@@ -1028,7 +1033,7 @@ it will merge; step 4 merges again only if `main` has moved since.
 
    Only the word `clean` is a pass — silence or an error is not, because a
    guard that fails open vouches for what it never compared. It errs towards
-   code: a genuine *Update branch* that `merge-tree` recomputes differently
+   code: a genuine merge of `main` that `merge-tree` recomputes differently
    costs a needless review, which is safe, so never loosen the test to quiet
    it.
 5. **Never relay a finding you could not reproduce by running it.**
@@ -1062,10 +1067,9 @@ Pulled: #N — <the question, or what stopped the lane>
 Filed on the way: …
 Waiting on main: #<pr>, … — main red at <sha> on <check>; merge the repair #<n> first, then run `/process-top-issues` once.
 Waiting on <service>: #<pr>, … — <the URL that did not answer>; run `/process-top-issues` once it answers.
-Waiting on you: merge the pull requests above. Each is merge-ready at the head its
-comment names — merge it while every required check is green and its head is that
-one, or differs only by an *Update branch* you pressed yourself. Otherwise — a
-conflict, a red check, a head you do not recognise — run `/process-top-issues` once.
+Waiting on you: add the pull requests above to the merge queue. Each is merge-ready at the head its
+comment names — queue it while its head is that one; the queue tests it on the latest main and merges
+it. One the queue removes, one that conflicts, a head you do not recognise — run `/process-top-issues` once.
 ```
 
 The `## Round <N> — result` heading is load-bearing, not decoration: it is
@@ -1081,14 +1085,14 @@ Then stop. The round ends when the owner merges.
 ## Rules
 
 - **Never merge** — not on green CI, not on a clean review, not on a
-  merge-ready comment. The owner presses merge unless they authorize you in as
-  many words for the session in hand; that authorization ends with the
-  session, never carries into another, and is never read into a round
-  approval. A delegated merge still needs all four: review clean on the final
-  head, every required context green on that head, the merge base green by
-  commit — save for the repair of a red `main` (step 4's *Merge-ready*) — and
-  the head unchanged since the review but for clean merges of `main` and
-  commits that change no file.
+  merge-ready comment; and adding a pull request to the merge queue is merging
+  it. The owner presses merge unless they authorize you in as many words for
+  the session in hand; that authorization ends with the session, never carries
+  into another, and is never read into a round approval. A delegated merge
+  still needs all four: review clean on the final head, every required context
+  green on that head, the merge base green by commit — save for the repair of
+  a red `main` (step 4's *Merge-ready*) — and the head unchanged since the
+  review but for clean merges of `main` and commits that change no file.
 - **Never poll CI in the foreground, and never from a lane or a
   `/code-review`.** The CI verdict is yours, read once per final head in the
   background (step 4's *Merge-ready*). A reviewer reports findings and says
@@ -1102,8 +1106,8 @@ Then stop. The round ends when the owner merges.
 - **Never ask a question mid-build.** Pull the item instead.
 - **Never build an item with an unanswered question.**
 - **Never stack.** A pull request that would depend on another unmerged one
-  is not opened. Two seams that move one value meet at *Update branch*
-  (the procedure's *Land*).
+  is not opened. Two seams that move one value meet in the merge queue,
+  which removes the one that fails on top of the other.
 - **Never relay an unverified finding as a defect.**
 - **Never hand a lane a judgement.** Investigation, planning, review and
   verification are yours; a lane implements a plan, and what it reports is
