@@ -10,7 +10,8 @@ file's reclassification (#1470/#1471).
 """
 
 import copy
-from typing import Any, Dict, Optional
+import logging
+from typing import Any, Dict, List, Optional
 
 from faultmaven.core.investigation.coverage_trust import CALLER_DECLARED_COVERAGE_SOURCE
 from faultmaven.core.investigation.milestone_engine.milestone_inference import (
@@ -19,8 +20,27 @@ from faultmaven.core.investigation.milestone_engine.milestone_inference import (
 from faultmaven.core.investigation.suggestion_liveness import (
     drop_clarifications_for_file,
 )
+from faultmaven.core.investigation.turn_uploads import report_turn_uploads
+from faultmaven.core.preprocessing.models import unified_data_type_of
 from faultmaven.exceptions import (
     NotFoundError,
+    ServiceException,
+    ValidationException,
+)
+from faultmaven.infrastructure.observability.evidence_metrics import (
+    EVIDENCE_RECLASSIFICATION_TOTAL,
+)
+from faultmaven.models.api import DataType
+from faultmaven.modules.agent.domain.services.investigation_service.attachments import (
+    _binary_placeholder,
+    _is_binary_content,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.clarification import (
+    _CLARIFICATION_FRIENDLY_NAMES,
+    _upload_subject,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
+    _infer_source_type,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -30,6 +50,8 @@ from faultmaven.modules.case.domain.models.evidence import (
     EvidenceSourceType,
     UploadedFile,
 )
+
+logger = logging.getLogger(__name__)
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 
@@ -331,34 +353,6 @@ def _reclassified_collections(
     retired_suggestions = drop_clarifications_for_file(case.last_suggestions, file_id)
 
     return new_files_list, new_evidence_list, retired_suggestions
-
-
-import logging
-from typing import Any, Dict, List, Optional
-
-from faultmaven.core.investigation.turn_uploads import report_turn_uploads
-from faultmaven.core.preprocessing.models import unified_data_type_of
-from faultmaven.exceptions import (
-    ServiceException,
-    ValidationException,
-)
-from faultmaven.infrastructure.observability.evidence_metrics import (
-    EVIDENCE_RECLASSIFICATION_TOTAL,
-)
-from faultmaven.models.api import DataType
-from faultmaven.modules.agent.domain.services.investigation_service.attachments import (
-    _binary_placeholder,
-    _is_binary_content,
-)
-from faultmaven.modules.agent.domain.services.investigation_service.clarification import (
-    _CLARIFICATION_FRIENDLY_NAMES,
-    _upload_subject,
-)
-from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
-    _infer_source_type,
-)
-
-logger = logging.getLogger(__name__)
 
 
 async def _handle_file_reclassification(
