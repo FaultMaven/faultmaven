@@ -381,7 +381,7 @@ Every classification_failed path populates `ClassificationResult.suggested_types
 - Content: a user-facing text like `[Classification uncertain for 'foo.csv' — requesting user input] Suggested types: metrics_and_performance, unstructured_text`
 - `extraction_metadata.suggested_types`: list of candidate DataType values (as strings)
 
-The agent still runs the turn using its file-reading tools (`search_file`, `deep_analysis`), producing a best-effort answer from the raw bytes. After the turn runs, `InvestigationService._build_classification_clarification` injects **DECIDE suggestions** ahead of the engine's follow-ups in `TurnResponse.suggested_actions`.
+The agent still runs the turn using its file-reading tools (`search_file`, `deep_analysis`), producing a best-effort answer from the raw bytes. After the turn runs, `_build_classification_clarification` (`investigation_service/clarification.py`, called from `process_turn`'s `_absorb_engine_result` phase) injects **DECIDE suggestions** ahead of the engine's follow-ups in `TurnResponse.suggested_actions`.
 
 **One set of cards per failed attachment, not per turn.** The `files` cap is `maxItems: 1`, but `pasted_content` is a separate form field that legitimately rides alongside a file, and the paste arm reaches `classification_failed` on its own — so a turn carries up to **two** attachments and both can fail. Each failed attachment gets up to 3 type-specific cards plus a **"Something else"** fallback, so a paste+file turn where both fell below threshold emits up to **8** cards spanning two attachments (#1222). The emitter does not reason from any field's cap; it clarifies whatever failed.
 

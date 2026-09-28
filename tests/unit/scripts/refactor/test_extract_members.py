@@ -358,3 +358,108 @@ class TestVerifierBites:
         self._mutate(head / SRC, "y = _clean(x)", "y = _clean(x[1:])")
         r = _verify(python_exe, base, head, spec)
         assert r.returncode == 1 and "run (owner)" in r.stdout
+
+
+APPEND_OWNER = '''"""Owner module."""
+
+from __future__ import annotations
+
+import logging
+from typing import List, Optional
+
+from pkg.util import helper
+
+logger = logging.getLogger(__name__)
+
+
+class Engine:
+    def __init__(self, repo):
+        self.repo = repo
+
+    def run(self, x):
+        return self._fetch(x)
+
+    def _fetch(self, y) -> Optional[List[str]]:
+        logger.info("fetch %s", y)
+        return helper(self.repo.get(y))
+'''
+
+EXISTING = '''"""Fetching helpers."""
+
+import logging
+from typing import List
+
+logger = logging.getLogger(__name__)
+
+
+def other() -> List[int]:
+    return [1]
+'''
+
+
+def _top_level_imports_after_first_def(text: str) -> list[int]:
+    import ast
+
+    seen_def, late = False, []
+    for n in ast.parse(text).body:
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            seen_def = True
+        elif seen_def and isinstance(n, (ast.Import, ast.ImportFrom)):
+            late.append(n.lineno)
+    return late
+
+
+class TestAppend:
+    """``"append": true`` adds members to a module that already exists."""
+
+    def _trees(self, tmp_path: Path, existing: str):
+        base = _tree(tmp_path / "base", APPEND_OWNER)
+        write(base / "pkg" / "fetching.py", existing)
+        head = tmp_path / "head"
+        shutil.copytree(base, head)
+        spec = _spec(
+            tmp_path,
+            [
+                {
+                    "module": "pkg/fetching.py",
+                    "kind": "functions",
+                    "append": True,
+                    "members": ["_fetch"],
+                }
+            ],
+        )
+        return base, head, spec
+
+    def test_new_imports_join_the_header_once_each(self, tmp_path, python_exe):
+        base, head, spec = self._trees(tmp_path, EXISTING)
+
+        r = _extract(python_exe, head, spec)
+
+        assert r.returncode == 0, r.stdout + r.stderr
+        text = (head / "pkg" / "fetching.py").read_text()
+        compile(text, "fetching.py", "exec")
+        assert _top_level_imports_after_first_def(text) == []
+        assert text.count("import logging") == 1
+        assert text.count("logger = logging.getLogger") == 1
+        assert text.count("from typing import List\n") == 1
+        assert "from typing import Optional" in text
+        assert "from pkg.util import helper" in text
+        body = text.split('"""Fetching helpers."""\n', 1)[1]
+        assert body.lstrip().startswith("from __future__ import annotations")
+        assert text.index("def other") < text.index("def _fetch")
+        assert _verify(python_exe, base, head, spec).returncode == 0
+
+    def test_a_name_bound_from_a_different_source_is_refused(
+        self, tmp_path, python_exe
+    ):
+        existing = EXISTING.replace(
+            "from typing import List\n",
+            "from typing import List\nfrom other import helper\n",
+        )
+        base, head, spec = self._trees(tmp_path, existing)
+
+        r = _extract(python_exe, head, spec)
+
+        assert r.returncode != 0
+        assert "re-bind ['helper']" in r.stdout + r.stderr
+        assert (head / "pkg" / "fetching.py").read_text() == existing

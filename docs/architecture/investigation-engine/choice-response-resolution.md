@@ -224,8 +224,8 @@ The rejected message falls back to conversation: where a pending transition exis
 | Layer | Location | Responsibility |
 |---|---|---|
 | Type definition | `api_models.py` `QueryIntent` | Declares `hypothesis_action` as a valid intent type |
-| Service dispatch | [`investigation_service/service.py:506`](../../../faultmaven/modules/agent/domain/services/investigation_service/service.py) | Routes typed intent to the per-intent handler |
-| Service handler | [`investigation_service/service.py:1504`](../../../faultmaven/modules/agent/domain/services/investigation_service/service.py) (`_handle_hypothesis_action`) | Validates payload shape, forwards to the engine with `intent_data` |
+| Service dispatch | [`investigation_service/service.py:857`](../../../faultmaven/modules/agent/domain/services/investigation_service/service.py) (`_dispatch_turn`) | Routes typed intent to the per-intent handler |
+| Service handler | [`investigation_service/service.py:1108`](../../../faultmaven/modules/agent/domain/services/investigation_service/service.py) (`_handle_hypothesis_action`) | Validates payload shape, forwards to the engine with `intent_data` |
 | Engine handler | [`milestone_engine/engine.py`](../../../faultmaven/core/investigation/milestone_engine/engine.py) `MilestoneEngine._process_turn_impl` (`elif intent_type == "hypothesis_action" and intent_data:`) | Applies the state change on `case.hypotheses[...]` and sets `metadata["hypothesis_action_applied"] = True` |
 
 ### 5.2 State Transitions Applied by the Engine
@@ -261,7 +261,7 @@ last_suggestions: Optional[List[Dict[str, Any]]] = Field(
 )
 ```
 
-**Updated after each turn** in `investigation_service.py`, after building `suggested_actions`. As shipped this is not a plain rebuild from the turn's own output — see P6 — but an assembly of this turn's clarification choices, the still-live ones carried from earlier turns, and this turn's engine follow-ups, each stamped with the offering turn:
+**Updated after each turn** in `investigation_service/turn_results.py`'s `_absorb_engine_result`, which `process_turn` calls *before* `turn_response.py`'s `_build_turn_response` builds `suggested_actions` from the result. As shipped this is not a plain rebuild from the turn's own output — see P6 — but an assembly of this turn's clarification choices, the still-live ones carried from earlier turns, and this turn's engine follow-ups, each stamped with the offering turn:
 
 ```python
 next_read_turn = updated_case.effective_current_turn + 1   # what NEXT turn computes

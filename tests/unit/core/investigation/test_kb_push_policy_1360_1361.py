@@ -520,13 +520,17 @@ class TestTheOffStateIsCoherentAcrossEveryConsumer:
         from faultmaven.core.investigation import case_telemetry
         from faultmaven.core.investigation.prompts.context_builder import assembly
         from faultmaven.modules.agent.domain.services.investigation_service import (
-            service as investigation_service,
+            turn_bookkeeping,
         )
 
+        # #1707 wave 3: ``_kb_context_sources`` is, and always was, defined in
+        # ``turn_bookkeeping`` (wave 2). service.py used to re-import it for
+        # its own call inside ``_build_turn_response``; that call moved out to
+        # ``turn_response`` in step B, so service.py no longer binds the name.
         for module, func in (
             (assembly, "build_investigation_context"),
             (case_telemetry, "_kb_retrieval"),
-            (investigation_service, "_kb_context_sources"),
+            (turn_bookkeeping, "_kb_context_sources"),
         ):
             src = inspect.getsource(getattr(module, func))
             assert "visible_kb_context(" in src, (

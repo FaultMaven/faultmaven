@@ -37,7 +37,7 @@ from faultmaven.infrastructure.protection.tenant_turn_cap import (
     utc_day,
 )
 from faultmaven.modules.agent.domain.services.investigation_service import (
-    service as _service_module,
+    attachments as _attachments_module,
 )
 from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
@@ -336,8 +336,11 @@ class TestControls:
         ledger = InMemoryTurnLedger()
         service = _service(engine, recording_case_repository, ledger, verdict="2")
         service.preprocessing_service = None
+        # #1707 wave 3: ``_preprocess_attachment`` is called from
+        # ``attachments._preprocess_turn_uploads`` now (moved off the class),
+        # so it is read as a bare module-global name of attachments.py itself.
         monkeypatch.setattr(
-            _service_module,
+            _attachments_module,
             "_preprocess_attachment",
             AsyncMock(
                 return_value=SimpleNamespace(

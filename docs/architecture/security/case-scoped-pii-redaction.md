@@ -30,7 +30,7 @@ This creates three requirements:
 
 **Before:** The LLM responded with `<IP_ADDRESS_1>` placeholders. These were returned to the user as-is. Users saw placeholders instead of real values.
 
-**After:** `InvestigationService.process_turn()` calls `redaction_ctx.reverse()` on the agent response before returning it to the user. The user sees original values.
+**After:** `InvestigationService.process_turn()` calls `redaction_ctx.reverse()` on the agent response before returning it to the user, in its `_absorb_engine_result` phase (`investigation_service/turn_results.py`). The user sees original values.
 
 ## Architecture
 
@@ -58,8 +58,8 @@ MilestoneEngine._process_turn_impl()
   └─ Save registry to Redis
                                             ↓
 InvestigationService.process_turn()
-  ├─ Reverse-substitute placeholders → original values
-  └─ Return TurnResponse to user (real IPs, names, etc.)
+  ├─ turn_results._absorb_engine_result: reverse-substitute placeholders → original values
+  └─ turn_response._build_turn_response: return TurnResponse to user (real IPs, names, etc.)
 ```
 
 The case-scoped registry flows through **both** the extraction layer (structural index creation) and the inference layer (LLM prompts + tool results), ensuring a single consistent namespace for all PII within a case.
@@ -160,7 +160,7 @@ await redaction_context.save()  # Persist to Redis for engine
 
 `_create_redaction_context()` loads the context from Redis (picks up any mappings from prior turns), and `classify_and_extract()` uses it instead of `DataSanitizer.sanitize()`. After all attachments are processed, the registry is saved so the engine picks up extraction-layer mappings.
 
-**2. Response reverse-substitution** — after the engine returns:
+**2. Response reverse-substitution** — after the engine returns, in `process_turn`'s `_absorb_engine_result` phase (`modules/agent/domain/services/investigation_service/turn_results.py`):
 
 ```python
 redaction_ctx = result.get("redaction_ctx")

@@ -1,4 +1,13 @@
+"""The KB push: pre-fetching runbook matches into the turn's prompt ahead of generation, and the limits and relevance floor that bound it."""
+
+import logging
 import re
+
+from faultmaven.modules.case.contracts import (
+    Case,
+)
+
+logger = logging.getLogger(__name__)
 
 KB_PREFETCH_FETCH_LIMIT = 10
 KB_CONTEXT_MAX_ENTRIES = 5
@@ -131,15 +140,6 @@ def _admit_diverse(ranked: list) -> list:
 # simply thinner than it should be — and on this path that starves the
 # symptom-verification context.
 KB_PREFETCH_RELEVANCE_THRESHOLD = 0.5
-
-import logging
-import re
-
-from faultmaven.modules.case.contracts import (
-    Case,
-)
-
-logger = logging.getLogger(__name__)
 
 
 class KbPrefetcher:
