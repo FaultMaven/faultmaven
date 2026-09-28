@@ -52,11 +52,15 @@ class AnthropicProvider(BaseLLMProvider):
     # per cell and no other parameter varied (the matrix is in
     # docs/reference/llm-model-capabilities.md §"Anthropic request shape"):
     #   - any `temperature` (0.7, 0.3 or 0.0) -> 400 "`temperature` is
-    #     deprecated for this model." on opus-4-8, opus-5, sonnet-5, opus-5-5
-    #     and fable-5-1;
+    #     deprecated for this model." on opus-4-7, opus-4-8, opus-5, sonnet-5,
+    #     fable-5, opus-5-5 and fable-5-1; accepted on opus-4-6, sonnet-4-6
+    #     and haiku-4-5 (sonnet-4-5 per the model docs);
     #   - forced tool use (`tool_choice` any/tool) -> 400 "tool_choice: type
     #     "tool" and "any" are not supported for this model." on opus-5-5 and
-    #     fable-5-1, and per the model docs on mythos-5-1.
+    #     fable-5-1; accepted on every other model above, fable-5 included.
+    # So every ceiling below is measured except the mythos entry, which rests
+    # on the model docs: mythos-5 and mythos-5-1 are not served to the key
+    # that measured the rest.
     # The Models API reports neither property (its `capabilities` cover batch,
     # citations, effort, structured_outputs and thinking), so the gate is a
     # model-family rule, as it is for Gemini's 3.7+ surface. Each table holds,
@@ -83,6 +87,9 @@ class AnthropicProvider(BaseLLMProvider):
     _CLAUDE_MODEL_ID = re.compile(
         r"claude-(opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?"
     )
+    # Model ids whose request shape has been logged: one line per model id per
+    # process, not one per call.
+    _REQUEST_SHAPE_LOGGED: set[str] = set()
 
     @property
     def provider_name(self) -> str:
@@ -116,11 +123,44 @@ class AnthropicProvider(BaseLLMProvider):
     def _accepts_forced_tool_choice(cls, model: str) -> bool:
         return cls._accepted_through(model, cls._FORCED_TOOL_CHOICE_ACCEPTED_THROUGH)
 
+    def _log_request_shape(self, model: str) -> None:
+        """Say once per model id what this provider leaves out of its requests.
+
+        An unparseable id gets a WARNING, because it takes the reduced shape by
+        default rather than by measurement. A parsed model above a ceiling gets
+        an INFO naming what is dropped. A model that accepts both logs nothing.
+        """
+        if model in self._REQUEST_SHAPE_LOGGED:
+            return
+        self._REQUEST_SHAPE_LOGGED.add(model)
+        if self._claude_version(model) is None:
+            self.logger.warning(
+                "Anthropic model id %r does not parse as "
+                "claude-<family>-<major>[-<minor>][-<yyyymmdd>]; it takes the "
+                "reduced request shape: no temperature, and forced tool_choice "
+                "sent as auto plus an instruction (#1695)",
+                model,
+            )
+            return
+        dropped = []
+        if not self._accepts_sampling(model):
+            dropped.append("temperature is not sent")
+        if not self._accepts_forced_tool_choice(model):
+            dropped.append("forced tool_choice is sent as auto plus an instruction")
+        if dropped:
+            self.logger.info(
+                "Anthropic model %s: %s (#1695)", model, "; ".join(dropped)
+            )
+
     @staticmethod
     def _tool_use_instruction(forced_choice: dict, tools: list) -> str:
-        """The fixed sentence that stands in for forcing on a model that
-        rejects it: names the tool when the forcing names one or only one is
-        offered, else asks for any of them."""
+        """The sentence that stands in for forcing on a model that rejects it.
+
+        A function of the forcing and the offered tools: it names the tool
+        when the forcing names one or exactly one tool is offered, and
+        otherwise asks for any of them. So it changes exactly when the tool
+        set does, and an unchanged tool set gets a byte-identical sentence.
+        """
         name = (
             forced_choice.get("name") if forced_choice.get("type") == "tool" else None
         )
@@ -257,6 +297,7 @@ class AnthropicProvider(BaseLLMProvider):
         selected_model = model or self.config.default_model
         if not selected_model:
             selected_model = "claude-sonnet-4-6"
+        self._log_request_shape(selected_model)
 
         # Prepare headers for Anthropic API
         headers = {
@@ -369,14 +410,28 @@ class AnthropicProvider(BaseLLMProvider):
                         # would be gone on the next call, a history edit that
                         # invalidates the preceding thinking blocks. Trailing,
                         # so the cached prefix above stays byte-identical. The
-                        # sentence is fixed, so every iteration that asks for
-                        # forcing sends the same block. A reply that still
-                        # carries no tool call reaches the engine's existing
-                        # handling: the tool loop's "provider ignored
-                        # tool_choice=required" path, or the single-shot
-                        # path's text-JSON parse. Keys other than type and
-                        # name (e.g. disable_parallel_tool_use, valid with
-                        # auto) are the caller's, and are carried over.
+                        # sentence is a function of the offered tools, so it
+                        # changes exactly when the tool set does, and an
+                        # unchanged tool set sends a byte-identical block.
+                        #
+                        # "auto" asks; it does not force. A reply that still
+                        # carries no tool call:
+                        #   - on the single-shot structured path, fails that
+                        #     attempt: the text-JSON parse recovers only a
+                        #     reply that is itself JSON, and a prose reply
+                        #     does not (engine side: #1755);
+                        #   - on a non-final tool-loop iteration, gets the
+                        #     loop's nudge and force_schema_next. Only a final
+                        #     or force-schema iteration reaches the loop's
+                        #     "provider ignored tool_choice=required" path.
+                        #
+                        # Keys other than type and name (e.g.
+                        # disable_parallel_tool_use, valid with auto) are the
+                        # caller's, and are carried over. A named
+                        # {"type": "tool", "name": X} also narrows the offered
+                        # tools to X when X is among them, so "auto" cannot
+                        # pick another tool; when it is not, the tools are
+                        # left as they are.
                         request_body["tool_choice"] = {
                             **{
                                 k: v
@@ -385,10 +440,18 @@ class AnthropicProvider(BaseLLMProvider):
                             },
                             "type": "auto",
                         }
+                        if tool_choice.get("type") == "tool":
+                            named = [
+                                t
+                                for t in anthropic_tools
+                                if t.get("name") == tool_choice.get("name")
+                            ]
+                            if named:
+                                request_body["tools"] = named
                         instruction = {
                             "type": "text",
                             "text": self._tool_use_instruction(
-                                tool_choice, anthropic_tools
+                                tool_choice, request_body["tools"]
                             ),
                         }
                         system = request_body.get("system")
