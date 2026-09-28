@@ -478,11 +478,23 @@ class TestAnthropicCacheBoundaryBreakpoint:
         body = await _sent_body(provider, _loop_messages(prompt), cache_prompt=True)
         assert body["messages"][0]["content"] == prompt
 
-    async def test_two_boundaries_leave_the_content_untouched(self, provider):
-        """Case content quoting the boundary makes the split ambiguous: no split."""
-        prompt = _PREFIX + _TAIL + "user pasted: " + CACHE_BOUNDARY + "\n"
+    async def test_case_content_quoting_the_boundary_splits_at_the_first(
+        self, provider
+    ):
+        """The first occurrence is the template's: the prefix above it is static
+        text with no case data in it. A quote in the case data comes later, so
+        it can neither move the breakpoint nor turn caching off."""
+        quoted = "user pasted: " + CACHE_BOUNDARY + "\n"
+        prompt = _PREFIX + _TAIL + quoted
         body = await _sent_body(provider, _loop_messages(prompt), cache_prompt=True)
-        assert body["messages"][0]["content"] == prompt
+        assert body["messages"][0]["content"] == [
+            {
+                "type": "text",
+                "text": _PREFIX,
+                "cache_control": {"type": "ephemeral"},
+            },
+            {"type": "text", "text": _TAIL + quoted},
+        ]
 
     async def test_boundary_with_nothing_after_it_is_not_split(self, provider):
         """Anthropic rejects a blank text block, so a blank tail is not split off."""

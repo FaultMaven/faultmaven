@@ -306,8 +306,9 @@ Example (unobservable race, two rivals both refuted):
 # _RCA_DIAGNOSIS_BLOCK — the single DIAGNOSIS-stage block in the unified
 # opportunistic flow. Full hypothesis-driven diagnostic flow, built by
 # composing the shared sub-blocks above with RCA-specific content inline.
-# Stage emphasis (Zone 1/2/3) is prepended by _get_diagnosis_focus_emphasis
-# based on cause_state — there is no longer a prospective path fork.
+# Stage emphasis (Zone 1/2/3) comes from _get_diagnosis_focus_emphasis, based
+# on cause_state — there is no longer a prospective path fork. It renders in
+# the prompt's per-turn tail as {focus_emphasis}, not in this block (#613).
 # =============================================================================
 _RCA_DIAGNOSIS_BLOCK = (
     """

@@ -427,7 +427,7 @@ Rules are injected into template strings in `templates/` and assembled at runtim
 | Rule | Template | Section in Template | Position |
 | ---- | -------- | ------------------- | -------- |
 | 1 (Answer First) | INQUIRY only | YOUR TASK instructions | Early (after context header) |
-| 2 (Evidence-Grounded) | INVESTIGATION_BASE | DIAGNOSTIC REASONING + EVIDENCE GROUNDING + hard constraints (includes confidence calibration + no premature resolution) | EVIDENCE GROUNDING via `{evidence_grounding}` before evidence-handling rules; DIAGNOSTIC REASONING via `{diagnostic_reasoning}` placeholder after CONCISENESS. Both placeholders gate to `""` in `knowledge_query` and `agent_meta` modes so the blocks are absent rather than exempted. |
+| 2 (Evidence-Grounded) | INVESTIGATION_BASE | DIAGNOSTIC REASONING + EVIDENCE GROUNDING + hard constraints (includes confidence calibration + no premature resolution) | EVIDENCE GROUNDING via `{evidence_grounding}` before evidence-handling rules; DIAGNOSTIC REASONING via `{diagnostic_reasoning}` placeholder after CONCISENESS, both in the cached prefix. In `knowledge_query` and `agent_meta` modes `{diagnostic_reasoning}` renders `""` and `{evidence_grounding}` renders only the observation-time definition (`_OBSERVATION_TIME_BLOCK`), so the grounding rules are absent rather than exempted. |
 | 3 (Advisor Role) | All three templates | ASSISTANT ROLE via `_ADVISOR_ROLE_CONSTRAINT` (voice) + `_ACTION_IMPACT_BLOCK` (action impact annotation) | `_ADVISOR_ROLE_CONSTRAINT` shared across INQUIRY_TEMPLATE, INVESTIGATION_BASE, and TERMINAL_TEMPLATE (voice must be preserved in terminal Q&A too). `_ACTION_IMPACT_BLOCK` shared across INQUIRY_TEMPLATE and INVESTIGATION_BASE only (TERMINAL has no action proposals). |
 | 4 (Graceful Pivot) | INVESTIGATION_BASE | KEY PRINCIPLES | Before YOUR TASK (the stage instructions close the durable prefix, #613) |
 | 5 (Work With What You Get) | INVESTIGATION_BASE | KEY PRINCIPLES (behavior table + one-ask-per-turn principle + CHECK BACK ON SUGGESTED ACTIONS for terse user replies that don't reference a prior diagnostic suggestion) | Before YOUR TASK (the stage instructions close the durable prefix, #613) |
@@ -441,7 +441,7 @@ Rules are injected into template strings in `templates/` and assembled at runtim
 
 Two pieces of rule-adjacent content are injected at runtime:
 
-1. **Focus Zone Emphasis** — a priority signal computed by `_get_diagnosis_focus_emphasis()` and prepended to the single `_RCA_DIAGNOSIS_BLOCK` (unified flow — no path branches). It maps `symptom_verified` / `cause_state` / `solution_proposed` to the current zone's emphasis (symptom verification → root-cause analysis while the cause is uncertain → solution). See [Evidence-Driven Investigation Framework §8.5](./evidence-driven-investigation-framework.md#85-focus-zone-emphasis-progress-milestone-driven).
+1. **Focus Zone Emphasis** — a priority signal computed by `_get_diagnosis_focus_emphasis()` on DIAGNOSIS turns (unified flow — no path branches) and rendered as `{focus_emphasis}` at the top of the prompt's per-turn tail, right after `CACHE_BOUNDARY` — not inside the stage instructions, because it moves with the milestones and, in Zone 2, with the wall clock (#613). It maps `symptom_verified` / `cause_state` / `solution_proposed` to the current zone's emphasis (symptom verification → root-cause analysis while the cause is uncertain → solution). See [Evidence-Driven Investigation Framework §8.5](./evidence-driven-investigation-framework.md#85-focus-zone-emphasis-progress-milestone-driven).
 
 2. **INQUIRY State** — an `<inquiry_state>` XML block injected into the INQUIRY template by `_build_context()` when a proposed problem statement exists but hasn't been confirmed. It carries ONE rule, `ENGINE_PRESENTS_THIS`: the engine composes the standing statement into the reply and offers the confirm/refine pair, so the LLM must NOT restate it or ask for confirmation — the user would be asked twice. If the LLM's understanding has changed it writes the revision to `proposed_problem_statement` and the engine presents the new wording. This replaced a two-mode fork (`NOT_YET_CONFIRMED` / `HANDSHAKE_DEFERRED`, keyed on a `handshake_deferred_at_turn` flag) that existed only because PRESENTING was the LLM's job and the prompt had to say, turn by turn, whether this was a presenting turn — see [INV-01](./investigation-invariants.md#invariant-enforcement-matrix).
 
@@ -511,28 +511,32 @@ CONCISENESS
                                                         OBSERVATION -> ANALYSIS -> CONCLUSION +
                                                         confidence calibration + no premature resolution
 CRITICAL: REASONING-FIRST REQUIREMENT                   internal_reasoning emission gate for milestones
-<security_constraints>
-YOUR TASK: {adaptive_instructions}                      Focus Zone prepended here for DIAGNOSIS only;
-                                                        last in the prefix because it changes with stage and focus
-=== CURRENT CASE (everything below this line changes from turn to turn) ===      CACHE_BOUNDARY
+YOUR TASK: {adaptive_instructions}                      Stage instructions; last in the prefix because
+                                                        they change with the stage and the mode
+=== CURRENT CASE (this turn's state, evidence and conversation follow) ===      CACHE_BOUNDARY
 PER-TURN TAIL
+  {focus_emphasis}                                      Focus Zone, DIAGNOSIS only (empty otherwise)
   Identity, case context, milestones, evidence, entity highlights,
   hypotheses, investigation journal, working conclusion, pending action,
   conversation history, system feedback, user message
                                                         (~2000-5000+ tokens of dynamic context)
+CLOSING RULES (read last)
+  "Compose your answer under the ASSISTANT ROLE, ... rules above."
+  <security_constraints>                                7 immutable rules
+  CRITICAL: Do NOT restate or summarize...              anti-padding closer
 ```
 
-**Why this order**: provider prompt caches reuse only a byte-identical prefix, so the instructions that never change come first and everything that changes per turn comes after `CACHE_BOUNDARY` ([prompt-assembly-architecture.md §3.3](./prompt-assembly-architecture.md#33-durable-prefix-and-the-cache-boundary-613)). Within the instructions, evidence-handling rules precede the principles and `YOUR TASK`, so the LLM internalizes the input-quality and classification framework *before* reading its stage-specific playbook. The stage instructions close the prefix because they are its only part that changes within a case (stage and focus zone). The case data the rules describe follows the boundary, ending on the user's message.
+**Why this order**: provider prompt caches reuse only a byte-identical prefix, so the standing instructions come first, in the cached prefix, and everything that changes per turn comes after `CACHE_BOUNDARY` ([prompt-assembly-architecture.md §3.3](./prompt-assembly-architecture.md#33-durable-prefix-and-the-cache-boundary-613)). Within the instructions, evidence-handling rules precede the principles and `YOUR TASK`, so the LLM internalizes the input-quality and classification framework *before* reading its stage-specific playbook. The stage instructions close the prefix because they are its only part that changes within a case (with the stage or the mode). The case data the rules describe follows the boundary. The immutable `<security_constraints>` and the anti-padding closer end the prompt, after the user's message, so they are freshest when the LLM composes its response and untrusted case content is never the last thing it reads; the line before them points back at the output-shaping rules in the prefix (ASSISTANT ROLE, ACTION IMPACT, CONCISENESS, DIAGNOSTIC REASONING, REASONING-FIRST).
 
-**`processing_mode == "knowledge_query"` bypass** (and `"agent_meta"`, Rule 9, which substitutes `AGENT_META_INSTRUCTIONS`): When this mode is set, `get_prompt_for_case()` skips stage dispatch entirely and passes `evidence_grounding=""` AND `diagnostic_reasoning=""`. `KNOWLEDGE_QUERY_INSTRUCTIONS` is injected as `adaptive_instructions`. Both the EVIDENCE GROUNDING and DIAGNOSTIC REASONING blocks are absent from the rendered prompt entirely — rather than inserting exemption clauses sandwiched between other constraint blocks. This matches the `KNOWLEDGE_QUERY_INSTRUCTIONS` waiver text ("The DIAGNOSTIC REASONING REQUIREMENTS and EVIDENCE GROUNDING rules do not apply").
+**`processing_mode == "knowledge_query"` bypass** (and `"agent_meta"`, Rule 9, which substitutes `AGENT_META_INSTRUCTIONS`): When this mode is set, `get_prompt_for_case()` skips stage dispatch entirely (so `{focus_emphasis}` is empty), passes `diagnostic_reasoning=""`, and passes `evidence_grounding=_OBSERVATION_TIME_BLOCK` — the observation-time definition alone, kept because `<evidence_collected>` still renders `fresh_this_turn` on these turns and a standing rule reads it (#512). `KNOWLEDGE_QUERY_INSTRUCTIONS` is injected as `adaptive_instructions`. The EVIDENCE GROUNDING rules and the DIAGNOSTIC REASONING block are absent from the rendered prompt — rather than inserting exemption clauses sandwiched between other constraint blocks. This matches the `KNOWLEDGE_QUERY_INSTRUCTIONS` waiver text ("The DIAGNOSTIC REASONING REQUIREMENTS and EVIDENCE GROUNDING rules do not apply").
 
 ### Design Rationale
 
 One structural invariant is enforced:
 
-- **Focus Zone is prepended to stage instructions**. It appears at the top of `{adaptive_instructions}` for DIAGNOSIS, which closes the instruction prefix: it is the last instruction-level content the LLM reads before the per-turn case data.
+- **Focus Zone opens the per-turn tail**. On DIAGNOSIS turns `{focus_emphasis}` is the first thing after `CACHE_BOUNDARY`, directly after the stage instructions that close the prefix, so it is still the first instruction-level content the LLM reads about where this case stands — without re-writing the cached prefix each time the zone or the symptom's currency changes (#613).
 
-The remaining rules occupy stable positions in the template but are not ordered for primacy/recency optimization; their order is fixed by the durable-prefix rule (#613), which puts every standing instruction ahead of the per-turn case data.
+The remaining rules occupy stable positions in the template. Their order is fixed by the durable-prefix rule (#613), which puts the standing instructions ahead of the per-turn case data, with one recency exception: the immutable `<security_constraints>` and the anti-padding closer end the prompt.
 
 ---
 

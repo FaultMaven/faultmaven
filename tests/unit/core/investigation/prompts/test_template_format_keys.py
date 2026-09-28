@@ -128,6 +128,7 @@ EXPECTED_KEYS: dict[str, set[str]] = {
         "evidence",
         "evidence_grounding",
         "evidence_needs",
+        "focus_emphasis",
         "hypotheses",
         "identity",
         "investigation_journal",

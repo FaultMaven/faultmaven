@@ -33,6 +33,7 @@ from faultmaven.utils.optional_dependency import module_is_usable
 from faultmaven.utils.token_estimation import estimate_tokens
 
 from .cache import LLMResponseCache
+from .prompt_cache import CACHE_BOUNDARY
 from .providers import LLMResponse, ReasoningIntent, StopReason, get_registry
 
 # Opik native tracing for LLM calls.
@@ -53,6 +54,57 @@ except ImportError:
     OPIK_AVAILABLE = False
 
 TELEMETRY_PAYLOAD_MAX_CHARS = 8000
+
+
+def _from_cache_boundary(text: str) -> Optional[str]:
+    """``text`` from its first ``CACHE_BOUNDARY`` on, or ``None`` if it has none.
+
+    The investigation prompt opens with ~80K characters of standing
+    instructions that are byte-identical on every call (#613). A span input
+    truncated to ``TELEMETRY_PAYLOAD_MAX_CHARS`` from the START would record
+    only that static text — never the case id, the state, the evidence or the
+    user's message. From the boundary on is the part that differs per call.
+    """
+    i = text.find(CACHE_BOUNDARY)
+    return None if i < 0 else text[i:]
+
+
+def _span_prompt_views(
+    prompt: Optional[str], messages: Optional[List[Dict[str, Any]]]
+) -> tuple[Optional[str], Optional[str], bool]:
+    """The span's ``prompt`` and ``messages`` inputs, and whether a prefix was elided.
+
+    A prompt holding ``CACHE_BOUNDARY`` is recorded from the boundary on. A
+    messages list is recorded from the first message whose string content
+    holds it: that message from the boundary on, then every later message.
+    The messages list is cut BEFORE it is stringified, not by searching its
+    ``str()``: ``repr`` escapes the boundary's apostrophe whenever the content
+    also holds a double quote, which the investigation prompt always does, so
+    a search of the stringified list would never find it. Anything without a
+    boundary is recorded exactly as before. Both are truncated to
+    ``TELEMETRY_PAYLOAD_MAX_CHARS``.
+    """
+    elided = False
+    prompt_view = None
+    if prompt:
+        tail = _from_cache_boundary(prompt)
+        if tail is not None:
+            elided = True
+            prompt = tail
+        prompt_view = prompt[:TELEMETRY_PAYLOAD_MAX_CHARS]
+    messages_view = None
+    if messages:
+        view: List[Any] = messages
+        for i, message in enumerate(messages):
+            content = message.get("content") if isinstance(message, dict) else None
+            tail = _from_cache_boundary(content) if isinstance(content, str) else None
+            if tail is not None:
+                elided = True
+                view = [{**message, "content": tail}, *messages[i + 1 :]]
+                break
+        messages_view = str(view)[:TELEMETRY_PAYLOAD_MAX_CHARS]
+    return prompt_view, messages_view, elided
+
 
 # Providers ``utils.token_estimation.estimate_tokens`` actually tokenizes.
 # Everything else falls through to its ``len // 4`` character heuristic, which
@@ -878,13 +930,17 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             return
 
         try:
+            # A prompt carrying the #613 cache boundary is recorded from the
+            # boundary on: its head is static instruction text, identical on
+            # every call, and would fill the whole truncated payload.
+            prompt_view, messages_view, prefix_elided = _span_prompt_views(
+                sanitized_prompt, sanitized_messages
+            )
             input_data = {}
-            if sanitized_prompt:
-                input_data["prompt"] = sanitized_prompt[:TELEMETRY_PAYLOAD_MAX_CHARS]
-            if sanitized_messages:
-                # Truncate messages if they become too large for telemetry stringification
-                messages_str = str(sanitized_messages)
-                input_data["messages"] = messages_str[:TELEMETRY_PAYLOAD_MAX_CHARS]
+            if prompt_view:
+                input_data["prompt"] = prompt_view
+            if messages_view:
+                input_data["messages"] = messages_view
             output_data = {}
             if response.content:
                 output_data["response"] = response.content[:TELEMETRY_PAYLOAD_MAX_CHARS]
@@ -897,6 +953,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 "confidence": response.confidence,
                 "cache_read_tokens": getattr(response, "cache_read_tokens", 0),
                 "cache_write_tokens": getattr(response, "cache_write_tokens", 0),
+                "prompt_prefix_elided": prefix_elided,
             }
 
             usage = None

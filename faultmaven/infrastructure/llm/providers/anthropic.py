@@ -654,18 +654,21 @@ def _mark_cache_boundary(messages: list) -> None:
 
     The investigation prompt reaches this provider as ONE user text block whose
     first part — the standing instructions, up to ``CACHE_BOUNDARY`` — renders
-    the same bytes on every turn, and whose rest is this turn's case data. The
+    the same bytes on every turn, and whose rest is this turn's case. The
     system breakpoint in ``generate()`` caches the tools and the system
     instruction only; this one extends the cached prefix through the boundary
     line, so the next turn reads the instructions from the cache too.
 
-    Splits only when the FIRST message is a user message whose content is a
-    string holding ``CACHE_BOUNDARY`` exactly once, with non-blank text after
-    it. Anything else — no boundary, a boundary quoted a second time by case
-    content, content that is already a block list — is left untouched: the
-    request goes out exactly as before, uncached past the system block. The
-    two text blocks concatenate to the original string, so the model reads
-    the same prompt either way.
+    Splits at the FIRST occurrence, when the FIRST message is a user message
+    whose content is a string holding ``CACHE_BOUNDARY`` with non-blank text
+    after it. The first occurrence is always the template's: everything above
+    it is static instruction text, which the prefix structure guard keeps free
+    of case data (``test_investigation_prefix_613.py``). So case content that
+    quotes the boundary lands after the split and cannot move it, or turn
+    caching off. Anything else — no boundary, content that is already a block
+    list, a blank tail — is left untouched: the request goes out exactly as
+    before, uncached past the system block. The two text blocks concatenate to
+    the original string, so the model reads the same prompt either way.
     """
     if not messages:
         return
@@ -673,7 +676,7 @@ def _mark_cache_boundary(messages: list) -> None:
     if first.get("role") != "user":
         return
     content = first.get("content")
-    if not isinstance(content, str) or content.count(CACHE_BOUNDARY) != 1:
+    if not isinstance(content, str) or CACHE_BOUNDARY not in content:
         return
     end = content.index(CACHE_BOUNDARY) + len(CACHE_BOUNDARY)
     if content.startswith("\n", end):

@@ -86,15 +86,17 @@ dollar figures as directional. Two honesty guarantees:
 ## Prompt caching
 
 The tool-augmented investigation loop marks its calls cacheable
-(`cache_prompt=True`). Only the **Anthropic** provider acts on it — it adds an
+(`cache_prompt=True`). The **Anthropic** provider acts on it: it adds an
 ephemeral (5-minute) `cache_control` breakpoint on the stable system + tools
 prefix, and a second one at the end of the investigation prompt's durable
 prefix (the `CACHE_BOUNDARY` line, #613), so the standing instructions bill at
 the reduced cache-read rate across the loop's iterations and across
-consecutive turns inside the TTL. Every other provider pops the flag
-(OpenAI-family cache prompts automatically server-side, and the prompt's
-durable-first layout is what gives them a prefix to reuse; the flag must never
-leak into a request body or it 400s). Caching is transparent to model output — it changes only how the prefix
+consecutive turns inside the TTL. The **local** provider's llama.cpp transport
+forwards it as llama.cpp's own `cache_prompt` body field, which reuses the KV
+cache for a shared prompt prefix. Every other provider pops the flag
+(OpenAI-family, Gemini and Fireworks cache prompts automatically server-side,
+and the prompt's durable-first layout is what gives them a prefix to reuse;
+the flag must never leak into their request bodies or they 400). Caching is transparent to model output — it changes only how the prefix
 is billed. `cache_read` tokens are visible in `llm_call_tokens_total` and
 `prompt_cache_hit` in the logs, so you can confirm cache hits are actually
 landing.

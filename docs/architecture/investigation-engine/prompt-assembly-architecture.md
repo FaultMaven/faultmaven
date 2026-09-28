@@ -110,7 +110,9 @@ The INQUIRY template includes a SEARCHING UPLOADED FILES block that codifies thi
 
 ### 3.1 Block order
 
-The template is laid out **durable first** (#613): the standing instructions, which render the same bytes on every turn, come first, then `CACHE_BOUNDARY` on its own line, then everything that changes from turn to turn. §3.3 gives the rule and why. Within the instructions the LLM still reads input-handling and evidence-classification rules **before** its stage-specific task.
+The template is laid out **durable first** (#613): the standing instructions, which render the same bytes on every turn, come first, then `CACHE_BOUNDARY` on its own line, then this turn's case, and last the short closing rules. §3.3 gives the rule and why. Within the instructions the LLM still reads input-handling and evidence-classification rules **before** its stage-specific task.
+
+**Why the closing rules come last.** The standing rules live in the cached prefix. The immutable `<security_constraints>` and the anti-padding closer end the prompt, after the case data and the user's message, so they are the freshest thing the model reads when it composes the answer — and so untrusted case content is never the last word. The line before them names the output-shaping rules in the prefix (ASSISTANT ROLE, ACTION IMPACT, CONCISENESS, DIAGNOSTIC REASONING, REASONING-FIRST) that the answer is composed under. Both blocks are short and static; placing them after the boundary costs a few hundred uncached tokens a call.
 
 ```text
 DURABLE PREFIX (byte-identical across turns at one stage and processing mode)
@@ -142,16 +144,13 @@ DURABLE PREFIX (byte-identical across turns at one stage and processing mode)
     {diagnostic_reasoning}                        (_DIAGNOSTIC_REASONING_BLOCK, gated)
     CRITICAL: REASONING-FIRST REQUIREMENT         (internal_reasoning emission gate)
 
-  SECURITY
-    <security_constraints>                        (7 immutable rules)
-    CRITICAL: Do NOT restate or summarize...      (anti-padding closer)
-
-  STAGE INSTRUCTIONS (last: the most volatile part of the prefix)
+  STAGE INSTRUCTIONS (last: the prefix's only part that changes within a case)
     YOUR TASK: {adaptive_instructions}            (see §3.2)
 
-=== CURRENT CASE (everything below this line changes from turn to turn) ===   (CACHE_BOUNDARY)
+=== CURRENT CASE (this turn's state, evidence and conversation follow) ===   (CACHE_BOUNDARY)
 
 PER-TURN TAIL (dynamic, ~2-5K+ tokens)
+  {focus_emphasis}                                (DIAGNOSIS focus zone, §3.2; empty otherwise)
   STATE: INVESTIGATING
   {identity}                                      (<case_identity>: CURRENT_TIME, CASE_ID, STATE, CURRENT_STAGE)
   {core_context}                                  (the FENCE: declaration, then <problem_context>)
@@ -159,6 +158,12 @@ PER-TURN TAIL (dynamic, ~2-5K+ tokens)
   hypotheses, candidate solutions, investigation journal,
   working conclusion, KB results, pending action,
   CONVERSATION HISTORY, system feedback, CURRENT USER MESSAGE
+
+CLOSING RULES (static, read last)
+  "Compose your answer under the ASSISTANT ROLE, ACTION IMPACT, CONCISENESS,
+   DIAGNOSTIC REASONING and REASONING-FIRST rules above."
+  <security_constraints>                          (7 immutable rules)
+  CRITICAL: Do NOT restate or summarize...        (anti-padding closer)
 ```
 
 **KEY PRINCIPLES bullets** (cross-stage, always present in INVESTIGATION_BASE):
@@ -181,16 +186,16 @@ The `{adaptive_instructions}` placeholder is filled by `_select_diagnosis_block(
 
 | Stage / mode | Adaptive instructions |
 | --- | --- |
-| DIAGNOSIS | `_get_diagnosis_focus_emphasis(progress)` + `_RCA_DIAGNOSIS_BLOCK` |
+| DIAGNOSIS | `_RCA_DIAGNOSIS_BLOCK` + `_CHAIN_EMISSION_BLOCK` (the focus emphasis renders separately, below) |
 | MITIGATION | `MITIGATION_INSTRUCTIONS` |
 | TREATMENT | `TREATMENT_INSTRUCTIONS` |
 | Knowledge query | `KNOWLEDGE_QUERY_INSTRUCTIONS` |
 
 `_RCA_DIAGNOSIS_BLOCK` is composed from a shared vocabulary of sub-blocks (`_DIAGNOSIS_ZONES_PREAMBLE`, `_EVIDENCE_REQUEST_FORMAT_BLOCK`, `_URGENCY_RECOGNITION_BLOCK`). The hypothesis-creation mandate (`_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`) is contained inside it and reached on every DIAGNOSIS turn — the former path-conditional blocks (`_SYMPTOM_VALIDATION_BLOCK`, `_GATE3_PENDING_BLOCK`, `_POST_MITIGATION_RCA_PREFIX`) and their pre-mitigation emission ban were removed. See `agent-stage-playbook.md` for the current DIAGNOSIS routing.
 
-`_get_diagnosis_focus_emphasis(progress)` prepends a Zone-aware progress signal:
+`_get_diagnosis_focus_emphasis(progress, case)` computes a Zone-aware progress signal. It renders as its own placeholder, `{focus_emphasis}`, at the top of the per-turn tail, right after `CACHE_BOUNDARY`, on DIAGNOSIS turns only (empty on every other stage and mode). It is not part of the stage instructions because it moves with the progress milestones and, in Zone 2, with the wall clock: the stale variant appears once the symptom's last observation is more than `symptom_currency.STALE_AFTER` (30 min) old. Kept in the prefix, it would re-write the cache on every such flip (#613).
 
-| Zone | Condition | Prepended emphasis |
+| Zone | Condition | Focus emphasis |
 | --- | --- | --- |
 | Zone 1 | `symptom_verified=False` | "Symptom verification pending — search for evidence the problem exists" |
 | Zone 2 | `symptom_verified=True`, `cause_state != IDENTIFIED` | "Root cause analysis — form hypotheses, search for causal evidence" |
@@ -203,21 +208,31 @@ The `{adaptive_instructions}` placeholder is filled by `_select_diagnosis_block(
 
 Provider prompt caches match on a **byte-identical prefix**. Anthropic caches up to an explicit `cache_control` breakpoint; OpenAI, Gemini and Fireworks cache the longest prefix they have seen recently, with no marker. Either way, a turn can read back from the cache only what the previous turn sent byte for byte from the very first byte. `INVESTIGATION_BASE` used to open with `STATE`, `<case_identity>` (which carries `CURRENT_TIME`) and the case data, and put the standing instructions after them, so no turn could reuse the instructions: every turn paid full price for them.
 
-**The rule.** Everything above `CACHE_BOUNDARY` must render the same bytes on every turn of a case at one stage and processing mode. No turn number, no `STATE`/`STAGE`, no timestamp, no fence token, no case content. What may sit there, and why:
+**The rule.** Everything above `CACHE_BOUNDARY` must render the same bytes on every turn of a case at one stage and processing mode. No turn number, no `STATE`/`STAGE`, no timestamp, no fence token, no case content, nothing that moves with the milestones or the clock. What may sit there, and why:
 
 | Part | Varies with | Placement |
 | --- | --- | --- |
 | Role line, `_PROMPT_FENCE_RULE`, the static instruction text and blocks | nothing. The fence rule names no token; the token is declared in `{core_context}` | prefix |
 | `{page_capture_hint}` | `case.source`, stamped at creation | prefix |
 | `{evidence_grounding}`, `{diagnostic_reasoning}` | processing mode (`knowledge_query` and `agent_meta` waive them) | prefix; a mode turn misses the cache, which is correct |
-| `{adaptive_instructions}` | stage, and in DIAGNOSIS the focus zone, which moves a few times a case | **last** in the prefix |
+| `{adaptive_instructions}` | stage and processing mode, a few times a case | **last** in the prefix |
+| `{focus_emphasis}` | DIAGNOSIS focus zone (milestones) and, in Zone 2, the wall clock | **first** in the tail |
 | `STATE` + `{identity}`, `{core_context}` (holds the fence token) and every section down to `{user_message}` | per turn | tail, in their old relative order |
+| The output-shaping pointer, `<security_constraints>`, the anti-padding closer | nothing | after `{user_message}`: the prompt's end, read last |
 
-`CACHE_BOUNDARY` is defined in `faultmaven/infrastructure/llm/prompt_cache.py`, because the Anthropic provider reads it and `infrastructure` must not import `core`. The template renders it once, on its own line, as the prefix's last line. When a request is sent with `cache_prompt=True` (the tool loop) and its first user message is a string holding the boundary exactly once, the Anthropic provider splits that message into two text blocks and puts a second `cache_control` breakpoint on the first, beside the existing one on the system instruction. Anything else (no boundary, a boundary quoted again by case content) is sent unsplit. Automatic-prefix providers need no marker.
+`CACHE_BOUNDARY` (`=== CURRENT CASE (this turn's state, evidence and conversation follow) ===`) is defined in `faultmaven/infrastructure/llm/prompt_cache.py`, because the Anthropic provider and the router read it and `infrastructure` must not import `core`. Its wording promises only that this turn's case follows: the closing rules come after the case, and on best-effort providers the schema instructions are appended after the prompt. The template renders it once, on its own line, as the prefix's last line.
 
-**Guards.** `tests/unit/core/investigation/prompts/test_investigation_prefix_613.py` formats the template with a sentinel per placeholder and fails when any placeholder outside a four-entry allowlist renders above the boundary; the placeholder set is derived from the template, so a new per-turn slot fails by default. The same file builds two consecutive prompts through `get_prompt_for_case` with every per-turn input varied and asserts the text through the boundary line is byte-identical. Provider behaviour is pinned in `tests/unit/infrastructure/llm/providers/test_anthropic_messages.py`.
+- **Anthropic.** When a request is sent with `cache_prompt=True` (the tool loop) and its first user message is a string holding the boundary, the provider splits that message at the boundary's **first** occurrence into two text blocks and puts a second `cache_control` breakpoint on the first, beside the existing one on the system instruction. The first occurrence is always the template's, because the structure guard keeps the prefix free of case data; case content quoting the boundary comes later and can neither move the breakpoint nor turn caching off. A message with no boundary, or nothing but whitespace after it, is sent unsplit. Automatic-prefix providers need no marker.
+- **Telemetry.** The Opik span records a prompt or message holding the boundary from the boundary on (truncated to `TELEMETRY_PAYLOAD_MAX_CHARS`) and sets `prompt_prefix_elided: true`; cut from the start, the truncated payload would show only the static prefix on every call.
 
-**Positional words.** The case data now sits below the instructions, so an instruction that points at a case section says "below": the journal (`INVESTIGATION JOURNAL`), the `<evidence>` blocks (`_EVIDENCE_GROUNDING_BLOCK`), `<causal_graph>` (`_CHAIN_EMISSION_BLOCK`) and the symptom's observation time (the stale Zone 2 emphasis).
+**Guards.** `tests/unit/core/investigation/prompts/test_investigation_prefix_613.py`:
+
+- formats the template with a sentinel per placeholder and fails when any placeholder outside a four-entry allowlist renders above the boundary (the placeholder set is derived from the template, so a new per-turn slot fails by default), pins `{focus_emphasis}` as the tail's first line and `<security_constraints>` as the last block, after `{user_message}`;
+- builds two consecutive prompts through `get_prompt_for_case` with every per-turn input varied — a focus-zone change and the Zone-2 stale flip included — and asserts the text through the boundary line is byte-identical, and that it changes with the stage or the processing mode.
+
+Provider behaviour is pinned in `tests/unit/infrastructure/llm/providers/test_anthropic_messages.py`, the span view in `tests/unit/infrastructure/llm/test_router_opik_span_613.py`.
+
+**Positional words.** The case data now sits below the instructions, so an instruction that points at a case section says "below": the journal (`INVESTIGATION JOURNAL`), the `<evidence>` blocks (`_EVIDENCE_GROUNDING_BLOCK`), `<causal_graph>` (`_CHAIN_EMISSION_BLOCK`) and the symptom's observation time (the stale Zone 2 emphasis). The closing pointer line says "above", because the rules it names are in the prefix.
 
 **Out of scope.** `INQUIRY_TEMPLATE`, `TERMINAL_TEMPLATE` and the `FALLBACK_*` prompts keep their order and have no boundary. The single-shot structured path sends no `cache_prompt`, so the Anthropic provider places no boundary breakpoint on it.
 

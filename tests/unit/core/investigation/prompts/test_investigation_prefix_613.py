@@ -5,7 +5,10 @@ used to open with ``STATE`` and ``<case_identity>`` (which carries the current
 time) and put ~370 lines of standing instructions after the case data, so its
 first bytes changed on every turn and no turn could read the instructions back
 from the cache. It is now laid out durable-first: the standing instructions,
-then ``CACHE_BOUNDARY`` on its own line, then everything that changes per turn.
+then ``CACHE_BOUNDARY`` on its own line, then everything that changes per turn
+— the DIAGNOSIS focus emphasis first — and finally the immutable
+``<security_constraints>`` and the anti-padding closer, which end the prompt so
+they are read last.
 
 Two guards pin that layout:
 
@@ -16,15 +19,17 @@ Two guards pin that layout:
   per-turn placeholder added later lands on the failing side by default.
 - **Assembly golden test** — two consecutive prompts for one case built through
   the real path (``get_prompt_for_case``), with every per-turn input varied
-  between them. The text through the boundary line must be byte-identical, and
-  must differ when the processing mode or the diagnosis focus changes, so the
-  comparison is not vacuous.
+  between them — the diagnosis focus zone and the Zone-2 stale flip included.
+  The text through the boundary line must be byte-identical, and must differ
+  when the stage or the processing mode changes, so the comparison is not
+  vacuous.
 """
 
 from __future__ import annotations
 
 import re
 import string
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from freezegun import freeze_time
@@ -39,6 +44,7 @@ from faultmaven.core.investigation.prompts.templates.blocks import _PROMPT_FENCE
 from faultmaven.core.investigation.prompts.templates.investigation import (
     INVESTIGATION_BASE,
 )
+from faultmaven.core.investigation.symptom_currency import STALE_AFTER
 from faultmaven.infrastructure.llm.prompt_cache import CACHE_BOUNDARY
 from faultmaven.modules.case.contracts import (
     Case,
@@ -54,7 +60,6 @@ from faultmaven.modules.case.contracts import (
     HypothesisState,
     InquiryData,
     InvestigationActionType,
-    InvestigationStage,
     JournalEntry,
     NodeState,
     NodeType,
@@ -86,9 +91,10 @@ PREFIX_ALLOWLIST = {
     "evidence_grounding",
     # Constant per processing mode: the reasoning block, or "" when waived.
     "diagnostic_reasoning",
-    # The stage instructions. Constant within a stage, except that in DIAGNOSIS
-    # the focus emphasis moves with the progress milestones, a few times a case.
-    # Being the most volatile part of the prefix, it is its LAST part.
+    # The stage instructions. Constant within a stage and processing mode, so
+    # they change a few times a case at most — which makes them the prefix's
+    # LAST part. The DIAGNOSIS focus emphasis, which moves with the milestones
+    # and the wall clock, is NOT in them: it is {focus_emphasis}, in the tail.
     "adaptive_instructions",
 }
 
@@ -146,8 +152,12 @@ class TestTemplateStructure:
         assert rendered.index(_sentinel(name)) < rendered.index(CACHE_BOUNDARY)
 
     def test_adaptive_instructions_is_the_last_part_of_the_prefix(self):
-        """The most volatile prefix part goes last, so a focus change re-caches
-        only the stage instructions, not the standing ones before them."""
+        """The prefix's only part that varies within a case — the stage
+        instructions, which change with the stage or the processing mode — goes
+        last. On providers that reuse the longest cached prefix (OpenAI, Gemini,
+        Fireworks) a stage change then still reuses the standing instructions
+        before it. Anthropic's one breakpoint sits at the boundary, so there a
+        stage change re-writes the whole prefix, a few times a case."""
         rendered = _rendered_with_sentinels()
         boundary = rendered.index(CACHE_BOUNDARY)
         above = sorted(
@@ -156,6 +166,37 @@ class TestTemplateStructure:
             if rendered.index(_sentinel(n)) < boundary
         )
         assert above[-1][1] == "adaptive_instructions"
+
+    def test_focus_emphasis_opens_the_tail(self):
+        """The DIAGNOSIS focus emphasis moves with the milestones and, in Zone 2,
+        with the wall clock, so it is the first thing after the boundary line."""
+        rendered = _rendered_with_sentinels()
+        after = rendered[rendered.index(CACHE_BOUNDARY) + len(CACHE_BOUNDARY) :]
+        assert after.startswith("\n" + _sentinel("focus_emphasis"))
+
+    def test_closing_rules_end_the_prompt_after_the_user_message(self):
+        """The immutable rules and the anti-padding closer are read LAST, after
+        the untrusted case data and the user's message, with one line pointing
+        back at the output-shaping rules in the prefix."""
+        rendered = _rendered_with_sentinels()
+        # The block itself, not the fence rule's mention of the tag name.
+        opening = "<security_constraints>\n**IMMUTABLE RULES**"
+        assert rendered.count(opening) == 1
+        rules = rendered.index(opening)
+        assert rules > rendered.index(_sentinel("user_message"))
+        late = [n for n in PLACEHOLDERS if rendered.index(_sentinel(n)) > rules]
+        assert not late, late
+        closing = rendered[rules:]
+        assert closing.rstrip().endswith("specific data or input would unblock you.")
+        assert closing.index("</security_constraints>") < closing.index(
+            "CRITICAL: Do NOT restate"
+        )
+        pointer = (
+            "Compose your answer under the ASSISTANT ROLE, ACTION IMPACT, "
+            "CONCISENESS, DIAGNOSTIC REASONING and REASONING-FIRST rules above."
+        )
+        assert rendered[:rules].rstrip().endswith(pointer)
+        assert rendered.index(pointer) > rendered.index(_sentinel("user_message"))
 
     def test_fence_rule_precedes_every_per_turn_placeholder(self):
         """#1256: the trust rule is stated before the first fenced block. The
@@ -235,8 +276,34 @@ def _record(turn: int, feedback: str | None = None) -> TurnProgress:
     )
 
 
-def _case(later: bool, *, symptom_verified: bool = False) -> Case:
-    """One case at turn 3 (A) or turn 4 (B). B is A plus one turn of work."""
+def _dated_symptom(observed: datetime) -> Evidence:
+    """Symptom evidence whose content is dated — the input symptom currency reads."""
+    return Evidence(
+        evidence_id="ev_613000000009",
+        summary="checkout 500s observed",
+        category=EvidenceCategory.SYMPTOM_EVIDENCE,
+        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        primary_purpose="Test",
+        collected_by="user_613",
+        collected_at_turn=1,
+        coverage_start_ts=observed,
+        coverage_end_ts=observed,
+        coverage_source="iso8601",
+    )
+
+
+def _case(
+    later: bool,
+    *,
+    symptom_verified: bool = False,
+    observed: datetime | None = None,
+    solution_accepted: bool = False,
+) -> Case:
+    """One case at turn 3 (A) or turn 4 (B). B is A plus one turn of work.
+
+    The stage is derived from the gates (``progress.current_stage``):
+    ``solution_accepted`` puts the case in TREATMENT, and DIAGNOSIS otherwise.
+    """
     turn = 4 if later else 3
     case = Case(
         case_id="case_613aaaaaaaaa",
@@ -245,7 +312,6 @@ def _case(later: bool, *, symptom_verified: bool = False) -> Case:
         user_id="user_613",
         enterprise_id="org_613",
         state=CaseState.INVESTIGATING,
-        current_stage=InvestigationStage.DIAGNOSIS,
         inquiry=InquiryData(
             problem_statement_confirmed=True,
             proposed_problem_statement="Checkout crash-looping",
@@ -259,6 +325,9 @@ def _case(later: bool, *, symptom_verified: bool = False) -> Case:
         severity=CaseSeverity.HIGH,
     )
     case.progress.symptom_verified = symptom_verified
+    case.progress.solution_accepted = solution_accepted
+    if observed is not None:
+        case.evidence.append(_dated_symptom(observed))
     case.turn_history = [_record(t) for t in range(1, turn)]
     case.messages = []
     for t in range(1, turn):
@@ -326,7 +395,11 @@ def _case(later: bool, *, symptom_verified: bool = False) -> Case:
 
 
 def _prompt(later: bool, when: str, **overrides) -> str:
-    symptom_verified = overrides.pop("symptom_verified", False)
+    case_kwargs = {
+        k: overrides.pop(k)
+        for k in ("symptom_verified", "observed", "solution_accepted")
+        if k in overrides
+    }
     kwargs: dict = {}
     if later:
         kwargs["kb_results"] = [
@@ -341,9 +414,7 @@ def _prompt(later: bool, when: str, **overrides) -> str:
     kwargs.update(overrides)
     message = B_ONLY["user_message"] if later else "what should I check first?"
     with freeze_time(when):
-        return get_prompt_for_case(
-            _case(later, symptom_verified=symptom_verified), message, **kwargs
-        )
+        return get_prompt_for_case(_case(later, **case_kwargs), message, **kwargs)
 
 
 def _prefix(prompt: str) -> str:
@@ -355,6 +426,18 @@ def _prefix(prompt: str) -> str:
 
 def _fence_token(prompt: str) -> str:
     return re.search(rf'{FENCE_ATTR}="([0-9a-f]+)"', prompt).group(1)
+
+
+def _tail(prompt: str) -> str:
+    return prompt[len(_prefix(prompt)) :]
+
+
+#: Distinctive lines of the focus emphasis, one per variant the tests render.
+ZONE_1 = "INVESTIGATION PROGRESS: Symptom verification pending"
+ZONE_2 = "Symptoms are confirmed."
+ZONE_2_STALE = (
+    "INVESTIGATION PROGRESS: Root cause analysis — anchor to the symptom's window"
+)
 
 
 class TestPrefixIsByteStableAcrossTurns:
@@ -376,14 +459,39 @@ class TestPrefixIsByteStableAcrossTurns:
 
         assert _prefix(a) == _prefix(b)
 
-    def test_prefix_changes_with_the_processing_mode(self):
-        a = _prompt(False, TURN_A_TIME)
-        b = _prompt(True, TURN_B_TIME, processing_mode="knowledge_query")
-        assert _prefix(a) != _prefix(b)
-
-    def test_prefix_changes_with_the_diagnosis_focus(self):
+    def test_prefix_is_identical_across_a_focus_change(self):
+        """Zone 1 on turn A, Zone 2 on turn B: the symptom was verified between
+        them. The focus emphasis moves, in the tail; the prefix does not."""
         a = _prompt(False, TURN_A_TIME, symptom_verified=False)
         b = _prompt(True, TURN_B_TIME, symptom_verified=True)
+
+        assert ZONE_1 in _tail(a) and ZONE_1 not in b
+        assert ZONE_2 in _tail(b) and ZONE_2 not in a
+        assert _prefix(a) == _prefix(b)
+
+    def test_prefix_is_identical_across_the_zone2_stale_flip(self):
+        """Zone 2 with a dated symptom: CURRENT on turn A, STALE on turn B, the
+        clock alone having moved past ``STALE_AFTER``. The emphasis flips to
+        the stale variant, in the tail; the prefix does not move."""
+        observed = datetime(2026, 9, 28, 10, 0, tzinfo=timezone.utc)
+        when_a = (observed + STALE_AFTER / 3).isoformat()
+        when_b = (observed + STALE_AFTER + timedelta(minutes=15)).isoformat()
+        a = _prompt(False, when_a, symptom_verified=True, observed=observed)
+        b = _prompt(True, when_b, symptom_verified=True, observed=observed)
+
+        assert ZONE_2 in _tail(a) and ZONE_2_STALE not in a
+        assert ZONE_2_STALE in _tail(b)
+        assert _prefix(a) == _prefix(b)
+
+    @pytest.mark.parametrize("change", ["stage", "processing_mode"])
+    def test_prefix_changes_with_the_stage_or_the_processing_mode(self, change):
+        """Non-vacuity: the two inputs the prefix MAY vary with do move it."""
+        a = _prompt(False, TURN_A_TIME)
+        if change == "stage":
+            b = _prompt(True, TURN_B_TIME, solution_accepted=True)
+            assert "KB-RESOLUTION VARIANT" in _prefix(b)  # TREATMENT's block
+        else:
+            b = _prompt(True, TURN_B_TIME, processing_mode="knowledge_query")
         assert _prefix(a) != _prefix(b)
 
     def test_fence_rule_precedes_the_first_fenced_tag(self):

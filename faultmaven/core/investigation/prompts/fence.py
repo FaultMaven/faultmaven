@@ -766,9 +766,11 @@ def reseal(text: str, original: str) -> str:
     :func:`render_fenced`'s checks run on the finished render, BEFORE the
     allocator ever sees it.
 
-    - The element stays open, so everything after it in the prompt — including
-      the trust rule itself, which ``INVESTIGATION_BASE`` renders *after*
-      ``{entity_highlights}`` — sits inside what reads as quoted case data.
+    - The element stays open, so everything after it in the prompt sits inside
+      what reads as quoted case data — the later case sections, the user's
+      message and, in ``INVESTIGATION_BASE``, the immutable
+      ``<security_constraints>`` that close the prompt after
+      ``{user_message}`` (#613).
     - The terminator is gone, so a body ending mid-tag is once again free to
       absorb whatever delimiter comes next. That is the #1217 absorption hole,
       reopened by an operation that runs after the fence was verified.
