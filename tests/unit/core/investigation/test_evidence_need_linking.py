@@ -886,17 +886,13 @@ class TestAsksTheUserNeverSeesAreNotRecorded:
         )
 
     def test_every_replacement_flag_is_read_somewhere_in_the_turn_path(self):
-        """The flag list is a hand-maintained mirror of ``_process_turn_impl``.
+        """The flag list is a hand-maintained mirror of ``_compose_turn_reply``.
         If a name drifts, the guard silently stops covering that branch."""
         import inspect
 
         from faultmaven.core.investigation.evidence_need_linking import (
             _REPLACEMENT_METADATA_FLAGS,
         )
-
-        # #1707 wave 3 step B: ``_compose_turn_reply`` moved out of the
-        # engine class into a module function of turn_completion.py, where
-        # every flag below is read — not on the owner method itself.
         from faultmaven.core.investigation.milestone_engine.turn_completion import (
             _compose_turn_reply,
         )
@@ -904,7 +900,7 @@ class TestAsksTheUserNeverSeesAreNotRecorded:
         src = inspect.getsource(_compose_turn_reply)
         for flag in _REPLACEMENT_METADATA_FLAGS:
             assert f'"{flag}"' in src, (
-                f"{flag} is no longer read in _process_turn_impl — the "
+                f"{flag} is no longer read in _compose_turn_reply — the "
                 "replacement guard is out of step with the branches it mirrors"
             )
 
