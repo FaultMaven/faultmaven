@@ -119,20 +119,21 @@ def _runbook_corpus() -> list[pathlib.Path]:
 #: payload costs a few seconds. The check passes only when the CEILING of
 #: the readings its noise allowance permits is under the bound (~22.6) and
 #: fails only when the FLOOR is over it. Measured on the development box:
-#: the fixed patterns under 2x CPU oversubscription (worst ceiling of 32,
-#: every one decided in the first window), and the quadratic patterns
+#: the fixed patterns idle (the highest ceiling of three runs; under 2x CPU
+#: oversubscription the worst was 22.4, every one decided in the first
+#: window), and the quadratic patterns
 #: restored, with the check's early exit disabled so the floor is the full
 #: reading (lowest of 2):
 #:
 #: ===================  ============  ===============  ===============
 #: shape                smallest      fixed: ceiling   restored: floor
 #: ===================  ============  ===============  ===============
-#: bare fences          32 fences     12.0             53.0
-#: bare brackets        128 bytes     11.5             51.8
-#: newline-space        256 units     10.9             47.4
-#: frontmatter          64 units      12.5             50.5
-#: chunker, no headers  32 units      11.4             48.2
-#: newline-space, big   384 units     11.1             49.5
+#: bare fences          32 fences     14.7             53.0
+#: bare brackets        128 bytes     14.7             51.8
+#: newline-space        256 units     13.8             47.4
+#: frontmatter          64 units      14.6             50.5
+#: chunker, no headers  32 units      14.8             48.2
+#: newline-space, big   384 units     13.8             49.5
 #: ===================  ============  ===============  ===============
 
 

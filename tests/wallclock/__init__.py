@@ -53,6 +53,7 @@ from .calibration import (
 from .growth import (
     MIN_TOTAL_GROWTH,
     NOISE_ALLOWANCE,
+    PASS_NOISE_ALLOWANCE,
     Growth,
     assert_linear_growth,
     growth_bound,
@@ -79,6 +80,7 @@ __all__ = [
     "MIN_TOTAL_GROWTH",
     "MIN_REGRESSION_MULTIPLE",
     "NOISE_ALLOWANCE",
+    "PASS_NOISE_ALLOWANCE",
     "RECORD_ENV",
     "THROUGHPUT_METRIC",
     "Budget",
