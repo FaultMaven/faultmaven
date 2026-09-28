@@ -64,10 +64,12 @@ The invariant
 -------------
 
 If every per-size minimum ``m`` is within ``NOISE_ALLOWANCE * m`` of the true
-per-call cost, the true ``R`` lies in ``[ratio_floor, ratio_ceiling]``. So a
-cost whose true ``R`` is under the bound can never be failed, and one at or
-over it can never be passed — **for every fixed cost C**, because ``C`` is
-not in ``R``. ``C`` only decides whether a window can decide. In particular:
+per-call cost, the true ``R`` is at least ``ratio_floor``, so a cost whose
+true ``R`` is under the bound can never be failed. If every minimum is within
+``PASS_NOISE_ALLOWANCE * m``, the true ``R`` is at most ``ratio_ceiling``, so
+a cost at or over the bound can never be passed. Both hold **for every fixed
+cost C**, because ``C`` is not in ``R``. ``C`` only decides whether a window
+can decide. In particular:
 
 * ``C + a*n`` (``R = 8``) never fails. It passes once ``C`` is under ~5x
   the work at the smallest size; three escalations reach that from ~2600x,
@@ -156,7 +158,7 @@ NOISE_ALLOWANCE = 0.10
 PASS_NOISE_ALLOWANCE = 2 * NOISE_ALLOWANCE
 
 #: A window whose largest size costs less than this many times its smallest
-#: decides nothing. A linear window can only pass above ~4.75 anyway, so this
+#: decides nothing. A linear window can only pass above ~11.5 anyway, so this
 #: never delays a correct pass; what it removes is a verdict taken where the
 #: fixed cost swamps the work, which is where error beyond the allowance
 #: could flip one (the sweep in ``test_benchmark_calibration.py``).
@@ -387,7 +389,8 @@ def assert_linear_growth(
         f"{growth.ratio_floor:.1f}x to {growth.ratio_ceiling:.1f}x the cost "
         f"added from {growth.sizes[0]} to {growth.sizes[1]} (as measured "
         f"{growth.ratio:.1f}x; the range allows {NOISE_ALLOWANCE:.0%} error "
-        f"per size below and {PASS_NOISE_ALLOWANCE:.0%} above). Linear reads "
+        f"per size at the floor and {PASS_NOISE_ALLOWANCE:.0%} at the ceiling). "
+        f"Linear reads "
         f"~{step}x and quadratic ~{step ** 2}x; the "
         f"bound is the midpoint, {bound:.1f}x"
     )

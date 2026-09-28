@@ -2504,6 +2504,27 @@ def _fixed_then_linear(fixed: int):
     return fn
 
 
+def _assert_failed_as_super_linear(fn, payload_at, small: int, label: str) -> None:
+    """A quadratic control: the check must fail it as super-linear.
+
+    A pass is the defect, so it reports the reading it passed on. #1741's
+    control passed a quadratic on a CI runner, and ``pytest.raises`` said only
+    ``DID NOT RAISE``: nothing to tell which size's minimum was off.
+    """
+    from tests.wallclock import assert_linear_growth
+
+    try:
+        growth = assert_linear_growth(fn, payload_at, small=small, label=label)
+    except AssertionError as error:
+        assert "is the usual cause" in str(error), str(error)
+    else:
+        pytest.fail(
+            f"{label}: passed as linear at sizes {growth.sizes} "
+            f"({growth.describe()}); measured {growth.ratio:.1f}x, "
+            f"floor {growth.ratio_floor:.1f}x, ceiling {growth.ratio_ceiling:.1f}x"
+        )
+
+
 # ---- arithmetic: the rule, fed exact costs (no clock)
 
 #: Fixed cost relative to the work at the window's smallest size, 0 and
@@ -2615,21 +2636,26 @@ class TestTheGrowthRule:
             assert _procedure(fixed, 1, 0) == expected, fixed
 
     def test_inside_the_allowance_no_error_produces_a_wrong_verdict(self):
-        """The invariant itself: minima within the allowance, every C."""
+        """The invariant itself, every C: a linear is never failed with minima
+        within ``NOISE_ALLOWANCE``, a quadratic never passed with minima within
+        ``PASS_NOISE_ALLOWANCE``."""
         from tests.wallclock.growth import (
             LINEAR,
             MAX_ESCALATIONS,
             NOISE_ALLOWANCE,
+            PASS_NOISE_ALLOWANCE,
             SUPER_LINEAR,
         )
 
-        grid = _error_grid(NOISE_ALLOWANCE, 5)
+        fail_grid = _error_grid(NOISE_ALLOWANCE, 5)
+        pass_grid = _error_grid(PASS_NOISE_ALLOWANCE, 5)
         for fixed in _FIXED_COSTS[::2]:
             for escalation in range(MAX_ESCALATIONS + 1):
-                for errors in grid:
+                for errors in fail_grid:
                     linear = _growth(_noisy(_costs(fixed, 1, 0, escalation), errors))
-                    quad = _growth(_noisy(_costs(fixed, 0, 1, escalation), errors))
                     assert linear.verdict != SUPER_LINEAR, (fixed, errors)
+                for errors in pass_grid:
+                    quad = _growth(_noisy(_costs(fixed, 0, 1, escalation), errors))
                     assert quad.verdict != LINEAR, (fixed, errors)
 
     def test_a_mixture_is_judged_by_its_true_ratio_over_the_window(self):
@@ -2770,23 +2796,17 @@ class TestTheGrowthHelper:
         ids=["regex-backtracking", "python-rescan"],
     )
     def test_a_quadratic_cost_fails(self, fn, payload_at, small):
-        from tests.wallclock import assert_linear_growth
-
-        with pytest.raises(AssertionError, match="is the usual cause"):
-            assert_linear_growth(fn, payload_at, small=small, label="quadratic control")
+        _assert_failed_as_super_linear(fn, payload_at, small, "quadratic control")
 
     @pytest.mark.parametrize("fixed", [1000, 2000, 3000])
     def test_a_fixed_cost_does_not_hide_a_quadratic(self, fixed):
         """The review's reproduction. 2000 and 3000 passed 3/3 before."""
-        from tests.wallclock import assert_linear_growth
-
-        with pytest.raises(AssertionError, match="is the usual cause"):
-            assert_linear_growth(
-                _fixed_then_quadratic(fixed),
-                lambda n: n,
-                small=2,
-                label=f"quadratic after {fixed} fixed iterations",
-            )
+        _assert_failed_as_super_linear(
+            _fixed_then_quadratic(fixed),
+            lambda n: n,
+            2,
+            f"quadratic after {fixed} fixed iterations",
+        )
 
     @pytest.mark.parametrize("fixed", [1000, 2000, 3000])
     def test_the_same_fixed_cost_on_a_linear_passes(self, fixed):
