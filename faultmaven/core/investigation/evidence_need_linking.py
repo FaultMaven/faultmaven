@@ -297,8 +297,9 @@ def _ask_text(follow_up: Any) -> str:
 
 
 #: Turn-metadata flags whose branches REPLACE ``follow_ups`` wholesale further
-#: down ``_process_turn_impl``. An ask on one of these turns is never rendered,
-#: so it must not be recorded — see ``suggestions_are_engine_replaced``.
+#: down the turn path, in ``_compose_turn_reply`` (``milestone_engine/
+#: turn_completion.py``). An ask on one of these turns is never rendered, so it
+#: must not be recorded — see ``suggestions_are_engine_replaced``.
 _REPLACEMENT_METADATA_FLAGS = (
     "resolution_ready_for_confirmation",
     "resolution_suggest_close",
@@ -328,10 +329,11 @@ def suggestions_are_engine_replaced(
     request precisely because it kept being suppressed.
 
     NOT conservative by construction — the drift runs the unsafe way. This is a
-    hand-maintained mirror of ``_process_turn_impl``: a renamed flag is caught by
-    a test, but a NEW replacement branch keyed on a new flag is not, and its
-    effect is OVER-recording (decaying asks the user never saw). Any change to
-    the suggestion-replacement branches has to be reflected here.
+    hand-maintained mirror of ``_compose_turn_reply``'s replacement branches: a
+    renamed flag is caught by a test, but a NEW replacement branch keyed on a new
+    flag is not, and its effect is OVER-recording (decaying asks the user never
+    saw). Any change to the suggestion-replacement branches has to be reflected
+    here.
     """
     if case.is_terminal or case.state != CaseState.INVESTIGATING:
         # Terminal turns carry engine-owned regen/runbook cards. INQUIRY is

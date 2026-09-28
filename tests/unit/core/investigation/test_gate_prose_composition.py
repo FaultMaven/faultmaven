@@ -24,7 +24,6 @@ Contract pinned here:
 import inspect
 import re
 
-from faultmaven.core.investigation.milestone_engine import engine as milestone_engine
 from faultmaven.core.investigation.milestone_engine.response_synthesis import (
     _prose_with_gate_notice,
 )
@@ -63,7 +62,14 @@ class TestOverrideBranchesUseComposer:
     """
 
     def _impl_source(self):
-        return inspect.getsource(milestone_engine.MilestoneEngine._process_turn_impl)
+        # #1707 wave 3 step B: the gate override branches live in
+        # ``_compose_turn_reply``, now a module function of
+        # turn_completion.py rather than a method of the engine class.
+        from faultmaven.core.investigation.milestone_engine.turn_completion import (
+            _compose_turn_reply,
+        )
+
+        return inspect.getsource(_compose_turn_reply)
 
     def test_all_gate_branches_route_prose_through_composer(self):
         src = self._impl_source()

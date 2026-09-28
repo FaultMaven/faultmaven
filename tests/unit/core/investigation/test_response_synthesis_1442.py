@@ -20,7 +20,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import engine as me
+from faultmaven.core.investigation.milestone_engine.cause_state import (
+    _gate1_statement_presentation,
+)
 from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.response_synthesis import (
@@ -32,9 +34,15 @@ from faultmaven.core.investigation.milestone_engine.response_synthesis import (
     schema_answer_stop_reason,
     synthesized_agent_response,
 )
+from faultmaven.core.investigation.milestone_engine.stage_gates import (
+    _close_confirmation_suggestions,
+)
 from faultmaven.core.investigation.milestone_engine.structured_output import (
     _parse_text_as_schema,
     _synthesize_agent_response,
+)
+from faultmaven.core.investigation.milestone_engine.terminal_replies import (
+    _build_resolution_confirmation,
 )
 from faultmaven.core.investigation.schemas import BaseInteractionResponse
 from faultmaven.infrastructure.llm.providers.base import (
@@ -288,7 +296,7 @@ def test_the_text_recovery_path_still_rejects_an_empty_answer():
 def test_the_flag_reader_is_strict_about_mocks():
     """A test double's attributes are truthy Mocks; none may read as synthesized."""
     assert is_agent_response_synthesized(MagicMock()) is False
-    assert me.is_agent_response_synthesized(object()) is False
+    assert is_agent_response_synthesized(object()) is False
 
 
 # ---------------------------------------------------------------------------
@@ -526,7 +534,18 @@ async def test_a_blank_schema_tool_answer_is_named_by_the_engine(site):
             ]
         )
         engine.generator.build_tool_context = AsyncMock(return_value=MagicMock())
-        route = patch.object(me, "_route_toolless_turn_single_shot", return_value=False)
+        # #1707 wave 3 step B: the reader moved to turn_generation.py's
+        # ``_generate_turn_response`` (a module function now, not a method
+        # of the engine), so the patch target moves with it.
+        from faultmaven.core.investigation.milestone_engine import (
+            turn_generation as _turn_generation_module,
+        )
+
+        route = patch.object(
+            _turn_generation_module,
+            "_route_toolless_turn_single_shot",
+            return_value=False,
+        )
 
     case = _case(absence=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE)
     with route:
@@ -571,7 +590,7 @@ GATE_SITES = [
 def _force_branch(site, case, md, engine):
     """Stand in for what ``_process_response_structured`` records on a turn
     that selects *site*. Returns a replacement case where the branch needs one."""
-    suggestions = me._close_confirmation_suggestions()
+    suggestions = _close_confirmation_suggestions()
     if site == "resolution_ready_for_confirmation":
         md[site] = True
     elif site == "resolution_suggest_close":
@@ -631,6 +650,9 @@ async def test_engine_prose_on_a_placeholder_turn_is_the_whole_reply(site):
     """
     from unittest.mock import patch
 
+    from faultmaven.core.investigation.milestone_engine import (
+        turn_completion as _turn_completion_module,
+    )
     from faultmaven.core.investigation.prompts.context_builder import history as cb
     from faultmaven.core.investigation.prompts.fence import PromptFence, mint_token
     from faultmaven.core.investigation.schemas import InquiryResponse
@@ -665,10 +687,19 @@ async def test_engine_prose_on_a_placeholder_turn_is_the_whole_reply(site):
         return (replaced or case_updated), md
 
     engine.responses.process_response_structured = _apply_then_select
+    # #1707 wave 3 step B: the reader moved to turn_completion.py's
+    # ``_compose_turn_reply`` (a module function now, not a method of the
+    # engine), so the patch target moves with it.
     detector = (
-        patch.object(me, "_narration_overclaim_notice", return_value=GATE_NOTICE)
+        patch.object(
+            _turn_completion_module,
+            "_narration_overclaim_notice",
+            return_value=GATE_NOTICE,
+        )
         if site == "inv40_overclaim"
-        else patch.object(me, "_narration_overclaim_notice", return_value=None)
+        else patch.object(
+            _turn_completion_module, "_narration_overclaim_notice", return_value=None
+        )
     )
     with detector:
         result = await engine.process_turn(case=case, user_message="and now?")
@@ -676,11 +707,11 @@ async def test_engine_prose_on_a_placeholder_turn_is_the_whole_reply(site):
     reply = result["agent_response"]
     case_updated = result["case_updated"]
     if site == "gate1":
-        expected = me._gate1_statement_presentation(case_updated)
+        expected = _gate1_statement_presentation(case_updated)
     elif site == "resolution_ready_for_confirmation":
         expected = (
             "Thanks for the additional details.\n\n"
-            + me._build_resolution_confirmation(case_updated)
+            + _build_resolution_confirmation(case_updated)
         )
     else:
         expected = GATE_NOTICE

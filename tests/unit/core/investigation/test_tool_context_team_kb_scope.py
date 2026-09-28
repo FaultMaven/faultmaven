@@ -208,10 +208,16 @@ def _module_source(module) -> str:
     return inspect.getsource(module)
 
 
-def _call_sites(module, attr_path: tuple[str, ...]) -> list[ast.Call]:
-    """Every ``ast.Call`` in ``module`` whose callee is ``attr_path``."""
+def _call_sites(module, attr_suffix: tuple[str, ...]) -> list[ast.Call]:
+    """Every ``ast.Call`` in ``module`` whose callee ENDS in ``attr_suffix``.
+
+    A suffix match, not an exact one: #1707 wave 3 step B moved
+    ``build_tool_context``'s caller out as a module function, where the
+    collaborator arrives as a bare parameter (``generator.build_tool_context``)
+    rather than through ``self`` (``self.generator.build_tool_context``, still
+    the shape at the surviving method call sites). Both name the same call.
+    """
     tree = ast.parse(_module_source(module))
-    wanted = ".".join(attr_path)
     found = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -222,7 +228,8 @@ def _call_sites(module, attr_path: tuple[str, ...]) -> list[ast.Call]:
             cur = cur.value
         if isinstance(cur, ast.Name):
             parts.append(cur.id)
-        if ".".join(reversed(parts)) == wanted:
+        callee = tuple(reversed(parts))
+        if callee[-len(attr_suffix) :] == attr_suffix:
             found.append(node)
     return found
 
@@ -236,12 +243,16 @@ def test_the_principal_reaches_every_tool_context_build():
 
     #1707: the method moved to ``StructuredOutputGenerator`` and lost its
     leading underscore (called from outside the collaborator), so every call
-    site is now two hops — ``self.generator.build_tool_context`` — rather than
-    one.
+    site is now two hops — ``generator.build_tool_context`` — rather than
+    one. Wave 3 step B moved one such caller (``_generate_turn_response``)
+    out of the engine class as a module function, where the collaborator
+    arrives as the bare parameter ``generator`` rather than ``self.generator``
+    — ``_call_sites`` matches the ``("generator", "build_tool_context")``
+    suffix so both shapes count as the same call.
     """
     from faultmaven.core.investigation import milestone_engine
 
-    calls = _call_sites(milestone_engine, ("self", "generator", "build_tool_context"))
+    calls = _call_sites(milestone_engine, ("generator", "build_tool_context"))
     assert calls, "no build_tool_context call sites found — did it get renamed?"
     for call in calls:
         assert any(kw.arg == "user_id" for kw in call.keywords), (

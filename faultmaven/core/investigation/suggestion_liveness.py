@@ -171,8 +171,9 @@ CLARIFICATION_CARRY_TURNS = 3
 #: comment used to claim it did — "the engine appends ``turn_history`` at its
 #: Step 6 and saves at Step 7, so a row committed by a save whose final
 #: assignment never ran carries turn N in the persisted counter and a stamp of
-#: N-1, which is out of window on the retry turn". Measured: two saves inside
-#: ``_process_turn_impl`` run BEFORE the turn is recorded (both "persist
+#: N-1, which is out of window on the retry turn". Measured: two saves on the
+#: transition turn path (``milestone_engine/transition_turns.py``) run BEFORE
+#: the turn is recorded (both "persist
 #: terminal state before synthesis", ahead of ``_finish_deterministic_turn``),
 #: so such a row carries N-1 in the persisted counter AND a stamp of N-1. The
 #: retry asks at N, the age is exactly 1, and the follow-up is inside this

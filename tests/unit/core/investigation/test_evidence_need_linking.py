@@ -477,16 +477,22 @@ class TestEngineWiring:
     before ``_flatten_follow_ups`` (or the wire response ships the nulls this
     whole change exists to stop). A reorder breaks the fix while every
     unit test above still passes, so the order is pinned here.
+
+    #1707 wave 3 split ``_process_turn_impl`` into phase methods
+    (``_apply_turn_response`` now holds the terminal sweep and the linker;
+    ``_persist_turn`` holds the save and the flattening). The order these
+    tests pin spans both, so they read it from
+    ``reinlined_process_turn_impl_source()`` — an AST inline of the phases
+    back into the owner's body, not a concatenation of the two methods'
+    sources, which would not reflect how they actually interleave.
     """
 
     def _source(self):
-        import inspect
-
-        from faultmaven.core.investigation.milestone_engine.engine import (
-            MilestoneEngine,
+        from tests.unit.core.investigation.turn_path_reinline import (
+            reinlined_process_turn_impl_source,
         )
 
-        return inspect.getsource(MilestoneEngine._process_turn_impl)
+        return reinlined_process_turn_impl_source()
 
     def test_turn_path_calls_the_linker(self):
         assert "link_evidence_suggestions_to_needs(" in self._source(), (
@@ -496,9 +502,11 @@ class TestEngineWiring:
         )
 
     def test_linking_runs_before_the_save(self):
+        # #1707 wave 3 step B: ``repository`` is now a direct parameter of
+        # ``_persist_turn``, not ``self.deps.repository``.
         src = self._source()
         assert src.index("link_evidence_suggestions_to_needs(") < src.index(
-            "await self.deps.repository.save(case_updated)"
+            "await repository.save(case_updated)"
         ), "linking must precede save() or created needs and the ask history are lost"
 
     def test_linking_runs_before_flattening(self):
@@ -878,21 +886,21 @@ class TestAsksTheUserNeverSeesAreNotRecorded:
         )
 
     def test_every_replacement_flag_is_read_somewhere_in_the_turn_path(self):
-        """The flag list is a hand-maintained mirror of ``_process_turn_impl``.
+        """The flag list is a hand-maintained mirror of ``_compose_turn_reply``.
         If a name drifts, the guard silently stops covering that branch."""
         import inspect
 
         from faultmaven.core.investigation.evidence_need_linking import (
             _REPLACEMENT_METADATA_FLAGS,
         )
-        from faultmaven.core.investigation.milestone_engine.engine import (
-            MilestoneEngine,
+        from faultmaven.core.investigation.milestone_engine.turn_completion import (
+            _compose_turn_reply,
         )
 
-        src = inspect.getsource(MilestoneEngine._process_turn_impl)
+        src = inspect.getsource(_compose_turn_reply)
         for flag in _REPLACEMENT_METADATA_FLAGS:
             assert f'"{flag}"' in src, (
-                f"{flag} is no longer read in _process_turn_impl — the "
+                f"{flag} is no longer read in _compose_turn_reply — the "
                 "replacement guard is out of step with the branches it mirrors"
             )
 
@@ -1075,11 +1083,14 @@ class TestSweepIsWiredBeforeLinking:
     def _source(self):
         import inspect
 
-        from faultmaven.core.investigation.milestone_engine.engine import (
-            MilestoneEngine,
+        # #1707 wave 3 step B: the sweep and the linker both live in
+        # ``_apply_turn_response``, now a module function of
+        # turn_application.py rather than a method of the engine class.
+        from faultmaven.core.investigation.milestone_engine.turn_application import (
+            _apply_turn_response,
         )
 
-        return inspect.getsource(MilestoneEngine._process_turn_impl)
+        return inspect.getsource(_apply_turn_response)
 
     def test_turn_path_sweeps_inferred_needs(self):
         assert "sweep_silent_inferred_needs(" in self._source()
@@ -1093,9 +1104,19 @@ class TestSweepIsWiredBeforeLinking:
         )
 
     def test_sweep_runs_before_the_save(self):
-        src = self._source()
+        # #1707 wave 3: the save now lives in the phase ``_persist_turn``,
+        # split off after ``_apply_turn_response`` (which holds the sweep) —
+        # an order question spanning two phases, answered from the AST
+        # re-inline rather than either phase's own source.
+        from tests.unit.core.investigation.turn_path_reinline import (
+            reinlined_process_turn_impl_source,
+        )
+
+        # #1707 wave 3 step B: ``repository`` is now a direct parameter of
+        # ``_persist_turn``, not ``self.deps.repository``.
+        src = reinlined_process_turn_impl_source()
         assert src.index("sweep_silent_inferred_needs(") < src.index(
-            "await self.deps.repository.save(case_updated)"
+            "await repository.save(case_updated)"
         )
 
 
@@ -1109,11 +1130,14 @@ class TestGuardCallIsPinned:
     def test_turn_path_consults_the_replacement_guard(self):
         import inspect
 
-        from faultmaven.core.investigation.milestone_engine.engine import (
-            MilestoneEngine,
+        # #1707 wave 3 step B: the guard is consulted in
+        # ``_apply_turn_response``, now a module function of
+        # turn_application.py rather than a method of the engine class.
+        from faultmaven.core.investigation.milestone_engine.turn_application import (
+            _apply_turn_response,
         )
 
-        src = inspect.getsource(MilestoneEngine._process_turn_impl)
+        src = inspect.getsource(_apply_turn_response)
         assert "suggestions_are_engine_replaced(" in src, (
             "the replacement guard is no longer consulted — EVIDENCE asks on "
             "gate and resolution turns are being recorded despite never being "
@@ -1123,11 +1147,11 @@ class TestGuardCallIsPinned:
     def test_guard_is_consulted_before_linking(self):
         import inspect
 
-        from faultmaven.core.investigation.milestone_engine.engine import (
-            MilestoneEngine,
+        from faultmaven.core.investigation.milestone_engine.turn_application import (
+            _apply_turn_response,
         )
 
-        src = inspect.getsource(MilestoneEngine._process_turn_impl)
+        src = inspect.getsource(_apply_turn_response)
         assert src.index("suggestions_are_engine_replaced(") < src.index(
             "link_evidence_suggestions_to_needs("
         )
