@@ -534,6 +534,20 @@ commits with its context intact; the owning agent reads CI once per pull
 request, in the background, and never waits in the foreground for
 anything a lane or a runner is doing.
 
+**Nothing is done twice.** Every step leaves a record that a later step, or
+a re-entry after a session dies, reads instead of redoing: the plan on the
+issue, and on the pull request a `## Review — <head>` comment per review
+round and the `## Merge-ready — <head>` comment. A delta review reads only
+what is new since the last reviewed head — the head's diff against that head
+plus the `main` it now contains, which shows every fix, resolution, foreign
+merge or rewrite and nothing `main` brought in — since the rest has not
+changed since it was read. A review round's fixes go back as one push, so CI
+runs once per round, not once per finding. And `main` is merged in as the
+lane returns, so verification, review and CI all see the code as it will
+merge, and the merge-ready step merges again only if `main` moved.
+Thoroughness is kept by reading everything once at the level it needs; speed
+comes from never reading the same unchanged thing twice.
+
 **Lanes run on two tiers, and only the lowest-risk work moves down.**
 Every lane carries a plan, so the tier measures what can go wrong in
 carrying it out, not how hard the item is to understand. A change on one

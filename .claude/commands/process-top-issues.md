@@ -701,9 +701,9 @@ merged is *reported* as merged rather than re-reviewed, because a review
 after the merge changes nothing and the worktree it was built in may be
 gone. It still gets its row, which is what the next settlement reads.
 
-**Investigate and plan each approved item yourself, before any lane is
-spent on it.** Trace it to its root on `origin/main` fetched now, and write
-the plan:
+**Investigate and plan each approved item yourself, before any lane is spent
+on it.** Trace it to its root on `origin/main` fetched now, starting from
+what the proposal's premise check already read, and write the plan:
 
 - the root, with the code points that show it;
 - the change, at the code points it touches, and what is out of scope;
@@ -839,12 +839,20 @@ re-entry into this step will not re-dispatch it, whatever the proposal and
 the head still say, because the dispatch rule above reads the label. Do not
 ask the owner mid-round and do not guess.
 
-Then per returned lane, in order:
+Then per returned lane, in order. **Nothing here is done twice.** Each step
+leaves a record a later step or a re-entry reads instead of redoing it: the
+plan on the issue, and on the pull request a `## Review — <head>` comment
+per review round and the `## Merge-ready — <head>` comment. Bring the head
+up to `origin/main` as the lane returns — merged in by you when it applies
+cleanly, a conflict resolved by the lane from your plan — before
+verification, so verification, the first review and CI all see the code as
+it will merge; step 4 merges again only if `main` has moved since.
 
-1. **Verify.** Re-run the lane's test command yourself from its worktree and
-   confirm the output matches what was reported. Confirm `git status` was
-   clean or every leftover file is named — and that the work is actually on
-   the pull request, not only on disk:
+1. **Verify.** Re-run the lane's test command yourself from its worktree — the
+   focused command, once per head; CI runs the suite — and confirm the output
+   matches what was reported. Confirm `git status` was clean or every leftover
+   file is named — and that the work is actually on the pull request, not only
+   on disk:
 
    ```bash
    git -C <worktree> rev-parse --short HEAD @{u}      # must agree
@@ -864,13 +872,20 @@ Then per returned lane, in order:
 2. **Review.** Run `/code-review xhigh <n>` on the pull request's final head —
    never a bare call, which reuses whatever level was typed last, and never
    lower for a `sonnet` lane, whose author is the weaker one. The verdict on
-   every finding is yours, reached by running it. An on-seam defect gets a fix
-   plan from you and goes back to the lane for one fix commit — to a `full`
+   every finding is yours, reached by running it. A round's on-seam defects go
+   back together — one fix plan from you, one fix commit, one push, so CI runs
+   once per round rather than once per finding — to the lane, or to a `full`
    lane, as the item's second, if this one is `sonnet`, with the fix plan
    posted as a revision. A design call is never a mid-round interruption: if
    the change depends on its answer, pull the item; otherwise file it, like an
    off-seam defect, as a new issue carrying `Found while working on #<n>`, and
-   step 2 places it — in *Needs your call* when it trips *What escalates*.
+   step 2 places it — in *Needs your call* when it trips *What escalates*. Post
+   the round's verdict on the pull request as `## Review — <head>`: each
+   finding and what became of it. A re-entry that finds one naming the current
+   head resumes from its verdict rather than verifying or reviewing again: a
+   clean one goes on to *Merge-ready*, and open on-seam defects go back to a
+   lane as above. One naming an earlier head takes a delta review of what came
+   after it.
 
    **If the pull request ships a guard, the brief is to defeat the guard** —
    what can be re-introduced without it noticing, in the shapes this codebase
@@ -878,30 +893,48 @@ Then per returned lane, in order:
    guard's answer on the current tree is a different activity and does not
    substitute: four rounds running the defect was in the guard the pull
    request installed, and every time it had already passed that check.
-3. **Delta.** Re-review the new head. A finding surviving two rounds is
-   escalated, not iterated — unless it **blocks the merge**, in which case it
-   goes back for as many rounds as the lane can clear it in, because escalating
-   it would hand the owner a pull request you know is broken. **If the lane
-   cannot clear it — for any reason, not only a ruling — pull it**: close the
-   pull request — or, on a shared one, apply the lane paragraph's rule — record
-   on the issue either the question or that the lane could not clear it, return
-   the item to the blocked pile (the two label edits, as in the pull above),
-   and give it a result row with outcome `pulled`, which is what keeps the next
-   round's settlement from reading your close as the owner's abandonment. That
-   is the loop's only other exit, and without it the round cannot reach step 5
-   at all. Blocking means the change is worse than the bug it fixes for someone
-   who has not hit it. Say in the result how many findings you filed rather
-   than fixed.
-4. **Merge-ready.** Bring the head up to `origin/main` fetched now. One that
-   does not contain it (`git merge-base --is-ancestor origin/main <head>`
-   fails) gets `main` merged in — by you when it applies cleanly, which changes
-   nothing in the diff review read, after which you re-run the plan's consumer
-   and N-count searches on the merged head, because what `main` brought in can
-   read what the diff changed; a conflict's resolution is code, and goes
-   through *Review*'s fix path above. Then read CI, started in the background
-   when the review ends and never polled in the foreground: every required
-   context on the head must read `SUCCESS` or `SKIPPED`, and `ci_verdict` from
-   *Building* compares the head with its merge base.
+3. **Delta.** Review only what is new since the last `## Review` head: the
+   current head's diff against what that head plus the `main` it now contains
+   would be. Clean merges of `main` and empty commits show nothing; fix
+   commits, a conflict's resolution, a merge of any other branch and a
+   rewritten history all show, and are read at the same level — the rest has
+   not changed since it was read, and the fix commits are where review
+   responses breed defects. An empty diff is a clean delta:
+
+   ```bash
+   git fetch -q origin main
+   git cat-file -e "<reviewed>^{commit}" 2>/dev/null || { echo "reviewed head not found: review the pull request whole"; exit 1; }
+   m=$(git merge-base <head> origin/main) || { echo "error: no merge base with main"; exit 1; }
+   out=$(git merge-tree --write-tree <reviewed> "$m"); [ $? -le 1 ] || { echo "error: merge-tree failed"; exit 1; }
+   git diff "$(printf '%s\n' "$out" | head -1)" <head> || { echo "error: diff failed"; exit 1; }
+   ```
+
+   Never take the delta from the *vouched head* test: that loop is a gate that
+   stops at the first commit it rejects, not a list of what changed. A finding
+   surviving two rounds is escalated, not iterated — unless it **blocks the
+   merge**, in which case it goes back for as many rounds as the lane can clear
+   it in, because escalating it would hand the owner a pull request you know is
+   broken. **If the lane cannot clear it — for any reason, not only a ruling —
+   pull it**: close the pull request — or, on a shared one, apply the lane
+   paragraph's rule — record on the issue either the question or that the lane
+   could not clear it, return the item to the blocked pile (the two label
+   edits, as in the pull above), and give it a result row with outcome
+   `pulled`, which is what keeps the next round's settlement from reading your
+   close as the owner's abandonment. That is the loop's only other exit, and
+   without it the round cannot reach step 5 at all. Blocking means the change
+   is worse than the bug it fixes for someone who has not hit it. Say in the
+   result how many findings you filed rather than fixed.
+4. **Merge-ready.** If `main` has moved since the head was brought up to date,
+   bring it up again to `origin/main` fetched now. One that does not contain it
+   (`git merge-base --is-ancestor origin/main <head>` fails) gets `main` merged
+   in — by you when it applies cleanly, which changes nothing in the diff
+   review read, after which you re-run the plan's consumer and N-count searches
+   on the merged head, because what `main` brought in can read what the diff
+   changed; a conflict's resolution is code, and goes through *Review*'s fix
+   path above. Then read CI, started in the background when the review ends and
+   never polled in the foreground: every required context on the head must read
+   `SUCCESS` or `SKIPPED`, and `ci_verdict` from *Building* compares the head
+   with its merge base.
 
    ```bash
    req=$(gh api repos/FaultMaven/faultmaven/rules/branches/main --jq \
@@ -914,7 +947,7 @@ Then per returned lane, in order:
 
    (`gh pr checks --json` does not exist here, and `gh --jq` takes no
    `--argjson`.) A regression CI finds is an on-seam defect: back through
-   *Review*'s fix path, and review again on the new head.
+   *Review*'s fix path, and a delta review of the fix.
 
    **Not every red is the lane's.** Where CI skipped the tests as docs-only,
    `ci_verdict` reads `skipped` on the head and there is nothing to compare:
