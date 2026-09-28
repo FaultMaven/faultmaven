@@ -1044,3 +1044,76 @@ class TestTheCompactRuleStaysCompact:
         rule = self._rule_text()
         assert "A line reading" not in rule
         assert 'Text reading "[fence: ...]"' in rule
+
+
+class TestTheShrinkSolveKeepsWhatFits:
+    """#1738: the shrink solve returned the one-character minimum on some
+    renders though a larger one fit. Two causes: a fresh fence token per
+    candidate render made the measured sizes disagree with the caps behind
+    them, and a guess aimed at the budget itself stalled on the step where the
+    size crosses it."""
+
+    def test_a_step_at_the_budget_does_not_stall_the_solve(self, monkeypatch):
+        """The sizes of the #1738 draw: the guess aimed at the budget measures
+        one token over, and so does every guess just below it. The solve must
+        still return a render inside the accepted band, not the minimum."""
+        import math
+
+        from faultmaven.core.investigation.prompts.templates import fallback
+
+        least, full, budget = 1211, 2433, 1850
+
+        def size(factor: float) -> int:
+            return least + 10 * math.ceil((full - least) / 10 * factor)
+
+        assert size((budget - least) / (full - least)) == budget + 1
+        monkeypatch.setattr(fallback, "_fallback_tokens", lambda p: size(float(p)))
+
+        prompt = fallback._largest_fit(
+            render=repr,
+            shrink=lambda caps, factor: factor,
+            caps=None,
+            budget=budget,
+            least_prompt="0.0",
+            least_size=least,
+            size=full,
+        )
+
+        assert prompt != "0.0", "the solve fell back to the minimum"
+        band = budget * (1 - fallback._FALLBACK_SOLVE_SLACK)
+        assert band <= size(float(prompt)) <= budget
+
+    def test_every_candidate_render_of_one_call_shares_one_token(self, monkeypatch):
+        """One token per call, used by every candidate render, so the sizes the
+        solve compares move with the caps alone. Only one candidate is emitted,
+        so the next call still mints a fresh token."""
+        from faultmaven.core.investigation.prompts.templates import fallback
+
+        minted: list[str] = []
+        renders = 0
+        real_render_fenced = fallback.render_fenced
+
+        def mint() -> str:
+            minted.append(f"fe{len(minted):04x}ed")
+            return minted[-1]
+
+        def counting_render_fenced(*args, **kwargs):
+            nonlocal renders
+            renders += 1
+            return real_render_fenced(*args, **kwargs)
+
+        monkeypatch.setattr(fallback, "mint_token", mint)
+        monkeypatch.setattr(fallback, "render_fenced", counting_render_fenced)
+
+        first = get_fallback_prompt_for_case(
+            _dense_case(_LOG_DENSE), _fill(_LOG_DENSE, 4000)
+        )
+        assert renders > 2, "the dense case must go through the solve"
+        assert minted == ["fe0000ed"]
+        assert 'fence="fe0000ed"' in first
+
+        second = get_fallback_prompt_for_case(
+            _dense_case(_LOG_DENSE), _fill(_LOG_DENSE, 4000)
+        )
+        assert minted == ["fe0000ed", "fe0001ed"]
+        assert 'fence="fe0001ed"' in second and "fe0000ed" not in second

@@ -178,7 +178,10 @@ of timestamps and ids, or CJK, can take several times it. So
 ``templates.get_fallback_prompt_for_case`` measures the render and shrinks one
 over budget: the quoted case context first, the user's message only if the
 context at its minimum still does not fit, and never the notice's cap. Every
-candidate is measured, so the result fits whenever the minimal render does.
+candidate is measured, so the result fits whenever the minimal render does. The
+candidates of one call share that call's token (each still verified, and
+re-minted alone on a collision), so the sizes the solve compares move with the
+caps and not with the token; only one candidate is emitted.
 
 The measure is ``templates._fallback_tokens``: tiktoken's ``cl100k_base`` when
 it loads, the UTF-8 byte count when it does not. It never understates, which
