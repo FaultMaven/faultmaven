@@ -350,18 +350,26 @@ _VERDICT = r"(?:Failed|Accepted|Partial|Postponed)"
 # Exactly one ``invalid user `` is sshd's — ``for invalid user invalid user
 # root`` is the name ``invalid user root`` — and it is possessive: sshd writes
 # it only before an invalid name, so a reading without it is never needed.
+# The ``invalid`` group records it: a lead WITHOUT it names an existing
+# account (``_account_name``).
 #   auth.c ``auth_log``: ``<verdict> <method> for [invalid user ]<name>``;
-_VERDICT_USER_LEAD = _VERDICT + r"\s+\S+\s+for\s(?:invalid user\s)?+"
+_VERDICT_USER_LEAD = _VERDICT + r"\s+\S+\s+for\s(?P<invalid>invalid user\s)?+"
 #   auth.c ``auth_maxtries_exceeded``;
 _MAXTRIES_LEAD = r"maximum authentication attempts exceeded"
-_MAXTRIES_USER_LEAD = _MAXTRIES_LEAD + r"\s+for\s(?:invalid user\s)?+"
+_MAXTRIES_USER_LEAD = _MAXTRIES_LEAD + r"\s+for\s(?P<invalid>invalid user\s)?+"
 #   auth.c ``getpwnamallow``: ``Invalid user <name> from <ip>``;
 _GETPWNAM_USER_LEAD = r"Invalid user\s"
 #   packet.c ``sshpkt_fmt_connection_id``: the log preamble auth2.c sets,
 #   ``invalid user <name>``, ``authenticating user <name>`` or, once
 #   authenticated, ``user <name>``. Only where it is present: before the
 #   preamble is set the id is the bare ``<ip> port <n>``, with no name slot.
-_PACKET_USER_PREFIX = r"\s+(?:(?:invalid|authenticating)\s+user|user)\s"
+_PACKET_USER_PREFIX = r"\s+(?:(?P<invalid>invalid)\s+user|authenticating\s+user|user)\s"
+# sshd writes a login name with ``%.100s``, so a slot longer than that holds
+# more than the name. It is cut there, and the cut is marked, so the rendered
+# list and the registry's column stay bounded; no genuine name is ever cut.
+_MAX_NAME_CHARS = 100
+# An existing account's name has no whitespace (``_account_name``).
+_ACCOUNT_TOKEN_RE = re.compile(r"\S+")
 _PACKET_ENDING_LEAD = (
     r"(?:[\w-]+:\s+)?(?:Connection (?:closed|reset) by|Disconnected from"
     r"|Timeout, client not responding from)"
@@ -378,8 +386,9 @@ def _slot_pattern(user_lead: str, slot_and_tail: str, *, lazy: bool) -> re.Patte
     The user group runs from the lead to the slot, greedy for the rightmost
     slot, lazy for the leftmost. It parses only a message whose anchored user
     lead has already matched (``_slot``); every other message is parsed with
-    the pre-fm#1668 ``.*<slot><tail>``, so each line gets exactly one parse
-    and a hostile line never pays for two.
+    the pre-fm#1668 ``.*<slot><tail>``. The one message parsed with both is
+    a lead-matched one the name reading finds no slot in, and both parses
+    are linear.
     """
     run = ".*?" if lazy else ".*"
     return re.compile(rf"{user_lead}(?P<user>{run})" + slot_and_tail, re.IGNORECASE)
@@ -392,9 +401,12 @@ class _SlotShape:
     ``rightmost``/``leftmost`` are the pre-fm#1668 readings, ``.*`` then the
     slot; ``user_rightmost``/``user_leftmost`` read the same slot behind
     ``user_lead``, with the login name between. A message that opens with
-    ``user_lead`` carries sshd's user slot and is read with the latter only.
+    ``user_lead`` carries sshd's user slot and is read with the latter; only
+    where they find no slot does the former decide its address.
     A ``*_leftmost`` is None where no client text follows the slot, and then
     the rightmost slot is the answer; otherwise the two must agree.
+    ``account_lead`` is True where a ``user_lead`` without ``invalid user ``
+    names an existing account; getpwnamallow's lead names only invalid ones.
     """
 
     lead: "re.Pattern[str]"
@@ -403,6 +415,7 @@ class _SlotShape:
     user_lead: "re.Pattern[str]"
     user_rightmost: "re.Pattern[str]"
     user_leftmost: "re.Pattern[str] | None"
+    account_lead: bool
 
 
 def _shape(
@@ -412,6 +425,7 @@ def _shape(
     *,
     agree: bool,
     lead_flags: int = re.IGNORECASE,
+    account_lead: bool = True,
 ) -> _SlotShape:
     return _SlotShape(
         re.compile(lead, lead_flags),
@@ -420,6 +434,7 @@ def _shape(
         re.compile(user_lead, re.IGNORECASE),
         _slot_pattern(user_lead, slot_and_tail, lazy=False),
         _slot_pattern(user_lead, slot_and_tail, lazy=True) if agree else None,
+        account_lead,
     )
 
 
@@ -449,6 +464,7 @@ _SLOT_SHAPES: tuple[_SlotShape, ...] = (
         r"\sfrom\s+(?P<addr>\S+)(?:\s+port\s+\d+)?" + _ANY_TAIL,
         agree=False,
         lead_flags=0,
+        account_lead=False,
     ),
     # packet.c ``sshpkt_fmt_connection_id`` leads that end at the slot ...
     _shape(
@@ -474,36 +490,85 @@ _PAM_RHOST_RE = re.compile(r"(?:^|\s)rhost=(?P<addr>\S*)")
 
 
 def _slot(message: str) -> tuple[str | None, bool, str | None]:
-    """``(address, user_slot, user)`` from one parse of ``message``.
+    """``(address, user_slot, user)`` for ``message``.
 
     ``user_slot`` is whether the message opens with its shape's user lead,
-    and it picks the one pattern the message is parsed with: the name reading
-    behind the lead, or the pre-fm#1668 reading.
-    ``user`` is the text between that lead and the address slot when the
-    slot is DECIDED — the rightmost parse, agreed on by the leftmost where
-    the shape has one — and None when the slot is undecided, the name is
-    empty (``Invalid user  from …``), or the message is too long to parse.
+    and it picks the pattern the message is parsed with: the name reading
+    behind the lead, or the pre-fm#1668 reading. ``user`` is the text between
+    that lead and the address slot when the slot is DECIDED — the rightmost
+    parse, agreed on by the leftmost where the shape has one — cut at
+    ``_MAX_NAME_CHARS``. When it is not decided, or the name is empty
+    (``Invalid user  from …``), or the message is too long to parse, ``user``
+    is an existing account's name where the lead says there is one
+    (``_account_name``), and None otherwise.
+
+    When the lead matched but the name reading finds no slot at all, the
+    pre-fm#1668 reading still decides the address: a single-spaced empty name
+    (``Invalid user from 1.2.3.4``) spends its one space as both the lead's
+    and the slot's, and ``main`` credited that address. That second parse
+    runs only on such a line, and both are linear.
     """
     for shape in _SLOT_SHAPES:
         if not shape.lead.match(message):
             continue
-        user_slot = bool(shape.user_lead.match(message))
+        lead = shape.user_lead.match(message)
         if len(message) > _MAX_ADDRESS_PARSE_CHARS:
-            return None, user_slot, None
-        if user_slot:
-            right, left = shape.user_rightmost, shape.user_leftmost
-        else:
-            right, left = shape.rightmost, shape.leftmost
-        rightmost = right.match(message)
+            return None, lead is not None, _account_name(shape, lead, message)
+        if lead is None:
+            return (
+                _decided_address(message, shape.rightmost, shape.leftmost),
+                False,
+                None,
+            )
+        rightmost = shape.user_rightmost.match(message)
         if rightmost is None:
-            return None, user_slot, None
-        if left is not None:
-            leftmost = left.match(message)
+            address = _decided_address(message, shape.rightmost, shape.leftmost)
+            return address, True, _account_name(shape, lead, message)
+        if shape.user_leftmost is not None:
+            leftmost = shape.user_leftmost.match(message)
             if leftmost is None or leftmost.span("addr") != rightmost.span("addr"):
-                return None, user_slot, None
-        user = rightmost.group("user") if user_slot else None
-        return rightmost.group("addr"), user_slot, user or None
+                return None, True, _account_name(shape, lead, message)
+        return rightmost.group("addr"), True, _capped(rightmost.group("user")) or None
     return None, False, None
+
+
+def _decided_address(
+    message: str, right: "re.Pattern[str]", left: "re.Pattern[str] | None"
+) -> str | None:
+    """The rightmost slot's address, where the leftmost (if any) agrees."""
+    rightmost = right.match(message)
+    if rightmost is None:
+        return None
+    if left is not None:
+        leftmost = left.match(message)
+        if leftmost is None or leftmost.span("addr") != rightmost.span("addr"):
+            return None
+    return rightmost.group("addr")
+
+
+def _account_name(
+    shape: _SlotShape, lead: "re.Match[str] | None", message: str
+) -> str | None:
+    """The name behind a lead that names an existing account, when the slot
+    could not decide it.
+
+    A lead without ``invalid user `` — ``Accepted publickey for <name>``,
+    ``authenticating user <name>`` — names an account that exists, and an
+    account name has no whitespace, so the name is the first whitespace-free
+    token after the lead. An ``invalid user`` or getpwnamallow lead names the
+    client's choice, which can be anything, and stays undecided.
+    """
+    if lead is None or not shape.account_lead or lead.groupdict().get("invalid"):
+        return None
+    token = _ACCOUNT_TOKEN_RE.match(message, lead.end())
+    return _capped(token.group(0)) if token else None
+
+
+def _capped(name: str) -> str:
+    """``name``, cut at sshd's ``%.100s`` and marked when cut."""
+    if len(name) <= _MAX_NAME_CHARS:
+        return name
+    return name[:_MAX_NAME_CHARS] + "…"
 
 
 def _rhost_address(message: str) -> str | None:
@@ -526,10 +591,12 @@ class SshdAuthLine:
     when the line has no slot or more than one slot parses.
 
     ``user_slot`` is True when the message's shape carries sshd's user slot
-    (fm#1668), and ``user`` is that slot's text, verbatim, when the address
-    slot was decided — None when it was not, when the name is empty, or when
-    the message is too long to parse. Break-in and PAM readings have no user
-    slot.
+    (fm#1668), and ``user`` is that slot's text, verbatim up to sshd's 100
+    characters, when the address slot was decided. When it was not, when the
+    name is empty, or when the message is too long to parse, ``user`` is an
+    existing account's name where the lead names one (no ``invalid user``:
+    the first whitespace-free token after the lead), and None otherwise.
+    Break-in and PAM readings have no user slot.
 
     ``weight`` is how many occurrences the line stands for: N on rsyslog's
     ``message repeated N times: [ … ]`` wrapper (fm#1669), 1 otherwise.

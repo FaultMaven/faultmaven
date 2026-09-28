@@ -417,12 +417,12 @@ class TestTheSummaryPamFigureIsDecidedPerIp:
         """No outcome line anywhere: every PAM line is an attempt. As main."""
         assert "Dominant activity: pam auth failure (4)." in _summary(_FORMAT_B)
 
-    def test_a_keyboard_interactive_only_file_shows_no_pam_figure(self):
-        """Every PAM line accompanies an outcome line, though no outcome is a
-        ``failed_password``: the per-IP rule counts the outcomes, so the PAM
-        lines are not attempts, in the row or in the summary. (main showed
-        "Dominant activity: pam auth failure (5).", because it dropped PAM
-        only when some line was a ``Failed password``.)"""
+    def test_a_keyboard_interactive_only_file_keeps_its_pam_figure(self):
+        """A keyboard-interactive brute force: every PAM line beside a
+        ``Failed keyboard-interactive/pam`` outcome, which is in no category
+        the summary lists. The breakdown counts the outcomes as attempts; the
+        summary shows the PAM lines, because no ``failed_password`` line of
+        that IP shows them — its only auth signal. As main (review F4)."""
         ip = "203.0.113.7"
         lines = [
             line
@@ -438,11 +438,16 @@ class TestTheSummaryPamFigureIsDecidedPerIp:
         assert _rows(_text(lines)) == {
             ip: "pam_auth_failure=5, other_outcome=5 → auth total=5"
         }
-        assert "pam auth failure" not in _summary(lines), _summary(lines)
+        assert "Dominant activity: pam auth failure (5)." in _summary(lines), _summary(
+            lines
+        )
 
-    def test_an_uncredited_pam_line_counts_only_without_outcome_lines(self):
-        """A PAM line whose ``rhost`` is a PTR name is credited to no IP. It is
-        an attempt only where nothing in the file is an outcome line."""
+    def test_an_uncredited_pam_line_counts_unless_the_file_has_failed_password(
+        self,
+    ):
+        """A PAM line credited to no IP (its ``rhost`` is a PTR name, or empty)
+        is shown unless the file has a ``failed_password`` line — main's rule.
+        An outcome line of another kind does not hide it."""
         uncredited = (
             "Jun 14 15:20:01 combo sshd(pam_unix)[20000]: authentication failure;"
             " logname= uid=0 euid=0 tty=NODEVssh ruser= rhost=1.1.1.1.dyn.example"
@@ -451,6 +456,42 @@ class TestTheSummaryPamFigureIsDecidedPerIp:
             _FORMAT_B + [uncredited]
         )
         assert "pam auth failure (4)" in _summary(_FORMAT_A + _FORMAT_B + [uncredited])
+        accepted = (
+            "Jun 14 15:21:01 combo sshd[20001]: Accepted publickey for alice from"
+            " 10.0.0.5 port 22 ssh2: RSA SHA256:abc"
+        )
+        assert "Dominant activity: pam auth failure (1), accepted login (1)." in (
+            _summary([uncredited, accepted])
+        )
+
+    def test_sudo_pam_failures_beside_an_accepted_login(self):
+        """Review F1: IP-less PAM failures from another service stay in the
+        summary beside an sshd outcome line. main renders the same."""
+        lines = [
+            f"Dec 10 10:00:0{i} host sudo: pam_unix(sudo:auth): authentication"
+            " failure; logname= uid=1000 euid=0 tty=/dev/pts/0 ruser=bob rhost="
+            "  user=bob"
+            for i in range(5)
+        ] + [
+            "Dec 10 10:01:00 host sshd[99]: Accepted publickey for alice from"
+            " 10.0.0.5 port 22 ssh2: RSA SHA256:abc"
+        ]
+        assert (
+            "Dominant activity: pam auth failure (5), accepted login (1)."
+            in _summary(lines)
+        ), _summary(
+            lines
+        )
+
+    def test_the_pam_figure_is_keyword_only_without_a_default(self):
+        """No caller can erase the figure by leaving it out."""
+        import inspect
+
+        parameter = inspect.signature(LogsAndErrorsExtractor._build_summary).parameters[
+            "pam_summary_lines"
+        ]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameter.default is inspect.Parameter.empty
 
 
 # One attempt through a multi-step login: its ``Postponed``/``Partial`` lines

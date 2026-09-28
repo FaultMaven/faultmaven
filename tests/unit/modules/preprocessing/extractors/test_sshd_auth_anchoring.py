@@ -1279,6 +1279,126 @@ class TestTheUserSlot:
             label=f"sshd_auth._slot on {lead!r} + spaces",
         )
 
+    @pytest.mark.parametrize(
+        "message, user",
+        [
+            pytest.param(f"Invalid user from {SRC} port 22", None, id="getpwnamallow"),
+            pytest.param(
+                f"Failed password for invalid user from {SRC} port 22 ssh2",
+                None,
+                id="verdict-password",
+            ),
+            pytest.param(
+                f"Failed publickey for invalid user from {SRC} port 22 ssh2: RSA"
+                " SHA256:x",
+                None,
+                id="verdict-publickey",
+            ),
+            pytest.param(
+                "error: maximum authentication attempts exceeded for invalid user"
+                f" from {SRC} port 22 ssh2 [preauth]",
+                None,
+                id="maxtries",
+            ),
+            pytest.param(
+                f"Connection closed by invalid user {SRC} port 22 [preauth]",
+                None,
+                id="packet",
+            ),
+            pytest.param(
+                f"Disconnecting invalid user {SRC} port 22: Too many authentication"
+                " failures [preauth]",
+                None,
+                id="packet-reason",
+            ),
+            # A valid-user lead names an existing account: its first token
+            # (``_account_name``) — ``from`` here, as main's ``for`` branch
+            # read it. sshd never writes this line.
+            pytest.param(
+                f"Failed password for from {SRC} port 22 ssh2",
+                "from",
+                id="verdict-valid-user",
+            ),
+        ],
+    )
+    def test_a_single_spaced_empty_name_keeps_its_address(self, message, user):
+        """Review F2: the lead's one space is also the slot's, so the name
+        reading finds no slot. The pre-fm#1668 reading still credits the
+        address, as main did; the name is not read from the slot."""
+        reading = _reading(message)
+        assert (reading.user_slot, reading.address, reading.user) == (True, SRC, user)
+
+    @pytest.mark.parametrize(
+        "message, user",
+        [
+            # Review F5, as main: an undecided slot (a certificate's key id
+            # holds a second from-slot) ...
+            pytest.param(
+                f"Accepted publickey for alice from {SRC} port 22 ssh2: RSA-CERT ID"
+                f" from {VICTIM} port 1",
+                "alice",
+                id="undecided",
+            ),
+            # ... and a slot that does not parse (a syslog-escaped CR).
+            pytest.param(
+                f"Failed publickey for root from {SRC} port 22 ssh2#015",
+                "root",
+                id="no-slot-escaped-cr",
+            ),
+            pytest.param(
+                "Accepted publickey for alice user=alice", "alice", id="no-slot"
+            ),
+            # An ``invalid user`` or getpwnamallow lead names the client's
+            # choice, and stays undecided.
+            pytest.param(
+                f"Failed publickey for invalid user alice from {SRC} port 22 ssh2:"
+                f" RSA-CERT ID from {VICTIM} port 1",
+                None,
+                id="invalid-user-undecided",
+            ),
+            pytest.param("Invalid user alice", None, id="getpwnamallow-no-slot"),
+        ],
+    )
+    def test_an_existing_accounts_name_survives_an_undecided_slot(self, message, user):
+        """A lead without ``invalid user `` names an account that exists, and
+        an account name has no whitespace: its first token is the name."""
+        reading = _reading(message)
+        assert (reading.user_slot, reading.user) == (True, user)
+
+    def test_a_packet_account_prefix_names_its_account(self):
+        """packet.c's ``authenticating user`` / ``user`` preamble names an
+        existing account too; ``invalid user`` does not."""
+        assert sshd_auth._slot("Connection closed by authenticating user root x") == (
+            None,
+            True,
+            "root",
+        )
+        assert sshd_auth._slot("Connection closed by user root x") == (
+            None,
+            True,
+            "root",
+        )
+        assert sshd_auth._slot("Connection closed by invalid user root x") == (
+            None,
+            True,
+            None,
+        )
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            pytest.param(f"Invalid user {{name}} from {SRC} port 22", id="slot"),
+            pytest.param("Accepted publickey for {name} user=x", id="account-token"),
+        ],
+    )
+    def test_a_name_is_cut_at_sshds_100_characters(self, message):
+        """sshd writes a login name with ``%.100s``: anything longer holds more
+        than the name. It is cut there and the cut is marked."""
+        long = _reading(message.format(name="a" * 300))
+        assert long.user == "a" * 100 + "…"
+        exact = _reading(message.format(name="b" * 100))
+        assert exact.user == "b" * 100
+
     @pytest.mark.parametrize("shape", USER_SLOT_SHAPES)
     def test_the_address_is_the_one_the_name_came_from(self, shape):
         """One parse: a name holding a slot lookalike does not move the address."""

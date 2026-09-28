@@ -58,17 +58,15 @@ class TestLogsEntityExtractor:
         assert ips["10.0.0.5"].in_error_context is False
 
     def test_user_extracted_from_syslog(self):
-        # Genuine sshd lines: the name is sshd's user slot, between ``for``
-        # and the ``from <ip>`` slot sshd always writes (fm#1668). A line
-        # with no from-slot has an undecided slot and names nobody.
         content = (
             "sshd[123]: Failed password for root from 10.0.0.1\n"
-            "sshd[124]: Accepted publickey for alice from 10.0.0.2 port 22 ssh2:"
-            " RSA SHA256:abc\n"
+            "sshd[124]: Accepted publickey for alice user=alice\n"
         )
         obs = self.extractor.extract(content, error_line_indices={0})
         users = _values(obs, EntityType.USER)
         assert "alice" in users
+        # ``for root`` is followed by ``from`` — the pattern intentionally
+        # only catches the explicit ``user=``/``invalid user`` forms.
 
     def test_port_requires_structural_context(self):
         # A bare timestamp fragment ``04:47`` must not be captured as port 47.

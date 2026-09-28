@@ -30,11 +30,13 @@ phantom ``root`` — one per line a brute-force source wrote. Three cases:
    for [invalid user ]<name> from …``, ``Invalid user <name> from …``,
    ``maximum authentication attempts exceeded for …``, and packet.c's
    ``Connection closed by invalid user <name> <ip> port …`` family): the
-   name is the slot's text, verbatim, or nothing when the slot is
-   undecided. The line is never searched — an undecided slot is exactly the
-   case a search gets wrong — and the name is not filtered: a name no
-   account can have (spaces, a PTR record, a digit first) is itself what an
-   attack looks like, and it is reported as the client sent it.
+   name is the slot's text, verbatim (up to sshd's 100 characters). Where
+   the slot is undecided, a lead without ``invalid user `` still names an
+   existing account — its first whitespace-free token — and an ``invalid
+   user`` lead names nothing. The line is never searched — an undecided slot
+   is exactly the case a search gets wrong — and the name is not filtered: a
+   name no account can have (spaces, a PTR record, a digit first) is itself
+   what an attack looks like, and it is reported as the client sent it.
 2. **A read line with an event or an outcome but no user slot** (a PAM
    failure, ``session opened for user X``, a break-in warning):
    ``user=<name>`` / ``user <name>`` only, never ``for <name>`` — on a PAM
@@ -43,17 +45,20 @@ phantom ``root`` — one per line a brute-force source wrote. Three cases:
 3. **Every other line** — a format ``sshd_auth`` does not read, every
    non-sshd log, and a read line with no event at all (``maximum
    authentication attempts exceeded for root``, ``Postponed publickey for
-   alice``) — exactly as before fm#1668, which keeps ``sshd_auth``'s rule
-   that an unread format never counts less than it did. The ``for`` branch is
-   safe on a read line with no event: sshd writes ``invalid user`` before
-   every name that is not an existing account, and that phrase is an event,
-   so a client-chosen name on an sshd line always has a user slot (case 1)
-   and a line with no event names only real accounts. A candidate survives
-   here when all of the following hold:
+   alice``) — as before fm#1668, which keeps ``sshd_auth``'s rule that an
+   unread format never counts less than it did, with two exceptions. On a
+   read line with no event the ``for`` branch takes only its FIRST match: a
+   client-chosen name can reach such a line without ``invalid user`` —
+   OpenSSH auth-pam.c's ``Authentication failure for illegal user <name>``,
+   pre-7.x ``Too many authentication failures for <name>`` — and sshd writes
+   the name after its own first ``for``, so a later ``for`` is inside the
+   name. And the branch's prefix admits ``illegal user `` as well as
+   ``invalid user `` on every line, since ``illegal`` is never an account.
+   A candidate survives here when all of the following hold:
 
    a. It came from ``user=<name>`` / ``user <name>`` (always applied), or
-      from ``for [invalid user] <name>`` on a line carrying an explicit auth
-      keyword. Kernel and service messages ("installed for high-res
+      from ``for [invalid|illegal user] <name>`` on a line carrying an
+      explicit auth keyword. Kernel and service messages ("installed for high-res
       timesource", "activate device for PnP cards") have no such keyword, so
       the ``for`` branch never sees them.
    b. It is not a PAM/SSH structural word ("unknown", "publickey", "user", …).
@@ -113,13 +118,27 @@ USER_FIELD_RE = re.compile(
     re.IGNORECASE,
 )
 
-# ``for [invalid user] <name>`` — gated on AUTH_CONTEXT_RE. Carries the same
-# "not a field name" lookahead as the field pattern: the rule is a property of
-# what a username is, not of which branch happened to capture it.
+# ``for [invalid|illegal user] <name>`` — gated on AUTH_CONTEXT_RE. Carries
+# the same "not a field name" lookahead as the field pattern: the rule is a
+# property of what a username is, not of which branch happened to capture it.
+# ``illegal user `` is OpenSSH auth-pam.c's spelling of ``invalid user ``.
 USER_FOR_RE = re.compile(
-    r"\bfor (?:invalid user )?([a-zA-Z_][a-zA-Z0-9._\-]{0,31})\b(?![\w.\-]*=)",
+    r"\bfor (?:(?:invalid|illegal) user )?([a-zA-Z_][a-zA-Z0-9._\-]{0,31})\b"
+    r"(?![\w.\-]*=)",
     re.IGNORECASE,
 )
+
+# The alphabet both capture groups above admit. A name made only of it reads
+# unambiguously bare; any other — sshd's user slot is the client's text,
+# verbatim (fm#1668) — has to be quoted where it is rendered, so that
+# ``root: 500 lines`` cannot read as a count.
+_PLAIN_USERNAME_RE = re.compile(r"[a-zA-Z0-9._\-]+")
+
+
+def is_plain_username(name: str) -> bool:
+    """Whether ``name`` uses only the alphabet the capture patterns admit."""
+    return bool(_PLAIN_USERNAME_RE.fullmatch(name))
+
 
 # Lines carrying these phrases are SSH/PAM auth events — the only context
 # where "for <name>" is a reliable username signal.
@@ -262,10 +281,14 @@ def extract_usernames(line: str, sshd: SshdAuthLine | None = None) -> list[str]:
         return [sshd.user] if sshd.user else []
     candidates = USER_FIELD_RE.findall(line)
     # Case 2 drops the ``for`` branch; case 3 — unread, or read with no event
-    # — keeps it.
+    # — keeps it, and a read line keeps only its first match.
     searched = not sshd.read or not (sshd.events or sshd.outcome)
     if searched and AUTH_CONTEXT_RE.search(line):
-        candidates += USER_FOR_RE.findall(line)
+        if sshd.read:
+            first = USER_FOR_RE.search(line)
+            candidates += [first.group(1)] if first else []
+        else:
+            candidates += USER_FOR_RE.findall(line)
     seen: set[str] = set()
     usernames: list[str] = []
     for candidate in candidates:

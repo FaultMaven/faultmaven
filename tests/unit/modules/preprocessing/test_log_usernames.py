@@ -40,12 +40,18 @@ from faultmaven.modules.preprocessing.log_usernames import (
     USER_FIELD_RE,
     USER_FOR_RE,
     extract_usernames,
+    is_plain_username,
     is_username,
 )
 
 # The rendered row states its unit — "lines", not "mentions" — because the
 # count is lines and the neighbouring IP block counts occurrences (fm#1574).
 _USER_ROW = re.compile(r"^ {4}(\S.*?): (\d+) lines")
+
+# ``grep -H`` output: a header ``sshd_auth`` does not read, so a line under it
+# is SEARCHED, exactly as before fm#1668. The searched path still captures by
+# regex, so the guards and fm#1574's per-line rule are pinned there.
+_UNREAD_PREFIX = "/var/log/auth.log:"
 
 
 def profile_usernames(content: str) -> list[str]:
@@ -262,13 +268,17 @@ def test_value_position_user_is_never_the_key() -> None:
 @pytest.mark.parametrize(
     "line",
     [
+        # On the searched path (``_UNREAD_PREFIX``): on a line ``sshd_auth``
+        # reads, the ``for`` branch does not run at all, and these passed
+        # there by coincidence while the lookahead went unguarded (fm#1668).
         pytest.param(
-            "Sep 21 11:00:10 web01 sshd[1]: pam_unix(sshd:auth): "
+            _UNREAD_PREFIX + "Sep 21 11:00:10 web01 sshd[1]: pam_unix(sshd:auth): "
             "authentication failure for logname=alice",
             id="for-logname",
         ),
         pytest.param(
-            "Sep 21 11:00:11 web01 sshd[2]: Failed password for rhost=1.2.3.4",
+            _UNREAD_PREFIX
+            + "Sep 21 11:00:11 web01 sshd[2]: Failed password for rhost=1.2.3.4",
             id="for-rhost",
         ),
     ],
@@ -290,11 +300,6 @@ def test_for_branch_does_not_capture_a_field_name(line: str) -> None:
 # The class: anything host-shaped or structural reaching the username list.
 # ---------------------------------------------------------------------------
 
-
-# ``grep -H`` output: a header ``sshd_auth`` does not read, so a line under it
-# is SEARCHED, exactly as before fm#1668. The searched path still captures by
-# regex, so the guards and fm#1574's per-line rule are pinned there.
-_UNREAD_PREFIX = "/var/log/auth.log:"
 
 _HOST_SHAPED_NAME_LINE = (
     "Dec 10 06:55:46 LabSZ sshd[24200]: Failed password for invalid user "
@@ -639,10 +644,12 @@ def test_registry_now_records_the_account_not_the_word_user(
         # The two branches reaching the same name through two GENUINELY
         # different fields — a "for" clause and a "user=" field — not the
         # "invalid user" overlap. Per-line semantics counts it once; see
-        # ``test_one_line_is_one_mention_even_across_different_fields``.
+        # ``test_one_line_is_one_mention_even_across_different_fields``. On
+        # the searched path (``_UNREAD_PREFIX``): a line ``sshd_auth`` reads
+        # names only its user slot, and passed here by coincidence.
         pytest.param(
-            "Dec 10 09:33:00 LabSZ sshd[3]: Failed password for alice from "
-            "1.2.3.4 port 2222 ssh2 user=alice",
+            _UNREAD_PREFIX + "Dec 10 09:33:00 LabSZ sshd[3]: Failed password for "
+            "alice from 1.2.3.4 port 2222 ssh2 user=alice",
             {"alice": 1},
             id="same-user-in-two-different-fields",
         ),
@@ -733,9 +740,11 @@ def test_one_line_is_one_mention_even_across_different_fields() -> None:
     collapse the same account across lines. Both are pinned as parameters of
     ``test_mention_counts_are_per_line_on_both_paths``.
     """
+    # On the searched path (``_UNREAD_PREFIX``): a line ``sshd_auth`` reads
+    # names only its user slot, and passed here by coincidence (fm#1668).
     line = (
-        "Dec 10 09:33:00 LabSZ sshd[3]: Failed password for alice from "
-        "1.2.3.4 port 2222 ssh2 user=alice\n"
+        _UNREAD_PREFIX + "Dec 10 09:33:00 LabSZ sshd[3]: Failed password for alice "
+        "from 1.2.3.4 port 2222 ssh2 user=alice\n"
     )
 
     # Both branches do reach the name — the de-duplication is what makes it
@@ -996,8 +1005,10 @@ _CALL_SPELLINGS = tuple(f"{name}(" for name in sorted(_RE_FUNCTIONS))
 
 # Patterns mentioning "user" that are NOT implementations of the rule. Read
 # individually and kept by exact text, so a rewrite of one has to come back
-# through here. The scan fails when an entry stops matching anything, because
-# a stale allowlist is how a guard goes quiet.
+# through here. Each entry is (sites, reason): the scan fails when an entry is
+# seen at any other number of sites than the one read — none, because a stale
+# allowlist is how a guard goes quiet, or more, because a second pattern with
+# the same flattened text would otherwise pass as the one that was read.
 #
 # There is deliberately no "has a capture group" test. ``re.findall`` and
 # ``re.finditer`` return group 0 when a pattern has none, so
@@ -1009,15 +1020,15 @@ _NOT_THE_RULE = {
     (
         "faultmaven/modules/preprocessing/extractors/command_output_extractor.py",
         r"PID\s+USER\s+%CPU\s+%MEM\s+VSZ\s+RSS",
-    ): "matches the ps(1) header row, extracts no name",
+    ): (1, "matches the ps(1) header row, extracts no name"),
     (
         "faultmaven/modules/preprocessing/extractors/logs_extractor.py",
         r"invalid user",
-    ): "presence test for the event counter, extracts no name",
+    ): (1, "presence test for the event counter, extracts no name"),
     (
         "faultmaven/modules/preprocessing/extractors/logs_extractor.py",
         r"sshd[^:]*:\s*session opened for user",
-    ): "event matcher for the session counter, extracts no name",
+    ): (1, "event matcher for the session counter, extracts no name"),
     # fm#1657's anchored reading of the same events, beside the search above
     # (which it leaves to lines whose header it does not read).
     (
@@ -1030,19 +1041,22 @@ _NOT_THE_RULE = {
         r"|Disconnecting|Received disconnect from|Timeout, client not responding from"
         r"|Unable to negotiate with)\s+"
         r")?invalid user\b",
-    ): "presence test for the invalid_user counter, extracts no name",
+    ): (1, "presence test for the invalid_user counter, extracts no name"),
     (
         "faultmaven/modules/preprocessing/extractors/sshd_auth.py",
         r"session opened for user\b",
-    ): "event matcher for the session counter, extracts no name",
+    ): (1, "event matcher for the session counter, extracts no name"),
     # fm#1668: the one name extraction outside the rule's home, and it is the
-    # rule's input — ``extract_usernames`` is its only reader.
+    # rule's input — ``extract_usernames`` is its only reader. Exactly one
+    # site, ``_slot_pattern``: the key is weak, so the count is what stops a
+    # second f-string-built user regex from hiding behind it.
     (
         "faultmaven/modules/preprocessing/extractors/sshd_auth.py",
         r"(?P<user>)",
     ): (
+        1,
         "sshd's positional user slot, read by log_usernames.extract_usernames"
-        " only; the key is weak because the scan flattens f-string parts"
+        " only; the key is weak because the scan flattens f-string parts",
     ),
 }
 
@@ -1163,7 +1177,7 @@ def test_exactly_one_implementation_of_the_username_rule() -> None:
     root = _repo_root()
     scanned: list[pathlib.Path] = []
     offenders: list[str] = []
-    allowlist_seen: set[tuple[str, str]] = set()
+    allowlist_seen: Counter = Counter()
 
     for path in sorted((root / "faultmaven").rglob("*.py")):
         scanned.append(path)
@@ -1205,7 +1219,7 @@ def test_exactly_one_implementation_of_the_username_rule() -> None:
             if pathlib.Path(relative) == _RULE_HOME:
                 continue
             if (relative, pattern) in _NOT_THE_RULE:
-                allowlist_seen.add((relative, pattern))
+                allowlist_seen[(relative, pattern)] += 1
                 continue
             offenders.append(f"{relative}:{node.lineno}  {pattern!r}")
 
@@ -1215,10 +1229,19 @@ def test_exactly_one_implementation_of_the_username_rule() -> None:
             str(p.relative_to(root)).startswith(str(directory)) for p in scanned
         ), f"scan never visited {directory}"
 
-    stale = set(_NOT_THE_RULE) - allowlist_seen
+    stale = sorted(key for key in _NOT_THE_RULE if not allowlist_seen[key])
     assert not stale, (
         "allowlisted patterns no longer exist; delete them so the list stays "
-        f"honest: {sorted(stale)}"
+        f"honest: {stale}"
+    )
+    miscounted = {
+        key: f"{allowlist_seen[key]} sites, read at {sites}"
+        for key, (sites, _reason) in _NOT_THE_RULE.items()
+        if allowlist_seen[key] != sites
+    }
+    assert not miscounted, (
+        "an allowlisted pattern is at a different number of sites than the one "
+        f"read; read the new one and count it: {miscounted}"
     )
 
     assert not offenders, (
@@ -1375,3 +1398,97 @@ def test_the_registry_records_the_same_slot_names():
     """The entity registry reads the same slot, unquoted: a value, not text."""
     content = _brute_force("x for root", 2) + _brute_force("admin", 1)
     assert Counter(registry_usernames(content)) == {"x for root": 2, "admin": 1}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "message, expected",
+    [
+        pytest.param(
+            "sshd[1]: Accepted publickey for alice from 10.0.0.2 port 22 ssh2:"
+            " RSA-CERT ID from 9.9.9.9 port 1",
+            ["alice"],
+            id="undecided-slot",
+        ),
+        pytest.param(
+            "sshd[1]: Failed publickey for root from 1.2.3.4 port 22 ssh2#015",
+            ["root"],
+            id="no-slot",
+        ),
+        pytest.param(
+            "sshd[1]: Accepted publickey for alice user=alice",
+            ["alice"],
+            id="no-from",
+        ),
+    ],
+)
+def test_an_existing_account_is_named_when_the_slot_cannot_decide(message, expected):
+    """Review F5, the same answers as main: a lead without ``invalid user``
+    names an existing account, whose name is its first token."""
+    line = "Dec 10 10:00:00 h " + message
+    assert _is_read(line)
+    assert extract_usernames(line) == expected
+    profile, registry = both_paths(line + "\n")
+    assert registry == expected, registry
+
+
+_NO_EVENT_FOR_LINES = [
+    pytest.param(
+        "sshd[1]: error: PAM: Authentication failure for illegal user x for root"
+        " from 1.2.3.4",
+        id="auth-pam-illegal-user",
+    ),
+    pytest.param(
+        "sshd[1]: Disconnecting: Too many authentication failures for x for root",
+        id="too-many-failures",
+    ),
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("message", _NO_EVENT_FOR_LINES)
+def test_a_no_event_read_line_takes_only_its_first_for(message):
+    """Review F3: a client-chosen name reaches these sshd lines without
+    ``invalid user`` (main: ``['x', 'illegal', 'root']`` and ``['x',
+    'root']``). sshd writes the name after its own first ``for``, so a later
+    ``for`` is the name's; and ``illegal user `` is auth-pam.c's prefix."""
+    line = "Dec 10 10:00:00 h " + message
+    assert _is_read(line)
+    assert extract_usernames(line) == ["x"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("message", _NO_EVENT_FOR_LINES)
+def test_an_unread_line_keeps_every_for(message):
+    """An unread line keeps ``findall`` — never less than before; only the
+    prefix changed, and ``illegal`` is never an account."""
+    line = _UNREAD_PREFIX + "Dec 10 10:00:00 h " + message
+    assert not _is_read(line)
+    assert extract_usernames(line) == ["x", "root"]
+
+
+@pytest.mark.unit
+def test_a_non_ascii_slot_name_renders_as_itself():
+    """Review F6: ``\\uXXXX`` escapes matched nothing ``search_file`` could
+    find; the quoted name is the name."""
+    content = _brute_force("админ{i}", 1)
+    search_map = str(LogsAndErrorsExtractor().extract(content).search_map)
+    assert '    "админ0": 1 lines' in search_map, search_map
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "name, plain",
+    [
+        pytest.param("svc_backup-01.x", True, id="capture-alphabet"),
+        pytest.param("root", True, id="plain"),
+        pytest.param("x for root", False, id="space"),
+        pytest.param("root: 500 lines", False, id="colon"),
+        pytest.param("админ", False, id="non-ascii"),
+        pytest.param("", False, id="empty"),
+    ],
+)
+def test_is_plain_username(name, plain):
+    """The alphabet the capture patterns admit, beside them in the rule's home
+    — what renders bare in "Distinct usernames"."""
+    assert is_plain_username(name) is plain
