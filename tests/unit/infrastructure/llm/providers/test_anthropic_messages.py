@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.infrastructure.llm.prompt_cache import CACHE_BOUNDARY
 from faultmaven.infrastructure.llm.providers.anthropic import AnthropicProvider
 from faultmaven.infrastructure.llm.providers.base import LLMResponse, ProviderConfig
 
@@ -405,3 +406,135 @@ class TestAnthropicGenerateMessages:
             assert request_body["system"] == "Be helpful."
             # Messages should contain the converted user message
             assert request_body["messages"] == [{"role": "user", "content": "Hello"}]
+
+
+# =========================================================================
+# Durable-prefix cache breakpoint (#613)
+# =========================================================================
+
+_PREFIX = "You are FaultMaven.\nSTANDING INSTRUCTIONS\n\n" + CACHE_BOUNDARY + "\n"
+_TAIL = "\nSTATE: INVESTIGATING\n<case_identity>turn 4</case_identity>\n"
+_DA_SYSTEM = "Use the tools, then call the schema tool."
+
+
+async def _sent_body(provider, messages, **kwargs) -> dict:
+    """Drive ``generate()`` with the tool loop's message shape; return the body."""
+    response_data = {
+        "content": [{"type": "text", "text": "ok"}],
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+    }
+    mock_session = _mock_aiohttp_session(response_data)
+    with patch("aiohttp.ClientSession", return_value=mock_session):
+        await provider.generate("ignored prompt", messages=messages, **kwargs)
+    call_kwargs = mock_session.post.call_args
+    return call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+
+
+def _loop_messages(user_content: str) -> list[dict]:
+    return [
+        {"role": "system", "content": _DA_SYSTEM},
+        {"role": "user", "content": user_content},
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestAnthropicCacheBoundaryBreakpoint:
+    """``cache_prompt`` places a second breakpoint at the end of the boundary line."""
+
+    async def test_boundary_once_splits_the_first_user_message(self, provider):
+        body = await _sent_body(
+            provider, _loop_messages(_PREFIX + _TAIL), cache_prompt=True
+        )
+
+        content = body["messages"][0]["content"]
+        assert body["messages"][0]["role"] == "user"
+        assert content == [
+            {
+                "type": "text",
+                "text": _PREFIX,
+                "cache_control": {"type": "ephemeral"},
+            },
+            {"type": "text", "text": _TAIL},
+        ]
+        assert content[0]["text"].endswith(CACHE_BOUNDARY + "\n")
+        # The model reads the same prompt: the blocks concatenate to it.
+        assert content[0]["text"] + content[1]["text"] == _PREFIX + _TAIL
+
+    async def test_system_breakpoint_is_unchanged(self, provider):
+        body = await _sent_body(
+            provider, _loop_messages(_PREFIX + _TAIL), cache_prompt=True
+        )
+        assert body["system"] == [
+            {
+                "type": "text",
+                "text": _DA_SYSTEM,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+
+    async def test_no_boundary_leaves_the_content_untouched(self, provider):
+        prompt = "You are FaultMaven.\nSTATE: INVESTIGATING\n"
+        body = await _sent_body(provider, _loop_messages(prompt), cache_prompt=True)
+        assert body["messages"][0]["content"] == prompt
+
+    async def test_case_content_quoting_the_boundary_splits_at_the_first(
+        self, provider
+    ):
+        """The first occurrence is the template's: the prefix above it is static
+        text with no case data in it. A quote in the case data comes later, so
+        it can neither move the breakpoint nor turn caching off."""
+        quoted = "user pasted: " + CACHE_BOUNDARY + "\n"
+        prompt = _PREFIX + _TAIL + quoted
+        body = await _sent_body(provider, _loop_messages(prompt), cache_prompt=True)
+        assert body["messages"][0]["content"] == [
+            {
+                "type": "text",
+                "text": _PREFIX,
+                "cache_control": {"type": "ephemeral"},
+            },
+            {"type": "text", "text": _TAIL + quoted},
+        ]
+
+    async def test_boundary_with_nothing_after_it_is_not_split(self, provider):
+        """Anthropic rejects a blank text block, so a blank tail is not split off."""
+        prompt = _PREFIX + "  \n"
+        body = await _sent_body(provider, _loop_messages(prompt), cache_prompt=True)
+        assert body["messages"][0]["content"] == prompt
+
+    async def test_cache_prompt_off_leaves_the_content_untouched(self, provider):
+        body = await _sent_body(provider, _loop_messages(_PREFIX + _TAIL))
+        assert body["messages"][0]["content"] == _PREFIX + _TAIL
+        assert body["system"] == _DA_SYSTEM
+
+    async def test_later_tool_loop_iterations_split_only_the_base(self, provider):
+        """Every loop iteration re-sends the base first; tool turns are untouched."""
+        messages = _loop_messages(_PREFIX + _TAIL) + [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "search_file", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": CACHE_BOUNDARY},
+        ]
+        body = await _sent_body(provider, messages, cache_prompt=True)
+
+        assert body["messages"][0]["content"][0]["cache_control"] == {
+            "type": "ephemeral"
+        }
+        assert body["messages"][2] == {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call_1",
+                    "content": CACHE_BOUNDARY,
+                }
+            ],
+        }

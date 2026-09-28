@@ -719,7 +719,7 @@ itself):
 Use the [search: ...] hints in <search_map> as starting strings.
 
 When calling search_file or deep_analysis, only pass evidence_ids tagged
-`searchable="true"` in the <evidence> blocks above. Those are file-backed
+`searchable="true"` in the <evidence> blocks below. Those are file-backed
 records and are the only ones the tools can read. Chat-extracted evidence
 (no ``source_file_id`` — the extract came from a verbatim quote in the
 user's chat message) is NOT searchable: it describes what was said, it

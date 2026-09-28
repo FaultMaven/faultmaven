@@ -777,7 +777,7 @@ The 4 stage instruction sets (SYMPTOM_VERIFICATION, HYPOTHESIS_FORMULATION, HYPO
 
 | New Instruction | Replaces | Focus |
 |-----------------|----------|-------|
-| **DIAGNOSIS prompt** (`focus_emphasis + _RCA_DIAGNOSIS_BLOCK` via `_select_diagnosis_block`, now a thin wrapper — no longer a path selector) | SYMPTOM_VERIFICATION + HYPOTHESIS_FORMULATION + HYPOTHESIS_VALIDATION | Understand, diagnose, propose solution |
+| **DIAGNOSIS prompt** (`_RCA_DIAGNOSIS_BLOCK` via `_select_diagnosis_block`, now a thin wrapper — no longer a path selector; `focus_emphasis` renders separately, at the top of the per-turn tail, #613) | SYMPTOM_VERIFICATION + HYPOTHESIS_FORMULATION + HYPOTHESIS_VALIDATION | Understand, diagnose, propose solution |
 | **MITIGATION_INSTRUCTIONS** | (new) | Apply temp fix, verify, return to the flow |
 | **TREATMENT_INSTRUCTIONS** | SOLUTION (expanded) | Verify fix, extended diagnosis if fix fails, resolve |
 
@@ -795,9 +795,10 @@ def get_stage_instructions(case: Case) -> str:
         return MITIGATION_INSTRUCTIONS
     else:
         # Single unified DIAGNOSIS block — see _select_diagnosis_block in
-        # templates/__init__.py. The path fork is retired: this is now a thin wrapper
-        # returning focus_emphasis + _RCA_DIAGNOSIS_BLOCK (it kept its old
-        # name but no longer selects a path). The hypothesis-emission-under-
+        # templates/assembly.py. The path fork is retired: this is now a thin
+        # wrapper returning _RCA_DIAGNOSIS_BLOCK + the chain-emission block (it
+        # kept its old name but no longer selects a path). The focus emphasis
+        # is rendered separately, as {focus_emphasis} (#613). The hypothesis-emission-under-
         # uncertainty mandate lives in _HYPOTHESIS_EVIDENCE_ORDERING_BLOCK
         # inside that block.
         return _select_diagnosis_block(case)
@@ -816,7 +817,7 @@ The agent is not forced through these steps sequentially. If evidence immediatel
 
 ### 8.5 Focus Zone Emphasis (Progress Milestone-Driven)
 
-Within the DIAGNOSIS stage, progress milestones determine a **focus zone** — a priority signal injected at the top of the DIAGNOSIS instructions that tells the LLM what matters most this turn. This is NOT a sub-stage boundary; all DIAGNOSIS capabilities remain available regardless of focus zone.
+Within the DIAGNOSIS stage, progress milestones determine a **focus zone** — a priority signal that tells the LLM what matters most this turn. It renders as `{focus_emphasis}` at the top of the prompt's per-turn tail, right after `CACHE_BOUNDARY` (#613), not inside the cached stage instructions: it moves with the milestones and, in Zone 2, with the wall clock. This is NOT a sub-stage boundary; all DIAGNOSIS capabilities remain available regardless of focus zone.
 
 **Design rationale**: DIAGNOSIS covers the full spectrum from "we don't know what the problem is" to "we've identified root cause and need to propose a fix." Without focus emphasis, the LLM receives all instructions equally and must infer priority from milestone flags. Focus zones make the priority explicit while preserving opportunistic investigation.
 
@@ -826,7 +827,8 @@ Within the DIAGNOSIS stage, progress milestones determine a **focus zone** — a
 def _get_diagnosis_focus_emphasis(progress: InvestigationProgress) -> str:
     """Compute focus zone from progress milestones.
 
-    Returns a priority signal injected before standard DIAGNOSIS instructions.
+    Returns a priority signal rendered as {focus_emphasis}, at the top of the
+    prompt's per-turn tail (#613).
     The LLM still has all DIAGNOSIS capabilities — this guides emphasis only.
     """
     if not progress.symptom_verified:
@@ -1224,7 +1226,7 @@ The old STAGE_INSTRUCTIONS dictionary and prompt templates remain in the codebas
 
 ### 13.2 Implementation Sequence
 
-1. **Add new stage instructions** (DONE) — `_RCA_DIAGNOSIS_BLOCK`, `MITIGATION_INSTRUCTIONS`, `TREATMENT_INSTRUCTIONS` in the templates package. The DIAGNOSIS-stage prompt is a single unified block assembled by `_select_diagnosis_block(case)` (`focus_emphasis + _RCA_DIAGNOSIS_BLOCK`); the path fork and its blocks (`_SYMPTOM_VALIDATION_BLOCK`, `_GATE3_PENDING_BLOCK`, `_POST_MITIGATION_RCA_PREFIX`) were retired in the flow redesign.
+1. **Add new stage instructions** (DONE) — `_RCA_DIAGNOSIS_BLOCK`, `MITIGATION_INSTRUCTIONS`, `TREATMENT_INSTRUCTIONS` in the templates package. The DIAGNOSIS-stage prompt is a single unified block assembled by `_select_diagnosis_block(case)` (`_RCA_DIAGNOSIS_BLOCK`, with `focus_emphasis` rendered separately at the top of the per-turn tail, #613); the path fork and its blocks (`_SYMPTOM_VALIDATION_BLOCK`, `_GATE3_PENDING_BLOCK`, `_POST_MITIGATION_RCA_PREFIX`) were retired in the flow redesign.
 2. **Update InvestigationStage enum** — Add DIAGNOSIS, MITIGATION, TREATMENT values
 3. **Update InvestigationProgress model** — Gate milestones + retained progress milestones
 4. **Add ProposedAction model** — action_type, expected_command, description (Section 10.5)

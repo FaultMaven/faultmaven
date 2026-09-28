@@ -223,7 +223,7 @@ for a connection *timeout*, a post-connect collation warning or a wrong-password
 auth error are signature-incompatible — they produce a different signature, so
 they are not candidates.
 
-The chains you have already built are shown in `<causal_graph>` above, each node
+The chains you have already built are shown in `<causal_graph>` below, each node
 with its `cn_...` id. EXTEND that graph: when a cause or rung is already present,
 reference its existing `cn_...` id (in `produces`, `root_node_ref`, or
 `node_evidence_links`) and attach new evidence to it — emit a NEW node only for a
@@ -306,8 +306,9 @@ Example (unobservable race, two rivals both refuted):
 # _RCA_DIAGNOSIS_BLOCK — the single DIAGNOSIS-stage block in the unified
 # opportunistic flow. Full hypothesis-driven diagnostic flow, built by
 # composing the shared sub-blocks above with RCA-specific content inline.
-# Stage emphasis (Zone 1/2/3) is prepended by _get_diagnosis_focus_emphasis
-# based on cause_state — there is no longer a prospective path fork.
+# Stage emphasis (Zone 1/2/3) comes from _get_diagnosis_focus_emphasis, based
+# on cause_state — there is no longer a prospective path fork. It renders in
+# the prompt's per-turn tail as {focus_emphasis}, not in this block (#613).
 # =============================================================================
 _RCA_DIAGNOSIS_BLOCK = (
     """

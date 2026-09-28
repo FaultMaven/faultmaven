@@ -66,9 +66,10 @@ def _symptom_verification_is_stale(case) -> bool:
 def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress", case=None) -> str:
     """Compute focus zone from progress milestones (Framework §8.5).
 
-    Returns a contextual status signal injected at the top of DIAGNOSIS
-    instructions. Informs the agent where the investigation stands and what
-    would advance it, WITHOUT overriding the user's question.
+    Returns a contextual status signal rendered as ``{focus_emphasis}`` at the
+    top of the prompt's per-turn tail, right after ``CACHE_BOUNDARY`` (#613),
+    on DIAGNOSIS turns. Informs the agent where the investigation stands and
+    what would advance it, WITHOUT overriding the user's question.
 
     Four states based on progress milestone state:
     - Zone 1: symptom_verified=False — verify problem exists
@@ -107,7 +108,7 @@ which silently drift to the present.
             return """
 **INVESTIGATION PROGRESS: Root cause analysis — anchor to the symptom's window**
 The symptom was observed some time ago (see the observation time on
-symptom_verified above). That period, not the present, is where this
+symptom_verified below). That period, not the present, is where this
 investigation looks.
 
 This does NOT mean the problem is stale or not worth pursuing — a problem is
@@ -210,17 +211,22 @@ _KB_MATCHED_CAUSE_SEEDED = """  - **Exactly one Cause matches:** its chain is AL
 
 
 def _select_diagnosis_block(case: Case) -> str:
-    """Focus emphasis + the RCA diagnosis block for a diagnosing turn.
+    """The RCA diagnosis block for a diagnosing turn.
 
     Diagnosis has no path fork (redesign R5): hypothesis formulation and
     evidence-needs run as a single opportunistic flow. Stage guidance is
     selected by the assessment variables (``symptom_verified`` /
     ``cause_state`` / ``solution_proposed``) via
-    ``_get_diagnosis_focus_emphasis`` — not by a prospective path choice. The
-    focus emphasis is prepended to ``_RCA_DIAGNOSIS_BLOCK``, which carries the
-    hypothesis-evidence ordering mandate
+    ``_get_diagnosis_focus_emphasis`` — not by a prospective path choice.
+    ``_RCA_DIAGNOSIS_BLOCK`` carries the hypothesis-evidence ordering mandate
     (``_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK``), then the chain-emission block
     teaches lazy backward expansion (the engine ingests the emitted chain).
+
+    The focus emphasis is NOT part of this block (#613). It moves with the
+    progress milestones and, in Zone 2, with the wall clock (symptom
+    currency), while this block is the last part of the prompt's cached
+    prefix. It renders as ``{focus_emphasis}`` at the top of the per-turn
+    tail instead (``get_prompt_for_case``).
 
     Legacy seeded cases (``seeded_provenance``): when this case's graph holds
     candidates the removed KB cause seeder planted, the flat "matched Cause →
@@ -231,9 +237,7 @@ def _select_diagnosis_block(case: Case) -> str:
     branch is dead for every case opened after 2026-09-02 and goes with the
     module's sunset.
     """
-    focus_emphasis = _get_diagnosis_focus_emphasis(case.progress, case)
-    block = focus_emphasis + _RCA_DIAGNOSIS_BLOCK
-    block += _CHAIN_EMISSION_BLOCK
+    block = _RCA_DIAGNOSIS_BLOCK + _CHAIN_EMISSION_BLOCK
 
     from faultmaven.core.investigation.seeded_provenance import (
         case_has_seeded_candidates,
@@ -367,6 +371,11 @@ def get_prompt_for_case(
             # GROUNDING and DIAGNOSTIC REASONING REQUIREMENTS from forcing the
             # LLM to cite case evidence for general knowledge questions, or
             # for questions about FaultMaven itself (#1328).
+            # The DIAGNOSIS focus emphasis renders in the per-turn tail, not in
+            # the stage instructions: it moves with the milestones and the wall
+            # clock, and the stage instructions close the cached prefix (#613).
+            # Empty on every turn that does not take the DIAGNOSIS branch.
+            focus_emphasis = ""
             if processing_mode == "knowledge_query":
                 adaptive_instr = KNOWLEDGE_QUERY_INSTRUCTIONS
             elif is_agent_meta:
@@ -375,6 +384,7 @@ def get_prompt_for_case(
                 # Dispatch to stage instructions (derived display stage)
                 if stage == InvestigationStage.DIAGNOSIS:
                     adaptive_instr = _select_diagnosis_block(case)
+                    focus_emphasis = _get_diagnosis_focus_emphasis(case.progress, case)
                 elif stage == InvestigationStage.MITIGATION:
                     adaptive_instr = MITIGATION_INSTRUCTIONS
                 elif stage == InvestigationStage.TREATMENT:
@@ -414,6 +424,7 @@ def get_prompt_for_case(
 
             return INVESTIGATION_BASE.format(
                 adaptive_instructions=adaptive_instr,
+                focus_emphasis=focus_emphasis,
                 evidence_grounding=evidence_grounding,
                 diagnostic_reasoning=diagnostic_reasoning,
                 **ctx,

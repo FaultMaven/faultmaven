@@ -534,7 +534,7 @@ There is no single complete prompt. Each turn assembles a prompt from a fixed ou
 | Stage / Mode | Outer shell | Behavioral blocks embedded | Stage instruction block | Evidence grounding | Diagnostic reasoning |
 | --- | --- | --- | --- | --- | --- |
 | INQUIRY | `INQUIRY_TEMPLATE` | `_READING_DISCIPLINE` `_DATA_CITATION` `_ADVISOR_ROLE` `_ACTION_IMPACT` | (built into shell) | ✗ | ✗ |
-| DIAGNOSIS (unified — no path fork) | `INVESTIGATION_BASE` | `_READING_DISCIPLINE` `_DATA_CITATION` `_ADVISOR_ROLE` `_ACTION_IMPACT` | `focus_emphasis()` + `_RCA_DIAGNOSIS_BLOCK` (single block; carries `_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`) | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
+| DIAGNOSIS (unified — no path fork) | `INVESTIGATION_BASE` | `_READING_DISCIPLINE` `_DATA_CITATION` `_ADVISOR_ROLE` `_ACTION_IMPACT` | `_RCA_DIAGNOSIS_BLOCK` (single block; carries `_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`), with `focus_emphasis()` rendered separately at the top of the per-turn tail (#613) | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
 | MITIGATION ("Mitigating") | `INVESTIGATION_BASE` | same | `MITIGATION_INSTRUCTIONS` (mitigation guidance) | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
 | TREATMENT | `INVESTIGATION_BASE` | same | `TREATMENT_INSTRUCTIONS` | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
 | Knowledge query (mode bypass) | `INVESTIGATION_BASE` | same | `KNOWLEDGE_QUERY_INSTRUCTIONS` | ✗ (suppressed) | ✗ (suppressed) |
@@ -565,8 +565,9 @@ Stage instructions are injected as `{adaptive_instructions}` in `INVESTIGATION_B
 #### cause_state-driven investigation guidance
 
 Post-redesign there is **no path fork**. `_select_diagnosis_block(case)` returns a
-single block — `_get_diagnosis_focus_emphasis(case.progress)` prepended to
-`_RCA_DIAGNOSIS_BLOCK`. The hypothesis-creation mandate
+single block — `_RCA_DIAGNOSIS_BLOCK` plus the chain-emission block — and
+`_get_diagnosis_focus_emphasis(case.progress, case)` renders beside it as
+`{focus_emphasis}`, at the top of the prompt's per-turn tail (#613). The hypothesis-creation mandate
 (`_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`) lives inside `_RCA_DIAGNOSIS_BLOCK` and is
 always present; the agent applies it **iff the cause is uncertain**
 (`cause_state ∈ {UNKNOWN, CANDIDATES}`) per the single diagnostic-machinery rule.
@@ -579,7 +580,9 @@ keeps its pre-redesign name `_select_diagnosis_block`; it is now a thin wrapper,
 a path selector.
 
 `_get_diagnosis_focus_emphasis()` maps the DIAGNOSIS zones plus the pending state to
-a contextual status signal prepended to the block. The per-zone conditions and
+a contextual status signal, rendered right after `CACHE_BOUNDARY` rather than
+inside the cached stage instructions, because it moves with the milestones and,
+in Zone 2, with the wall clock. The per-zone conditions and
 emphasis strings are documented once, in
 [Prompt Assembly Architecture §3.2](./prompt-assembly-architecture.md#32-adaptive-instructions)
 (the canonical rendition). The Zone-3-pending emphasis is a non-suppressive hold
