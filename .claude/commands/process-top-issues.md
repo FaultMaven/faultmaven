@@ -957,10 +957,19 @@ it will merge; step 4 merges again only if `main` has moved since.
    that is missing has no run to re-run: re-trigger it once by pushing an empty
    commit (`git commit --allow-empty -m "ci: re-trigger checks"`) — one push,
    so no state lies between two mutations, and a commit that changes no file is
-   not code (*The vouched head*). One still red that the merge base fails too —
-   *Building*'s comparison, re-running the base's run where its verdict
-   predates the failure — is `main`'s, and the pull request **waits on
-   `main`**: it is never pulled for a failure it did not cause.
+   not code (*The vouched head*). A failure outside the repository — the log
+   names a host other than the runner's own (`localhost`, `testserver` and any
+   address the suite starts are the pull request's), and your own request to
+   each URL the failed runs named fails the same way — is neither the pull
+   request's nor `main`'s: wait it out, checking those URLs every few minutes
+   in the background, re-run once per outage when all of them answer, and never
+   file a `main red` issue for it. If they have not answered by the time the
+   rest of the round is ready, report the pull request as waiting on that
+   service and stop; step 1's refresh re-runs it the next invocation. One still
+   red that the merge base fails too — *Building*'s comparison, re-running the
+   base's run where its verdict predates the failure — is `main`'s, and the
+   pull request **waits on `main`**: it is never pulled for a failure it did
+   not cause.
 
    **A red `main` is repaired before anything merges.** Its issue is titled
    `main red: <check> at <sha>`; look for an open one with the list below
@@ -1027,8 +1036,9 @@ it will merge; step 4 merges again only if `main` has moved since.
 ## 5. Report and hand back
 
 Report when every item is merge-ready, closed by its verification, pulled,
-or waiting on a red `main` whose repair is merge-ready or reported. Nothing
-is handed over half-way. Comment on the round's proposal:
+waiting on a red `main` whose repair is merge-ready or reported, or waiting
+on an outside service. Nothing is handed over half-way. Comment on the
+round's proposal:
 
 ```
 ## Round <N> — result
@@ -1051,6 +1061,7 @@ next proposal's *Measurement* counts the second lanes.
 Pulled: #N — <the question, or what stopped the lane>
 Filed on the way: …
 Waiting on main: #<pr>, … — main red at <sha> on <check>; merge the repair #<n> first, then run `/process-top-issues` once.
+Waiting on <service>: #<pr>, … — <the URL that did not answer>; run `/process-top-issues` once it answers.
 Waiting on you: merge the pull requests above. Each is merge-ready at the head its
 comment names — merge it while every required check is green and its head is that
 one, or differs only by an *Update branch* you pressed yourself. Otherwise — a
