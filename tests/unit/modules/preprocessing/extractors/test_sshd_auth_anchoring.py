@@ -1023,8 +1023,9 @@ class TestAdversarialLines:
         almost nothing until they are long, and for those the helper moves the
         window up until the work shows. Mutation-checked — a host pattern of
         ``\\S*\\S*[^\\s:]`` reads at least 47 on the three shapes it makes
-        quadratic; fixed, every shape reads between 6 and 10 (linear reads
-        ~8), idle or on a 2x oversubscribed box (bound ~22.6).
+        quadratic; fixed, every shape reads between 6 and 10 at the window
+        it decides on (linear reads ~8), idle or on a 2x oversubscribed box
+        (bound ~22.6).
         """
         assert_linear_growth(
             read_sshd_auth_line,
