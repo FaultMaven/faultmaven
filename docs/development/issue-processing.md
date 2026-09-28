@@ -35,14 +35,14 @@ the work has got to:
   a recommendation, so answering is a word. Answer any, ignore any: an
   unanswered question returns in the next proposal and nothing stalls
   waiting on it.
-- **Merge pull requests.** A result comment lists them, each already
+- **Queue pull requests to merge.** A result comment lists them, each already
   reviewed, green and checked against its plan by the agent, with a
   merge-ready comment naming the head it vouches for. Merging one is not
-  reviewing it: merge while every required check is green and the head is the
-  one the comment names, or differs from it only by an *Update branch* you
-  pressed yourself. Otherwise — a conflict, a red check, a head you do not
-  recognise — run `/process-top-issues` once; it brings that pull request back
-  to merge-ready and stops.
+  reviewing it: add it to the merge queue while its head is the one the
+  comment names; the queue tests it on the latest `main` and merges it. If the
+  queue removes one, one conflicts, or its head is one you do not recognise,
+  run `/process-top-issues` once; it brings that pull request back to
+  merge-ready and stops.
 - **Run what only you can run, and close it.** The *yours* pile is work no
   agent can do — a live-deployment check, a console or credential an agent
   lacks — and a ruling can route work into it. It is listed in every
@@ -147,10 +147,10 @@ nobody wrote, and this one ends in a round asking.
 
 No unmerged pull request from the previous round. If there is one, this
 round does not start: it refreshes any that cannot be merged as they stand —
-behind `main`, conflicting, or red — so the owner is never left holding a
-pull request only a review could unstick, then reports what is outstanding
-and stops. This is what bounds work in progress, and it is why nothing here
-tracks pull requests ageing in the background.
+removed from the merge queue, conflicting, or red — so the owner is never
+left holding a pull request only a review could unstick, then reports what
+is outstanding and stops. This is what bounds work in progress, and it is
+why nothing here tracks pull requests ageing in the background.
 
 **Not open is not the same as settled.** *Close out* reports before the
 merges, so this is the only moment an agent sees what the owner did, and
@@ -544,7 +544,8 @@ merge or rewrite and nothing `main` brought in — since the rest has not
 changed since it was read. A review round's fixes go back as one push, so CI
 runs once per round, not once per finding. And `main` is merged in as the
 lane returns, so verification, review and CI all see the code as it will
-merge, and the merge-ready step merges again only if `main` moved.
+merge, and after that the merge queue keeps it current, so nothing merges
+`main` in again unless a conflict or a queue removal calls for it.
 Thoroughness is kept by reading everything once at the level it needs; speed
 comes from never reading the same unchanged thing twice.
 
@@ -582,15 +583,16 @@ reviewing — the owner is asked for the calls only a person can make, under
 *What escalates*, and getting the code right is the agents'. A pull request
 that cannot get there is pulled, never handed over with a caveat.
 
-**The owner merges**, unless they authorize the agent in as many words for
-the session in hand. The authorization ends with that session and never
-carries into another; approving a *round* is not approving its merges, and
-an agent that widens one into the other is deciding something that was not
-given to it. Delegated or not, a merge needs all four: review clean on the
-final head, every required context green on that head, the merge base green
-by commit, and the head unchanged since the review but for clean merges of
-`main` and commits that change no file, neither of which changes anything in
-the diff the review read.
+**The owner merges** — by adding the pull request to the merge queue —
+unless they authorize the agent in as many words for the session in hand.
+The authorization ends with that session and never carries into another;
+approving a *round* is not approving its merges, and an agent that widens
+one into the other is deciding something that was not given to it. Delegated
+or not, a merge needs all four: review clean on the final head, every
+required context green on that head, the merge base green by commit, and the
+head unchanged since the review but for clean merges of `main` and commits
+that change no file, neither of which changes anything in the diff the
+review read.
 
 The third condition has one exception: the pull request that repairs a red
 `main`, whose base is red by definition. For it, the condition is that its
@@ -600,24 +602,23 @@ wait on `main`. Without the exception a red `main` would leave every pull
 request in the round unmergeable, and since no round starts while one is
 open, nothing inside the procedure would ever repair it.
 
-**Merging one pull request can leave the next behind `main`.** The branch
-rules do not require a pull request to be up to date, so CI's verdict on a
-head is a verdict on `main` as it stood when CI ran, and two of a round's
-pull requests can each be green alone and not together. So the head must
-contain `main` when its merge-ready comment is posted, and a later one is
-brought up to date before it merges: *Update branch* and green checks are
-enough for the owner. A clean merge of `main` changes nothing in the diff
-the review read; what it can change is the code around it — a new reader of
-a value the pull request changed, a new caller of a function whose contract
-it changed, the class *Enumerate the consumers* exists for — and that is
-CI's to catch on the merged head, with the plan's consumer searches re-run
-there whenever the agent brings a head up to date. The comment vouches for
+**The merge queue keeps pull requests current with `main`.** Each is tested
+merged onto the latest `main` and onto the pull requests queued ahead of it
+before it lands, so two of a round's pull requests that are green alone and
+not together cannot both land: the queue removes the one that fails. So the
+agent merges `main` into a head as its lane returns, for review to read the
+code as it will merge, and never chases `main` afterwards. A clean merge of
+`main` changes nothing in the diff the review read; what it can change is
+the code around it — a new reader of a value the pull request changed, a new
+caller of a function whose contract it changed, the class *Enumerate the
+consumers* exists for — and that is CI's to catch, with the plan's consumer
+searches re-run whenever the agent merges `main` in. The comment vouches for
 one head, and a commit after it that is neither a clean merge of `main` nor
 a commit that changes no file is code nobody reviewed: a conflict's
-resolution has the same shape as *Update branch*, so the test is the tree,
-not the commit message. What *Update branch* cannot do — resolve a conflict,
-or turn a red check green — is the next invocation's to repair, in *Settle
-the last round*, before it stops.
+resolution has the same shape as a clean merge, so the test is the tree, not
+the commit message. A pull request the queue removes, or one that conflicts,
+is the next invocation's to repair, in *Settle the last round*, before it
+stops.
 
 A round is not over until every one is merged or explicitly abandoned —
 abandoned meaning the owner closed it unmerged, which *Settle the last
@@ -817,8 +818,8 @@ reads them all:
   Lanes collide on global values such as the API contract version and the
   alembic head, so items on one seam share one lane and one pull request
   rather than two lanes off the same base; two seams that move the same value
-  meet when the second is brought up to date with `main`, where CI or the
-  merge itself catches it.
+  meet in the merge queue, which removes the one that fails on top of the
+  other.
 - **A pull request that ships a guard gets a pass briefed to DEFEAT the
   guard.** Not to review the code — to answer one question: *what can be
   re-introduced without this noticing?* Four rounds running the defect has
