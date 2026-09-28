@@ -27,7 +27,7 @@ code, and the quoted `TOOLLESS_INFERENCE_OUTPUT_FLOOR` value matches
 
 | Provider | Environment Variable | Models | Structured output | Notes |
 |----------|---------------------|--------|-------------------|-------|
-| Anthropic | `ANTHROPIC_API_KEY` | claude-sonnet-4-6 | **FUNCTION_CALLING** | Schema enforced via forced tool use; recommended for logic |
+| Anthropic | `ANTHROPIC_API_KEY` | claude-sonnet-4-6 | **FUNCTION_CALLING** | Schema tool forced where the model accepts forcing, otherwise `auto` plus an instruction naming it (per-model rule: `docs/reference/llm-model-capabilities.md` §"Anthropic request shape"); recommended for logic |
 | OpenAI | `OPENAI_API_KEY` | gpt-5.6-luna | **STRICT** (gpt-4o+) | Reasons by default: plain calls send `reasoning_effort: "none"` and tool calls force it (hard model constraint), while structured calls keep the `low` starvation floor — so `OPENAI_REASONING_EFFORT=none` is a no-op here (and warns per structured call) — leave it unset. A HIGHER value is NOT inert: it replaces the `"none"` shape default on plain calls. `gpt-5.4-mini` remains supported |
 | Google Gemini | `GEMINI_API_KEY` | gemini-3.7-flash | **STRICT** (1.5+) | **Shipped default provider + model.** Fast multimodal. The adapter version-gates the reduced 3.6/3.7 API surfaces (no sampling params, `thinkingLevel`-only, user-role function responses carrying the call id); `gemini-3.5-flash*` remain supported on the classic surface |
 | Fireworks AI | `FIREWORKS_API_KEY` | accounts/fireworks/models/deepseek-v4-flash | BEST_EFFORT | Strong open weights, but schema not enforced — see note |
@@ -171,6 +171,18 @@ deliberately and declares `TOOLLESS_INFERENCE_OUTPUT_FLOOR` to buy the lift.
 Reasoning here is **routed**, not suppressed: the provider's minimum where the
 model is transforming supplied context, its default where the model is
 reasoning over candidates.
+
+The **Anthropic** adapter gates its request shape on the model the same way
+(#1695, measured live 2026-09-28). Newer Claude models 400 on any
+`temperature` (from `claude-opus-4-7`), and the newest also 400 on forced
+tool use (`claude-opus-5-5` and `claude-fable-5-1`; `claude-mythos-5-1` per
+the model docs). So `temperature` is sent only up to a per-family ceiling.
+Above the forcing ceiling, `tool_choice="required"` is sent as `auto`, plus
+a trailing `system` block that names the tool when the forcing names one or
+exactly one tool is offered. There the thinking-under-forcing refusal
+does not apply. An unparseable id or a version above its ceiling takes
+that newest shape, which every measured model accepts. Matrix and ceilings:
+`docs/reference/llm-model-capabilities.md` §"Anthropic request shape".
 
 ## Stop reasons and truncation
 
