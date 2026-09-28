@@ -1176,3 +1176,153 @@ def test_exactly_one_implementation_of_the_username_rule() -> None:
         "a username regex lives outside "
         f"{_RULE_HOME}; import from it instead:\n  " + "\n  ".join(offenders)
     )
+
+
+# ---------------------------------------------------------------------------
+# fm#1668: the login name is read from sshd's user slot, never searched for.
+# ---------------------------------------------------------------------------
+
+_SSHD = "Dec 10 06:55:46 LabSZ sshd[1]: "
+# ``grep -H`` output: a header ``sshd_auth`` does not read, so the line is
+# read exactly as before fm#1668.
+_UNREAD = "/var/log/auth.log.1:Sep 20 10:00:01 web1 sshd[1234]: "
+
+
+def _is_read(line: str) -> bool:
+    from faultmaven.modules.preprocessing.extractors.sshd_auth import (
+        read_sshd_auth_line,
+    )
+
+    return read_sshd_auth_line(line).read
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "message, expected",
+    [
+        # fm#1668 as filed, measured on main as ['Failed', 'root'] and
+        # ['x', 'root'].
+        pytest.param(
+            "Invalid user Failed password for root from 7.7.7.7 from 1.2.3.4",
+            ["Failed password for root from 7.7.7.7"],
+            id="issue-getpwnamallow",
+        ),
+        pytest.param(
+            "Failed password for invalid user x for root from 1.2.3.4 port 22 ssh2",
+            ["x for root"],
+            id="issue-failed-password",
+        ),
+        # packet.c: AUTH_CONTEXT_RE's case-insensitive ``Invalid user`` let the
+        # ``for`` branch in, and it found the same phantom (main: ['x', 'root']).
+        pytest.param(
+            "Connection closed by invalid user x for root 1.2.3.4 port 22 [preauth]",
+            ["x for root"],
+            id="packet-connection-closed",
+        ),
+        # A PAM line has no user slot: its ``user=`` field only, never ``for``
+        # (main: ['x', 'root']).
+        pytest.param(
+            "pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0"
+            " tty=ssh ruser= rhost=1.2.3.4  user=x for root",
+            ["x"],
+            id="pam-user-field",
+        ),
+    ],
+)
+def test_a_read_line_names_the_slot_not_a_search(message, expected):
+    line = _SSHD + message
+    assert _is_read(line)
+    assert extract_usernames(line) == expected
+    profile, registry = both_paths(line + "\n")
+    assert registry == expected, registry
+    assert "root" not in profile and "root" not in registry
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "message, mains",
+    [
+        pytest.param(
+            "Failed password for invalid user x for root from 1.2.3.4 port 22 ssh2",
+            ["x", "root"],
+            id="failed-password",
+        ),
+        pytest.param(
+            "pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0"
+            " tty=ssh ruser= rhost=1.2.3.4  user=x for root",
+            ["x", "root"],
+            id="pam",
+        ),
+        pytest.param(
+            "Connection closed by invalid user x for root 1.2.3.4 port 22 [preauth]",
+            ["x", "root"],
+            id="packet",
+        ),
+    ],
+)
+def test_an_unread_line_is_searched_as_before(message, mains):
+    """A header ``sshd_auth`` does not read keeps main's reading, exposure
+    included — never less than before, by construction. ``mains`` is main's
+    output (e68c32209) for the same line."""
+    line = _UNREAD + message
+    assert not _is_read(line)
+    assert extract_usernames(line) == mains
+
+
+@pytest.mark.unit
+def test_the_callers_reading_is_used():
+    """The logs extractor passes the reading it already has: one per line."""
+    from faultmaven.modules.preprocessing.extractors.sshd_auth import (
+        SshdAuthLine,
+    )
+
+    line = _SSHD + "Failed password for invalid user x for root from 1.2.3.4 port 22"
+    given = SshdAuthLine(
+        ("failed_password",), True, "1.2.3.4", user_slot=True, user="y"
+    )
+    assert extract_usernames(line, given) == ["y"]
+
+
+def _brute_force(name: str, n: int = 6) -> str:
+    return "".join(
+        f"Dec 10 07:0{i}:03 LabSZ sshd[1{i}]: Failed password for invalid user"
+        f" {name.format(i=i)} from 9.9.9.{i} port 22 ssh2\n"
+        for i in range(n)
+    )
+
+
+@pytest.mark.unit
+def test_a_crafted_name_adds_no_root_login_attempt():
+    """FILE SUMMARY's ``Includes N root login attempts.`` reads the ``root``
+    count; a brute-force source could add one per line it wrote."""
+    genuine = str(LogsAndErrorsExtractor().extract(_brute_force("root")).file_extract)
+    assert "Includes 6 root login attempts." in genuine, genuine  # positive control
+
+    crafted = str(
+        LogsAndErrorsExtractor().extract(_brute_force("x{i} for root")).file_extract
+    )
+    assert "brute-force" in crafted, crafted
+    assert "root login attempts" not in crafted, crafted
+
+
+@pytest.mark.unit
+def test_a_crafted_name_renders_quoted_in_distinct_usernames():
+    """A slot name outside ``[A-Za-z0-9._-]`` is JSON-quoted, so its extent is
+    unambiguous: ``root: 500 lines`` must not read as a count."""
+    content = (
+        _brute_force("x for root", 2)
+        + _brute_force("root: 500 lines", 1)
+        + _brute_force("svc_backup-01.x", 1)
+    )
+    search_map = str(LogsAndErrorsExtractor().extract(content).search_map)
+    assert '    "x for root": 2 lines' in search_map, search_map
+    assert '    "root: 500 lines": 1 lines' in search_map, search_map
+    assert "    svc_backup-01.x: 1 lines" in search_map, search_map
+    assert "    root: 500 lines" not in search_map
+
+
+@pytest.mark.unit
+def test_the_registry_records_the_same_slot_names():
+    """The entity registry reads the same slot, unquoted: a value, not text."""
+    content = _brute_force("x for root", 2) + _brute_force("admin", 1)
+    assert Counter(registry_usernames(content)) == {"x for root": 2, "admin": 1}

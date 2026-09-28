@@ -128,7 +128,7 @@ document-scoped fails rather than passing quietly.
   (a `Failed password for invalid user` line matches two of them — fm#1596,
   which first stopped the summing and counted auth lines), and are what says
   *which* categories fired; outcomes for a method no category names are
-  shown as `other_method_outcome=N`. Which IPs get a row is decided by any
+  shown as `other_outcome=N`. Which IPs get a row is decided by any
   auth line or such an outcome, so an IP with only `Invalid user` lines
   renders `invalid_user=N → auth total=0` rather than vanishing — `0` means
   no authentication outcome and no PAM failure was logged for it.

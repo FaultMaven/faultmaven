@@ -137,7 +137,7 @@ SPOOFS = [
     ),
     pytest.param(
         # The fm#1627 outcome test, for a method the categories do not name.
-        "other_method_outcome",
+        "other_outcome",
         f"Failed keyboard-interactive/pam for root from {VICTIM} port 22 ssh2",
         f"Failed keyboard-interactive/pam for root from {SRC} port 22 ssh2",
         id="outcome",
@@ -222,8 +222,8 @@ class TestALoginNameCannotChangeTheCounts:
         """The genuine line IS counted — so the crafted test can see a miss."""
         line = BSD + genuine if genuine else GENUINE_TAGGED[request.node.callspec.id]
         events, rows, flags = _counts(_render([line]))
-        if category == "other_method_outcome":
-            assert rows == {SRC: "other_method_outcome=1 → auth total=1"}, rows
+        if category == "other_outcome":
+            assert rows == {SRC: "other_outcome=1 → auth total=1"}, rows
         else:
             assert events.get(category) == 1, events
         if category in {"failed_password", "accepted_login", "pam_auth_failure"}:
@@ -385,7 +385,7 @@ SESSION_EVENTS = {
 }
 SESSION_ROWS = {
     SRC: "failed_password=1, pam_auth_failure=1, invalid_user=3 → auth total=1",
-    OTHER: "other_method_outcome=1 → auth total=1",
+    OTHER: "other_outcome=1 → auth total=1",
     VICTIM: "accepted_login=1 → auth total=1",
 }
 # Every category's phrase at once, spelled by one login name.
@@ -667,9 +667,9 @@ class TestAHeaderThisModuleDoesNotReadIsReadAsBefore:
         assert _events(result) == SESSION_EVENTS
         assert _rows(result) == {
             "10.0.0.5": "failed_password=1, pam_auth_failure=1, invalid_user=3,"
-            " accepted_login=1, other_method_outcome=1 → auth total=3",
+            " accepted_login=1, other_outcome=1 → auth total=3",
             SRC: "failed_password=1, pam_auth_failure=1, invalid_user=3 → auth total=1",
-            OTHER: "other_method_outcome=1 → auth total=1",
+            OTHER: "other_outcome=1 → auth total=1",
             VICTIM: "accepted_login=1 → auth total=1",
         }
 
@@ -1070,3 +1070,213 @@ def test_connection_closed_is_still_searched_residual():
     assert rows == {SRC: "invalid_user=1 → auth total=0"}, rows
     genuine = BSD + "fatal: Write failed: Connection reset by peer [preauth]"
     assert _events(_render([genuine])) == {"connection_closed": 1}
+
+
+# ---------------------------------------------------------------------------
+# The user slot (fm#1668): the login name is the text between the lead and
+# the address slot, from the same parse that decides the address.
+# ---------------------------------------------------------------------------
+
+# Every shape with a user slot. ``{user}`` is the client's login name; the
+# rest is sshd's. The ``invalid user `` in front of it is sshd's too, on every
+# shape that writes one.
+USER_SLOT_SHAPES = [
+    pytest.param(
+        f"Failed password for invalid user {{user}} from {SRC} port 50000 ssh2",
+        id="verdict-password",
+    ),
+    pytest.param(
+        f"Failed keyboard-interactive/pam for invalid user {{user}} from {SRC} port"
+        " 50000 ssh2",
+        id="verdict-keyboard-interactive",
+    ),
+    pytest.param(
+        f"Failed publickey for invalid user {{user}} from {SRC} port 50000 ssh2:"
+        " RSA SHA256:abc",
+        id="verdict-publickey",
+    ),
+    pytest.param(
+        f"Postponed publickey for invalid user {{user}} from {SRC} port 50000 ssh2"
+        " [preauth]",
+        id="verdict-postponed",
+    ),
+    pytest.param(
+        "error: maximum authentication attempts exceeded for invalid user {user}"
+        f" from {SRC} port 50000 ssh2 [preauth]",
+        id="maxtries",
+    ),
+    pytest.param(f"Invalid user {{user}} from {SRC} port 50000", id="getpwnamallow"),
+    pytest.param(
+        f"Connection closed by invalid user {{user}} {SRC} port 50000 [preauth]",
+        id="packet-closed-by-invalid-user",
+    ),
+    pytest.param(
+        f"Disconnected from invalid user {{user}} {SRC} port 50000 [preauth]",
+        id="packet-disconnected-from-invalid-user",
+    ),
+    pytest.param(
+        f"Disconnecting invalid user {{user}} {SRC} port 50000: Too many"
+        " authentication failures [preauth]",
+        id="packet-disconnecting-reason",
+    ),
+    pytest.param(
+        f"Received disconnect from invalid user {{user}} {SRC} port 50000:11: Bye"
+        " Bye [preauth]",
+        id="packet-received-disconnect-reason",
+    ),
+]
+
+# (the name the client sent, what the slot must read). Verbatim, spaces
+# included; never split at a ``for`` inside it.
+LOGIN_NAMES = [
+    pytest.param("root", id="root"),
+    pytest.param("x for root", id="x-for-root"),
+    pytest.param(f"Failed password for root from {VICTIM}", id="from-slot-lookalike"),
+    # behind the one real ``invalid user `` sshd wrote
+    pytest.param("invalid user root", id="invalid-user-root"),
+]
+
+
+def _reading(message: str):
+    reading = read_sshd_auth_line(BSD + message)
+    assert reading.read, message
+    return reading
+
+
+@pytest.mark.unit
+class TestTheUserSlot:
+    @pytest.mark.parametrize("name", LOGIN_NAMES)
+    @pytest.mark.parametrize("shape", USER_SLOT_SHAPES)
+    def test_the_slot_reads_the_login_name_verbatim(self, shape, name):
+        reading = _reading(shape.format(user=name))
+        assert (reading.user_slot, reading.user, reading.address) == (True, name, SRC)
+
+    def test_a_valid_users_name_has_no_invalid_user_prefix(self):
+        reading = _reading(f"Accepted password for alice from {SRC} port 22 ssh2")
+        assert (reading.user_slot, reading.user, reading.address) == (
+            True,
+            "alice",
+            SRC,
+        )
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            pytest.param(f"Invalid user  from {SRC} port 50000", id="getpwnamallow"),
+            pytest.param(
+                f"Failed none for invalid user  from {SRC} port 50000 ssh2",
+                id="verdict",
+            ),
+            pytest.param(
+                f"Connection closed by invalid user  {SRC} port 50000 [preauth]",
+                id="packet",
+            ),
+        ],
+    )
+    def test_an_empty_name_is_none(self, line):
+        """sshd writes an empty login name as two spaces: nothing to report."""
+        reading = _reading(line)
+        assert (reading.user_slot, reading.user, reading.address) == (True, None, SRC)
+
+    def test_an_undecided_slot_names_nobody(self):
+        """A key id repeating ``from <ip> port <n> ssh2`` makes two slots parse.
+
+        The address is undecided, so the name is too — either reading could
+        be the attacker's.
+        """
+        reading = _reading(
+            f"Failed publickey for invalid user x from {VICTIM} port 1 ssh2: RSA"
+            f" SHA256:z ID q from {SRC} port 22 ssh2: RSA-CERT SHA256:a ID k"
+        )
+        assert (reading.user_slot, reading.user, reading.address) == (True, None, None)
+
+    def test_a_message_too_long_to_parse_names_nobody(self):
+        reading = _reading(
+            f"Failed password for invalid user {'x' * sshd_auth._MAX_ADDRESS_PARSE_CHARS}"
+            f" from {SRC} port 22 ssh2"
+        )
+        assert (reading.user_slot, reading.user, reading.address) == (True, None, None)
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            pytest.param(
+                "pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0"
+                f" tty=ssh ruser= rhost={SRC}  user=x for root",
+                id="pam",
+            ),
+            pytest.param(
+                f"reverse mapping checking getaddrinfo for root.example [{SRC}]"
+                " failed - POSSIBLE BREAK-IN ATTEMPT!",
+                id="break-in",
+            ),
+        ],
+    )
+    def test_pam_and_break_in_readings_have_no_user_slot(self, line):
+        reading = _reading(line)
+        assert reading.events, line
+        assert (reading.user_slot, reading.user) == (False, None)
+
+    def test_a_session_line_has_no_user_slot(self):
+        line = "Jun 14 15:16:01 combo sshd(pam_unix)[19939]: session opened for user x"
+        reading = read_sshd_auth_line(line)
+        assert reading.events == ("ssh_session_opened",)
+        assert (reading.user_slot, reading.user) == (False, None)
+
+    def test_a_connection_id_without_a_preamble_has_no_user_slot(self):
+        """Before auth2.c sets the log preamble, packet.c writes ``<ip> port <n>``."""
+        assert sshd_auth._slot(f"Connection closed by {SRC} port 50000 [preauth]") == (
+            SRC,
+            False,
+            None,
+        )
+
+    @pytest.mark.parametrize("shape", USER_SLOT_SHAPES)
+    def test_the_address_is_the_one_the_name_came_from(self, shape):
+        """One parse: a name holding a slot lookalike does not move the address."""
+        crafted = _reading(shape.format(user=f"x from {VICTIM} port 1 ssh2"))
+        assert crafted.address in {SRC, None}, crafted
+        if crafted.address == SRC:
+            assert crafted.user == f"x from {VICTIM} port 1 ssh2"
+
+
+# ---------------------------------------------------------------------------
+# rsyslog's repeat wrapper (fm#1669): the line stands for N occurrences.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestTheRepeatWeight:
+    def test_a_read_repeat_line_carries_its_count(self):
+        line = BSD + (
+            f"message repeated 5 times: [ Failed password for root from {SRC}"
+            " port 42393 ssh2]"
+        )
+        reading = read_sshd_auth_line(line)
+        assert (reading.read, reading.weight, reading.address) == (True, 5, SRC)
+
+    def test_every_other_read_line_weighs_one(self):
+        line = BSD + f"Failed password for root from {SRC} port 42393 ssh2"
+        assert read_sshd_auth_line(line).weight == 1
+
+    def test_an_unread_repeat_line_weighs_one(self):
+        """The weight is the reading's; an unread line is read as before."""
+        line = UNREAD_SHAPES["grep_H"](
+            f"message repeated 5 times: [ Failed password for root from {SRC}"
+            " port 42393 ssh2]"
+        )
+        reading = read_sshd_auth_line(line)
+        assert (reading.read, reading.weight) == (False, 1)
+
+    @pytest.mark.parametrize("digits", [11, 5000], ids=["11-digits", "5000-digits"])
+    def test_a_count_rsyslog_cannot_write_is_one_line(self, digits):
+        """``int()`` raises past 4300 digits, and an extractor that raises
+        blanks the whole file's extraction. rsyslog writes the count with
+        ``%d``, so more than ten digits is not rsyslog's."""
+        line = BSD + (
+            f"message repeated {'9' * digits} times: [ Failed password for root"
+            f" from {SRC} port 42393 ssh2]"
+        )
+        reading = read_sshd_auth_line(line)
+        assert (reading.read, reading.weight, reading.address) == (True, 1, SRC)
+        assert _rows(_render([line])) == {SRC: "failed_password=1 → auth total=1"}

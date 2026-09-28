@@ -37,6 +37,14 @@ searched anywhere, every IPv4 credited. An unread format therefore never
 counts less than that, by construction, and keeps that reading's exposure;
 every format read here gets the protection. A line with no word any rule of
 either reading needs is decided here as "no event" (``_EVENT_WORDS``).
+
+THE USER SLOT (fm#1668). The client's login name sits between a shape's
+fixed lead (``Failed password for [invalid user ]``, ``Invalid user ``,
+``Connection closed by invalid user `` …) and the address slot, so the parse
+that decides the address decides the name too: it is the text between the
+two, verbatim — spaces included, because a name no account can have is
+itself what an attack looks like. ``x for root`` is one login name, never a
+second account called ``root``. Only exactly one ``invalid user `` is sshd's.
 """
 
 from __future__ import annotations
@@ -117,10 +125,16 @@ _MESSAGE_LEVEL = rf"(?:(?:error|fatal|debug[1-3]?|verbose):\s+|{_LEVEL_WORD}\s+)
 _MESSAGE_PREFIX_RE = re.compile(
     r"(?:\[ID \d+ [\w.]+\]\s+)?"
     + _MESSAGE_LEVEL
-    + r"(?P<repeat>message repeated \d+ times: \[\s*"
+    + r"(?P<repeat>message repeated (?P<times>\d+) times: \[\s*"
     + _MESSAGE_LEVEL
     + r")?"
 )
+# rsyslog writes the repeat count with ``%d`` of a C int, so ten digits hold
+# any count it can write. A longer run is not rsyslog's, and is read as one
+# line: converting it would raise past Python's int/str digit limit (4300)
+# in ``int()`` or, summed, in the rendered count — and an extractor that
+# raises blanks the whole file's extraction.
+_MAX_REPEAT_DIGITS = 10
 # JSON-lines exports carry the message as one field (journald ``MESSAGE``,
 # docker json-file ``log``). Any other key is a format this module does not
 # read, and the line is left to the search.
@@ -130,11 +144,17 @@ _JSON_PROGRAM_KEYS = ("SYSLOG_IDENTIFIER",)
 
 @dataclass(frozen=True)
 class SyslogMessage:
-    """One line split at the message start: the tag's parts, then the words."""
+    """One line split at the message start: the tag's parts, then the words.
+
+    ``repeat`` is N of rsyslog's ``message repeated N times: [ … ]`` wrapper
+    — the line stands for N occurrences of ``text`` (fm#1669) — and 1 on
+    every other line.
+    """
 
     program: str
     module: str
     text: str
+    repeat: int = 1
 
 
 def split_syslog_line(line: str) -> SyslogMessage:
@@ -177,15 +197,23 @@ def _split_text_line(line: str) -> SyslogMessage:
         program = header.group("program") or ""
         module = header.group("module") or ""
         rest = line[header.end() :]
-    return SyslogMessage(program, module, _strip_message_prefix(rest))
+    text, repeat = _strip_message_prefix(rest)
+    return SyslogMessage(program, module, text, repeat)
 
 
-def _strip_message_prefix(rest: str) -> str:
+def _strip_message_prefix(rest: str) -> tuple[str, int]:
     prefix = _MESSAGE_PREFIX_RE.match(rest)
     text = rest[prefix.end() :].rstrip()
-    if prefix.group("repeat") and text.endswith("]"):
-        text = text[:-1].rstrip()
-    return text
+    repeat = 1
+    if prefix.group("repeat"):
+        if text.endswith("]"):
+            text = text[:-1].rstrip()
+        times = prefix.group("times")
+        if len(times) <= _MAX_REPEAT_DIGITS:
+            # ``max``: rsyslog never writes 0, and a line is never less
+            # than one occurrence.
+            repeat = max(1, int(times))
+    return text, repeat
 
 
 def _split_json_line(line: str) -> SyslogMessage:
@@ -207,7 +235,9 @@ def _split_json_line(line: str) -> SyslogMessage:
     # container that runs syslogd). It is read as text, never as JSON again:
     # one level, however the value is nested.
     inner = _split_text_line(value.rstrip("\n").lstrip())
-    return SyslogMessage(inner.program or program, inner.module, inner.text)
+    return SyslogMessage(
+        inner.program or program, inner.module, inner.text, inner.repeat
+    )
 
 
 def _is_sshd(program: str) -> bool:
@@ -290,9 +320,9 @@ _MAX_ADDRESS_PARSE_CHARS = 4096
 
 # Where sshd writes the remote address, in its two spellings: auth.c's
 # ``from <ip> port <n> ssh2`` and packet.c ``sshpkt_fmt_connection_id``'s
-# ``<ip> port <n>``. A leading greedy ``.*`` finds the RIGHTMOST slot the tail
-# admits, a lazy ``.*?`` the LEFTMOST. The lead phrase is not part of these:
-# it only selects the shape, and it holds no slot lookalike.
+# ``<ip> port <n>``. A greedy run in front of the slot finds the RIGHTMOST
+# slot the tail admits, a lazy one the LEFTMOST. The lead phrase holds no
+# slot lookalike.
 _FROM_SLOT = r"\sfrom\s+(?P<addr>\S+)(?:\s+port\s+\d+)?(?:\s+ssh[12])?"
 _BARE_SLOT = r"\s(?P<addr>\S+)\s+port\s+\d+"
 _PREAUTH_END = r"(?:\s+\[preauth\])?\s*$"
@@ -310,6 +340,49 @@ _KEY_TAIL = r"(?::\s.*)?" + _PREAUTH_END
 _REASON_TAIL = r"(?:\s+timed out|:.*)?" + _PREAUTH_END
 _VERDICT = r"(?:Failed|Accepted|Partial|Postponed)"
 
+# The USER LEAD: sshd's own words in front of the client's login name
+# (fm#1668). The name is the text from the end of the lead to the address
+# slot, so the parse that decides the slot decides the name. Exactly one
+# ``invalid user `` is sshd's — ``for invalid user invalid user root`` is the
+# name ``invalid user root``.
+#   auth.c ``auth_log``: ``<verdict> <method> for [invalid user ]<name>``;
+_VERDICT_USER_LEAD = _VERDICT + r"\s+\S+\s+for\s+(?:invalid user\s+)?"
+#   auth.c ``auth_maxtries_exceeded``;
+_MAXTRIES_LEAD = r"maximum authentication attempts exceeded"
+_MAXTRIES_USER_LEAD = _MAXTRIES_LEAD + r"\s+for\s+(?:invalid user\s+)?"
+#   auth.c ``getpwnamallow``: ``Invalid user <name> from <ip>``;
+_GETPWNAM_USER_LEAD = r"Invalid user\s"
+#   packet.c ``sshpkt_fmt_connection_id``: the log preamble auth2.c sets,
+#   ``invalid user <name>``, ``authenticating user <name>`` or, once
+#   authenticated, ``user <name>``. Only where it is present: before the
+#   preamble is set the id is the bare ``<ip> port <n>``, with no name slot.
+_PACKET_USER_PREFIX = r"\s+(?:(?:invalid|authenticating)\s+user\s+|user\s+)"
+_PACKET_ENDING_LEAD = (
+    r"(?:[\w-]+:\s+)?(?:Connection (?:closed|reset) by|Disconnected from"
+    r"|Timeout, client not responding from)"
+)
+_PACKET_REASON_LEAD = (
+    r"(?:[\w-]+:\s+)?(?:Connection from|Disconnecting|Received disconnect"
+    r" from|Unable to negotiate with)"
+)
+
+
+def _slot_pattern(user_lead: str, slot_and_tail: str, *, lazy: bool) -> re.Pattern:
+    """``<user lead><user><slot><tail>``, else the slot anywhere, as before.
+
+    The first alternative is the reading with a name: the user group runs
+    from the lead to the slot, greedy for the rightmost slot, lazy for the
+    leftmost. The second is the pre-fm#1668 reading, and is reached only when
+    the first cannot parse — a line that does not have the lead, or has it
+    but no slot after it — so where no name can be read the address is
+    exactly what it was. Both alternatives are one match, so the name and
+    the address always come from the same reading.
+    """
+    run = ".*?" if lazy else ".*"
+    return re.compile(
+        rf"(?:{user_lead}(?P<user>{run})|{run})" + slot_and_tail, re.IGNORECASE
+    )
+
 
 @dataclass(frozen=True)
 class _SlotShape:
@@ -317,63 +390,72 @@ class _SlotShape:
 
     ``leftmost`` is None where no client text follows the slot, and then the
     rightmost slot is the answer; otherwise the two must agree.
+    ``user_lead`` is None where the shape writes no login name; where it is
+    set, a message it matches at the start carries sshd's user slot.
     """
 
     lead: "re.Pattern[str]"
     rightmost: "re.Pattern[str]"
     leftmost: "re.Pattern[str] | None" = None
+    user_lead: "re.Pattern[str] | None" = None
+
+
+def _shape(
+    lead: str,
+    user_lead: str,
+    slot_and_tail: str,
+    *,
+    agree: bool,
+    lead_flags: int = re.IGNORECASE,
+) -> _SlotShape:
+    return _SlotShape(
+        re.compile(lead, lead_flags),
+        _slot_pattern(user_lead, slot_and_tail, lazy=False),
+        _slot_pattern(user_lead, slot_and_tail, lazy=True) if agree else None,
+        re.compile(user_lead, re.IGNORECASE),
+    )
 
 
 # Selected by the FIRST lead that opens the message.
 _SLOT_SHAPES: tuple[_SlotShape, ...] = (
     # auth.c ``auth_log`` for password, none and keyboard-interactive, which
     # append nothing after ``ssh2``.
-    _SlotShape(
-        re.compile(
-            _VERDICT + r"\s+(?:password|none|keyboard-interactive(?:/\w+)?)\s",
-            re.IGNORECASE,
-        ),
-        re.compile(r".*" + _FROM_SLOT + _ANY_TAIL, re.IGNORECASE),
+    _shape(
+        _VERDICT + r"\s+(?:password|none|keyboard-interactive(?:/\w+)?)\s",
+        _VERDICT_USER_LEAD,
+        _FROM_SLOT + _ANY_TAIL,
+        agree=False,
     ),
     # ... and for publickey, hostbased and the rest, which append the key.
-    _SlotShape(
-        re.compile(_VERDICT + r"\s", re.IGNORECASE),
-        re.compile(r".*" + _FROM_SLOT + _KEY_TAIL, re.IGNORECASE),
-        re.compile(r".*?" + _FROM_SLOT + _KEY_TAIL, re.IGNORECASE),
-    ),
+    _shape(_VERDICT + r"\s", _VERDICT_USER_LEAD, _FROM_SLOT + _KEY_TAIL, agree=True),
     # auth.c ``auth_maxtries_exceeded``
-    _SlotShape(
-        re.compile(r"maximum authentication attempts exceeded\s", re.IGNORECASE),
-        re.compile(r".*" + _FROM_SLOT + _ANY_TAIL, re.IGNORECASE),
+    _shape(
+        _MAXTRIES_LEAD + r"\s", _MAXTRIES_USER_LEAD, _FROM_SLOT + _ANY_TAIL, agree=False
     ),
     # auth.c ``getpwnamallow``: ``Invalid user X from <ip>[ port <n>]``.
     # Case-sensitive: sshd capitalises this message, and the lower-case
     # ``invalid user X`` of ``input_userauth_request: invalid user X`` carries
     # no address — headerless output can read that function name as the tag.
-    _SlotShape(
-        re.compile(r"Invalid user\s"),
-        re.compile(
-            r".*\sfrom\s+(?P<addr>\S+)(?:\s+port\s+\d+)?" + _ANY_TAIL, re.IGNORECASE
-        ),
+    _shape(
+        r"Invalid user\s",
+        _GETPWNAM_USER_LEAD,
+        r"\sfrom\s+(?P<addr>\S+)(?:\s+port\s+\d+)?" + _ANY_TAIL,
+        agree=False,
+        lead_flags=0,
     ),
     # packet.c ``sshpkt_fmt_connection_id`` leads that end at the slot ...
-    _SlotShape(
-        re.compile(
-            r"(?:[\w-]+:\s+)?(?:Connection (?:closed|reset) by|Disconnected from"
-            r"|Timeout, client not responding from)\s",
-            re.IGNORECASE,
-        ),
-        re.compile(r".*" + _BARE_SLOT + _ANY_TAIL, re.IGNORECASE),
+    _shape(
+        _PACKET_ENDING_LEAD + r"\s",
+        _PACKET_ENDING_LEAD + _PACKET_USER_PREFIX,
+        _BARE_SLOT + _ANY_TAIL,
+        agree=False,
     ),
     # ... and those that append a reason after it.
-    _SlotShape(
-        re.compile(
-            r"(?:[\w-]+:\s+)?(?:Connection from|Disconnecting|Received disconnect"
-            r" from|Unable to negotiate with)\s",
-            re.IGNORECASE,
-        ),
-        re.compile(r".*" + _BARE_SLOT + _REASON_TAIL, re.IGNORECASE),
-        re.compile(r".*?" + _BARE_SLOT + _REASON_TAIL, re.IGNORECASE),
+    _shape(
+        _PACKET_REASON_LEAD + r"\s",
+        _PACKET_REASON_LEAD + _PACKET_USER_PREFIX,
+        _BARE_SLOT + _REASON_TAIL,
+        agree=True,
     ),
 )
 # pam_unix: ``… ruser=<r> rhost=<host>[  user=<name>]``. Client text can sit
@@ -384,21 +466,30 @@ _SLOT_SHAPES: tuple[_SlotShape, ...] = (
 _PAM_RHOST_RE = re.compile(r"(?:^|\s)rhost=(?P<addr>\S*)")
 
 
-def _slot_address(message: str) -> str | None:
-    if len(message) > _MAX_ADDRESS_PARSE_CHARS:
-        return None
+def _slot(message: str) -> tuple[str | None, bool, str | None]:
+    """``(address, user_slot, user)`` from one parse of ``message``.
+
+    ``user_slot`` is whether the message opens with its shape's user lead.
+    ``user`` is the text between that lead and the address slot when the
+    slot is DECIDED — the rightmost parse, agreed on by the leftmost where
+    the shape has one — and None when the slot is undecided, the name is
+    empty (``Invalid user  from …``), or the message is too long to parse.
+    """
     for shape in _SLOT_SHAPES:
         if not shape.lead.match(message):
             continue
+        user_slot = shape.user_lead is not None and bool(shape.user_lead.match(message))
+        if len(message) > _MAX_ADDRESS_PARSE_CHARS:
+            return None, user_slot, None
         rightmost = shape.rightmost.match(message)
         if rightmost is None:
-            return None
+            return None, user_slot, None
         if shape.leftmost is not None:
             leftmost = shape.leftmost.match(message)
             if leftmost is None or leftmost.span("addr") != rightmost.span("addr"):
-                return None
-        return rightmost.group("addr")
-    return None
+                return None, user_slot, None
+        return rightmost.group("addr"), user_slot, rightmost.group("user") or None
+    return None, False, None
 
 
 def _rhost_address(message: str) -> str | None:
@@ -419,12 +510,24 @@ class SshdAuthLine:
     extractor's per-line order. ``outcome`` is True on an attempt's outcome
     line (fm#1627). ``address`` is the remote address in sshd's slot, or None
     when the line has no slot or more than one slot parses.
+
+    ``user_slot`` is True when the message's shape carries sshd's user slot
+    (fm#1668), and ``user`` is that slot's text, verbatim, when the address
+    slot was decided — None when it was not, when the name is empty, or when
+    the message is too long to parse. Break-in and PAM readings have no user
+    slot.
+
+    ``weight`` is how many occurrences the line stands for: N on rsyslog's
+    ``message repeated N times: [ … ]`` wrapper (fm#1669), 1 otherwise.
     """
 
     events: tuple[str, ...]
     outcome: bool
     address: str | None
     read: bool = True
+    user_slot: bool = False
+    user: str | None = None
+    weight: int = 1
 
 
 _NO_EVENT = SshdAuthLine((), False, None)
@@ -501,13 +604,21 @@ def _read_message(message: SyslogMessage) -> SshdAuthLine | None:
     }.isdisjoint(events)
     if not events and not outcome:
         return None
+    user_slot, user = False, None
     if break_in:
         address = break_in.group("reverse_addr") or break_in.group("forward_addr")
     elif pam_failure:
         address = _rhost_address(text)
     else:
-        address = _slot_address(text)
-    return SshdAuthLine(tuple(events), outcome, _unmapped(address))
+        address, user_slot, user = _slot(text)
+    return SshdAuthLine(
+        tuple(events),
+        outcome,
+        _unmapped(address),
+        user_slot=user_slot,
+        user=user,
+        weight=message.repeat,
+    )
 
 
 def _unmapped(address: str | None) -> str | None:

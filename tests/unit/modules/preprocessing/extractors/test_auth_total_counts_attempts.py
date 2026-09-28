@@ -107,10 +107,10 @@ class TestAuthTotalCountsAttempts:
     def test_the_fallback_is_per_ip_not_per_file(self):
         """One IP's outcome lines do not switch another IP's fallback off.
 
-        The file-level summary applies its PAM rule once per file
-        (``_build_summary``); the ruling applies this one per IP. A
-        pam-only IP sharing a file with an OpenSSH one still reads its PAM
-        count, not 0.
+        The ruling applies this per IP, and since fm#1654 the file-level
+        summary's PAM figure follows the same rule
+        (``TestTheSummaryPamFigureIsDecidedPerIp``). A pam-only IP sharing a
+        file with an OpenSSH one still reads its PAM count, not 0.
         """
         lines = _format_b("218.188.2.4", 2)
         for i, user in enumerate(("admin", "oracle")):
@@ -204,8 +204,7 @@ class TestEveryMethodsOutcomeIsAnAttempt:
         )
         rows = _rows(_text(lines))
         assert rows[ip] == (
-            "pam_auth_failure=5, accepted_login=1, other_method_outcome=5"
-            " → auth total=6"
+            "pam_auth_failure=5, accepted_login=1, other_outcome=5" " → auth total=6"
         ), rows
 
     def test_more_pam_lines_than_outcome_lines(self):
@@ -234,7 +233,7 @@ class TestEveryMethodsOutcomeIsAnAttempt:
             for i in range(3)
         ]
         rows = _rows(_text(lines))
-        assert rows[ip] == "other_method_outcome=3 → auth total=3", rows
+        assert rows[ip] == "other_outcome=3 → auth total=3", rows
 
     def test_failed_none_is_not_an_attempt(self):
         """``Failed none`` is the client's method query: no credential offered.
@@ -268,3 +267,187 @@ class TestAuthAttemptCount:
             0, Counter({"pam_auth_failure": 7, "invalid_user": 3})
         )
         assert count == 7
+
+
+def _search_map(lines: list[str]) -> str:
+    return LogsAndErrorsExtractor().extract(_text(lines)).search_map or ""
+
+
+def _summary(lines: list[str]) -> str:
+    return LogsAndErrorsExtractor().extract(_text(lines)).file_extract.split("\n\n")[0]
+
+
+def _event_lines(lines: list[str]) -> dict[str, int]:
+    """The ``Event types`` block's LINE counts."""
+    events: dict[str, int] = {}
+    inside = False
+    for raw in _search_map(lines).split("\n"):
+        if raw.lstrip().startswith("Event types"):
+            inside = True
+            continue
+        if inside:
+            if raw.startswith("      "):
+                continue
+            if not raw.startswith("    "):
+                break
+            name, _, rest = raw.strip().partition(": ")
+            events[name] = int(rest.split()[0])
+    return events
+
+
+_REPEAT_NOTE = 'A "message repeated N times" line counts N times'
+
+
+@pytest.mark.unit
+class TestARepeatedMessageIsNAttempts:
+    """rsyslog's ``message repeated N times: [ … ]`` stands for N occurrences
+    (fm#1669). The per-IP tallies and ``auth total`` count it N times; the
+    ``Event types`` LINE count counts it once, because ``search_file`` finds
+    one line — and the header says so where both are shown."""
+
+    # loghub OpenSSH_2k, lines 29-30.
+    LOGHUB = [
+        "Dec 10 07:13:43 LabSZ sshd[24227]: Failed password for root from"
+        " 5.36.59.76 port 42393 ssh2",
+        "Dec 10 07:13:56 LabSZ sshd[24227]: message repeated 5 times: [ Failed"
+        " password for root from 5.36.59.76 port 42393 ssh2]",
+    ]
+
+    def test_the_loghub_lines_are_six_attempts(self):
+        assert _rows(_text(self.LOGHUB)) == {
+            "5.36.59.76": "failed_password=6 → auth total=6"
+        }
+
+    def test_event_types_still_counts_lines(self):
+        assert _event_lines(self.LOGHUB) == {"failed_password": 2}
+
+    def test_the_header_says_which_count_is_which(self):
+        assert _REPEAT_NOTE in _search_map(self.LOGHUB)
+
+    def test_no_repeat_line_no_note(self):
+        """Said only where it applies: without a repeat the header is as before."""
+        search_map = _search_map(self.LOGHUB[:1] * 2)
+        assert "IP auth breakdown" in search_map
+        assert _REPEAT_NOTE not in search_map
+
+    def test_the_pam_fallback_sees_the_weighted_count(self):
+        """Format B has no outcome line, so the weighted PAM count is the total."""
+        tagged = "Jun 14 15:16:0{i} combo sshd(pam_unix)[1993{i}]: "
+        pam = (
+            "authentication failure; logname= uid=0 euid=0 tty=NODEVssh ruser="
+            " rhost=218.188.2.4"
+        )
+        lines = [
+            tagged.format(i=1) + pam,
+            tagged.format(i=2) + f"message repeated 3 times: [ {pam}]",
+        ]
+        assert _rows(_text(lines)) == {
+            "218.188.2.4": "pam_auth_failure=4 → auth total=4"
+        }
+        assert _event_lines(lines) == {"pam_auth_failure": 2}
+        # FILE SUMMARY counts lines, like "Event types".
+        assert "Dominant activity: pam auth failure (2)." in _summary(lines)
+
+    def test_an_unread_repeat_line_is_one_line(self):
+        """The weight is ``sshd_auth``'s reading; an unread line is read as before."""
+        lines = [f"/var/log/auth.log.1:{line}" for line in self.LOGHUB]
+        assert _rows(_text(lines)) == {"5.36.59.76": "failed_password=2 → auth total=2"}
+
+
+# fm#1654's review probe: a Format A (OpenSSH) host beside a Format B (loghub
+# Linux) host.
+_FORMAT_A = [
+    line
+    for i in range(3)
+    for line in (
+        f"Dec 10 07:0{i}:01 h sshd[1{i}]: Invalid user u{i} from 1.1.1.1",
+        f"Dec 10 07:0{i}:02 h sshd[1{i}]: pam_unix(sshd:auth): authentication"
+        " failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=1.1.1.1",
+        f"Dec 10 07:0{i}:03 h sshd[1{i}]: Failed password for invalid user u{i}"
+        " from 1.1.1.1 port 22 ssh2",
+    )
+]
+_FORMAT_B = _format_b("2.2.2.2", 4)
+
+
+@pytest.mark.unit
+class TestTheSummaryPamFigureIsDecidedPerIp:
+    """FILE SUMMARY's PAM figure follows the breakdown's per-IP rule (fm#1654).
+
+    It used to drop every PAM line when any line in the file was a
+    ``Failed password``, so a Format B host's failures vanished from the
+    summary while its breakdown row counted them.
+    """
+
+    def test_the_issue_probe(self):
+        lines = _FORMAT_A + _FORMAT_B
+        assert _rows(_text(lines)) == {
+            "1.1.1.1": "failed_password=3, pam_auth_failure=3, invalid_user=6"
+            " → auth total=3",
+            "2.2.2.2": "pam_auth_failure=4 → auth total=4",
+        }
+        # main: "invalid user (6), failed password (3)."
+        assert (
+            "Dominant activity: invalid user (6), pam auth failure (4),"
+            " failed password (3)." in _summary(lines)
+        ), _summary(lines)
+
+    def test_a_format_a_only_file_is_unchanged(self):
+        """Every PAM line accompanies an outcome line: no PAM figure. As main."""
+        assert "Dominant activity: invalid user (6), failed password (3)." in (
+            _summary(_FORMAT_A)
+        )
+
+    def test_a_format_b_only_file_is_unchanged(self):
+        """No outcome line anywhere: every PAM line is an attempt. As main."""
+        assert "Dominant activity: pam auth failure (4)." in _summary(_FORMAT_B)
+
+    def test_an_uncredited_pam_line_counts_only_without_outcome_lines(self):
+        """A PAM line whose ``rhost`` is a PTR name is credited to no IP. It is
+        an attempt only where nothing in the file is an outcome line."""
+        uncredited = (
+            "Jun 14 15:20:01 combo sshd(pam_unix)[20000]: authentication failure;"
+            " logname= uid=0 euid=0 tty=NODEVssh ruser= rhost=1.1.1.1.dyn.example"
+        )
+        assert "Dominant activity: pam auth failure (5)." in _summary(
+            _FORMAT_B + [uncredited]
+        )
+        assert "pam auth failure (4)" in _summary(_FORMAT_A + _FORMAT_B + [uncredited])
+
+
+# One attempt through a multi-step login: its ``Postponed``/``Partial`` lines
+# are steps, and only the final ``Accepted`` line is its outcome (fm#1656).
+_POSTPONED = [
+    "Postponed keyboard-interactive for root from {ip} port 22 ssh2 [preauth]",
+    "Postponed keyboard-interactive/pam for root from {ip} port 22 ssh2 [preauth]",
+    "Accepted keyboard-interactive/pam for root from {ip} port 22 ssh2",
+]
+_PARTIAL = [
+    "Partial publickey for root from {ip} port 22 ssh2: ED25519 SHA256:abc",
+    "Accepted keyboard-interactive/pam for root from {ip} port 22 ssh2",
+]
+# The two readers: a header ``sshd_auth`` reads (``AUTH_OUTCOME_RE`` decides)
+# and ``grep -H`` output, which it does not (``_SSHD_AUTH_OUTCOME_RE``).
+_READERS = {
+    "read": "Dec 10 06:55:46 LabSZ sshd[24200]: {m}",
+    "searched": "/var/log/auth.log.1:Dec 10 06:55:46 LabSZ sshd[24200]: {m}",
+}
+
+
+@pytest.mark.unit
+class TestPartialAndPostponedAreNotOutcomes:
+    """``Partial``/``Postponed`` are steps of one attempt, not attempts."""
+
+    @pytest.mark.parametrize("reader", sorted(_READERS))
+    @pytest.mark.parametrize(
+        "session", [_POSTPONED, _PARTIAL], ids=["postponed", "partial"]
+    )
+    def test_one_attempt_is_one(self, reader, session):
+        from faultmaven.modules.preprocessing.extractors.sshd_auth import (
+            read_sshd_auth_line,
+        )
+
+        ip = "203.0.113.8"
+        lines = [_READERS[reader].format(m=m.format(ip=ip)) for m in session]
+        assert {read_sshd_auth_line(line).read for line in lines} == {reader == "read"}
+        assert _rows(_text(lines)) == {ip: "other_outcome=1 → auth total=1"}
