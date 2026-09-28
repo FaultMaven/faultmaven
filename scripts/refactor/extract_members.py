@@ -306,6 +306,92 @@ def import_block(src: Source) -> str:
     return "".join(chunks)
 
 
+def _is_type_checking_block(n: ast.stmt) -> bool:
+    return (
+        isinstance(n, ast.If)
+        and "TYPE_CHECKING" in ast.unparse(n.test)
+        and all(isinstance(b, (ast.Import, ast.ImportFrom)) for b in n.body)
+    )
+
+
+def _import_bindings(n: ast.stmt) -> dict[str, str]:
+    """name -> what it is bound to, for one import statement (dotted source)."""
+    if isinstance(n, ast.Import):
+        return {a.asname or a.name: a.name for a in n.names}
+    if isinstance(n, ast.ImportFrom):
+        mod = "." * n.level + (n.module or "")
+        return {a.asname or a.name: f"{mod}:{a.name}" for a in n.names}
+    return {}
+
+
+def append_to_module(
+    existing: str, import_chunks: list[str], add_logger: bool, body: str
+) -> str:
+    """Append ``body`` to an existing module, merging its imports into the header.
+
+    The new imports go after the module's leading run of imports, never at the
+    append point: ruff's ``I`` rules sort one contiguous block, so an import
+    written below existing code stays there. A name the module already imports
+    from the same source is dropped rather than imported twice; the same name
+    bound from a DIFFERENT source is refused, since dropping either binding
+    would silently change what the moved code or the existing code reads.
+    A ``from __future__`` import goes first, where Python requires it.
+    """
+    tree = ast.parse(existing)
+    lines = existing.splitlines(keepends=True)
+    bound: dict[str, str] = {}
+    for n in tree.body:
+        for s in n.body if _is_type_checking_block(n) else [n]:
+            bound.update(_import_bindings(s))
+    docstring_end = 0
+    header_end = 0
+    for i, n in enumerate(tree.body):
+        if (
+            i == 0
+            and isinstance(n, ast.Expr)
+            and isinstance(n.value, ast.Constant)
+            and isinstance(n.value.value, str)
+        ):
+            docstring_end = header_end = n.end_lineno
+        elif isinstance(n, (ast.Import, ast.ImportFrom)) or _is_type_checking_block(n):
+            header_end = n.end_lineno
+        else:
+            break
+    future, rest = [], []
+    for chunk in import_chunks:
+        n = ast.parse(chunk).body[0]
+        if isinstance(n, (ast.Import, ast.ImportFrom)):
+            new = _import_bindings(n)
+            clash = sorted(k for k, v in new.items() if k in bound and bound[k] != v)
+            if clash:
+                raise ValueError(
+                    f"appending would re-bind {clash}, which the module already "
+                    "imports from a different source"
+                )
+            keep = [a for a in n.names if (a.asname or a.name) not in bound]
+            if not keep:
+                continue
+            if len(keep) < len(n.names):
+                n.names = keep
+                chunk = ast.unparse(n) + "\n"
+            bound.update(_import_bindings(n))
+        elif chunk in existing:
+            continue
+        is_future = isinstance(n, ast.ImportFrom) and n.module == "__future__"
+        (future if is_future else rest).append(chunk)
+    logger_line = "\nlogger = logging.getLogger(__name__)\n" if add_logger else ""
+    return (
+        "".join(lines[:docstring_end])
+        + "".join(future)
+        + "".join(lines[docstring_end:header_end])
+        + "".join(rest)
+        + logger_line
+        + "".join(lines[header_end:]).rstrip("\n")
+        + "\n\n\n"
+        + body
+    )
+
+
 def dotted(repo: Path, path: str) -> str:
     p = Path(path)
     if p.is_absolute():
@@ -813,7 +899,7 @@ def render(P, repo: Path, spec: dict):
         existing = target.read_text() if target.exists() and g.get("append") else None
         self_mod = dotted(repo, g["module"])
         self_rel = "." + Path(g["module"]).stem
-        own_imports = "".join(
+        own_chunks = [
             chunk
             for chunk in _import_chunks(src)
             if not re.search(
@@ -821,34 +907,26 @@ def render(P, repo: Path, spec: dict):
                 chunk,
                 re.M,
             )
-        )
-        doc = g.get("module_docstring", "TODO: module docstring.")
-        text = (
-            (existing + "\n\n" if existing else f'"""{doc}"""\n\n')
-            + ("" if existing else own_imports)
-            + "".join(imp)
-            + (
-                "\nlogger = logging.getLogger(__name__)\n"
-                if not existing and "logger" in "".join(body)
-                else ""
-            )
-            + "\n\n"
-            + "\n\n".join(body)
-        )
+        ]
+        uses_logger = "logger" in "".join(body)
         if existing:
-            # new imports go after the module's own (ruff I sorts them); never import itself
             has_logger = re.search(r"^logger\s*=", existing, re.M) is not None
-            uses_logger = "logger" in "".join(body)
-            text = (
-                existing
-                + "\n"
-                + own_imports
-                + "".join(imp)
-                + (
-                    "\nlogger = logging.getLogger(__name__)\n"
-                    if uses_logger and not has_logger
-                    else ""
+            try:
+                text = append_to_module(
+                    existing,
+                    own_chunks + imp,
+                    uses_logger and not has_logger,
+                    "\n\n".join(body),
                 )
+            except ValueError as e:
+                raise SystemExit(f"{g['module']}: {e}")
+        else:
+            doc = g.get("module_docstring", "TODO: module docstring.")
+            text = (
+                f'"""{doc}"""\n\n'
+                + "".join(own_chunks)
+                + "".join(imp)
+                + ("\nlogger = logging.getLogger(__name__)\n" if uses_logger else "")
                 + "\n\n"
                 + "\n\n".join(body)
             )
