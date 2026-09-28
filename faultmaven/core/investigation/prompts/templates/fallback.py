@@ -7,7 +7,11 @@ from faultmaven.core.investigation.prompts.context_builder.assembly import (
     system_feedback_block,
 )
 from faultmaven.core.investigation.prompts.context_builder.evidence import _label_attr
-from faultmaven.core.investigation.prompts.fence import PromptFence, render_fenced
+from faultmaven.core.investigation.prompts.fence import (
+    PromptFence,
+    mint_token,
+    render_fenced,
+)
 from faultmaven.modules.case.contracts import Case, CaseState
 from faultmaven.modules.case.domain.models.progress import CauseState
 from faultmaven.utils.model_context import MIN_PROMPT_BUDGET
@@ -378,10 +382,17 @@ def _largest_fit(render, shrink, caps, budget, least_prompt, least_size, size):
     """
     fit_factor, fit_prompt, fit_size = 0.0, least_prompt, least_size
     over_factor, over_size = 1.0, size
+    # Aim at the middle of the accepted band, not at the budget itself. The size
+    # is a step function of the factor, so a guess aimed at the budget lands on
+    # the step's high side as often as not, and every guess after it lands just
+    # below that point and measures the same: the bracket never narrows and the
+    # solve returns the minimum (#1738). Aimed inside the band, a guess that
+    # lands over still moves the bracket by the band's half-width.
+    target = budget * (1 - _FALLBACK_SOLVE_SLACK / 2)
     for _ in range(_FALLBACK_SOLVE_STEPS):
         if budget - fit_size <= budget * _FALLBACK_SOLVE_SLACK:
             break
-        factor = fit_factor + (over_factor - fit_factor) * (budget - fit_size) / (
+        factor = fit_factor + (over_factor - fit_factor) * (target - fit_size) / (
             over_size - fit_size
         )
         prompt = render(shrink(caps, factor))
@@ -431,10 +442,20 @@ def get_fallback_prompt_for_case(
     is still addressable (INV-1).
     """
     budget = _FALLBACK_MAX_TOKENS if max_tokens is None else max_tokens
+    # One token for every candidate render. The fence appears in every
+    # delimiter, and a random token's own token count varies from mint to mint,
+    # so a fresh token per candidate made the sizes the solver compares
+    # disagree with the caps behind them: a candidate that fit could measure
+    # over, and the solve fell back to the minimum (#1738). Only one of these
+    # renders is emitted, so the emitted prompt still carries one fresh token.
+    # A candidate whose content does collide re-mints for itself alone.
+    solve_token = mint_token()
 
     def render(caps: _FallbackCaps) -> str:
+        tokens = iter((solve_token,))
         return render_fenced(
-            lambda fence: _fallback_body(case, user_message, fence, caps)
+            lambda fence: _fallback_body(case, user_message, fence, caps),
+            token_source=lambda: next(tokens, None) or mint_token(),
         )
 
     caps = _FallbackCaps()
