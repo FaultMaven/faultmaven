@@ -35,7 +35,14 @@ the work has got to:
   a recommendation, so answering is a word. Answer any, ignore any: an
   unanswered question returns in the next proposal and nothing stalls
   waiting on it.
-- **Merge pull requests.** A result comment lists them with their CI state.
+- **Merge pull requests.** A result comment lists them, each already
+  reviewed, green and checked against its plan by the agent, with a
+  merge-ready comment naming the head it vouches for. Merging one is not
+  reviewing it: merge while every required check is green and the head is the
+  one the comment names, or differs from it only by an *Update branch* you
+  pressed yourself. Otherwise — a conflict, a red check, a head you do not
+  recognise — run `/process-top-issues` once; it brings that pull request back
+  to merge-ready and stops.
 - **Run what only you can run, and close it.** The *yours* pile is work no
   agent can do — a live-deployment check, a console or credential an agent
   lacks — and a ruling can route work into it. It is listed in every
@@ -139,9 +146,11 @@ nobody wrote, and this one ends in a round asking.
 `.claude/commands/process-top-issues.md` carries the table.
 
 No unmerged pull request from the previous round. If there is one, this
-round does not start: report what is outstanding and stop. This is what
-bounds work in progress, and it is why nothing here tracks pull requests
-ageing in the background.
+round does not start: it refreshes any that cannot be merged as they stand —
+behind `main`, conflicting, or red — so the owner is never left holding a
+pull request only a review could unstick, then reports what is outstanding
+and stops. This is what bounds work in progress, and it is why nothing here
+tracks pull requests ageing in the background.
 
 **Not open is not the same as settled.** *Close out* reports before the
 merges, so this is the only moment an agent sees what the owner did, and
@@ -419,9 +428,10 @@ hygiene as much as code health, and `fetched now` is not a figure of speech —
 a base pulled the day before would still have ranked #752. The check is
 cheap: reading one narration file and one `git grep` caught both before any
 lane was dispatched. An item whose premise looks dead is still worth a round
-— as a **verification** lane, which proves by execution whether it
-reproduces, makes the covering guard bite under mutation, and either posts
-the evidence or fixes what survives.
+— as a **verification** item, which the owning agent runs itself: it proves
+by execution whether the defect reproduces, makes the covering guard bite
+under mutation, and either posts the evidence or plans a fix for what
+survives.
 
 **Who closes a verified-fixed issue:** the owning agent, after re-running
 that evidence rather than relaying it, naming the pull request that actually
@@ -463,8 +473,9 @@ of them are not ready: see *What escalates*.
 
 ### 3. Build
 
-One lane per approved item, in its own worktree, autonomous. The gates under
-*Building* are not optional.
+The owning agent investigates and plans each approved item itself; then one
+lane per item implements the plan, in its own worktree, autonomous. The
+gates under *Building* are not optional.
 
 **Once per round, though — this step is re-entered.** Step 0 routes an
 answered proposal back here whatever has already run, and an item its lane has
@@ -478,12 +489,13 @@ dropped: it goes on to verification and review with the pull request it already
 has, which is also what makes the skip self-checking, since a branch someone
 else named alike is read there rather than quietly standing in for a lane.
 
-**No question is asked while building.** If a lane cannot deliver its item,
-the item is **pulled**: the lane stops, what stopped it is recorded on the
-issue — the question if there is one, otherwise the fact — the item returns
-to the blocked pile — one label on one issue, which collides with nothing
-another lane is doing — and it appears in the next proposal. The other lanes
-carry on. Half-built work is not left behind and the round is not held up.
+**No question is asked while building.** If an item cannot be delivered, it
+is **pulled**: its lane, if it has one, stops, what stopped it is recorded
+on the issue — the question if there is one, otherwise the fact — the item
+returns to the blocked pile — one label on one issue, which collides with
+nothing another lane is doing — and it appears in the next proposal. The
+other lanes carry on. Half-built work is not left behind and the round is
+not held up.
 
 **"Cannot deliver", not "needs a ruling".** Needing a ruling is the common
 case and not the only one: the work turns out to be several rounds of it, or
@@ -494,20 +506,96 @@ level down, which is why that gate's condition is "cannot clear" rather than
 "needs a ruling". Failing to clear a blocking finding is one way of failing
 to deliver; this is the general case.
 
+**The owning agent does the thinking; a lane builds.** Investigation,
+planning and the verdict on quality stay with the agent that owns the
+round. Most of *Building*'s gates are judgements — where the root is, how
+many places a rule lives, who reads a value that is changing, whether a
+guard reaches what it claims to, whether a finding is real — and each was
+written after one went wrong. They belong to the strongest model in the
+round and the one agent that sees every item in it, and taking them out of
+the lane is also what lets a lane run on a smaller model at all. So the
+plan — root, change, consumers, the tests that prove it — is written
+before any lane starts and posted on the issue, where the owner can read
+it. A feature item's plan is its spec; a verification or an investigation
+is run by the owning agent, with a lane only packaging what survives or
+what was measured. A lane whose code disagrees with its plan stops rather
+than re-planning, because a second planner is how an item drifts from
+what was approved.
+
+**Planning spends the budget review does.** One agent now thinks through
+every item twice — before its lane and after it — so a round's size counts
+both, not review alone. It stays efficient by pipelining: each lane starts
+as soon as its plan is posted, is verified as it returns, and takes its fix
+commits with its context intact; the owning agent reads CI once per pull
+request, in the background, and never waits in the foreground for
+anything a lane or a runner is doing.
+
+**Lanes run on two tiers, and only the lowest-risk work moves down.**
+Every lane carries a plan, so the tier measures what can go wrong in
+carrying it out, not how hard the item is to understand. A change on one
+seam that is not a round by itself runs on a smaller model; a security
+boundary, a storage change or a new guard runs on the owning agent's.
+*Picking*'s size rule draws the line: review is the constraint and lanes
+are not, so a cheaper lane that costs one more review round has cost more
+than it saved. There is no third tier: every lane writes under
+*Building*'s gates and opens a pull request that full-tier review reads,
+so a tier further down saves on the cheapest part of the round and spends
+on the dearest.
+
+**A lane's failure goes back to the planner.** A lane that stops, or fails
+the owning agent's verification, was carrying either a plan that did not
+survive the code or a plan it could not carry out. The owning agent reads
+which, revises the plan, and gives the item one more lane at full tier;
+only that lane's failure pulls it — unless what stopped the first needs a
+ruling, is several rounds of work, or cannot be done from here, which
+pulls it at once. So the smaller tier never decides where an item lands,
+and it never writes a review response either: an on-seam finding in its
+work moves the item to full tier, because review responses are where
+*Blame a finding before acting on it* traced every one of fm#1498's
+round-4 findings. The result records every second lane, and the next
+proposal counts them.
+
 ### 4. Land
 
-Report each pull request with its CI state. **The owner merges**, unless the
-owner delegates it for this round in as many words — approving a *round* is
-not approving its merges, and an agent that widens one into the other is
-deciding something that was not given to it. Delegated or not, a merge needs
-all four: review clean on the final head, every required context green on
-that head, the merge base green by commit, and the head unchanged since the
-review. A round is not
-over until every one is merged or explicitly abandoned — abandoned meaning
-the owner closed it unmerged, which *Settle the last round* places again,
-in the blocked pile unless a ruling has since said otherwise. A pull
-request the agent closed itself is a pull, settled where it happened, and
-not this.
+Report each pull request **merge-ready**: the four conditions below hold on
+its final head, the owning agent has checked it against its plan, and
+nothing in it waits on the owner. That is what lets the owner merge without
+reviewing — the owner is asked for the calls only a person can make, under
+*What escalates*, and getting the code right is the agents'. A pull request
+that cannot get there is pulled, never handed over with a caveat.
+
+**The owner merges**, unless they authorize the agent in as many words for
+the session in hand. The authorization ends with that session and never
+carries into another; approving a *round* is not approving its merges, and
+an agent that widens one into the other is deciding something that was not
+given to it. Delegated or not, a merge needs all four: review clean on the
+final head, every required context green on that head, the merge base green
+by commit, and the head unchanged since the review but for a clean merge of
+`main`, which changes nothing in the diff the review read.
+
+**Merging one pull request can leave the next behind `main`.** The branch
+rules do not require a pull request to be up to date, so CI's verdict on a
+head is a verdict on `main` as it stood when CI ran, and two of a round's
+pull requests can each be green alone and not together. So the head must
+contain `main` when its merge-ready comment is posted, and a later one is
+brought up to date before it merges: *Update branch* and green checks are
+enough for the owner. A clean merge of `main` changes nothing in the diff
+the review read; what it can change is the code around it — a new reader of
+a value the pull request changed, a new caller of a function whose contract
+it changed, the class *Enumerate the consumers* exists for — and that is
+CI's to catch on the merged head, with the plan's consumer searches re-run
+there whenever the agent brings a head up to date. The comment vouches for
+one head, and a commit after it that is not a clean merge of `main` is code
+nobody reviewed: a conflict's resolution has the same shape as *Update
+branch*, so the test is the tree, not the commit message. What *Update
+branch* cannot do — resolve a conflict, or turn a red check green — is the
+next invocation's to repair, in *Settle the last round*, before it stops.
+
+A round is not over until every one is merged or explicitly abandoned —
+abandoned meaning the owner closed it unmerged, which *Settle the last
+round* places again, in the blocked pile unless a ruling has since said
+otherwise. A pull request the agent closed itself is a pull, settled where
+it happened, and not this.
 
 ### 5. Close out
 
@@ -682,7 +770,15 @@ not an exit.
 
 ## Building
 
-Gates for a lane, each from a failure that cost real time:
+Gates for building an item, each from a failure that cost real time. The
+owning agent holds the ones that decide what to build and whether it is
+right — *Root before scope*, *State N*, *Enumerate the consumers*, *Measure
+an over-approximation's cost*, and every gate on review, verification and CI
+— and its plan carries their results to the lane. The lane holds the rest: a
+worktree per lane on a base fetched now; a guard's test drives the path that
+runs it; a false-positive count is measured and reported, never judged; the
+whole tree is ported; CI is never the lane's to read or wait on. Every lane
+reads them all:
 
 - **Root before scope.** Trace to the root cause before deciding what to
   ship, and design the fix for the class rather than the reported copy. When
@@ -691,8 +787,10 @@ Gates for a lane, each from a failure that cost real time:
   may never stand in for the investigation.
 - **Worktree per lane, base fetched now.** Never work in a shared checkout.
   Lanes collide on global values such as the API contract version and the
-  alembic head, so two lanes on the same seam are sequenced rather than run
-  together.
+  alembic head, so items on one seam share one lane and one pull request
+  rather than two lanes off the same base; two seams that move the same value
+  meet when the second is brought up to date with `main`, where CI or the
+  merge itself catches it.
 - **A pull request that ships a guard gets a pass briefed to DEFEAT the
   guard.** Not to review the code — to answer one question: *what can be
   re-introduced without this noticing?* Four rounds running the defect has
@@ -783,8 +881,9 @@ Gates for a lane, each from a failure that cost real time:
   lanes in one round each stalled polling `Test Standalone` / `Test Cloud`.
   The rule above says how to get the answer and never says whose answer it
   is, and that gap is what they fell into. A reviewer's output is findings;
-  whether CI is green on the final head is a *merge* criterion, read once by
-  whoever merges. A review that catches itself waiting on a check run should
+  whether CI is green on the final head is a *merge* criterion, read once —
+  by the owning agent, in the background, before it calls the pull request
+  merge-ready. A review that catches itself waiting on a check run should
   report what it has and label the rest unreached — a partial review with an
   honest gap beats a complete one that arrives after the decision it was for.
 
@@ -861,7 +960,8 @@ is not a round's to ask for — it is standing, and holds nothing up. Between
 those two, decide and record rather than ask.
 
 A question belongs in the blocked pile, and therefore in a proposal, when any
-of these holds. Everything else an agent decides and records.
+of these holds. Everything else an agent decides and records — while
+planning an item, in that item's plan.
 
 1. It would override a documented design decision.
 2. It is about what a user sees or experiences.
@@ -924,11 +1024,16 @@ the **residue**, meaning issues still open a week after filing. The raw open
 count moves with how hard the period looked rather than with how healthy the
 code is, and review alone accounts for about a third of everything filed.
 
-Three signals that this document is wrong rather than the work:
+Five signals that this document is wrong rather than the work:
 
 - Residue not falling across four rounds spanning at least four weeks.
 - Items pulled in *Build* more often than they are built, which would mean
   *Propose* is not finding the questions before the work starts.
+- Items needing a second lane more often than not. After a smaller-tier
+  lane, the tier line is drawn too low; after a full-tier one, plans are
+  going out without being checked against the code.
+- A merge-ready pull request needing a fix after it merged, which would
+  mean the owner's merge trusted a check that does not hold.
 - The rule-4 tier growing across four rounds, which means the reserved slot
   is drawing from it slower than review is filling it. The tier is what
   `scripts/backlog_metrics.py` prints under *Rule-4 tier*, an upper bound by
@@ -963,6 +1068,9 @@ first fix for that left the merely-too-hard case with no exit either. The
 read that counts is of the text after the edits, not of the edits.
 
 ## Words used here
+
+**Lane.** A subagent working one item from the owning agent's plan, in its
+own worktree. It builds; it does not plan, review or decide.
 
 **Seam.** All the places one rule has to hold. Every place that writes a
 conversation row is one seam; every place that reads that table in order is
