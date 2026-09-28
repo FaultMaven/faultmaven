@@ -65,12 +65,12 @@ offered folds into `unknown`.
 
 ## Log line
 
-Emitted at `WARNING` from `faultmaven.core.investigation.milestone_engine`,
+Emitted at `WARNING` from `faultmaven.core.investigation.milestone_engine.generation`,
 event name `tool_result_truncated`, with four structured fields:
 
 ```json
 {"event": "tool_result_truncated",
- "logger": "faultmaven.core.investigation.milestone_engine",
+ "logger": "faultmaven.core.investigation.milestone_engine.generation",
  "level": "warning", "timestamp": "2026-08-18T11:42:45.462943Z",
  "tool": "kb_qa", "original_chars": 8319, "cap_chars": 8000,
  "dropped_chars": 319}
