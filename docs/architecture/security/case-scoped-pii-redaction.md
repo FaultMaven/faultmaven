@@ -41,28 +41,24 @@ User uploads file
     → stored raw (never redacted at rest)
                                             ↓
 InvestigationService.process_turn()
-  ├─ Create CaseRedactionContext, load from Redis
-  ├─ For each attachment:
-  │     PreprocessingService.classify_and_extract(redaction_context=ctx)
-  │       └─ Redact structural index with case-scoped registry
-  ├─ Save registry to Redis (extraction-layer mappings)
-                                            ↓
-Context builder assembles prompt from evidence + user message + history
+  └─ Preprocessing (classify_and_extract) builds the file's summary and
+     structural index from the raw content; both are persisted raw
                                             ↓
 MilestoneEngine._process_turn_impl()
-  ├─ Load CaseRedactionContext from Redis (includes extraction-layer mappings)
-  ├─ Redact prompt with case-scoped registry
+  ├─ Create CaseRedactionContext, load its registry from Redis   (_generate_turn_response)
+  ├─ Context builder assembles the prompt from evidence, uploads, user message, history (raw)
+  ├─ Redact the prompt with the case-scoped registry              (StructuredOutputGenerator)
   ├─ Send to LLM
   ├─ LLM calls tool → execute → redact result with SAME registry → return to LLM
   ├─ LLM responds with placeholders
-  └─ Save registry to Redis
+  └─ Save registry to Redis                                       (_persist_turn)
                                             ↓
 InvestigationService.process_turn()
   ├─ turn_results._absorb_engine_result: reverse-substitute placeholders → original values
   └─ turn_response._build_turn_response: return TurnResponse to user (real IPs, names, etc.)
 ```
 
-The case-scoped registry flows through **both** the extraction layer (structural index creation) and the inference layer (LLM prompts + tool results), ensuring a single consistent namespace for all PII within a case.
+Redaction happens at one boundary: where content leaves for an LLM. Everything upstream (the upload, the summary and structural index preprocessing builds from it, the evidence) is stored and assembled raw. The engine redacts the assembled prompt and every tool result with the case-scoped registry, so one consistent namespace covers all the PII that reaches the model, whichever file or turn it came from.
 
 ### Why MilestoneEngine, Not Router?
 
@@ -143,24 +139,9 @@ The `_should_redact()` helper checks `SANITIZE_PII` setting. When `False`, `Case
 
 ### InvestigationService Integration
 
-**File:** `modules/agent/domain/services/investigation_service/service.py`
+**File:** `modules/agent/domain/services/investigation_service/turn_results.py`
 
-The service manages two integration points:
-
-**1. Extraction-layer redaction** — before the engine runs, during attachment preprocessing:
-
-```python
-redaction_context = await self._create_redaction_context(case.case_id)
-for attachment in payload.attachments:
-    evidence = await self._preprocess_attachment(
-        case, attachment, ..., redaction_context=redaction_context,
-    )
-await redaction_context.save()  # Persist to Redis for engine
-```
-
-`_create_redaction_context()` loads the context from Redis (picks up any mappings from prior turns), and `classify_and_extract()` uses it instead of `DataSanitizer.sanitize()`. After all attachments are processed, the registry is saved so the engine picks up extraction-layer mappings.
-
-**2. Response reverse-substitution** — after the engine returns, in `process_turn`'s `_absorb_engine_result` phase (`modules/agent/domain/services/investigation_service/turn_results.py`):
+The service has one integration point, **response reverse-substitution**: after the engine returns, in `process_turn`'s `_absorb_engine_result` phase (`modules/agent/domain/services/investigation_service/turn_results.py`):
 
 ```python
 redaction_ctx = result.get("redaction_ctx")
@@ -197,30 +178,37 @@ Registry works in-memory for the current turn. Consistent within the turn, not a
 
 ### Single Registry Path
 
-When `SANITIZE_PII=true`, all redaction (extraction and inference) flows through the same `CaseRedactionContext`. There is no "double redaction" — the extraction layer's `classify_and_extract()` receives the context, and the engine loads the same context from Redis. When `SANITIZE_PII=false`, no redaction occurs at any layer.
+When `SANITIZE_PII=true`, all redaction flows through one `CaseRedactionContext` per case, applied at the LLM boundary only: the prompt and each tool result. There is no "double redaction". Preprocessing does not redact, and the Router's sanitizer sees only placeholders. When `SANITIZE_PII=false`, no redaction occurs at any layer.
+
+### Not Implemented: Redaction During Preprocessing
+
+Preprocessing does not redact. An upload's persisted summary and structural index hold raw content, as the upload itself does, and are redacted like any other prompt content when they reach an LLM. Redacting at extraction time, so that the persisted preprocessing artifacts carry placeholders rather than values, would be implemented if it is needed in the future. It would have to use the same case registry, or its placeholders would disagree with the ones the inference layer assigns.
 
 ### Placeholder in User Message
 
 If a user types `<IP_ADDRESS_1>` in their message, `reverse()` would replace it with the original value. This is the correct behavior — the user is referencing a previously-seen entity.
 
-## Files Changed
+## Where It Lives
 
-| File | Change | Risk |
-| --- | --- | --- |
-| `infrastructure/security/case_redaction.py` | New file | None |
-| `infrastructure/security/redaction.py` | Added `sanitize_text_with_registry()`, wired Presidio config to settings, `\b` word boundary on password regex, removed dead code | Low |
-| `core/investigation/milestone_engine/engine.py` | Redaction lifecycle in turn processing + tool loop | Medium |
-| `modules/agent/domain/services/investigation_service/service.py` | Extraction-layer context creation + reverse-substitution | Low |
-| `modules/preprocessing/preprocessing_service.py` | `redaction_context` param on all 3 sanitize paths | Low |
-| `container/providers/services.py` | Pass sanitizer + redis_client to engine | Low |
-| `config/settings.py` | Added `redaction_registry_ttl_hours`, updated `entities_to_protect` defaults (removed false-positive-prone entities), raised `min_score_threshold` to 0.85 | Low |
+| File | Role |
+| --- | --- |
+| `infrastructure/security/case_redaction.py` | `CaseRedactionContext`: the case-scoped registry, persisted in Redis |
+| `infrastructure/security/redaction.py` | `DataSanitizer`, including `sanitize_text_with_registry()`, the Presidio settings wiring, and the `\b` word boundary on the password regex |
+| `core/investigation/milestone_engine/turn_generation.py` | Creates the context and loads its registry (`_generate_turn_response`) |
+| `core/investigation/milestone_engine/generation.py` | Redacts the prompt and each tool result (`StructuredOutputGenerator`) |
+| `core/investigation/milestone_engine/turn_completion.py` | Saves the registry (`_persist_turn`) |
+| `core/investigation/milestone_engine/terminal_turns.py` | The same lifecycle on the terminal Q&A path |
+| `modules/agent/domain/services/investigation_service/turn_results.py` | Reverse-substitution (`_absorb_engine_result`) |
+| `container/providers/services.py` | Passes the sanitizer and the Redis client to the engine |
+| `config/settings.py` | `redaction_registry_ttl_hours`, `entities_to_protect`, `min_score_threshold` |
 
-## What Is Not Changed
+## What Redaction Does Not Touch
 
-- **Context builder** — no changes. Assembles raw content; redaction happens downstream
-- **Router** — existing `_sanitize_if_needed()` stays as a safety net
-- **Tool implementations** — `search_file`/`deep_analysis` are unchanged. Their raw results are redacted by the engine
-- **Evidence storage** — evidence is stored raw, never redacted at rest
+- **Preprocessing**: builds summaries and structural indexes from raw content (see *Not Implemented* above)
+- **Context builder**: assembles raw content; the engine redacts downstream
+- **Router**: its `_sanitize_if_needed()` stays as a safety net for LLM calls outside an investigation turn
+- **Tool implementations**: `search_file` and `deep_analysis` read raw content, and the engine redacts their results
+- **Storage**: uploads, evidence and preprocessing artifacts are stored raw, never redacted at rest
 
 ## Testing
 
@@ -247,7 +235,7 @@ If a user types `<IP_ADDRESS_1>` in their message, `reverse()` would replace it 
 
 Playbook scenario S6 (Cross-Evidence Correlation) with `SANITIZE_PII=true`:
 
-- `failed_password: 520` survives intact in structural index (no `<PASSWORD_1>` corruption)
+- `failed_password: 520` survives intact where the structural index reaches the prompt (no `<PASSWORD_1>` corruption)
 - No `<PERSON_N>` false positives on timestamps or log tokens
 - IPs correctly redacted to `<IP_ADDRESS_N>` placeholders
 - User-facing response shows real IPs (reverse-substituted)
