@@ -37,7 +37,7 @@ version of this module spent a noise allowance against one side only and
 passed whatever that could not call super-linear — so a pure quadratic with a
 moderate fixed cost passed (``fixed + n**2`` loop, ``C/q`` from ~430 to
 ~1360: 3/3 green). The rule is now two-sided. With every per-size minimum
-allowed to be off by ``NOISE_ALLOWANCE`` of itself, ``[ratio_floor,
+allowed to be off by an allowance of itself, ``[ratio_floor,
 ratio_ceiling]`` is every ``R`` consistent with the measurement, and:
 
 * **super-linear** only if ``ratio_floor >= bound`` — even the most linear
@@ -47,6 +47,14 @@ ratio_ceiling]`` is every ``R`` consistent with the measurement, and:
 * otherwise **undecided**. So is any window whose largest size costs under
   ``MIN_TOTAL_GROWTH`` times its smallest: the work does not show there, and
   deciding either way on it is deciding on noise.
+
+The two sides do not allow the same error. The floor allows
+``NOISE_ALLOWANCE`` and the ceiling ``PASS_NOISE_ALLOWANCE``, twice as much,
+because the two wrong verdicts do not cost the same: a false fail breaks the
+build and is looked at, a false pass lets a super-linear cost through
+unseen. With one allowance for both, a CI runner's per-size error once passed
+the planted quadratic from the window where ``C`` swamps ``t(8n) - t(n)``
+(#1741).
 
 An undecided window moves up by ``step`` — the work grows, ``C`` does not —
 at most ``MAX_ESCALATIONS`` times, and a call still undecided is REFUSED as
@@ -61,24 +69,24 @@ cost whose true ``R`` is under the bound can never be failed, and one at or
 over it can never be passed — **for every fixed cost C**, because ``C`` is
 not in ``R``. ``C`` only decides whether a window can decide. In particular:
 
-* ``C + a*n`` (``R = 8``) never fails. It passes once ``C`` is under ~16x
-  the work at the smallest size; three escalations reach that from ~8000x,
+* ``C + a*n`` (``R = 8``) never fails. It passes once ``C`` is under ~5x
+  the work at the smallest size; three escalations reach that from ~2600x,
   and above that it is refused;
 * ``C + q*n**2`` (``R = 64``) never passes. It fails once ``C`` is under
   ~430x the work at the smallest size — one escalation divides that by 64;
 * ``C + a*n + q*n**2`` has ``R = (56a + 4032q) / (7a + 63q)``, increasing
   in ``q/a``: it crosses the bound where the quadratic term at the window's
   LARGEST size is ~2.5x the linear term. With no fixed cost the window says
-  linear while that share is at most ~1.5x and super-linear from ~4x; in
+  linear while that share is at most ~0.8x and super-linear from ~4x; in
   between it escalates, which multiplies ``q/a`` by 8, so a window only ever
   moves a mixture toward failing. The check answers for the sizes it
   measured; a call site picks sizes that reach the payloads it guards.
 
 ``tests/unit/ci/test_benchmark_calibration.py`` pins all of this over fixed
 costs from 0 to 1e7 times the work, and outside the model it searches for an
-adversarial per-size error: a wrong verdict needs one over 13% (a quadratic
+adversarial per-size error: a wrong verdict needs one over 24% (a quadratic
 passed) or over 18% (a linear failed). The measured spread of the minima
-here is a few percent.
+here is a few percent; a CI runner's has exceeded 13% (#1741).
 
 A cost exactly at the bound (``n ** 1.5``) is undecidable by construction and
 is refused, which is the honest answer.
@@ -135,9 +143,17 @@ MIN_SAMPLE_SECONDS = 0.002
 #: cannot spin the check forever.
 MAX_CALLS_PER_SAMPLE = 1 << 16
 
-#: How far each per-size minimum may be off, as a fraction of itself. The
-#: measured spread of the minima on a loaded box is a few percent.
+#: How far each per-size minimum may be off, as a fraction of itself, before
+#: a reading can FAIL a call. The measured spread of the minima on a loaded box
+#: is a few percent.
 NOISE_ALLOWANCE = 0.10
+
+#: The same allowance before a reading can PASS a call, twice as wide. A false
+#: fail breaks the build and gets looked at; a false pass lets a super-linear
+#: cost through silently, so a pass has to survive twice the error. A CI runner
+#: produced a per-size error past the old symmetric margin and passed the
+#: planted quadratic (#1741).
+PASS_NOISE_ALLOWANCE = 2 * NOISE_ALLOWANCE
 
 #: A window whose largest size costs less than this many times its smallest
 #: decides nothing. A linear window can only pass above ~4.75 anyway, so this
@@ -198,14 +214,16 @@ class Growth:
 
     @property
     def ratio_ceiling(self) -> float:
-        """The greatest true ratio consistent with the minima.
+        """The greatest true ratio consistent with the minima, each off by up
+        to ``PASS_NOISE_ALLOWANCE`` (the wider allowance: this is the side a
+        pass is judged on).
 
         ``inf`` when the noise could make ``t(8n) - t(n)`` zero: nothing then
         bounds the ratio from above.
         """
         t1, t2, t3 = self.seconds
-        upper = (t3 - t2) + NOISE_ALLOWANCE * (t2 + t3)
-        lower = (t2 - t1) - NOISE_ALLOWANCE * (t1 + t2)
+        upper = (t3 - t2) + PASS_NOISE_ALLOWANCE * (t2 + t3)
+        lower = (t2 - t1) - PASS_NOISE_ALLOWANCE * (t1 + t2)
         return upper / lower if lower > 0 else math.inf
 
     @property
@@ -369,7 +387,8 @@ def assert_linear_growth(
         f"{growth.ratio_floor:.1f}x to {growth.ratio_ceiling:.1f}x the cost "
         f"added from {growth.sizes[0]} to {growth.sizes[1]} (as measured "
         f"{growth.ratio:.1f}x; the range allows {NOISE_ALLOWANCE:.0%} error "
-        f"per size). Linear reads ~{step}x and quadratic ~{step ** 2}x; the "
+        f"per size below and {PASS_NOISE_ALLOWANCE:.0%} above). Linear reads "
+        f"~{step}x and quadratic ~{step ** 2}x; the "
         f"bound is the midpoint, {bound:.1f}x"
     )
     assert growth.verdict != UNDECIDED, (

@@ -2601,15 +2601,17 @@ class TestTheGrowthRule:
     def test_what_the_procedure_concludes_for_every_fixed_cost(self):
         """Quadratic: failed at every C tried. Linear: passed, or refused.
 
-        A linear cost passes once C is under ~16x the work at the smallest
-        size; three escalations reach C up to ~8000x. Beyond that it is
-        refused as miscalibrated — never failed, never passed unseen.
+        A linear cost passes once C is under ~5x the work at the smallest
+        size; three escalations reach C up to ~2600x. Beyond that it is
+        refused as miscalibrated — never failed, never passed unseen. (It was
+        ~16x and ~8000x while a pass allowed no more error than a fail,
+        #1741.)
         """
         from tests.wallclock.growth import LINEAR, SUPER_LINEAR
 
         for fixed in _FIXED_COSTS:
             assert _procedure(fixed, 0, 1) == SUPER_LINEAR, fixed
-            expected = LINEAR if fixed <= 8000 else "refused"
+            expected = LINEAR if fixed <= 2600 else "refused"
             assert _procedure(fixed, 1, 0) == expected, fixed
 
     def test_inside_the_allowance_no_error_produces_a_wrong_verdict(self):
@@ -2667,7 +2669,7 @@ class TestTheGrowthRule:
             assert ranks == sorted(ranks), fixed
 
     def test_where_a_mixture_is_decided(self):
-        """At any C a linear cost alone passes at (C <= 15): measured bounds.
+        """At any C a linear cost alone passes at (C < 5): measured bounds.
 
         Linear while the quadratic term at the largest size is at most 1/20
         of the linear term; super-linear once it is 8x. In between the window
@@ -2675,7 +2677,7 @@ class TestTheGrowthRule:
         """
         from tests.wallclock.growth import LINEAR, SUPER_LINEAR
 
-        for fixed in (0.0, 1.0, 5.0, 15.0):
+        for fixed in (0.0, 1.0, 2.5, 4.5):
             assert _growth(_costs(fixed, 1, 0.05 / 64)).verdict == LINEAR, fixed
             assert _growth(_costs(fixed, 1, 8 / 64)).verdict == SUPER_LINEAR, fixed
 
@@ -2683,16 +2685,39 @@ class TestTheGrowthRule:
         """The margin, as a per-size error an adversary must reach, any C.
 
         Computed with this class: a quadratic can be passed only with an
-        error over 13.8% per size, a linear failed only over 18.3%. The
-        positive halves show the search is able to find a win at all.
+        error over 24.1% per size (13.8% while both sides allowed the same
+        error, #1741), a linear failed only over 18.3%. The positive halves
+        show the search is able to find a win at all.
         """
         from tests.wallclock.growth import LINEAR, SUPER_LINEAR
 
         costs = _FIXED_COSTS
-        assert not any(_adversary_reaches(c, 0, 1, 0.13, LINEAR) for c in costs)
-        assert any(_adversary_reaches(c, 0, 1, 0.15, LINEAR) for c in costs)
+        assert not any(_adversary_reaches(c, 0, 1, 0.23, LINEAR) for c in costs)
+        assert any(_adversary_reaches(c, 0, 1, 0.25, LINEAR) for c in costs)
         assert not any(_adversary_reaches(c, 1, 0, 0.18, SUPER_LINEAR) for c in costs)
         assert any(_adversary_reaches(c, 1, 0, 0.19, SUPER_LINEAR) for c in costs)
+
+    def test_a_pass_must_survive_twice_the_error_a_fail_does(self):
+        """#1741: the planted ``3000 + n**2`` loop, measured here at sizes 2,
+        16 and 128, then the middle minimum read 1.5x high, as a loaded runner
+        can. The lower half is nearly all fixed cost, so one symmetric
+        allowance called that linear and the quadratic passed without the
+        window moving up. With the pass side's allowance doubled it is
+        undecided and escalates, where the same quadratic fails."""
+        from tests.wallclock.growth import (
+            LINEAR,
+            NOISE_ALLOWANCE,
+            PASS_NOISE_ALLOWANCE,
+            UNDECIDED,
+        )
+
+        measured = (146.72, 158.18, 810.95)
+        inflated = _growth((measured[0], measured[1] * 1.5, measured[2]))
+
+        assert PASS_NOISE_ALLOWANCE == 2 * NOISE_ALLOWANCE
+        assert _growth(measured).verdict == UNDECIDED
+        assert inflated.verdict == UNDECIDED
+        assert inflated.verdict != LINEAR
 
     def test_a_reading_the_noise_explains_is_escalated_not_judged(self):
         """The sshd reader's ``slot-lookalikes`` shape, measured on fixed code.
