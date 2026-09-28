@@ -592,9 +592,8 @@ item's size is already being judged, and shown so the owner can change it
 in the reply that approves the round. It is `full` — your own model —
 unless **both** of these hold, and then it is `sonnet`:
 
-- a lane builds it: a defect, a chore or docs, or the pull request that
-  follows an investigation or verification you ran. A feature item has no
-  lane — its deliverable is your plan — and its tier is `—`;
+- a lane builds it: a defect, a feature, a chore or docs, or the pull
+  request that follows an investigation or verification you ran;
 - the change sits on one seam and is none of what makes an item a round by
   itself — a security boundary, a storage change, a new guard.
 
@@ -694,10 +693,7 @@ verify-and-review pass below carrying the pull request it has, exactly as a
 returned lane would — except that a pull request the owner has already
 merged is *reported* as merged rather than re-reviewed, because a review
 after the merge changes nothing and the worktree it was built in may be
-gone. It still gets its row, which is what the next settlement reads. (A
-feature item opens none, so this does not reach one — its spec is your
-plan, which a re-entry finds under its heading, below, and does not write
-again.)
+gone. It still gets its row, which is what the next settlement reads.
 
 **Investigate and plan each approved item yourself, before any lane is
 spent on it.** Trace it to its root on `origin/main` fetched now, and write
@@ -729,8 +725,6 @@ plan.
 
 What the plan finds decides the item's path:
 
-- **Feature** — the plan is the spec, and the item's whole deliverable this
-  round. No lane follows it.
 - **Verification** — run it: prove by execution whether the defect
   reproduces, and make the covering guard bite under mutation. Unambiguously
   dead, close the issue yourself, naming the pull request that fixed it and
@@ -738,14 +732,19 @@ What the plan finds decides the item's path:
   ambiguous answer is a pull.
 - **Investigation** — run the measurement and read it yourself. A lane
   packages the script and its unit test into the pull request.
-- **Defect, chore or docs** — a lane builds the plan.
+- **Defect, feature, chore or docs** — a lane builds the plan. A feature's
+  plan is its spec, and says what a user will see; a choice in it that the four
+  triggers reserve for the owner pulls the item with that question, as for any
+  plan.
 
 If you find more than the proposal saw, raise the item's tier on the plan's
 first line — unless the owner set it, which governs the first lane; say in
 the result that you would have raised it. A second lane is always `full`.
 **An item you cannot plan is pulled before any lane is spent on it** — the
 root will not hold still, it needs a ruling, or it is several rounds of
-work.
+work that will not slice. One that slices is planned as its first slice,
+which ships on its own, with the rest filed as issues the pull request's
+`Refs` comment names — *Root before scope* in *Building*.
 
 One lane per item that has one — or per seam, where approved items share
 one, at the highest of their tiers — each with a self-contained prompt
@@ -950,9 +949,8 @@ Then per returned lane, in order:
 
 ## 5. Report and hand back
 
-Report when every item is merge-ready, delivered without a pull request —
-a feature's plan, a verification's close — or pulled. Nothing is handed
-over half-way. Comment on the round's proposal:
+Report when every item is merge-ready, closed by its verification, or
+pulled. Nothing is handed over half-way. Comment on the round's proposal:
 
 ```
 ## Round <N> — result

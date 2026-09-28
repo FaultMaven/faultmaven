@@ -516,9 +516,13 @@ round and the one agent that sees every item in it, and taking them out of
 the lane is also what lets a lane run on a smaller model at all. So the
 plan — root, change, consumers, the tests that prove it — is written
 before any lane starts and posted on the issue, where the owner can read
-it. A feature item's plan is its spec; a verification or an investigation
-is run by the owning agent, with a lane only packaging what survives or
-what was measured. A lane whose code disagrees with its plan stops rather
+it. A feature item's plan is its spec, and a lane builds it like any
+other; a verification or an investigation is run by the owning agent,
+with a lane only packaging what survives or what was measured. Features
+used to get a round for the spec alone. It asked the owner nothing the
+escalation triggers do not already put in front of them — a choice about
+what a user sees pulls the item with the question either way — and it
+left an item with no pull request, which no settlement row could read. A lane whose code disagrees with its plan stops rather
 than re-planning, because a second planner is how an item drifts from
 what was approved.
 
