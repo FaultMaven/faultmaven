@@ -107,7 +107,7 @@ which silently drift to the present.
             return """
 **INVESTIGATION PROGRESS: Root cause analysis — anchor to the symptom's window**
 The symptom was observed some time ago (see the observation time on
-symptom_verified above). That period, not the present, is where this
+symptom_verified below). That period, not the present, is where this
 investigation looks.
 
 This does NOT mean the problem is stale or not worth pursuing — a problem is

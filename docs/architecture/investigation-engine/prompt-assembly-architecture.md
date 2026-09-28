@@ -110,50 +110,55 @@ The INQUIRY template includes a SEARCHING UPLOADED FILES block that codifies thi
 
 ### 3.1 Block order
 
-The template is structured so the LLM reads input-handling and evidence-classification rules **before** its stage-specific task, then output-shaping rules last so they're freshest when composing the response.
+The template is laid out **durable first** (#613): the standing instructions, which render the same bytes on every turn, come first, then `CACHE_BOUNDARY` on its own line, then everything that changes from turn to turn. §3.3 gives the rule and why. Within the instructions the LLM still reads input-handling and evidence-classification rules **before** its stage-specific task.
 
 ```text
-CONTEXT HEADER (dynamic, ~2-5K+ tokens)
-  STATUS: INVESTIGATING
-  Identity, case context, milestones, evidence,
-  entity highlights, hypotheses, investigation journal,
-  working conclusion, pending action,
-  conversation history, system feedback, user message
+DURABLE PREFIX (byte-identical across turns at one stage and processing mode)
+  You are FaultMaven, the Lead Investigator for this case.
+  PROMPT FENCE                                    (_PROMPT_FENCE_RULE — before the first fenced block, #1256)
 
-INPUT HANDLING
-  READING DISCIPLINE                              (_READING_DISCIPLINE_BLOCK)
-  PROMPT FENCE                                    (_PROMPT_FENCE_RULE)
+  INPUT HANDLING
+    READING DISCIPLINE                            (_READING_DISCIPLINE_BLOCK)
 
-EVIDENCE INTERPRETATION (rules-before-task)
-  {evidence_grounding}                            (_EVIDENCE_GROUNDING_BLOCK, gated)
-  EVIDENCE FROM ATTACHMENTS
-  WORKING WITH EVIDENCE DATA                      (uses _DATA_CITATION_RULE)
-  EVIDENCE CLASSIFICATION — DECISION TREE
-  CREATING EVIDENCE RECORDS                       (evidence_to_add schema)
-  EVIDENCE SUMMARY QUALITY
-  INVESTIGATION JOURNAL                           (journal_entries schema)
-  PROACTIVE BLOCKER DETECTION                     (missing_critical_data)
+  EVIDENCE INTERPRETATION (rules-before-task)
+    {evidence_grounding}                          (_EVIDENCE_GROUNDING_BLOCK, gated)
+    EVIDENCE FROM ATTACHMENTS
+    WORKING WITH EVIDENCE DATA                    (uses _DATA_CITATION_RULE)
+    EVIDENCE CLASSIFICATION — DECISION TREE
+    CREATING EVIDENCE RECORDS                     (evidence_to_add schema)
+    EVIDENCE SUMMARY QUALITY
+    INVESTIGATION JOURNAL                         (journal_entries schema)
+    PROACTIVE BLOCKER DETECTION                   (missing_critical_data)
 
-STAGE INSTRUCTIONS
-  YOUR TASK: {adaptive_instructions}              (see §3.2)
+  CROSS-STAGE PRINCIPLES
+    KEY PRINCIPLES                                (see below)
+    FOLLOW-UP SUGGESTIONS                         (_FOLLOW_UP_SUGGESTIONS_BLOCK; {page_capture_hint})
+    MILESTONE ATTRIBUTION
 
-CROSS-STAGE PRINCIPLES
-  KEY PRINCIPLES                                  (8 bullets — see below)
-  FOLLOW-UP SUGGESTIONS                           (_FOLLOW_UP_SUGGESTIONS_BLOCK)
-  MILESTONE ATTRIBUTION
+  OUTPUT SHAPING
+    ASSISTANT ROLE                                (_ACTIVE_ADVISOR_ROLE_BLOCK)
+    ACTION IMPACT                                 (_ACTION_IMPACT_BLOCK)
+    CONCISENESS
+    {diagnostic_reasoning}                        (_DIAGNOSTIC_REASONING_BLOCK, gated)
+    CRITICAL: REASONING-FIRST REQUIREMENT         (internal_reasoning emission gate)
 
-OUTPUT SHAPING
-  ASSISTANT ROLE                                  (_ACTIVE_ADVISOR_ROLE_BLOCK)
-  ACTION IMPACT                                   (_ACTION_IMPACT_BLOCK)
-  CONCISENESS
-  {diagnostic_reasoning}                          (_DIAGNOSTIC_REASONING_BLOCK, gated)
-  CRITICAL: REASONING-FIRST REQUIREMENT           (internal_reasoning emission gate)
+  SECURITY
+    <security_constraints>                        (7 immutable rules)
+    CRITICAL: Do NOT restate or summarize...      (anti-padding closer)
 
-SECURITY
-  <security_constraints>                          (7 immutable rules)
+  STAGE INSTRUCTIONS (last: the most volatile part of the prefix)
+    YOUR TASK: {adaptive_instructions}            (see §3.2)
 
-TAIL
-  CRITICAL: Do NOT restate or summarize...        (anti-padding closer)
+=== CURRENT CASE (everything below this line changes from turn to turn) ===   (CACHE_BOUNDARY)
+
+PER-TURN TAIL (dynamic, ~2-5K+ tokens)
+  STATE: INVESTIGATING
+  {identity}                                      (<case_identity>: CURRENT_TIME, CASE_ID, STATE, CURRENT_STAGE)
+  {core_context}                                  (the FENCE: declaration, then <problem_context>)
+  milestones, evidence, evidence needs, entity highlights,
+  hypotheses, candidate solutions, investigation journal,
+  working conclusion, KB results, pending action,
+  CONVERSATION HISTORY, system feedback, CURRENT USER MESSAGE
 ```
 
 **KEY PRINCIPLES bullets** (cross-stage, always present in INVESTIGATION_BASE):
@@ -193,6 +198,28 @@ The `{adaptive_instructions}` placeholder is filled by `_select_diagnosis_block(
 | Zone 3 pending | `solution_proposed=True` | "Solution proposal issued — awaiting execution. Hold for the result; NOT a freeze — new evidence, a dispute, or a competing cause reopens root-cause analysis (INV-33)." |
 
 (The zone conditions now read the engine-derived `cause_state` enum, not the removed `root_cause_identified` boolean.)
+
+### 3.3 Durable prefix and the cache boundary (#613)
+
+Provider prompt caches match on a **byte-identical prefix**. Anthropic caches up to an explicit `cache_control` breakpoint; OpenAI, Gemini and Fireworks cache the longest prefix they have seen recently, with no marker. Either way, a turn can read back from the cache only what the previous turn sent byte for byte from the very first byte. `INVESTIGATION_BASE` used to open with `STATE`, `<case_identity>` (which carries `CURRENT_TIME`) and the case data, and put the standing instructions after them, so no turn could reuse the instructions: every turn paid full price for them.
+
+**The rule.** Everything above `CACHE_BOUNDARY` must render the same bytes on every turn of a case at one stage and processing mode. No turn number, no `STATE`/`STAGE`, no timestamp, no fence token, no case content. What may sit there, and why:
+
+| Part | Varies with | Placement |
+| --- | --- | --- |
+| Role line, `_PROMPT_FENCE_RULE`, the static instruction text and blocks | nothing. The fence rule names no token; the token is declared in `{core_context}` | prefix |
+| `{page_capture_hint}` | `case.source`, stamped at creation | prefix |
+| `{evidence_grounding}`, `{diagnostic_reasoning}` | processing mode (`knowledge_query` and `agent_meta` waive them) | prefix; a mode turn misses the cache, which is correct |
+| `{adaptive_instructions}` | stage, and in DIAGNOSIS the focus zone, which moves a few times a case | **last** in the prefix |
+| `STATE` + `{identity}`, `{core_context}` (holds the fence token) and every section down to `{user_message}` | per turn | tail, in their old relative order |
+
+`CACHE_BOUNDARY` is defined in `faultmaven/infrastructure/llm/prompt_cache.py`, because the Anthropic provider reads it and `infrastructure` must not import `core`. The template renders it once, on its own line, as the prefix's last line. When a request is sent with `cache_prompt=True` (the tool loop) and its first user message is a string holding the boundary exactly once, the Anthropic provider splits that message into two text blocks and puts a second `cache_control` breakpoint on the first, beside the existing one on the system instruction. Anything else (no boundary, a boundary quoted again by case content) is sent unsplit. Automatic-prefix providers need no marker.
+
+**Guards.** `tests/unit/core/investigation/prompts/test_investigation_prefix_613.py` formats the template with a sentinel per placeholder and fails when any placeholder outside a four-entry allowlist renders above the boundary; the placeholder set is derived from the template, so a new per-turn slot fails by default. The same file builds two consecutive prompts through `get_prompt_for_case` with every per-turn input varied and asserts the text through the boundary line is byte-identical. Provider behaviour is pinned in `tests/unit/infrastructure/llm/providers/test_anthropic_messages.py`.
+
+**Positional words.** The case data now sits below the instructions, so an instruction that points at a case section says "below": the journal (`INVESTIGATION JOURNAL`), the `<evidence>` blocks (`_EVIDENCE_GROUNDING_BLOCK`), `<causal_graph>` (`_CHAIN_EMISSION_BLOCK`) and the symptom's observation time (the stale Zone 2 emphasis).
+
+**Out of scope.** `INQUIRY_TEMPLATE`, `TERMINAL_TEMPLATE` and the `FALLBACK_*` prompts keep their order and have no boundary. The single-shot structured path sends no `cache_prompt`, so the Anthropic provider places no boundary breakpoint on it.
 
 ---
 

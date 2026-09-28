@@ -88,10 +88,13 @@ dollar figures as directional. Two honesty guarantees:
 The tool-augmented investigation loop marks its calls cacheable
 (`cache_prompt=True`). Only the **Anthropic** provider acts on it — it adds an
 ephemeral (5-minute) `cache_control` breakpoint on the stable system + tools
-prefix, so that prefix bills at the reduced cache-read rate across the loop's
-iterations. Every other provider pops the flag (OpenAI-family cache prompts
-automatically server-side; the flag must never leak into a request body or it
-400s). Caching is transparent to model output — it changes only how the prefix
+prefix, and a second one at the end of the investigation prompt's durable
+prefix (the `CACHE_BOUNDARY` line, #613), so the standing instructions bill at
+the reduced cache-read rate across the loop's iterations and across
+consecutive turns inside the TTL. Every other provider pops the flag
+(OpenAI-family cache prompts automatically server-side, and the prompt's
+durable-first layout is what gives them a prefix to reuse; the flag must never
+leak into a request body or it 400s). Caching is transparent to model output — it changes only how the prefix
 is billed. `cache_read` tokens are visible in `llm_call_tokens_total` and
 `prompt_cache_hit` in the logs, so you can confirm cache hits are actually
 landing.

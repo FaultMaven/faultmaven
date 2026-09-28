@@ -1,3 +1,5 @@
+from faultmaven.infrastructure.llm.prompt_cache import CACHE_BOUNDARY
+
 from .blocks import (
     _ACTION_IMPACT_BLOCK,
     _ACTIVE_ADVISOR_ROLE_BLOCK,
@@ -9,44 +11,21 @@ from .blocks import (
 )
 
 INVESTIGATION_BASE = (
+    # DURABLE PREFIX FIRST, PER-TURN TAIL LAST (#613). A provider prompt cache
+    # matches on a byte-identical prefix, so everything above CACHE_BOUNDARY
+    # must render the same bytes on every turn of a case at one stage and
+    # processing mode: no turn number, no STATE/STAGE, no timestamp, no fence
+    # token, no case data. {adaptive_instructions} changes with the stage and
+    # the diagnosis focus, so it is the LAST thing in the prefix. Everything
+    # that changes per turn sits below the boundary, in its old relative
+    # order. Pinned by test_investigation_prefix_613.py.
     """You are FaultMaven, the Lead Investigator for this case.
 
-STATE: INVESTIGATING
-{identity}
 """
     # Before the first fenced block, not after the last one — see the note in
     # INQUIRY_TEMPLATE (#1256).
     + _PROMPT_FENCE_RULE
     + """
-
-{core_context}
-
-{milestones}
-
-{evidence}
-
-{evidence_needs}
-
-{entity_highlights}
-
-{hypotheses}
-
-{candidate_solutions}
-
-{investigation_journal}
-
-{working_conclusion}
-
-{kb_results}
-
-{pending_action}
-
-CONVERSATION HISTORY:
-{conversation_history}
-
-{system_feedback}
-CURRENT USER MESSAGE:
-{user_message}
 
 """
     + _READING_DISCIPLINE_BLOCK
@@ -238,9 +217,6 @@ This flags data quality issues via system feedback, allowing you to:
 
 For minor issues that don't block progress, use evidence_quality_issues instead.
 
-YOUR TASK:
-{adaptive_instructions}
-
 KEY PRINCIPLES:
 - Evidence-Driven Progress: Only set a progress indicator to True when you are also creating
   evidence (via evidence_to_add) that justifies it. No evidence = indicator stays False.
@@ -372,6 +348,45 @@ If you have new analysis, a new recommendation, or a pivot — include it.
 If you don't, a brief response is better than padding. Never manufacture
 content to seem productive. If you are stuck, say so and state what
 specific data or input would unblock you.
+
+YOUR TASK:
+{adaptive_instructions}
+
+"""
+    + CACHE_BOUNDARY
+    + """
+
+STATE: INVESTIGATING
+{identity}
+
+{core_context}
+
+{milestones}
+
+{evidence}
+
+{evidence_needs}
+
+{entity_highlights}
+
+{hypotheses}
+
+{candidate_solutions}
+
+{investigation_journal}
+
+{working_conclusion}
+
+{kb_results}
+
+{pending_action}
+
+CONVERSATION HISTORY:
+{conversation_history}
+
+{system_feedback}
+CURRENT USER MESSAGE:
+{user_message}
 """
 )
 

@@ -429,10 +429,10 @@ Rules are injected into template strings in `templates/` and assembled at runtim
 | 1 (Answer First) | INQUIRY only | YOUR TASK instructions | Early (after context header) |
 | 2 (Evidence-Grounded) | INVESTIGATION_BASE | DIAGNOSTIC REASONING + EVIDENCE GROUNDING + hard constraints (includes confidence calibration + no premature resolution) | EVIDENCE GROUNDING via `{evidence_grounding}` before evidence-handling rules; DIAGNOSTIC REASONING via `{diagnostic_reasoning}` placeholder after CONCISENESS. Both placeholders gate to `""` in `knowledge_query` and `agent_meta` modes so the blocks are absent rather than exempted. |
 | 3 (Advisor Role) | All three templates | ASSISTANT ROLE via `_ADVISOR_ROLE_CONSTRAINT` (voice) + `_ACTION_IMPACT_BLOCK` (action impact annotation) | `_ADVISOR_ROLE_CONSTRAINT` shared across INQUIRY_TEMPLATE, INVESTIGATION_BASE, and TERMINAL_TEMPLATE (voice must be preserved in terminal Q&A too). `_ACTION_IMPACT_BLOCK` shared across INQUIRY_TEMPLATE and INVESTIGATION_BASE only (TERMINAL has no action proposals). |
-| 4 (Graceful Pivot) | INVESTIGATION_BASE | KEY PRINCIPLES | After YOUR TASK |
-| 5 (Work With What You Get) | INVESTIGATION_BASE | KEY PRINCIPLES (behavior table + one-ask-per-turn principle + CHECK BACK ON SUGGESTED ACTIONS for terse user replies that don't reference a prior diagnostic suggestion) | After YOUR TASK |
+| 4 (Graceful Pivot) | INVESTIGATION_BASE | KEY PRINCIPLES | Before YOUR TASK (the stage instructions close the durable prefix, #613) |
+| 5 (Work With What You Get) | INVESTIGATION_BASE | KEY PRINCIPLES (behavior table + one-ask-per-turn principle + CHECK BACK ON SUGGESTED ACTIONS for terse user replies that don't reference a prior diagnostic suggestion) | Before YOUR TASK (the stage instructions close the durable prefix, #613) |
 | 6 (Knowledge First) | INQUIRY + INVESTIGATION_BASE + DA system instruction | YOUR TASK (INQUIRY), DIAGNOSIS (INVESTIGATING), TYPE B routing (DA instruction); `KNOWLEDGE_QUERY_INSTRUCTIONS` constant used for knowledge_query bypass | Early in each |
-| 7 (Signal Extraction) | INQUIRY + INVESTIGATION_BASE | READING DISCIPLINE via `_READING_DISCIPLINE_BLOCK` constant | After CURRENT USER MESSAGE, before YOUR TASK (INQUIRY) / before EVIDENCE GROUNDING (INVESTIGATION_BASE) — near top of each template |
+| 7 (Signal Extraction) | INQUIRY + INVESTIGATION_BASE | READING DISCIPLINE via `_READING_DISCIPLINE_BLOCK` constant | After CURRENT USER MESSAGE, before YOUR TASK (INQUIRY) / after the PROMPT FENCE rule, before EVIDENCE GROUNDING (INVESTIGATION_BASE) — near top of each template |
 | 8 (Full-Context Reasoning) | INVESTIGATION_BASE | READING DISCIPLINE via `_READING_DISCIPLINE_BLOCK` (paired with Rule 7) | Same block as Rule 7. In INQUIRY the Full-Context portion is a no-op because its scope-gating opener ("When drawing diagnostic conclusions...") does not engage on pre-investigation turns. |
 
 **Non-rule shared constants:** `_DATA_CITATION_RULE` is a shared quality-standard constant (not a behavioral rule) concatenated into INQUIRY_TEMPLATE's TRIAGE SUMMARY QUALITY section and INVESTIGATION_BASE's WORKING WITH EVIDENCE DATA section. It prescribes specificity when citing file extract values (actual IPs / counts / timestamps rather than "I see some errors") and judgment when enumerating entities. Follows the same single-definition pattern as `_ADVISOR_ROLE_CONSTRAINT` to prevent drift between the two injection sites.
@@ -481,16 +481,12 @@ These clauses are prompt-layer operational guidance rather than behavioral rules
 ### INVESTIGATION_BASE Layout
 
 ```text
-CONTEXT HEADER
-  Identity, case context, milestones, evidence, entity highlights,
-  hypotheses, investigation journal, working conclusion, pending action,
-  conversation history, system feedback, user message
-                                                        (~2000-5000+ tokens of dynamic context)
-
+DURABLE PREFIX (byte-identical across turns at one stage and mode, #613)
+ROLE LINE + PROMPT FENCE                                _PROMPT_FENCE_RULE, before the first fenced block (#1256)
 READING DISCIPLINE (Rules 7, 8)                         _READING_DISCIPLINE_BLOCK constant
                                                         Signal Extraction + Full-Context Reasoning
-{evidence_grounding} (Rule 2 extension)                 _EVIDENCE_GROUNDING_BLOCK constant; set to "" for
-                                                        knowledge_query / agent_meta (block entirely absent, not exempted)
+{evidence_grounding} (Rule 2 extension)                 _EVIDENCE_GROUNDING_BLOCK constant; replaced by the
+                                                        observation-time definition alone for knowledge_query / agent_meta
 EVIDENCE FROM ATTACHMENTS                               Orientation: prior files remain searchable;
                                                         attachments arrive pre-processed in structural indexes
 WORKING WITH EVIDENCE DATA                              _DATA_CITATION_RULE constant (also used in
@@ -500,8 +496,6 @@ CREATING EVIDENCE RECORDS                               evidence_to_add schema +
 EVIDENCE SUMMARY QUALITY                                Long-term memory for evidence artifacts
 INVESTIGATION JOURNAL                                   journal_entries schema + entry types
 PROACTIVE BLOCKER DETECTION                             missing_critical_data emission
-YOUR TASK: {adaptive_instructions}                      Focus Zone prepended here for DIAGNOSIS only
-                                                        Mitigation guidance applies when an Axis-B gap exists
 KEY PRINCIPLES (Rules 4, 5)                             Evidence-Driven Progress, NAME THE NEXT DATA POINT,
                                                         Graceful Pivot, Acknowledge Corrections, Check Back
                                                         on Suggested Actions, Work With What You Get
@@ -518,9 +512,17 @@ CONCISENESS
                                                         confidence calibration + no premature resolution
 CRITICAL: REASONING-FIRST REQUIREMENT                   internal_reasoning emission gate for milestones
 <security_constraints>
+YOUR TASK: {adaptive_instructions}                      Focus Zone prepended here for DIAGNOSIS only;
+                                                        last in the prefix because it changes with stage and focus
+=== CURRENT CASE (everything below this line changes from turn to turn) ===      CACHE_BOUNDARY
+PER-TURN TAIL
+  Identity, case context, milestones, evidence, entity highlights,
+  hypotheses, investigation journal, working conclusion, pending action,
+  conversation history, system feedback, user message
+                                                        (~2000-5000+ tokens of dynamic context)
 ```
 
-**Why this order**: evidence-handling rules precede `YOUR TASK` so the LLM internalizes the input-quality and classification framework *before* reading its stage-specific playbook. The dynamic context block above READING DISCIPLINE is where actual evidence appears; the rules section below READING DISCIPLINE tells the LLM how to interpret it. The instruction layer (`adaptive_instructions` + KEY PRINCIPLES + FOLLOW-UP SUGGESTIONS) follows. Output-shaping rules (ASSISTANT ROLE, ACTION IMPACT, CONCISENESS, DIAGNOSTIC REASONING, REASONING-FIRST) come last so they're freshest in the LLM's working context when it composes its response.
+**Why this order**: provider prompt caches reuse only a byte-identical prefix, so the instructions that never change come first and everything that changes per turn comes after `CACHE_BOUNDARY` ([prompt-assembly-architecture.md §3.3](./prompt-assembly-architecture.md#33-durable-prefix-and-the-cache-boundary-613)). Within the instructions, evidence-handling rules precede the principles and `YOUR TASK`, so the LLM internalizes the input-quality and classification framework *before* reading its stage-specific playbook. The stage instructions close the prefix because they are its only part that changes within a case (stage and focus zone). The case data the rules describe follows the boundary, ending on the user's message.
 
 **`processing_mode == "knowledge_query"` bypass** (and `"agent_meta"`, Rule 9, which substitutes `AGENT_META_INSTRUCTIONS`): When this mode is set, `get_prompt_for_case()` skips stage dispatch entirely and passes `evidence_grounding=""` AND `diagnostic_reasoning=""`. `KNOWLEDGE_QUERY_INSTRUCTIONS` is injected as `adaptive_instructions`. Both the EVIDENCE GROUNDING and DIAGNOSTIC REASONING blocks are absent from the rendered prompt entirely — rather than inserting exemption clauses sandwiched between other constraint blocks. This matches the `KNOWLEDGE_QUERY_INSTRUCTIONS` waiver text ("The DIAGNOSTIC REASONING REQUIREMENTS and EVIDENCE GROUNDING rules do not apply").
 
@@ -528,9 +530,9 @@ CRITICAL: REASONING-FIRST REQUIREMENT                   internal_reasoning emiss
 
 One structural invariant is enforced:
 
-- **Focus Zone is prepended to stage instructions**. It appears at the top of `{adaptive_instructions}` for DIAGNOSIS, making it the first instruction-level content the LLM sees after the dynamic context header.
+- **Focus Zone is prepended to stage instructions**. It appears at the top of `{adaptive_instructions}` for DIAGNOSIS, which closes the instruction prefix: it is the last instruction-level content the LLM reads before the per-turn case data.
 
-The remaining rules occupy stable positions in the template but are not ordered for primacy/recency optimization. The dynamic context header (identity, evidence, hypotheses, conversation history) consumes thousands of tokens before any instruction, so positional effects within the instruction block are negligible compared to Focus Zone's first-instruction position.
+The remaining rules occupy stable positions in the template but are not ordered for primacy/recency optimization; their order is fixed by the durable-prefix rule (#613), which puts every standing instruction ahead of the per-turn case data.
 
 ---
 

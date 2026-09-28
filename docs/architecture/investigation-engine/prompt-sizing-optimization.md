@@ -254,9 +254,10 @@ tool-less build keeps the full extract (safety verified). A playbook-S9 eval sho
   `cache_read`, no separate `cache_write`) and Anthropic explicit `cache_control`
   (a `cache_write` on the prefix write, then `cache_read` on reuse). The
   cost-weighting above exists precisely so these cached re-sends register at their
-  true (discounted) cost. A further architectural win — segregating the durable
-  prefix from the ephemeral scratchpad so the stable prefix is never re-sent
-  full-price (strategy 1) — is deferred to issue #613.
+  true (discounted) cost. The cross-turn win — segregating the durable prefix
+  from the per-turn tail so consecutive turns reuse the standing instructions
+  from the cache (strategy 1) — landed in #613: see
+  [prompt-assembly-architecture.md §3.3](./prompt-assembly-architecture.md#33-durable-prefix-and-the-cache-boundary-613).
 
 ### 4.4 Instrument-gap fixes (found during measurement — now resolved)
 

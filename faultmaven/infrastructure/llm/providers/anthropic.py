@@ -13,6 +13,7 @@ from typing import List, Optional
 import aiohttp
 
 from faultmaven.exceptions import LLMException
+from faultmaven.infrastructure.llm.prompt_cache import CACHE_BOUNDARY
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
@@ -202,7 +203,10 @@ class AnthropicProvider(BaseLLMProvider):
         self._discard_reasoning_kwargs(kwargs, model=selected_model)
         if messages:
             converted = self._convert_messages_to_anthropic(messages)
-            request_body["messages"] = converted["messages"]
+            anthropic_messages = converted["messages"]
+            if cache_prompt:
+                _mark_cache_boundary(anthropic_messages)
+            request_body["messages"] = anthropic_messages
             if converted.get("system"):
                 request_body["system"] = converted["system"]
         else:
@@ -643,3 +647,48 @@ class AnthropicProvider(BaseLLMProvider):
             result["system"] = "\n\n".join(system_parts)
 
         return result
+
+
+def _mark_cache_boundary(messages: list) -> None:
+    """Put a second cache breakpoint at the end of the prompt's durable prefix (#613).
+
+    The investigation prompt reaches this provider as ONE user text block whose
+    first part — the standing instructions, up to ``CACHE_BOUNDARY`` — renders
+    the same bytes on every turn, and whose rest is this turn's case data. The
+    system breakpoint in ``generate()`` caches the tools and the system
+    instruction only; this one extends the cached prefix through the boundary
+    line, so the next turn reads the instructions from the cache too.
+
+    Splits only when the FIRST message is a user message whose content is a
+    string holding ``CACHE_BOUNDARY`` exactly once, with non-blank text after
+    it. Anything else — no boundary, a boundary quoted a second time by case
+    content, content that is already a block list — is left untouched: the
+    request goes out exactly as before, uncached past the system block. The
+    two text blocks concatenate to the original string, so the model reads
+    the same prompt either way.
+    """
+    if not messages:
+        return
+    first = messages[0]
+    if first.get("role") != "user":
+        return
+    content = first.get("content")
+    if not isinstance(content, str) or content.count(CACHE_BOUNDARY) != 1:
+        return
+    end = content.index(CACHE_BOUNDARY) + len(CACHE_BOUNDARY)
+    if content.startswith("\n", end):
+        end += 1  # the breakpoint closes the boundary LINE, newline included
+    head, tail = content[:end], content[end:]
+    if not tail.strip():
+        return  # Anthropic rejects a blank text block
+    messages[0] = {
+        **first,
+        "content": [
+            {
+                "type": "text",
+                "text": head,
+                "cache_control": {"type": "ephemeral"},
+            },
+            {"type": "text", "text": tail},
+        ],
+    }

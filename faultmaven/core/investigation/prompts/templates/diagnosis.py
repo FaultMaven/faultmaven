@@ -223,7 +223,7 @@ for a connection *timeout*, a post-connect collation warning or a wrong-password
 auth error are signature-incompatible — they produce a different signature, so
 they are not candidates.
 
-The chains you have already built are shown in `<causal_graph>` above, each node
+The chains you have already built are shown in `<causal_graph>` below, each node
 with its `cn_...` id. EXTEND that graph: when a cause or rung is already present,
 reference its existing `cn_...` id (in `produces`, `root_node_ref`, or
 `node_evidence_links`) and attach new evidence to it — emit a NEW node only for a
