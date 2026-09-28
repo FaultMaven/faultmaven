@@ -773,7 +773,20 @@ def test_an_in_line_control_character_is_not_a_line_break(
     assert reference[(entity_type, value)] == _RECORD_COUNT, reference
 
     folded = "\n".join(f"{line}\x0c{line}" for line in records) + "\n"
-    assert _counts(extractor_cls().extract(folded)) == reference, (
+    expected = dict(reference)
+    if extractor_cls is LogsEntityExtractor:
+        # Each folded line is ONE sshd message holding two ``from`` slots:
+        # the address is its rightmost slot (fm#1657), which is the second
+        # record's, and the login name is sshd's user slot — everything from
+        # the first ``for`` to that slot (fm#1668). So the name spans the form
+        # feed, and each line still names it once.
+        del expected[(EntityType.USER, "alice")]
+        for line in records:
+            head = line.split(" for alice", 1)[0]
+            expected[
+                (EntityType.USER, f"alice from 10.0.0.7 port 22\x0c{head} for alice")
+            ] = 1
+    assert _counts(extractor_cls().extract(folded)) == expected, (
         "a form feed was treated as a line break — str.splitlines() or "
         "another over-splitter has replaced split_log_lines (fm#1601)"
     )

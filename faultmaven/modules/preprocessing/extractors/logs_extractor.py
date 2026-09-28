@@ -5,6 +5,7 @@ Implements severity-based error detection with adaptive context extraction.
 No LLM calls required - pure keyword-based extraction.
 """
 
+import json
 import re
 from collections import Counter
 
@@ -23,7 +24,10 @@ from faultmaven.modules.preprocessing.extractors.utils import (
     is_port,
     split_log_lines,
 )
-from faultmaven.modules.preprocessing.log_usernames import extract_usernames
+from faultmaven.modules.preprocessing.log_usernames import (
+    extract_usernames,
+    is_plain_username,
+)
 
 # ---------------------------------------------------------------------------
 # Log-template normalisation — strips per-line variable parts so that
@@ -614,6 +618,13 @@ class LogsAndErrorsExtractor:
     # LINES (fm#1574). Do not re-derive that here — a local re-implementation
     # is what #522 cost, and the rendering states the unit so the two cannot
     # drift apart silently.
+    #
+    # A name read from sshd's user slot is the client's, verbatim (fm#1668),
+    # so it can hold anything — ``x for root``, or ``root: 500 lines``, which
+    # rendered bare would read as a count. A name outside the alphabet the
+    # searched branches capture (``log_usernames.is_plain_username``) is
+    # rendered JSON-quoted, so its extent is unambiguous; every other name
+    # renders exactly as before.
 
     # Port matchers. A port number is a numeric token that needs *structural*
     # context on the left: either an explicit `port` keyword, or a
@@ -938,7 +949,20 @@ class LogsAndErrorsExtractor:
         return matched_events, line_is_outcome
 
     @staticmethod
-    def _auth_attempt_count(outcome_lines: int, ip_events: Counter) -> int:
+    def _pam_counts_as_attempts(outcome_lines: int) -> bool:
+        """Whether an IP's PAM failures are its attempts: it has no outcome line.
+
+        The breakdown's rule only. It asks how many ATTEMPTS an IP made, and a
+        PAM line is one only where no outcome line — ``Failed``/``Accepted``
+        for any method — was written for it. FILE SUMMARY asks something else
+        (``_build_summary``): whether a PAM line is already SHOWN there, as a
+        ``failed_password`` line, so a keyboard-interactive brute force, whose
+        outcomes are in no category the summary lists, keeps its PAM figure.
+        """
+        return outcome_lines == 0
+
+    @classmethod
+    def _auth_attempt_count(cls, outcome_lines: int, ip_events: Counter) -> int:
         """One IP's ``auth total``: attempts, by outcome line (fm#1627).
 
         ``outcome_lines`` is the number of that IP's sshd outcome lines —
@@ -946,11 +970,20 @@ class LogsAndErrorsExtractor:
         ``pam_auth_failure`` count is the attempt count instead — Format B
         logs (``sshd(pam_unix)[PID]: authentication failure; ... rhost=IP``)
         have no outcome line, and without the fallback every IP in them
-        would read 0.
+        would read 0. Both counts are weighted: a ``message repeated N times``
+        line is N of them (fm#1669).
         """
-        if outcome_lines:
+        if not cls._pam_counts_as_attempts(outcome_lines):
             return outcome_lines
         return ip_events.get("pam_auth_failure", 0)
+
+    @staticmethod
+    def _render_username(user: str) -> str:
+        # ``ensure_ascii=False``: a non-ASCII name renders as itself, so the
+        # model can pass it to ``search_file``; ``\uXXXX`` matches nothing.
+        if is_plain_username(user):
+            return user
+        return json.dumps(user, ensure_ascii=False)
 
     def _build_entity_profile(
         self,
@@ -1003,9 +1036,28 @@ class LogsAndErrorsExtractor:
         ip_auth_outcome_counts: Counter = Counter()
         # Per-IP count of outcome lines that match NO auth category —
         # ``Failed publickey``, ``Failed keyboard-interactive/pam`` and the
-        # like. Rendered in the breakdown row as ``other_method_outcome`` so
-        # the total always has something beside it that accounts for it.
+        # like. Rendered in the breakdown row as ``other_outcome`` so the
+        # total always has something beside it that accounts for it.
         ip_other_outcome_counts: Counter = Counter()
+        # rsyslog's ``message repeated N times: [ … ]`` is N occurrences of
+        # the line inside it (fm#1669). On a line ``sshd_auth`` reads, the
+        # three per-IP tallies above that feed the breakdown's numbers —
+        # ``ip_event_counts``, ``ip_auth_outcome_counts`` and
+        # ``ip_other_outcome_counts`` — count it N times; every LINE count
+        # (``event_counts``, ``ip_auth_line_counts``, the entity counts)
+        # counts it once, because ``search_file`` finds one line. The IPs
+        # that got a weighted count, so the breakdown can say so.
+        ip_weighted: set[str] = set()
+        # FILE SUMMARY's PAM figure (fm#1654): PAM failure LINES, keyed by
+        # the IPs each one was credited to, so the summary can count a line
+        # once and apply main's rule per IP — a PAM line is dropped where its
+        # IP's ``Failed password`` lines already show it — instead of
+        # dropping every PAM line when any line anywhere is one.
+        pam_lines_by_ips: Counter = Counter()
+        # Per-IP ``accepted_login`` LINES, unweighted: the attacker/legitimate
+        # split under "Event types" divides that block's line count, so it
+        # counts lines too (fm#1669), not the weighted ``ip_event_counts``.
+        ip_accepted_lines: Counter = Counter()
         # Tracks whether the log contains "error state N" lines (mod_jk / similar)
         has_numeric_state_codes = False
         # Syslog service name counts for multi-service logs
@@ -1063,7 +1115,11 @@ class LogsAndErrorsExtractor:
                     ip_error_counts[ip] += 1
             if not has_numeric_state_codes and self._STATE_CODE_RE.search(line):
                 has_numeric_state_codes = True
-            for user in extract_usernames(line):
+            # Read once, here, for the usernames and the events below: a line
+            # ``sshd_auth`` reads takes its login name from sshd's user slot
+            # (fm#1668), never from a search the client's text can steer.
+            sshd = read_sshd_auth_line(line)
+            for user in extract_usernames(line, sshd):
                 user_all_counts[user] += 1
                 if is_error:
                     user_error_counts[user] += 1
@@ -1139,8 +1195,7 @@ class LogsAndErrorsExtractor:
             # disconnect reason can spell any address. No slot, or an
             # ambiguous one, credits no IP; the event still counts. Every
             # other line is read as before fm#1657: searched, and credited to
-            # every IPv4 on it.
-            sshd = read_sshd_auth_line(line)
+            # every IPv4 on it. (``sshd`` was read above, before the usernames.)
             if sshd.read:
                 line_events = set(sshd.events)
                 line_is_outcome = sshd.outcome
@@ -1167,10 +1222,16 @@ class LogsAndErrorsExtractor:
                 matched_events
             )
             line_is_other_outcome = line_is_outcome and not line_is_category_outcome
+            # N on a read ``message repeated N times`` line (fm#1669), else 1.
+            weight = sshd.weight if sshd.read else 1
             for ip in event_ips if line_is_outcome else ():
-                ip_auth_outcome_counts[ip] += 1
+                ip_auth_outcome_counts[ip] += weight
                 if line_is_other_outcome:
-                    ip_other_outcome_counts[ip] += 1
+                    ip_other_outcome_counts[ip] += weight
+                if weight > 1:
+                    ip_weighted.add(ip)
+            if "pam_auth_failure" in matched_events:
+                pam_lines_by_ips[tuple(event_ips)] += 1
             if matched_events:
                 ts = extract_timestamp(line)
                 if ts:
@@ -1204,9 +1265,13 @@ class LogsAndErrorsExtractor:
                     if ip not in ip_event_counts:
                         ip_event_counts[ip] = Counter()
                     for ev in matched_events:
-                        ip_event_counts[ip][ev] += 1
+                        ip_event_counts[ip][ev] += weight
+                    if "accepted_login" in matched_events:
+                        ip_accepted_lines[ip] += 1
                     if line_is_auth:
                         ip_auth_line_counts[ip] += 1
+                        if weight > 1:
+                            ip_weighted.add(ip)
 
         # BGL block is only meaningful when at least one non-dash flag is
         # present (a file with only dash-flag lines is not informative;
@@ -1226,6 +1291,21 @@ class LogsAndErrorsExtractor:
             or mod_jk_state_counts
         ):
             return "", "ENTITY PROFILE: No entities found"
+
+        # FILE SUMMARY's PAM figure (fm#1654): main's rule, applied per IP. A
+        # PAM line counts unless its IP has ``failed_password`` lines, which
+        # already show that attempt; a line credited to no IP counts unless
+        # the file has a ``failed_password`` line. A line credited to several
+        # IPs is one line, shown if any of them lets it through.
+        pam_summary_lines = sum(
+            n
+            for ips, n in pam_lines_by_ips.items()
+            if (
+                any(not ip_event_counts[ip].get("failed_password") for ip in ips)
+                if ips
+                else not event_counts.get("failed_password")
+            )
+        )
 
         # FILE SUMMARY — returned separately so extract() can place it in file_extract
         first_ts, last_ts, _ = extract_time_range_ts(content)
@@ -1250,6 +1330,7 @@ class LogsAndErrorsExtractor:
             bgl_node_count=len(bgl_nodes),
             bgl_line_count=bgl_line_count,
             kb_package_count=len(kb_package_counts),
+            pam_summary_lines=pam_summary_lines,
         )
 
         # ENTITY PROFILE body — the search map
@@ -1345,10 +1426,7 @@ class LogsAndErrorsExtractor:
                 if event == "accepted_login":
                     attacker_accepted = 0
                     legitimate_accepted = 0
-                    for ip, ev_counts in ip_event_counts.items():
-                        n = ev_counts.get("accepted_login", 0)
-                        if not n:
-                            continue
+                    for ip, n in ip_accepted_lines.items():
                         if ip in attacker_ips:
                             attacker_accepted += n
                         else:
@@ -1400,6 +1478,15 @@ class LogsAndErrorsExtractor:
             if ip_auth_line_counts.get(ip, 0) or ip_other_outcome_counts.get(ip, 0)
         ]
         if auth_ips:
+            # Said only where it applies, so a file with no weighted row
+            # renders exactly as it did before fm#1669.
+            repeat_note = (
+                ' A "message repeated N times" line counts N times in these'
+                ' per-IP numbers; "Event types" and FILE SUMMARY count it once,'
+                " as one line."
+                if ip_weighted.intersection(auth_ips[:5])
+                else ""
+            )
             parts.append(
                 "  IP auth breakdown"
                 " [use these event-specific counts for auth questions,"
@@ -1411,9 +1498,10 @@ class LogsAndErrorsExtractor:
                 " Invalid user and PAM lines accompany an attempt and are not"
                 " added to it. auth total=0 means no authentication outcome"
                 " and no PAM failure was logged for that IP."
-                " other_method_outcome = outcome lines for a method the"
-                " categories do not name (publickey failures,"
+                " other_outcome = outcome lines for a method the"
+                " categories do not name (e.g. publickey failures,"
                 " keyboard-interactive)."
+                f"{repeat_note}"
                 " Do not add the per-event numbers — sshd logs one attempt on"
                 " several lines, and one line can match several events"
                 ' (e.g. "Failed password for invalid user")]:'
@@ -1425,9 +1513,7 @@ class LogsAndErrorsExtractor:
                     if ip_event_counts.get(ip, {}).get(ev, 0)
                 ]
                 if ip_other_outcome_counts.get(ip, 0):
-                    ev_parts.append(
-                        f"other_method_outcome={ip_other_outcome_counts[ip]}"
-                    )
+                    ev_parts.append(f"other_outcome={ip_other_outcome_counts[ip]}")
                 attempts = self._auth_attempt_count(
                     ip_auth_outcome_counts.get(ip, 0),
                     ip_event_counts.get(ip, Counter()),
@@ -1446,7 +1532,9 @@ class LogsAndErrorsExtractor:
             for user, total in user_all_counts.most_common():
                 error_n = user_error_counts.get(user, 0)
                 annotation = f"  ({error_n} on error lines)" if error_n else ""
-                parts.append(f"    {user}: {total} lines{annotation}")
+                parts.append(
+                    f"    {self._render_username(user)}: {total} lines{annotation}"
+                )
 
         # "lines", not "mentions"/"requests": every ENTITY count in this
         # profile is the number of LINES the value appears on (fm#1587), the
@@ -1680,12 +1768,12 @@ class LogsAndErrorsExtractor:
 
         return ""
 
-    # Event types whose count is a duplicate of another event type and should
-    # be hidden from FILE SUMMARY's dominant-activity picker. PAM is special:
-    # in Format A logs (OpenSSH "pam_unix(sshd:auth):") it duplicates
-    # failed_password, but in Format B logs (loghub Linux "sshd(pam_unix)[PID]:")
-    # failed_password never matches and pam_auth_failure IS the auth signal.
-    # Hence the exclusion is applied conditionally inside _build_summary.
+    # PAM is special in FILE SUMMARY's dominant-activity picker: in Format A
+    # logs (OpenSSH "pam_unix(sshd:auth):") a PAM line accompanies a
+    # ``Failed password`` line and duplicates it, but in Format B logs (loghub
+    # Linux "sshd(pam_unix)[PID]:") there is no such line and pam_auth_failure
+    # IS the auth signal. Which it is, is decided per IP (fm#1654):
+    # ``_build_entity_profile`` passes the result in as ``pam_summary_lines``.
 
     def _build_summary(
         self,
@@ -1707,9 +1795,21 @@ class LogsAndErrorsExtractor:
         bgl_node_count: int = 0,
         bgl_line_count: int = 0,
         kb_package_count: int = 0,
+        *,
+        pam_summary_lines: int,
     ) -> str:
         """Return a compact FILE SUMMARY (2–4 sentences) describing dominant
         activity, top source, and key absences.
+
+        ``pam_summary_lines`` is the ``pam_auth_failure`` figure the summary
+        shows, and it has no default, so no caller can erase it by omission:
+        the PAM failure lines not already shown as a ``failed_password`` line
+        of the same IP (``_build_entity_profile``). That is main's rule, per
+        IP. It differs from the breakdown's ``_pam_counts_as_attempts`` on
+        purpose: the breakdown counts ATTEMPTS, and any outcome line is one;
+        the summary lists event CATEGORIES, and a PAM line only duplicates a
+        category it shows — ``Failed keyboard-interactive/pam`` is in none, so
+        its PAM lines are the summary's only auth signal.
 
         Prepended to the entity profile so it survives context truncation and
         gives the agent an immediate orientation without requiring it to parse
@@ -1755,16 +1855,19 @@ class LogsAndErrorsExtractor:
                 f" record did not match the IP address — reverse-DNS mismatch)."
             )
 
-        # Dominant activity counts — exclude supplementary duplicate event types.
-        # pam_auth_failure duplicates failed_password ONLY when both are present
-        # (Format A logs). When failed_password is 0, pam_auth_failure is the
-        # primary auth signal (Format B) and must be surfaced.
-        exclude = set()
-        if event_counts.get("failed_password", 0) > 0:
-            exclude.add("pam_auth_failure")
+        # Dominant activity counts. pam_auth_failure shows only the PAM lines
+        # no failed_password line of the same IP already shows (fm#1654) —
+        # per IP, not dropped file-wide whenever any line is a
+        # failed_password: a Format B host sharing a file with an OpenSSH one
+        # keeps its failures here as its breakdown row does. The key keeps its
+        # place, so ties break as before.
         summary_events = Counter(
-            {k: v for k, v in event_counts.items() if k not in exclude}
+            {
+                k: (pam_summary_lines if k == "pam_auth_failure" else v)
+                for k, v in event_counts.items()
+            }
         )
+        summary_events = Counter({k: v for k, v in summary_events.items() if v > 0})
         top_events = summary_events.most_common(3)
         if top_events:
             ev_summary = ", ".join(
