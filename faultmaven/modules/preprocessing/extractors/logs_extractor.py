@@ -1046,6 +1046,10 @@ class LogsAndErrorsExtractor:
         # ``Failed password``.
         pam_lines_by_ips: Counter = Counter()
         file_outcome_lines = 0
+        # Per-IP ``accepted_login`` LINES, unweighted: the attacker/legitimate
+        # split under "Event types" divides that block's line count, so it
+        # counts lines too (fm#1669), not the weighted ``ip_event_counts``.
+        ip_accepted_lines: Counter = Counter()
         # Tracks whether the log contains "error state N" lines (mod_jk / similar)
         has_numeric_state_codes = False
         # Syslog service name counts for multi-service logs
@@ -1256,6 +1260,8 @@ class LogsAndErrorsExtractor:
                         ip_event_counts[ip] = Counter()
                     for ev in matched_events:
                         ip_event_counts[ip][ev] += weight
+                    if "accepted_login" in matched_events:
+                        ip_accepted_lines[ip] += 1
                     if line_is_auth:
                         ip_auth_line_counts[ip] += 1
                         if weight > 1:
@@ -1417,10 +1423,7 @@ class LogsAndErrorsExtractor:
                 if event == "accepted_login":
                     attacker_accepted = 0
                     legitimate_accepted = 0
-                    for ip, ev_counts in ip_event_counts.items():
-                        n = ev_counts.get("accepted_login", 0)
-                        if not n:
-                            continue
+                    for ip, n in ip_accepted_lines.items():
                         if ip in attacker_ips:
                             attacker_accepted += n
                         else:

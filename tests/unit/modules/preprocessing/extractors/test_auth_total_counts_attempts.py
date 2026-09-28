@@ -348,6 +348,21 @@ class TestARepeatedMessageIsNAttempts:
         # FILE SUMMARY counts lines, like "Event types".
         assert "Dominant activity: pam auth failure (2)." in _summary(lines)
 
+    def test_the_accepted_login_split_counts_lines(self):
+        """The attacker/legitimate split sits under "Event types" and divides
+        its ``accepted_login`` LINE count, so it counts lines too — while the
+        breakdown row counts the repeated line twice."""
+        accepted = "Accepted password for alice from 10.1.1.1 port 22 ssh2"
+        lines = [
+            f"Dec 10 07:13:43 LabSZ sshd[24227]: {accepted}",
+            f"Dec 10 07:13:56 LabSZ sshd[24227]: message repeated 2 times: [ {accepted}]",
+        ]
+        assert _event_lines(lines) == {"accepted_login": 2}
+        search_map = _search_map(lines)
+        assert "      0 from attacker IPs" in search_map, search_map
+        assert "      2 from non-attacker IPs" in search_map, search_map
+        assert _rows(_text(lines)) == {"10.1.1.1": "accepted_login=3 → auth total=3"}
+
     def test_an_unread_repeat_line_is_one_line(self):
         """The weight is ``sshd_auth``'s reading; an unread line is read as before."""
         lines = [f"/var/log/auth.log.1:{line}" for line in self.LOGHUB]
@@ -401,6 +416,29 @@ class TestTheSummaryPamFigureIsDecidedPerIp:
     def test_a_format_b_only_file_is_unchanged(self):
         """No outcome line anywhere: every PAM line is an attempt. As main."""
         assert "Dominant activity: pam auth failure (4)." in _summary(_FORMAT_B)
+
+    def test_a_keyboard_interactive_only_file_shows_no_pam_figure(self):
+        """Every PAM line accompanies an outcome line, though no outcome is a
+        ``failed_password``: the per-IP rule counts the outcomes, so the PAM
+        lines are not attempts, in the row or in the summary. (main showed
+        "Dominant activity: pam auth failure (5).", because it dropped PAM
+        only when some line was a ``Failed password``.)"""
+        ip = "203.0.113.7"
+        lines = [
+            line
+            for i in range(5)
+            for line in (
+                f"Jul 28 09:0{i}:10 combo sshd[70{i}]: pam_unix(sshd:auth):"
+                " authentication failure; logname= uid=0 euid=0 tty=ssh ruser="
+                f" rhost={ip}  user=ops",
+                f"Jul 28 09:0{i}:11 combo sshd[70{i}]: Failed"
+                f" keyboard-interactive/pam for ops from {ip} port 5100{i} ssh2",
+            )
+        ]
+        assert _rows(_text(lines)) == {
+            ip: "pam_auth_failure=5, other_outcome=5 → auth total=5"
+        }
+        assert "pam auth failure" not in _summary(lines), _summary(lines)
 
     def test_an_uncredited_pam_line_counts_only_without_outcome_lines(self):
         """A PAM line whose ``rhost`` is a PTR name is credited to no IP. It is

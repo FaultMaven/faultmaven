@@ -291,21 +291,46 @@ def test_for_branch_does_not_capture_a_field_name(line: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+# ``grep -H`` output: a header ``sshd_auth`` does not read, so a line under it
+# is SEARCHED, exactly as before fm#1668. The searched path still captures by
+# regex, so the guards and fm#1574's per-line rule are pinned there.
+_UNREAD_PREFIX = "/var/log/auth.log:"
+
+_HOST_SHAPED_NAME_LINE = (
+    "Dec 10 06:55:46 LabSZ sshd[24200]: Failed password for invalid user "
+    "host-187-141-143-180-sta.mx from 173.234.31.186 port 38926 ssh2"
+)
+
+
 @pytest.mark.unit
 def test_reverse_dns_login_name_is_rejected() -> None:
-    """Guard: ``REVERSE_DNS_RE``.
+    """Guard: ``REVERSE_DNS_RE``, on the SEARCHED path.
 
     sshd echoes whatever login name a client offered, so a scanner offering a
     host-shaped name puts a PTR record in username position on an
-    auth-context line — the one shape that reaches the guard.
+    auth-context line — the one shape that reaches the guard. A search
+    captures by regex, so the guard still decides there: the same text in a
+    format ``sshd_auth`` does not read (``grep -H`` output).
     """
-    content = (
-        "Dec 10 06:55:46 LabSZ sshd[24200]: Failed password for invalid user "
-        "host-187-141-143-180-sta.mx from 173.234.31.186 port 38926 ssh2\n"
+    from faultmaven.modules.preprocessing.extractors.sshd_auth import (
+        read_sshd_auth_line,
     )
-    profile, registry = both_paths(content)
+
+    unread = _UNREAD_PREFIX + _HOST_SHAPED_NAME_LINE
+    assert read_sshd_auth_line(unread).read is False
+    profile, registry = both_paths(unread + "\n")
     assert profile == [], profile
     assert registry == [], registry
+
+
+@pytest.mark.unit
+def test_a_host_shaped_login_name_in_the_slot_is_reported_verbatim() -> None:
+    """On a read line the name is sshd's user slot, exactly as the client
+    offered it (fm#1668): a name no account can have is itself the attack
+    signal, so the slot is not filtered."""
+    profile, registry = both_paths(_HOST_SHAPED_NAME_LINE + "\n")
+    assert profile == ["host-187-141-143-180-sta.mx"], profile
+    assert registry == ["host-187-141-143-180-sta.mx"], registry
 
 
 @pytest.mark.unit
@@ -622,12 +647,22 @@ def test_registry_now_records_the_account_not_the_word_user(
             id="same-user-in-two-different-fields",
         ),
         # De-duplication must be by VALUE, not a blanket one-per-line: two
-        # different accounts named on one line are two mentions.
+        # different accounts named on one line are two mentions. sshd never
+        # writes ``user=`` after ``ssh2``, so the rule is pinned on the
+        # searched path (``_UNREAD_PREFIX``) ...
+        pytest.param(
+            _UNREAD_PREFIX + "Dec 10 09:34:00 LabSZ sshd[4]: Failed password for bob "
+            "from 1.2.3.4 port 22 ssh2 user=alice",
+            {"alice": 1, "bob": 1},
+            id="two-different-users-one-line",
+        ),
+        # ... while on a line ``sshd_auth`` reads, sshd's user slot is the
+        # answer and the line is not searched (fm#1668).
         pytest.param(
             "Dec 10 09:34:00 LabSZ sshd[4]: Failed password for bob from "
             "1.2.3.4 port 22 ssh2 user=alice",
-            {"alice": 1, "bob": 1},
-            id="two-different-users-one-line",
+            {"bob": 1},
+            id="read-line-slot-only",
         ),
         # And it must be PER LINE, not per file: the same account on two
         # lines is two mentions. A ``dict.fromkeys`` hoisted out of the
@@ -718,16 +753,19 @@ def test_one_line_is_one_mention_even_across_different_fields() -> None:
 @pytest.mark.parametrize(
     "line,expected,winner",
     [
+        # Searched path (``_UNREAD_PREFIX``): sshd never writes ``user=``
+        # after ``ssh2``, and a line ``sshd_auth`` reads takes its name from
+        # the user slot instead (fm#1668).
         pytest.param(
-            "Dec 10 09:34:00 h sshd[4]: Failed password for Alice from "
-            "1.2.3.4 port 22 ssh2 user=alice",
+            _UNREAD_PREFIX + "Dec 10 09:34:00 h sshd[4]: Failed password for Alice "
+            "from 1.2.3.4 port 22 ssh2 user=alice",
             {"alice": 1},
             "alice",
             id="for-clause-uppercase-field-lowercase",
         ),
         pytest.param(
-            "Dec 10 09:34:00 h sshd[4]: Failed password for alice from "
-            "1.2.3.4 port 22 ssh2 user=Alice",
+            _UNREAD_PREFIX + "Dec 10 09:34:00 h sshd[4]: Failed password for alice "
+            "from 1.2.3.4 port 22 ssh2 user=Alice",
             {"Alice": 1},
             "Alice",
             id="for-clause-lowercase-field-uppercase",
@@ -884,9 +922,11 @@ def test_returned_order_is_branch_order_not_text_order() -> None:
     ``Counter``, and the profile renders by count — but it is the contract
     the next caller reads, and it is what decides the case tie-break above.
     """
+    # On the searched path (``_UNREAD_PREFIX``): a line ``sshd_auth`` reads
+    # names only its user slot (fm#1668).
     line = (
-        "Dec 10 09:34:00 h sshd[4]: Failed password for bob from 1.2.3.4 "
-        "port 22 ssh2 user=alice"
+        _UNREAD_PREFIX + "Dec 10 09:34:00 h sshd[4]: Failed password for bob from "
+        "1.2.3.4 port 22 ssh2 user=alice"
     )
     assert line.index("bob") < line.index("alice")
     assert extract_usernames(line) == ["alice", "bob"]
@@ -995,10 +1035,15 @@ _NOT_THE_RULE = {
         "faultmaven/modules/preprocessing/extractors/sshd_auth.py",
         r"session opened for user\b",
     ): "event matcher for the session counter, extracts no name",
+    # fm#1668: the one name extraction outside the rule's home, and it is the
+    # rule's input — ``extract_usernames`` is its only reader.
     (
         "faultmaven/modules/preprocessing/extractors/sshd_auth.py",
-        r"Invalid user\s",
-    ): "selects the getpwnamallow address-slot shape, extracts no name",
+        r"(?P<user>)",
+    ): (
+        "sshd's positional user slot, read by log_usernames.extract_usernames"
+        " only; the key is weak because the scan flattens f-string parts"
+    ),
 }
 
 
@@ -1104,12 +1149,16 @@ def test_exactly_one_implementation_of_the_username_rule() -> None:
     existed, N was 2 and only one copy was correct.
 
     Declared blind spots, measured rather than assumed: a pattern assembled
-    at runtime from non-literal parts (``re.compile("|".join(parts))``)
-    flattens to the empty string and is invisible — 1 such site exists in
-    ``faultmaven/`` and it is a URL redactor. And the scan keys on the
-    literal token ``user``, so a rule spelled around ``acct=`` or ``login=``
-    is out of reach; widening to a vocabulary of account-ish keys has not
-    been measured and is not guessed at here.
+    at runtime from non-literal parts (``re.compile("|".join(parts))``, a
+    function parameter, an f-string field) flattens to the empty string and
+    is invisible, or flattens only in part. Measured on 2026-09-28 (fm#1668):
+    44 ``re`` call sites in ``faultmaven/`` flatten to the empty string and 25
+    more only in part — among them ``sshd_auth._shape``'s compiles of a
+    shape's lead and user lead (invisible) and ``sshd_auth._slot_pattern``,
+    which flattens to ``(?P<user>)`` and is allowlisted below. And the scan
+    keys on the literal token ``user``, so a rule spelled around ``acct=`` or
+    ``login=`` is out of reach; widening to a vocabulary of account-ish keys
+    has not been measured and is not guessed at here.
     """
     root = _repo_root()
     scanned: list[pathlib.Path] = []

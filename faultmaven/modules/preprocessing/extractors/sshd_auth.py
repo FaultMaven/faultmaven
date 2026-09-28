@@ -342,21 +342,26 @@ _VERDICT = r"(?:Failed|Accepted|Partial|Postponed)"
 
 # The USER LEAD: sshd's own words in front of the client's login name
 # (fm#1668). The name is the text from the end of the lead to the address
-# slot, so the parse that decides the slot decides the name. Exactly one
-# ``invalid user `` is sshd's — ``for invalid user invalid user root`` is the
-# name ``invalid user root``.
+# slot, so the parse that decides the slot decides the name. Each lead ends in
+# the ONE space sshd writes before the name (``for %s%.100s``, ``Invalid user
+# %.100s``, ``%suser %s``): whatever follows it is the name's, so an empty name
+# (two spaces) reads as empty, and a run of spaces is never re-split — a
+# ``\s+`` there backtracked once per space, quadratic on a crafted line.
+# Exactly one ``invalid user `` is sshd's — ``for invalid user invalid user
+# root`` is the name ``invalid user root`` — and it is possessive: sshd writes
+# it only before an invalid name, so a reading without it is never needed.
 #   auth.c ``auth_log``: ``<verdict> <method> for [invalid user ]<name>``;
-_VERDICT_USER_LEAD = _VERDICT + r"\s+\S+\s+for\s+(?:invalid user\s+)?"
+_VERDICT_USER_LEAD = _VERDICT + r"\s+\S+\s+for\s(?:invalid user\s)?+"
 #   auth.c ``auth_maxtries_exceeded``;
 _MAXTRIES_LEAD = r"maximum authentication attempts exceeded"
-_MAXTRIES_USER_LEAD = _MAXTRIES_LEAD + r"\s+for\s+(?:invalid user\s+)?"
+_MAXTRIES_USER_LEAD = _MAXTRIES_LEAD + r"\s+for\s(?:invalid user\s)?+"
 #   auth.c ``getpwnamallow``: ``Invalid user <name> from <ip>``;
 _GETPWNAM_USER_LEAD = r"Invalid user\s"
 #   packet.c ``sshpkt_fmt_connection_id``: the log preamble auth2.c sets,
 #   ``invalid user <name>``, ``authenticating user <name>`` or, once
 #   authenticated, ``user <name>``. Only where it is present: before the
 #   preamble is set the id is the bare ``<ip> port <n>``, with no name slot.
-_PACKET_USER_PREFIX = r"\s+(?:(?:invalid|authenticating)\s+user\s+|user\s+)"
+_PACKET_USER_PREFIX = r"\s+(?:(?:invalid|authenticating)\s+user|user)\s"
 _PACKET_ENDING_LEAD = (
     r"(?:[\w-]+:\s+)?(?:Connection (?:closed|reset) by|Disconnected from"
     r"|Timeout, client not responding from)"
@@ -368,36 +373,36 @@ _PACKET_REASON_LEAD = (
 
 
 def _slot_pattern(user_lead: str, slot_and_tail: str, *, lazy: bool) -> re.Pattern:
-    """``<user lead><user><slot><tail>``, else the slot anywhere, as before.
+    """``<user lead><user><slot><tail>``: the reading with a name.
 
-    The first alternative is the reading with a name: the user group runs
-    from the lead to the slot, greedy for the rightmost slot, lazy for the
-    leftmost. The second is the pre-fm#1668 reading, and is reached only when
-    the first cannot parse — a line that does not have the lead, or has it
-    but no slot after it — so where no name can be read the address is
-    exactly what it was. Both alternatives are one match, so the name and
-    the address always come from the same reading.
+    The user group runs from the lead to the slot, greedy for the rightmost
+    slot, lazy for the leftmost. It parses only a message whose anchored user
+    lead has already matched (``_slot``); every other message is parsed with
+    the pre-fm#1668 ``.*<slot><tail>``, so each line gets exactly one parse
+    and a hostile line never pays for two.
     """
     run = ".*?" if lazy else ".*"
-    return re.compile(
-        rf"(?:{user_lead}(?P<user>{run})|{run})" + slot_and_tail, re.IGNORECASE
-    )
+    return re.compile(rf"{user_lead}(?P<user>{run})" + slot_and_tail, re.IGNORECASE)
 
 
 @dataclass(frozen=True)
 class _SlotShape:
     """One message shape: the lead that selects it, and how its slot is read.
 
-    ``leftmost`` is None where no client text follows the slot, and then the
-    rightmost slot is the answer; otherwise the two must agree.
-    ``user_lead`` is None where the shape writes no login name; where it is
-    set, a message it matches at the start carries sshd's user slot.
+    ``rightmost``/``leftmost`` are the pre-fm#1668 readings, ``.*`` then the
+    slot; ``user_rightmost``/``user_leftmost`` read the same slot behind
+    ``user_lead``, with the login name between. A message that opens with
+    ``user_lead`` carries sshd's user slot and is read with the latter only.
+    A ``*_leftmost`` is None where no client text follows the slot, and then
+    the rightmost slot is the answer; otherwise the two must agree.
     """
 
     lead: "re.Pattern[str]"
     rightmost: "re.Pattern[str]"
-    leftmost: "re.Pattern[str] | None" = None
-    user_lead: "re.Pattern[str] | None" = None
+    leftmost: "re.Pattern[str] | None"
+    user_lead: "re.Pattern[str]"
+    user_rightmost: "re.Pattern[str]"
+    user_leftmost: "re.Pattern[str] | None"
 
 
 def _shape(
@@ -410,9 +415,11 @@ def _shape(
 ) -> _SlotShape:
     return _SlotShape(
         re.compile(lead, lead_flags),
+        re.compile(r".*" + slot_and_tail, re.IGNORECASE),
+        re.compile(r".*?" + slot_and_tail, re.IGNORECASE) if agree else None,
+        re.compile(user_lead, re.IGNORECASE),
         _slot_pattern(user_lead, slot_and_tail, lazy=False),
         _slot_pattern(user_lead, slot_and_tail, lazy=True) if agree else None,
-        re.compile(user_lead, re.IGNORECASE),
     )
 
 
@@ -469,7 +476,9 @@ _PAM_RHOST_RE = re.compile(r"(?:^|\s)rhost=(?P<addr>\S*)")
 def _slot(message: str) -> tuple[str | None, bool, str | None]:
     """``(address, user_slot, user)`` from one parse of ``message``.
 
-    ``user_slot`` is whether the message opens with its shape's user lead.
+    ``user_slot`` is whether the message opens with its shape's user lead,
+    and it picks the one pattern the message is parsed with: the name reading
+    behind the lead, or the pre-fm#1668 reading.
     ``user`` is the text between that lead and the address slot when the
     slot is DECIDED — the rightmost parse, agreed on by the leftmost where
     the shape has one — and None when the slot is undecided, the name is
@@ -478,17 +487,22 @@ def _slot(message: str) -> tuple[str | None, bool, str | None]:
     for shape in _SLOT_SHAPES:
         if not shape.lead.match(message):
             continue
-        user_slot = shape.user_lead is not None and bool(shape.user_lead.match(message))
+        user_slot = bool(shape.user_lead.match(message))
         if len(message) > _MAX_ADDRESS_PARSE_CHARS:
             return None, user_slot, None
-        rightmost = shape.rightmost.match(message)
+        if user_slot:
+            right, left = shape.user_rightmost, shape.user_leftmost
+        else:
+            right, left = shape.rightmost, shape.leftmost
+        rightmost = right.match(message)
         if rightmost is None:
             return None, user_slot, None
-        if shape.leftmost is not None:
-            leftmost = shape.leftmost.match(message)
+        if left is not None:
+            leftmost = left.match(message)
             if leftmost is None or leftmost.span("addr") != rightmost.span("addr"):
                 return None, user_slot, None
-        return rightmost.group("addr"), user_slot, rightmost.group("user") or None
+        user = rightmost.group("user") if user_slot else None
+        return rightmost.group("addr"), user_slot, user or None
     return None, False, None
 
 

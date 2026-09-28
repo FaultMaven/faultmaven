@@ -35,14 +35,21 @@ phantom ``root`` — one per line a brute-force source wrote. Three cases:
    case a search gets wrong — and the name is not filtered: a name no
    account can have (spaces, a PTR record, a digit first) is itself what an
    attack looks like, and it is reported as the client sent it.
-2. **A read line without a user slot** (a PAM failure, ``session opened for
-   user X``): ``user=<name>`` / ``user <name>`` only, never ``for <name>`` —
-   on a PAM line whose ``user=`` value holds ``x for root``, that branch is
-   the phantom again.
-3. **Every other line** — a format ``sshd_auth`` does not read, and every
-   non-sshd log — exactly as before fm#1668, which keeps ``sshd_auth``'s rule
-   that an unread format never counts less than it did. A candidate survives
-   there when all of the following hold:
+2. **A read line with an event or an outcome but no user slot** (a PAM
+   failure, ``session opened for user X``, a break-in warning):
+   ``user=<name>`` / ``user <name>`` only, never ``for <name>`` — on a PAM
+   line whose ``user=`` value holds ``x for root``, that branch is the phantom
+   again.
+3. **Every other line** — a format ``sshd_auth`` does not read, every
+   non-sshd log, and a read line with no event at all (``maximum
+   authentication attempts exceeded for root``, ``Postponed publickey for
+   alice``) — exactly as before fm#1668, which keeps ``sshd_auth``'s rule
+   that an unread format never counts less than it did. The ``for`` branch is
+   safe on a read line with no event: sshd writes ``invalid user`` before
+   every name that is not an existing account, and that phrase is an event,
+   so a client-chosen name on an sshd line always has a user slot (case 1)
+   and a line with no event names only real accounts. A candidate survives
+   here when all of the following hold:
 
    a. It came from ``user=<name>`` / ``user <name>`` (always applied), or
       from ``for [invalid user] <name>`` on a line carrying an explicit auth
@@ -254,7 +261,10 @@ def extract_usernames(line: str, sshd: SshdAuthLine | None = None) -> list[str]:
     if sshd.read and sshd.user_slot:
         return [sshd.user] if sshd.user else []
     candidates = USER_FIELD_RE.findall(line)
-    if not sshd.read and AUTH_CONTEXT_RE.search(line):
+    # Case 2 drops the ``for`` branch; case 3 — unread, or read with no event
+    # — keeps it.
+    searched = not sshd.read or not (sshd.events or sshd.outcome)
+    if searched and AUTH_CONTEXT_RE.search(line):
         candidates += USER_FOR_RE.findall(line)
     seen: set[str] = set()
     usernames: list[str] = []

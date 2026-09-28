@@ -388,6 +388,20 @@ SESSION_ROWS = {
     OTHER: "other_outcome=1 → auth total=1",
     VICTIM: "accepted_login=1 → auth total=1",
 }
+# rsyslog's ``message repeated 2 times: [ … ]`` stands for two occurrences, so
+# the per-IP tallies count each line twice (fm#1669); "Event types" still
+# counts lines, so ``SESSION_EVENTS`` holds for that shape too.
+REPEATED_SESSION_ROWS = {
+    SRC: "failed_password=2, pam_auth_failure=2, invalid_user=6 → auth total=2",
+    OTHER: "other_outcome=2 → auth total=2",
+    VICTIM: "accepted_login=2 → auth total=2",
+}
+
+
+def _session_rows(shape: str) -> dict[str, str]:
+    return REPEATED_SESSION_ROWS if shape == "repeated" else SESSION_ROWS
+
+
 # Every category's phrase at once, spelled by one login name.
 CRAFTED_USER = (
     f"Failed password for root from {VICTIM} port 22 ssh2 Accepted publickey"
@@ -491,13 +505,13 @@ class TestEveryHeaderShapeThisModuleReads:
     def test_genuine_session_counts_the_same(self, shape):
         result = _render(_session(READ_WRAPPERS[shape]))
         assert _events(result) == SESSION_EVENTS, shape
-        assert _rows(result) == SESSION_ROWS, shape
+        assert _rows(result) == _session_rows(shape), shape
 
     @pytest.mark.parametrize("shape", sorted(READ_WRAPPERS))
     def test_crafted_session_counts_like_the_ordinary_one(self, shape):
         crafted = _render(_session(READ_WRAPPERS[shape], CRAFTED_USER))
         assert _events(crafted) == SESSION_EVENTS, shape
-        assert _rows(crafted) == SESSION_ROWS, shape
+        assert _rows(crafted) == _session_rows(shape), shape
 
     @pytest.mark.parametrize(
         "tag_line",
@@ -1229,6 +1243,40 @@ class TestTheUserSlot:
             SRC,
             False,
             None,
+        )
+
+    @pytest.mark.parametrize(
+        "lead",
+        [
+            pytest.param("Failed password for", id="verdict"),
+            pytest.param("Failed password for invalid user", id="verdict-invalid"),
+            pytest.param(
+                "maximum authentication attempts exceeded for invalid user",
+                id="maxtries",
+            ),
+            pytest.param("Invalid user", id="getpwnamallow"),
+            pytest.param("Connection closed by invalid user", id="packet"),
+            pytest.param("Received disconnect from user", id="packet-reason"),
+        ],
+    )
+    def test_the_name_parse_is_linear_below_the_parse_bound(self, lead):
+        """A run of spaces after a user lead, and no slot, just under the
+        4096-char bound the slot parse runs within.
+
+        ``TestAdversarialLines`` cannot see this: its top size is always
+        8192 chars, above the bound, where the parse is skipped. A ``\\s+``
+        before the name backtracked once per space — 3900 spaces cost
+        200-312 ms per line, against 0.1-0.2 ms before fm#1668 — so the
+        window here stops at 64 x 48 = 3072 spaces, and it times the slot
+        parse itself: below the bound, ``read_sshd_auth_line``'s fixed cost
+        per call (the header split) hides the growth from the helper.
+        """
+        assert_linear_growth(
+            sshd_auth._slot,
+            lambda spaces: lead + " " * spaces + "x",
+            small=48,
+            max_escalations=0,
+            label=f"sshd_auth._slot on {lead!r} + spaces",
         )
 
     @pytest.mark.parametrize("shape", USER_SLOT_SHAPES)
