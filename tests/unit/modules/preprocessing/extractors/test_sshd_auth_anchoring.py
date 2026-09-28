@@ -1259,23 +1259,29 @@ class TestTheUserSlot:
             pytest.param("Received disconnect from user", id="packet-reason"),
         ],
     )
-    def test_the_name_parse_is_linear_below_the_parse_bound(self, lead):
-        """A run of spaces after a user lead, and no slot, just under the
-        4096-char bound the slot parse runs within.
+    def test_the_name_parse_is_linear(self, lead, monkeypatch):
+        """A run of spaces after a user lead, and no slot.
 
-        ``TestAdversarialLines`` cannot see this: its top size is always
-        8192 chars, above the bound, where the parse is skipped. A ``\\s+``
-        before the name backtracked once per space — 3900 spaces cost
-        200-312 ms per line, against 0.1-0.2 ms before fm#1668 — so the
-        window here stops at 64 x 48 = 3072 spaces, and it times the slot
-        parse itself: below the bound, ``read_sshd_auth_line``'s fixed cost
-        per call (the header split) hides the growth from the helper.
+        A ``\\s+`` before the name backtracked once per space: 3900 spaces
+        cost 200-312 ms per line, against 0.1-0.2 ms before fm#1668.
+        ``TestAdversarialLines`` cannot see this, because its windows reach
+        past ``_MAX_ADDRESS_PARSE_CHARS``, where the parse is skipped.
+
+        So the bound is lifted here, far above any window the helper can
+        escalate to. The bound only skips long lines; the regex this guards
+        is the one that runs on every line below it, and its growth is the
+        same whether the line is 3 KB or 3 MB. A window pinned under the
+        bound left the fixed per-call cost wide enough to straddle the
+        helper's bound on CI runners (fm#1668 Plan Revision 3), so the
+        helper escalates here as it does everywhere else. It times the slot
+        parse itself, not ``read_sshd_auth_line``, whose header split is
+        cost that does not grow with the name.
         """
+        monkeypatch.setattr(sshd_auth, "_MAX_ADDRESS_PARSE_CHARS", 1 << 22)
         assert_linear_growth(
             sshd_auth._slot,
             lambda spaces: lead + " " * spaces + "x",
             small=48,
-            max_escalations=0,
             label=f"sshd_auth._slot on {lead!r} + spaces",
         )
 
