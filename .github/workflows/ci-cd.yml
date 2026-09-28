@@ -649,7 +649,7 @@ jobs:
         image: postgres:16
         env:
           POSTGRES_USER: fmtest
-          POSTGRES_PASSWORD: fmtest
+          POSTGRES_PASSWORD: fmtest  # pragma: allowlist secret
           POSTGRES_DB: fmtest
         ports:
           - 5432:5432
@@ -660,7 +660,7 @@ jobs:
           --health-retries 10
 
     env:
-      DATABASE_URL: "postgresql+asyncpg://fmtest:fmtest@localhost:5432/fmtest"
+      DATABASE_URL: "postgresql+asyncpg://fmtest:fmtest@localhost:5432/fmtest"  # pragma: allowlist secret
       # Bypass the integration conftest's Redis/API readiness gate — these
       # tests need only PostgreSQL.
       SKIP_SERVICE_CHECKS: "true"
@@ -844,7 +844,7 @@ jobs:
         continue-on-error: true
         env:
           # sha256 of oasdiff_1.29.1_linux_amd64.tar.gz as published.
-          OASDIFF_SHA256: "541f7c66c933495fceef24eaf5c48aa66c19069f366f7bd0a60a6a4820c5e533"
+          OASDIFF_SHA256: "541f7c66c933495fceef24eaf5c48aa66c19069f366f7bd0a60a6a4820c5e533"  # pragma: allowlist secret
         run: |
           BASE="${CONTRACT_BASE:-}"
           if [ -z "${BASE}" ]; then
