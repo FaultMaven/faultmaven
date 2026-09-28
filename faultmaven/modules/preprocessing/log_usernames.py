@@ -20,19 +20,55 @@ What stays with each consumer is *formatting* — how the counts are rendered
 — which is what the duplication was originally there to keep independent.
 The rule itself is here.
 
-A username candidate survives when all of the following hold:
+Where a line's username comes from depends on how ``extractors/sshd_auth``
+reads it (fm#1668). sshd copies the client's login name into its lines
+verbatim, so a pattern SEARCHED for anywhere in the line reads the client's
+text as structure: the name ``x for root`` made ``for <name>`` find a second,
+phantom ``root`` — one per line a brute-force source wrote. Three cases:
 
-1. It came from ``user=<name>`` / ``user <name>`` (always applied), or from
-   ``for [invalid user] <name>`` on a line carrying an explicit auth keyword.
-   Kernel and service messages ("installed for high-res timesource",
-   "activate device for PnP cards") have no such keyword, so the ``for``
-   branch never sees them.
-2. It is not a PAM/SSH structural word ("unknown", "publickey", "user", …).
-3. It is not a reverse-DNS hostname — syslog's ``rhost`` carries the PTR
-   record of the connecting address, and sshd echoes whatever login name a
-   client offered, so a scanner offering a host-shaped name reaches the
-   username branch.
-4. It does not start with a digit and does not end in punctuation.
+1. **A read line whose shape carries sshd's user slot** (``Failed <method>
+   for [invalid user ]<name> from …``, ``Invalid user <name> from …``,
+   ``maximum authentication attempts exceeded for …``, and packet.c's
+   ``Connection closed by invalid user <name> <ip> port …`` family): the
+   name is the slot's text, verbatim (up to sshd's 100 characters). Where
+   the slot is undecided, a lead without ``invalid user `` still names an
+   existing account — its first whitespace-free token — and an ``invalid
+   user`` lead names nothing. The line is never searched — an undecided slot
+   is exactly the case a search gets wrong — and the name is not filtered: a
+   name no account can have (spaces, a PTR record, a digit first) is itself
+   what an attack looks like, and it is reported as the client sent it.
+2. **A read line with an event or an outcome but no user slot** (a PAM
+   failure, ``session opened for user X``, a break-in warning):
+   ``user=<name>`` / ``user <name>`` only, never ``for <name>`` — on a PAM
+   line whose ``user=`` value holds ``x for root``, that branch is the phantom
+   again.
+3. **Every other line** — a format ``sshd_auth`` does not read, every
+   non-sshd log, and a read line with no event at all (``maximum
+   authentication attempts exceeded for root``, ``Postponed publickey for
+   alice``) — as before fm#1668, which keeps ``sshd_auth``'s rule that an
+   unread format never counts less than it did, with two exceptions. On a
+   read line with no event the ``for`` branch takes only its FIRST match: a
+   client-chosen name can reach such a line without ``invalid user`` —
+   OpenSSH auth-pam.c's ``Authentication failure for illegal user <name>``,
+   pre-7.x ``Too many authentication failures for <name>`` — and sshd writes
+   the name after its own first ``for``, so a later ``for`` is inside the
+   name. And the branch's prefix admits ``illegal user `` as well as
+   ``invalid user `` on every line, since ``illegal`` is never an account.
+   A candidate survives here when all of the following hold:
+
+   a. It came from ``user=<name>`` / ``user <name>`` (always applied), or
+      from ``for [invalid|illegal user] <name>`` on a line carrying an
+      explicit auth keyword. Kernel and service messages ("installed for high-res
+      timesource", "activate device for PnP cards") have no such keyword, so
+      the ``for`` branch never sees them.
+   b. It is not a PAM/SSH structural word ("unknown", "publickey", "user", …).
+   c. It is not a reverse-DNS hostname — syslog's ``rhost`` carries the PTR
+      record of the connecting address, and sshd echoes whatever login name a
+      client offered, so a scanner offering a host-shaped name reaches the
+      username branch.
+   d. It does not start with a digit and does not end in punctuation.
+
+   Case 2 applies (a), without its ``for`` branch, and (b)–(d).
 
 Multiplicity is decided here too, and the same way for both consumers: a
 mention is a LINE. The two branches overlap on ``for invalid user <name>``,
@@ -44,6 +80,11 @@ case-folded as well — ``for Alice … user=alice`` is one account, once.
 from __future__ import annotations
 
 import re
+
+from faultmaven.modules.preprocessing.extractors.sshd_auth import (
+    SshdAuthLine,
+    read_sshd_auth_line,
+)
 
 # ``user=<name>`` and ``user <name>``. Applied to every line.
 #
@@ -77,13 +118,27 @@ USER_FIELD_RE = re.compile(
     re.IGNORECASE,
 )
 
-# ``for [invalid user] <name>`` — gated on AUTH_CONTEXT_RE. Carries the same
-# "not a field name" lookahead as the field pattern: the rule is a property of
-# what a username is, not of which branch happened to capture it.
+# ``for [invalid|illegal user] <name>`` — gated on AUTH_CONTEXT_RE. Carries
+# the same "not a field name" lookahead as the field pattern: the rule is a
+# property of what a username is, not of which branch happened to capture it.
+# ``illegal user `` is OpenSSH auth-pam.c's spelling of ``invalid user ``.
 USER_FOR_RE = re.compile(
-    r"\bfor (?:invalid user )?([a-zA-Z_][a-zA-Z0-9._\-]{0,31})\b(?![\w.\-]*=)",
+    r"\bfor (?:(?:invalid|illegal) user )?([a-zA-Z_][a-zA-Z0-9._\-]{0,31})\b"
+    r"(?![\w.\-]*=)",
     re.IGNORECASE,
 )
+
+# The alphabet both capture groups above admit. A name made only of it reads
+# unambiguously bare; any other — sshd's user slot is the client's text,
+# verbatim (fm#1668) — has to be quoted where it is rendered, so that
+# ``root: 500 lines`` cannot read as a count.
+_PLAIN_USERNAME_RE = re.compile(r"[a-zA-Z0-9._\-]+")
+
+
+def is_plain_username(name: str) -> bool:
+    """Whether ``name`` uses only the alphabet the capture patterns admit."""
+    return bool(_PLAIN_USERNAME_RE.fullmatch(name))
+
 
 # Lines carrying these phrases are SSH/PAM auth events — the only context
 # where "for <name>" is a reliable username signal.
@@ -164,8 +219,15 @@ def is_username(candidate: str) -> bool:
     )
 
 
-def extract_usernames(line: str) -> list[str]:
+def extract_usernames(line: str, sshd: SshdAuthLine | None = None) -> list[str]:
     """Return the usernames mentioned in one log line, each once.
+
+    ``sshd`` is the line's ``read_sshd_auth_line`` reading, for a caller that
+    already has it; without it the line is read here. Which of the module
+    docstring's three cases applies is decided by that reading. A line with
+    sshd's user slot (case 1) names at most its one login name; everything
+    below is about the searched cases, 2 and 3, and the examples in it are
+    lines of case 3.
 
     **A mention is a LINE, not a match** (fm#1574). The two branches overlap
     on the shape a scanner produces most — ``Failed password for invalid user
@@ -213,9 +275,20 @@ def extract_usernames(line: str) -> list[str]:
       account identity (POSIX says they differ, Active Directory says they do
       not) and about a persisted key, not about this line's arithmetic.
     """
+    if sshd is None:
+        sshd = read_sshd_auth_line(line)
+    if sshd.read and sshd.user_slot:
+        return [sshd.user] if sshd.user else []
     candidates = USER_FIELD_RE.findall(line)
-    if AUTH_CONTEXT_RE.search(line):
-        candidates += USER_FOR_RE.findall(line)
+    # Case 2 drops the ``for`` branch; case 3 — unread, or read with no event
+    # — keeps it, and a read line keeps only its first match.
+    searched = not sshd.read or not (sshd.events or sshd.outcome)
+    if searched and AUTH_CONTEXT_RE.search(line):
+        if sshd.read:
+            first = USER_FOR_RE.search(line)
+            candidates += [first.group(1)] if first else []
+        else:
+            candidates += USER_FOR_RE.findall(line)
     seen: set[str] = set()
     usernames: list[str] = []
     for candidate in candidates:
