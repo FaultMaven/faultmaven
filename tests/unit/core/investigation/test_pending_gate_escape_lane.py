@@ -412,8 +412,8 @@ class TestGateAnswerMatchers:
     def test_confirm_matcher_accepts_bare_confirmations(self):
         engine = _engine()
         # Consent is the whole reply (#1783): "yes, it's resolved, the error is
-        # gone" carries words outside the consent grammar and is re-asked, as
-        # the #1783 corpus pins.
+        # gone" carries words outside the consent vocabulary and is re-asked,
+        # as the #1783 corpus pins.
         for msg in ("yes", "ok", "yes, please close it"):
             assert confirmation_token_class(msg) is not None, msg
 

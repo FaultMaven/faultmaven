@@ -23,6 +23,8 @@ Reference: investigation-lifecycle-logic.md Section 1.4
 """
 
 import logging
+import re
+import unicodedata
 from datetime import UTC, datetime
 from typing import Any, Optional
 
@@ -71,6 +73,35 @@ CAUSE_IDENTIFIED_LIKELIHOOD = 0.6
 # between the pattern matcher and the intent-resolver guard (#721).
 BARE_CONSENT_MAX_LENGTH = 100
 
+#: Characters typed for an apostrophe: the curly pair mobile keyboards and macOS
+#: autocorrect produce, the modifier letter, the prime, the fullwidth form, the
+#: acute accent and the backtick (#1783). Every consent and refusal token is
+#: spelled with a straight one ("that's right", "don't").
+_APOSTROPHE_LOOKALIKES = str.maketrans(
+    {c: "'" for c in "\u2019\u2018\u02bc\u2032\uff07\u00b4`"}
+)
+
+#: A question mark in any script, read after NFKC folds the fullwidth one
+#: ("ok？") into "?" (#1783): Arabic, the interrobang, and the double forms.
+_QUESTION_MARKS = ("?", "\u061f", "\u203d", "\u2047", "\u2048", "\u2049")
+
+
+def normalize_reply(user_message: "str | None") -> str:
+    """A typed reply as every gate-answer matcher reads it (#1783).
+
+    NFKC (fullwidth and circled letters become plain ones), then every
+    Unicode format character (category ``Cf``: zero-width spaces and joiners,
+    bidi marks) removed, apostrophe lookalikes straightened, whitespace
+    collapsed, stripped and lowercased. One normaliser, so the substance test
+    here and the consent and decline matchers in ``transition_consent`` read
+    the same text: a zero-width character or a fullwidth letter cannot hide a
+    word from one of them and not the other.
+    """
+    text = unicodedata.normalize("NFKC", user_message or "")
+    text = "".join(c for c in text if unicodedata.category(c) != "Cf")
+    text = text.translate(_APOSTROPHE_LOOKALIKES)
+    return re.sub(r"\s+", " ", text).strip().lower()
+
 
 def is_substantive_reply(user_message: "str | None") -> bool:
     """INV-26 substance test for a reply that would commit a gate.
@@ -108,13 +139,21 @@ def is_substantive_reply(user_message: "str | None") -> bool:
     the IntentResolver adoption guard in ``investigation_service`` (#721,
     classifier-minted confirmation intents) both apply it. An empty message is
     not substantive — it is also not consent; callers reject it separately.
+
+    It reads the ``normalize_reply`` text, and a question mark in any script
+    (``_QUESTION_MARKS``) is a question: "ok？" and "resolve it؟" are
+    questions, not consent (#1783).
     """
     if not user_message:
         return False
-    msg = user_message.strip().lower()
+    msg = normalize_reply(user_message)
     if len(msg) > BARE_CONSENT_MAX_LENGTH:
         return True
-    return "?" in msg or " but " in msg or msg.endswith(" but")
+    return (
+        any(mark in msg for mark in _QUESTION_MARKS)
+        or " but " in msg
+        or msg.endswith(" but")
+    )
 
 
 def cause_identification_leg(

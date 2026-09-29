@@ -881,6 +881,12 @@ def _apply_stage_gate_signals(
         )
 
 
+#: What the "Yes, close this case" card sends when clicked. Typed or sent as
+#: text without its intent it is still the engine's own words for consent, so
+#: the typed-consent matcher reads it as consent (#1783).
+CLOSE_CONFIRMATION_PAYLOAD = "Yes, close this case without resolution."
+
+
 def _close_confirmation_suggestions() -> list:
     """Generate DECIDE follow-up suggestions for close (abandon) confirmation.
 
@@ -897,7 +903,7 @@ def _close_confirmation_suggestions() -> list:
         {
             "label": "Yes, close this case",
             "action_type": "DECIDE",
-            "payload": "Yes, close this case without resolution.",
+            "payload": CLOSE_CONFIRMATION_PAYLOAD,
             "body": "Confirm closing the case. Closing is irreversible — the case becomes read-only.",
             "intent": {"type": "confirmation", "confirmation_value": True},
         },

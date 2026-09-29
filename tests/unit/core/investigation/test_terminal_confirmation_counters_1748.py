@@ -37,25 +37,36 @@ import faultmaven.modules.agent.domain.services.investigation_service.turn_messa
 import faultmaven.modules.case.domain.models.turn as turn_model
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
+    CLOSE_CONFIRMATION_PAYLOAD,
+    _close_confirmation_suggestions,
     _gate_token_match,
 )
 from faultmaven.core.investigation.milestone_engine.terminal_replies import (
     GENERATE_RUNBOOK_PAYLOAD,
     REGENERATE_CLOSURE_SUMMARY_PAYLOAD,
     REGENERATE_RESOLUTION_SUMMARY_PAYLOAD,
+    RESOLVE_CONFIRMATION_PAYLOAD,
     _resolution_confirmation_suggestions,
 )
 from faultmaven.core.investigation.milestone_engine.terminal_turns import (
     TerminalTurnHandler,
 )
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
+    _DECLINE_OPENERS,
     _EXPLICIT_CONFIRM_TOKENS,
+    _OPENING_ONLY_DECLINES,
+    _REFUSAL_PHRASES,
     _WEAK_CONFIRM_TOKENS,
+    _minted_confirmation_conflicts,
     _user_declines_transition,
     confirmation_token_class,
 )
 from faultmaven.core.investigation.schemas import TurnPayload
-from faultmaven.core.investigation.terminal_transitions import propose_transition
+from faultmaven.core.investigation.terminal_transitions import (
+    is_substantive_reply,
+    propose_transition,
+)
+from faultmaven.exceptions import ServiceException
 from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
@@ -73,12 +84,12 @@ from faultmaven.modules.case.exceptions import StaleCaseException
 
 pytestmark = pytest.mark.unit
 
-#: The label table. The class is read from the FIRST token of a consenting
-#: reply. BARE means no letter or digit after that token, so punctuation, emoji
-#: and emoticons made of punctuation keep a reply bare; PREFIXED means a consent
-#: of more than one word (another token, or a filler such as "please"). A reply
-#: that refuses, defers or carries any word outside the consent grammar is not
-#: a confirmation at all (#1783), so it has no label: see the corpus below.
+#: The label table. A consent OPENS with a token, and its set names the class
+#: (#1748). ``*_token`` means the reply's words are exactly that token's, once
+#: its positive emoji, shortcodes and emoticons are removed, so "ok 👍", "ok :+1:"
+#: and "ok (y)" are bare; ``*_prefixed`` means a consent that carries more of
+#: the vocabulary. A reply that is not consent has no label (#1783): see the
+#: corpus below.
 LABEL_TABLE = {
     "weak_token": [
         "ok",
@@ -96,6 +107,11 @@ LABEL_TABLE = {
         # No space: the gate still reads "ok" (a word boundary before ":"), and
         # what follows is only a shortcode.
         "ok:+1:",
+        # Positive emoticons, including those written with a letter or digit.
+        "ok :D",
+        "ok (y)",
+        "ok <3",
+        "ok 👍🏽",
     ],
     "weak_prefixed": [
         "ok go ahead",
@@ -105,6 +121,7 @@ LABEL_TABLE = {
         "lgtm, confirmed",
         "ok thanks",
         "ok :+1: go ahead",
+        "looks good to me",
     ],
     "explicit_token": [
         "yes",
@@ -115,71 +132,94 @@ LABEL_TABLE = {
         "that\u2019s right",
         "yes!",
         "yes :white_check_mark:",
+        "yes ✅",
     ],
     "explicit_prefixed": [
         "yes please close it",
         "yes please",
         "yes, mark as resolved",
         "yes ok",
+        "please do it",
+        # The engine's own card payloads, typed or sent without their intent.
+        RESOLVE_CONFIRMATION_PAYLOAD,
+        CLOSE_CONFIRMATION_PAYLOAD,
     ],
 }
 
 #: What "Yes, mark as resolved" sends when clicked.
 CONFIRM_CARD = _resolution_confirmation_suggestions()[0]
 
-# #1783's corpus: what the gate reads as consent. Built negatives first, from
-# replies that share the tokens. ``main`` confirmed every reply that OPENED with
-# a token, so every row of RE_ASKED and READ_AS_A_DECLINE, and every row of
-# MUST_NOT_CONFIRM but its last three, was a terminal transition there;
-# MUST_CONFIRM confirmed there too, except the curly apostrophe rows.
+# #1783's corpus, every row pinned. It is the owning agent's probe of revision 1
+# (the ruling on PR #1793), built negatives first from replies that share the
+# tokens: the review's and the defeat pass's misses, apostrophe lookalikes,
+# zero-width and fullwidth text, negative emoji, and other languages. ``main``
+# confirmed every reply that OPENED with a token.
 
-#: Consents: every one still confirms.
-MUST_CONFIRM = [
-    "ok",
-    "ok!",
-    "OK.",
-    "ok 👍",
-    "ok :+1:",
-    "okay",
-    "sure",
-    "lgtm",
-    "sounds good",
-    "looks good",
-    "yes",
-    "yes!",
-    "yes please",
-    "yes, please close it",
-    "yes please close it",
-    "ok go ahead",
-    "sure, close it",
-    "lgtm, confirmed",
-    "that's right",
-    "go ahead",
-    "please do",
-    "ok thanks",
-    "yes thank you",
-    "ok ok",
-    "yep",
-    "confirmed",
-    "mark it as resolved",
-    "yes, mark as resolved",
-    "absolutely",
-    "go for it",
-    # Curly apostrophes, as mobile and macOS autocorrect type them. Neither
-    # confirmed on ``main``.
-    "that\u2019s right",
-    "that\u2019s correct",
-]
+#: Consents, each with the class it is counted under.
+MUST_CONFIRM = {
+    "ok": "weak_token",
+    "ok!": "weak_token",
+    "OK.": "weak_token",
+    "ok 👍": "weak_token",
+    "ok :+1:": "weak_token",
+    "okay": "weak_token",
+    "sure": "weak_token",
+    "lgtm": "weak_token",
+    "sounds good": "weak_token",
+    "looks good": "weak_token",
+    "yes": "explicit_token",
+    "yes!": "explicit_token",
+    "yes please": "explicit_prefixed",
+    "yes, please close it": "explicit_prefixed",
+    "yes please close it": "explicit_prefixed",
+    "ok go ahead": "weak_prefixed",
+    "sure, close it": "weak_prefixed",
+    "lgtm, confirmed": "weak_prefixed",
+    "that's right": "explicit_token",
+    "go ahead": "explicit_token",
+    "please do": "explicit_token",
+    "ok thanks": "weak_prefixed",
+    "yes thank you": "explicit_prefixed",
+    "ok ok": "weak_prefixed",
+    "yep": "explicit_token",
+    "confirmed": "explicit_token",
+    "mark it as resolved": "explicit_token",
+    "yes, mark as resolved": "explicit_prefixed",
+    "absolutely": "explicit_token",
+    "go for it": "explicit_token",
+    "that\u2019s right": "explicit_token",
+    "that\u2019s correct": "explicit_token",
+    "ok 👍🏽": "weak_token",
+    "yes ✅": "explicit_token",
+    "ok :)": "weak_token",
+    "ok :D": "weak_token",
+    "ok (y)": "weak_token",
+    "Yes, the issue is resolved. Please mark this case as resolved.": "explicit_prefixed",
+    "Yes, close this case without resolution.": "explicit_prefixed",
+    "looks good to me": "weak_prefixed",
+    "yes it worked": "explicit_prefixed",
+    "ok thx": "weak_prefixed",
+    "yes pls": "explicit_prefixed",
+    "yes, resolved": "explicit_prefixed",
+    "yes, close": "explicit_prefixed",
+    "yes it is": "explicit_prefixed",
+    "yep, all good": "explicit_prefixed",
+    "ok, go ahead and close it": "weak_prefixed",
+    "please do it": "explicit_prefixed",
+    "yes please do it": "explicit_prefixed",
+    "sure, please do it": "weak_prefixed",
+    "yes, it's fixed": "explicit_prefixed",
+    "ok, all good now": "weak_prefixed",
+    "yes everything is back to normal": "explicit_prefixed",
+}
 
-#: Refusals and deferrals that open with a token: none confirms.
-MUST_NOT_CONFIRM = [
+#: Certain declines: the reply opens with a decline word, carries a negative
+#: emoji, or puts a refusal phrase after consent words alone.
+DECLINED = [
+    "ok ✓ later",
     "ok, don't close it yet",
     "ok, don\u2019t close it yet",
-    "ok no",
-    "ok, no",
     "sure, do it later",
-    "okay i'll confirm with the team",
-    "lgtm, not approved yet",
     "ok. mark as resolved later",
     "yes, don't close it yet",
     "do it later",
@@ -187,58 +227,189 @@ MUST_NOT_CONFIRM = [
     "ok, wait",
     "ok not now",
     "ok hold on",
-    "yes no",
     "ok stop",
     "ok cancel that",
     "ok never mind",
+    "❌ close it",
+    "🚫 close it",
+    "✗ close it",
+    "⛔ resolve it",
+    "👎 ok",
+    "🛑 ok",
+    ":x: close it",
+    ":-1: ok",
+    "thanks, ok 👎",
+    "ok 👎",
+    "yes ❌",
+    "ok 🚫",
+    "ok ✋",
+    "ok ⏳",
+    "ok 🙅",
+    "ok :-1:",
+    "ok :thumbsdown:",
+    "yes :x:",
+    "ok :no_entry:",
+    "ok :raised_hand:",
+    "ok :no_good:",
+    "ok :stop:",
+    "ok :wait:",
+    "yes :later:",
+    "ok :(",
+    "ok >:(",
+    "ok :-/",
+    "yeah sure 🙄",
+    "ok ⓝⓞⓣ ⓨⓔⓣ",
+    "do\u200bn't close it",
+    "ok, not  yet",
+    "ok, don\u02bct close it yet",
+    "ok dont close it yet",
+]
+
+#: Not consent and not a certain decline: the gate re-asks once, then withdraws.
+RE_ASKED = [
+    "ok нет",
+    "ok 不要",
+    "ok nein",
+    "yes 👍 no",
+    "ok no",
+    "ok, no",
+    "okay i'll confirm with the team",
+    "lgtm, not approved yet",
+    "yes no",
     "yes... actually no",
     "okay, let me double check first",
     "ok after lunch",
-    "sure \u2014 tomorrow",
-    # Refused on ``main`` as well, and still refused.
+    "sure — tomorrow",
+    "!ok",
+    "¬ok",
+    "!= ok",
+    "!close it",
+    "~ok",
+    "~yes~",
+    "~~ok~~",
+    "~~close it~~",
+    "[ ] close it",
+    "- [ ] mark as resolved",
+    "close it？",
+    "ok？",
+    "resolve it؟",
+    "proceed‽",
+    "confirm⁇",
+    "ok, don\u00b4t close it yet",
+    "yes, the issue is not resolved",
+    "yes it is still broken",
+    "ok it failed again",
+    "sure, the errors are back",
+    "ok, that's not it",
+    # #1783 round 1 and #1748 rows, each still pinned.
     "yes but not yet",
     "sure, but first check the logs",
     "yesterday it was fine",
-]
-
-#: Consents outside the closed grammar. They confirmed on ``main``; now the gate
-#: re-asks once rather than confirm (a missed consent costs one re-ask, a false
-#: one closes a case irreversibly). The first four are the plan's; the rest were
-#: measured on this change, from the rows #1748 and the escape lane pinned.
-RE_ASKED = [
     "sure thing",
     "yes, no problem",
     "ok no worries",
     "sure, whenever",
-    "looks good to me",
     "yes, it's resolved, the error is gone",
-    "ok :D",
     "yes :P",
+    "ok XD",
+    "hmm",
+    "note the db latency spiked",
+    # A filler or a symbol before the token: re-asked, as on ``main``.
+    "thanks, ok",
+    "please, yes",
+    ":+1: ok",
+    "👍 ok",
+    # Held by the closed character set alone: no refusal signal, no unknown word.
+    "ok 😠",
+    "ok ⌛",
+    "ok 💔",
 ]
 
-#: Consents that also carry a refusal phrase: the phrase vetoes and declines.
-READ_AS_A_DECLINE = [
-    "yes, don't wait",
+#: A refusal word inside what may be a consent: ambiguous, so re-asked, and
+#: never recorded as a refusal of the offer.
+AMBIGUOUS_CONSENTS = [
+    "yes, the errors don't come back",
+    "sure, I don't mind",
+    "yes, let's stop here",
     "go ahead, no need to wait",
 ]
 
-#: The replies that refuse or defer anywhere, and so decline the transition.
-DECLINES = [
+#: Consents the certain-decline rule declines: see
+#: ``test_the_accepted_false_declines``.
+ACCEPTED_FALSE_DECLINES = [
+    "yes, cancel the investigation",
+    "go ahead, dont hold up the release",
+    "yes, don't wait",
+]
+
+#: A question is the user deciding: never consent, never a certain decline.
+QUESTIONS = [
+    "What happens to the runbook if I cancel this?",
+    "Should I wait for the change window before closing?",
+    "Can we do this later, after the deploy?",
+]
+
+#: Typed text a resolver-minted confirmation conflicts with: re-asked, never
+#: executed and never declined.
+MINTED_CONFLICTS = [
+    "ok ñot yet",
+    "yes да нет",
+    "no",
+    "nope",
+    "not ready",
+    "no thanks",
+    "nope, it's fine now",
+    "no, not ready",
+    "ok, not ready",
+    "dont",
+    "ok, dont close it yet",
+    "nah",
+    "negative",
+    "hold up",
+    "not so fast",
+    "l8r",
+    "ok nein",
+    "ok, pas encore",
+    "ok нет",
+    "ok 不要",
+    "not yet",
+    "ok, hold on",
+    "do\u200bn't",
+    "don\u02bct",
+    "don\u2032t",
+    "don\uff07t",
+    "ｄｏｎ't",
+    "ok no",
+    "ok after lunch",
+    "lgtm, not approved yet",
+    "yes... actually no",
+    "ok 👎",
     "ok, don't close it yet",
-    "ok, don\u2019t close it yet",
-    "sure, do it later",
-    "ok. mark as resolved later",
-    "yes, don't close it yet",
-    "do it later",
-    "confirm later",
-    "ok, wait",
-    "ok not now",
-    "ok hold on",
-    "ok stop",
-    "ok cancel that",
-    "ok never mind",
-    "yes but not yet",
-    *READ_AS_A_DECLINE,
+    "yes, the errors don't come back",
+    # A question in a non-ASCII mark: text outside the vocabulary would
+    # otherwise be the classifier's reading.
+    "that works\u061f",
+    "that works\u203d",
+]
+
+#: Typed text a resolver-minted confirmation executes on.
+MINTED_AGREES = [
+    "that works",
+    "Yes, the issue is resolved. Please mark this case as resolved.",
+    "yes, mark as resolved",
+    "sounds great, go",
+    "ok",
+    "yes please",
+    "yes it worked",
+    "perfect, thank you",
+]
+
+#: The residual: text wholly outside the vocabulary is the classifier's
+#: reading, as "that works" is. See ``test_the_minted_residual``.
+MINTED_RESIDUAL = [
+    "oui non",
+    "sí, pero no",
+    "ja, aber noch nicht",
 ]
 
 _ALL_TOKENS = _EXPLICIT_CONFIRM_TOKENS + _WEAK_CONFIRM_TOKENS
@@ -334,37 +505,110 @@ class TestTheClassifier:
         )
 
 
+def _typed_verdict(message: str) -> str:
+    """What the engine's gate does with a typed reply and no intent, in its
+    order: consent executes, a certain decline declines, anything else is
+    re-asked (then withdrawn)."""
+    if confirmation_token_class(message) is not None:
+        return "confirm"
+    if _user_declines_transition(message):
+        return "decline"
+    return "re-ask"
+
+
 class TestARefusalNeverConfirms:
-    """#1783: consent is the whole reply, and a refusal anywhere vetoes it."""
+    """#1783: a typed reply confirms only when all of it is consent, and a
+    confirmation the resolver mints never outranks the text it came from."""
 
-    @pytest.mark.parametrize("message", MUST_CONFIRM)
-    def test_every_consent_confirms(self, message):
-        assert confirmation_token_class(message) is not None
+    @pytest.mark.parametrize("message, label", list(MUST_CONFIRM.items()))
+    def test_every_consent_confirms_with_its_class(self, message, label):
+        assert confirmation_token_class(message) == label
 
-    @pytest.mark.parametrize("message", MUST_NOT_CONFIRM + RE_ASKED + READ_AS_A_DECLINE)
-    def test_no_refusal_and_no_unknown_word_confirms(self, message):
-        assert confirmation_token_class(message) is None
+    @pytest.mark.parametrize("message", DECLINED)
+    def test_a_refusal_declines(self, message):
+        assert _typed_verdict(message) == "decline"
 
-    @pytest.mark.parametrize("message", DECLINES)
-    def test_a_refusal_anywhere_declines(self, message):
-        assert _user_declines_transition(message)
+    @pytest.mark.parametrize("message", RE_ASKED + AMBIGUOUS_CONSENTS)
+    def test_what_is_neither_consent_nor_a_certain_decline_is_re_asked(self, message):
+        """Never executed, and never recorded as a refusal of the offer:
+        "sure, I don't mind" carries a refusal word and may be consent."""
+        assert _typed_verdict(message) == "re-ask"
+
+    @pytest.mark.parametrize("message", ACCEPTED_FALSE_DECLINES)
+    def test_the_accepted_false_declines(self, message):
+        """Each is a consent with a refusal phrase preceded by consent words
+        alone, which is the shape of "ok, don't close it yet" — the rule cannot
+        tell them apart without parsing negation. Accepted: a false decline
+        withdraws a proposal the user can ask for again ("close the case"),
+        while a false consent closes a case irreversibly."""
+        assert _typed_verdict(message) == "decline"
+
+    @pytest.mark.parametrize("message", QUESTIONS)
+    def test_a_question_is_never_a_certain_decline(self, message):
+        assert _typed_verdict(message) == "re-ask"
+
+    @pytest.mark.parametrize("message", MINTED_CONFLICTS)
+    def test_a_minted_confirmation_the_text_conflicts_with_is_re_asked(self, message):
+        assert _minted_confirmation_conflicts(message)
+
+    @pytest.mark.parametrize("message", MINTED_AGREES)
+    def test_a_minted_confirmation_the_text_agrees_with_executes(self, message):
+        assert not _minted_confirmation_conflicts(message)
+
+    @pytest.mark.parametrize("message", MINTED_RESIDUAL)
+    def test_the_minted_residual(self, message):
+        """The stated residual (PR #1793): a reply wholly outside the
+        vocabulary is the classifier's reading, as "that works" is, so a
+        confirmation minted from it executes. Pinned so that closing it is a
+        visible change."""
+        assert not _minted_confirmation_conflicts(message)
 
     @pytest.mark.parametrize(
         "message",
-        MUST_CONFIRM + [m for m in MUST_NOT_CONFIRM + RE_ASKED if m not in DECLINES],
+        [
+            "ok\uff1f",
+            "resolve it\u061f",
+            "proceed\u203d",
+            "ok\u2047",
+            "ok\u2048",
+            "ok\u2049",
+        ],
     )
-    def test_no_consent_and_no_bare_unknown_word_declines(self, message):
-        """Bare "no" is not a refusal phrase: "yes, no problem" is re-asked,
-        never declined, and "ok no" gets the same one-time re-ask."""
-        assert not _user_declines_transition(message)
+    def test_a_question_mark_in_any_script_is_substantive(self, message):
+        """INV-26 reads the mark after NFKC, which folds the fullwidth one."""
+        assert is_substantive_reply(message)
+
+    def test_the_refusal_list_is_one_list(self):
+        """The decline openers are the opening-only words plus a subset of THE
+        refusal list: there is no second list to disagree with it."""
+        assert set(_DECLINE_OPENERS) - set(_OPENING_ONLY_DECLINES) <= set(
+            _REFUSAL_PHRASES
+        )
+        assert not set(_OPENING_ONLY_DECLINES) & set(_REFUSAL_PHRASES)
+
+    def test_the_card_payloads_are_the_builders_own(self):
+        """One source: the matcher reads the constants the card builders send."""
+        assert CONFIRM_CARD["payload"] == RESOLVE_CONFIRMATION_PAYLOAD
+        assert _close_confirmation_suggestions()[0]["payload"] == (
+            CLOSE_CONFIRMATION_PAYLOAD
+        )
+        assert _close_confirmation_suggestions()[0]["intent"] == {
+            "type": "confirmation",
+            "confirmation_value": True,
+        }
 
     def test_a_token_that_carries_a_refusal_still_never_confirms(self, monkeypatch):
-        """The veto holds on its own, not only because no token today carries a
-        refusal phrase: a token added that does is still refused."""
+        """The refusal veto holds on its own, not only because no token or
+        vocabulary word today is a refusal: one added that is still refuses."""
         monkeypatch.setattr(
             transition_consent,
             "_EXPLICIT_CONFIRM_TOKENS",
             (*_EXPLICIT_CONFIRM_TOKENS, "close it later"),
+        )
+        monkeypatch.setattr(
+            transition_consent,
+            "_CONSENT_VOCABULARY",
+            transition_consent._CONSENT_VOCABULARY | {"later"},
         )
         assert confirmation_token_class("close it later") is None
         assert confirmation_token_class("close it") == "explicit_token"
@@ -717,15 +961,24 @@ class TestTheConfirmationCounter:
 class TestTheGateOnARefusal:
     """#1783 through ``InvestigationService.process_turn``: a typed reply that
     refuses or defers never executes the pending terminal transition, whether
-    the typed matcher reads it or the resolver mints a confirmation from it."""
+    the typed matcher reads it or the resolver mints a confirmation from it;
+    and an ambiguous reply is re-asked, never recorded as a refusal."""
 
     SIGNATURE = "SUGGEST_RESOLVE|1|chain"
 
-    def _store(self) -> _Store:
-        case = _investigating_case()
+    def _store(self, pending: str = "resolved") -> _Store:
+        case = _investigating_case(pending)
         # An engine proposer's offer: a refusal of it is recorded against this.
         case.pending_transition["justifying_signature"] = self.SIGNATURE
         return _Store(case)
+
+    def _minting(self, store: _Store, card: dict):
+        """The service with the confirmation pair on offer and the resolver
+        minting ``card``'s intent from whatever is typed."""
+        _offer_the_resolution_cards(store)
+        svc = _service(store)
+        svc.intent_resolver.resolve = AsyncMock(return_value=card["intent"])
+        return svc, _spy_on_the_engine(svc)
 
     def _assert_declined(self, store: _Store, response) -> None:
         row = store.row()
@@ -736,6 +989,14 @@ class TestTheGateOnARefusal:
             "Understood. The case remains open for further investigation."
         )
 
+    def _assert_re_asked(self, store: _Store, response) -> None:
+        row = store.row()
+        assert row.state == CaseState.INVESTIGATING
+        assert row.pending_transition["to_state"] == "resolved"
+        assert row.pending_transition["re_presented"] is True
+        assert row.progress.deferred_disposition_declined_signatures == []
+        assert "Please select one of the options above" in response.agent_response
+
     async def test_a_typed_refusal_after_a_weak_token_declines(self, counters):
         confirmation, _ = counters
         store = self._store()
@@ -745,33 +1006,46 @@ class TestTheGateOnARefusal:
         self._assert_declined(store, response)
         confirmation.labels.assert_not_called()
 
-    async def test_a_confirmation_the_resolver_minted_from_a_refusal_declines(
-        self, counters
+    @pytest.mark.parametrize(
+        "message", ["\u274c close it", "\U0001f44e ok", "ok :wait:"]
+    )
+    async def test_a_refusal_symbol_before_or_after_the_token_declines(
+        self, counters, message
     ):
+        """The defeat pass's shapes: a negative emoji before the token, and a
+        refusal shortcode after it."""
         confirmation, _ = counters
         store = self._store()
-        _offer_the_resolution_cards(store)
-        svc = _service(store)
-        svc.intent_resolver.resolve = AsyncMock(return_value=CONFIRM_CARD["intent"])
-        engine = _spy_on_the_engine(svc)
 
-        response = await _turn(svc, "ok, don't close it yet")
+        response = await _turn(_service(store), message)
+
+        self._assert_declined(store, response)
+        confirmation.labels.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "message", ["ok, don't close it yet", "nope, it's fine now"]
+    )
+    async def test_a_confirmation_minted_from_conflicting_text_is_re_asked(
+        self, counters, message
+    ):
+        """Never executed, and never declined on the conflict."""
+        confirmation, _ = counters
+        store = self._store()
+        svc, engine = self._minting(store, CONFIRM_CARD)
+
+        response = await _turn(svc, message)
 
         # The mint reached the gate as a typed confirmation intent.
         assert engine.await_args.kwargs["intent_type"] == "confirmation"
         assert engine.await_args.kwargs["intent_data"] == {"value": True}
         assert engine.await_args.kwargs["typed"] is True
-        self._assert_declined(store, response)
+        self._assert_re_asked(store, response)
         confirmation.labels.assert_not_called()
 
     async def test_a_minted_decline_outranks_a_typed_token(self, counters):
         confirmation, _ = counters
         store = self._store()
-        _offer_the_resolution_cards(store)
-        svc = _service(store)
-        decline_card = _resolution_confirmation_suggestions()[1]
-        svc.intent_resolver.resolve = AsyncMock(return_value=decline_card["intent"])
-        engine = _spy_on_the_engine(svc)
+        svc, engine = self._minting(store, _resolution_confirmation_suggestions()[1])
         assert confirmation_token_class("ok") == "weak_token"
 
         response = await _turn(svc, "ok")
@@ -796,29 +1070,70 @@ class TestTheGateOnARefusal:
         assert store.row().state == CaseState.RESOLVED
         confirmation.labels.assert_called_once_with(via="intent", to_state="resolved")
 
-    async def test_a_token_then_an_unknown_word_is_asked_again(self, counters):
+    @pytest.mark.parametrize("message", ["ok no", "sure, I don't mind", "ok\uff1f"])
+    async def test_an_ambiguous_reply_is_asked_again(self, counters, message):
+        """A token then an unknown word, a refusal word inside what may be
+        consent, a fullwidth question mark: none executes, none is recorded
+        as a refusal of the offer."""
         confirmation, _ = counters
         store = self._store()
 
-        response = await _turn(_service(store), "ok no")
+        response = await _turn(_service(store), message)
 
-        row = store.row()
-        assert row.state == CaseState.INVESTIGATING
-        assert row.pending_transition["to_state"] == "resolved"
-        assert row.pending_transition["re_presented"] is True
-        assert row.progress.deferred_disposition_declined_signatures == []
-        assert "Please select one of the options above" in response.agent_response
+        self._assert_re_asked(store, response)
         confirmation.labels.assert_not_called()
 
-    async def test_a_curly_apostrophe_confirms(self, counters):
+    async def test_a_question_carrying_a_refusal_word_records_no_refusal(self):
+        """The question is answered by a normal turn (the LLM, doubled here to
+        raise), and the offer is withdrawn for it without being recorded as
+        refused."""
+        store = self._store()
+        svc = _service(store)
+        engine = _spy_on_the_engine(svc)
+
+        with pytest.raises(ServiceException, match="no route under test reaches"):
+            await _turn(svc, "What happens to the runbook if I cancel this?")
+
+        case = engine.await_args.kwargs["case"]
+        assert svc.engine.generator.generate_structured_output.called
+        assert case.state == CaseState.INVESTIGATING
+        assert case.pending_transition is None
+        assert case.progress.deferred_disposition_declined_signatures == []
+
+    @pytest.mark.parametrize(
+        "message, via",
+        [
+            ("that\u2019s right", "explicit_token"),
+            ("looks good to me", "weak_prefixed"),
+        ],
+    )
+    async def test_a_typed_consent_confirms(self, counters, message, via):
         confirmation, _ = counters
         store = self._store()
 
-        await _turn(_service(store), "that\u2019s right")
+        await _turn(_service(store), message)
 
         assert store.row().state == CaseState.RESOLVED
+        confirmation.labels.assert_called_once_with(via=via, to_state="resolved")
+
+    @pytest.mark.parametrize(
+        "pending, payload, state",
+        [
+            ("resolved", RESOLVE_CONFIRMATION_PAYLOAD, CaseState.RESOLVED),
+            ("closed", CLOSE_CONFIRMATION_PAYLOAD, CaseState.CLOSED),
+        ],
+    )
+    async def test_a_card_payload_typed_without_its_intent_confirms(
+        self, counters, pending, payload, state
+    ):
+        confirmation, _ = counters
+        store = self._store(pending)
+
+        await _turn(_service(store), payload)
+
+        assert store.row().state == state
         confirmation.labels.assert_called_once_with(
-            via="explicit_token", to_state="resolved"
+            via="explicit_prefixed", to_state=pending
         )
 
 

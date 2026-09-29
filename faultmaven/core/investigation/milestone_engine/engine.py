@@ -31,7 +31,7 @@ from faultmaven.core.investigation.milestone_engine.terminal_turns import (
     TerminalTurnHandler,
 )
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
-    _reply_refuses,
+    _minted_confirmation_conflicts,
     _user_declines_transition,
     confirmation_token_class,
 )
@@ -633,16 +633,23 @@ class MilestoneEngine:
                     # The typed matcher, read once: its verdict is whether
                     # the text confirms, its class names how (#1748).
                     token_class = confirmation_token_class(user_message)
-                    # A refusal in the text vetoes an intent the resolver
-                    # MINTED from that text, never a click; and a minted
-                    # decline outranks a typed token (#1783). "ok, don't close
-                    # it yet" confirms by neither lane and declines below.
-                    user_confirms = (
-                        intent_confirms and not (typed and _reply_refuses(user_message))
-                    ) or (token_class is not None and not intent_declines)
-                    user_declines = intent_declines or _user_declines_transition(
-                        user_message
-                    )
+                    if intent_confirms and typed:
+                        # A confirmation the resolver MINTED from typed text is
+                        # an inference, and the text outranks it (#1783): when
+                        # the two conflict ("nope, it's fine now", "ok, don't
+                        # close it yet") the gate re-asks below. It never
+                        # executes on the conflict, and never declines on it.
+                        user_confirms = not _minted_confirmation_conflicts(user_message)
+                        user_declines = False
+                    else:
+                        # A click confirms as it always did; a minted decline
+                        # outranks a typed token (#1783).
+                        user_confirms = intent_confirms or (
+                            token_class is not None and not intent_declines
+                        )
+                        user_declines = intent_declines or _user_declines_transition(
+                            user_message
+                        )
 
                     if user_confirms:
                         # How the user confirmed, for the turn record (#1748). A

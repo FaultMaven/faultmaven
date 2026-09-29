@@ -463,19 +463,23 @@ classified before any LLM call:
   ("yesterday…" is not "yes"), and a message carrying a question mark or a
   contrastive " but " ("ok but what is the root cause?") is substantive input, not
   consent — it takes the escape lane below instead of executing a terminal
-  transition. **Consent is the whole reply (#1783):** all of it must be
-  confirmation tokens, the fillers `please` / `thanks` / `thank you`, and
-  characters that are not letters or digits (curly apostrophes read as straight),
-  so "ok go ahead" and "yes, please close it" confirm while "ok no" and "sure —
-  tomorrow" are re-asked. A refusal or deferral anywhere ("ok, don't close it
-  yet", "sure, do it later") never confirms, and it vetoes a confirmation intent
-  the resolver minted from the same typed text; a clicked intent is never vetoed,
-  and a minted decline outranks a typed token
+  transition. **Consent is the whole reply (#1783):** read after one normaliser
+  (NFKC, format characters removed, apostrophe lookalikes straightened), it must
+  OPEN with a confirmation token and continue only with the closed consent
+  vocabulary, positive emoji and separators, with no refusal signal anywhere and
+  no question mark in any script. So "ok go ahead", "yes, resolved" and "looks
+  good to me" confirm, while "❌ close it", "ok no" and "sure — tomorrow" do
+  not. The engine's own card payloads, typed, are consent. A confirmation the
+  resolver minted from typed text that conflicts with it ("nope, it's fine
+  now") is re-asked — never executed, never declined; a clicked intent is never
+  overridden by its text, and a minted decline outranks a typed token
 - **Bare no** (word-boundary token match or intent metadata, below the substantive
   bound) → cancel transition, acknowledge deterministically ("note…"/"stopped…" do
-  not read as "no"/"stop"). A reply that opens with a decline token, or refuses or
-  defers anywhere (`don't`, `not yet`, `later`, `wait`, `cancel`, `never mind`, …;
-  #1783), is a decline
+  not read as "no"/"stop"). A decline must be **certain** (#1783): the reply opens
+  with a decline word, carries a negative emoji (`👎`, `:wait:`), or puts a
+  refusal phrase after consent words alone ("ok, don't close it yet"). A refusal
+  word elsewhere ("sure, I don't mind", a question about cancelling) is ambiguous
+  and takes the re-ask below; "yes, don't wait" is an accepted false decline
 - **Decline carrying substance** (decline token followed by data, a question, a
   redirection) → cancel transition, then process the message as a normal turn so
   its content is not lost
@@ -1092,9 +1096,9 @@ This routes through `IntentType.CONFIRMATION` → deterministic `pending_transit
 bypassing the tool loop and pattern matching entirely.
 
 **Typed responses** (user types instead of clicking) fall back to `confirmation_token_class()` (consent is "not `None`")
-pattern matching with a 100-char length guard. It reads the **whole reply** (#1783): consent only when every word is a
-confirmation token or a filler (`please`, `thanks`, `thank you`), and never when a refusal or deferral appears anywhere
-in it — "ok, don't close it yet" declines rather than confirms.
+pattern matching with a 100-char length guard. It reads the **whole reply** (#1783): consent only when it opens with a
+confirmation token and every other word is in the closed consent vocabulary, never when a refusal signal or a question
+appears anywhere in it — "ok, don't close it yet" declines rather than confirms, and the card payload typed is consent.
 
 ---
 

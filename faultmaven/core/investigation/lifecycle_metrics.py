@@ -538,21 +538,23 @@ close_pivoted_to_resolve_total = Counter(
 # labelled by ``via`` and ``to_state`` (``resolved`` | ``closed``). ``via`` is
 # how the user confirmed:
 #   ``intent``            a click;
-#   ``explicit_token``    typed text that is a BARE explicit token ("yes!");
-#   ``explicit_prefixed`` typed consent whose first token is explicit, saying
-#                         more ("yes please close it", "yes, mark as resolved");
+#   ``explicit_token``    a typed BARE explicit token ("yes!", "yes 👍");
+#   ``explicit_prefixed`` a typed consent opening with an explicit token and
+#                         carrying more of the consent vocabulary ("yes please
+#                         close it", "yes, resolved"), or a card payload typed;
 #   ``weak_token``        a typed BARE weak token ("ok", "ok 👍", "ok :+1:") —
 #                         #723's term;
-#   ``weak_prefixed``     typed consent whose first token is weak, saying more
-#                         ("ok go ahead", "ok thanks");
-#   ``typed_other``       typed text the intent resolver accepted that is not
-#                         a whole-reply consent ("that works").
-# Typed text is consent only when the WHOLE reply is (#1783): tokens, fillers
-# and non-alphanumerics, with no refusal anywhere, so "ok, don't close it yet"
-# counts nowhere. BARE means no letter or digit after the first token once Slack
-# emoji shortcodes (":+1:") are removed, so a Slack reply labels as the same
-# reply with the Unicode emoji does. The prefixed labels are reported beside the
-# others and never merged into either side.
+#   ``weak_prefixed``     a typed consent opening with a weak token and carrying
+#                         more ("ok go ahead", "looks good to me");
+#   ``typed_other``       typed text the intent resolver accepted that is not a
+#                         typed consent ("that works").
+# Typed text is consent only when it OPENS with a token and the rest is the
+# closed consent vocabulary, positive emoji and separators, with no refusal
+# signal anywhere (#1783), so "ok, don't close it yet" counts nowhere. BARE
+# means the reply's words are exactly the opening token's once its positive
+# emoji, shortcodes and emoticons are removed, so a Slack reply labels as the
+# same reply with the Unicode emoji does. The prefixed labels are reported
+# beside the others and never merged into either side.
 # ``faultmaven_terminal_followup_total`` counts the turn IMMEDIATELY after the
 # confirming turn, by the same ``via`` and the case's state, when the user
 # typed it: non-blank text, no effective intent, not one of the ack turn's own
@@ -570,9 +572,8 @@ terminal_confirmation_total = Counter(
     "Terminal transitions executed on a user confirmation, by how the user "
     "confirmed (intent|explicit_token|explicit_prefixed|weak_token|"
     "weak_prefixed|typed_other) and the state reached (resolved|closed). "
-    "*_token is a bare token: no letter or digit after it once Slack :shortcode: "
-    "emoji are removed; an emoticon with a letter or digit (:D, XD, <3) is "
-    "*_prefixed.",
+    "*_token is a bare opening token (positive emoji and punctuation aside); "
+    "*_prefixed is a consent that carries more of the consent vocabulary.",
     ["via", "to_state"],
 )
 

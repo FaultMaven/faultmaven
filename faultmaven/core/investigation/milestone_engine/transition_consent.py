@@ -3,22 +3,18 @@
 import re
 from typing import Optional
 
+from faultmaven.core.investigation.terminal_transitions import (
+    is_substantive_reply,
+    normalize_reply,
+)
 from faultmaven.modules.case.contracts import TerminalConfirmedVia
 
 from .stage_gates import (
+    CLOSE_CONFIRMATION_PAYLOAD,
     _gate_token_match,
     _matches_gate_token,
 )
-
-#: A Slack emoji as it arrives on the wire (``:+1:``, ``:white_check_mark:``).
-#: Removed before the bare test so a Slack reply labels as the same reply typed
-#: with the Unicode emoji does (#1748). Applied to the lowercased message.
-_SLACK_EMOJI_SHORTCODE = re.compile(r":[a-z0-9_+-]+:")
-
-#: Curly apostrophes, as mobile keyboards and macOS autocorrect type them.
-#: Every token here is spelled with a straight one ("that's right", "don't"),
-#: so a reply is read with its curly ones straightened (#1783).
-_APOSTROPHES = str.maketrans({"’": "'", "‘": "'"})
+from .terminal_replies import RESOLVE_CONFIRMATION_PAYLOAD
 
 # Bare tokens that carry little intent on their own: #723's Note 1 list. Kept
 # apart from the explicit set so a terminal transition confirmed by one of
@@ -50,13 +46,121 @@ _EXPLICIT_CONFIRM_TOKENS = (
 )
 
 #: Politeness a consent may carry without ceasing to be one ("yes please",
-#: "ok thanks"). Never consent on its own: a reply needs a token as well.
-_CONSENT_FILLERS = ("please", "thanks", "thank you")
+#: "ok thx"). Never consent on its own: a reply must OPEN with a token.
+_CONSENT_FILLERS = ("please", "pls", "plz", "thanks", "thx", "ty", "thank you")
 
-#: A refusal or a deferral, anywhere in a reply (#1783). Any of these vetoes
-#: consent and reads as a decline. Bare "no" is deliberately absent: "no
-#: problem" and "no worries" would read as refusals, and the whole-reply
-#: grammar already refuses "ok no" (which the gate then re-asks once).
+#: The closed vocabulary a consent may continue with after its opening token
+#: (#1783): "yes, resolved", "yep, all good", "looks good to me", "yes
+#: everything is back to normal". Deliberately without any negation ("not",
+#: "no", "still", "again"), so "yes, the issue is not resolved" is not consent.
+_AFFIRMATIVE_WORDS = frozenset(
+    (
+        "it is it's its resolved fixed solved done works worked working all good"
+        " great fine perfect now the issue problem case this that close closed"
+        " mark as go ahead and to me we are we're i think everything looks seems"
+        " back normal too also indeed definitely of course sir mate team"
+    ).split()
+)
+
+#: The words of every consent token and filler: all a refusal phrase may follow
+#: for the reply to be a CERTAIN decline ("yes, don't close it yet").
+_TOKEN_WORDS = frozenset(
+    word
+    for phrase in _EXPLICIT_CONFIRM_TOKENS + _WEAK_CONFIRM_TOKENS + _CONSENT_FILLERS
+    for word in phrase.split()
+)
+
+#: Every word a consent may contain.
+_CONSENT_VOCABULARY = _TOKEN_WORDS | _AFFIRMATIVE_WORDS
+
+#: Emoji, Slack shortcodes and emoticons that keep a consent a consent. They are
+#: removed before the character and word checks, so "ok 👍", "ok :+1:" and
+#: "ok (y)" are the bare token. Matched on the normalised (lowercased) text.
+_POSITIVE_EMOJI = (
+    "👍",
+    "👌",
+    "✅",
+    "✔",
+    "☑",
+    "🙏",
+    "🙂",
+    "😊",
+    "😀",
+    "😃",
+    "🎉",
+    "💯",
+    "🚀",
+    "✨",
+    "🙌",
+    ":+1:",
+    ":thumbsup:",
+    ":ok_hand:",
+    ":white_check_mark:",
+    ":heavy_check_mark:",
+    ":ballot_box_with_check:",
+    ":pray:",
+    ":slightly_smiling_face:",
+    ":smile:",
+    ":tada:",
+    ":100:",
+    ":rocket:",
+    ":sparkles:",
+    ":raised_hands:",
+    ":)",
+    ":-)",
+    "=)",
+    ":]",
+    ":d",
+    ":-d",
+    "(y)",
+    "<3",
+)
+
+#: Emoji, Slack shortcodes and emoticons that refuse or defer (#1783). Any of
+#: them anywhere is a refusal signal and a certain decline: "ok 👎", "👎 ok",
+#: "ok :wait:".
+_NEGATIVE_EMOJI = (
+    "👎",
+    "❌",
+    "🚫",
+    "✋",
+    "🛑",
+    "⛔",
+    "🙅",
+    "✗",
+    "✖",
+    "⏳",
+    "🙄",
+    ":-1:",
+    ":thumbsdown:",
+    ":x:",
+    ":no_entry:",
+    ":no_entry_sign:",
+    ":raised_hand:",
+    ":stop_sign:",
+    ":octagonal_sign:",
+    ":no_good:",
+    ":stop:",
+    ":wait:",
+    ":later:",
+    ":(",
+    ">:(",
+    ":-/",
+    ":-(",
+)
+
+#: The only characters besides letters and digits a consent may contain, once
+#: its positive emoji are removed: separators, quotes, the emoji variation
+#: selector and the skin-tone modifiers. A closed set, so "!ok", "~~ok~~",
+#: "[ ] close it" and "ok ⏳" are not consent (#1783).
+_CONSENT_SEPARATORS = (
+    frozenset(" .,!;-—–\"'") | {"️"} | {chr(c) for c in range(0x1F3FB, 0x1F400)}
+)
+
+#: A refusal or a deferral: THE refusal list (#1783). Read anywhere in a reply,
+#: word-bounded, on the normalised text before anything is removed. Bare "no"
+#: is deliberately absent — "no problem" and "no worries" would read as
+#: refusals — and a reply that merely contains it is re-asked instead.
 _REFUSAL_PHRASES = (
     "don't",
     "do not",
@@ -70,30 +174,68 @@ _REFUSAL_PHRASES = (
     "stop",
     "never mind",
     "nevermind",
+    "dont",
+    "nah",
+    "negative",
+    "hold up",
+    "not so fast",
+    "l8r",
+    "w8",
+)
+
+#: Words that decline only when a reply OPENS with them ("no", "nope, it's fine
+#: now"), whatever follows, a question included, as the decline list always
+#: read. Not refusal phrases: "yes, no problem" is not a refusal.
+_OPENING_ONLY_DECLINES = ("no", "nope", "not ready")
+
+#: What a certain decline may open with: the opening-only words, and the
+#: subset of ``_REFUSAL_PHRASES`` that opens a decline even when a question or
+#: more text follows.
+_DECLINE_OPENERS = _OPENING_ONLY_DECLINES + (
+    "not yet",
+    "wait",
+    "cancel",
+    "don't",
+    "dont",
+    "hold on",
+    "stop",
+    "nah",
+    "negative",
 )
 
 _REFUSAL = re.compile(
     r"(?<!\w)(?:" + "|".join(re.escape(p) for p in _REFUSAL_PHRASES) + r")(?!\w)"
 )
 
+#: A word, in any script: "нет" and "不要" are words the vocabulary does not
+#: hold, not separators.
+_WORD = re.compile(r"[^\W_]+(?:'[^\W_]+)*")
 
-def _normalize_reply(user_message: str) -> str:
-    """``user_message`` as every matcher here reads it: stripped, lowercased,
-    curly apostrophes straightened."""
-    return user_message.strip().lower().translate(_APOSTROPHES)
+#: The engine's own positive card payloads, one source: the builders' constants.
+_POSITIVE_CARD_PAYLOADS = frozenset(
+    normalize_reply(payload)
+    for payload in (RESOLVE_CONFIRMATION_PAYLOAD, CLOSE_CONFIRMATION_PAYLOAD)
+)
 
 
-def _reply_refuses(user_message: str) -> bool:
-    """Whether ``user_message`` refuses or defers anywhere in it (#1783).
+def _without_positive_emoji(msg: str) -> str:
+    """``msg`` with each positive emoji, shortcode and emoticon replaced by a
+    space, longest first."""
+    for emoji in sorted(_POSITIVE_EMOJI, key=len, reverse=True):
+        msg = msg.replace(emoji, " ")
+    return msg
 
-    Word-bounded, so "stopped the pod" is not "stop" and "waiting" is not
-    "wait". It vetoes the typed matcher below and a confirmation intent the
-    resolver minted from the same text, and it makes the reply a decline. A
-    CLICKED confirmation is never vetoed by the text it carries.
-    """
-    if not user_message:
-        return False
-    return _REFUSAL.search(_normalize_reply(user_message)) is not None
+
+def _refusal_signal(msg: str) -> bool:
+    """Whether the normalised ``msg`` carries a refusal phrase or a negative
+    emoji anywhere (#1783). Read before any emoji or shortcode is removed."""
+    return _REFUSAL.search(msg) is not None or any(e in msg for e in _NEGATIVE_EMOJI)
+
+
+def _opening_token(msg: str) -> Optional[str]:
+    """The consent token the normalised ``msg`` opens with, longest first."""
+    match = _gate_token_match(msg, _EXPLICIT_CONFIRM_TOKENS + _WEAK_CONFIRM_TOKENS)
+    return match[0] if match else None
 
 
 def confirmation_token_class(user_message: str) -> Optional[TerminalConfirmedVia]:
@@ -108,104 +250,112 @@ def confirmation_token_class(user_message: str) -> Optional[TerminalConfirmedVia
     through IntentType.CONFIRMATION deterministically. This matcher
     is a safety net for users who type instead of clicking.
 
-    Uses a 100-char length guard: short messages are direct responses
-    to the confirmation prompt; longer messages likely contain context
-    that should go through normal LLM processing.
+    A match here executes a TERMINAL transition, so the reply must be a BARE
+    consent. It is read as ``normalize_reply`` gives it, and it is consent
+    only when all of these hold (#1783):
 
-    A match here executes a TERMINAL transition, so it must be a BARE
-    confirmation, and the substance test comes first: a message carrying a
-    question or a contrastive continuation ("ok but what is the root
-    cause?") is substantive input, not consent — it falls to the
-    pending-gate escape lane instead (INV-26: the gate never consumes
-    substantive input). The substance test is the shared
-    ``is_substantive_reply`` predicate — the same one that guards
-    classifier-minted confirmation intents at the IntentResolver adoption
-    site (#721), so the two confirm lanes cannot drift apart.
+    * it is not substantive (the shared ``is_substantive_reply``: over 100
+      characters, a question in any script, or a contrastive " but "), so a
+      question is never consent (INV-26: the gate never consumes substantive
+      input; the same predicate guards resolver-minted intents, #721);
+    * it carries no refusal signal (``_refusal_signal``: a refusal phrase or a
+      negative emoji, anywhere);
+    * it OPENS with a consent token, the longest match, on a word boundary
+      ("yesterday…" is not "yes"). A reply that opens with anything else —
+      "❌ close it", "~~ok~~", "thanks, ok" — is not consent;
+    * once its positive emoji, shortcodes and emoticons are removed, every
+      other character is a letter, a digit or in ``_CONSENT_SEPARATORS``;
+    * every word is in the closed vocabulary: the words of the tokens and
+      fillers, and ``_AFFIRMATIVE_WORDS`` ("yes, resolved", "looks good to
+      me"). A word outside it ("ok no", "ok нет", "sure — tomorrow") withholds
+      consent, and the gate re-asks.
 
-    **Consent is the whole reply (#1783).** The reply confirms only when all
-    of it, once curly apostrophes are straightened and Slack emoji shortcodes
-    (``:+1:``, ``:white_check_mark:``) removed, is confirmation tokens (the
-    explicit and weak sets), the fillers ``please`` / ``thanks`` / ``thank
-    you``, and characters that are not letters or digits — with at least one
-    token. It is a closed grammar: nothing is parsed for negation, so a word
-    it does not know ("ok no", "okay i'll confirm with the team", "sure —
-    tomorrow") withholds consent, and the gate re-asks. A refusal or deferral
-    anywhere (``_reply_refuses``: "ok, don't close it yet", "sure, do it
-    later") vetoes consent as well. A missed consent costs one re-ask; a false
-    one closes a case irreversibly. The grammar walks the reply with the
-    gate's own matcher (``_gate_token_match``, longest match, word-bounded)
-    at each word, so tokens match on word boundaries ("yesterday…" is not
-    "yes").
+    The engine's own positive card payloads are consent too, typed or sent
+    without their intent.
 
-    The class is read from the FIRST token of a consenting reply (#1748). Its
-    set says explicit or weak; what follows it says bare or prefixed. BARE
-    means no letter or digit anywhere after that token: punctuation, Unicode
-    emoji, Slack shortcodes and emoticons made of punctuation keep a reply
-    bare ("ok!", "ok 👍", "ok :+1:", "ok =)", "yes :)"). PREFIXED means a
-    consent of more than one word — another token or a filler ("ok go ahead",
-    "yes please close it", "ok thanks"):
-
-    * ``"explicit_token"`` / ``"explicit_prefixed"`` — the first token is
-      explicit, alone or with more;
-    * ``"weak_token"`` / ``"weak_prefixed"`` — the first token is weak, alone
-      (#723's "bare weak token") or with more.
+    The class names the opening token's set, explicit or weak (#1748), and
+    whether the reply says more: ``*_token`` when its words are exactly the
+    opening token's (emoji and punctuation aside: "ok 👍", "ok :+1:",
+    "yes!"), ``*_prefixed`` when it carries more of the vocabulary ("ok go
+    ahead", "yes please close it", a card payload).
     """
-    from faultmaven.core.investigation.terminal_transitions import (
-        is_substantive_reply,
-    )
-
-    if not user_message:
+    msg = normalize_reply(user_message)
+    if not msg or is_substantive_reply(msg) or _refusal_signal(msg):
         return None
-    if is_substantive_reply(user_message):
+    token = _opening_token(msg)
+    if msg in _POSITIVE_CARD_PAYLOADS:
+        return "weak_prefixed" if token in _WEAK_CONFIRM_TOKENS else "explicit_prefixed"
+    if token is None:
         return None
-    msg = _SLACK_EMOJI_SHORTCODE.sub(" ", _normalize_reply(user_message))
-    tokens = _EXPLICIT_CONFIRM_TOKENS + _WEAK_CONFIRM_TOKENS
-    first: Optional[tuple[str, int]] = None
-    pos = 0
-    while pos < len(msg):
-        if not msg[pos].isalnum():
-            pos += 1
-            continue
-        match = _gate_token_match(msg[pos:], tokens + _CONSENT_FILLERS)
-        if match is None:
-            return None  # a word the consent grammar does not know
-        word, length = match
-        if first is None and word in tokens:
-            first = (word, pos + length)
-        pos += length
-    if first is None or _reply_refuses(msg):
+    rest = _without_positive_emoji(msg)
+    if any(not c.isalnum() and c not in _CONSENT_SEPARATORS for c in rest):
         return None
-    token, end = first
-    bare = not any(c.isalnum() for c in msg[end:])
+    words = _WORD.findall(rest)
+    if not all(word in _CONSENT_VOCABULARY for word in words):
+        return None
+    bare = words == token.split()
     if token in _EXPLICIT_CONFIRM_TOKENS:
         return "explicit_token" if bare else "explicit_prefixed"
     return "weak_token" if bare else "weak_prefixed"
 
 
 def _user_declines_transition(user_message: str) -> bool:
-    """Check if user message declines a pending transition.
+    """Whether ``user_message`` CERTAINLY declines a pending transition.
 
-    Opens with a decline token, or refuses or defers anywhere in it
-    (``_reply_refuses``, #1783: "ok, don't close it yet" is a decline, not a
-    reply the gate cannot read).
+    Certain means one of (#1783):
+
+    * it opens with a decline word (``_DECLINE_OPENERS``), whatever follows;
+    * it carries a negative emoji (``_NEGATIVE_EMOJI``);
+    * it is not substantive, and a refusal phrase appears in it with only the
+      words of consent tokens and fillers before it ("ok, don't close it yet",
+      "sure, do it later").
+
+    Anything else is not a certain decline, even with a refusal word in it:
+    "sure, I don't mind" and "yes, the errors don't come back" are
+    ambiguous, and a question ("what happens if I cancel?") is the user
+    deciding. Those are re-asked or withdrawn, never recorded as a refusal of
+    the offer. A few consents are declined by this rule, and that is
+    accepted: "yes, don't wait", "yes, cancel the investigation". A false
+    decline withdraws a proposal the user can ask for again; a false consent
+    closes a case irreversibly.
 
     Tokens match on word boundaries — "note db latency spiked" must not
     read as "no", nor "stopped the pod" as "stop" (the old bare
     ``startswith`` swallowed such evidence-bearing messages with a
     canned acknowledgment).
     """
-    if not user_message:
+    msg = normalize_reply(user_message)
+    if not msg:
         return False
-    msg = _normalize_reply(user_message)
-    decline_patterns = [
-        "no",
-        "nope",
-        "not yet",
-        "wait",
-        "cancel",
-        "don't",
-        "not ready",
-        "hold on",
-        "stop",
-    ]
-    return _matches_gate_token(msg, decline_patterns) or _reply_refuses(msg)
+    if _matches_gate_token(msg, _DECLINE_OPENERS):
+        return True
+    if any(e in msg for e in _NEGATIVE_EMOJI):
+        return True
+    if is_substantive_reply(msg):
+        return False
+    refusal = _REFUSAL.search(msg)
+    if refusal is None:
+        return False
+    before = _WORD.findall(_without_positive_emoji(msg[: refusal.start()]))
+    return all(word in _TOKEN_WORDS for word in before)
+
+
+def _minted_confirmation_conflicts(user_message: str) -> bool:
+    """Whether a confirmation the resolver MINTED from ``user_message``
+    conflicts with the text itself (#1783).
+
+    The resolver's match is an inference, and the text outranks it when the
+    text is a certain decline, carries a refusal signal, is substantive, or
+    opens with a consent token without being consent ("ok no", "ok after
+    lunch"). The gate then re-asks: it neither executes the inference nor
+    declines on it. Text wholly outside the vocabulary ("that works", "oui
+    non") is the classifier's reading and does not conflict.
+    """
+    msg = normalize_reply(user_message)
+    if (
+        _user_declines_transition(msg)
+        or _refusal_signal(msg)
+        or is_substantive_reply(msg)
+    ):
+        return True
+    return _opening_token(msg) is not None and confirmation_token_class(msg) is None

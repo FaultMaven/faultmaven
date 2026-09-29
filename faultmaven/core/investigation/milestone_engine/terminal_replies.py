@@ -60,6 +60,14 @@ def _build_resolution_confirmation(case) -> str:
     return "\n".join(parts)
 
 
+#: What the "Yes, mark as resolved" card sends when clicked. Typed or sent as
+#: text without its intent it is still the engine's own words for consent, so
+#: the typed-consent matcher reads it as consent (#1783).
+RESOLVE_CONFIRMATION_PAYLOAD = (
+    "Yes, the issue is resolved. Please mark this case as resolved."
+)
+
+
 def _resolution_confirmation_suggestions() -> list:
     """Generate DECIDE follow-up suggestions for resolution confirmation.
 
@@ -75,7 +83,7 @@ def _resolution_confirmation_suggestions() -> list:
         {
             "label": "Yes, mark as resolved",
             "action_type": "DECIDE",
-            "payload": "Yes, the issue is resolved. Please mark this case as resolved.",
+            "payload": RESOLVE_CONFIRMATION_PAYLOAD,
             "body": "Confirm resolution and close the investigation.",
             "intent": {"type": "confirmation", "confirmation_value": True},
         },
