@@ -622,6 +622,8 @@ A single malformed sub-record emitted by the LLM (e.g. `evidence_to_add` with `s
 
 An out-of-range confidence is usually settled before step 2, inside Pydantic (§3.3). Validators report what they did through the validation context, one sink per attempt, and the ladder counts the successful attempt's reports: `faultmaven_schema_field_repairs_total`, a `repaired` outcome for a body whose only defects were repaired, and a note on the turn's `validation_repairs`.
 
+A `state_updates` that arrives as the model's XML parameter form (`<parameter name="k">v</parameter>`, closed or not, possibly nested) is parsed into the object it encodes on all three parse paths; any other string, or a missing value, becomes `{}`, and `faultmaven_schema_state_updates_repairs_total` counts each by `schema` and `repair` (`xml_recovered`, `string_dropped`, `absent_defaulted`). `string_dropped` is lost state that still validates `clean` (fm#1753).
+
 Wired into every validation site: the schema-tool call, the text fallback, and the non-tool single-shot path. This is distinct from the field-level defensive coercion in §3.3 (which handles known per-field LLM quirks): the backstop is the general safety net for *any* schema with cross-field validators. Provider-native constrained generation remains the upstream mitigation; the backstop is the safety net, not a per-variant patch.
 
 ---

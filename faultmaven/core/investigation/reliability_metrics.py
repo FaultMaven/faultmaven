@@ -78,6 +78,14 @@ Read as rates, never the numerator alone:
   too: document triage's ``TriageResult.confidence`` (the classifier role,
   fm#1672), whose unrepairable values are ``defaulted`` — treated as absent,
   so the default's advisory path applies rather than the hard reject.
+
+- ``faultmaven_schema_state_updates_repairs_total``: every ``state_updates``
+  the engine settled before validation, by ``schema`` and ``repair`` —
+  ``xml_recovered`` (the model's XML parameter form parsed into the object it
+  encodes), ``string_dropped`` (any other string coerced to ``{}``: the turn's
+  state updates are LOST, yet the body validates ``clean`` because ``{}`` takes
+  the defaults) or ``absent_defaulted`` (null or missing, defaulted). A dict is
+  not counted (fm#1753).
 """
 
 from faultmaven.infrastructure.shims.metrics import Counter
@@ -130,4 +138,15 @@ schema_field_repairs_total = Counter(
     "(owning model class), ``field`` and ``action`` (rescaled | coerced | "
     "dropped | pruned | defaulted). Link confidences are counted at ingest.",
     ["schema", "field", "action"],
+)
+
+# Pinned by tests, for the same reason as SCHEMA_VALIDATION_OUTCOMES.
+STATE_UPDATES_REPAIRS = ("xml_recovered", "string_dropped", "absent_defaulted")
+
+schema_state_updates_repairs_total = Counter(
+    "faultmaven_schema_state_updates_repairs_total",
+    "state_updates settled before validation, labeled by ``schema`` and "
+    "``repair`` (xml_recovered | string_dropped | absent_defaulted). "
+    "string_dropped is lost state: the body still validates clean.",
+    ["schema", "repair"],
 )

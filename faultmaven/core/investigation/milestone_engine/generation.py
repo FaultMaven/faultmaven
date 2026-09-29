@@ -17,6 +17,7 @@ from faultmaven.core.investigation.llm_error_handler import (
 from faultmaven.core.investigation.milestone_engine.errors import MilestoneEngineError
 from faultmaven.core.investigation.milestone_engine.structured_output import (
     _fix_enum_violations,
+    _normalize_state_updates,
     _parse_nested_json,
     _parse_schema_tool_call,
     _parse_text_as_schema,
@@ -1811,19 +1812,9 @@ class StructuredOutputGenerator:
                 # Parse any nested JSON strings (reuse class static method)
                 content_obj = _parse_nested_json(content_obj)
 
-                # Some LLMs (Fireworks/DeepSeek V3) return null for required
-                # object fields, or leave state_updates as an unparsed string
-                # when JSON was truncated. Coerce both to {} so Pydantic field
-                # defaults apply instead of a hard validation error.
-                _su = (
-                    content_obj.get("state_updates")
-                    if isinstance(content_obj, dict)
-                    else None
-                )
-                if isinstance(content_obj, dict) and (
-                    _su is None or isinstance(_su, str)
-                ):
-                    content_obj["state_updates"] = {}
+                # Recover the XML parameter form, or coerce an unresolvable
+                # state_updates to {} so Pydantic defaults apply (counted).
+                content_obj = _normalize_state_updates(content_obj, schema_model)
 
                 # Fix any hallucinated enum values (reuse class static method)
                 schema_dict = schema_model.model_json_schema()

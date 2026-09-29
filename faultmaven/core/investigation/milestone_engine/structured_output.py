@@ -17,6 +17,7 @@ from faultmaven.core.investigation.confidence_repair import (
     count as count_confidence_repair,
 )
 from faultmaven.core.investigation.reliability_metrics import (
+    schema_state_updates_repairs_total,
     schema_validation_total,
 )
 from faultmaven.core.investigation.schemas import (
@@ -55,14 +56,9 @@ def _parse_schema_tool_call(
     # Recursively parse nested JSON strings
     content_obj = _parse_nested_json(content_obj)
 
-    # Coerce unresolvable state_updates to {} so Pydantic field defaults apply.
-    # Covers two Fireworks/DeepSeek V3 failure modes:
-    #   (a) null — LLM omitted the field entirely
-    #   (b) string — JSON was truncated/malformed and _parse_nested_json
-    #       could not repair it (e.g. closing "} cut off before XML tag)
-    _su = content_obj.get("state_updates") if isinstance(content_obj, dict) else None
-    if isinstance(content_obj, dict) and (_su is None or isinstance(_su, str)):
-        content_obj["state_updates"] = {}
+    # Recover the XML parameter form, or coerce unresolvable state_updates to
+    # {} so Pydantic field defaults apply (counted either way).
+    content_obj = _normalize_state_updates(content_obj, schema_model)
 
     # Fix hallucinated enum values
     schema_dict = schema_model.model_json_schema()
@@ -553,9 +549,7 @@ def _parse_text_as_schema(
     """
     content_obj = loads_llm_json(text)
     content_obj = _parse_nested_json(content_obj)
-    _su = content_obj.get("state_updates") if isinstance(content_obj, dict) else None
-    if isinstance(content_obj, dict) and (_su is None or isinstance(_su, str)):
-        content_obj["state_updates"] = {}
+    content_obj = _normalize_state_updates(content_obj, schema_model)
     schema_dict = schema_model.model_json_schema()
     content_obj = _fix_enum_violations(
         content_obj,
@@ -578,6 +572,103 @@ def _parse_text_as_schema(
             "JSON example, not a real response"
         )
     return parsed
+
+
+_XML_PARAMETER_TAG = re.compile(r'<parameter\s+name="([^"<>]+)"\s*>|</parameter\s*>')
+_TRAILING_FOREIGN_CLOSERS = re.compile(
+    r"(\s*</(?!parameter\b)[A-Za-z_][\w:-]*\s*>)+\s*$"
+)
+
+
+def _recover_xml_parameters(text: str) -> Optional[dict]:
+    """Parse a model's leaked XML parameter form into the object it encodes.
+
+    ``<parameter name="k">v</parameter>`` sequences become ``{k: v}``, nested
+    where a value is itself tagged. A parameter left open at the end of the
+    string is closed implicitly (the shape ``claude-opus-5`` emits). Returns
+    ``None`` for anything else: text that does not start with a tag, text
+    outside every parameter, a stray or duplicate key, or a parameter mixing
+    text with child parameters.
+    """
+    text = _TRAILING_FOREIGN_CLOSERS.sub("", text.strip())
+    if not text.startswith("<parameter"):
+        return None
+
+    root: dict = {}
+    # frames: [key, children, text_parts]; the root frame has key None.
+    stack: list = [[None, root, []]]
+
+    def close_frame() -> bool:
+        key, children, parts = stack.pop()
+        body = "".join(parts)
+        if children:
+            if body.strip():
+                return False
+            value: Any = children
+        else:
+            value = body.strip()
+        parent_children = stack[-1][1]
+        if key in parent_children:
+            return False
+        parent_children[key] = value
+        return True
+
+    pos = 0
+    for match in _XML_PARAMETER_TAG.finditer(text):
+        between = text[pos : match.start()]
+        stack[-1][2].append(between)
+        pos = match.end()
+        if match.group(1) is not None:
+            stack.append([match.group(1), {}, []])
+        else:
+            if len(stack) == 1:
+                return None
+            if not close_frame():
+                return None
+    stack[-1][2].append(text[pos:])
+    while len(stack) > 1:
+        if not close_frame():
+            return None
+    if "".join(stack[0][2]).strip():
+        return None
+    if not root:
+        return None
+    result = _parse_nested_json(root)
+    return result if isinstance(result, dict) else None
+
+
+def _normalize_state_updates(content_obj: Any, schema_model: Any) -> Any:
+    """Settle ``state_updates`` before validation; count every repair.
+
+    An XML-parameter string is parsed into the object it encodes; any other
+    string, or a missing/null value, becomes ``{}`` so the schema defaults
+    apply. A value that is already an object is left alone and not counted.
+    """
+    if not isinstance(content_obj, dict):
+        return content_obj
+    su = content_obj.get("state_updates")
+    schema_name = getattr(schema_model, "__name__", str(schema_model))
+    if isinstance(su, str):
+        recovered = _recover_xml_parameters(su)
+        if recovered is not None:
+            content_obj["state_updates"] = recovered
+            repair = "xml_recovered"
+        else:
+            logger.warning(
+                "state_updates for %s arrived as an unparseable string "
+                "(length=%d); coerced to {} — the turn's state updates are lost",
+                schema_name,
+                len(su),
+            )
+            content_obj["state_updates"] = {}
+            repair = "string_dropped"
+    elif su is None:
+        content_obj["state_updates"] = {}
+        repair = "absent_defaulted"
+    else:
+        return content_obj
+    schema_state_updates_repairs_total.labels(schema=schema_name, repair=repair).inc()
+    return content_obj
 
 
 def _parse_nested_json(obj):
