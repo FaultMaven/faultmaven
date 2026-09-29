@@ -2810,17 +2810,29 @@ class TestTheGrowthHelper:
 
     @pytest.mark.parametrize("fixed", [1000, 2000, 3000])
     def test_the_same_fixed_cost_on_a_linear_passes(self, fixed):
-        """The other column: it escalates until the work shows, then passes."""
+        """The other column: it escalates until the work shows, then passes.
+
+        This control's fixed cost is built larger than any production
+        caller's, so it gets one window more than they do: at the callers'
+        last window, ``1024, 8192, 65536``, ``t(8n) - t(n)`` is a small
+        difference of two large numbers, and a loaded CI runner left the pass
+        side's ceiling straddling the bound — undecided, so refused (#1760).
+        One more window multiplies the work by 8 against the same fixed cost.
+        The bound and both allowances are untouched, and the quadratic column
+        above keeps the callers' budget.
+        """
         from tests.wallclock import assert_linear_growth
+        from tests.wallclock.growth import MAX_ESCALATIONS
 
         growth = assert_linear_growth(
             _fixed_then_linear(fixed),
             lambda n: n,
             small=2,
             label=f"linear after {fixed} fixed iterations",
+            max_escalations=MAX_ESCALATIONS + 1,
         )
         # Moved up by whole steps of 8 from 2: escalated at least once.
-        assert growth.sizes[0] in {16, 128, 1024}, growth.describe()
+        assert growth.sizes[0] in {16, 128, 1024, 8192}, growth.describe()
 
     def test_a_call_that_never_shows_its_work_is_refused(self):
         """Miscalibrated, not linear: nothing grew across a 32768x input.
