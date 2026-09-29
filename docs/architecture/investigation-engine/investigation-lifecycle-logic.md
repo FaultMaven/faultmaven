@@ -202,7 +202,7 @@ def _apply_inquiry_updates(case: Case, updates: Any, metadata: Dict[str, Any],
     (`user_confirms()`) was removed in commit 06cfa834 (2026-03-17)
     when intent-routing for explicit clicks became the canonical
     confirmation path. Typed responses that match a confirmation
-    pattern only fire on a TERMINAL case via `_user_confirms_transition`
+    pattern only fire on a TERMINAL case via `confirmation_token_class`
     (see terminal_transitions handling — disposition paths only).
     """
 
@@ -1082,7 +1082,7 @@ Let me start by verifying the scope and impact. What services are affected?"
 This routes through `IntentType.CONFIRMATION` → deterministic `pending_transition` handling,
 bypassing the tool loop and pattern matching entirely.
 
-**Typed responses** (user types instead of clicking) fall back to `_user_confirms_transition()`
+**Typed responses** (user types instead of clicking) fall back to `confirmation_token_class()` (consent is "not `None`")
 pattern matching with a 100-char length guard.
 
 ---
@@ -1375,7 +1375,7 @@ The gate is intentionally **substance-only**. Conversation depth (`message_count
 
 **Runbook generation — chat-side trigger + completion notification** (RESOLVED only):
 
-The runbook affordance on the RESOLVED ack-turn is a separate downstream artifact, not a summary. Clicking it routes via the same exact-match dispatch (`_RUNBOOK_CREATION_PATTERNS` in `milestone_engine/terminal_turns.py`'s `TerminalTurnHandler`) to `RunbookCreator.handle_runbook_creation` (`milestone_engine/runbook_creation.py`), which runs two pre-flight gates synchronously: content readiness (`assess_runbook_readiness` — does the case have a root cause + actionable solution?) and deduplication against the published-runbook corpus (`RunbookKnowledgeBase`, scoped to the case owner — see `runbook-dedup.md`). On `NOT_READY`, the chat reply explains why and no draft is created. On `SIMILAR_FOUND` (a ≥ 0.70 best-chunk match), the turn STOPS: the candidate is named by title and score — stated as overlap, never as coverage — no draft is created, and a *"Generate a new runbook anyway"* DECIDE affordance (`_RUNBOOK_CONFIRM_PATTERNS`, also on `TerminalTurnHandler` → `dedup_confirmed=True`) makes the choice answerable on the next turn. On proceed (no match, or explicit confirmation, or a dedup-failure caveat — the case is runbook-worthy and only the duplicate check is uncertain), the conversion runs as a **fire-and-forget background task** (`RunbookCreator._run_runbook_conversion`); the chat reply returns immediately ("Creating your runbook draft… It will appear in the Dashboard under **Knowledge Base > Drafts** once generation finishes. You can also create and edit runbooks there directly").
+The runbook affordance on the RESOLVED ack-turn is a separate downstream artifact, not a summary. Clicking it routes via the same exact-match dispatch (`_RUNBOOK_CREATION_PATTERNS`, read by `terminal_card_action` in `milestone_engine/terminal_turns.py`, which `TerminalTurnHandler` dispatches on) to `RunbookCreator.handle_runbook_creation` (`milestone_engine/runbook_creation.py`), which runs two pre-flight gates synchronously: content readiness (`assess_runbook_readiness` — does the case have a root cause + actionable solution?) and deduplication against the published-runbook corpus (`RunbookKnowledgeBase`, scoped to the case owner — see `runbook-dedup.md`). On `NOT_READY`, the chat reply explains why and no draft is created. On `SIMILAR_FOUND` (a ≥ 0.70 best-chunk match), the turn STOPS: the candidate is named by title and score — stated as overlap, never as coverage — no draft is created, and a *"Generate a new runbook anyway"* DECIDE affordance (`_RUNBOOK_CONFIRM_PATTERNS`, also read by `terminal_card_action` → `dedup_confirmed=True`) makes the choice answerable on the next turn. On proceed (no match, or explicit confirmation, or a dedup-failure caveat — the case is runbook-worthy and only the duplicate check is uncertain), the conversion runs as a **fire-and-forget background task** (`RunbookCreator._run_runbook_conversion`); the chat reply returns immediately ("Creating your runbook draft… It will appear in the Dashboard under **Knowledge Base > Drafts** once generation finishes. You can also create and edit runbooks there directly").
 
 **Reachability rule.** Every action or place a message names must be reachable by its reader at the moment they read it. This is the rule the whole runbook flow's copy is written against, and it is enforced by a property test over both the turn responses and the notifications (`test_runbook_completion_and_summary_failure.py`): any affordance label appearing in a turn's text must appear in that same turn's `suggested_follow_ups`.
 

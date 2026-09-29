@@ -191,7 +191,7 @@ Single token: `1`, `2`, ..., `N`, or `none`.
 
 A resolver match is an **inference** from typed text, not a deterministic click — but the engine treats adopted intents as click-equivalent consent and consults them *before* its INV-26 bare-token guards. Unguarded, the classifier could match `"yes but what about the replication lag?"` to "Yes, mark as resolved" and irreversibly resolve the case — consuming substantive input as consent, exactly what INV-26 forbids.
 
-So the adoption site (`intent_gates._minted_intent_swallows_gate_consent`) rejects a minted intent when it **would commit a gate** and the message is **substantive** per `terminal_transitions.is_substantive_reply` — the same predicate `_user_confirms_transition` uses (>100 chars, contains `?`, or a contrastive `" but "`), so the confirm lanes cannot drift.
+So the adoption site (`intent_gates._minted_intent_swallows_gate_consent`) rejects a minted intent when it **would commit a gate** and the message is **substantive** per `terminal_transitions.is_substantive_reply` — the same predicate `confirmation_token_class` uses (>100 chars, contains `?`, or a contrastive `" but "`), so the confirm lanes cannot drift.
 
 There are two gates, and #721 guarded only the first:
 

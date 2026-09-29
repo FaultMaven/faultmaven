@@ -1,4 +1,4 @@
-"""Per-turn message-row bookkeeping: appending the user's turn and the agent's reply to the case, and the completion side effects (save + #1142 telemetry emission) that go with the agent one."""
+"""Per-turn message-row bookkeeping: appending the user's turn and the agent's reply to the case, and the completion side effects (save + #1142 telemetry emission + the #1748 terminal-confirmation counters) that go with the agent one."""
 
 import logging
 from typing import Optional
@@ -7,6 +7,13 @@ from faultmaven.core.investigation.case_telemetry import (
     TurnPath,
     collect_progress_arms,
     emit_case_turn,
+)
+from faultmaven.core.investigation.lifecycle_metrics import (
+    terminal_confirmation_total,
+    terminal_followup_total,
+)
+from faultmaven.core.investigation.milestone_engine.terminal_turns import (
+    terminal_card_action,
 )
 from faultmaven.models.api_models import IntentType
 from faultmaven.modules.agent.domain.services.orientation import OrientationKind
@@ -102,6 +109,7 @@ async def _save_and_emit_turn(
     *,
     agent_response_text,
     attachment_metadata,
+    intent,
     intent_type,
     oob_kind,
     payload,
@@ -126,6 +134,14 @@ async def _save_and_emit_turn(
     agent_response_text = agent_message["content"]
     updated_case.message_count += 1
     await repository.save(updated_case)
+
+    # #1748: the terminal-confirmation pair, counted HERE — after the save, at
+    # the one point every route passes through — so a turn that fails or
+    # conflicts and is retried counts once, and a route that never reaches the
+    # engine (GREETING) counts like any other.
+    _count_terminal_confirmation(
+        updated_case, intent=intent, user_message=payload.query or ""
+    )
 
     # 4b. #1142: one row per consumed turn, on every route. Emitted
     # AFTER the save so the counter, the case state and both ledgers are
@@ -182,3 +198,67 @@ async def _save_and_emit_turn(
         attachment_count=len(attachment_metadata or []),
     )
     return agent_response_text
+
+
+def _count_terminal_confirmation(updated_case, *, intent, user_message) -> None:
+    """Count a confirmed terminal transition, and the turn after it (#1748).
+
+    Read from the SAVED turn records. By this point ``turn_history[-1]`` is this
+    turn's own record on every route — the engine writes it on the routes that
+    reach its bookkeeping and ``_backfill_consumed_turn`` writes it on the rest
+    (greeting, file reclassification, out-of-band, the terminal short-circuit) —
+    and ``terminal_confirmed_via`` is set only on the record of a turn whose
+    confirmation EXECUTED a terminal transition. Terminal states have no
+    outgoing transition, so a record carrying a channel also says the case is
+    terminal now, and — one record back — that this turn began terminal. No
+    separate state check is needed for either count:
+
+    * this turn confirmed one when its own record carries a channel;
+    * this turn is the one immediately after a confirmation when the PREVIOUS
+      record carries a channel. Every later turn finds a predecessor that
+      carries none, so it needs no flag.
+
+    The follow-up counts only a message the user typed: non-blank text (an
+    empty turn — a bare Slack mention — is an orientation request, not a
+    follow-up); no effective ``intent`` (the one ``_build_user_message`` settled
+    on, so a client-sent GREETING it re-derives from the text counts as typed);
+    and not the payload of one of the ack turn's own cards (runbook,
+    regenerate), which carry no intent and arrive as their text — recognised by
+    ``terminal_card_action`` with the case's state, exactly as the terminal
+    handler dispatches on it. A click in that turn means this confirmation gets
+    no follow-up count at all.
+
+    Nor is a RESUBMISSION a follow-up: text equal, stripped and lowercased, to
+    the confirming turn's own message (its record's ``user_message_summary``)
+    is a double submit or a retry of the confirmation, and carries nothing new
+    about whether the close held.
+
+    A metric must never fail a turn: the turn is already saved, and a
+    registry failure here is logged and dropped.
+    """
+    try:
+        history = updated_case.turn_history
+        to_state = updated_case.state.value
+        if history and history[-1].terminal_confirmed_via:
+            terminal_confirmation_total.labels(
+                via=history[-1].terminal_confirmed_via, to_state=to_state
+            ).inc()
+        if (
+            len(history) >= 2
+            and history[-2].terminal_confirmed_via
+            and user_message.strip()
+            and intent is None
+            and terminal_card_action(user_message, updated_case.state) is None
+            # A resubmitted confirmation carries nothing new.
+            and user_message.strip().lower()
+            != (history[-2].user_message_summary or "").strip().lower()
+        ):
+            terminal_followup_total.labels(
+                via=history[-2].terminal_confirmed_via, to_state=to_state
+            ).inc()
+    except Exception:
+        logger.warning(
+            "Terminal-confirmation telemetry failed for case %s",
+            getattr(updated_case, "case_id", None),
+            exc_info=True,
+        )

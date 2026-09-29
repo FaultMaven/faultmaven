@@ -1,8 +1,11 @@
+import logging
 from datetime import datetime, timezone
 from enum import Enum
-from typing import List, Optional
+from typing import Any, List, Literal, Optional, get_args
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+logger = logging.getLogger(__name__)
 
 # ============================================================
 # Turn Tracking Models (Section 8)
@@ -124,6 +127,28 @@ class InvestigationMomentum(str, Enum):
 #: an aside answered outside the investigation is not diagnostic effort.
 NON_INVESTIGATIVE_OUTCOMES = frozenset({"conversation", "other", "out_of_band"})
 
+#: How a user confirmed the terminal transition a turn executed (#1748): a
+#: clicked intent (a DECIDE card, or the dropdown pick repeated); typed text
+#: opening with an explicit token, bare ("yes", "go ahead!") or saying more
+#: ("yes, don't close it yet"); typed text opening with a weak token, bare
+#: ("ok", "lgtm 👍") or saying more ("ok go ahead"); or typed text the intent
+#: resolver accepted that is no known token ("that works"). The prefixed labels
+#: are left unclassified. The ONE copy of the label set: ``TurnProgress``
+#: stores it and the terminal-confirmation counters are labelled by it.
+TerminalConfirmedVia = Literal[
+    "intent",
+    "explicit_token",
+    "explicit_prefixed",
+    "weak_token",
+    "weak_prefixed",
+    "typed_other",
+]
+
+#: Unknown channel values already warned about in this process (#1748): a stale
+#: record is re-read on every load of its case, and one WARNING per distinct
+#: value says everything a repeat would.
+_WARNED_UNKNOWN_CHANNELS: set[str] = set()
+
 
 class TurnProgress(BaseModel):
     """
@@ -175,6 +200,16 @@ class TurnProgress(BaseModel):
     # ============================================================
     # User Interaction
     # ============================================================
+    terminal_confirmed_via: Optional[TerminalConfirmedVia] = Field(
+        default=None,
+        description=(
+            "How the user confirmed the terminal transition this turn executed "
+            "(clicked intent; typed text opening with an explicit or a weak "
+            "token, bare or with more text; or other typed text the resolver "
+            "accepted). None on every turn that executed no terminal transition."
+        ),
+    )
+
     user_message_summary: Optional[str] = Field(
         default=None, description="Summary of user message", max_length=500
     )
@@ -252,6 +287,33 @@ class TurnProgress(BaseModel):
             "pruned (fm#1502)"
         ),
     )
+
+    @field_validator("terminal_confirmed_via", mode="before")
+    @classmethod
+    def _unknown_channel_is_none(cls, v: Any) -> Any:
+        """Read a channel outside the label set as None — this runs on LOAD.
+
+        Both repositories rebuild every record with ``TurnProgress(**t)`` inside
+        the case loader, so a ``Literal`` rejection here would not drop one
+        label: it would make the whole CASE unloadable, over a telemetry field.
+        A value the label set no longer names (a renamed or retired channel)
+        is a record of a confirmation nobody can count any more; None says
+        exactly that.
+
+        Never silently: it runs on construction too, so a producer writing a
+        value the set does not name would otherwise mute that channel with
+        nothing to show for it. The WARNING carries the value, once per
+        distinct value per process — a stale record is re-read on every load.
+        """
+        if v is None or v in get_args(TerminalConfirmedVia):
+            return v
+        if repr(v) not in _WARNED_UNKNOWN_CHANNELS:
+            _WARNED_UNKNOWN_CHANNELS.add(repr(v))
+            logger.warning(
+                "terminal_confirmed_via %r is not a known channel; recorded as None",
+                v,
+            )
+        return None
 
     # ============================================================
     # Computed Properties

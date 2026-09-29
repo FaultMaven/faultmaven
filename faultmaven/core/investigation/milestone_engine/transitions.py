@@ -4,8 +4,8 @@ import logging
 from typing import Any
 
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
-    _user_confirms_transition,
     _user_declines_transition,
+    confirmation_token_class,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -275,7 +275,7 @@ class TransitionManager:
                 )
 
                 # Use the user_message parameter directly, not from metadata
-                if _user_confirms_transition(user_message):
+                if confirmation_token_class(user_message) is not None:
                     # Gap #6: Checkpoint before terminal transition
                     if self.deps.checkpoint_service:
                         to_state = case.pending_transition.get("to_state", "unknown")

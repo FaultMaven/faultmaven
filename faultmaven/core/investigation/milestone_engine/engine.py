@@ -31,8 +31,8 @@ from faultmaven.core.investigation.milestone_engine.terminal_turns import (
     TerminalTurnHandler,
 )
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
-    _user_confirms_transition,
     _user_declines_transition,
+    confirmation_token_class,
 )
 from faultmaven.core.investigation.milestone_engine.transition_turns import (
     _close_on_explicit_intent,
@@ -73,6 +73,7 @@ from faultmaven.modules.agent.tools.vectorize_file_tool import VECTORIZED_SYSTEM
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
+    TerminalConfirmedVia,
     TurnOutcome,
 )
 from faultmaven.modules.case.domain.services.case_action_manager import (
@@ -299,6 +300,7 @@ class MilestoneEngine:
         intent_type: str | None = None,
         intent_data: dict[str, Any] | None = None,
         user_id: str | None = None,
+        typed: bool = False,
     ) -> dict[str, Any]:
         """
         Process a single conversation turn with optional structured intent.
@@ -321,6 +323,13 @@ class MilestoneEngine:
                 allowlist handed to the agent's tools (owner + team arms,
                 ADR-013 §D4). ``None`` means no principal — an engine-internal
                 turn — and collapses the allowlist to the global corpus.
+            typed: True when the service MINTED ``intent_type`` from typed text
+                (the intent resolver) rather than receiving it from a click. It
+                names how a terminal transition was confirmed (#1748): a typed
+                "ok" the resolver turned into a confirmation is not a click. A
+                keyword of its own, not an ``intent_data`` key: that dict is
+                filled from the client's intent payload, and server facts never
+                ride in it (the same reason ``user_id`` is kept out).
 
         Returns:
             {
@@ -375,6 +384,7 @@ class MilestoneEngine:
                     intent_type,
                     intent_data,
                     user_id=user_id,
+                    typed=typed,
                 )
             finally:
                 active_token_tracker.reset(token)
@@ -438,6 +448,7 @@ class MilestoneEngine:
         intent_type: str | None = None,
         intent_data: dict[str, Any] | None = None,
         user_id: str | None = None,
+        typed: bool = False,
     ) -> dict[str, Any]:
         """Inner implementation of process_turn, called under per-case lock."""
         # Refused FIRST, before any state is touched. INVESTIGATING is not a
@@ -618,14 +629,25 @@ class MilestoneEngine:
                         intent_type == "confirmation"
                         and (intent_data or {}).get("value") is False
                     )
-                    user_confirms = intent_confirms or _user_confirms_transition(
-                        user_message
-                    )
+                    # The typed matcher, read once: its verdict is whether
+                    # the text confirms, its class names how (#1748).
+                    token_class = confirmation_token_class(user_message)
+                    user_confirms = intent_confirms or token_class is not None
                     user_declines = intent_declines or _user_declines_transition(
                         user_message
                     )
 
                     if user_confirms:
+                        # How the user confirmed, for the turn record (#1748). A
+                        # click is ``intent``. An intent the service minted from
+                        # typed text (``typed``) is NOT a click: it is named by
+                        # its tokens, and ``typed_other`` when the resolver
+                        # accepted text that is no known token ("that works").
+                        confirmed_via: TerminalConfirmedVia
+                        if intent_confirms and not typed:
+                            confirmed_via = "intent"
+                        else:
+                            confirmed_via = token_class or "typed_other"
                         return await _confirm_pending_transition(
                             self.deps.checkpoint_service,
                             self.deps.report_service,
@@ -634,6 +656,7 @@ class MilestoneEngine:
                             case=case,
                             upload_report=upload_report,
                             user_message=user_message,
+                            confirmed_via=confirmed_via,
                         )
                     elif user_declines:
                         # Record the refusal BEFORE cancelling: the cancel is
@@ -740,7 +763,7 @@ class MilestoneEngine:
             # fallback (below)" with a 2026-02-08 fix for "close as
             # unresolved" matching resolution patterns. There is no such
             # fallback below, and there is no natural-language transition
-            # detector anywhere: ``_user_confirms_transition`` /
+            # detector anywhere: ``confirmation_token_class`` /
             # ``_user_declines_transition`` only answer a STANDING pending, and
             # ``IntentResolver`` matches typed text against suggestions already
             # on screen. A typed "mark this resolved" with nothing standing

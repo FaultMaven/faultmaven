@@ -1,6 +1,7 @@
 """Handling a terminal (RESOLVED/CLOSED) turn: report regeneration and the terminal Q&A path. Runbook creation is a sibling collaborator (runbook_creation.py)."""
 
 import logging
+from enum import Enum
 from typing import Any, Optional
 
 from faultmaven.core.investigation.milestone_engine.redaction import _should_redact
@@ -33,31 +34,67 @@ from .terminal_replies import (
 logger = logging.getLogger(__name__)
 
 
+# Only the precomposed payloads submitted by the DECIDE regen
+# suggestions reach this set. Free-typed summary-shaped requests
+# (e.g. "give me a recap", "summarize what we discussed") fall through
+# to terminal Q&A on purpose: typing should never produce a persisted
+# Report side effect. The Q&A prompt is instructed to redirect those
+# asks to the existing summary + regen affordance.
+_REPORT_REGEN_PATTERNS = (
+    "regenerate the closure summary report for this case",
+    "regenerate the resolution summary report for this case",
+)
+# Same exact-match policy as _REPORT_REGEN_PATTERNS: only the
+# precomposed DECIDE-suggestion payload reaches the runbook
+# creation path. Free-typed paraphrases ("create a runbook please")
+# fall through to Q&A. This keeps the principle consistent across
+# terminal-state actions: clicking triggers persisted side effects;
+# typing never does.
+_RUNBOOK_CREATION_PATTERNS = (GENERATE_RUNBOOK_PAYLOAD.lower(),)
+# The explicit "generate anyway" confirmation offered on the
+# SIMILAR_FOUND stop turn. Dispatched separately so the handler knows
+# the user has already seen the similar-runbook candidate and chosen —
+# the similar-match stop is waived, nothing else is.
+_RUNBOOK_CONFIRM_PATTERNS = (GENERATE_RUNBOOK_ANYWAY_PAYLOAD.lower(),)
+
+
+class TerminalCardAction(str, Enum):
+    """Which terminal-case DECIDE card a message is the payload of."""
+
+    REGENERATE_REPORT = "regenerate_report"
+    CREATE_RUNBOOK = "create_runbook"
+    CONFIRM_RUNBOOK = "confirm_runbook"
+
+
+def terminal_card_action(
+    user_message: str, case_state: CaseState
+) -> Optional[TerminalCardAction]:
+    """The terminal card ``user_message`` acts as on a case in ``case_state``, or None.
+
+    The ONE recogniser for these cards. They carry no ``intent``, so a click
+    arrives as its payload text, and exact match is the only thing that tells
+    a click from typing (INV-12). ``TerminalTurnHandler`` dispatches on it, and
+    the terminal-confirmation follow-up counter excludes what it recognises
+    (#1748) — so the two can never disagree about what a card click is.
+
+    The runbook cards act only on a RESOLVED case: runbooks codify a confirmed
+    root-cause-to-solution chain. On any other state their text is typed text
+    and goes to Q&A, so it is recognised as nothing here.
+    """
+    msg_lower = user_message.lower().strip().rstrip(".!? ")
+    if msg_lower in _REPORT_REGEN_PATTERNS:
+        return TerminalCardAction.REGENERATE_REPORT
+    if case_state != CaseState.RESOLVED:
+        return None
+    if msg_lower in _RUNBOOK_CREATION_PATTERNS:
+        return TerminalCardAction.CREATE_RUNBOOK
+    if msg_lower in _RUNBOOK_CONFIRM_PATTERNS:
+        return TerminalCardAction.CONFIRM_RUNBOOK
+    return None
+
+
 class TerminalTurnHandler:
     """Drives a terminal-state turn: regenerating the case report on request, and answering terminal Q&A without reopening the investigation."""
-
-    # Only the precomposed payloads submitted by the DECIDE regen
-    # suggestions reach this set. Free-typed summary-shaped requests
-    # (e.g. "give me a recap", "summarize what we discussed") fall through
-    # to terminal Q&A on purpose: typing should never produce a persisted
-    # Report side effect. The Q&A prompt is instructed to redirect those
-    # asks to the existing summary + regen affordance.
-    _REPORT_REGEN_PATTERNS = (
-        "regenerate the closure summary report for this case",
-        "regenerate the resolution summary report for this case",
-    )
-    # Same exact-match policy as _REPORT_REGEN_PATTERNS: only the
-    # precomposed DECIDE-suggestion payload reaches the runbook
-    # creation path. Free-typed paraphrases ("create a runbook please")
-    # fall through to Q&A. This keeps the principle consistent across
-    # terminal-state actions: clicking triggers persisted side effects;
-    # typing never does.
-    _RUNBOOK_CREATION_PATTERNS = (GENERATE_RUNBOOK_PAYLOAD.lower(),)
-    # The explicit "generate anyway" confirmation offered on the
-    # SIMILAR_FOUND stop turn. Dispatched separately so the handler knows
-    # the user has already seen the similar-runbook candidate and chosen —
-    # the similar-match stop is waived, nothing else is.
-    _RUNBOOK_CONFIRM_PATTERNS = (GENERATE_RUNBOOK_ANYWAY_PAYLOAD.lower(),)
 
     def __init__(self, *, deps, generator, runbooks) -> None:
         self.deps = deps
@@ -164,24 +201,24 @@ class TerminalTurnHandler:
              troubleshooting scenarios (root cause + verified solution).
           3. User asks questions about the case → answer via TERMINAL_TEMPLATE.
         """
-        msg_lower = user_message.lower().strip().rstrip(".!? ")
+        card = terminal_card_action(user_message, case.state)
 
         # Scenario 1: Report regeneration. Strict exact-match against the
         # DECIDE suggestion payloads — free-typed paraphrases fall
         # through to Q&A so typing can never produce a persisted Report
         # side effect.
-        if msg_lower in self._REPORT_REGEN_PATTERNS:
+        if card is TerminalCardAction.REGENERATE_REPORT:
             return await self._handle_report_regeneration(case, metadata)
 
         # Scenario 2: Runbook creation. Strict exact-match (same policy
         # as regen): only the DECIDE suggestion's precomposed
         # payload triggers persisted runbook generation; paraphrases
-        # fall through to Q&A. RESOLVED-only — runbooks codify a
-        # confirmed root-cause-to-solution chain.
-        is_runbook_eligible = case.state == CaseState.RESOLVED
-        if is_runbook_eligible and msg_lower in self._RUNBOOK_CREATION_PATTERNS:
+        # fall through to Q&A. RESOLVED-only, decided inside
+        # ``terminal_card_action`` — runbooks codify a confirmed
+        # root-cause-to-solution chain.
+        if card is TerminalCardAction.CREATE_RUNBOOK:
             return await self.runbooks.handle_runbook_creation(case, metadata)
-        if is_runbook_eligible and msg_lower in self._RUNBOOK_CONFIRM_PATTERNS:
+        if card is TerminalCardAction.CONFIRM_RUNBOOK:
             return await self.runbooks.handle_runbook_creation(
                 case, metadata, dedup_confirmed=True
             )

@@ -475,6 +475,9 @@ class InvestigationService:
                 self.repository,
                 agent_response_text=agent_response_text,
                 attachment_metadata=attachment_metadata,
+                # The intent ``_build_user_message`` settled on — the client's,
+                # minus a GREETING it re-derives from the text — not a mint.
+                intent=intent,
                 intent_type=intent_type,
                 oob_kind=oob_kind,
                 payload=payload,
@@ -667,6 +670,12 @@ class InvestigationService:
         # recomputed there; see the lane's own note.
         gate_reply_refused = False
 
+        # Set when the intent below was MINTED from typed text rather than sent
+        # by a click. The engine names how a terminal transition was confirmed
+        # (#1748), and a typed "ok" the resolver turned into a confirmation is
+        # still a typed "ok", not a click.
+        intent_minted = False
+
         if (
             intent_type == IntentType.CONVERSATION
             and query
@@ -709,6 +718,7 @@ class InvestigationService:
                     else:
                         intent = resolved_qi
                         intent_type = resolved_qi.type
+                        intent_minted = True
                         logger.info(
                             f"Intent resolved from suggestions: {intent_type.value} "
                             f"for message: '{query[:50]}...'"
@@ -845,6 +855,7 @@ class InvestigationService:
                     ),
                     user_id=user_id,
                     attachments=attachment_metadata or None,
+                    typed=intent_minted,
                 )
             elif intent_type == IntentType.CONFIRMATION:
                 result = await self._handle_confirmation(
@@ -853,6 +864,7 @@ class InvestigationService:
                     confirmation_value=(intent.confirmation_value if intent else None),
                     user_id=user_id,
                     attachments=attachment_metadata or None,
+                    typed=intent_minted,
                 )
             elif intent_type == IntentType.HYPOTHESIS_ACTION:
                 result = await self._handle_hypothesis_action(
@@ -993,6 +1005,7 @@ class InvestigationService:
         user_confirmed: bool,
         user_id: Optional[str] = None,
         attachments: Optional[List[Dict[str, Any]]] = None,
+        typed: bool = False,
     ) -> Dict[str, Any]:
         """Handle status transition intent with validation.
 
@@ -1009,6 +1022,11 @@ class InvestigationService:
                 ``_preprocess_attachment`` had already committed a row for every
                 attachment, so an upload riding a dropdown/chip intent was
                 invisible to the engine (#1229).
+            typed: True when the intent was minted from typed text by the
+                intent resolver, not sent by a click. Passed to the engine as
+                its own ``typed`` keyword, which names how a terminal transition
+                was confirmed (#1748) — never inside ``intent_data``, which the
+                client's intent payload fills.
 
         Returns:
             Result dict with agent response and updated case
@@ -1064,6 +1082,7 @@ class InvestigationService:
                 "user_confirmed": user_confirmed,
             },
             user_id=user_id,
+            typed=typed,
         )
 
         return result
@@ -1075,6 +1094,7 @@ class InvestigationService:
         confirmation_value: Optional[bool],
         user_id: Optional[str] = None,
         attachments: Optional[List[Dict[str, Any]]] = None,
+        typed: bool = False,
     ) -> Dict[str, Any]:
         """Handle yes/no confirmation intent.
 
@@ -1086,6 +1106,8 @@ class InvestigationService:
                 KB read allowlist)
             attachments: The turn's engine attachment metadata (see
                 ``_handle_status_transition``; #1229).
+            typed: The intent was minted from typed text, not clicked (see
+                ``_handle_status_transition``; #1748).
 
         Returns:
             Result dict with agent response and updated case
@@ -1101,6 +1123,7 @@ class InvestigationService:
             intent_type="confirmation",
             intent_data={"value": confirmation_value},
             user_id=user_id,
+            typed=typed,
         )
 
         return result

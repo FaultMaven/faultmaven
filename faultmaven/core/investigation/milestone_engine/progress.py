@@ -10,6 +10,7 @@ from typing import (
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
+    TerminalConfirmedVia,
     TurnOutcome,
     TurnProgress,
 )
@@ -94,7 +95,9 @@ def check_if_progress_made(metadata: dict[str, Any]) -> bool:
     return False
 
 
-def confirmed_transition_arms(case: "Case", executed: bool) -> dict[str, Any]:
+def confirmed_transition_arms(
+    case: "Case", executed: bool, confirmed_via: TerminalConfirmedVia
+) -> dict[str, Any]:
     """Arms for a deterministic branch that just confirmed a terminal proposal.
 
     TWO branches used to confirm a standing terminal proposal without an LLM
@@ -120,12 +123,16 @@ def confirmed_transition_arms(case: "Case", executed: bool) -> dict[str, Any]:
         * ``solution_verified`` is claimed only for a RESOLVED landing. It is a
           resolution milestone, so asserting it on a CLOSED confirmation — which
           0b also serves — would manufacture a gate completion the case never had.
+        * ``terminal_confirmed_via`` is ``confirmed_via`` only when ``executed``: the
+          turn record names how the user confirmed only for a transition that
+          committed, so the first later message can be counted against it (#1748).
     """
     transitioned = bool(executed)
     resolved = transitioned and case.state == CaseState.RESOLVED
     return {
         "status_transitioned": transitioned,
         "milestones_completed": ["solution_verified"] if resolved else [],
+        "terminal_confirmed_via": confirmed_via if transitioned else None,
     }
 
 
@@ -182,6 +189,7 @@ def record_promptless_turn(
     milestones_completed: Optional[list[str]] = None,
     outcome: TurnOutcome = TurnOutcome.CONVERSATION,
     agent_response_synthesized: bool = False,
+    terminal_confirmed_via: Optional[TerminalConfirmedVia] = None,
 ) -> None:
     """Record the ``TurnProgress`` of a turn that built no prompt (#1688).
 
@@ -232,6 +240,7 @@ def record_promptless_turn(
             user_message_summary=summarize_for_turn_record(user_message, 200),
             agent_response_summary=summarize_for_turn_record(agent_response, 500),
             agent_response_synthesized=agent_response_synthesized,
+            terminal_confirmed_via=terminal_confirmed_via,
             system_feedback=forwarded,
             system_feedback_forwarded=bool(forwarded),
         )

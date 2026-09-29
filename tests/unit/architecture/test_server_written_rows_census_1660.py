@@ -199,6 +199,16 @@ OTHER_READERS: dict[tuple[str, str], tuple[int, str]] = {
         "AnthropicProvider.generate",
     ): (1, _WIRE),
     ("faultmaven/infrastructure/llm/router.py", "LLMRouter.generate"): (1, _WIRE),
+    # #1748: the terminal follow-up counter compares a turn's text with the
+    # confirming turn's own message, to keep a resubmission out of a metric.
+    (
+        "faultmaven/modules/agent/domain/services/investigation_service/turn_messages.py",
+        "_count_terminal_confirmation",
+    ): (
+        1,
+        "a metric screen: equality with the confirming turn's own message "
+        "marks a resubmission, which is not counted; nothing reaches a model",
+    ),
 }
 
 

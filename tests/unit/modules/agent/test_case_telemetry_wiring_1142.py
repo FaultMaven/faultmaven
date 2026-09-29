@@ -91,6 +91,7 @@ def engine():
         intent_type: Optional[str] = None,
         intent_data: Optional[dict[str, Any]] = None,
         user_id: Optional[str] = None,
+        typed: bool = False,
     ) -> dict[str, Any]:
         case.updated_at = datetime.now(timezone.utc)
         return {

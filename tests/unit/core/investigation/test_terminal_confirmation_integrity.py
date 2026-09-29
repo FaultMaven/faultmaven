@@ -22,7 +22,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
-    _user_confirms_transition,
+    confirmation_token_class,
 )
 from faultmaven.core.investigation.terminal_transitions import (
     BARE_CONSENT_MAX_LENGTH,
@@ -120,7 +120,7 @@ class TestIsSubstantiveReply:
         assert is_substantive_reply(None) is False
 
     def test_parity_with_typed_confirmation_matcher(self):
-        """The typed-pattern lane (_user_confirms_transition) and the
+        """The typed-pattern lane (confirmation_token_class) and the
         minted-intent lane must reject the same substantive message —
         the predicate is shared precisely so they cannot drift."""
         from faultmaven.core.investigation.milestone_engine.engine import (
@@ -132,7 +132,7 @@ class TestIsSubstantiveReply:
         )
         msg = "yes but what about the replication lag?"
         assert is_substantive_reply(msg) is True
-        assert _user_confirms_transition(msg) is False
+        assert confirmation_token_class(msg) is None
 
 
 # =============================================================================

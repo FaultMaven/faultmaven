@@ -142,6 +142,7 @@ class MockMilestoneEngine:
         intent_type: Optional[str] = None,
         intent_data: Optional[dict[str, Any]] = None,
         user_id: Optional[str] = None,
+        typed: bool = False,
     ) -> dict[str, Any]:
         """Mock turn processing.
 
