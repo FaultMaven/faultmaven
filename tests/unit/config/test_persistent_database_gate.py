@@ -11,6 +11,7 @@ runner tests), because a direct call proves nothing about placement.
 
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -21,7 +22,10 @@ from faultmaven.config.persistent_database import (
     require_persistent_database,
     require_persistent_database_url,
 )
-from faultmaven.config.settings import persistent_database_configured
+from faultmaven.config.settings import (
+    configured_database_url,
+    persistent_database_configured,
+)
 
 
 def _settings(url):
@@ -99,6 +103,41 @@ def test_the_bare_url_form_refuses_every_non_persistent_url_with_the_same_messag
 @pytest.mark.parametrize("url", PERSISTENT)
 def test_the_bare_url_form_accepts_every_persistent_url(url):
     require_persistent_database_url(url)  # does not raise
+
+
+@pytest.fixture
+def no_database_url(monkeypatch):
+    """Remove every spelling of DATABASE_URL: the settings bind it in any case,
+    and the xdist worker sets one."""
+    for name in [n for n in os.environ if n.upper() == "DATABASE_URL"]:
+        monkeypatch.delenv(name)
+
+
+@pytest.mark.unit
+def test_configured_database_url_is_none_when_nothing_sets_it(no_database_url):
+    """Unset means the field default applies: the persistent SQLite file."""
+    assert configured_database_url() is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "name, value",
+    [
+        ("DATABASE_URL", "sqlite+aiosqlite:////srv/fm.db"),
+        ("database_url", "sqlite+aiosqlite:////srv/fm.db"),
+        ("Database_Url", "sqlite+aiosqlite:///:memory:"),
+        ("DATABASE_URL", ""),
+    ],
+    ids=["uppercase", "lowercase", "mixed-case", "set-but-empty"],
+)
+def test_configured_database_url_reads_every_spelling_the_settings_bind(
+    no_database_url, monkeypatch, name, value
+):
+    """The one reader for callers that judge the URL without the full settings
+    (the JWT-secret skip, ``alembic/env.py``). An exact-name read missed the
+    lowercase spelling the gate refuses (#1703, #1704)."""
+    monkeypatch.setenv(name, value)
+    assert configured_database_url() == value
 
 
 @pytest.mark.unit

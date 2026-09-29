@@ -53,6 +53,12 @@ Run Alembic from the repository root, where `alembic.ini` lives.
 Use the same URL the app uses; `alembic/env.py` swaps the async driver for a
 sync one itself, so one `DATABASE_URL` serves both the app and Alembic.
 
+`alembic/env.py` reads the variable as the app's settings do, in any case. Unset,
+it migrates `data/faultmaven.db` under the project root. Set to an empty or
+non-persistent value (`:memory:`, an in-memory SQLite URL, a value that does not
+parse), `alembic upgrade head` refuses with the app's message and exits 1
+(#1704), rather than migrating a database that vanishes with the process.
+
 ```bash
 # Standalone default (the same file the app opens when run from the repo root)
 mkdir -p data    # SQLite creates the file, not its directory

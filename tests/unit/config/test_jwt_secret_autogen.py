@@ -7,9 +7,11 @@ non-fatal on write failure — and that the field itself does NO per-constructio
 I/O (the generation lives in get_settings(), not a default_factory).
 
 They also pin that a process whose DATABASE_URL configures no persistent
-database persists nothing (#1703): every persistent-database gate reads the URL
+database creates nothing (#1703): every persistent-database gate reads the URL
 through get_settings(), which calls this first, so a refused boot or ``fm-*``
-command used to leave ``data/.jwt_secret`` behind.
+command used to leave ``data/.jwt_secret`` behind. And that each of the
+function's three decisions is read the way the settings read it — in any case,
+validated — never from ``os.environ`` by exact name.
 """
 
 import os
@@ -18,11 +20,23 @@ import pytest
 
 from faultmaven.config import settings as S
 
+#: Every name the function's decisions depend on. pydantic-settings binds them
+#: case-insensitively, so ANY spelling in the ambient environment (a CI job's
+#: ``DATABASE_URL``, the xdist worker's per-worker file URL) would steer a test.
+_ISOLATED_NAMES = {"DATABASE_URL", "JWT_SECRET_KEY", "AUTH_MODE", "JWT_SECRET_FILE"}
 
-def _unset_jwt_secret_key(monkeypatch) -> None:
-    """Unset JWT_SECRET_KEY so that the value the function exports is removed
-    again at teardown. A bare ``delenv(..., raising=False)`` records nothing when
-    the key is already absent, so the export would leak into later tests."""
+
+@pytest.fixture(autouse=True)
+def isolated_env(monkeypatch):
+    """Remove every spelling of the isolated names, for every test in this file.
+
+    Then record ``JWT_SECRET_KEY`` as absent, so the value the function exports
+    is removed again at teardown: a bare ``delenv(..., raising=False)`` records
+    nothing when the key is already absent, and the export would leak into
+    later tests.
+    """
+    for name in [n for n in os.environ if n.upper() in _ISOLATED_NAMES]:
+        monkeypatch.delenv(name)
     monkeypatch.setenv("JWT_SECRET_KEY", "restored-at-teardown")
     monkeypatch.delenv("JWT_SECRET_KEY")
 
@@ -31,8 +45,6 @@ def _unset_jwt_secret_key(monkeypatch) -> None:
 def clean_jwt_env(monkeypatch, tmp_path):
     """Local mode, no JWT_SECRET_KEY, secret file pointed at a temp path, and
     DATABASE_URL unset: the shipped persistent default, the arm that persists."""
-    _unset_jwt_secret_key(monkeypatch)
-    monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("AUTH_MODE", "local")
     secret_file = tmp_path / ".jwt_secret"
     monkeypatch.setenv("JWT_SECRET_FILE", str(secret_file))
@@ -85,7 +97,6 @@ def test_oauth_mode_is_a_noop(clean_jwt_env, monkeypatch):
 
 def test_write_failure_is_nonfatal(monkeypatch, tmp_path):
     """A filesystem error must log+return, not raise (auth then errors clearly)."""
-    monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
     monkeypatch.setenv("AUTH_MODE", "local")
     # Parent path is a regular file, so mkdir(parents=True) raises OSError.
     blocker = tmp_path / "iam_a_file"
@@ -106,11 +117,13 @@ def test_write_failure_is_nonfatal(monkeypatch, tmp_path):
 def local_mode_in_empty_cwd(monkeypatch, tmp_path):
     """Local mode, no JWT_SECRET_KEY, the SHIPPED secret path (``data/.jwt_secret``
     under the cwd), and the cwd an empty directory, so any write shows up."""
-    _unset_jwt_secret_key(monkeypatch)
-    monkeypatch.delenv("JWT_SECRET_FILE", raising=False)
     monkeypatch.setenv("AUTH_MODE", "local")
     monkeypatch.chdir(tmp_path)
     return tmp_path
+
+
+def _written(root) -> list[str]:
+    return sorted(str(p.relative_to(root)) for p in root.rglob("*"))
 
 
 @pytest.mark.unit
@@ -132,10 +145,42 @@ def test_a_non_persistent_database_url_exports_a_secret_and_writes_nothing(
     S.ensure_local_jwt_secret_env()
 
     assert os.environ.get("JWT_SECRET_KEY"), "local auth was left with no secret"
-    assert list(local_mode_in_empty_cwd.iterdir()) == [], (
+    assert _written(local_mode_in_empty_cwd) == [], (
         "a process with no persistent database wrote a durable secret: "
-        f"{sorted(p.name for p in local_mode_in_empty_cwd.iterdir())}"
+        f"{_written(local_mode_in_empty_cwd)}"
     )
+
+
+@pytest.mark.unit
+def test_a_lowercase_non_persistent_database_url_writes_nothing(
+    local_mode_in_empty_cwd, monkeypatch
+):
+    """pydantic-settings binds ``database_url`` to the field, so the gate refuses
+    it; the skip must see the same spelling, or the refused run writes."""
+    monkeypatch.setenv("database_url", "sqlite+aiosqlite:///:memory:")
+
+    S.ensure_local_jwt_secret_env()
+
+    assert os.environ.get("JWT_SECRET_KEY")
+    assert _written(local_mode_in_empty_cwd) == []
+
+
+@pytest.mark.unit
+def test_an_existing_secret_file_is_read_not_replaced_on_a_non_persistent_database(
+    local_mode_in_empty_cwd, monkeypatch
+):
+    """Creating nothing is the rule, not reading nothing: a secret already on
+    disk is still the one this install signs with."""
+    secret_file = local_mode_in_empty_cwd / "data" / ".jwt_secret"
+    secret_file.parent.mkdir()
+    secret_file.write_text("existing-secret\n", encoding="utf-8")
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+
+    S.ensure_local_jwt_secret_env()
+
+    assert os.environ["JWT_SECRET_KEY"] == "existing-secret"
+    assert secret_file.read_text(encoding="utf-8") == "existing-secret\n"
+    assert _written(local_mode_in_empty_cwd) == ["data", "data/.jwt_secret"]
 
 
 @pytest.mark.unit
@@ -149,9 +194,7 @@ def test_a_persistent_database_persists_the_secret_at_0600(
 ):
     """Unset DATABASE_URL is the shipped file default, a persistent database, so
     a real standalone install still keeps one secret across restarts."""
-    if database_url is None:
-        monkeypatch.delenv("DATABASE_URL", raising=False)
-    else:
+    if database_url is not None:
         monkeypatch.setenv("DATABASE_URL", database_url)
 
     S.ensure_local_jwt_secret_env()
@@ -172,4 +215,43 @@ def test_an_explicit_secret_still_wins_on_a_non_persistent_database(
     S.ensure_local_jwt_secret_env()
 
     assert os.environ["JWT_SECRET_KEY"] == "user-provided-secret"
-    assert list(local_mode_in_empty_cwd.iterdir()) == []
+    assert _written(local_mode_in_empty_cwd) == []
+
+
+# ---------------------------------------------------------------------------
+# Each decision is read as the settings read it (#1703 review)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_a_lowercase_jwt_secret_key_is_honoured_not_shadowed(
+    local_mode_in_empty_cwd, monkeypatch
+):
+    """The settings bind ``jwt_secret_key``. An exact-name read missed it,
+    generated and persisted a secret, and exported ``JWT_SECRET_KEY``, which
+    then shadowed the operator's value."""
+    monkeypatch.setenv("jwt_secret_key", "operator-set-secret")
+
+    S.ensure_local_jwt_secret_env()
+
+    assert "JWT_SECRET_KEY" not in os.environ, "a generated secret was exported"
+    assert os.environ["jwt_secret_key"] == "operator-set-secret"
+    assert S.SecuritySettings().jwt_secret_key.get_secret_value() == (
+        "operator-set-secret"
+    )
+    assert _written(local_mode_in_empty_cwd) == []
+
+
+@pytest.mark.unit
+def test_an_auth_mode_the_settings_refuse_writes_nothing(
+    local_mode_in_empty_cwd, monkeypatch
+):
+    """``AuthMode`` accepts ``local`` and ``oauth`` exactly, so the settings
+    refuse ``LOCAL``. A ``.strip().lower()`` read took it as local and wrote the
+    secret for a run that could not start."""
+    monkeypatch.setenv("AUTH_MODE", "LOCAL")
+
+    S.ensure_local_jwt_secret_env()
+
+    assert "JWT_SECRET_KEY" not in os.environ
+    assert _written(local_mode_in_empty_cwd) == []

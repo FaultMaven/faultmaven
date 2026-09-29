@@ -12,7 +12,8 @@ Features:
 - Automatic driver conversion (asyncpg -> psycopg2 for sync operations)
 
 Environment Variables:
-    DATABASE_URL: The database to migrate. Unset: ``data/faultmaven.db``
+    DATABASE_URL: The database to migrate, bound as the app's settings bind it
+        (in any case). Unset: ``data/faultmaven.db``
         (SQLite) under the project root. Set to a value that configures no
         persistent database (empty, ``:memory:``, an in-memory SQLite URL, a
         value that does not parse), the migration refuses and exits 1 (#1704).
@@ -21,7 +22,6 @@ Usage:
     alembic upgrade head
 """
 
-import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path
@@ -48,10 +48,8 @@ if config.config_file_name is not None:
 sys.path.insert(0, str(project_root))
 
 # Target metadata for autogenerate - import from models
-from faultmaven.config.persistent_database import (
-    NonPersistentDatabaseError,
-    require_persistent_database_url,
-)
+from faultmaven.cli._database_gate import require_persistent_database_url_or_exit
+from faultmaven.config.settings import configured_database_url
 from faultmaven.infrastructure.persistence.models import Base
 
 target_metadata = Base.metadata
@@ -66,37 +64,27 @@ def get_database_url() -> str:
        refused unless it configures a persistent database
     2. Default: SQLite ``data/faultmaven.db`` under the project root
 
+    The value is read through ``configured_database_url()`` — ``DatabaseSettings``,
+    the class the app's settings are built from — so the migration binds the
+    variable in exactly the spellings the app does (``database_url`` included)
+    and validates it the same way; a ``ValidationError`` ends the run, as it
+    ends the app's boot.
+
     Returns:
         str: Database connection URL
     """
-    url = os.environ.get("DATABASE_URL")
+    url = configured_database_url()
     if url is not None:
         # Set but EMPTY refuses too, rather than falling back to the default
         # file: the app's predicate refuses an empty URL, and the migration must
         # agree with the app on which database a value names (#1704). Judged on
         # the raw value, before any driver conversion.
-        _require_persistent_database_or_exit(url)
+        require_persistent_database_url_or_exit(url)
         return _convert_async_url(url)
 
     # Default to SQLite for development
     sqlite_path = project_root / "data" / "faultmaven.db"
     return f"sqlite:///{sqlite_path}"
-
-
-def _require_persistent_database_or_exit(url: str) -> None:
-    """Exit 1 with the boot gate's message unless ``url`` is a persistent database.
-
-    The same rule and message as the API, the jobs runner and every ``fm-*``
-    command (``faultmaven/config/persistent_database.py``), in the shape
-    ``faultmaven/cli/_database_gate.py`` prints. Without it an in-memory URL
-    migrated a database that vanished with the process and exited 0, so a
-    misconfigured migration Job reported success (#1704).
-    """
-    try:
-        require_persistent_database_url(url)
-    except NonPersistentDatabaseError as exc:
-        print(f"❌ Refusing to run: {exc}", file=sys.stderr, flush=True)
-        sys.exit(1)
 
 
 def _convert_async_url(url: str) -> str:

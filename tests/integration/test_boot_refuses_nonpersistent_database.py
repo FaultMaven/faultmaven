@@ -19,15 +19,18 @@ direct call to the gate says nothing about where it runs:
 - **In-process with the predicate TRUE** — pins that the gate is not behind the
   test-environment skip.
 
-The no-disk-write assertion has a positive control (``slow``): the same child,
-same cwd-relative layout, with a real file URL, boots and DOES write ``data/``
-there — so an empty cwd after a refusal means the refusal came first, not that
-the probe looked in the wrong place.
+The child runs under local auth with ``JWT_SECRET_KEY`` unset (#1703), so
+``get_settings()`` mints the standalone JWT secret ahead of the gate. It used to
+persist it to ``data/.jwt_secret`` whatever ``DATABASE_URL`` said, so a refused
+boot left the file behind. A refused boot is also run with the URL set ONLY as
+lowercase ``database_url``, which the settings bind and the gate refuses.
 
-Each runs with ``JWT_SECRET_KEY`` set and unset (#1703). Unset under local auth,
-``get_settings()`` mints the standalone JWT secret, and it used to persist it to
-``data/.jwt_secret`` whatever ``DATABASE_URL`` said, ahead of the refusal. The
-positive control shows that a real deployment still persists it.
+The no-disk-write assertion has a positive control (``slow``): the same child,
+same cwd, with ``DATABASE_URL`` UNSET, boots on the shipped default — a SQLite
+file relative to the cwd, which is the child's empty temp directory, never the
+checkout — and DOES write ``data/``, the database and the JWT secret there. So
+an empty cwd after a refusal means the refusal came first, not that the probe
+looked in the wrong place, and a persistent deployment still keeps its secret.
 """
 
 from __future__ import annotations
@@ -81,11 +84,12 @@ _CHILD = textwrap.dedent("""
     """)
 
 
-def _boot_in_child(database_url: str, *, jwt_secret_key: bool = True) -> dict:
+def _boot_in_child(database_env: dict[str, str]) -> dict:
     """Boot the real app in a clean child process, cwd an empty directory.
 
-    ``jwt_secret_key=False`` leaves ``JWT_SECRET_KEY`` out of the child's
-    environment, so local auth mints its own (#1703).
+    ``database_env`` is the child's whole database configuration: ``{}`` leaves
+    ``DATABASE_URL`` unset, and a key may be spelled in any case. There is no
+    ``JWT_SECRET_KEY``, so local auth mints its own (#1703).
     """
     # Its own temp root, never pytest's tmp_path: that path contains "test",
     # which flips ``_is_test_environment`` in the child and hides the question.
@@ -99,22 +103,19 @@ def _boot_in_child(database_url: str, *, jwt_secret_key: bool = True) -> dict:
             "HOME": str(root),
             "PATH": "/usr/bin:/bin",
             "PYTHONPATH": str(Path(faultmaven.__file__).parent.parent),
-            "DATABASE_URL": database_url,
+            **database_env,
             "DEPLOYMENT_MODE": "standalone",
             "AUTH_MODE": "local",
             "ENVIRONMENT": "development",
-            "JWT_SECRET_KEY": "dbgate-probe-secret-please-ignore-000001",
             # The LLM credential gate is live when the predicate is false.
             "CHAT_PROVIDER": "gemini",
             "GEMINI_API_KEY": "dummy-key-for-boot-probe",
             # Hermetic: settings' load_dotenv() walks up from the faultmaven
             # package when __main__ has a __file__, and in a nested worktree
-            # finds the parent checkout's .env, whose JWT_SECRET_KEY would make
-            # the unset case vacuous.
+            # finds the parent checkout's .env, whose JWT_SECRET_KEY or
+            # DATABASE_URL would decide the case instead of this test.
             "PYTHON_DOTENV_DISABLED": "1",
         }
-        if not jwt_secret_key:
-            del env["JWT_SECRET_KEY"]
         completed = subprocess.run(
             [sys.executable, str(script)],
             cwd=run_dir,
@@ -149,25 +150,22 @@ def _assert_probe_is_live(result: dict) -> None:
     )
 
 
-_JWT_SECRET_KEY = pytest.mark.parametrize(
-    "jwt_secret_key", [True, False], ids=["jwt-secret-set", "jwt-secret-unset"]
-)
-
-
 @pytest.mark.integration
-@_JWT_SECRET_KEY
 @pytest.mark.parametrize(
-    "database_url",
-    ["", "sqlite+aiosqlite:///:memory:", ":memory:"],
-    ids=["empty", "sqlite-memory", "bare-memory"],
+    "database_env",
+    [
+        {"DATABASE_URL": ""},
+        {"DATABASE_URL": "sqlite+aiosqlite:///:memory:"},
+        {"DATABASE_URL": ":memory:"},
+        {"database_url": "sqlite+aiosqlite:///:memory:"},
+    ],
+    ids=["empty", "sqlite-memory", "bare-memory", "lowercase-only-sqlite-memory"],
 )
-def test_deployment_boot_is_refused_before_anything_is_written(
-    database_url, jwt_secret_key
-):
-    result = _boot_in_child(database_url, jwt_secret_key=jwt_secret_key)
+def test_deployment_boot_is_refused_before_anything_is_written(database_env):
+    result = _boot_in_child(database_env)
     _assert_probe_is_live(result)
 
-    assert result["booted"] is False, f"booted on DATABASE_URL={database_url!r}"
+    assert result["booted"] is False, f"booted on {database_env!r}"
     assert result["error_type"] == "NonPersistentDatabaseError", result
     assert DEFAULT_DATABASE_URL in result["error"]
     assert "needs a database" in result["error"]
@@ -184,28 +182,28 @@ def test_refusal_names_the_default_the_product_ships():
     Read in the clean child: in this process the harness rebinds the field's
     default to a per-worker file, so it cannot be compared here.
     """
-    result = _boot_in_child("")
+    result = _boot_in_child({"DATABASE_URL": ""})
     assert result["shipped_default"] == DEFAULT_DATABASE_URL
 
 
 @pytest.mark.slow
 @pytest.mark.integration
-@_JWT_SECRET_KEY
-def test_a_file_database_boots_and_writes_where_the_refusal_did_not(jwt_secret_key):
+def test_the_default_database_boots_and_writes_where_the_refusal_did_not():
     """Positive control for the empty-cwd assertion, and the ordinary boot.
 
-    With ``JWT_SECRET_KEY`` unset it is also the control for the secret: a
-    deployment with a persistent database still persists ``data/.jwt_secret``,
-    so the refused boot's missing file means the refusal came first (#1703).
+    ``DATABASE_URL`` unset: the shipped default, a SQLite file relative to the
+    child's cwd. It is also the control for the secret: a deployment with a
+    persistent database still persists ``data/.jwt_secret``, so a refused boot's
+    missing file means the refusal came first (#1703).
     """
-    result = _boot_in_child(DEFAULT_DATABASE_URL, jwt_secret_key=jwt_secret_key)
+    result = _boot_in_child({})
     _assert_probe_is_live(result)
     assert result["booted"] is True, result.get("error")
     assert result["health_status"] == 200
     assert "data" in result["cwd_entries"], result["cwd_entries"]
-    # Minted and persisted only when the environment gives no secret.
-    secret_written = ".jwt_secret" in result["data_entries"]
-    assert secret_written is (not jwt_secret_key), result["data_entries"]
+    # The default resolved against the child's cwd, not the checkout.
+    assert "faultmaven.db" in result["data_entries"], result["data_entries"]
+    assert ".jwt_secret" in result["data_entries"], result["data_entries"]
 
 
 @pytest.mark.integration

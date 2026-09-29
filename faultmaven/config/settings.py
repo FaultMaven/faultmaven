@@ -18,7 +18,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Set, Type, Union
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import (
+    Field,
+    SecretStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings
 
 # =============================================================================
@@ -962,6 +968,32 @@ def persistent_database_configured(database_url: Optional[str]) -> bool:
     return not _sqlite_url_is_ephemeral(url)
 
 
+def configured_database_url() -> Optional[str]:
+    """The ``DATABASE_URL`` the environment configures, read as the settings read it.
+
+    Built through ``DatabaseSettings``, the class ``FaultMavenSettings.database``
+    is built from, so it binds the variable in every spelling the settings do
+    (pydantic-settings is case-insensitive: ``database_url`` counts) and never in
+    one they do not. The one reader for a caller that must judge the URL without
+    constructing the settings: ``ensure_local_jwt_secret_env`` (which runs before
+    them) and ``alembic/env.py``. An exact-name ``os.environ`` read disagreed
+    with the settings on a lowercase spelling (#1703, #1704).
+
+    Returns:
+        The configured value, the empty string included, or ``None`` when the
+        environment does not set it and the field default (the persistent
+        SQLite file) applies.
+
+    Raises:
+        pydantic.ValidationError: when the environment's database settings do
+            not validate; the settings refuse the same environment.
+    """
+    database = DatabaseSettings()
+    if "database_url" not in database.model_fields_set:
+        return None
+    return database.database_url
+
+
 #: Query parameters whose value may be shown when a database URL is printed:
 #: SQLite's URI parameters and the pysqlite connect arguments, which name how
 #: the database is opened and never carry a secret. Every other value is
@@ -1053,13 +1085,6 @@ class DatabaseSettings(BaseSettings):
     redis_db: int = Field(default=0)
     redis_password: Optional[SecretStr] = Field(default=None)
     redis_url: Optional[str] = Field(default=None)
-
-    model_config = {
-        "env_file": ".env",
-        "env_file_encoding": "utf-8",
-        "case_sensitive": False,
-        "extra": "ignore",
-    }
 
     # ============================================
     # ChromaDB Configuration
@@ -1276,37 +1301,65 @@ def ensure_local_jwt_secret_env() -> None:
     constructed) — deliberately NOT a per-field default_factory, so there's no
     repeated or racy filesystem I/O on every settings instantiation.
 
+    Its three decisions are read through the settings classes the settings are
+    built from — ``SecuritySettings``, ``AuthSettings`` and
+    :func:`configured_database_url` (``DatabaseSettings``) — never from
+    ``os.environ`` by name. One reader per variable: pydantic-settings binds a
+    name in any case and validates it, so an exact-name read disagreed with the
+    settings — it ignored a lowercase ``jwt_secret_key`` and shadowed it with a
+    generated one, and wrote the file for an ``AUTH_MODE=LOCAL`` or a lowercase
+    in-memory ``database_url`` the settings then refused (#1703).
+
     No-ops when:
       - JWT_SECRET_KEY is already set (an explicit value always wins), or
-      - AUTH_MODE is not 'local' (OAuth uses RS256 key files, not this secret).
-    Persists nothing when DATABASE_URL is set and configures no persistent
-    database (``persistent_database_configured``): it exports an ephemeral secret
-    and creates no directory and no file (#1703). A process with nothing durable
-    has nothing for a durable secret to protect, and every gate that refuses such
-    a URL reads it through get_settings(), which calls this first — so a refused
-    boot or fm-* command used to leave data/.jwt_secret behind. An UNSET
+      - AUTH_MODE is not 'local' (OAuth uses RS256 key files, not this secret), or
+      - those settings do not validate: the settings refuse the same
+        environment a moment later, so nothing is minted or written for it.
+    Creates nothing when DATABASE_URL is set and configures no persistent
+    database (``persistent_database_configured``): it exports an existing secret
+    file's value if there is one, else an ephemeral secret, and creates no
+    directory and no file (#1703). A process with nothing durable has nothing
+    for a durable secret to protect, and every gate that refuses such a URL
+    reads it through get_settings(), which calls this first — so a refused boot
+    or fm-* command used to leave data/.jwt_secret behind. An UNSET
     DATABASE_URL is the persistent file default and persists as before.
     On a filesystem error it logs a warning and returns — local auth then fails
     with a clear "JWT_SECRET_KEY not configured" message rather than the server
     crashing at import time.
     """
-    if os.environ.get("JWT_SECRET_KEY"):
-        return
-    if os.environ.get("AUTH_MODE", "local").strip().lower() != "local":
-        return
-
     logger = logging.getLogger(__name__)
-    if "DATABASE_URL" in os.environ and not persistent_database_configured(
-        os.environ["DATABASE_URL"]
-    ):
-        os.environ["JWT_SECRET_KEY"] = secrets.token_urlsafe(48)
+    try:
+        # Truthy, not "not None": an empty secret is no secret to every consumer
+        # (``if not secret`` in the token generator), so it is minted over.
+        if SecuritySettings().jwt_secret_key:
+            return
+        if AuthSettings().auth_mode is not AuthMode.LOCAL:
+            return
+        database_url = configured_database_url()
+    except ValidationError as exc:
         logger.debug(
-            "DATABASE_URL configures no persistent database, so no durable JWT "
-            "secret is written; this process signs with an ephemeral one."
+            "Settings do not validate, so no local JWT secret is minted: %s", exc
         )
         return
 
     secret_path = Path(os.environ.get("JWT_SECRET_FILE", "data/.jwt_secret"))
+    if database_url is not None and not persistent_database_configured(database_url):
+        try:
+            value = (
+                secret_path.read_text(encoding="utf-8").strip()
+                if secret_path.is_file()
+                else ""
+            )
+        except OSError:
+            value = ""
+        os.environ["JWT_SECRET_KEY"] = value or secrets.token_urlsafe(48)
+        logger.debug(
+            "DATABASE_URL configures no persistent database, so no JWT secret is "
+            "written; this process signs with %s.",
+            "the existing secret file's value" if value else "an ephemeral secret",
+        )
+        return
+
     try:
         secret_path.parent.mkdir(parents=True, exist_ok=True)
         value = (
@@ -1401,14 +1454,16 @@ class SecuritySettings(BaseSettings):
     jwt_public_key_path: Optional[str] = Field(default=None)
     jwt_private_key: Optional[SecretStr] = Field(default=None)
     jwt_public_key: Optional[str] = Field(default=None)
-    # HS256 secret for local auth. In local mode get_settings() auto-generates and
-    # persists it (data/.jwt_secret) via ensure_local_jwt_secret_env() before the
-    # settings are built, so a standalone install needs no JWT_SECRET_KEY — set the
-    # env var to override. OAuth/RS256 ignores this.
+    # HS256 secret for local auth. In local mode get_settings() provides it via
+    # ensure_local_jwt_secret_env() before the settings are built, so a standalone
+    # install needs no JWT_SECRET_KEY — set the env var to override. It is
+    # generated and persisted (data/.jwt_secret) only when the database is
+    # persistent; otherwise an existing file is read, or an ephemeral per-process
+    # secret is used (#1703). OAuth/RS256 ignores this.
     jwt_secret_key: Optional[SecretStr] = Field(
         default=None,
         validation_alias="JWT_SECRET_KEY",
-        description="HS256 secret for local auth; auto-generated+persisted in local mode by get_settings() if unset (override via JWT_SECRET_KEY). Unused in OAuth/RS256 mode.",
+        description="HS256 secret for local auth; if unset in local mode, get_settings() generates and persists one (data/.jwt_secret) when the database is persistent, and otherwise reads an existing file or uses an ephemeral per-process secret (override via JWT_SECRET_KEY). Unused in OAuth/RS256 mode.",
     )
     # NOTE: token expiry is deliberately NOT declared here. It lives once, on
     # AuthSettings, and every minting path takes it from there (#888). This half
