@@ -82,6 +82,29 @@ class AnthropicProvider(BaseLLMProvider):
         "fable": (5, 0),
         "mythos": (5, 0),
     }
+    # Thinking shape (#1756), same "last version measured" form. Measured live
+    # 2026-09-29, one request per cell, only the `thinking` shape varied
+    # (`enabled` with budget_tokens 1024, or `adaptive`):
+    #   haiku-4-5, sonnet-4-5, opus-4-5: enabled 200; adaptive 400 ("adaptive
+    #     thinking is not supported on this model").
+    #   sonnet-4-6, opus-4-6: both 200.
+    #   opus-4-7 through opus-5-5, sonnet-5(-5), fable-5(-1): enabled 400
+    #     ("thinking.type.enabled" is not supported; use adaptive); adaptive 200.
+    # budget_tokens is accepted through the first table's entry; adaptive is
+    # rejected through the second's. A parsed id in an unlisted family or above
+    # an entry rejects budget_tokens and accepts adaptive. An unparseable id is
+    # the exception to #1695's default: no thinking shape is accepted by every
+    # model, so an id the adapter cannot read is sent the configured mode.
+    _BUDGET_TOKENS_ACCEPTED_THROUGH = {
+        "opus": (4, 6),
+        "sonnet": (4, 6),
+        "haiku": (4, 5),
+    }
+    _ADAPTIVE_THINKING_REJECTED_THROUGH = {
+        "opus": (4, 5),
+        "sonnet": (4, 5),
+        "haiku": (4, 5),
+    }
     # claude-<family>-<major>[-<minor>][-<yyyymmdd>]. The minor is 1-2 digits
     # and the date 8, so claude-opus-4-20250514 is (4, 0) and
     # claude-haiku-4-5-20251001 is (4, 5).
@@ -91,6 +114,9 @@ class AnthropicProvider(BaseLLMProvider):
     # Model ids whose request shape has been logged: one line per model id per
     # process, not one per call.
     _REQUEST_SHAPE_LOGGED: set[str] = set()
+    # (model id, configured thinking mode) pairs whose shape was substituted:
+    # one WARNING per pair per process (#1756).
+    _THINKING_SUBSTITUTION_LOGGED: set[tuple[str, str]] = set()
 
     @property
     def provider_name(self) -> str:
@@ -123,6 +149,14 @@ class AnthropicProvider(BaseLLMProvider):
     @classmethod
     def _accepts_forced_tool_choice(cls, model: str) -> bool:
         return cls._accepted_through(model, cls._FORCED_TOOL_CHOICE_ACCEPTED_THROUGH)
+
+    @classmethod
+    def _accepts_budget_tokens(cls, model: str) -> bool:
+        return cls._accepted_through(model, cls._BUDGET_TOKENS_ACCEPTED_THROUGH)
+
+    @classmethod
+    def _accepts_adaptive_thinking(cls, model: str) -> bool:
+        return not cls._accepted_through(model, cls._ADAPTIVE_THINKING_REJECTED_THROUGH)
 
     def _log_request_shape(self, model: str) -> None:
         """Say once per model id what this provider leaves out of its requests.
@@ -173,7 +207,14 @@ class AnthropicProvider(BaseLLMProvider):
             "Respond by calling one of the provided tools; do not reply in plain text."
         )
 
-    def _resolve_thinking(self, max_tokens: int) -> Optional[dict]:
+    def _log_thinking_substitution(self, model: str, configured: str, msg: str) -> None:
+        key = (model, configured)
+        if key in self._THINKING_SUBSTITUTION_LOGGED:
+            return
+        self._THINKING_SUBSTITUTION_LOGGED.add(key)
+        self.logger.warning(msg, model)
+
+    def _resolve_thinking(self, max_tokens: int, model: str) -> Optional[dict]:
         """Thinking parameter for this call, or None to send none at all.
 
         Modes (from ProviderConfig.thinking_mode, default None → off):
@@ -181,9 +222,16 @@ class AnthropicProvider(BaseLLMProvider):
           to pre-#1116 behavior. This is the shipped default.
         - "adaptive": ``{"type": "adaptive"}`` — the mechanism on Claude 4.6+
           (``budget_tokens`` is deprecated on 4.6 and a 400 on 4.7+; the
-          model decides how much to think).
-        - "enabled": ``{"type": "enabled", "budget_tokens": N}`` — pre-4.6
-          models only.
+          model decides how much to think). A model that rejects it (4.5 and
+          older) is sent "enabled" instead.
+        - "enabled": ``{"type": "enabled", "budget_tokens": N}`` — accepted
+          through opus/sonnet 4.6 and haiku 4.5. A model that rejects
+          ``budget_tokens`` (4.7+, an unlisted family, a version above its
+          ceiling) is sent "adaptive" instead (#1756).
+
+        An unparseable model id is sent the configured mode, unsubstituted:
+        no thinking shape is accepted by every model, so an id the adapter
+        cannot read gets what the operator configured.
 
         Starvation guard (fm#1094): thinking is billed INSIDE ``max_tokens``.
         A configuration that cannot leave ``_THINKING_MIN_ANSWER_TOKENS`` for
@@ -193,6 +241,32 @@ class AnthropicProvider(BaseLLMProvider):
         mode = (self.config.thinking_mode or "off").strip().lower()
         if mode in ("", "off"):
             return None
+
+        # Send the shape this model accepts (#1756); the substituted mode's own
+        # guards below then apply. An unparseable id keeps the configured mode.
+        configured = mode
+        parsed = self._claude_version(model) is not None
+        if parsed and mode == "enabled" and not self._accepts_budget_tokens(model):
+            mode = "adaptive"
+            self._log_thinking_substitution(
+                model,
+                configured,
+                "ANTHROPIC_THINKING_MODE=enabled: model %s rejects budget_tokens "
+                "(a 400), so its thinking requests use adaptive thinking "
+                "instead; ANTHROPIC_THINKING_BUDGET_TOKENS does not apply to it "
+                "(#1756)",
+            )
+        elif (
+            parsed and mode == "adaptive" and not self._accepts_adaptive_thinking(model)
+        ):
+            mode = "enabled"
+            self._log_thinking_substitution(
+                model,
+                configured,
+                "ANTHROPIC_THINKING_MODE=adaptive: model %s does not support "
+                "adaptive thinking (a 400), so its thinking requests use enabled "
+                "thinking with ANTHROPIC_THINKING_BUDGET_TOKENS instead (#1756)",
+            )
 
         if mode == "adaptive":
             # No caller-controlled partition exists in adaptive mode, but the
@@ -477,7 +551,7 @@ class AnthropicProvider(BaseLLMProvider):
         # (ANTHROPIC_THINKING_MODE, default "off": no `thinking` key and a
         # request byte-identical to pre-#1116 behavior).
         if request_body.get("tools"):
-            thinking_param = self._resolve_thinking(max_tokens)
+            thinking_param = self._resolve_thinking(max_tokens, selected_model)
             # Thinking supports only tool_choice auto/none — forced tool use
             # ({"type": "any"} / {"type": "tool"}) is rejected with a 400. On
             # a model that ACCEPTS forcing we FAIL CLOSED here: the caller's

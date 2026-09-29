@@ -542,3 +542,177 @@ class TestRegistryWiring:
 
         assert config.thinking_mode is None
         assert config.thinking_budget_tokens is None
+
+
+# =========================================================================
+# 5. Shape per model (#1756)
+# =========================================================================
+
+
+def _model_config(model, mode, budget=4096):
+    config = _config(thinking_mode=mode, thinking_budget_tokens=budget)
+    config.models = [model]
+    config.default_model = model
+    return config
+
+
+def _substitution_records(caplog):
+    return [r for r in caplog.records if "(#1756)" in r.getMessage()]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestThinkingShapePerModel:
+    @pytest.fixture(autouse=True)
+    def _fresh_log_memory(self, monkeypatch):
+        monkeypatch.setattr(AnthropicProvider, "_THINKING_SUBSTITUTION_LOGGED", set())
+        monkeypatch.setattr(AnthropicProvider, "_REQUEST_SHAPE_LOGGED", set())
+
+    async def _body(self, model, mode, budget=4096, **kwargs):
+        provider = AnthropicProvider(_model_config(model, mode, budget))
+        kwargs.setdefault("max_tokens", 8000)
+        return await _sent_request_body(provider, tools=_TOOLS, **kwargs)
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "claude-sonnet-4-6",
+            "claude-opus-4-6",
+            "claude-haiku-4-5-20251001",
+            "claude-opus-4-5-20251101",
+        ],
+    )
+    async def test_enabled_kept_on_models_that_accept_budget_tokens(
+        self, model, caplog
+    ):
+        with caplog.at_level("WARNING"):
+            body = await self._body(model, "enabled")
+        assert body["thinking"] == {"type": "enabled", "budget_tokens": 4096}
+        assert not _substitution_records(caplog)
+
+    @pytest.mark.parametrize(
+        "model",
+        ["claude-opus-4-7", "claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5"],
+    )
+    async def test_enabled_becomes_adaptive_on_models_that_reject_budget_tokens(
+        self, model, caplog
+    ):
+        with caplog.at_level("WARNING"):
+            body = await self._body(model, "enabled")
+        assert body["thinking"] == {"type": "adaptive"}
+        records = _substitution_records(caplog)
+        assert len(records) == 1
+        assert "ANTHROPIC_THINKING_MODE=enabled" in records[0].getMessage()
+        assert model in records[0].getMessage()
+
+    async def test_enabled_becomes_adaptive_on_a_version_above_the_ceiling(self):
+        body = await self._body("claude-opus-6", "enabled")
+        assert body["thinking"] == {"type": "adaptive"}
+
+    @pytest.mark.parametrize(
+        ("model", "mode", "expected"),
+        [
+            (
+                "claude-mythos-preview",
+                "enabled",
+                {"type": "enabled", "budget_tokens": 4096},
+            ),
+            (
+                "claude-opus-4-5@20251101",
+                "enabled",
+                {"type": "enabled", "budget_tokens": 4096},
+            ),
+            ("claude-mythos-preview", "adaptive", {"type": "adaptive"}),
+        ],
+    )
+    async def test_unparseable_id_keeps_the_configured_mode(
+        self, model, mode, expected, caplog
+    ):
+        """No thinking shape is accepted by every model, so an id the adapter
+        cannot read is sent what the operator configured."""
+        with caplog.at_level("WARNING"):
+            body = await self._body(model, mode)
+        assert body["thinking"] == expected
+        assert not _substitution_records(caplog)
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-4-5-20250929",
+            "claude-opus-4-5-20251101",
+        ],
+    )
+    async def test_adaptive_becomes_enabled_on_models_that_reject_adaptive(
+        self, model, caplog
+    ):
+        with caplog.at_level("WARNING"):
+            body = await self._body(model, "adaptive")
+        assert body["thinking"] == {"type": "enabled", "budget_tokens": 4096}
+        records = _substitution_records(caplog)
+        assert len(records) == 1
+        assert "ANTHROPIC_THINKING_MODE=adaptive" in records[0].getMessage()
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "claude-sonnet-4-6",
+            "claude-opus-4-7",
+            "claude-fable-5-1",
+            "claude-mythos-preview",
+        ],
+    )
+    async def test_adaptive_kept_on_models_that_accept_it(self, model, caplog):
+        with caplog.at_level("WARNING"):
+            body = await self._body(model, "adaptive")
+        assert body["thinking"] == {"type": "adaptive"}
+        assert not _substitution_records(caplog)
+
+    async def test_substituted_adaptive_keeps_the_adaptive_floor(self):
+        body = await self._body("claude-opus-4-7", "enabled", max_tokens=2047)
+        assert "thinking" not in body
+
+    @pytest.mark.parametrize(
+        ("budget", "max_tokens"),
+        [
+            # Below the API minimum: the enabled guard would refuse it.
+            (512, 8000),
+            # 3000 - 4096 leaves no answer floor: the enabled guard would
+            # refuse it, while the adaptive floor of 2048 passes.
+            (4096, 3000),
+        ],
+    )
+    async def test_substituted_adaptive_skips_the_enabled_budget_guards(
+        self, budget, max_tokens
+    ):
+        body = await self._body(
+            "claude-opus-4-7", "enabled", budget=budget, max_tokens=max_tokens
+        )
+        assert body["thinking"] == {"type": "adaptive"}
+
+    async def test_substituted_enabled_keeps_the_answer_floor(self):
+        body = await self._body(
+            "claude-haiku-4-5-20251001", "adaptive", budget=7500, max_tokens=8000
+        )
+        assert "thinking" not in body
+
+    async def test_off_sends_nothing_and_logs_nothing(self, caplog):
+        with caplog.at_level("WARNING"):
+            body = await self._body("claude-opus-4-7", "off")
+        assert "thinking" not in body
+        assert not _substitution_records(caplog)
+
+    async def test_substitution_warns_once_per_model_and_mode(self, caplog):
+        with caplog.at_level("WARNING"):
+            await self._body("claude-opus-4-7", "enabled")
+            await self._body("claude-opus-4-7", "enabled")
+            assert len(_substitution_records(caplog)) == 1
+            await self._body("claude-opus-5", "enabled")
+        records = _substitution_records(caplog)
+        assert len(records) == 2
+        assert "claude-opus-5" in records[1].getMessage()
+
+    async def test_forced_tool_choice_and_thinking_both_follow_the_model(self):
+        body = await self._body("claude-opus-5-5", "enabled", tool_choice="required")
+        assert body["tool_choice"] == {"type": "auto"}
+        assert body["thinking"] == {"type": "adaptive"}
