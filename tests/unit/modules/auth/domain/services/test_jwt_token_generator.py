@@ -323,6 +323,8 @@ class TestTokenValidation:
                 "iat": int(datetime.now(timezone.utc).timestamp()),
                 "jti": "invalid_sig_jti",
                 "type": "access",
+                "iss": ISSUER,
+                "aud": AUDIENCE,
             },
             TEST_PRIVATE_KEY,
             algorithm="RS256",
@@ -338,11 +340,14 @@ class TestTokenValidation:
             [header, payload, base64url_encode(bytes(corrupted)).decode("ascii")]
         )
 
-        # The header and payload decode unchanged: the corruption touched only
-        # the signature bytes, not the token's encoding.
+        # The header and payload decode unchanged, and the uncorrupted token
+        # carries the configured issuer and audience and validates: the
+        # signature is the only defect, so only signature verification can
+        # reject the corrupted token.
         assert jwt.decode(invalid_token, options={"verify_signature": False}) == (
             jwt.decode(valid_token, options={"verify_signature": False})
         )
+        assert await token_generator.validate_access_token(valid_token) is not None
 
         # Validation should return None
         result = await token_generator.validate_access_token(invalid_token)
