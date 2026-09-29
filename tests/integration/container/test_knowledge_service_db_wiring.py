@@ -61,3 +61,39 @@ async def test_container_built_knowledge_service_can_reach_the_database(
     # gates on this attribute — ingest_runbook refuses outright without it, so
     # `kb_seed` fails for every pack runbook (#894).
     assert knowledge_service._db_session_factory is get_db_session
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_the_composed_knowledge_service_writes_only_through_the_guarded_store(
+    fresh_container,
+):
+    """Under default settings the KB writer is ``KnowledgeVectorStore`` — the
+    store whose ``add_documents`` refuses a KB chunk with no tenant stamp
+    (#1168) — and never the plain ``ChromaDBVectorStore`` the container also
+    registers, which checks no stamp. The container used to wire
+    ``knowledge_vector_store or vector_store``; the fallback is gone, and the
+    dedup reader is bound to the same writer's collection."""
+    from faultmaven.config.settings import get_settings
+    from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
+        KB_COLLECTION,
+        KnowledgeVectorStore,
+    )
+    from faultmaven.infrastructure.persistence.chromadb_store import (
+        ChromaDBVectorStore,
+    )
+
+    if get_settings().server.skip_service_checks:
+        pytest.skip("SKIP_SERVICE_CHECKS builds no vector store to compare")
+
+    await fresh_container.initialize()
+    knowledge_service = fresh_container.get_knowledge_service()
+    plain_store = fresh_container.get_service("vector_store")
+
+    # Precondition: both stores exist, so "the guarded one was chosen" is a
+    # choice and not the only option.
+    assert isinstance(plain_store, ChromaDBVectorStore)
+    assert isinstance(knowledge_service._vector_store, KnowledgeVectorStore)
+    assert knowledge_service._vector_store is fresh_container.knowledge_vector_store
+    assert knowledge_service._vector_store is not plain_store
+    assert fresh_container.runbook_kb.vector_store.collection_name == KB_COLLECTION

@@ -179,9 +179,13 @@ from faultmaven.providers.tenancy.factory import BUILTIN_MULTI, BUILTIN_SINGLE
 pytestmark = [pytest.mark.integration, pytest.mark.security]
 
 # --- The two tenants -------------------------------------------------------
-# Orgs are named for the narrative and for the share-resolution arm, which is
-# the ONLY place an org id reaches a KB read. The seeded chunks carry them as
-# the ``enterprise_id`` stamp (#1168), which no read filters on until #1775.
+# Enterprises isolate (ADR-017). Each seeded tenant chunk carries its
+# enterprise as the ``enterprise_id`` stamp (#1168), exactly as the live
+# indexer writes it; the platform and "system" rows carry the Standalone
+# enterprise, the value production writes for the global tier. No read filters
+# on the stamp until #1775. The share-resolution arm is the one place these ids
+# reach a KB read today. Organizations bill and appear nowhere in vector
+# metadata.
 ENTERPRISE_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"  # the caller's own tenant
 ENTERPRISE_B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"  # the tenant being attacked
 
@@ -920,7 +924,16 @@ async def test_what_each_stated_tier_means_to_a_tenant_that_did_not_author_it(
     ):
         assert (
             await service._index_document_in_vector_store(
-                document, enterprise_id=ENTERPRISE_A
+                document,
+                # The value production writes: a global row carries the
+                # Standalone enterprise, a tenant row its author's. Stamping a
+                # global chunk with a tenant would be a shape production never
+                # writes, and #1775's conjunct would judge it differently.
+                enterprise_id=(
+                    STANDALONE_ENTERPRISE_ID
+                    if stated_tier == "global"
+                    else ENTERPRISE_A
+                ),
             )
             == 1
         )

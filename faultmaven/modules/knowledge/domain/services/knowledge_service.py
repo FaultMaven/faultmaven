@@ -1008,8 +1008,10 @@ class KnowledgeService:
                 Also raised when ``document`` names no knowledge tier
                 (``KNOWLEDGE_SCOPE_REQUIRED``) or names one that does not exist
                 (``KNOWLEDGE_SCOPE_INVALID``) — see :func:`require_write_scope`.
-                And (``KNOWLEDGE_INDEXING_FAILED``) when ``enterprise_id`` is
-                blank — refused before the old chunks are deleted (#1168).
+            ValueError: If ``enterprise_id`` is not a non-blank string (#1168)
+                — refused first, before any store check, chunking, embedding
+                or deletion, with the same rule and message as the store's own
+                refusal (:meth:`VectorMetadata.require_enterprise_id_value`).
         """
         # The live KB writer's tier check (#1166). ``KnowledgeBaseDocument.scope``
         # is required, which stops an omission at construction; this is the belt
@@ -1026,6 +1028,19 @@ class KnowledgeService:
         # second one is the unchecked one.
         _scope = require_write_scope(
             getattr(document, "document_id", None), getattr(document, "scope", None)
+        )
+
+        # The tenant check (#1168), for the same reasons and in the same place:
+        # ahead of the ``_vector_store`` early exit, because a refusal that only
+        # fires in deployments with a store is not a guard; before any chunking
+        # or embedding, because a call that cannot be written must not pay for
+        # a cold model load first; and OUTSIDE the ``try`` below, because a
+        # missing tenant is the caller's programming error, not the transient
+        # ``KNOWLEDGE_INDEXING_FAILED`` that handler reports. The RAW argument
+        # is checked — the store re-checks each chunk's metadata as a second
+        # layer, and ``VectorMetadata`` refuses a non-string outright.
+        VectorMetadata.require_enterprise_id_value(
+            enterprise_id, document_id=getattr(document, "document_id", None)
         )
 
         if not self._vector_store:
@@ -1120,12 +1135,8 @@ class KnowledgeService:
             # at least kept it searchable. Unreachable for dicts built by
             # to_chroma_metadata() (it emits only declared keys), so this is
             # ordering insurance, not a second authority (fm#1035 review).
-            # The tenant stamp is checked here for the same reason (#1168):
-            # the store refuses a KB chunk without one, and a refusal after
-            # the delete would leave the document with no vectors at all.
             for d in doc_dicts:
                 VectorMetadata.reject_undeclared_keys(d["metadata"])
-                VectorMetadata.require_enterprise_id(d["metadata"], document_id=d["id"])
 
             # Replacement is fully in hand (embeddings + validated chunk
             # dicts) — only now remove the old chunks. The vector store

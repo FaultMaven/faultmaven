@@ -75,6 +75,10 @@ def _row_from(state):
         return None
     row = MagicMock()
     row.item_id = "doc-1"
+    # The NOT NULL isolation key every persisted row carries, and the value
+    # the indexer stamps on its chunks (#1168) — a bare MagicMock attribute is
+    # not a tenant, and the indexer refuses it before doing any work.
+    row.enterprise_id = "ent-row"
     row.title = state["title"]
     row.content = state["content"]
     row.tags = list(state["tags"])

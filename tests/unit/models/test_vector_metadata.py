@@ -1,6 +1,7 @@
 """Tests for VectorMetadata — RAG enrichment fields in ChromaDB metadata."""
 
 import pytest
+from pydantic import ValidationError
 
 from faultmaven.models.vector_metadata import VectorMetadata
 
@@ -109,3 +110,23 @@ class TestTheTenantKey:
 
     def test_require_enterprise_id_admits_a_named_tenant(self):
         VectorMetadata.require_enterprise_id({"enterprise_id": "ent-1"})
+
+    @pytest.mark.parametrize("value", [7, True], ids=["int", "bool"])
+    def test_a_non_string_tenant_is_refused_by_the_model_not_stringified(self, value):
+        """``enterprise_id`` is deliberately absent from ``_coerce_str``: a
+        stringified ``"7"`` or ``"True"`` would pass every non-blank check
+        downstream and match no enterprise, so the model refuses it instead."""
+        with pytest.raises(ValidationError, match="enterprise_id"):
+            VectorMetadata(scope="personal", enterprise_id=value)
+
+    def test_one_rule_serves_both_the_argument_and_the_dict(self):
+        """The indexer checks its raw argument and the store checks each
+        chunk's dict — one rule, one message."""
+        with pytest.raises(ValueError, match="carries no enterprise_id") as arg:
+            VectorMetadata.require_enterprise_id_value(7, document_id="doc")
+        with pytest.raises(ValueError, match="carries no enterprise_id") as md:
+            VectorMetadata.require_enterprise_id(
+                {"enterprise_id": 7}, document_id="doc"
+            )
+
+        assert str(arg.value) == str(md.value)

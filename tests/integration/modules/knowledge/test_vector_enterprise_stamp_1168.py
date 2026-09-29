@@ -34,8 +34,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from unittest.mock import MagicMock, patch
 
 import chromadb
@@ -44,7 +45,7 @@ from chromadb.config import Settings as ChromaSettings
 
 from faultmaven.bootstrap import kb_init
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
-from faultmaven.config.tenant_context import set_current_enterprise_id
+from faultmaven.config.tenant_context import _current_enterprise_id
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KB_COLLECTION,
     KnowledgeVectorStore,
@@ -144,17 +145,22 @@ def fixed_embedder():
         yield
 
 
-@pytest.fixture
-def ambient_enterprise():
-    """Bind the request tenant to ``value`` — always a DIFFERENT enterprise
-    from the row under test, so a stamp read from the ambient context instead
-    of the row is visible. Restored to the default afterwards."""
+@contextmanager
+def _ambient_enterprise(value: str) -> Iterator[None]:
+    """Bind the request tenant to ``value`` for the block, IN the test's own
+    context, and restore the previous binding with its token on exit.
 
-    def _bind(value: str) -> None:
-        set_current_enterprise_id(value)
-
-    yield _bind
-    set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
+    Always a DIFFERENT enterprise from the row under test, so a stamp read from
+    the ambient context instead of the row is visible. Used inside the test
+    coroutine rather than as a fixture: a fixture's teardown can run in a
+    different context from the test body, and overwriting with a default is not
+    a restore — the house idiom is ``set`` → token → ``reset(token)``.
+    """
+    token = _current_enterprise_id.set(value)
+    try:
+        yield
+    finally:
+        _current_enterprise_id.reset(token)
 
 
 def _chunks(chroma, parent_id: str) -> dict[str, Any]:
@@ -210,23 +216,22 @@ async def test_an_authored_runbook_is_stamped_with_its_rows_enterprise(
     service,
     chroma,
     session_factory,
-    ambient_enterprise,
     author_enterprise,
     ambient,
     owner,
 ):
     """Two enterprises, so the stamp cannot be a constant that happens to match."""
-    ambient_enterprise(ambient)
     item_id = f"kb_authored_{author_enterprise[:4]}"
 
-    chunks = await service.ingest_runbook(
-        document_id=item_id,
-        title="Connection pool exhaustion",
-        content=_BODY,
-        enterprise_id=author_enterprise,
-        scope="personal",
-        owner_id=owner,
-    )
+    with _ambient_enterprise(ambient):
+        chunks = await service.ingest_runbook(
+            document_id=item_id,
+            title="Connection pool exhaustion",
+            content=_BODY,
+            enterprise_id=author_enterprise,
+            scope="personal",
+            owner_id=owner,
+        )
 
     assert chunks >= 1
     async with session_factory() as session:
@@ -283,7 +288,7 @@ def _write_pack(tmp_path: Path) -> tuple[Path, str]:
 
 @pytest.mark.asyncio
 async def test_a_pack_ingested_runbook_carries_the_standalone_enterprise(
-    service, chroma, session_factory, ambient_enterprise, tmp_path
+    service, chroma, session_factory, tmp_path
 ):
     """The global tier's chunks carry the platform value their SQL row carries.
 
@@ -292,16 +297,16 @@ async def test_a_pack_ingested_runbook_carries_the_standalone_enterprise(
     ``fm-reset-kb`` and the ``kb_seed`` job all hand ``bootstrap_kb``
     ``SingleTenantProvider.DEFAULT_ENTERPRISE_ID``).
     """
-    ambient_enterprise(ENTERPRISE_A)
     pack_dir, item_id = _write_pack(tmp_path)
 
-    result = await kb_init.bootstrap_kb(
-        knowledge_service=service,
-        db_session_factory=session_factory,
-        enterprise_id=SingleTenantProvider.DEFAULT_ENTERPRISE_ID,
-        project_root=tmp_path,
-        pack_dir=pack_dir,
-    )
+    with _ambient_enterprise(ENTERPRISE_A):
+        result = await kb_init.bootstrap_kb(
+            knowledge_service=service,
+            db_session_factory=session_factory,
+            enterprise_id=SingleTenantProvider.DEFAULT_ENTERPRISE_ID,
+            project_root=tmp_path,
+            pack_dir=pack_dir,
+        )
 
     assert result.failed == [], result
     assert result.ingested == ["global/stamp-probe.md"], result
@@ -318,11 +323,10 @@ async def test_a_pack_ingested_runbook_carries_the_standalone_enterprise(
 
 @pytest.mark.asyncio
 async def test_a_repaired_row_is_restamped_from_the_row(
-    service, chroma, session_factory, ambient_enterprise
+    service, chroma, session_factory
 ):
     """Repair runs at boot with no request bound, so the row is the only
     honest source of the tenant — and here the ambient context says otherwise."""
-    ambient_enterprise(ENTERPRISE_A)
     await _write_row(
         session_factory,
         item_id="kb_orphan_row",
@@ -330,7 +334,8 @@ async def test_a_repaired_row_is_restamped_from_the_row(
         content=_BODY,
     )
 
-    chunks = await service.reindex_missing_vectors("kb_orphan_row")
+    with _ambient_enterprise(ENTERPRISE_A):
+        chunks = await service.reindex_missing_vectors("kb_orphan_row")
 
     assert chunks >= 1
     assert _stamps(chroma, "kb_orphan_row") == {ENTERPRISE_B}
@@ -342,16 +347,14 @@ async def test_a_repaired_row_is_restamped_from_the_row(
 
 
 @pytest.mark.asyncio
-async def test_a_content_update_restamps_from_the_row(
-    service, chroma, session_factory, ambient_enterprise
-):
+async def test_a_content_update_restamps_from_the_row(service, chroma, session_factory):
     await _write_row(
         session_factory, item_id="kb_edited", enterprise_id=ENTERPRISE_B, content=_BODY
     )
-    ambient_enterprise(ENTERPRISE_A)
     edited = _BODY + "\n\n## Verification\n\nThe queue drains within a minute."
 
-    result = await service.update_document_metadata("kb_edited", content=edited)
+    with _ambient_enterprise(ENTERPRISE_A):
+        result = await service.update_document_metadata("kb_edited", content=edited)
 
     assert result is not None and result["content"] == edited
     chunks = _chunks(chroma, "kb_edited")
@@ -368,7 +371,7 @@ async def test_a_content_update_restamps_from_the_row(
 
 @pytest.mark.asyncio
 async def test_a_failed_commit_realigns_the_vectors_stamped_from_the_observed_row(
-    service, chroma, session_factory, ambient_enterprise
+    service, chroma, session_factory
 ):
     """Driven through the path that runs it: the update re-indexes, its commit
     fails, and the compensation re-reads the row (still the previous content)
@@ -379,13 +382,15 @@ async def test_a_failed_commit_realigns_the_vectors_stamped_from_the_observed_ro
         enterprise_id=ENTERPRISE_B,
         content=_BODY,
     )
-    ambient_enterprise(ENTERPRISE_A)
     edited = _BODY + "\n\n## Verification\n\nThe queue drains within a minute."
 
-    with patch.object(
-        DatabaseKnowledgeItemRepository,
-        "update",
-        side_effect=RuntimeError("commit failed"),
+    with (
+        _ambient_enterprise(ENTERPRISE_A),
+        patch.object(
+            DatabaseKnowledgeItemRepository,
+            "update",
+            side_effect=RuntimeError("commit failed"),
+        ),
     ):
         with pytest.raises(RuntimeError, match="commit failed"):
             await service.update_document_metadata("kb_realigned", content=edited)

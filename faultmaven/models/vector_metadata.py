@@ -38,6 +38,10 @@ class VectorMetadata(BaseModel):
     # organization bills and is never a visibility predicate, and a declared
     # key that nothing stamped and nothing filtered on looked like a tenant
     # control without being one (#1167, #1168). Undeclared, it is now refused.
+    #
+    # Deliberately NOT in ``_coerce_str`` below: a non-string tenant (``7``,
+    # ``True``) is refused by the model rather than stringified into a value
+    # that would pass every non-blank check and match no enterprise.
     enterprise_id: Optional[str] = None
     # There is deliberately NO ``report_type`` and no runbook-identity block
     # (``case_id``/``case_title``/``runbook_source``/``document_title``/
@@ -114,36 +118,47 @@ class VectorMetadata(BaseModel):
                 f"to_chroma_metadata) or stop writing them."
             )
 
-    @classmethod
-    def require_enterprise_id(
-        cls, md: Optional[Dict[str, Any]], *, document_id: Any = None
-    ) -> None:
-        """Raise unless ``md`` names its owning tenant (#1168).
+    @staticmethod
+    def require_enterprise_id_value(value: Any, *, document_id: Any = None) -> None:
+        """Raise unless ``value`` names an owning tenant (#1168). THE rule.
 
         Every chunk in the KB collection carries the ``enterprise_id`` of the
         ``knowledge_items`` row it belongs to. Slice 2 (#1775) conjuncts that
         key onto every KB read, so a chunk written without it would silently
         fall out of every tenant's results — and until then it would be one
-        more chunk the backfill has to find. Refusing the write is what keeps a
-        future writer from skipping the stamp.
+        more chunk the backfill (#1777) has to find.
 
-        A non-blank string only: an empty or whitespace value names no tenant,
-        and a non-string would be stringified by the store into a value no
-        read conjunct will ever match.
+        A non-blank ``str`` only: an empty or whitespace value names no tenant,
+        and a non-string (``7``, ``b"ent"``, ``True``) would be stringified
+        somewhere downstream into a value no read conjunct will ever match.
 
-        Same placement rule as :meth:`reject_undeclared_keys`: callers invoke
-        it BEFORE any retry/circuit-breaker wrapper, because the failure is a
-        deterministic programming error.
+        One rule, two callers: the indexer checks its raw argument with this
+        before it does any work, and the store checks each chunk's metadata
+        through :meth:`require_enterprise_id`. Both raise the same
+        ``ValueError``, BEFORE any retry/circuit-breaker wrapper — the failure
+        is a deterministic programming error, not a transient one.
         """
-        value = (md or {}).get("enterprise_id")
         if not (isinstance(value, str) and value.strip()):
             raise ValueError(
-                f"KB vector metadata for document {document_id!r} carries no "
+                f"KB write for document {document_id!r} carries no "
                 f"enterprise_id (got {value!r}). Every chunk in the KB "
                 f"collection must name the enterprise of the knowledge_items "
                 f"row it belongs to (#1168) — pass the row's own enterprise_id "
                 f"to the indexer."
             )
+
+    @classmethod
+    def require_enterprise_id(
+        cls, md: Optional[Dict[str, Any]], *, document_id: Any = None
+    ) -> None:
+        """Raise unless the chunk metadata ``md`` names its owning tenant.
+
+        The store's form of :meth:`require_enterprise_id_value`: the same rule
+        and message, applied to one chunk's metadata dict.
+        """
+        cls.require_enterprise_id_value(
+            (md or {}).get("enterprise_id"), document_id=document_id
+        )
 
     @field_validator("tags", mode="before")
     @classmethod
@@ -162,7 +177,6 @@ class VectorMetadata(BaseModel):
         "source_url",
         "scope",
         "owner_id",
-        "enterprise_id",
         "domain",
         "service",
         "last_updated",

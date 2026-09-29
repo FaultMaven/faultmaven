@@ -223,6 +223,7 @@ async def test_boot_repair_is_bounded_too_so_a_hang_cannot_crashloop_the_pod():
 
     row = MagicMock()
     row.item_id = "doc-1"
+    row.enterprise_id = STANDALONE_ENTERPRISE_ID  # NOT NULL on every row (#1168)
     row.title = "Draining a node"
     row.content = "# Draining a node\n\nCordon, then drain."
     row.item_type = "runbook"

@@ -117,16 +117,16 @@ distributions later. The one auto-suppression that remains is provenance-based
 
 - **One reader, bound to the writer's collection by construction.** The
   container builds a single `RunbookKnowledgeBase`
-  (`create_runbook_dedup_kb`) that both call sites use. The production KB
-  writer is `KnowledgeVectorStore` (`knowledge_vector_store or vector_store`
-  in the container), whose `add_documents` targets the hardcoded
-  `KB_COLLECTION` — so the reader is built over the same KB ChromaDB client
-  bound to that same constant (`RunbookKnowledgeBase.over_kb_collection`),
-  NOT over the settings-named `container.vector_store`, which diverges the
-  moment `CHROMADB_COLLECTION` is overridden. When the writer is the fallback
-  `vector_store`, the reader is that same object; when the reader cannot be
-  bound to the writer's collection, it is `None` (dedup honestly skipped)
-  rather than mis-bound. A reader/writer collection split would silently
+  (`create_runbook_dedup_kb`) that both call sites use. The KB writer is
+  `KnowledgeVectorStore` — the container wires `knowledge_vector_store` and
+  nothing else (#1168 removed the `or vector_store` fallback) — whose
+  `add_documents` targets the hardcoded `KB_COLLECTION`, so the reader is
+  built over the same KB ChromaDB client bound to that same constant
+  (`RunbookKnowledgeBase.over_kb_collection`), NOT over the settings-named
+  `container.vector_store`, which diverges the moment `CHROMADB_COLLECTION` is
+  overridden. With no KB writer there is no reader, and when the reader cannot
+  be bound to the writer's collection it is `None` too (dedup honestly
+  skipped) rather than mis-bound. A reader/writer collection split would silently
   reinstate the empty-result dedup this design removes.
 - The engine receives that reader by **explicit constructor injection**
   (`MilestoneEngine(runbook_kb=...)`). `None` is legitimate — local dev

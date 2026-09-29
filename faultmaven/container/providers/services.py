@@ -58,51 +58,46 @@ def create_case_service(
 
 def create_runbook_dedup_kb(
     knowledge_vector_store: Any | None,
-    vector_store: Any | None,
     kb_chromadb_client: Any | None,
 ) -> Any | None:
     """Create the runbook-dedup reader, bound to the KB WRITER's collection.
 
-    ``KnowledgeService`` writes through ``knowledge_vector_store or
-    vector_store`` (see the knowledge-service wiring below). The dedup reader
-    must land on the SAME collection as whichever writer is in force, by
-    construction — a reader/writer collection split silently reinstates the
-    empty-result dedup fm#1030 removed:
+    ``KnowledgeService`` writes through ``knowledge_vector_store`` and nothing
+    else (see the knowledge-service wiring below). The dedup reader must land
+    on the SAME collection as that writer, by construction — a reader/writer
+    collection split silently reinstates the empty-result dedup fm#1030
+    removed:
 
-    - Writer is ``KnowledgeVectorStore`` (the production default): its
-      ``add_documents`` targets the hardcoded ``KB_COLLECTION``, so the
-      reader is built over the same KB client bound to that same constant
+    - Writer is ``KnowledgeVectorStore``: its ``add_documents`` targets the
+      hardcoded ``KB_COLLECTION``, so the reader is built over the same KB
+      client bound to that same constant
       (``RunbookKnowledgeBase.over_kb_collection``). A bare
-      ``ChromaDBVectorStore`` would bind the settings-derived collection
-      name instead, which diverges the moment ``CHROMADB_COLLECTION`` is
+      ``ChromaDBVectorStore`` would bind the settings-derived collection name
+      instead, which diverges the moment ``CHROMADB_COLLECTION`` is
       overridden.
-    - Writer is the fallback ``vector_store``: the reader is that SAME
-      object, so reader and writer agree by identity.
+    - No writer (``knowledge_vector_store`` is None — ``SKIP_SERVICE_CHECKS``):
+      no reader. There used to be a second pairing here, the plain
+      ``ChromaDBVectorStore`` as both writer and reader, but the writer half
+      was removed (#1168): that store never checks the tenant stamp, and it
+      could never be selected anyway — both store factories are gated on the
+      same flag, so it was None whenever ``knowledge_vector_store`` was.
     - Writer store present but its client is not (cannot happen in a
       correctly built container, but stated rather than assumed): return
       None — an honest "dedup did not run" beats a reader searching a
       collection the writer never touches.
     """
-    if knowledge_vector_store is not None:
-        if kb_chromadb_client is None:
-            logger.warning(
-                "Runbook dedup disabled: KB writer present but its ChromaDB "
-                "client is not — refusing to bind the dedup reader to a "
-                "collection the writer may not write"
-            )
-            return None
-        from faultmaven.infrastructure.knowledge.runbook_kb import (
-            RunbookKnowledgeBase,
+    if knowledge_vector_store is None:
+        return None
+    if kb_chromadb_client is None:
+        logger.warning(
+            "Runbook dedup disabled: KB writer present but its ChromaDB "
+            "client is not — refusing to bind the dedup reader to a "
+            "collection the writer may not write"
         )
+        return None
+    from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 
-        return RunbookKnowledgeBase.over_kb_collection(kb_chromadb_client)
-    if vector_store:
-        from faultmaven.infrastructure.knowledge.runbook_kb import (
-            RunbookKnowledgeBase,
-        )
-
-        return RunbookKnowledgeBase(vector_store=vector_store)
-    return None
+    return RunbookKnowledgeBase.over_kb_collection(kb_chromadb_client)
 
 
 def create_milestone_engine(
@@ -1320,7 +1315,6 @@ def register_services(container: BaseDIContainer) -> None:
     case_repository = getattr(container, "case_repository", None)
     session_store = container.get_service("session_store")
     case_vector_store = getattr(container, "case_vector_store", None)
-    vector_store = container.get_service("vector_store")
     knowledge_ingester = getattr(container, "knowledge_ingester", None)
     redis_client = getattr(container, "redis_client", None)
 
@@ -1521,11 +1515,15 @@ def register_services(container: BaseDIContainer) -> None:
     )
     container._register_service("case_service", case_service)
 
-    # Knowledge Service — prefer KnowledgeVectorStore (scope-enforcing) over the
-    # generic ChromaDBVectorStore. Fall back to vector_store if not registered.
+    # Knowledge Service — writes through KnowledgeVectorStore and nothing else:
+    # its add_documents refuses a KB chunk with no tenant stamp (#1168). There
+    # is deliberately no fallback to the generic ChromaDBVectorStore, which
+    # checks no stamp — and which was never selectable anyway, since both
+    # store factories are gated on the same SKIP_SERVICE_CHECKS flag. With no
+    # knowledge_vector_store the service indexes nothing (its no-store exit).
     knowledge_vector_store = getattr(container, "knowledge_vector_store", None)
     knowledge_service = create_knowledge_service(
-        knowledge_vector_store or vector_store,
+        knowledge_vector_store,
         knowledge_ingester,
         container.get_service("sanitizer", required=True),
         container.get_service("tracer", required=True),
@@ -1605,7 +1603,6 @@ def register_services(container: BaseDIContainer) -> None:
     # report-recommendation route reads via ``container.runbook_kb``.
     runbook_kb = create_runbook_dedup_kb(
         knowledge_vector_store=getattr(container, "knowledge_vector_store", None),
-        vector_store=vector_store,
         kb_chromadb_client=getattr(container, "kb_chromadb_client", None),
     )
     container.runbook_kb = runbook_kb

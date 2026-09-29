@@ -136,8 +136,8 @@ _GLOBAL_TIER = {"scope": "global"}
 # refused), and ADR-017 makes it billing attribution, never a visibility
 # predicate — so a clause keyed on it alone named a "scope" that matched
 # nothing, and is now refused as unscoped (#1168). Nor is `enterprise_id` here
-# yet: it is stamped on every KB write since #1168, and #1775 conjuncts it on
-# read.
+# yet: every KB write the service makes stamps it since #1168, and #1775
+# conjuncts it on read.
 SCOPE_FILTER_KEYS = {"scope", "owner_id", "parent_document_id"}
 
 # Common English stop words for term overlap scoring
@@ -282,8 +282,8 @@ class KnowledgeVectorStore(BaseExternalClient):
     :meth:`_require_kb_filter_present`, which checks that a filter is *present*
     and not that it is *scoped*. It is not the tenant control; the tenant
     control is ``build_kb_scope_filter``. The vector-layer one is the
-    ``enterprise_id`` stamp every KB write carries (#1168), which #1775
-    conjuncts on read.
+    ``enterprise_id`` stamp every KB write the service makes carries (#1168),
+    which #1775 conjuncts on read.
 
     Case evidence collections (case_{case_id}) are exempt from the check
     since they are already scoped by case ownership.
@@ -438,8 +438,9 @@ class KnowledgeVectorStore(BaseExternalClient):
         ``build_kb_scope_filter``, whose output is keyed on the caller's own
         identifiers, plus the AST pin that every filtered KB read derives its
         clause from it. Giving ChromaDB a tenant dimension of its own is the
-        control this check is sometimes mistaken for: every KB write now
-        stamps ``enterprise_id`` into chunk metadata (**#1168**, refused in
+        control this check is sometimes mistaken for: every KB write the
+        service makes now stamps ``enterprise_id`` into chunk metadata
+        (**#1168**, refused in
         :meth:`add_documents` when absent), and conjuncting it on read, outside
         the ``$or``, is **#1775**. Until that lands, no read consults the stamp.
 
@@ -1292,7 +1293,10 @@ class KnowledgeVectorStore(BaseExternalClient):
             VectorMetadata.reject_undeclared_keys(md)
             # Every KB chunk names its owning tenant (#1168): the key slice 2
             # (#1775) conjuncts on read. Refused here, at the one store every
-            # KB write goes through, so a future writer cannot skip the stamp.
+            # KB write the service makes goes through (the container wires no
+            # other), so a new service writer cannot skip the stamp. The two
+            # dead writers that bypass this store — ``KnowledgeIngester`` and
+            # ``scripts/migration_backfill_scopes.py`` — are #1782.
             # Case-evidence collections are scoped by case and carry no stamp.
             if collection_name == KB_COLLECTION:
                 VectorMetadata.require_enterprise_id(md, document_id=doc.get("id"))
