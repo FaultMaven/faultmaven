@@ -8,6 +8,7 @@ from typing import (
     Any,
     Literal,
     Optional,
+    Sequence,
 )
 
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
@@ -36,7 +37,7 @@ from faultmaven.modules.case.contracts import (
 logger = logging.getLogger(__name__)
 
 
-def _matches_gate_token(msg: str, tokens: list[str]) -> bool:
+def _matches_gate_token(msg: str, tokens: Sequence[str]) -> bool:
     """Word-boundary prefix match for typed gate answers.
 
     Bare ``startswith`` also matched words that merely share the prefix —
@@ -47,6 +48,19 @@ def _matches_gate_token(msg: str, tokens: list[str]) -> bool:
     prefix-sharing words. ``msg`` must already be stripped/lowercased.
     """
     return any(re.match(rf"{re.escape(t)}\b", msg) for t in tokens)
+
+
+def _contains_gate_token(msg: str, tokens: Sequence[str]) -> bool:
+    """The search form of :func:`_matches_gate_token`: a token ANYWHERE in ``msg``.
+
+    Same grammar — the escaped token between word boundaries, so "yesterday"
+    still does not contain "yes" — anchored at any word instead of the first.
+    It decides nothing on its own: the prefix form says whether a reply is a
+    gate answer at all, and this one only asks which tokens the answer
+    carries ("ok, go ahead" opens on "ok" and carries "go ahead", #1748).
+    ``msg`` must already be stripped/lowercased.
+    """
+    return any(re.search(rf"\b{re.escape(t)}\b", msg) for t in tokens)
 
 
 #: Milestone names the ENGINE derives rather than the LLM claiming them. They

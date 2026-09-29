@@ -22,6 +22,7 @@ from faultmaven.modules.case.contracts import (
     Case,
     HypothesisState,
     InvestigationMomentum,
+    TerminalConfirmedVia,
     TurnOutcome,
     TurnProgress,
 )
@@ -82,7 +83,7 @@ def _create_turn_record(
     repair_pattern: str | None = None,
     validation_repairs: list[str] | None = None,
     agent_response_synthesized: bool = False,
-    terminal_confirmed_via: str | None = None,
+    terminal_confirmed_via: TerminalConfirmedVia | None = None,
 ) -> TurnProgress:
     """Create turn progress record."""
     # Multiple backstops (path-conditional emission rejection, milestone
@@ -147,7 +148,7 @@ def _finish_deterministic_turn(
     milestones_completed: list[str] | None = None,
     progress_made: bool = False,
     status_transitioned: bool = False,
-    terminal_confirmed_via: str | None = None,
+    terminal_confirmed_via: TerminalConfirmedVia | None = None,
 ) -> dict[str, Any]:
     """Close out a deterministic early-return turn: ONE progress decision,
     applied to all three surfaces that report it (#1229).

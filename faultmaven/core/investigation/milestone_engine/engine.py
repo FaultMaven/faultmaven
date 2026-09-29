@@ -31,7 +31,6 @@ from faultmaven.core.investigation.milestone_engine.terminal_turns import (
     TerminalTurnHandler,
 )
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
-    _user_confirms_transition,
     _user_declines_transition,
     confirmation_token_class,
 )
@@ -619,19 +618,25 @@ class MilestoneEngine:
                         intent_type == "confirmation"
                         and (intent_data or {}).get("value") is False
                     )
-                    user_confirms = intent_confirms or _user_confirms_transition(
-                        user_message
-                    )
+                    # The typed matcher, read once: its verdict is whether
+                    # the text confirms, its class names how (#1748).
+                    token_class = confirmation_token_class(user_message)
+                    user_confirms = intent_confirms or token_class is not None
                     user_declines = intent_declines or _user_declines_transition(
                         user_message
                     )
 
                     if user_confirms:
-                        confirmed_via = (
-                            "intent"
-                            if intent_confirms
-                            else confirmation_token_class(user_message)
-                        )
+                        # How the user confirmed, for the turn record (#1748). A
+                        # click is ``intent``. An intent the service minted from
+                        # typed text carries ``typed`` and is NOT a click: it is
+                        # named by its tokens, and ``typed_other`` when the
+                        # resolver accepted text that is no known token ("that
+                        # works").
+                        if intent_confirms and not (intent_data or {}).get("typed"):
+                            confirmed_via = "intent"
+                        else:
+                            confirmed_via = token_class or "typed_other"
                         return await _confirm_pending_transition(
                             self.deps.checkpoint_service,
                             self.deps.report_service,

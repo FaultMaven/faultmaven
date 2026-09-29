@@ -48,9 +48,7 @@ async def _confirm_pending_transition(
             },
         )
 
-    executed = confirm_pending_transition(
-        case, case.user_id, confirmed_via=confirmed_via
-    )
+    executed = confirm_pending_transition(case, case.user_id)
     if not executed and (case.pending_transition or {}).get("to_state") == "resolved":
         # INV-37 resolve-preservation: the pending CLOSE
         # pivoted to a RESOLVED proposal (the case became

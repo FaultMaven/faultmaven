@@ -288,13 +288,16 @@ class TransitionManager:
                                 "to_state": to_state,
                             },
                         )
-                    confirmed_via = confirmation_token_class(user_message)
-                    executed = confirm_pending_transition(
-                        case, case.user_id, confirmed_via=confirmed_via
-                    )
+                    executed = confirm_pending_transition(case, case.user_id)
                     if executed:
                         metadata["status_transitioned"] = True
-                        metadata["terminal_confirmed_via"] = confirmed_via
+                        # Read onto this turn's record by ``_apply_turn_response``
+                        # and counted after the save (#1748). This branch
+                        # confirms on the typed text alone, so the text's token
+                        # class is the channel.
+                        metadata["terminal_confirmed_via"] = confirmation_token_class(
+                            user_message
+                        )
                     else:
                         # INV-37 resolve-preservation: the pending CLOSE pivoted
                         # to a RESOLVED proposal because the case became

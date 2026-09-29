@@ -143,9 +143,7 @@ def test_confirm_pending_close_pivots_to_resolved_when_resolvable():
     case = _resolvable_case_with_pending_close()
 
     with patch.object(terminal_transitions, "close_pivoted_to_resolve_total") as ctr:
-        executed = confirm_pending_transition(
-            case, "user_test", confirmed_via="explicit_token"
-        )
+        executed = confirm_pending_transition(case, "user_test")
         ctr.inc.assert_called_once()
 
     # Nothing terminal committed.
@@ -173,9 +171,7 @@ def test_pivot_message_handles_out_of_band_fix_without_record():
     propose_transition(case, to_state="closed", summary="Closing as unresolved.")
 
     with patch.object(terminal_transitions, "close_pivoted_to_resolve_total"):
-        executed = confirm_pending_transition(
-            case, "user_test", confirmed_via="explicit_token"
-        )
+        executed = confirm_pending_transition(case, "user_test")
 
     assert executed is False
     assert case.pending_transition["to_state"] == "resolved"
@@ -195,9 +191,7 @@ def test_confirm_pending_close_executes_when_not_resolvable():
     propose_transition(case, to_state="closed", summary="Closing as stabilized.")
 
     with patch.object(terminal_transitions, "close_pivoted_to_resolve_total") as ctr:
-        executed = confirm_pending_transition(
-            case, "user_test", confirmed_via="explicit_token"
-        )
+        executed = confirm_pending_transition(case, "user_test")
         ctr.inc.assert_not_called()
 
     assert executed is True
@@ -215,9 +209,7 @@ def test_confirm_pending_resolve_is_unaffected_by_the_guard():
     propose_transition(case, to_state="resolved", summary="Resolving.")
 
     with patch.object(terminal_transitions, "close_pivoted_to_resolve_total") as ctr:
-        executed = confirm_pending_transition(
-            case, "user_test", confirmed_via="explicit_token"
-        )
+        executed = confirm_pending_transition(case, "user_test")
         ctr.inc.assert_not_called()
 
     assert executed is True
@@ -265,9 +257,7 @@ def test_pivot_scoped_to_investigating_never_proposes_invalid_inquiry_edge():
     propose_transition(case, to_state="closed", summary="Inquiry-only close.")
 
     with patch.object(terminal_transitions, "close_pivoted_to_resolve_total") as ctr:
-        executed = confirm_pending_transition(
-            case, "user_test", confirmed_via="explicit_token"
-        )
+        executed = confirm_pending_transition(case, "user_test")
         ctr.inc.assert_not_called()
 
     assert executed is True

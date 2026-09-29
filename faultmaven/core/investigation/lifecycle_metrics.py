@@ -527,31 +527,39 @@ close_pivoted_to_resolve_total = Counter(
 )
 
 # Terminal-confirmation telemetry (#1748, the observable behind #723). A
-# rule-fire and outcome pair: ``faultmaven_terminal_confirmation_total`` counts
-# every terminal transition the engine EXECUTED on a user's confirmation,
-# labelled by ``via`` (how the user confirmed: ``intent`` = a DECIDE click or a
-# repeated dropdown click, ``explicit_token`` = typed "yes"/"go ahead"/...,
-# ``weak_token`` = a bare "ok"/"sure"/"lgtm"/...) and ``to_state``
-# (``resolved`` | ``closed``). ``faultmaven_terminal_followup_total`` counts the
-# FIRST message a user sends on a case after that confirmation, by the same
-# ``via``. The load-bearing signal is the follow-up rate per channel; a weak
+# rule-fire and outcome pair, both counted by the investigation service AFTER
+# the turn's save (``turn_messages._save_and_emit_turn``) from the saved turn
+# records, so a turn that fails or conflicts and is retried counts once.
+# ``faultmaven_terminal_confirmation_total`` counts every terminal transition a
+# user's confirmation executed, labelled by ``via`` (how the user confirmed:
+# ``intent`` = a click, ``explicit_token`` = typed "yes"/"go ahead"/...,
+# ``weak_token`` = typed "ok"/"sure"/"lgtm"/... with no explicit token,
+# ``typed_other`` = typed text the intent resolver accepted that is no known
+# token) and ``to_state`` (``resolved`` | ``closed``).
+# ``faultmaven_terminal_followup_total`` counts the FIRST message a user sends
+# on the case after that confirmation carrying no structured intent (typed
+# text, not a click on a card that sends one), by the same ``via`` and the
+# state the case is in. The load-bearing signal is the follow-up rate per channel; a weak
 # token's rate well above the explicit token's is what #723 defers on. A
-# follow-up alone is not proof of a spurious close ("thanks" is one). Labels
-# are bounded enums, never user text. The INV-37 pivot executes nothing and
-# counts nothing.
+# follow-up alone is not proof of a spurious close ("thanks" is one). Labels are
+# bounded enums (``TerminalConfirmedVia``, ``CaseState``), never user text. The
+# INV-37 pivot executes nothing and counts nothing.
 terminal_confirmation_total = Counter(
     "faultmaven_terminal_confirmation_total",
     "Terminal transitions executed on a user confirmation, by how the user "
-    "confirmed (intent|explicit_token|weak_token) and the state reached "
-    "(resolved|closed).",
+    "confirmed (intent|explicit_token|weak_token|typed_other) and the state "
+    "reached (resolved|closed).",
     ["via", "to_state"],
 )
 
 terminal_followup_total = Counter(
     "faultmaven_terminal_followup_total",
-    "First user message on a case after a confirmed terminal transition, by "
-    "how that transition was confirmed (intent|explicit_token|weak_token).",
-    ["via"],
+    "First user message without a structured intent on a case after a "
+    "confirmed terminal transition, "
+    "by how that transition was confirmed "
+    "(intent|explicit_token|weak_token|typed_other) and the case's state "
+    "(resolved|closed).",
+    ["via", "to_state"],
 )
 
 # INV-43 resolution-offer telemetry. The RESOLVED handshake had exactly three

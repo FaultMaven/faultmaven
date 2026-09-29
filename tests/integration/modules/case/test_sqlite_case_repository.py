@@ -2160,3 +2160,66 @@ async def test_terminal_confirmed_via_survives_a_save_and_load(sqlite_session):
     loaded = await repo.get(case_id)
 
     assert loaded.turn_history[-1].terminal_confirmed_via == "weak_token"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_an_unknown_stored_confirmation_channel_loads_as_none(sqlite_session):
+    """#1748: the loader rebuilds every record with ``TurnProgress(**t)``, so a
+    channel the label set no longer names must load as None — rejecting it
+    would make the whole case unloadable over a telemetry field."""
+    import json
+
+    from faultmaven.modules.case.domain.models.case import Case
+    from faultmaven.modules.case.domain.models.documentation import DocumentationData
+    from faultmaven.modules.case.domain.models.lifecycle import CaseState
+    from faultmaven.modules.case.domain.models.problem import InquiryData
+    from faultmaven.modules.case.domain.models.progress import InvestigationProgress
+    from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
+    from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
+        SQLiteCaseRepository,
+    )
+
+    repo = SQLiteCaseRepository(sqlite_session)
+    case_id = f"case_{uuid4().hex[:12]}"
+    case = Case(
+        case_id=case_id,
+        user_id="test_user_123",
+        enterprise_id="test_ent_123",
+        title="Retired confirmation channel",
+        state=CaseState.INQUIRY,
+        inquiry=InquiryData(),
+        documentation=DocumentationData(),
+        progress=InvestigationProgress(),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    case.current_turn = 1
+    case.turn_history.append(
+        TurnProgress(
+            turn_number=1,
+            progress_made=True,
+            outcome=TurnOutcome.CONVERSATION,
+            terminal_confirmed_via="weak_token",
+        )
+    )
+    await repo.save(case)
+
+    # Rewrite the stored record the way an older build's label would read.
+    row = await sqlite_session.execute(
+        text("SELECT metadata FROM cases WHERE case_id = :cid"), {"cid": case_id}
+    )
+    stored = json.loads(row.scalar_one())
+    assert stored["turn_history"][-1]["terminal_confirmed_via"] == "weak_token"
+    stored["turn_history"][-1]["terminal_confirmed_via"] = "bare_weak"
+    await sqlite_session.execute(
+        text("UPDATE cases SET metadata = :m WHERE case_id = :cid"),
+        {"m": json.dumps(stored), "cid": case_id},
+    )
+    await sqlite_session.commit()
+    sqlite_session.expunge_all()
+
+    loaded = await repo.get(case_id)
+
+    assert loaded is not None
+    assert loaded.turn_history[-1].terminal_confirmed_via is None

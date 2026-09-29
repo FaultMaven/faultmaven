@@ -3,6 +3,7 @@
 from typing import Optional
 
 from .stage_gates import (
+    _contains_gate_token,
     _matches_gate_token,
 )
 
@@ -36,8 +37,12 @@ _EXPLICIT_CONFIRM_TOKENS = (
 )
 
 
-def _user_confirms_transition(user_message: str) -> bool:
-    """Fallback check for typed confirmations (not DECIDE clicks).
+def confirmation_token_class(user_message: str) -> Optional[str]:
+    """Which class of typed confirmation ``user_message`` is, or None for none.
+
+    The typed-confirmation matcher itself (not DECIDE clicks): None means the
+    gate does not read the message as consent, and ``_user_confirms_transition``
+    is exactly "this is not None".
 
     DECIDE suggestion clicks now carry intent metadata and route
     through IntentType.CONFIRMATION deterministically. This matcher
@@ -57,36 +62,35 @@ def _user_confirms_transition(user_message: str) -> bool:
     the same one that guards classifier-minted confirmation intents at
     the IntentResolver adoption site (#721), so the two confirm lanes
     cannot drift apart.
+
+    Whether the message confirms is decided by its OPENING token, over both
+    sets. Which class it is reads the WHOLE message (#1748): ``"explicit_token"``
+    when an explicit token appears anywhere in it — "ok, go ahead" and
+    "sure, close it" open on a weak token and still say what they mean — and
+    ``"weak_token"`` only when none does.
     """
     from faultmaven.core.investigation.terminal_transitions import (
         is_substantive_reply,
     )
 
     if not user_message:
-        return False
+        return None
     if is_substantive_reply(user_message):
-        return False
-    msg = user_message.strip().lower()
-    return _matches_gate_token(msg, list(_EXPLICIT_CONFIRM_TOKENS)) or (
-        _matches_gate_token(msg, list(_WEAK_CONFIRM_TOKENS))
-    )
-
-
-def confirmation_token_class(user_message: str) -> Optional[str]:
-    """Which class of typed token confirmed, or None when nothing did.
-
-    Returns None exactly when ``_user_confirms_transition`` returns False.
-    Otherwise ``"explicit_token"`` if any explicit token matches, and
-    ``"weak_token"`` when only a weak one does, so "yes ok" is explicit.
-    Same matcher and same substance screen as ``_user_confirms_transition``;
-    this only reports which set matched (#1748, the observable behind #723).
-    """
-    if not _user_confirms_transition(user_message):
         return None
     msg = user_message.strip().lower()
-    if _matches_gate_token(msg, list(_EXPLICIT_CONFIRM_TOKENS)):
+    if not _matches_gate_token(msg, _EXPLICIT_CONFIRM_TOKENS + _WEAK_CONFIRM_TOKENS):
+        return None
+    if _contains_gate_token(msg, _EXPLICIT_CONFIRM_TOKENS):
         return "explicit_token"
     return "weak_token"
+
+
+def _user_confirms_transition(user_message: str) -> bool:
+    """Fallback check for typed confirmations (not DECIDE clicks).
+
+    The verdict of :func:`confirmation_token_class`, which carries the rules.
+    """
+    return confirmation_token_class(user_message) is not None
 
 
 def _user_declines_transition(user_message: str) -> bool:

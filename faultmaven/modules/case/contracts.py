@@ -554,6 +554,7 @@ from faultmaven.modules.case.domain.models.solution import (
 from faultmaven.modules.case.domain.models.turn import (
     NON_INVESTIGATIVE_OUTCOMES,
     InvestigationMomentum,
+    TerminalConfirmedVia,
     TurnOutcome,
     TurnProgress,
 )
@@ -660,6 +661,7 @@ __all__ = [
     "TERMINAL_HYPOTHESIS_STATES",
     "NON_INVESTIGATIVE_OUTCOMES",
     "is_default_case_title",
+    "TerminalConfirmedVia",
     "TurnOutcome",
     "TurnProgress",
     "UploadedFile",

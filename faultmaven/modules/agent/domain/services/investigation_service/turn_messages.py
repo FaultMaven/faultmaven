@@ -1,4 +1,4 @@
-"""Per-turn message-row bookkeeping: appending the user's turn and the agent's reply to the case, and the completion side effects (save + #1142 telemetry emission) that go with the agent one."""
+"""Per-turn message-row bookkeeping: appending the user's turn and the agent's reply to the case, and the completion side effects (save + #1142 telemetry emission + the #1748 terminal-confirmation counters) that go with the agent one."""
 
 import logging
 from typing import Optional
@@ -7,6 +7,10 @@ from faultmaven.core.investigation.case_telemetry import (
     TurnPath,
     collect_progress_arms,
     emit_case_turn,
+)
+from faultmaven.core.investigation.lifecycle_metrics import (
+    terminal_confirmation_total,
+    terminal_followup_total,
 )
 from faultmaven.models.api_models import IntentType
 from faultmaven.modules.agent.domain.services.orientation import OrientationKind
@@ -127,6 +131,14 @@ async def _save_and_emit_turn(
     updated_case.message_count += 1
     await repository.save(updated_case)
 
+    # #1748: the terminal-confirmation pair, counted HERE — after the save, at
+    # the one point every route passes through — so a turn that fails or
+    # conflicts and is retried counts once, and a route that never reaches the
+    # engine (GREETING) counts like any other.
+    _count_terminal_confirmation(
+        updated_case, payload=payload, was_terminal=was_terminal
+    )
+
     # 4b. #1142: one row per consumed turn, on every route. Emitted
     # AFTER the save so the counter, the case state and both ledgers are
     # the settled post-turn values — the pre-existing
@@ -182,3 +194,51 @@ async def _save_and_emit_turn(
         attachment_count=len(attachment_metadata or []),
     )
     return agent_response_text
+
+
+def _count_terminal_confirmation(updated_case, *, payload, was_terminal) -> None:
+    """Count a confirmed terminal transition, and the first message after it (#1748).
+
+    Read from the SAVED turn records. By this point ``turn_history[-1]`` is this
+    turn's own record on every route — the engine writes it on the routes that
+    reach its bookkeeping and ``_backfill_consumed_turn`` writes it on the rest
+    (greeting, file reclassification, out-of-band, the terminal short-circuit) —
+    and ``terminal_confirmed_via`` is set only on the record of a turn whose
+    confirmation executed a terminal transition. So:
+
+    * this turn confirmed one when its own record carries a channel;
+    * this turn is the first message after one when it began on a terminal case
+      and the PREVIOUS record carries a channel. Every later message finds a
+      predecessor that carries none, so it needs no flag.
+
+    The follow-up counts only a message with no structured intent
+    (``payload.intent is None``): typed text, not a click on a card that sends
+    an intent — the confirmation card clicked again, say. A card that carries
+    no intent (the ack turn's runbook or regenerate card) arrives as its text
+    and is counted.
+
+    A metric must never fail a turn: the turn is already saved, and a
+    registry failure here is logged and dropped.
+    """
+    try:
+        history = updated_case.turn_history
+        to_state = updated_case.state.value
+        if updated_case.is_terminal and history and history[-1].terminal_confirmed_via:
+            terminal_confirmation_total.labels(
+                via=history[-1].terminal_confirmed_via, to_state=to_state
+            ).inc()
+        if (
+            was_terminal
+            and len(history) >= 2
+            and history[-2].terminal_confirmed_via
+            and payload.intent is None
+        ):
+            terminal_followup_total.labels(
+                via=history[-2].terminal_confirmed_via, to_state=to_state
+            ).inc()
+    except Exception:
+        logger.warning(
+            "Terminal-confirmation telemetry failed for case %s",
+            getattr(updated_case, "case_id", None),
+            exc_info=True,
+        )

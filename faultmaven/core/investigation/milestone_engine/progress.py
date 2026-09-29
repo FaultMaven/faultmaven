@@ -10,6 +10,7 @@ from typing import (
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
+    TerminalConfirmedVia,
     TurnOutcome,
     TurnProgress,
 )
@@ -95,7 +96,7 @@ def check_if_progress_made(metadata: dict[str, Any]) -> bool:
 
 
 def confirmed_transition_arms(
-    case: "Case", executed: bool, confirmed_via: str
+    case: "Case", executed: bool, confirmed_via: TerminalConfirmedVia
 ) -> dict[str, Any]:
     """Arms for a deterministic branch that just confirmed a terminal proposal.
 
@@ -188,7 +189,7 @@ def record_promptless_turn(
     milestones_completed: Optional[list[str]] = None,
     outcome: TurnOutcome = TurnOutcome.CONVERSATION,
     agent_response_synthesized: bool = False,
-    terminal_confirmed_via: Optional[str] = None,
+    terminal_confirmed_via: Optional[TerminalConfirmedVia] = None,
 ) -> None:
     """Record the ``TurnProgress`` of a turn that built no prompt (#1688).
 

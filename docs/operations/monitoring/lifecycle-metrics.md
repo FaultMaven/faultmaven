@@ -294,19 +294,29 @@ Composition seams (cross-tier dependencies in the matrix) are the natural candid
 
 **Counters:**
 
-- `faultmaven_terminal_confirmation_total{via, to_state}` — one increment per terminal transition the engine executed on a user's confirmation. `via` is `intent` (a DECIDE click or a repeated dropdown click), `explicit_token` (a typed `yes`, `go ahead`, …) or `weak_token` (a bare weak token only; `yes ok` is explicit). `to_state` is `resolved` or `closed`. The INV-37 close-to-resolve pivot executes nothing and counts nothing.
-- `faultmaven_terminal_followup_total{via}` — one increment for the **first** message a user sends on a case after that confirmation, by the same `via`. The confirming turn's record carries `terminal_confirmed_via`; later messages find their own records and count nothing.
+- `faultmaven_terminal_confirmation_total{via, to_state}` — one increment per terminal transition a user's confirmation executed. `via` is how the user confirmed:
+  - `intent` — a click (the DECIDE confirmation card, or the dropdown pick repeated);
+  - `explicit_token` — typed text carrying an explicit token anywhere (`yes`, `go ahead`, …; `ok, go ahead` and `yes ok` are explicit);
+  - `weak_token` — typed text opening on a weak token and carrying no explicit one;
+  - `typed_other` — typed text the intent resolver accepted as a confirmation that is no known token ("that works").
 
-Both label sets are bounded enums, never the user's text.
+  A typed reply the resolver turned into a confirmation intent is still typed, and is named by its tokens, never `intent`. `to_state` is `resolved` or `closed`. The INV-37 close-to-resolve pivot executes nothing and counts nothing.
+- `faultmaven_terminal_followup_total{via, to_state}` — one increment for the **first** message a user sends on the case after that confirmation, by the same `via` and the state the case is in. Only a message with no structured intent counts: typed text, not a click on a card that sends one (the confirmation card clicked again). A card that carries no intent — the ack turn's runbook and regenerate cards — arrives as its text and is counted.
+
+**When they count.** Both are counted by the investigation service after the turn's save (`turn_messages._save_and_emit_turn`), the one point every route passes through, and read from the saved turn records: the confirming turn's record carries `terminal_confirmed_via`, so the next message finds it on its predecessor and every later message finds a predecessor that carries none. A turn that fails or conflicts and is retried counts once, and a route that never reaches the engine (a greeting) counts like any other.
+
+Both label sets are bounded enums (`TerminalConfirmedVia`, `CaseState`), never the user's text.
 
 **#723 trigger 1, as a query** — the follow-up rate per channel over 30 days:
 
 ```promql
-sum by (via) (increase(faultmaven_terminal_followup_total[30d]))
+sum by (via, to_state) (increase(faultmaven_terminal_followup_total[30d]))
   /
-sum by (via) (increase(faultmaven_terminal_confirmation_total[30d]))
+sum by (via, to_state) (increase(faultmaven_terminal_confirmation_total[30d]))
 ```
 
 The signal is the `weak_token` rate against the `explicit_token` rate, not either alone: a follow-up is not proof of a spurious close ("thanks" is a follow-up).
 
 **#723 trigger 2 cannot occur.** A dropdown INQUIRY → INVESTIGATING is refused at engine entry since #1624 (`earned_edge_refusal`; from INQUIRY, `USER_SELECTABLE_ACTIONS` offers only CLOSED), so no counter exists for it.
+
+Matrix row: INV-03 in `investigation-invariants.md`.

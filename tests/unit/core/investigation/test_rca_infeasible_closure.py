@@ -149,9 +149,7 @@ def test_confirm_pending_transition_closes_rca_infeasible():
     case = _make_case(rca_infeasible=True, rationale="deprecated legacy system")
     _apply_stage_gate_side_effects(case, {"mitigation_verified"}, "ok", {})
 
-    confirmed = confirm_pending_transition(
-        case, "user_123", confirmed_via="explicit_token"
-    )
+    confirmed = confirm_pending_transition(case, "user_123")
 
     assert confirmed is True
     assert case.state == CaseState.CLOSED
