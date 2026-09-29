@@ -181,7 +181,10 @@ Above the forcing ceiling, `tool_choice="required"` is sent as `auto`, plus
 a trailing `system` block that names the tool when the forcing names one or
 exactly one tool is offered. There the thinking-under-forcing refusal
 does not apply. An unparseable id or a version above its ceiling takes
-that newest shape, which every measured model accepts. Matrix and ceilings:
+that newest shape, which every measured model accepts. The thinking shape
+is the exception: no shape is accepted by every model, so an unparseable id
+is sent the configured `ANTHROPIC_THINKING_MODE`, and a parsed id above its
+ceiling is sent `adaptive` (#1756). Matrix and ceilings:
 `docs/reference/llm-model-capabilities.md` §"Anthropic request shape".
 
 ## Stop reasons and truncation

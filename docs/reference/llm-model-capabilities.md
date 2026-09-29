@@ -366,7 +366,10 @@ accepts that shape, so an unknown model never 400s on these two parameters.
 The cost is losing sampling and forcing on an unknown *old* model. Raise a
 ceiling only after measuring the property on the new version. The adapter
 logs each unparseable id once as a WARNING, and each parsed model above a
-ceiling once at INFO, naming what it drops.
+ceiling once at INFO, naming what it drops. The thinking shape is the
+exception: no shape is accepted by every model, so an unparseable id is sent
+the configured `ANTHROPIC_THINKING_MODE`, and a parsed id above its ceiling is
+sent `adaptive` (#1756).
 
 `strict: true` is not sent on the schema tool. Strict tool use requires
 `additionalProperties: false` on every object and rejects

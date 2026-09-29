@@ -91,8 +91,10 @@ class AnthropicProvider(BaseLLMProvider):
     #   opus-4-7 through opus-5-5, sonnet-5(-5), fable-5(-1): enabled 400
     #     ("thinking.type.enabled" is not supported; use adaptive); adaptive 200.
     # budget_tokens is accepted through the first table's entry; adaptive is
-    # rejected through the second's. An unparseable id, an unlisted family or a
-    # version above an entry rejects budget_tokens and accepts adaptive.
+    # rejected through the second's. A parsed id in an unlisted family or above
+    # an entry rejects budget_tokens and accepts adaptive. An unparseable id is
+    # the exception to #1695's default: no thinking shape is accepted by every
+    # model, so an id the adapter cannot read is sent the configured mode.
     _BUDGET_TOKENS_ACCEPTED_THROUGH = {
         "opus": (4, 6),
         "sonnet": (4, 6),
@@ -224,8 +226,12 @@ class AnthropicProvider(BaseLLMProvider):
           older) is sent "enabled" instead.
         - "enabled": ``{"type": "enabled", "budget_tokens": N}`` — accepted
           through opus/sonnet 4.6 and haiku 4.5. A model that rejects
-          ``budget_tokens`` (4.7+, an unparseable id) is sent "adaptive"
-          instead (#1756).
+          ``budget_tokens`` (4.7+, an unlisted family, a version above its
+          ceiling) is sent "adaptive" instead (#1756).
+
+        An unparseable model id is sent the configured mode, unsubstituted:
+        no thinking shape is accepted by every model, so an id the adapter
+        cannot read gets what the operator configured.
 
         Starvation guard (fm#1094): thinking is billed INSIDE ``max_tokens``.
         A configuration that cannot leave ``_THINKING_MIN_ANSWER_TOKENS`` for
@@ -237,26 +243,29 @@ class AnthropicProvider(BaseLLMProvider):
             return None
 
         # Send the shape this model accepts (#1756); the substituted mode's own
-        # guards below then apply.
+        # guards below then apply. An unparseable id keeps the configured mode.
         configured = mode
-        if mode == "enabled" and not self._accepts_budget_tokens(model):
+        parsed = self._claude_version(model) is not None
+        if parsed and mode == "enabled" and not self._accepts_budget_tokens(model):
             mode = "adaptive"
             self._log_thinking_substitution(
                 model,
                 configured,
                 "ANTHROPIC_THINKING_MODE=enabled: model %s rejects budget_tokens "
-                "with a 400; sending adaptive thinking instead "
-                "(ANTHROPIC_THINKING_BUDGET_TOKENS is not used for this model) "
+                "(a 400), so its thinking requests use adaptive thinking "
+                "instead; ANTHROPIC_THINKING_BUDGET_TOKENS does not apply to it "
                 "(#1756)",
             )
-        elif mode == "adaptive" and not self._accepts_adaptive_thinking(model):
+        elif (
+            parsed and mode == "adaptive" and not self._accepts_adaptive_thinking(model)
+        ):
             mode = "enabled"
             self._log_thinking_substitution(
                 model,
                 configured,
                 "ANTHROPIC_THINKING_MODE=adaptive: model %s does not support "
-                "adaptive thinking (a 400); sending enabled thinking with "
-                "budget_tokens instead (#1756)",
+                "adaptive thinking (a 400), so its thinking requests use enabled "
+                "thinking with ANTHROPIC_THINKING_BUDGET_TOKENS instead (#1756)",
             )
 
         if mode == "adaptive":

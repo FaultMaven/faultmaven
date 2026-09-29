@@ -605,10 +605,35 @@ class TestThinkingShapePerModel:
         assert "ANTHROPIC_THINKING_MODE=enabled" in records[0].getMessage()
         assert model in records[0].getMessage()
 
-    @pytest.mark.parametrize("model", ["claude-mythos-preview", "claude-opus-6"])
-    async def test_enabled_becomes_adaptive_on_unparseable_or_newer_model(self, model):
-        body = await self._body(model, "enabled")
+    async def test_enabled_becomes_adaptive_on_a_version_above_the_ceiling(self):
+        body = await self._body("claude-opus-6", "enabled")
         assert body["thinking"] == {"type": "adaptive"}
+
+    @pytest.mark.parametrize(
+        ("model", "mode", "expected"),
+        [
+            (
+                "claude-mythos-preview",
+                "enabled",
+                {"type": "enabled", "budget_tokens": 4096},
+            ),
+            (
+                "claude-opus-4-5@20251101",
+                "enabled",
+                {"type": "enabled", "budget_tokens": 4096},
+            ),
+            ("claude-mythos-preview", "adaptive", {"type": "adaptive"}),
+        ],
+    )
+    async def test_unparseable_id_keeps_the_configured_mode(
+        self, model, mode, expected, caplog
+    ):
+        """No thinking shape is accepted by every model, so an id the adapter
+        cannot read is sent what the operator configured."""
+        with caplog.at_level("WARNING"):
+            body = await self._body(model, mode)
+        assert body["thinking"] == expected
+        assert not _substitution_records(caplog)
 
     @pytest.mark.parametrize(
         "model",
@@ -646,6 +671,24 @@ class TestThinkingShapePerModel:
     async def test_substituted_adaptive_keeps_the_adaptive_floor(self):
         body = await self._body("claude-opus-4-7", "enabled", max_tokens=2047)
         assert "thinking" not in body
+
+    @pytest.mark.parametrize(
+        ("budget", "max_tokens"),
+        [
+            # Below the API minimum: the enabled guard would refuse it.
+            (512, 8000),
+            # 3000 - 4096 leaves no answer floor: the enabled guard would
+            # refuse it, while the adaptive floor of 2048 passes.
+            (4096, 3000),
+        ],
+    )
+    async def test_substituted_adaptive_skips_the_enabled_budget_guards(
+        self, budget, max_tokens
+    ):
+        body = await self._body(
+            "claude-opus-4-7", "enabled", budget=budget, max_tokens=max_tokens
+        )
+        assert body["thinking"] == {"type": "adaptive"}
 
     async def test_substituted_enabled_keeps_the_answer_floor(self):
         body = await self._body(

@@ -305,13 +305,14 @@ class LLMSettings(BaseSettings):
     # (#1116). DEFAULT OFF — "off" sends no `thinking` parameter and the
     # request payload is byte-identical to pre-#1116 behavior. Modes:
     #   - "adaptive": `{"type": "adaptive"}` — the model decides how much to
-    #     think. Sent as "enabled" on a model that rejects it (4.5).
+    #     think. Sent as "enabled" on a model that rejects it (4.5 and older).
     #   - "enabled": `{"type": "enabled", "budget_tokens": N}`. Sent as
     #     "adaptive" on a model that rejects budget_tokens (4.7+).
-    #     Each substitution logs one WARNING per model. N comes from anthropic_thinking_budget_tokens and is
-    #     validated against max_tokens at call time (thinking bills INSIDE
-    #     max_tokens; a starvable call is downgraded to no-thinking with a
-    #     warning rather than issued — see AnthropicProvider._resolve_thinking).
+    #     Each substitution logs one WARNING per model. N comes from
+    #     anthropic_thinking_budget_tokens and is validated against max_tokens
+    #     at call time (thinking bills INSIDE max_tokens; a starvable call is
+    #     downgraded to no-thinking with a warning rather than issued — see
+    #     AnthropicProvider._resolve_thinking).
     # Scope: the provider applies thinking only to tool-calling (structured
     # output) requests, mirroring Gemini's structured-only thinking config.
     # Declared `str`, not Literal: pydantic-settings' case-insensitivity
@@ -324,8 +325,10 @@ class LLMSettings(BaseSettings):
     anthropic_thinking_mode: str = Field(
         default="off", validation_alias="ANTHROPIC_THINKING_MODE"
     )
-    # Thinking budget for "enabled" mode (ignored in other modes). Anthropic's
-    # API minimum is 1024; must leave room for the visible answer under
+    # Thinking budget, sent whenever enabled thinking is sent: in "enabled"
+    # mode on a model that accepts budget_tokens, and in "adaptive" mode on a
+    # model that does not support adaptive (4.5 and older). Anthropic's API
+    # minimum is 1024; must leave room for the visible answer under
     # max_tokens or the call is downgraded to no-thinking.
     anthropic_thinking_budget_tokens: int = Field(
         default=4096, validation_alias="ANTHROPIC_THINKING_BUDGET_TOKENS"
