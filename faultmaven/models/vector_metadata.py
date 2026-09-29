@@ -54,9 +54,12 @@ class VectorMetadata(BaseModel):
     # ``owner_id``, ``title``, ``parent_document_id``). The schema earns a key
     # only when a live reader needs it, and ``reject_undeclared_keys`` makes a
     # write of an undeclared key fail loudly rather than silently — on the
-    # writers that consult it: ``ChromaDBVectorStore`` and
-    # ``KnowledgeVectorStore.add_documents``, which is every vector write with
-    # a live production caller. It is NOT every writer in the codebase:
+    # writers that consult it: ``KnowledgeVectorStore.add_documents``, the one
+    # store ``KnowledgeService`` writes through and so every KB vector write
+    # with a live production caller (it also refuses a chunk with no tenant
+    # stamp, #1168); and ``ChromaDBVectorStore``, which is still registered
+    # over the same collection but has no live KB writer and checks no tenant
+    # stamp — #1782. It is NOT every writer in the codebase:
     # ``KnowledgeIngester._process_and_store`` writes the same collection
     # directly (stamping ``document_id``, which only its own read/delete
     # methods filter on) and bypasses this guard — that whole subsystem has no
@@ -129,14 +132,16 @@ class VectorMetadata(BaseModel):
         more chunk the backfill (#1777) has to find.
 
         A non-blank ``str`` only: an empty or whitespace value names no tenant,
-        and a non-string (``7``, ``b"ent"``, ``True``) would be stringified
-        somewhere downstream into a value no read conjunct will ever match.
+        and a non-string (``7``, ``b"ent"``, ``True``) is not an enterprise id
+        — stringified or decoded downstream, it would become a value no read
+        conjunct matches.
 
         One rule, two callers: the indexer checks its raw argument with this
-        before it does any work, and the store checks each chunk's metadata
-        through :meth:`require_enterprise_id`. Both raise the same
-        ``ValueError``, BEFORE any retry/circuit-breaker wrapper — the failure
-        is a deterministic programming error, not a transient one.
+        before it does any work, and the store checks each chunk's
+        ``metadata.get("enterprise_id")`` with it (an absent key arrives as
+        ``None``). Both raise this ``ValueError``, BEFORE any retry or
+        circuit-breaker wrapper — the failure is a deterministic programming
+        error, not a transient one.
         """
         if not (isinstance(value, str) and value.strip()):
             raise ValueError(
@@ -146,19 +151,6 @@ class VectorMetadata(BaseModel):
                 f"row it belongs to (#1168) — pass the row's own enterprise_id "
                 f"to the indexer."
             )
-
-    @classmethod
-    def require_enterprise_id(
-        cls, md: Optional[Dict[str, Any]], *, document_id: Any = None
-    ) -> None:
-        """Raise unless the chunk metadata ``md`` names its owning tenant.
-
-        The store's form of :meth:`require_enterprise_id_value`: the same rule
-        and message, applied to one chunk's metadata dict.
-        """
-        cls.require_enterprise_id_value(
-            (md or {}).get("enterprise_id"), document_id=document_id
-        )
 
     @field_validator("tags", mode="before")
     @classmethod

@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.infrastructure.knowledge.runbook_kb import (
     RESULTS_UNREADABLE_CODE,
     RunbookKnowledgeBase,
@@ -41,6 +42,9 @@ pytestmark = [pytest.mark.knowledge_base]
 
 USER_A = "user-alpha-11111111"
 USER_B = "user-beta-22222222"
+#: The tenant a non-global row belongs to. Global rows carry the Standalone
+#: enterprise, the value production writes for the platform tier (#1168).
+TENANT_ENTERPRISE = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
 
 _DIM = 8
 
@@ -121,15 +125,19 @@ def _chunk_metadata(
     """The key set the LIVE writer stamps on every chunk.
 
     Mirrors ``_index_document_in_vector_store``: ``document_type``, ``scope``
-    (immutable floor only — never team), ``owner_id``, ``title``,
-    ``parent_document_id``, chunk tracking. ``add_documents`` refuses any key
-    ``VectorMetadata`` does not declare, so a hand-seeded dict that drifts from
-    the production one fails here instead of silently seeding rows production
-    could never write (#912).
+    (immutable floor only — never team), ``owner_id``, the owning tenant's
+    ``enterprise_id`` (#1168: Standalone for the global tier, the row's tenant
+    otherwise), ``title``, ``parent_document_id``, chunk tracking.
+    ``add_documents`` refuses any key ``VectorMetadata`` does not declare, so a
+    hand-seeded dict that drifts from the production one fails here instead of
+    silently seeding rows production could never write (#912).
     """
     md: Dict[str, Any] = {
         "document_type": document_type,
         "scope": scope,
+        "enterprise_id": (
+            STANDALONE_ENTERPRISE_ID if scope == "global" else TENANT_ENTERPRISE
+        ),
         "title": title,
         "parent_document_id": parent,
         "chunk_index": chunk_index,

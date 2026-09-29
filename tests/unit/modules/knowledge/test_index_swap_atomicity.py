@@ -242,6 +242,56 @@ async def test_boot_repair_still_tolerates_an_unavailable_embedder():
     assert service._vector_store.delete_documents_by_parent_id.await_count == 0
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "enterprise_id", ["", "   ", None], ids=["empty", "blank", "none"]
+)
+async def test_boot_repair_counts_a_row_with_no_tenant_as_a_failed_repair(
+    enterprise_id, caplog
+):
+    """``reindex_missing_vectors`` promises "fail-safe 0 (no raise)". The
+    indexer's #1168 tenant check raises ``ValueError`` before any work, outside
+    the ``KnowledgeBaseError`` handling — so a row naming no usable tenant must
+    be caught here, logged at ERROR with its item id, and returned as a failed
+    repair (0), never allowed to abort the boot pass. Unreachable from a real
+    row (the column is NOT NULL), which is why only a double can reach it."""
+    service = _service()
+
+    row = MagicMock()
+    row.item_id = "doc-no-tenant"
+    row.enterprise_id = enterprise_id
+    row.title = "Draining a node"
+    row.content = "# Draining a node\n\nCordon, then drain."
+    row.item_type = "runbook"
+    row.tags = []
+    row.source_url = None
+    row.scope = "global"
+    row.owner_id = None
+    row.created_at = "2026-01-01T00:00:00Z"
+    row.updated_at = "2026-01-01T00:00:00Z"
+
+    result = MagicMock()
+    result.scalar_one_or_none = MagicMock(return_value=row)
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result)
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    service._db_session_factory = MagicMock(return_value=session)
+    embed = AsyncMock(return_value=[[0.1] * 1024])
+
+    with caplog.at_level("ERROR"), patch(_EMBED_TEXTS, new=embed):
+        chunks = await service.reindex_missing_vectors("doc-no-tenant")
+
+    assert chunks == 0, "a refused repair must degrade to 0, not raise"
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert any(
+        "doc-no-tenant" in r.getMessage() for r in errors
+    ), "the refused repair was not logged at ERROR with its item id"
+    embed.assert_not_awaited()
+    assert service._vector_store.delete_documents_by_parent_id.await_count == 0
+    assert service._vector_store.add_documents.await_count == 0
+
+
 # ---------------------------------------------------------------------------
 # The human-facing search surface must not read as "nothing matched" either
 # ---------------------------------------------------------------------------

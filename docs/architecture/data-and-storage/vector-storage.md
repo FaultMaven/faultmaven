@@ -37,9 +37,9 @@ ChromaDB Evidence Instance (PersistentClient at data/chroma-evidence/ for local,
 
 **Architecture**: Two ChromaDB clients created in the DI container — one for permanent KB collections (`kb_chromadb_client` at `data/chroma-kb/`), one for ephemeral case evidence (`evidence_chromadb_client` at `data/chroma-evidence/`). Local deployment uses `PersistentClient` (file-based), cloud uses `HttpClient` to external server. Separate instances ensure KB data is protected from evidence churn and can be backed up independently.
 
-**Scope Isolation**: The `faultmaven_kb` collection uses metadata filtering — NOT separate collections per user/team. Vector metadata carries the **immutable visibility floor** — `scope` (`personal` or `global`) and `owner_id` — plus the owning tenant, `enterprise_id`: the `knowledge_items` row's own value, the Standalone enterprise for the global tier (#1168; no read consults it until #1775). `team_id` is deliberately **never written** — team visibility is mutable, and a chunk tagged with a team would be orphaned on unshare (matching no filter branch). It lives in the `resource_shares` table and is resolved to an **id allowlist at query time** (ADR-013 §D4 / ADR-011 D3).
+**Scope Isolation**: The `faultmaven_kb` collection uses metadata filtering — NOT separate collections per user/team. Vector metadata carries the **immutable visibility floor** — `scope` (`personal` or `global`) and `owner_id` — plus the owning tenant, `enterprise_id`: the `knowledge_items` row's own value, the Standalone enterprise for the global tier. Every chunk written **since #1168** carries it; chunks written before carry none until #1777's backfill, and the read conjunct (#1775) waits on that backfill. `team_id` is deliberately **never written** — team visibility is mutable, and a chunk tagged with a team would be orphaned on unshare (matching no filter branch). It lives in the `resource_shares` table and is resolved to an **id allowlist at query time** (ADR-013 §D4 / ADR-011 D3).
 
-**One adapter writes this collection for the service.** `KnowledgeService` is wired with `knowledge_vector_store` and nothing else: the `or vector_store` fallback to the plain `ChromaDBVectorStore` was removed in #1168, because that store checks no tenant stamp and was never selectable anyway (both factories are gated on the same `SKIP_SERVICE_CHECKS` flag). `KnowledgeVectorStore.add_documents` refuses, before any retry, a metadata key `VectorMetadata` does not declare (fm#1035) and a KB chunk with no non-blank `enterprise_id` (#1168); it does not otherwise normalize values through `VectorMetadata` — the caller, `KnowledgeService._index_document_in_vector_store`, builds its dict as `VectorMetadata(...).to_chroma_metadata()`. Two dead writers still reach the collection without this store — `KnowledgeIngester._process_and_store` and `scripts/migration_backfill_scopes.py`, neither with a live caller — and are #1782.
+**One adapter writes this collection for the service.** `KnowledgeService` is wired with `knowledge_vector_store` and nothing else: the `or vector_store` fallback to the plain `ChromaDBVectorStore` was removed in #1168, because that store checks no tenant stamp and was never selectable anyway (both factories are gated on the same `SKIP_SERVICE_CHECKS` flag). `KnowledgeVectorStore.add_documents` refuses, before any retry, a metadata key `VectorMetadata` does not declare (fm#1035) and a KB chunk with no non-blank `enterprise_id` (#1168); it does not otherwise normalize values through `VectorMetadata` — the caller, `KnowledgeService._index_document_in_vector_store`, builds its dict as `VectorMetadata(...).to_chroma_metadata()`. Paths that can still reach the collection without this store — `ChromaDBVectorStore` (still registered over `faultmaven_kb`, though nothing writes through it), the dead `KnowledgeIngester._process_and_store` and the dead `scripts/migration_backfill_scopes.py` — are #1782.
 
 `KnowledgeVectorStore` enforces a scope-invariant check that rejects any query to `faultmaven_kb` without a scope filter. `build_kb_scope_filter` (in `knowledge_service.py`) builds the combined filter the unified `answer_from_kb` tool uses:
 
@@ -97,9 +97,9 @@ CaseVectorStore(client=evidence_client)    # dynamic case_{id} collections
 **Purpose**: All runbooks and documentation — global, personal, and team-scoped
 **Collection**: `faultmaven_kb` (single collection, metadata-filtered by scope)
 **Lifecycle**: Permanent (user/admin-controlled deletion)
-**Implementation**: `faultmaven/infrastructure/persistence/chromadb_store.py` (ChromaDBVectorStore)
+**Implementation**: `faultmaven/infrastructure/knowledge/knowledge_vector_store.py` (`KnowledgeVectorStore`) — the only store `KnowledgeService` writes through. `ChromaDBVectorStore` is still registered over the same collection but is not the KB writer (#1782).
 
-**Scope Isolation**: Metadata carries `scope`, `owner_id` and the tenant's `enterprise_id` — never `team_id` (see §1.1). The unified `answer_from_kb` tool automatically filters by the user's accessible scopes, resolving team visibility to an id allowlist at query time.
+**Scope Isolation**: Metadata carries `scope`, `owner_id` and — on every chunk written since #1168; older chunks await #1777 — the tenant's `enterprise_id`, never `team_id` (see §1.1). The unified `answer_from_kb` tool automatically filters by the user's accessible scopes, resolving team visibility to an id allowlist at query time.
 
 **Characteristics**:
 
@@ -222,21 +222,9 @@ and no `report_type` key (fm#1030). See
 
 **Manual Upload Flow**:
 
-```python
-# User uploads runbook via API
-POST /api/v1/knowledge/documents
+`POST /api/v1/knowledge/documents` → `KnowledgeService.upload_document` validates the document and publishes it through `ingest_runbook`, which writes the `knowledge_items` row first. Only then does the indexer, `KnowledgeService._index_document_in_vector_store`, chunk the content, embed it in-process with BGE-M3, stamp every chunk with `scope`, `owner_id` and the row's `enterprise_id` (never `team_id`), and write the chunks and their embeddings through `KnowledgeVectorStore.add_documents`. The document id is returned to the client.
 
-# Service flow
-1. Validate document (format, size, ownership)
-2. Store in faultmaven_kb collection with scope/owner_id/enterprise_id metadata (never team_id)
-3. ChromaDB generates embeddings server-side
-4. Return document_id to client
-
-# Python API
-await knowledge_vector_store.add_documents([doc_dict])  # KnowledgeVectorStore
-```
-
-**Metadata passthrough**: `ChromaDBVectorStore.add_documents()` normalizes metadata through `VectorMetadata`, which declares the visibility floor (`scope`, `owner_id`) — **not** `team_id`. Tags are serialized as comma-joined strings (ChromaDB rejects list values in metadata).
+**Metadata**: the indexer builds each chunk's dict as `VectorMetadata(...).to_chroma_metadata()`. `VectorMetadata` declares the visibility floor (`scope`, `owner_id`) and the tenant (`enterprise_id`) — **not** `team_id`. Tags are serialized as comma-joined strings (ChromaDB rejects list values in metadata).
 
 `VectorMetadata` is an **allowlist**: it stores the keys it declares. Since #912 an undeclared key **raises** instead of being dropped in silence, because a dropped key is indistinguishable from a stored one at the call site and only surfaces later as a wrong value at read time. Add the field to the schema (declaration **and** `to_chroma_metadata`) or stop writing it.
 
@@ -340,7 +328,7 @@ async def search_kb(user_id: str, query: str, k: int = 5) -> List[Document]:
     )
 ```
 
-`KnowledgeVectorStore` rejects any `faultmaven_kb` query whose filter names no scope key. That is a **presence** check, not a tenant check (#1167): cross-tenant isolation comes from `build_kb_scope_filter`, keyed on the caller's own ids. The vector layer's own tenant key is the `enterprise_id` every chunk carries (#1168); conjuncting it on read is #1775.
+`KnowledgeVectorStore` rejects any `faultmaven_kb` query whose filter names no scope key. That is a **presence** check, not a tenant check (#1167): cross-tenant isolation comes from `build_kb_scope_filter`, keyed on the caller's own ids. The vector layer's own tenant key is the `enterprise_id` every chunk written since #1168 carries (older chunks carry none until #1777); conjuncting it on read is #1775.
 
 ### 4.3 Performance Characteristics
 

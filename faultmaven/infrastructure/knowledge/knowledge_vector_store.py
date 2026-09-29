@@ -10,8 +10,10 @@ Filter-presence check: a query against faultmaven_kb MUST name at least one
 scope key in its `where` clause or it is rejected with ValueError. That is a
 presence check and not a tenant check — see `_require_kb_filter_present`. The
 tenant control is `build_kb_scope_filter`. ChromaDB's own tenant dimension is
-the `enterprise_id` every KB chunk is stamped with (#1168, refused on write in
-`add_documents` when absent); conjuncting it on read is #1775.
+the `enterprise_id` stamp (#1168, refused on write in `add_documents` when
+absent): every KB chunk written SINCE #1168 carries it, while chunks written
+before carry none until #1777's backfill — unchanged pack runbooks are never
+re-ingested. Conjuncting it on read is #1775, which waits on that backfill.
 
 Hybrid search: Two-stage retrieval + reranking pipeline:
   Stage 1 — Recall: Casts a wide net with two sequential retrieval arms that
@@ -1259,7 +1261,7 @@ class KnowledgeVectorStore(BaseExternalClient):
                 dropped in silence and read back later as the reader's
                 fallback (#912). Also, for the KB collection only, if any
                 document's metadata lacks a non-blank ``enterprise_id``
-                (#1168) — see :meth:`VectorMetadata.require_enterprise_id`.
+                (#1168) — see :meth:`VectorMetadata.require_enterprise_id_value`.
         """
         # Refused OUTSIDE call_external, deliberately (fm#1035). A malformed
         # metadata dict is a deterministic programming error, not a ChromaDB
@@ -1299,7 +1301,9 @@ class KnowledgeVectorStore(BaseExternalClient):
             # ``scripts/migration_backfill_scopes.py`` — are #1782.
             # Case-evidence collections are scoped by case and carry no stamp.
             if collection_name == KB_COLLECTION:
-                VectorMetadata.require_enterprise_id(md, document_id=doc.get("id"))
+                VectorMetadata.require_enterprise_id_value(
+                    md.get("enterprise_id"), document_id=doc.get("id")
+                )
             metadatas.append(md)
 
         # `id` and `content` are read out here for the same reason the metadata

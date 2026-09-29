@@ -92,24 +92,21 @@ class TestTheTenantKey:
         )
 
     @pytest.mark.parametrize(
-        "md",
-        [
-            None,
-            {},
-            {"scope": "global"},
-            {"enterprise_id": None},
-            {"enterprise_id": ""},
-            {"enterprise_id": "   "},
-            {"enterprise_id": 7},
-        ],
-        ids=["none", "empty", "absent", "null", "blank", "whitespace", "non-string"],
+        "value",
+        [None, "", "   ", 7, True, b"ent"],
+        ids=["none", "empty", "whitespace", "int", "bool", "bytes"],
     )
-    def test_require_enterprise_id_refuses_every_shape_that_names_no_tenant(self, md):
+    def test_require_enterprise_id_value_refuses_every_shape_that_names_no_tenant(
+        self, value
+    ):
+        """The one tenant rule, which both the indexer (on its raw argument)
+        and the store (on each chunk's ``metadata.get("enterprise_id")``) call.
+        A key absent from a chunk's metadata reaches it as ``None``."""
         with pytest.raises(ValueError, match="carries no enterprise_id"):
-            VectorMetadata.require_enterprise_id(md, document_id="doc_chunk_0")
+            VectorMetadata.require_enterprise_id_value(value, document_id="doc_chunk_0")
 
-    def test_require_enterprise_id_admits_a_named_tenant(self):
-        VectorMetadata.require_enterprise_id({"enterprise_id": "ent-1"})
+    def test_require_enterprise_id_value_admits_a_named_tenant(self):
+        VectorMetadata.require_enterprise_id_value("ent-1")
 
     @pytest.mark.parametrize("value", [7, True], ids=["int", "bool"])
     def test_a_non_string_tenant_is_refused_by_the_model_not_stringified(self, value):
@@ -118,15 +115,3 @@ class TestTheTenantKey:
         downstream and match no enterprise, so the model refuses it instead."""
         with pytest.raises(ValidationError, match="enterprise_id"):
             VectorMetadata(scope="personal", enterprise_id=value)
-
-    def test_one_rule_serves_both_the_argument_and_the_dict(self):
-        """The indexer checks its raw argument and the store checks each
-        chunk's dict — one rule, one message."""
-        with pytest.raises(ValueError, match="carries no enterprise_id") as arg:
-            VectorMetadata.require_enterprise_id_value(7, document_id="doc")
-        with pytest.raises(ValueError, match="carries no enterprise_id") as md:
-            VectorMetadata.require_enterprise_id(
-                {"enterprise_id": 7}, document_id="doc"
-            )
-
-        assert str(arg.value) == str(md.value)

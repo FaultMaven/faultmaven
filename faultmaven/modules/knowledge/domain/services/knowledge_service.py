@@ -1037,8 +1037,10 @@ class KnowledgeService:
         # a cold model load first; and OUTSIDE the ``try`` below, because a
         # missing tenant is the caller's programming error, not the transient
         # ``KNOWLEDGE_INDEXING_FAILED`` that handler reports. The RAW argument
-        # is checked — the store re-checks each chunk's metadata as a second
-        # layer, and ``VectorMetadata`` refuses a non-string outright.
+        # is checked, and this check is what refuses a non-string or blank
+        # tenant: ``VectorMetadata`` alone decodes bytes (``b"ent"`` becomes
+        # ``"ent"``) and admits whitespace. The store re-checks each chunk's
+        # metadata as a second layer.
         VectorMetadata.require_enterprise_id_value(
             enterprise_id, document_id=getattr(document, "document_id", None)
         )
@@ -1558,8 +1560,11 @@ class KnowledgeService:
         query-compatible — a retrievable runbook beats a silently missing one.
 
         Returns the number of chunks indexed. Fail-safe 0 (no raise) when the
-        row is absent, no vector store is wired, or the embedding model is
-        unavailable — leaving the row orphaned for a later boot to repair.
+        row is absent, no vector store is wired, the embedding model is
+        unavailable, or the row names no usable tenant (the indexer's #1168
+        ``ValueError``, logged at ERROR with the item id) — leaving the row
+        orphaned for a later boot to repair, which the caller counts as a failed
+        repair.
 
         This is the ONE caller that legitimately tolerates an indexing failure,
         because it runs as a bounded best-effort repair pass during boot and a
@@ -1625,6 +1630,17 @@ class KnowledgeService:
             logger.warning(
                 f"reindex_missing_vectors: repair failed for {item_id}: {e} — "
                 "leaving the row orphaned for a later boot to retry"
+            )
+            return 0
+        except ValueError as e:
+            # The indexer's tenant check (#1168), refused before any work. Not
+            # reachable from a real row — ``knowledge_items.enterprise_id`` is
+            # NOT NULL — but this method promises no raise, so a row that names
+            # no usable tenant is a failed repair like any other: loud, per row,
+            # and never an aborted startup.
+            logger.error(
+                f"reindex_missing_vectors: repair refused for {item_id}: {e} — "
+                "the row names no usable enterprise_id; leaving it orphaned"
             )
             return 0
 

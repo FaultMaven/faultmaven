@@ -63,17 +63,48 @@ async def test_container_built_knowledge_service_can_reach_the_database(
     assert knowledge_service._db_session_factory is get_db_session
 
 
+@pytest.fixture
+def service_checks_on(monkeypatch, tmp_path):
+    """Compose with ``SKIP_SERVICE_CHECKS=false``, whatever the ambient value.
+
+    Every CI pytest job sets it ``true``, and under ``true`` both vector-store
+    factories return None — so a pin that followed the ambient value would
+    skip (or pass vacuously) in exactly the place it has to bite. This builds
+    its own composition instead: standalone, with the two local ChromaDB
+    ``PersistentClient`` trees in ``tmp_path``, so it needs no server and runs
+    anywhere. The settings singleton is rebuilt from the patched environment
+    and rebuilt again afterwards, before ``monkeypatch`` restores it.
+    """
+    from faultmaven.config.settings import reset_settings
+
+    monkeypatch.setenv("SKIP_SERVICE_CHECKS", "false")
+    monkeypatch.setenv("DEPLOYMENT_MODE", "standalone")
+    monkeypatch.setenv("CHROMADB_KB_PERSIST_DIR", str(tmp_path / "chroma-kb"))
+    monkeypatch.setenv(
+        "CHROMADB_EVIDENCE_PERSIST_DIR", str(tmp_path / "chroma-evidence")
+    )
+    reset_settings()
+    yield
+    reset_settings()
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_the_composed_knowledge_service_writes_only_through_the_guarded_store(
+    service_checks_on,
     fresh_container,
 ):
-    """Under default settings the KB writer is ``KnowledgeVectorStore`` — the
-    store whose ``add_documents`` refuses a KB chunk with no tenant stamp
-    (#1168) — and never the plain ``ChromaDBVectorStore`` the container also
-    registers, which checks no stamp. The container used to wire
-    ``knowledge_vector_store or vector_store``; the fallback is gone, and the
-    dedup reader is bound to the same writer's collection."""
+    """The KB writer is ``KnowledgeVectorStore`` — the store whose
+    ``add_documents`` refuses a KB chunk with no tenant stamp (#1168) — and
+    never the plain ``ChromaDBVectorStore`` the container also registers, which
+    checks no stamp. The container used to wire ``knowledge_vector_store or
+    vector_store``; the fallback is gone, and the dedup reader is bound to the
+    same writer's collection.
+
+    Runs under either ambient ``SKIP_SERVICE_CHECKS`` value (see
+    ``service_checks_on``): it never skips, because a skipped pin would let the
+    service be rewired to the plain store with CI still green.
+    """
     from faultmaven.config.settings import get_settings
     from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
         KB_COLLECTION,
@@ -83,8 +114,7 @@ async def test_the_composed_knowledge_service_writes_only_through_the_guarded_st
         ChromaDBVectorStore,
     )
 
-    if get_settings().server.skip_service_checks:
-        pytest.skip("SKIP_SERVICE_CHECKS builds no vector store to compare")
+    assert get_settings().server.skip_service_checks is False
 
     await fresh_container.initialize()
     knowledge_service = fresh_container.get_knowledge_service()
