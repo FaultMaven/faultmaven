@@ -38,11 +38,15 @@ logger = logging.getLogger(__name__)
 def _parse_schema_tool_call(
     tool_call: Any,
     schema_model: Any,
+    *,
+    cut: bool = False,
 ) -> BaseInteractionResponse:
     """Parse a schema tool call response into a Pydantic model.
 
     Applies the same JSON cleanup (nested parsing + enum fixing) as the
-    single-shot path in _generate_structured_output.
+    single-shot path in _generate_structured_output. *cut* says the provider
+    reported the response stopped at ``max_tokens``; a cut ``state_updates``
+    string is never recovered (:func:`_normalize_state_updates`).
     """
     args = tool_call.function.get("arguments", "{}")
     if isinstance(args, dict):
@@ -56,9 +60,9 @@ def _parse_schema_tool_call(
     # Recursively parse nested JSON strings
     content_obj = _parse_nested_json(content_obj)
 
-    # Recover the XML parameter form, or coerce unresolvable state_updates to
-    # {} so Pydantic field defaults apply (counted either way).
-    content_obj = _normalize_state_updates(content_obj, schema_model)
+    # Recover the leaked parameter form, or coerce unresolvable state_updates
+    # to {} so Pydantic field defaults apply (counted either way).
+    content_obj = _normalize_state_updates(content_obj, schema_model, cut=cut)
 
     # Fix hallucinated enum values
     schema_dict = schema_model.model_json_schema()
@@ -533,6 +537,8 @@ def _log_dropped_fields(
 def _parse_text_as_schema(
     text: str,
     schema_model: Any,
+    *,
+    cut: bool = False,
 ) -> BaseInteractionResponse:
     """Parse free-form LLM text as a schema instance.
 
@@ -546,10 +552,12 @@ def _parse_text_as_schema(
     false positives where prose happens to embed a JSON block that fits
     the schema but doesn't represent a real response — those should
     escalate to the non-tool fallback path, not be returned as-is.
+
+    *cut* is as in :func:`_parse_schema_tool_call`.
     """
     content_obj = loads_llm_json(text)
     content_obj = _parse_nested_json(content_obj)
-    content_obj = _normalize_state_updates(content_obj, schema_model)
+    content_obj = _normalize_state_updates(content_obj, schema_model, cut=cut)
     schema_dict = schema_model.model_json_schema()
     content_obj = _fix_enum_violations(
         content_obj,
@@ -574,91 +582,130 @@ def _parse_text_as_schema(
     return parsed
 
 
-_XML_PARAMETER_TAG = re.compile(r'<parameter\s+name="([^"<>]+)"\s*>|</parameter\s*>')
-_TRAILING_FOREIGN_CLOSERS = re.compile(
-    r"(\s*</(?!parameter\b)[A-Za-z_][\w:-]*\s*>)+\s*$"
+# The one shape a leaked state_updates takes: a single open parameter tag whose
+# value runs to the end of the string. The provider ends the tool argument at
+# the model's first inner ``</parameter>``, so the received string never holds
+# a closer, and any later sibling arrives as a top-level argument instead.
+_LEAKED_PARAMETER = re.compile(
+    r'\A\s*<parameter name="([A-Za-z_][A-Za-z0-9_]*)">(.*)\Z', re.DOTALL
 )
 
 
-def _recover_xml_parameters(text: str) -> Optional[dict]:
-    """Parse a model's leaked XML parameter form into the object it encodes.
+def _state_model_of(schema_model: Any) -> Optional[type]:
+    """The model class of *schema_model*'s ``state_updates`` field.
 
-    ``<parameter name="k">v</parameter>`` sequences become ``{k: v}``, nested
-    where a value is itself tagged. A parameter left open at the end of the
-    string is closed implicitly (the shape ``claude-opus-5`` emits). Returns
-    ``None`` for anything else: text that does not start with a tag, text
-    outside every parameter, a stray or duplicate key, or a parameter mixing
-    text with child parameters.
+    The field's annotation, unwrapped from ``Optional``; ``None`` unless that
+    is a ``BaseModel`` subclass.
     """
-    text = _TRAILING_FOREIGN_CLOSERS.sub("", text.strip())
-    if not text.startswith("<parameter"):
+    import types
+    import typing
+
+    from pydantic import BaseModel
+
+    fields = getattr(schema_model, "model_fields", None)
+    if not isinstance(fields, dict) or "state_updates" not in fields:
+        return None
+    annotation = fields["state_updates"].annotation
+    if typing.get_origin(annotation) in (typing.Union, types.UnionType):
+        members = [a for a in typing.get_args(annotation) if a is not type(None)]
+        annotation = members[0] if len(members) == 1 else None
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    return None
+
+
+def _recover_leaked_parameter(content_obj: dict, schema_model: Any) -> Optional[dict]:
+    """Recover a ``state_updates`` string that is the leaked parameter form.
+
+    ``claude-opus-5`` can return the schema tool's ``state_updates`` as
+    ``<parameter name="K">VALUE``: one open tag, no closer, the value running
+    to the end of the string, with any later state field leaked to the top
+    level of the arguments. Returns ``{K: value}`` plus those leaked siblings,
+    which are MOVED out of *content_obj*; returns ``None`` (and leaves
+    *content_obj* untouched) unless the string is exactly that form, VALUE
+    holds no other parameter tag, and K is a field of the response's
+    state-update model.
+
+    VALUE is kept as raw text (stripped) when the field accepts it as text —
+    a text field, an enum, anything Pydantic reads from a string — so no text
+    value is reinterpreted; otherwise it is JSON-decoded, and a value that is
+    not JSON fails the recovery.
+    """
+    from pydantic import TypeAdapter, ValidationError
+
+    su = content_obj.get("state_updates")
+    if not isinstance(su, str):
+        return None
+    state_model = _state_model_of(schema_model)
+    if state_model is None:
+        return None
+    match = _LEAKED_PARAMETER.match(su)
+    if match is None:
+        return None
+    key, value = match.group(1), match.group(2)
+    if "<parameter" in value or "</parameter" in value:
+        return None
+    field = state_model.model_fields.get(key)
+    if field is None:
         return None
 
-    root: dict = {}
-    # frames: [key, children, text_parts]; the root frame has key None.
-    stack: list = [[None, root, []]]
-
-    def close_frame() -> bool:
-        key, children, parts = stack.pop()
-        body = "".join(parts)
-        if children:
-            if body.strip():
-                return False
-            value: Any = children
-        else:
-            value = body.strip()
-        parent_children = stack[-1][1]
-        if key in parent_children:
-            return False
-        parent_children[key] = value
-        return True
-
-    pos = 0
-    for match in _XML_PARAMETER_TAG.finditer(text):
-        between = text[pos : match.start()]
-        stack[-1][2].append(between)
-        pos = match.end()
-        if match.group(1) is not None:
-            stack.append([match.group(1), {}, []])
-        else:
-            if len(stack) == 1:
-                return None
-            if not close_frame():
-                return None
-    stack[-1][2].append(text[pos:])
-    while len(stack) > 1:
-        if not close_frame():
+    raw = value.strip()
+    decoded: Any
+    try:
+        TypeAdapter(field.annotation).validate_python(raw)
+        decoded = raw
+    except ValidationError:
+        try:
+            decoded = json.loads(raw)
+        except ValueError:
             return None
-    if "".join(stack[0][2]).strip():
-        return None
-    if not root:
-        return None
-    result = _parse_nested_json(root)
-    return result if isinstance(result, dict) else None
+
+    result: dict = {key: decoded}
+    for k in list(content_obj):
+        if (
+            k != "state_updates"
+            and k not in schema_model.model_fields
+            and k in state_model.model_fields
+            and k not in result
+        ):
+            result[k] = content_obj.pop(k)
+    return result
 
 
-def _normalize_state_updates(content_obj: Any, schema_model: Any) -> Any:
+def _normalize_state_updates(
+    content_obj: Any, schema_model: Any, *, cut: bool = False
+) -> Any:
     """Settle ``state_updates`` before validation; count every repair.
 
-    An XML-parameter string is parsed into the object it encodes; any other
-    string, or a missing/null value, becomes ``{}`` so the schema defaults
-    apply. A value that is already an object is left alone and not counted.
+    A string that is the leaked parameter form (:func:`_recover_leaked_parameter`)
+    is recovered, with its leaked siblings lifted back in, unless the provider
+    reported the response *cut* at ``max_tokens``: a cut value looks exactly
+    like the real unclosed form, so it is never recovered. Any other string,
+    and a cut one, becomes ``{}``, as does a missing or null value, so the
+    schema defaults apply. A value that is already an object is left alone and
+    not counted.
+
+    ``xml_recovered`` counts a recovery, not a validated body: validation comes
+    after this and is counted on ``faultmaven_schema_validation_total``.
     """
     if not isinstance(content_obj, dict):
         return content_obj
     su = content_obj.get("state_updates")
     schema_name = getattr(schema_model, "__name__", str(schema_model))
     if isinstance(su, str):
-        recovered = _recover_xml_parameters(su)
+        recovered = (
+            None if cut else _recover_leaked_parameter(content_obj, schema_model)
+        )
         if recovered is not None:
             content_obj["state_updates"] = recovered
             repair = "xml_recovered"
         else:
             logger.warning(
-                "state_updates for %s arrived as an unparseable string "
-                "(length=%d); coerced to {} — the turn's state updates are lost",
+                "structured_output_state_updates_dropped: state_updates for %s "
+                "arrived as a string that is not the leaked parameter form; "
+                "coerced to {} (state lost)",
                 schema_name,
-                len(su),
+                extra={"schema": schema_name, "length": len(su), "cut": cut},
             )
             content_obj["state_updates"] = {}
             repair = "string_dropped"

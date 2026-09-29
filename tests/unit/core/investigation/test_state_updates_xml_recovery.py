@@ -1,10 +1,14 @@
-"""fm#1753: a ``state_updates`` that arrives as the model's XML parameter form.
+"""fm#1753: a ``state_updates`` that arrives as the model's leaked parameter form.
 
-``claude-opus-5`` returns the schema tool's nested ``state_updates`` as a string
-of ``<parameter name="k">v`` tags. The engine used to coerce it to ``{}`` (the
-body then validated ``clean``) and dropped the turn's state. It is now parsed
-into the object it encodes on all three parse paths, and every coercion is
-counted on ``faultmaven_schema_state_updates_repairs_total``.
+``claude-opus-5`` can return the schema tool's ``state_updates`` as the string
+``<parameter name="K">VALUE``: one open tag, no closer, the value running to the
+end. The provider ends the argument at the model's first inner
+``</parameter>``, so any later state field arrives as a top-level argument. The
+engine used to coerce the string to ``{}`` (the body then validated ``clean``)
+and dropped the turn's state. It is now recovered on all three parse paths,
+with leaked siblings lifted back in, unless the provider reported the response
+cut at ``max_tokens``; every coercion is counted on
+``faultmaven_schema_state_updates_repairs_total``.
 """
 
 import ast
@@ -21,10 +25,14 @@ from faultmaven.core.investigation.milestone_engine.structured_output import (
     _normalize_state_updates,
     _parse_schema_tool_call,
     _parse_text_as_schema,
-    _recover_xml_parameters,
+    _recover_leaked_parameter,
 )
 from faultmaven.core.investigation.reliability_metrics import STATE_UPDATES_REPAIRS
-from faultmaven.core.investigation.schemas import TerminalResponse
+from faultmaven.core.investigation.schemas import (
+    InvestigationResponse_Diagnosis,
+    TerminalResponse,
+)
+from faultmaven.infrastructure.llm.providers import StopReason
 from faultmaven.infrastructure.llm.providers.base import LLMResponse, ToolCall
 
 pytestmark = pytest.mark.unit
@@ -34,69 +42,132 @@ pytestmark = pytest.mark.unit
 REAL_SAMPLE = '\n<parameter name="final_summary_update">RESOLVED — Disk exhaustion on api-3 /var volume.\n\nROOT CAUSE: An unrotated debug log on api-3 grew unbounded and filled the /var volume to 100%, causing write failures and the observed production error spike. The log path was not covered by logrotate, so the file was never truncated or aged out.\n\nRESOLUTION: The debug log was rotated and the oversized file deleted to reclaim space. Logrotate was then enabled for that log path to prevent unbounded growth going forward.\n\nVERIFICATION: /var utilization on api-3 returned to 41%. Error stream clean for 2 hours post-fix with no recurrence.\n\nOPEN FOLLOW-UPS (non-blocking):\n- Confirm the logrotate config persists across deploys / config-management runs (drift risk).\n- Evaluate whether debug-level logging should be enabled in production for this service at all.\n- Audit sibling API hosts for the same uncovered log path — if debug logging was set fleet-wide, they share the same failure trajectory.\n- Add a /var disk-utilization alert (~80% threshold) for earlier warning.'
 SAMPLE_TEXT = REAL_SAMPLE.split('">', 1)[1].strip()
 
+# args of a second real claude-opus-5 TerminalResponse capture, 2026-09-29:
+# documentation_links, a state field, leaked to the TOP level of the arguments.
+LEAKED_SIBLING_ARGS = {
+    "agent_response": "Case closed. Here's the wrap-up for the record.\n\n**What happened:** `api-3` began returning errors because the `/var` volume hit 100% utilization. The culprit was a debug log that had been left enabled and was never registered with logrotate, so it grew unbounded until writes to `/var` failed.\n\n**What fixed it:** The oversized log was rotated and the stale copy deleted, reclaiming the volume down to **41% utilization**. A logrotate policy was then put in place for that log so it can't grow unbounded again.\n\n**Verification:** Disk sitting steady at 41% and the error stream has been clean for **2 hours** post-fix — long enough to confirm this wasn't a transient recovery.\n\n**Worth considering before you move on:** the fix addresses `api-3` specifically. If the same debug logging was enabled across other API hosts (or was turned on for a past investigation and never turned off fleet-wide), those nodes are on the same clock and will fail the same way. A quick check of `/var` usage and logrotate coverage on the sibling nodes, plus a disk-utilization alert threshold around 80%, would turn this from a fix into a prevention.",
+    "state_updates": '\n<parameter name="final_summary_update">RESOLVED — Disk exhaustion on api-3 /var volume.\n\nROOT CAUSE: An unrotated debug log on api-3 grew unbounded and filled the /var volume to capacity, causing write failures and the resulting production error stream. The log had no logrotate policy covering it.\n\nRESOLUTION: Rotated the oversized debug log and deleted the stale file, reclaiming space. Enabled logrotate for the log to prevent unbounded growth going forward.\n\nVERIFICATION: /var volume utilization returned to 41% and held steady. Error stream clean for 2 hours following the fix, confirming sustained recovery rather than a transient dip.\n\nFOLLOW-UP (not performed, recommended): Audit sibling API hosts for the same debug logging and missing logrotate coverage — they may be on the same failure trajectory. Add a disk-utilization alert (~80% threshold) on /var to catch recurrence before exhaustion.',
+    "documentation_links": [],
+}
+LEAKED_SIBLING_TEXT = LEAKED_SIBLING_ARGS["state_updates"].split('">', 1)[1].strip()
+
 SCHEMA = "TerminalResponse"
+DROP_EVENT = "structured_output_state_updates_dropped"
+
+
+def _body(state_updates, **extra) -> dict:
+    return {"agent_response": "x", "state_updates": state_updates, **extra}
 
 
 @pytest.mark.parametrize(
-    "text, expected",
+    "schema, state_updates, expected",
     [
         (
-            '<parameter name="final_summary_update">text</parameter>',
-            {"final_summary_update": "text"},
+            TerminalResponse,
+            '\n<parameter name="final_summary_update">[1] disk full on api-3',
+            {"final_summary_update": "[1] disk full on api-3"},
         ),
         (
-            '<parameter name="a">x</parameter>\n<parameter name="b">["l1","l2"]</parameter>',
-            {"a": "x", "b": ["l1", "l2"]},
+            TerminalResponse,
+            '<parameter name="final_summary_update">42',
+            {"final_summary_update": "42"},
         ),
         (
-            '<parameter name="milestones"><parameter name="symptom_verified">true</parameter></parameter>',
+            TerminalResponse,
+            '<parameter name="final_summary_update">true',
+            {"final_summary_update": "true"},
+        ),
+        (
+            TerminalResponse,
+            '<parameter name="final_summary_update">null',
+            {"final_summary_update": "null"},
+        ),
+        (
+            TerminalResponse,
+            '\n<parameter name="final_summary_update">Fixed in server.xml:\n'
+            '<Connector port="8080"/>\n</Service>\n</Server>',
+            {
+                "final_summary_update": 'Fixed in server.xml:\n<Connector port="8080"/>'
+                "\n</Service>\n</Server>"
+            },
+        ),
+        (
+            TerminalResponse,
+            '<parameter name="documentation_links">["https://x"]',
+            {"documentation_links": ["https://x"]},
+        ),
+        (
+            InvestigationResponse_Diagnosis,
+            '<parameter name="milestones">{"symptom_verified": true}',
             {"milestones": {"symptom_verified": True}},
         ),
+    ],
+    ids=[
+        "text-keeps-leading-json",
+        "text-keeps-number",
+        "text-keeps-true",
+        "text-keeps-null",
+        "text-keeps-trailing-closers",
+        "list-field-decodes-json",
+        "object-field-decodes-json",
+    ],
+)
+def test_recovers_the_leaked_parameter(schema, state_updates, expected):
+    assert _recover_leaked_parameter(_body(state_updates), schema) == expected
+
+
+@pytest.mark.parametrize(
+    "schema, state_updates",
+    [
+        (TerminalResponse, '<parameter name="final_summary_update">x</parameter>'),
+        (TerminalResponse, '<parameter name="documentation_links">'),
+        (TerminalResponse, '<parameter name="documentation_links">see wiki'),
+        (TerminalResponse, '<parameter name="agent_response">x'),
         (
+            InvestigationResponse_Diagnosis,
             '<parameter name="milestones"><parameter name="symptom_verified">true',
-            {"milestones": {"symptom_verified": True}},
         ),
-        (
-            '<parameter name="a">x</parameter><parameter name="b">y',
-            {"a": "x", "b": "y"},
-        ),
-        ('\n\n  <parameter name="a">x</parameter>\n ', {"a": "x"}),
-        ('<parameter name="a">x</parameter>\n</invoke>', {"a": "x"}),
-        ('<parameter name="a"></parameter>', {"a": ""}),
-        (
-            '<parameter name="evidence_to_add">[{"summary":"s"}]</parameter>',
-            {"evidence_to_add": [{"summary": "s"}]},
-        ),
-        (
-            '<parameter name="a">x < y and </param> text</parameter>',
-            {"a": "x < y and </param> text"},
-        ),
+        (TerminalResponse, 'Here: <parameter name="final_summary_update">x'),
+        (TerminalResponse, "Root cause: disk"),
+        (TerminalResponse, '{"final_summary_update": "x'),
+        (TerminalResponse, "<parameter name='final_summary_update'>x"),
+    ],
+    ids=[
+        "a-closer-never-occurs",
+        "list-field-empty",
+        "list-field-not-json",
+        "not-a-state-field",
+        "nested-tag",
+        "text-before-the-tag",
+        "prose",
+        "truncated-json",
+        "single-quoted-name",
     ],
 )
-def test_recovers_xml_parameters(text, expected):
-    assert _recover_xml_parameters(text) == expected
+def test_declines_everything_else(schema, state_updates):
+    body = _body(state_updates, documentation_links=["https://y"])
+    before = json.loads(json.dumps(body))
+    assert _recover_leaked_parameter(body, schema) is None
+    assert body == before  # a declined recovery lifts nothing
 
 
-@pytest.mark.parametrize(
-    "text",
-    [
-        "Root cause: disk exhaustion",
-        '{"milestones": {"a": tr',
-        'Here you go <parameter name="a">x',
-        '<parameter name="a">x<parameter name="b">y',  # mixed
-        '<parameter name="a">x</parameter><parameter name="a">y</parameter>',  # duplicate
-        '<parameter name="a">x</parameter></parameter>',  # unbalanced
-        "<parameter name='a'>x</parameter>",
-        '<parameter name="a">see <parameter name="b"> in docs</parameter>',  # mixed
-        '<parameter name="a">x</parameter> trailing words',
-        "</parameter>",
-        "",
-        "<parameter>x</parameter>",
-        '<parameters name="a">x</parameters>',
-    ],
-)
-def test_declines_everything_else(text):
-    assert _recover_xml_parameters(text) is None
+def test_lifts_a_leaked_state_sibling_out_of_the_top_level():
+    body = _body(
+        '\n<parameter name="final_summary_update">S', documentation_links=["https://y"]
+    )
+    assert _recover_leaked_parameter(body, TerminalResponse) == {
+        "final_summary_update": "S",
+        "documentation_links": ["https://y"],
+    }
+    assert "documentation_links" not in body
+
+
+def test_never_lifts_a_top_level_schema_field():
+    body = _body('\n<parameter name="final_summary_update">S', suggested_follow_ups=[])
+    assert _recover_leaked_parameter(body, TerminalResponse) == {
+        "final_summary_update": "S"
+    }
+    assert body["suggested_follow_ups"] == []
 
 
 class _Counters:
@@ -125,6 +196,10 @@ def _repair(name: str) -> dict:
     return {"schema": SCHEMA, "repair": name}
 
 
+def _drop_warnings(caplog) -> list:
+    return [r for r in caplog.records if r.getMessage().startswith(DROP_EVENT)]
+
+
 def _tool_call(state_updates=..., **extra) -> ToolCall:
     args = {"agent_response": "Resolved.", **extra}
     if state_updates is not ...:
@@ -143,6 +218,44 @@ def test_tool_call_recovers_real_sample(counters):
     assert counters.outcomes() == [{"schema": SCHEMA, "outcome": "clean"}]
 
 
+def test_tool_call_lifts_the_real_leaked_sibling(counters, caplog):
+    call = ToolCall(
+        id="c1",
+        type="function",
+        function={
+            "name": "TerminalResponse",
+            "arguments": json.dumps(LEAKED_SIBLING_ARGS),
+        },
+    )
+    with caplog.at_level(logging.WARNING, logger=so.logger.name):
+        parsed = _parse_schema_tool_call(call, TerminalResponse)
+    assert parsed.state_updates.final_summary_update == LEAKED_SIBLING_TEXT
+    # The sample's leaked value is [], the field's default too: that it was SET
+    # is what shows it landed in state_updates rather than being dropped.
+    assert parsed.state_updates.documentation_links == []
+    assert "documentation_links" in parsed.state_updates.model_fields_set
+    assert not [
+        r
+        for r in caplog.records
+        if r.getMessage() == "structured_output_dropped_field"
+        and getattr(r, "field", None) == "documentation_links"
+    ]
+    assert counters.repairs() == [_repair("xml_recovered")]
+    assert counters.outcomes() == [{"schema": SCHEMA, "outcome": "clean"}]
+
+
+def test_tool_call_never_recovers_a_cut_response(counters, caplog):
+    with caplog.at_level(logging.WARNING, logger=so.logger.name):
+        parsed = _parse_schema_tool_call(
+            _tool_call(REAL_SAMPLE), TerminalResponse, cut=True
+        )
+    assert parsed.state_updates.final_summary_update is None
+    assert counters.repairs() == [_repair("string_dropped")]
+    (warning,) = _drop_warnings(caplog)
+    assert warning.cut is True
+    assert SAMPLE_TEXT[:40] not in warning.getMessage()
+
+
 def test_tool_call_other_string_is_dropped_counted_and_logged_without_content(
     counters, caplog
 ):
@@ -152,10 +265,15 @@ def test_tool_call_other_string_is_dropped_counted_and_logged_without_content(
     assert parsed.state_updates.final_summary_update is None
     assert counters.repairs() == [_repair("string_dropped")]
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert len(warnings) == 1
-    assert secret not in warnings[0].getMessage()
-    assert "TerminalResponse" in warnings[0].getMessage()
-    assert str(len(secret)) in warnings[0].getMessage()
+    assert warnings == _drop_warnings(caplog) and len(warnings) == 1
+    (warning,) = warnings
+    assert secret not in warning.getMessage()
+    assert "TerminalResponse" in warning.getMessage()
+    assert (warning.schema, warning.length, warning.cut) == (
+        "TerminalResponse",
+        len(secret),
+        False,
+    )
 
 
 def test_tool_call_absent_state_updates_is_defaulted_and_counted(counters):
@@ -172,33 +290,53 @@ def test_tool_call_dict_state_updates_unchanged_and_uncounted(counters):
     assert counters.repairs() == []
 
 
-def test_text_path_recovers_real_sample(counters):
-    text = json.dumps({"agent_response": "Resolved.", "state_updates": REAL_SAMPLE})
+@pytest.mark.parametrize(
+    "state_updates, expected, repair",
+    [(REAL_SAMPLE, SAMPLE_TEXT, "xml_recovered"), ("not xml", None, "string_dropped")],
+    ids=["recovered", "dropped"],
+)
+def test_text_path(counters, state_updates, expected, repair):
+    text = json.dumps({"agent_response": "Resolved.", "state_updates": state_updates})
     parsed = _parse_text_as_schema(text, TerminalResponse)
-    assert parsed.state_updates.final_summary_update == SAMPLE_TEXT
-    assert counters.repairs() == [_repair("xml_recovered")]
+    assert parsed.state_updates.final_summary_update == expected
+    assert counters.repairs() == [_repair(repair)]
+
+
+def _llm(content: str = "", *, stop_reason: StopReason, tool_calls=None):
+    return LLMResponse(
+        content=content,
+        confidence=0.9,
+        provider="test",
+        model="test-model",
+        tokens_used=10,
+        response_time_ms=5,
+        tool_calls=tool_calls,
+        stop_reason=stop_reason,
+    )
 
 
 @pytest.mark.asyncio
-async def test_single_shot_path_recovers_real_sample(counters):
+@pytest.mark.parametrize(
+    "state_updates, stop_reason, expected, repair",
+    [
+        (REAL_SAMPLE, StopReason.STOP, SAMPLE_TEXT, "xml_recovered"),
+        ("not xml at all", StopReason.STOP, None, "string_dropped"),
+        (REAL_SAMPLE, StopReason.MAX_TOKENS, None, "string_dropped"),
+    ],
+    ids=["recovered", "dropped", "cut-never-recovered"],
+)
+async def test_single_shot_path(counters, state_updates, stop_reason, expected, repair):
     from faultmaven.infrastructure.llm.structured_output_capability import (
         StructuredOutputCapability,
         StructuredOutputMode,
         StructuredOutputStrategy,
     )
 
-    content = json.dumps({"agent_response": "Resolved.", "state_updates": REAL_SAMPLE})
-    provider = MagicMock()
-    provider.generate = AsyncMock(
-        return_value=LLMResponse(
-            content=content,
-            confidence=0.9,
-            provider="test",
-            model="test-model",
-            tokens_used=10,
-            response_time_ms=5,
-        )
+    content = json.dumps(
+        {"agent_response": "Resolved.", "state_updates": state_updates}
     )
+    provider = MagicMock()
+    provider.generate = AsyncMock(return_value=_llm(content, stop_reason=stop_reason))
     provider.get_structured_output_strategy = MagicMock(
         return_value=StructuredOutputStrategy(
             capability=StructuredOutputCapability.BEST_EFFORT,
@@ -215,27 +353,84 @@ async def test_single_shot_path_recovers_real_sample(counters):
     parsed = await engine.generator._generate_structured_output_inner(
         "p", TerminalResponse
     )
-    assert parsed.state_updates.final_summary_update == SAMPLE_TEXT
-    assert counters.repairs() == [_repair("xml_recovered")]
+    assert parsed.state_updates.final_summary_update == expected
+    assert counters.repairs() == [_repair(repair)]
+
+
+async def _tool_loop(*responses: LLMResponse):
+    """Drive ``_tool_augmented_generate`` the way test_response_synthesis_1442
+    does. A cut response is answered again by the truncation retry, so the
+    last response repeats for as long as the loop asks."""
+    queue = list(responses)
+
+    async def _generate(**_kwargs):
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+    provider = AsyncMock()
+    provider.generate = AsyncMock(side_effect=_generate)
+    repo = MagicMock()
+    repo.save = AsyncMock()
+    engine = MilestoneEngine(
+        llm_provider=provider, repository=repo, investigation_tools=MagicMock()
+    )
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "search_file",
+                "description": "Search files",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+    return await engine.generator._tool_augmented_generate(
+        prompt="p",
+        schema_model=TerminalResponse,
+        investigation_tools=tools,
+        tool_context=MagicMock(),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stop_reason, expected, repair",
+    [
+        (StopReason.TOOL_CALLS, SAMPLE_TEXT, "xml_recovered"),
+        (StopReason.MAX_TOKENS, None, "string_dropped"),
+    ],
+    ids=["recovered", "cut-never-recovered"],
+)
+async def test_tool_loop_schema_call(counters, stop_reason, expected, repair):
+    parsed = await _tool_loop(
+        _llm(stop_reason=stop_reason, tool_calls=[_tool_call(REAL_SAMPLE)])
+    )
+    assert parsed.state_updates.final_summary_update == expected
+    assert counters.repairs() == [_repair(repair)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stop_reason, expected, repair",
+    [
+        (StopReason.STOP, SAMPLE_TEXT, "xml_recovered"),
+        (StopReason.MAX_TOKENS, None, "string_dropped"),
+    ],
+    ids=["recovered", "cut-never-recovered"],
+)
+async def test_tool_loop_forced_text_parse(counters, stop_reason, expected, repair):
+    """The loop's third parse site: after the nudge, the model still answers in
+    text, and that text is parsed as the schema."""
+    body = json.dumps({"agent_response": "Resolved.", "state_updates": REAL_SAMPLE})
+    parsed = await _tool_loop(
+        _llm("I will answer in prose.", stop_reason=StopReason.STOP),
+        _llm(body, stop_reason=stop_reason),
+    )
+    assert parsed.state_updates.final_summary_update == expected
+    assert counters.repairs() == [_repair(repair)]
 
 
 def test_non_dict_body_is_returned_unchanged():
     assert _normalize_state_updates([1], TerminalResponse) == [1]
-
-
-def test_every_state_updates_coercion_goes_through_the_helper():
-    """State N = 3: the scan that found the duplicated ``isinstance(_su, str)``
-    blocks. None may come back; each parse path calls the helper."""
-    from faultmaven.core.investigation.milestone_engine import generation
-
-    for module in (so, generation):
-        assert "isinstance(_su, str)" not in inspect.getsource(module)
-    for fn in (
-        _parse_schema_tool_call,
-        _parse_text_as_schema,
-        generation.StructuredOutputGenerator._generate_structured_output_inner,
-    ):
-        assert "_normalize_state_updates(" in inspect.getsource(fn)
 
 
 def test_repair_vocabulary_is_pinned():

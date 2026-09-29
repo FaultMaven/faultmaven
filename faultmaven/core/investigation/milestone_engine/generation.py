@@ -47,6 +47,7 @@ from faultmaven.infrastructure.llm.metering import (
     active_token_tracker,
     record_provider_call,
 )
+from faultmaven.infrastructure.llm.providers import StopReason
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputMode,
 )
@@ -812,7 +813,12 @@ class StructuredOutputGenerator:
                     text = (response.content or "").strip()
                     if text:
                         try:
-                            return _parse_text_as_schema(text, schema_model)
+                            return _parse_text_as_schema(
+                                text,
+                                schema_model,
+                                cut=schema_answer_stop_reason(response)
+                                is StopReason.MAX_TOKENS,
+                            )
                         except Exception as parse_err:
                             logger.warning(
                                 "Tool loop: text content after forced-schema "
@@ -896,7 +902,12 @@ class StructuredOutputGenerator:
                         iteration,
                     )
                     return _synthesize_agent_response(
-                        _parse_schema_tool_call(tc, schema_model),
+                        _parse_schema_tool_call(
+                            tc,
+                            schema_model,
+                            cut=schema_answer_stop_reason(response)
+                            is StopReason.MAX_TOKENS,
+                        ),
                         schema_answer_stop_reason(response),
                     )
 
@@ -1812,9 +1823,12 @@ class StructuredOutputGenerator:
                 # Parse any nested JSON strings (reuse class static method)
                 content_obj = _parse_nested_json(content_obj)
 
-                # Recover the XML parameter form, or coerce an unresolvable
-                # state_updates to {} so Pydantic defaults apply (counted).
-                content_obj = _normalize_state_updates(content_obj, schema_model)
+                # Recover the leaked parameter form, or coerce an unresolvable
+                # state_updates to {} so Pydantic defaults apply (counted). A
+                # body the provider reported cut is never recovered.
+                content_obj = _normalize_state_updates(
+                    content_obj, schema_model, cut=provider_reported_cut
+                )
 
                 # Fix any hallucinated enum values (reuse class static method)
                 schema_dict = schema_model.model_json_schema()

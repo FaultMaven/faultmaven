@@ -57,7 +57,10 @@ Read as rates, never the numerator alone:
   or dropped; a body that needed both a repair and a prune is ``pruned``.
 
   The A/B "schema-validity" metric is ``clean / total``. Read state loss as
-  ``(state_dropped + response_synthesized_state_dropped) / total`` — the
+  ``(state_dropped + response_synthesized_state_dropped +
+  faultmaven_schema_state_updates_repairs_total{repair="string_dropped"}) /
+  total`` — the last term is state lost BEFORE validation, in a body that can
+  then still validate ``clean`` (fm#1753), so no outcome here shows it. The
   synthesized-and-dropped rung is deliberately NOT folded into
   ``response_synthesized``: it loses everything that rung loses AND the turn's
   state, and counting the worse disposition as the lesser one is how a
@@ -81,11 +84,16 @@ Read as rates, never the numerator alone:
 
 - ``faultmaven_schema_state_updates_repairs_total``: every ``state_updates``
   the engine settled before validation, by ``schema`` and ``repair`` —
-  ``xml_recovered`` (the model's XML parameter form parsed into the object it
-  encodes), ``string_dropped`` (any other string coerced to ``{}``: the turn's
-  state updates are LOST, yet the body validates ``clean`` because ``{}`` takes
-  the defaults) or ``absent_defaulted`` (null or missing, defaulted). A dict is
-  not counted (fm#1753).
+  ``xml_recovered`` (the model's leaked single-parameter form,
+  ``<parameter name="K">VALUE`` with no closer, recovered into the object, with
+  any state field that leaked to the top level lifted back in),
+  ``string_dropped`` (any other string, or any string in a response the
+  provider reported cut at ``max_tokens``, coerced to ``{}``: the turn's state
+  updates are LOST, yet the body validates ``clean`` because ``{}`` takes the
+  defaults) or ``absent_defaulted`` (null or missing, defaulted). A dict is not
+  counted. ``xml_recovered`` counts a recovery, not a validated body: the
+  recovered body is validated afterwards and counted on
+  ``faultmaven_schema_validation_total`` like any other (fm#1753).
 """
 
 from faultmaven.infrastructure.shims.metrics import Counter
