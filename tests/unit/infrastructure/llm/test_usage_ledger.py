@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-import time
 from dataclasses import dataclass
 
 import pytest
@@ -550,6 +549,10 @@ class TestTheFlush:
 
 
 class TestTheDrain:
+    """The drain's deadline — it gives up at its timeout and counts what it
+    abandoned — is pinned in virtual time, in
+    ``test_usage_ledger_drain_deadline.py``."""
+
     async def test_awaits_pending_writes(self, ledger):
         class _Slow(InMemoryUsageLedger):
             async def record_call(self, attribution, bucket, usage_date):
@@ -565,22 +568,6 @@ class TestTheDrain:
         assert await drain_pending_usage_writes(timeout_s=5) == 0
         assert slow.call_writes == 3
         assert not usage_ledger._pending_writes
-
-    async def test_returns_within_its_timeout_and_counts_what_it_abandoned(
-        self, unpersisted
-    ):
-        class _Hung(InMemoryUsageLedger):
-            async def record_call(self, attribution, bucket, usage_date):
-                await asyncio.sleep(60)
-
-        install_usage_ledger(_Hung())
-        record_provider_call("anthropic", "claude-sonnet-4-6", _Resp(1, 1), 1.0)
-
-        started = time.monotonic()
-        abandoned = await drain_pending_usage_writes(timeout_s=0.1)
-        assert time.monotonic() - started < 2
-        assert abandoned == 1
-        assert unpersisted.counts == {REASON_STORE_ERROR: 1}
 
 
 def _a_task_left_by_a_closed_loop() -> "asyncio.Task[None]":
