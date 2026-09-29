@@ -126,7 +126,11 @@ class Case(BaseModel):
 
     closure_reason: Optional[str] = Field(
         default=None,
-        description="Why case was closed: resolved | abandoned | escalated | inquiry_only | duplicate | other",
+        description=(
+            "Sub-categorization of a CLOSED case, derived by the engine; None for "
+            "non-terminal and RESOLVED cases. One of: "
+            + " | ".join(sorted(VALID_CLOSURE_REASONS))
+        ),
         max_length=100,
     )
 
@@ -579,7 +583,7 @@ class Case(BaseModel):
     def valid_closure_reason(cls, v):
         """closure_reason is a sub-categorization of CLOSED state, all
         engine-derived. None for non-terminal and RESOLVED cases.
-        See: VALID_CLOSURE_REASONS in this module."""
+        See: VALID_CLOSURE_REASONS in lifecycle.py."""
         if v is not None and v not in VALID_CLOSURE_REASONS:
             raise ValueError(
                 f"closure_reason must be one of: {sorted(VALID_CLOSURE_REASONS)}"
@@ -1004,7 +1008,6 @@ class Case(BaseModel):
                 state=CaseState.RESOLVED,
                 resolved_at=datetime.now(UTC),
                 closed_at=datetime.now(UTC),
-                closure_reason="resolved"
             )
 
         Args:

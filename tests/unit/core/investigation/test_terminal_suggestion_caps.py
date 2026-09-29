@@ -60,7 +60,7 @@ class _StubClosedCase:
         # description, closure_reason, etc. Provide enough to PASS so the
         # gate doesn't short-circuit the suggestion list.
         self.description = "Real problem statement of substantive length."
-        self.closure_reason = "fixed_externally"
+        self.closure_reason = "closed_insufficient_evidence"
         self.problem_verification = None
         self.working_conclusion = None
         self.root_cause_conclusion = None

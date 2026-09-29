@@ -2933,7 +2933,7 @@ async def test_the_other_partys_case_survives_every_mutation_a_tries(world):
         world,
         "POST",
         f"/api/v1/cases/{case_id}/close",
-        json={"closure_reason": "other"},
+        json={},
     )
     delete = await as_a(world, "DELETE", f"/api/v1/cases/{case_id}")
 
@@ -4441,7 +4441,7 @@ async def test_a_share_grants_read_not_write(shared_world):
         world,
         "POST",
         f"/api/v1/cases/{case_id}/close",
-        json={"closure_reason": "other"},
+        json={},
     )
     delete = await as_teammate(world, "DELETE", f"/api/v1/cases/{case_id}")
     edit_report = await as_teammate(

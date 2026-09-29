@@ -91,10 +91,10 @@ class TestAtomicUpdateValidation:
         case.atomic_update(
             state=CaseState.CLOSED,
             closed_at=now,
-            closure_reason="abandoned",
+            closure_reason="closed_insufficient_evidence",
         )
         assert case.state == CaseState.CLOSED
-        assert case.closure_reason == "abandoned"
+        assert case.closure_reason == "closed_insufficient_evidence"
 
     def test_closed_without_closure_reason_raises(self):
         case = _make_investigating_case()

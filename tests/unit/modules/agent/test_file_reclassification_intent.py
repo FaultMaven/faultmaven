@@ -1804,7 +1804,7 @@ class TestATerminalTurnOffersNothing:
                 update={
                     "state": CaseState.CLOSED,
                     "closed_at": datetime.now(UTC),
-                    "closure_reason": "resolved_elsewhere",
+                    "closure_reason": "closed_insufficient_evidence",
                 }
             )
             return result
@@ -2621,7 +2621,6 @@ class TestTerminalCaseGuard:
                 "state": CaseState.RESOLVED,
                 "resolved_at": now,
                 "closed_at": now,
-                "closure_reason": "resolved",
             }
         )
         with pytest.raises(ValidationException, match="closed case"):
@@ -3208,7 +3207,6 @@ class TestATerminalCaseAnswersNothingStored:
                 "state": CaseState.RESOLVED,
                 "resolved_at": datetime.now(UTC),
                 "closed_at": datetime.now(UTC),
-                "closure_reason": "resolved",
             }
         )
         assert terminal.is_terminal
