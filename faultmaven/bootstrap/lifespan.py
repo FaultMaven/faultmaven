@@ -313,7 +313,28 @@ async def lifespan(app: FastAPI):
     # Default: disabled for operational neutrality - use CLI jobs or external schedulers instead
     # See: python -m faultmaven.jobs.run --list
     case_cleanup_scheduler = None
+    llm_usage_retention_task = None
     if settings.server.run_scheduler:
+        # LLM usage ledger retention (#640, Q6). Beside case cleanup and
+        # refused under multi for the same reason: the horizon is
+        # deployment-wide and RLS would show this process one enterprise.
+        try:
+            from faultmaven.infrastructure.tasks.llm_usage_retention import (
+                start_llm_usage_retention_scheduler,
+            )
+            from faultmaven.providers.tenancy.factory import (
+                BUILTIN_MULTI,
+                requested_tenant_provider,
+            )
+
+            llm_usage_retention_task = start_llm_usage_retention_scheduler(
+                interval_hours=24,
+                is_multi_tenant=(requested_tenant_provider() == BUILTIN_MULTI),
+            )
+        except Exception as e:
+            logger.warning(
+                f"LLM usage retention scheduler not started (non-critical): {e}"
+            )
         try:
             # Self-contained import: the container is composed in
             # compose_application, not bound in this scope.
@@ -431,6 +452,23 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down FaultMaven API server...")
 
+    # Finish the LLM usage ledger's in-flight own-row writes (#640) while the
+    # database is still open, then uninstall it — whatever the drain did: calls
+    # metered after this point are counted as not persisted rather than
+    # scheduled against a closing engine. A write still pending at the timeout
+    # is counted.
+    from faultmaven.infrastructure.llm.usage_ledger import (
+        drain_pending_usage_writes,
+        install_usage_ledger,
+    )
+
+    try:
+        await drain_pending_usage_writes(timeout_s=5)
+    except Exception as e:
+        logger.warning(f"LLM usage ledger drain failed (non-critical): {e}")
+    finally:
+        install_usage_ledger(None)
+
     # Stop funnel metrics collector
     _funnel_task = getattr(app.state, "funnel_metrics_task", None)
     if _funnel_task is not None:
@@ -457,6 +495,17 @@ async def lifespan(app: FastAPI):
             stop_case_cleanup_scheduler(case_cleanup_scheduler)
         except Exception as e:
             logger.warning(f"Error stopping case cleanup scheduler: {e}")
+
+    # Stop LLM usage retention
+    if llm_usage_retention_task is not None:
+        try:
+            from faultmaven.infrastructure.tasks.llm_usage_retention import (
+                stop_llm_usage_retention_scheduler,
+            )
+
+            await stop_llm_usage_retention_scheduler(llm_usage_retention_task)
+        except Exception as e:
+            logger.warning(f"Error stopping LLM usage retention scheduler: {e}")
 
     # Cleanup resources
     if "session_manager" in app.extra:

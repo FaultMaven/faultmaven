@@ -385,6 +385,19 @@ OPENAI_API_KEY=sk-prod-key-...  # Different key!
 | `PATTERN_CONFIDENCE_THRESHOLD` | float | 0.7 | Trigger LLM when pattern confidence < this |
 | `CONFIDENCE_OVERRIDE_THRESHOLD` | float | 0.4 | Force clarification when confidence < this |
 
+## LLM Usage Ledger Retention
+
+How long the LLM usage ledger keeps its rows (#640). Both are
+`ObservabilitySettings` fields (`settings.observability`), and both are pruned
+by the `llm_usage_retention` job; see
+[LLM cost observability](../operations/monitoring/llm-cost-observability.md#the-usage-ledger)
+for when that job runs.
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `LLM_USAGE_DAILY_RETENTION_DAYS` | int (>= 1) | 400 | Days of `llm_usage_daily` rows kept; a row goes when its UTC `usage_date` is older than today minus this |
+| `LLM_USAGE_TURN_RETENTION_DAYS` | int (>= 1) | 90 | Days of `llm_turn_spend` rows kept; a row goes when its `occurred_at` is older than now minus this |
+
 ## Related Documentation
 
 - [Context Management Guide](./CONTEXT_MANAGEMENT.md)

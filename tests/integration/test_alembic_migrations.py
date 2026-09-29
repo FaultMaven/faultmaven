@@ -32,10 +32,15 @@ from faultmaven.models.rbac_seed import SYSTEM_ROLE_IDS
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
-# Current head revision. There is exactly one migration: ADR-017's clean
-# baseline replaced the 001-053 chain, so "downgrade to before X" is always
-# "downgrade base" and every seed assertion below reverses the whole schema.
-HEAD_REVISION = "a1e0c17bd001"  # 001_enterprise_baseline
+# Current head revision. The chain is ADR-017's clean baseline (which replaced
+# the 001-053 chain) plus additive revisions on top of it, so the seed
+# assertions below reverse the whole schema with "downgrade base" and each
+# additive revision is stepped over on its own.
+HEAD_REVISION = "65913afe773c"  # 002_llm_usage_ledger
+#: The baseline, which every additive revision parents onto.
+BASELINE_REVISION = "a1e0c17bd001"  # 001_enterprise_baseline
+#: The tables 002_llm_usage_ledger adds (#640).
+LLM_USAGE_TABLES = ["llm_turn_spend", "llm_usage_daily"]
 
 
 @pytest.fixture(scope="function")
@@ -152,11 +157,12 @@ def get_current_revision(database_url: str) -> str:
     return ""
 
 
-# Every table the baseline creates (ADR-017). ``turn_usage`` replaces the
-# organization-keyed ``organization_turn_usage``, ``sso_personal_enterprises``
-# replaces ``sso_personal_orgs``, and ``team_invitations`` is new: the consent
-# record a team forms by. ``token_revocations`` (#828) is where revocation
-# state lives when the cache does not outlive the process.
+# Every table the chain creates: the baseline's (ADR-017) and the LLM usage
+# ledger 002 adds (#640). ``turn_usage`` replaces the organization-keyed
+# ``organization_turn_usage``, ``sso_personal_enterprises`` replaces
+# ``sso_personal_orgs``, and ``team_invitations`` is new: the consent record a
+# team forms by. ``token_revocations`` (#828) is where revocation state lives
+# when the cache does not outlive the process.
 EXPECTED_TABLES = [
     "alembic_version",
     "case_actions",
@@ -180,6 +186,8 @@ EXPECTED_TABLES = [
     "knowledge_items",
     "knowledge_suggestions",
     "config_overrides",
+    "llm_turn_spend",
+    "llm_usage_daily",
     "oauth_authorization_codes",
     "operator_access_audit",
     "operator_access_grants",
@@ -319,6 +327,113 @@ class TestAlembicMigrationInfrastructure:
         ), f"The enterprise baseline should be in history. Output: {output}"
 
 
+class TestLlmUsageLedgerRevision:
+    """002_llm_usage_ledger is the chain's first ADDITIVE revision (#640).
+
+    The baseline is not amended: a deployment receives these two tables through
+    its normal migration run. So the revision must step down and back up on its
+    own without touching anything the baseline owns, and the SQLite half of its
+    constraints must hold, because standalone is where most of these rows live.
+    """
+
+    def test_downgrade_one_removes_exactly_the_ledger(
+        self, clean_database, database_url
+    ):
+        assert run_alembic("upgrade head", database_url).returncode == 0
+        before = get_tables(TEST_DB)
+        assert set(LLM_USAGE_TABLES) <= set(before)
+
+        result = run_alembic("downgrade -1", database_url)
+        assert result.returncode == 0, result.stderr
+        assert get_current_revision(database_url) == BASELINE_REVISION
+        assert get_tables(TEST_DB) == sorted(set(before) - set(LLM_USAGE_TABLES))
+
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stderr
+        assert get_tables(TEST_DB) == before
+        assert get_current_revision(database_url) == HEAD_REVISION
+
+    @staticmethod
+    def _daily(conn, kind: str, subject_id: str, actor: str = "u1") -> None:
+        conn.execute(
+            "INSERT INTO llm_usage_daily (enterprise_id, usage_date, "
+            "billing_subject_kind, billing_subject_id, actor_user_id, provider, "
+            "model, outcome) VALUES (?, '2026-09-29', ?, ?, ?, 'anthropic', "
+            "'claude-sonnet-4-6', 'kept')",
+            (
+                TestStandaloneTenancySeed.STANDALONE_ENTERPRISE_ID,
+                kind,
+                subject_id,
+                actor,
+            ),
+        )
+
+    @pytest.mark.parametrize(
+        "kind, subject_id",
+        [("none", "org-1"), ("account", ""), ("organization", ""), ("team", "t1")],
+    )
+    def test_the_subject_id_is_tied_to_its_kind(
+        self, clean_database, database_url, kind, subject_id
+    ):
+        """``none`` and only ``none`` carries the empty id, and there is no
+        fourth kind."""
+        assert run_alembic("upgrade head", database_url).returncode == 0
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            with pytest.raises(sqlite3.IntegrityError, match="llm_usage_daily_"):
+                self._daily(conn, kind, subject_id)
+        finally:
+            conn.close()
+
+    def test_a_row_with_no_subject_and_no_actor_is_admitted(
+        self, clean_database, database_url
+    ):
+        """A job's call: metering must not refuse what the cap would."""
+        assert run_alembic("upgrade head", database_url).returncode == 0
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            self._daily(conn, "none", "", actor="")
+            conn.commit()
+            assert query_rows(
+                TEST_DB,
+                "SELECT billing_subject_kind, actor_user_id FROM llm_usage_daily",
+            ) == [("none", "")]
+        finally:
+            conn.close()
+
+    def test_a_turn_row_goes_with_its_case(self, clean_database, database_url):
+        """Q4: turn rows are deleted with their case; nothing else holds them."""
+        assert run_alembic("upgrade head", database_url).returncode == 0
+        enterprise = TestStandaloneTenancySeed.STANDALONE_ENTERPRISE_ID
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute(
+                "INSERT INTO users (user_id, enterprise_id, username, email, "
+                "display_name, created_at, updated_at) VALUES ('u1', ?, 'u1', "
+                "'u1@example.com', 'U One', datetime('now'), datetime('now'))",
+                (enterprise,),
+            )
+            conn.execute(
+                "INSERT INTO cases (case_id, enterprise_id, user_id, title, "
+                "created_at, updated_at) VALUES ('case_1', ?, 'u1', 't', "
+                "datetime('now'), datetime('now'))",
+                (enterprise,),
+            )
+            conn.execute(
+                "INSERT INTO llm_turn_spend (enterprise_id, case_id, turn_number, "
+                "billing_subject_kind, billing_subject_id, occurred_at) "
+                "VALUES (?, 'case_1', 1, 'account', 'u1', datetime('now'))",
+                (enterprise,),
+            )
+            conn.commit()
+            conn.execute("DELETE FROM cases WHERE case_id = 'case_1'")
+            conn.commit()
+            assert query_rows(TEST_DB, "SELECT * FROM llm_turn_spend") == []
+        finally:
+            conn.close()
+
+
 class TestRbacSeed:
     """Migration 029 seeds the system RBAC roles/permissions/grants.
 
@@ -379,10 +494,10 @@ class TestRbacSeed:
     def test_seed_is_reversible_and_idempotent(self, clean_database, database_url):
         """Downgrade removes the seed with its tables; re-upgrade restores it.
 
-        With one baseline there is no revision between "seeded" and "no schema",
-        so the reversal is ``downgrade base`` and what it proves is narrower than
-        the chain's version could be — but it is the property that matters: a
-        re-upgrade lands on exactly the seed and not a doubled one.
+        The seed lives in the baseline, so its reversal is ``downgrade base``
+        (which steps back over every additive revision first). What it proves is
+        the property that matters: a re-upgrade lands on exactly the seed and not
+        a doubled one.
         """
         run_alembic("upgrade head", database_url)
         assert len(query_rows(TEST_DB, "SELECT role_id FROM roles")) == 3
@@ -391,7 +506,7 @@ class TestRbacSeed:
         assert result.returncode == 0, f"downgrade failed: {result.stderr}"
         assert get_tables(TEST_DB) == [
             "alembic_version"
-        ], "the baseline's downgrade must drop every table it created"
+        ], "the chain's downgrade must drop every table it created"
 
         # Re-apply — counts return to exactly the seed, no duplication.
         run_alembic("upgrade head", database_url)

@@ -1,12 +1,12 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-09-16 23:40 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-09-29 00:51 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
 ## Summary
 
-**42 tables** in the schema.
+**44 tables** in the schema.
 
 | Table | Columns | Primary Key | Foreign Keys |
 |-------|---------|-------------|--------------|
@@ -31,6 +31,8 @@
 | `investigation_sessions` | 18 | `session_id` | cases, enterprises, organizations, users |
 | `knowledge_items` | 29 | `item_id` | enterprises, organizations, users |
 | `knowledge_suggestions` | 31 | `suggestion_id` | cases, enterprises, knowledge_items, organizations, users |
+| `llm_turn_spend` | 17 | `enterprise_id, case_id, turn_number` | cases, enterprises |
+| `llm_usage_daily` | 15 | `enterprise_id, usage_date, billing_subject_kind, billing_subject_id, actor_user_id, provider, model, outcome` | enterprises |
 | `oauth_authorization_codes` | 8 | `code` | users |
 | `operator_access_audit` | 12 | `audit_id` | — |
 | `operator_access_grants` | 14 | `grant_id` | — |
@@ -430,6 +432,42 @@ erDiagram
         DATETIME created_at
         DATETIME updated_at
     }
+    llm_turn_spend {
+        VARCHAR enterprise_id PK
+        VARCHAR case_id PK
+        INTEGER turn_number PK
+        INTEGER investigation_turn
+        VARCHAR actor_user_id
+        VARCHAR billing_subject_kind
+        VARCHAR billing_subject_id
+        BIGINT input_tokens
+        BIGINT output_tokens
+        BIGINT cache_read_tokens
+        BIGINT cache_write_tokens
+        BIGINT spend_weighted_tokens
+        INTEGER calls
+        INTEGER low_confidence_calls
+        INTEGER unpriced_calls
+        FLOAT estimated_cost_usd
+        DATETIME occurred_at
+    }
+    llm_usage_daily {
+        VARCHAR enterprise_id PK
+        DATE usage_date PK
+        VARCHAR billing_subject_kind PK
+        VARCHAR billing_subject_id PK
+        VARCHAR actor_user_id PK
+        VARCHAR provider PK
+        VARCHAR model PK
+        VARCHAR outcome PK
+        BIGINT input_tokens
+        BIGINT output_tokens
+        BIGINT cache_read_tokens
+        BIGINT cache_write_tokens
+        FLOAT estimated_cost_usd
+        INTEGER calls
+        INTEGER unpriced_calls
+    }
     oauth_authorization_codes {
         VARCHAR code PK
         VARCHAR user_id FK
@@ -712,6 +750,7 @@ erDiagram
     cases ||--o{ hypotheses : ""
     cases ||--o{ investigation_sessions : ""
     cases ||--o{ knowledge_suggestions : ""
+    cases ||--o{ llm_turn_spend : ""
     cases ||--o{ reports : ""
     cases ||--o{ solutions : ""
     cases ||--o{ uploaded_files : ""
@@ -739,6 +778,8 @@ erDiagram
     enterprises ||--o{ investigation_sessions : ""
     enterprises ||--o{ knowledge_items : ""
     enterprises ||--o{ knowledge_suggestions : ""
+    enterprises ||--o{ llm_turn_spend : ""
+    enterprises ||--o{ llm_usage_daily : ""
     enterprises ||--o{ organization_members : ""
     enterprises ||--o{ organizations : ""
     enterprises ||--o{ reports : ""

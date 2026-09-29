@@ -4,7 +4,7 @@
 **Status**: Authoritative Standard
 **Last Updated**: 2026-09-06
 
-> **Scope**: This document reflects the live schema as of the single baseline migration `a1e0c17bd001` (`001_enterprise_baseline`, current head). All DDL below matches the SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/models.py`. When this doc disagrees with the ORM, the ORM is the source of truth.
+> **Scope**: This document reflects the case-domain schema the baseline migration `a1e0c17bd001` (`001_enterprise_baseline`) creates. The chain is that baseline plus additive revisions (`alembic heads` names the head); none of them changes a table below — the first, `002_llm_usage_ledger`, adds the LLM usage ledger, whose `llm_turn_spend` rows reference `cases` with `ON DELETE CASCADE` (see [llm-cost-observability.md](../../../operations/monitoring/llm-cost-observability.md#the-usage-ledger)). All DDL below matches the SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/models.py`. When this doc disagrees with the ORM, the ORM is the source of truth.
 
 > **NOTE on `enterprise_id` / `organization_id` placement (ADR-017)**: Three tiers answer three separate questions. Every tenanted case-domain table carries `enterprise_id NOT NULL FK` — the isolation boundary, and the key every PostgreSQL RLS policy reads — denormalized directly onto the row so RLS never has to join through `cases`. The same tables also carry `organization_id`, but that column is **nullable billing attribution** (`ON DELETE SET NULL`), stamped from the actor's organization at write time and never read as a visibility predicate. The per-table DDL below reflects this placement on every tenanted table.
 
@@ -38,7 +38,7 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | --- | --- | --- |
 | ✅ Design | Approved | This document |
 | ✅ ORM Models | Complete | `faultmaven/infrastructure/persistence/models.py` |
-| ✅ Migration | Complete | `alembic/versions/` — single baseline `a1e0c17bd001` (`001_enterprise_baseline`), current head |
+| ✅ Migration | Complete | `alembic/versions/` — baseline `a1e0c17bd001` (`001_enterprise_baseline`) plus additive revisions |
 | ✅ PostgreSQL Repository | Complete | `postgresql_hybrid_case_repository/repository.py` |
 | ✅ SQLite Repository | Complete | `sqlite_case_repository/` |
 | ✅ SQLite Integration Tests | Complete | Tests passing with real SQLite database |
@@ -46,7 +46,7 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | ⏳ Performance Validation | Pending | Benchmarks needed |
 | ⏳ Production Deploy | Pending | PostgreSQL not yet deployed to K8s |
 
-**Migration**: `alembic/versions/` holds exactly one migration, `001_enterprise_baseline` (revision `a1e0c17bd001`, no parent). It creates the whole schema in one `CREATE` — cases, evidence, hypotheses and every other case-domain table, with `enterprise_id NOT NULL` as the isolation key on each and RLS policies keyed on `app.current_enterprise_id` (ADR-017: the enterprise isolates, the organization bills, the team shares). This replaces the earlier 001–053 chain outright rather than extending it: moving the isolation key one tier up touches every tenant-scoped table and every RLS policy, so a stacked migration would only have restated the chain with a dual-key period in the middle, and the owner's rule for the campaign was pre-user, no-backward-compatibility (`fm-wipe-deployment --wipe` + re-provision on this baseline for any existing deployment). The prior chain's per-migration history (evidence's `summary`/`extract` split, the case-lifecycle `status`→`state` rename, the causal-graph chain model, the polymorphic `resource_shares` table, per-turn authorship, the SSO organization mapping, and so on) is preserved in git history and in `faultmaven-doc-internal`'s ADR-017 campaign notes, not as a live migration table here — every one of those changes is now simply *how the schema is*, expressed directly in the tables below.
+**Migration**: `alembic/versions/` starts at `001_enterprise_baseline` (revision `a1e0c17bd001`, no parent), and additive revisions follow it without amending it. The baseline creates the whole case-domain schema in one `CREATE` — cases, evidence, hypotheses and every other case-domain table, with `enterprise_id NOT NULL` as the isolation key on each and RLS policies keyed on `app.current_enterprise_id` (ADR-017: the enterprise isolates, the organization bills, the team shares). This replaces the earlier 001–053 chain outright rather than extending it: moving the isolation key one tier up touches every tenant-scoped table and every RLS policy, so a stacked migration would only have restated the chain with a dual-key period in the middle, and the owner's rule for the campaign was pre-user, no-backward-compatibility (`fm-wipe-deployment --wipe` + re-provision on this baseline for any existing deployment). The prior chain's per-migration history (evidence's `summary`/`extract` split, the case-lifecycle `status`→`state` rename, the causal-graph chain model, the polymorphic `resource_shares` table, per-turn authorship, the SSO organization mapping, and so on) is preserved in git history and in `faultmaven-doc-internal`'s ADR-017 campaign notes, not as a live migration table here — every one of those changes is now simply *how the schema is*, expressed directly in the tables below.
 
 **Active Implementations**:
 
@@ -1683,7 +1683,7 @@ All tenanted case-domain tables get RLS policies in PostgreSQL deployments, keye
 
 `cases`, `case_messages`, `case_actions`, `case_tags`, `case_checkpoints`, `case_entities`, `evidence`, `hypotheses`, `hypothesis_evidence`, `solutions`, `uploaded_files`, `investigation_sessions`, `reports`, `conversion_jobs`, `conversion_drafts`, `causal_nodes`, `causal_edges`, `causal_node_evidence`
 
-> The single baseline migration (`001_enterprise_baseline`) creates every one of these policies from a shared table list at once, keyed on `enterprise_id`. A new tenanted case-domain table must be added to that list (or enrolled by a follow-up migration), or it silently escapes tenant isolation.
+> The baseline migration (`001_enterprise_baseline`) creates every one of these policies from a shared table list at once, keyed on `enterprise_id`. That list does not reach a table a later revision adds: a new tenanted case-domain table is enrolled by the revision that creates it, or it silently escapes tenant isolation.
 
 **Policy pattern (Tier 2 — PostgreSQL-only)**:
 
@@ -1715,7 +1715,7 @@ Before deploying PostgreSQLHybridCaseRepository to production, validate the foll
 # Deploy PostgreSQL to K8s (if not already running)
 kubectl apply -f faultmaven-k8s-infra/applications/postgresql/
 
-# Apply the single baseline migration (a1e0c17bd001, 001_enterprise_baseline)
+# Apply the chain: the baseline (a1e0c17bd001, 001_enterprise_baseline) and the additive revisions after it
 alembic upgrade head
 
 # Verify all tables created
@@ -1880,7 +1880,7 @@ psql -U faultmaven -d faultmaven_cases -c "SELECT * FROM evidence WHERE case_id 
 
 - [x] Design approved (this document)
 - [x] ORM models (`faultmaven/infrastructure/persistence/models.py`)
-- [x] Single baseline migration `a1e0c17bd001` (`001_enterprise_baseline`) — the enterprise isolates, RLS keyed on `enterprise_id`
+- [x] Baseline migration `a1e0c17bd001` (`001_enterprise_baseline`) — the enterprise isolates, RLS keyed on `enterprise_id`
 - [x] Repository implementation (`postgresql_hybrid_case_repository/repository.py`, `sqlite_case_repository/`)
 - [x] Container.py wiring (`CASE_STORAGE_TYPE=database`)
 - [x] Enterprise tier bootstrap (default enterprise seed; NOT NULL `enterprise_id` on users/orgs)
@@ -1954,7 +1954,7 @@ The following tables and columns existed in earlier iterations of this design bu
 - **Created**: 2025-11-09
 - **Last Updated**: 2026-09-06
 - **Version**: 5.0 (Authoritative)
-- **Status**: ✅ Implemented — live schema (single baseline migration `a1e0c17bd001`, `001_enterprise_baseline`)
+- **Status**: ✅ Implemented — live schema (baseline migration `a1e0c17bd001`, `001_enterprise_baseline`)
 
 **Changelog**:
 

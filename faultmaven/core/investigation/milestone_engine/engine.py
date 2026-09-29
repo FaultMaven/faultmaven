@@ -63,6 +63,11 @@ from faultmaven.infrastructure.llm.metering import (
     TurnTokenTracker,
     active_token_tracker,
 )
+from faultmaven.infrastructure.llm.usage_ledger import (
+    capture_attribution,
+    flush_turn,
+    warn_attribution_error,
+)
 from faultmaven.models.interfaces import ILLMProvider
 from faultmaven.modules.agent.tools.vectorize_file_tool import VECTORIZED_SYSTEM_MESSAGE
 from faultmaven.modules.case.contracts import (
@@ -340,7 +345,27 @@ class MilestoneEngine:
             # billed LLM call made while handling the turn — main generation,
             # tool loop, KB Q&A, classifier, synthesis, and any fallback
             # attempts — accrues to it via the registry metering chokepoint.
-            tracker = TurnTokenTracker()
+            #
+            # Who pays and who acted are captured HERE, in the context every
+            # call of the turn runs in, and the turn's address with them: the
+            # service has already advanced the message clock for this turn, so
+            # ``current_turn`` at entry IS this turn's number (#640).
+            #
+            # Capturing them must not fail the turn: a raise here leaves the
+            # turn unattributed (counted ``attribution_error`` at the flush) and
+            # the turn runs on.
+            tracker = TurnTokenTracker(actor_user_id=user_id or "")
+            turn_number = 0
+            investigation_turn = 0
+            try:
+                turn_number = case.current_turn
+                tracker.attribution = capture_attribution(user_id)
+                investigation_turn = case.investigation_turn_at(turn_number)
+            except Exception as exc:
+                tracker.attribution = None
+                tracker.attribution_failed = True
+                investigation_turn = 0
+                warn_attribution_error(exc)
             token = active_token_tracker.set(tracker)
             try:
                 result = await self._process_turn_impl(
@@ -394,6 +419,15 @@ class MilestoneEngine:
                         )
                 except Exception:
                     pass
+                # Persist the turn's spend (#640). Fails open by contract —
+                # flush_turn never raises — so a ledger outage cannot cost a
+                # turn its answer; what it did not persist is counted instead.
+                await flush_turn(
+                    tracker,
+                    case_id=case.case_id,
+                    turn_number=turn_number,
+                    investigation_turn=investigation_turn,
+                )
             return result
 
     async def _process_turn_impl(

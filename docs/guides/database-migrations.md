@@ -26,9 +26,11 @@ Cloud deployment points it at PostgreSQL. There is one Alembic chain in
 `faultmaven/infrastructure/persistence/models.py`, which is the metadata
 `alembic/env.py` hands to autogenerate.
 
-While the chain is a single baseline (`001_enterprise_baseline`, ADR-017), that
-one migration creates the whole schema and `downgrade()` drops the whole schema —
-see [Migration History](#migration-history).
+The chain is a baseline (`001_enterprise_baseline`, ADR-017) plus additive
+revisions on top of it. The baseline creates the schema it was written with and
+its `downgrade()` drops all of it; each additive revision adds to that schema,
+and its `downgrade()` removes only what it added — see
+[Migration History](#migration-history).
 
 ### Who runs the migrations
 
@@ -282,17 +284,22 @@ alembic downgrade abc123def456      # to a revision
 alembic downgrade base              # everything
 ```
 
-> ⚠️ While the chain is a single baseline, `alembic downgrade -1` **is**
-> `alembic downgrade base`: it drops every table and leaves only
-> `alembic_version`. Back up first.
+> ⚠️ `alembic downgrade -1` steps back over the newest revision only, and an
+> additive revision's `downgrade()` drops the tables it added — with their rows.
+> Stepping back past the baseline (`alembic downgrade base`, or `-1` from the
+> baseline itself) drops every table and leaves only `alembic_version`. Back up
+> first.
 
 ## Re-provisioning a Database
 
-While the chain is a single baseline there is nothing to migrate *from*: an
-existing deployment is re-provisioned, not migrated. The baseline has also been
-amended in place (it is the only migration), and a database stamped with the
-baseline's revision before an amendment never receives it — Alembic considers
-it up to date, so `alembic upgrade head` does nothing. Re-provision instead:
+A deployment on the current baseline receives each additive revision through
+its normal migration run (`alembic upgrade head`, or the migration Job); nothing
+is re-provisioned for those. Re-provisioning is the answer for one case only: a
+database stamped at the baseline's revision **before the baseline was amended
+in place** (it was, while it was the only migration). Alembic considers such a
+database up to date on the baseline, so no run ever delivers the amendment, and
+the revisions stacked on top would apply to a schema they were not written
+against. Re-provision it instead:
 
 - **PostgreSQL**: drop and re-create the database, then re-run the migration
   Job. `fm-wipe-deployment --wipe` clears the surfaces a `DROP DATABASE` does
@@ -385,9 +392,9 @@ alembic upgrade head
 **Cause**: Migration was partially applied or a table was created manually.
 
 **Solution**: rebuild the database from empty. Do not `alembic stamp` past the
-failure: while the chain is a single baseline, stamping marks the whole schema
-applied, and whatever the migration had not yet created (tables, triggers, RLS
-policies, seed rows) is simply missing.
+failure: stamping marks the revision applied, and whatever it had not yet
+created (tables, triggers, RLS policies, seed rows) is simply missing — for the
+baseline, that is the whole schema.
 
 - **SQLite**: with the API stopped, delete `data/faultmaven.db` and run
   `alembic upgrade head`.
@@ -499,19 +506,29 @@ alembic current --verbose
 
 ## Migration History
 
-While the chain is a single baseline, `001_enterprise_baseline`
-(`alembic/versions/20260906_1200_a1e0c17bd001_001_enterprise_baseline.py`)
-creates every table, the RLS policies, the append-only operator triggers, the
-last-admin constraint trigger and the seed rows. There is no chain because the
-isolation key moved a tier (ADR-017): every tenant-scoped table, every policy
-and both SSO lookup tables changed at once, and the system was pre-user — no
-backward compatibility, no data preservation. An existing deployment is
-re-provisioned on this baseline, not migrated: the database is dropped and
-re-created and the migration Job re-run, and `fm-wipe-deployment --wipe` clears
-the surfaces a `DROP DATABASE` does not reach (vectors, object storage, Redis) —
-follow [deployment-wipe.md](../operations/deployment-wipe.md) exactly. So there
-is nothing to migrate *from*; `downgrade()` drops everything. The migration's
-own docstring carries the reasoning per table group.
+The chain starts at `001_enterprise_baseline`
+(`alembic/versions/20260906_1200_a1e0c17bd001_001_enterprise_baseline.py`),
+which creates the tables it was written with, the RLS policies, the append-only
+operator triggers, the last-admin constraint trigger and the seed rows. It
+replaced the 001–053 chain outright because the isolation key moved a tier
+(ADR-017): every tenant-scoped table, every policy and both SSO lookup tables
+changed at once, and the system was pre-user — no backward compatibility, no
+data preservation. A deployment from before the baseline was re-provisioned on
+it, not migrated: the database dropped and re-created and the migration Job
+re-run, with `fm-wipe-deployment --wipe` clearing the surfaces a `DROP DATABASE`
+does not reach (vectors, object storage, Redis) — see
+[Re-provisioning a Database](#re-provisioning-a-database). The baseline's
+`downgrade()` drops everything, and its docstring carries the reasoning per
+table group.
+
+Since then new tables arrive as **additive revisions** (ruled 2026-09-28 for
+#640); once one exists, amending the baseline in place would also miss every
+database stamped at a later revision. Each revision parents onto the head before
+it, adds its tables with their RLS enrolment on PostgreSQL, and its
+`downgrade()` drops only what it added. The first is `002_llm_usage_ledger`
+(`llm_usage_daily`, `llm_turn_spend`). A tenant-scoped table added this way is
+enrolled in RLS by its own revision — the baseline's table list does not reach
+it.
 
 Run `alembic heads` for the current head. Do not copy a revision id from prose:
 a lane that parents a new migration onto a revision read from a document

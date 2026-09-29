@@ -176,6 +176,12 @@ MUST_BE_EMPTY = frozenset(
         # attached to an id that may be minted again — and the new tenant would
         # start its first day already partway to its cap.
         "turn_usage",
+        # The LLM usage ledger (#640). Spend attributed to enterprises, payers
+        # and accounts the wipe removes; the daily rows name no case, so the
+        # case cascade does not reach them, and a surviving row would put the
+        # previous deployment's spend on the new one's usage page.
+        "llm_turn_spend",
+        "llm_usage_daily",
         # Operator governance. Append-only by trigger, so these survive only a
         # drop-and-recreate — their presence after a "wipe" proves DELETE was
         # used instead, and that the RBAC seed is probably gone with it.

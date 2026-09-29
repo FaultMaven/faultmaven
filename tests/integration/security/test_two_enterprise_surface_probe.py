@@ -250,6 +250,8 @@ pytestmark = [
 #: ``team_invitations`` joins it because Phase 1 introduces it as tenant data
 #: (D4's consent record): who was invited into which team is exactly the sort of
 #: row the wall exists to keep on one side of it.
+#: ``llm_usage_daily`` and ``llm_turn_spend`` join it with revision 002 (#640):
+#: the LLM usage ledger is per-enterprise spend, enrolled by its own revision.
 ENTERPRISE_SCOPED_TABLES = frozenset(
     {
         "case_actions",
@@ -271,6 +273,8 @@ ENTERPRISE_SCOPED_TABLES = frozenset(
         "investigation_sessions",
         "knowledge_items",
         "knowledge_suggestions",
+        "llm_turn_spend",
+        "llm_usage_daily",
         "organization_members",
         "organizations",
         "reports",

@@ -8,7 +8,9 @@ Schema is organized into four domains:
   a billing subject). Three tiers, three questions (ADR-017): the **enterprise**
   isolates (`enterprise_id` is the RLS key), the **organization** bills (a cost
   centre, no role in visibility), the **team** shares (formed by consent, inside
-  one enterprise, may span organizations).
+  one enterprise, may span organizations). `llm_usage_daily` and
+  `llm_turn_spend` are the LLM usage ledger (#640): what the billed calls cost,
+  per payer and actor per UTC day, and per engine turn.
 - **Case domain** — `cases` and its children: evidence, hypotheses, solutions,
   messages, files, actions, tags, checkpoints, entities, sessions, agent
   executions, tool calls, hypothesis-evidence junction, reports.
@@ -557,6 +559,200 @@ class TurnUsageModel(Base):
             name="turn_usage_subject_kind_check",
         ),
         CheckConstraint("turn_count >= 0", name="turn_usage_non_negative"),
+    )
+
+
+#: The subject kinds a usage row may name. ``turn_usage`` has two; this ledger
+#: has a third, ``none``, because metering must not refuse: a billed call with no
+#: actor and no billing organization (for example a standalone call made outside
+#: an authenticated request) is still spend, and dropping it would make the
+#: totals lie. ``turn_usage`` never meets that case because the
+#: cap refuses a turn with no subject.
+_USAGE_SUBJECT_KIND_CHECK = (
+    "billing_subject_kind IN ('organization', 'account', 'none')"
+)
+#: ``none`` and only ``none`` carries the empty id — the two columns cannot
+#: disagree about whether there is a subject.
+_USAGE_SUBJECT_ID_CHECK = "(billing_subject_kind = 'none') = (billing_subject_id = '')"
+
+
+class LlmUsageDailyModel(Base):
+    """LLM spend per enterprise, UTC day, payer, actor, provider, model and outcome.
+
+    The persisted half of the metering chokepoint (``infrastructure/llm/
+    metering.record_provider_call``, #640): every billed provider call lands in
+    exactly one row here, either through its engine turn's flush or as a row of
+    its own. Prometheus carries the same figures without a tenant, by design;
+    this table carries the tenant, and it survives restarts and sums correctly
+    across replicas because every write is an atomic database increment.
+
+    **No key column is nullable.** ``actor_user_id`` is ``''`` when there is no
+    actor and ``billing_subject_id`` is ``''`` when the kind is ``none``.
+    A NULL in an ``ON CONFLICT`` target never conflicts on SQLite — NULL is
+    distinct from NULL — so a nullable key would insert a new row per flush
+    instead of incrementing one, and the totals would still be right while the
+    row count grew without bound.
+
+    **No foreign key on ``actor_user_id`` or ``billing_subject_id``**, as for
+    ``turn_usage.billing_subject_id``. User deletion is a hard delete: ``SET
+    NULL`` would merge a deleted user's rows into the no-actor rows, and
+    ``CASCADE`` would erase their spend from the enterprise totals. A deleted
+    user's id therefore stays in these rows, the same posture as ``turn_usage``.
+
+    There are deliberately no ``created_at``/``updated_at`` columns — every write
+    after the first arrives through ``ON CONFLICT DO UPDATE``, which does not fire
+    SQLAlchemy's ``onupdate``, so a timestamp here would freeze at the day's first
+    call while looking like it tracked the last one (the ``TurnUsageModel``
+    reasoning, unchanged).
+
+    ``estimated_cost_usd`` is the estimate at call time from the price table then
+    in force, over PRICED calls only; ``unpriced_calls`` counts the calls it
+    therefore leaves out. Tokens are always stored, so re-pricing stays possible.
+
+    Tenanted: ``enterprise_id`` leads the key for the reason ``TurnUsageModel``
+    gives — a conflict target narrower than the RLS predicate can resolve to a
+    row the inserting session cannot see.
+    """
+
+    __tablename__ = "llm_usage_daily"
+
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    usage_date = Column(Date, primary_key=True)
+    billing_subject_kind = Column(String(20), primary_key=True)
+    billing_subject_id = Column(String(36), primary_key=True)
+    actor_user_id = Column(String(36), primary_key=True)
+    provider = Column(String(64), primary_key=True)
+    model = Column(String(255), primary_key=True)
+    outcome = Column(String(20), primary_key=True)
+    input_tokens = Column(
+        BigInteger, nullable=False, server_default=text("0"), default=0
+    )
+    output_tokens = Column(
+        BigInteger, nullable=False, server_default=text("0"), default=0
+    )
+    cache_read_tokens = Column(
+        BigInteger, nullable=False, server_default=text("0"), default=0
+    )
+    cache_write_tokens = Column(
+        BigInteger, nullable=False, server_default=text("0"), default=0
+    )
+    estimated_cost_usd = Column(
+        Float, nullable=False, server_default=text("0"), default=0.0
+    )
+    calls = Column(Integer, nullable=False, server_default=text("0"), default=0)
+    unpriced_calls = Column(
+        Integer, nullable=False, server_default=text("0"), default=0
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            _USAGE_SUBJECT_KIND_CHECK, name="llm_usage_daily_subject_kind_check"
+        ),
+        CheckConstraint(
+            _USAGE_SUBJECT_ID_CHECK, name="llm_usage_daily_subject_id_check"
+        ),
+        CheckConstraint(
+            "outcome IN ('kept', 'low_confidence')",
+            name="llm_usage_daily_outcome_check",
+        ),
+        CheckConstraint(
+            "input_tokens >= 0 AND output_tokens >= 0 AND cache_read_tokens >= 0 "
+            "AND cache_write_tokens >= 0 AND calls >= 0 AND unpriced_calls >= 0",
+            name="llm_usage_daily_non_negative",
+        ),
+    )
+
+
+class LlmTurnSpendModel(Base):
+    """One engine turn's LLM spend: the per-turn half of the usage ledger (#640).
+
+    Written once per engine turn that made a billed call, by the flush at the end
+    of ``MilestoneEngine.process_turn``, in the same transaction as that turn's
+    ``llm_usage_daily`` increments. It is what a per-turn distribution and a
+    "heaviest turns" drill-down read; the daily rows cannot answer either.
+
+    Addressed by the message clock, ``(enterprise_id, case_id, turn_number)``,
+    and labelled with ``investigation_turn`` for display (#1387: display the
+    ordinal, address by the clock). A retried turn that reuses the clock
+    ACCUMULATES into its row — every counter is an increment and
+    ``occurred_at`` takes the later flush — rather than conflicting.
+
+    Rows go with their case (``ON DELETE CASCADE``). The daily rows name no case
+    and keep the spend, so after a case is deleted the per-turn figures shrink
+    and the daily totals do not.
+
+    The key and FK rules are ``LlmUsageDailyModel``'s: no key column is nullable
+    (``actor_user_id`` is ``''`` for no actor), and there is no foreign key on the
+    actor or the billing subject, so a deleted user's id stays in the row.
+    ``occurred_at`` is the flush time, which is also why there is no
+    ``updated_at``: it IS the last write.
+    """
+
+    __tablename__ = "llm_turn_spend"
+
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    case_id = Column(
+        String(36),
+        ForeignKey("cases.case_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    turn_number = Column(Integer, primary_key=True)
+    investigation_turn = Column(
+        Integer, nullable=False, server_default=text("0"), default=0
+    )
+    actor_user_id = Column(String(36), nullable=False, server_default=text("''"))
+    billing_subject_kind = Column(String(20), nullable=False)
+    billing_subject_id = Column(String(36), nullable=False, server_default=text("''"))
+    input_tokens = Column(
+        BigInteger, nullable=False, server_default=text("0"), default=0
+    )
+    output_tokens = Column(
+        BigInteger, nullable=False, server_default=text("0"), default=0
+    )
+    cache_read_tokens = Column(
+        BigInteger, nullable=False, server_default=text("0"), default=0
+    )
+    cache_write_tokens = Column(
+        BigInteger, nullable=False, server_default=text("0"), default=0
+    )
+    spend_weighted_tokens = Column(
+        BigInteger, nullable=False, server_default=text("0"), default=0
+    )
+    calls = Column(Integer, nullable=False, server_default=text("0"), default=0)
+    low_confidence_calls = Column(
+        Integer, nullable=False, server_default=text("0"), default=0
+    )
+    unpriced_calls = Column(
+        Integer, nullable=False, server_default=text("0"), default=0
+    )
+    estimated_cost_usd = Column(
+        Float, nullable=False, server_default=text("0"), default=0.0
+    )
+    occurred_at = Column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            _USAGE_SUBJECT_KIND_CHECK, name="llm_turn_spend_subject_kind_check"
+        ),
+        CheckConstraint(
+            _USAGE_SUBJECT_ID_CHECK, name="llm_turn_spend_subject_id_check"
+        ),
+        CheckConstraint(
+            "turn_number >= 0 AND investigation_turn >= 0 AND input_tokens >= 0 "
+            "AND output_tokens >= 0 AND cache_read_tokens >= 0 "
+            "AND cache_write_tokens >= 0 AND spend_weighted_tokens >= 0 "
+            "AND calls >= 0 AND low_confidence_calls >= 0 AND unpriced_calls >= 0",
+            name="llm_turn_spend_non_negative",
+        ),
+        Index("ix_llm_turn_spend_enterprise_occurred", "enterprise_id", "occurred_at"),
     )
 
 

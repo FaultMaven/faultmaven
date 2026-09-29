@@ -2,7 +2,7 @@
 
 ## Schema
 
-FaultMaven uses **Alembic** for database migrations. While the chain is a single baseline (`001_enterprise_baseline`, ADR-017), that one migration creates every table, the PostgreSQL RLS policies, the append-only operator triggers, the last-admin constraint trigger, and the seed rows (the Standalone enterprise, the Standalone default team, the RBAC roles and permissions). `alembic heads` prints the current head; `tests/integration/test_alembic_migrations.py` pins it together with the expected table set. The dialect rule every migration must satisfy (SQLite as well as PostgreSQL) is stated once, in the repository `CLAUDE.md` §Database.
+FaultMaven uses **Alembic** for database migrations. The chain is a baseline plus additive revisions on top of it. The baseline, `001_enterprise_baseline` (ADR-017), creates the schema it was written with, the PostgreSQL RLS policies, the append-only operator triggers, the last-admin constraint trigger, and the seed rows (the Standalone enterprise, the Standalone default team, the RBAC roles and permissions); each later revision adds to it without amending it — `002_llm_usage_ledger` adds `llm_usage_daily` and `llm_turn_spend` with their RLS policies. `alembic heads` prints the current head; `tests/integration/test_alembic_migrations.py` pins it together with the expected table set. The dialect rule every migration must satisfy (SQLite as well as PostgreSQL) is stated once, in the repository `CLAUDE.md` §Database.
 
 - **Authoritative source**: `alembic/versions/` in the repo root
 - **ER diagram**: [docs/architecture/data-and-storage/er-diagram.md](../../architecture/data-and-storage/er-diagram.md) (regenerate via `scripts/generate_er_diagram.py`)
@@ -27,6 +27,8 @@ Investigation activity is recorded in `case_messages` and `case_actions`. `inves
 **Knowledge domain (case-adjacent):** `knowledge_items`, `knowledge_suggestions`
 
 **Tenancy, sharing and usage:** `enterprises`, `sso_org_mappings`, `sso_personal_enterprises`, `resource_shares`, `turn_usage` — semantics in `.claude/rules/data-model.md` and [sso-org-mapping.md](../../architecture/security/sso-org-mapping.md)
+
+**LLM usage ledger (#640):** `llm_usage_daily` (billed LLM calls per enterprise, UTC day, billing subject, actor, provider, model and outcome) and `llm_turn_spend` (one row per engine turn that made a billed call; deleted with its case) — what each row means, attribution, retention and the fail-open counter: [llm-cost-observability.md](../../operations/monitoring/llm-cost-observability.md#the-usage-ledger)
 
 **Operator access (ADR-012 D9):** `operator_access_grants`, `operator_access_audit` — [break-glass-content-access.md](../../architecture/security/break-glass-content-access.md)
 

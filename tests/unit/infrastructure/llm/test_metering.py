@@ -33,11 +33,23 @@ class _FakeResponse:
     response_time_ms: int = 0
 
 
+def _add(tracker, response, cost_usd=0.0, priced=True, outcome="kept"):
+    """Feed one call the way ``record_provider_call`` does."""
+    tracker.add(
+        response,
+        provider="anthropic",
+        model="claude-sonnet-4-6",
+        outcome=outcome,
+        cost_usd=cost_usd,
+        priced=priced,
+    )
+
+
 @pytest.mark.unit
 class TestTurnTokenTracker:
     def test_total_tokens_sums_disjoint_buckets(self):
         t = TurnTokenTracker()
-        t.add(_FakeResponse(input_tokens=100, output_tokens=50, cache_read_tokens=25))
+        _add(t, _FakeResponse(input_tokens=100, output_tokens=50, cache_read_tokens=25))
         assert t.total_tokens == 175
         assert t.total_calls == 1
 
@@ -46,13 +58,14 @@ class TestTurnTokenTracker:
         # the cost-weighted measure the budget guards compare against counts
         # them at 0.25x; input/output/cache_write count in full.
         t = TurnTokenTracker()
-        t.add(
+        _add(
+            t,
             _FakeResponse(
                 input_tokens=1000,
                 output_tokens=200,
                 cache_read_tokens=4000,
                 cache_write_tokens=100,
-            )
+            ),
         )
         assert t.total_tokens == 5300
         # 1000 + 200 + 100 + 0.25 * 4000 = 2300
@@ -62,8 +75,8 @@ class TestTurnTokenTracker:
 
     def test_multiple_calls_accumulate(self):
         t = TurnTokenTracker()
-        t.add(_FakeResponse(input_tokens=100, output_tokens=50), cost_usd=0.10)
-        t.add(_FakeResponse(input_tokens=200, output_tokens=80), cost_usd=0.20)
+        _add(t, _FakeResponse(input_tokens=100, output_tokens=50), cost_usd=0.10)
+        _add(t, _FakeResponse(input_tokens=200, output_tokens=80), cost_usd=0.20)
         assert t.input_tokens == 300
         assert t.output_tokens == 130
         assert t.total_calls == 2
@@ -75,19 +88,19 @@ class TestTurnTokenTracker:
         # feeding the same object twice therefore counts twice.
         t = TurnTokenTracker()
         resp = _FakeResponse(input_tokens=100, output_tokens=50)
-        t.add(resp, cost_usd=0.10)
-        t.add(resp, cost_usd=0.10)
+        _add(t, resp, cost_usd=0.10)
+        _add(t, resp, cost_usd=0.10)
         assert t.total_calls == 2
         assert t.cost_usd == pytest.approx(0.20)
 
     def test_none_response_is_ignored(self):
         t = TurnTokenTracker()
-        t.add(None)
+        _add(t, None)
         assert t.total_calls == 0
 
     def test_unpriced_calls_counted(self):
         t = TurnTokenTracker()
-        t.add(_FakeResponse(input_tokens=100), cost_usd=0.0, priced=False)
+        _add(t, _FakeResponse(input_tokens=100), cost_usd=0.0, priced=False)
         assert t.unpriced_calls == 1
 
 
