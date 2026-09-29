@@ -1602,10 +1602,10 @@ class TestReadinessAssessments:
         assert should_generate_terminal_summary(case) is True
 
     # test_summary_guardrail_skips_duplicates removed — the 'duplicate'
-    # short-circuit was deleted when closure_reason was simplified to 3
-    # engine-derived values. Duplicate-tracking, if reintroduced, will
-    # use a separate field rather than an enum value the engine can't
-    # reliably assign.
+    # short-circuit was deleted when closure_reason was simplified to the
+    # engine-derived VALID_CLOSURE_REASONS. Duplicate-tracking, if
+    # reintroduced, will use a separate field rather than an enum value the
+    # engine can't reliably assign.
 
     def test_skip_reason_resolved_case_returns_none(self):
         """Resolved cases always generate a summary — skip reason is None

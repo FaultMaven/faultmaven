@@ -583,7 +583,7 @@ class Case(BaseModel):
     def valid_closure_reason(cls, v):
         """closure_reason is a sub-categorization of CLOSED state, all
         engine-derived. None for non-terminal and RESOLVED cases.
-        See: VALID_CLOSURE_REASONS in this module."""
+        See: VALID_CLOSURE_REASONS in lifecycle.py."""
         if v is not None and v not in VALID_CLOSURE_REASONS:
             raise ValueError(
                 f"closure_reason must be one of: {sorted(VALID_CLOSURE_REASONS)}"

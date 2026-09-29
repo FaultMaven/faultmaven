@@ -19,4 +19,7 @@ def test_description_names_exactly_the_enforced_vocabulary():
 
 @pytest.mark.unit
 def test_description_says_resolved_carries_none():
-    assert "RESOLVED" in Case.model_fields["closure_reason"].description
+    assert (
+        "None for non-terminal and RESOLVED cases"
+        in Case.model_fields["closure_reason"].description
+    )

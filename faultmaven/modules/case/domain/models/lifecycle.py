@@ -64,7 +64,7 @@ class CaseState(str, Enum):
     Characteristics:
     - Problem was fixed
     - Solution verified
-    - closure_reason = "resolved"
+    - closure_reason is None (resolution is the categorization)
     - No further case actions allowed
 
     Disposition: Terminal (permanent)

@@ -643,7 +643,7 @@ class TestATerminalCaseIsNotMutable:
             update={
                 "state": CaseState.CLOSED,
                 "closed_at": now,
-                "closure_reason": "resolved",
+                "closure_reason": "closed_insufficient_evidence",
             }
         )
         rig.repo._storage[closed.case_id] = closed
@@ -1263,7 +1263,7 @@ class TestAMissingEvidenceIdIsA404WhateverTheCaseState:
             update={
                 "state": CaseState.CLOSED,
                 "closed_at": now,
-                "closure_reason": "resolved",
+                "closure_reason": "closed_insufficient_evidence",
             }
         )
         rig.repo._storage[closed.case_id] = closed

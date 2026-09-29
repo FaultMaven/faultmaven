@@ -1176,13 +1176,8 @@ Here's what will happen when I close this case:
 - This is irreversible — the case becomes read-only
 - No further evidence submission or investigation will be possible
 - You can still ask questions about this case
-- Archive the case from Dashboard when you are done
-
-Please select a closure reason:
-
-[Abandoned]  [Escalated]  [Other]
-
-Or type your reason."""
+- Archive the case from Dashboard when you are done"""
+# The engine derives closure_reason (derive_closure_reason); the user is not asked for one.
 ```
 
 **INQUIRY → CLOSED**
@@ -1345,7 +1340,7 @@ When a case reaches a terminal state, the system synchronously generates a light
 | Case Status | Report Type | Content Focus |
 |-------------|-------------|---------------|
 | RESOLVED | `RESOLUTION_SUMMARY` | What the problem was, root cause, the causal map (when established over a non-trivial graph — §4.5.0), solution applied, confirming evidence, timeline, milestones reached, whether a mitigation was inserted |
-| CLOSED | `CLOSURE_SUMMARY` | What the problem was, investigation state at closure, approaches attempted, closure reason, leading hypotheses with confidence, mitigation status, recommendation for next investigator (if escalated) |
+| CLOSED | `CLOSURE_SUMMARY` | What the problem was, investigation state at closure, approaches attempted, closure reason, leading hypotheses with confidence, mitigation status, recommendation for next investigator (closed_insufficient_evidence and closed_restatement_held closes) |
 
 **Generation approach**:
 
@@ -1982,7 +1977,7 @@ After a case reaches RESOLVED or CLOSED, the system auto-generates a terminal su
 | Case Status | Report Type | Content Structure |
 |-------------|-------------|-------------------|
 | RESOLVED | `RESOLUTION_SUMMARY` | Problem Statement, Root Cause (from validated hypotheses; lists the cause's co-necessary conditions when the graph carries an AND-set), Causal Map (gated), Solution Applied (the executed fix — see below), Confirming Evidence, Timeline, Milestones Reached, Mitigation (if any) |
-| CLOSED | `CLOSURE_SUMMARY` | Problem Statement, Investigation State (milestones/evidence/hypotheses counts), Closure Reason, Leading Hypotheses (top 5 by confidence), Mitigation Status, Timeline, Recommendation (for escalated/abandoned cases) |
+| CLOSED | `CLOSURE_SUMMARY` | Problem Statement, Investigation State (milestones/evidence/hypotheses counts), Closure Reason, Leading Hypotheses (top 5 by confidence), Mitigation Status, Timeline, Recommendation (closed_insufficient_evidence and closed_restatement_held closes) |
 
 **Solution Applied** reports what was *done*, not everything that was said. The engine mints one `Solution` per LLM fix proposal and never stamps its lifecycle fields, so `case.solutions` accumulates every re-proposal of one remediation — three paraphrases of the same fix in the case that prompted this (fm#1091), all rendered as applied. The section is therefore derived from each solution's co-created `ProposedAction` via `classify_solution_outcome`, the same signal the runbook boundary uses: `APPLIED` entries (the user executed them) render under **Solution Applied**; `FAILED` entries (superseded, rejected, or engine-downgraded — never run) are dropped, since asserting them to the user is the over-claim the runbook boundary already refuses. A **standing proposal** renders under **Proposed Solution** — with a note that no fix was recorded as executed — whenever no *permanent* fix was executed. That last condition is the load-bearing one: `classify_solution_outcome` reports APPLIED for an accepted MITIGATION too, and offer supersession covers SOLUTION offers only, so a pending SOLUTION beside an accepted stop-gap is the real fix still outstanding (it must be shown), while a pending SOLUTION beside an accepted SOLUTION is the model restating the executed fix (it must not). A case with **no `ProposedAction` rows at all** is un-instrumented rather than un-executed, and keeps the pre-existing surface-every-solution rendering — a legacy resolved case must not acquire a "no fix was executed" claim its record cannot support.
 
