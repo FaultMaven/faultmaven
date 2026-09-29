@@ -477,27 +477,40 @@ class TestAnEngineTurn:
         self, usage_db, router, unpersisted, caplog
     ):
         """The turn row is the one write that can fail alone — here its case
-        does not exist, so the FK refuses it. It rolls back in its savepoint;
-        the day's increments commit, and only the turn row is counted lost."""
+        does not exist, so the FK refuses it. It rolls back in its savepoint and
+        the day's increments commit. Every call of the turn therefore reached a
+        row, so the unpersisted-calls counter must NOT move: counting them would
+        report a gap between billed and persisted calls that is not there. The
+        loss is logged instead."""
         engine = _engine(router)
         _stand_in(engine, lambda: _route(router))
+        orphan = "case_ffff0640dead"
 
         with caplog.at_level(logging.WARNING, logger=usage_ledger.__name__):
             result = await engine.process_turn(
-                _case(case_id="case_ffff0640dead"), "why?", user_id=USER
+                _case(case_id=orphan), "why?", user_id=USER
             )
 
         assert result["agent_response"] == "the answer"
         assert await _turns(usage_db) == []
         (row,) = await _daily(usage_db)
         assert row["calls"] == 1, "the day's spend went down with the turn row"
-        assert unpersisted == {REASON_STORE_ERROR: 1}
+        assert unpersisted.get(REASON_STORE_ERROR, 0) == 0, (
+            "the turn's calls reached the daily rows; counting them as "
+            f"unpersisted over-reports the gap: {unpersisted}"
+        )
+        assert unpersisted == {}
         warnings = [
             r
             for r in caplog.records
             if r.name == usage_ledger.__name__ and r.levelno == logging.WARNING
         ]
-        assert len(warnings) == 1 and "store_error" in warnings[0].getMessage()
+        assert len(warnings) == 1, [r.getMessage() for r in warnings]
+        message = warnings[0].getMessage()
+        assert message.startswith("llm_usage_turn_row_unpersisted")
+        assert "reached the daily rows" in message
+        assert "IntegrityError" in message, "the exception type is named"
+        assert orphan not in message and USER not in message, "never the row"
 
     async def test_an_attribution_failure_costs_the_turn_nothing(
         self, usage_db, router, monkeypatch, unpersisted

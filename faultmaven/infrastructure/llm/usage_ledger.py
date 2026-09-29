@@ -39,9 +39,7 @@ gap between ``llm_provider_calls_total`` and the persisted calls is observable:
 
 ``store_error``        the write raised or was cancelled (a raise is also logged
                        at WARNING, naming the reason and the exception type,
-                       never the row). A turn row that fails alone counts here
-                       too: its savepoint rolls back and the turn's daily
-                       increments still commit.
+                       never the row)
 ``no_tenant``          no usable enterprise under multi-tenancy — RLS would
                        refuse the row anyway
 ``attribution_error``  capturing who pays raised, so there is nothing to stamp
@@ -55,6 +53,12 @@ gap between ``llm_provider_calls_total`` and the persisted calls is observable:
 Jobs are not in the ledger. No job calls an LLM today, and ``jobs/run.py``
 composes no ledger, so a job's call would count ``not_composed``. A job that
 starts calling an LLM must install the ledger in the runner.
+
+A turn row lost ALONE is logged, not counted. It is written in a savepoint, so
+when it fails by itself (its case deleted mid-turn) it rolls back and the turn's
+daily increments still commit: every one of its calls reached a row, which is
+all this counter measures. Counting them would open a gap that is not there. It
+is logged at WARNING as ``llm_usage_turn_row_unpersisted`` instead.
 
 This ledger and ``turn_usage`` do not reconcile. ``turn_usage`` counts turns,
 is written before the model runs, and only under multi-tenancy for engine
@@ -304,14 +308,13 @@ class SqlUsageLedger(IUsageLedger):
             # The turn row in a SAVEPOINT: it is the one write here that can
             # fail on its own (its case deleted mid-turn, so the FK refuses),
             # and it must not take the day's spend down with it. The daily
-            # increments above still commit; only the turn row is lost, and
-            # that is counted.
+            # increments above still commit, so every call of the turn reached
+            # a row: the loss is logged, and NOT counted as unpersisted calls.
             try:
                 async with session.begin_nested():
                     await session.execute(self._turn_upsert(session, attribution, turn))
             except Exception as exc:
-                count_unpersisted(REASON_STORE_ERROR, turn.calls)
-                _warn_store_error("turn_row", turn.calls, exc)
+                _warn_turn_row_lost(turn.calls, exc)
 
     async def record_call(self, attribution, bucket, usage_date) -> None:
         from faultmaven.infrastructure.persistence.database import get_db_session
@@ -450,6 +453,17 @@ def _warn_store_error(unit: str, calls: int, exc: BaseException) -> None:
         calls,
         REASON_STORE_ERROR,
         unit,
+        type(exc).__name__,
+    )
+
+
+def _warn_turn_row_lost(calls: int, exc: BaseException) -> None:
+    # The exception's TYPE only, as for a store error: its text is the row.
+    logger.warning(
+        "llm_usage_turn_row_unpersisted: the turn's llm_turn_spend row was not "
+        "written; its %d billed call(s) reached the daily rows, so nothing is "
+        "counted as unpersisted (error=%s)",
+        calls,
         type(exc).__name__,
     )
 

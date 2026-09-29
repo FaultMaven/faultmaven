@@ -150,11 +150,18 @@ billed call that does not reach a row increments
 
 | `reason` | Meaning |
 |---|---|
-| `store_error` | The write raised (the database was unreachable or locked) or was cancelled. A raise is also logged at WARNING as `llm_usage_unpersisted`, naming the reason and the exception type — never the row. A write still in flight when shutdown's 5-second drain gives up is cancelled and counted here. A turn row that fails on its own (its case was deleted mid-turn) counts here too: it is written in a savepoint, so it rolls back alone and the turn's daily increments still commit. |
+| `store_error` | The write raised (the database was unreachable or locked) or was cancelled. A raise is also logged at WARNING as `llm_usage_unpersisted`, naming the reason and the exception type — never the row. A write still in flight when shutdown's 5-second drain gives up is cancelled and counted here. |
 | `no_tenant` | Under `TENANT_PROVIDER=multi`, a call with no usable enterprise bound. RLS would refuse the row, so none is attempted. |
 | `attribution_error` | Capturing who pays raised, so there is nothing to stamp the row with. Logged at WARNING with the exception type. The turn or call itself carries on. |
 | `no_loop` | A call outside any turn metered with no running event loop to write it from. |
 | `not_composed` | No ledger is installed — the composition root did not run (a unit test, or a process that never booted the app). Not logged. |
+
+A **turn row lost on its own** is logged, not counted. It is written in a
+savepoint, so when it fails by itself (its case was deleted mid-turn) it rolls
+back alone and the turn's daily increments still commit. Every call of the turn
+reached a row, which is all the counter measures, so it does not move. The loss
+is logged at WARNING as `llm_usage_turn_row_unpersisted`, with the exception
+type and never the row.
 
 ### Retention
 
