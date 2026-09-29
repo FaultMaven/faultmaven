@@ -477,12 +477,17 @@ def _missing_screens(fn: ast.AST, declared: frozenset[str]) -> set[str]:
     needs ``_SKIP``, and a reader of the reply summary needs ``_FLAG``. The
     guard check only verifies what ``PROMPT_READERS`` declares, so a
     declaration that left a screen out was a requirement nothing enforced.
+
+    A read counts in any shape the census collects — by attribute, or untied
+    (``_reads_untied``). An untied read still requires the screen, and
+    ``_applied_guards`` then withholds it, so the reader fails until it reads
+    by attribute on a screened record.
     """
 
     def reads(fields: frozenset[str]) -> bool:
         return any(
             isinstance(n, ast.Attribute) and n.attr in fields for n in ast.walk(fn)
-        )
+        ) or _reads_untied(fn, fields)
 
     required: set[str] = set()
     if reads(_SKIP_READS):
@@ -735,6 +740,28 @@ def test_the_derived_requirement_catches_a_screen_left_out_of_a_declaration():
         "    return turn.user_message_summary"
     ).body[0]
     assert _missing_screens(fn, _FLAG) == _SKIP
+
+
+def test_an_untied_read_derives_its_screens_too():
+    """Positive control: a reader that reaches a summary only through a dump
+    and a subscript has no attribute read to derive a requirement from, so a
+    declaration with no screens used to pass both checks while the
+    placeholder text was quoted. The whole-record dump carries the reply
+    summary as well, so it requires both screens."""
+    fn = _parse(
+        "def f(turn):\n    d = turn.model_dump()\n"
+        "    return d['user_message_summary']"
+    ).body[0]
+    missing = _missing_screens(fn, frozenset())
+    assert _SKIP <= missing
+    assert missing == _SKIP | _FLAG
+
+
+def test_an_untied_read_of_the_reply_requires_the_flag():
+    """The ``_FLAG`` side: an untied read of the reply summary requires the
+    reply flag as well as the skip screen that covers either summary."""
+    fn = _parse("def f(d):\n    return d['agent_response_summary']").body[0]
+    assert _missing_screens(fn, _SKIP) == _FLAG
 
 
 @pytest.mark.parametrize("site", sorted(PROMPT_READERS), ids=lambda s: s[1])
