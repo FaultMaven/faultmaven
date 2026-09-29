@@ -75,9 +75,9 @@ class CaseState(str, Enum):
     Disposition: Case closed WITHOUT solution.
 
     Characteristics:
-    - Investigation abandoned/escalated
-    - OR inquiry-only (no investigation)
-    - closure_reason = "abandoned" | "escalated" | "inquiry_only" | "duplicate" | "other"
+    - Inquiry-only (no investigation), OR any close from INVESTIGATING
+    - closure_reason is one of VALID_CLOSURE_REASONS (defined below in this
+      module), set by derive_closure_reason
     - No further case actions allowed
 
     Disposition: Terminal (permanent)

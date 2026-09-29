@@ -126,7 +126,11 @@ class Case(BaseModel):
 
     closure_reason: Optional[str] = Field(
         default=None,
-        description="Why case was closed: resolved | abandoned | escalated | inquiry_only | duplicate | other",
+        description=(
+            "Sub-categorization of a CLOSED case, derived by the engine; None for "
+            "non-terminal and RESOLVED cases. One of: "
+            + " | ".join(sorted(VALID_CLOSURE_REASONS))
+        ),
         max_length=100,
     )
 
@@ -1004,7 +1008,6 @@ class Case(BaseModel):
                 state=CaseState.RESOLVED,
                 resolved_at=datetime.now(UTC),
                 closed_at=datetime.now(UTC),
-                closure_reason="resolved"
             )
 
         Args:
