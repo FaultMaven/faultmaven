@@ -91,7 +91,7 @@ ENGINE_SCHEMAS = [
 #: N = 10. ``test_census_*`` fails if a field is added, removed or loses its
 #: bound without this map moving with it.
 POLICY = {
-    ("ReasoningConclusion", "confidence"): "add",
+    ("EvidenceConclusion", "confidence"): "add",
     ("KnowledgeMatch", "match_likelihood"): "add",
     ("EvidenceToAdd", "likelihood"): "add",
     ("HypothesisToAdd", "likelihood"): "add",
@@ -421,18 +421,18 @@ class _Case(typing.NamedTuple):
 D = schemas.InvestigationResponse_Diagnosis
 
 CASES: dict[tuple[str, str], _Case] = {
-    ("ReasoningConclusion", "confidence"): _Case(
+    ("EvidenceConclusion", "confidence"): _Case(
         D,
         lambda v: _diag(
             {},
-            internal_reasoning={"conclusions": [_conclusion(v), _conclusion(0.5, "s")]},
+            evidence_trail={"conclusions": [_conclusion(v), _conclusion(0.5, "s")]},
         ),
         lambda p: next(
-            (c for c in p.internal_reasoning.conclusions if c.observation == "o"),
+            (c for c in p.evidence_trail.conclusions if c.observation == "o"),
             None,
         ),
         lambda r: r.confidence,
-        lambda p: any(c.observation == "s" for c in p.internal_reasoning.conclusions),
+        lambda p: any(c.observation == "s" for c in p.evidence_trail.conclusions),
     ),
     ("KnowledgeMatch", "match_likelihood"): _Case(
         schemas.InquiryResponse,
@@ -758,14 +758,14 @@ def test_the_drop_all_rung_builds_on_the_pruned_body():
     back, and the turn failed outright."""
     body = _diag(
         {"evidence_to_add": "not-a-list"},
-        internal_reasoning={"conclusions": [_conclusion(float("nan"))]},
+        evidence_trail={"conclusions": [_conclusion(float("nan"))]},
     )
     parsed, outcomes, fields = _ladder(body, D)
     assert parsed.agent_response == "a"
-    assert parsed.internal_reasoning.conclusions == []
+    assert parsed.evidence_trail.conclusions == []
     assert outcomes == ["state_dropped"]
     assert fields == [
-        {"schema": "ReasoningConclusion", "field": "confidence", "action": "pruned"}
+        {"schema": "EvidenceConclusion", "field": "confidence", "action": "pruned"}
     ]
 
 

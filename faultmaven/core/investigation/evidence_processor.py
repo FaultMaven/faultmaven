@@ -92,7 +92,7 @@ def validate_milestone_claims(
     Args:
         case: Current case state
         milestones_claimed: Milestone names the LLM is claiming as completed
-        reasoning: InternalReasoning object (evidence_analyzed optional)
+        reasoning: EvidenceTrail object (evidence_analyzed optional)
 
     Returns:
         List of validation results, one per claimed milestone
@@ -191,7 +191,7 @@ def validate_milestone_claims(
             if milestone not in justifications:
                 # Don't fail validation, just log a warning
                 logger.debug(
-                    f"Milestone '{milestone}' claimed without justification in internal_reasoning"
+                    f"Milestone '{milestone}' claimed without justification in evidence_trail"
                 )
 
         results.append(

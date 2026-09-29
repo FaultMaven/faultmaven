@@ -572,7 +572,7 @@ def test_the_reasoning_gate_still_rejects_an_unjustified_milestone():
     response = InvestigationResponse_Diagnosis.model_validate(
         {
             "agent_response": "Symptom confirmed.",
-            "internal_reasoning": {
+            "evidence_trail": {
                 # Exactly the strict wire shape: every key, null where silent.
                 "milestone_justifications": {
                     "symptom_verified": None,
@@ -603,7 +603,7 @@ def test_the_reasoning_gate_accepts_a_justified_milestone():
     response = InvestigationResponse_Diagnosis.model_validate(
         {
             "agent_response": "Symptom confirmed.",
-            "internal_reasoning": {
+            "evidence_trail": {
                 "milestone_justifications": {
                     "symptom_verified": "47 connection errors in ev_abc123",
                     "mitigation_accepted": None,

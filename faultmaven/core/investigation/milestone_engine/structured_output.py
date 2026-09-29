@@ -228,7 +228,7 @@ def _validate_with_degradation(content_obj, schema_model):
 
         # What the prune step removed stays removed below: the fallback
         # rungs build on the pruned body, so a record already quarantined
-        # outside ``state_updates`` (an ``internal_reasoning`` conclusion)
+        # outside ``state_updates`` (an ``evidence_trail`` conclusion)
         # cannot come back and fail the rung that drops everything else.
         base = pruned if dropped else content_obj
 

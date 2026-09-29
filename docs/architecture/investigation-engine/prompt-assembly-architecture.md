@@ -112,7 +112,7 @@ The INQUIRY template includes a SEARCHING UPLOADED FILES block that codifies thi
 
 The template is laid out **durable first** (#613): the standing instructions, which render the same bytes on every turn, come first, then `CACHE_BOUNDARY` on its own line, then this turn's case, and last the short closing rules. §3.3 gives the rule and why. Within the instructions the LLM still reads input-handling and evidence-classification rules **before** its stage-specific task.
 
-**Why the closing rules come last.** The standing rules live in the cached prefix. The immutable `<security_constraints>` and the anti-padding closer end the prompt, after the case data and the user's message, so they are the freshest thing the model reads when it composes the answer — and so untrusted case content is never the last word. The line before them names the output-shaping rules in the prefix (ASSISTANT ROLE, ACTION IMPACT, CONCISENESS, DIAGNOSTIC REASONING, REASONING-FIRST) that the answer is composed under. Both blocks are short and static; placing them after the boundary costs a few hundred uncached tokens a call.
+**Why the closing rules come last.** The standing rules live in the cached prefix. The immutable `<security_constraints>` and the anti-padding closer end the prompt, after the case data and the user's message, so they are the freshest thing the model reads when it composes the answer — and so untrusted case content is never the last word. The line before them names the output-shaping rules in the prefix (ASSISTANT ROLE, ACTION IMPACT, CONCISENESS, DIAGNOSTIC REASONING, EVIDENCE-FIRST) that the answer is composed under. Both blocks are short and static; placing them after the boundary costs a few hundred uncached tokens a call.
 
 ```text
 DURABLE PREFIX (byte-identical across turns at one stage and processing mode)
@@ -142,7 +142,7 @@ DURABLE PREFIX (byte-identical across turns at one stage and processing mode)
     ACTION IMPACT                                 (_ACTION_IMPACT_BLOCK)
     CONCISENESS
     {diagnostic_reasoning}                        (_DIAGNOSTIC_REASONING_BLOCK, gated)
-    CRITICAL: REASONING-FIRST REQUIREMENT         (internal_reasoning emission gate)
+    CRITICAL: EVIDENCE-FIRST REQUIREMENT          (evidence_trail emission gate)
 
   STAGE INSTRUCTIONS (last: the prefix's only part that changes within a case)
     YOUR TASK: {adaptive_instructions}            (see §3.2)
@@ -161,7 +161,7 @@ PER-TURN TAIL (dynamic, ~2-5K+ tokens)
 
 CLOSING RULES (static, read last)
   "Compose your answer under the ASSISTANT ROLE, ACTION IMPACT, CONCISENESS and
-   REASONING-FIRST rules above, and DIAGNOSTIC REASONING where this prompt
+   EVIDENCE-FIRST rules above, and DIAGNOSTIC REASONING where this prompt
    includes it."
   <security_constraints>                          (7 immutable rules)
   CRITICAL: Do NOT restate or summarize...        (anti-padding closer)
@@ -249,7 +249,7 @@ When `processing_mode == "knowledge_query"`, the user is asking a general techni
 
 **Why suppress rather than exempt:** earlier versions kept the rule blocks present and stated "the above rules don't apply." The result was ~4KB of waived rule text alongside a waiver — high signal/noise. The current design omits the waived blocks entirely. The waiver line in `KNOWLEDGE_QUERY_INSTRUCTIONS` remains as a hint that the rules exist in other modes, but the bulk doesn't.
 
-**What stays in INV_kq mode:** READING DISCIPLINE, the evidence-handling rules (still useful if the user pivots to a case-specific question), KEY PRINCIPLES (with `NAME THE NEXT DATA POINT` self-gating via "skip for general-knowledge questions"), FOLLOW-UP SUGGESTIONS, ASSISTANT ROLE, ACTION IMPACT, CONCISENESS, CRITICAL: REASONING-FIRST REQUIREMENT (conditional — inert when no milestones advance), and `<security_constraints>`.
+**What stays in INV_kq mode:** READING DISCIPLINE, the evidence-handling rules (still useful if the user pivots to a case-specific question), KEY PRINCIPLES (with `NAME THE NEXT DATA POINT` self-gating via "skip for general-knowledge questions"), FOLLOW-UP SUGGESTIONS, ASSISTANT ROLE, ACTION IMPACT, CONCISENESS, CRITICAL: EVIDENCE-FIRST REQUIREMENT (conditional — inert when no milestones advance), and `<security_constraints>`.
 
 ---
 

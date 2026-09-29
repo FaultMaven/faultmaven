@@ -26,8 +26,8 @@ from faultmaven.core.investigation.checkpoint_service import CheckpointService
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import (
     EvidenceToAdd,
+    EvidenceTrail,
     InquiryResponse,
-    InternalReasoning,
     InvestigationResponse_Diagnosis,
     InvestigationResponse_Treatment,
     MilestoneUpdates,
@@ -266,7 +266,7 @@ def _investigation_verification_response() -> InvestigationResponse_Diagnosis:
             "is being exhausted due to leaked connections from the new deployment. "
             "I've verified the symptoms and assessed the scope."
         ),
-        internal_reasoning=InternalReasoning(
+        evidence_trail=EvidenceTrail(
             evidence_analyzed=["ev_placeholder"],
             milestone_justifications={
                 "symptom_verified": "Connection pool exhaustion confirmed via log evidence",
@@ -305,7 +305,7 @@ def _investigation_propose_resolved_response() -> InvestigationResponse_Treatmen
             "The root cause has been identified: a connection leak in the new "
             "database connection pool configuration. Rolling back fixed the issue."
         ),
-        internal_reasoning=InternalReasoning(
+        evidence_trail=EvidenceTrail(
             evidence_analyzed=["ev_placeholder"],
             milestone_justifications={
                 "solution_proposed": "Rollback connection pool settings",
@@ -954,7 +954,7 @@ class TestEvidenceAccumulation:
         case.current_turn = 4
         response_turn4 = InvestigationResponse_Diagnosis(
             agent_response="Root cause confirmed: v2.1.3 deployment introduced a DB connection leak.",
-            internal_reasoning=InternalReasoning(
+            evidence_trail=EvidenceTrail(
                 evidence_analyzed=["ev_placeholder"],
                 milestone_justifications={
                     "symptom_verified": "500s confirmed in logs from 14:03",

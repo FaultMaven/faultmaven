@@ -470,7 +470,7 @@ def test_novel_keys_reach_the_progress_predicate_through_the_real_apply_path(eng
                 case,
                 updates,
                 metadata,
-                SimpleNamespace(internal_reasoning=None, agent_response=""),
+                SimpleNamespace(evidence_trail=None, agent_response=""),
                 "any message",
             )
         )

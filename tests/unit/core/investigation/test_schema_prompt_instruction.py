@@ -1,5 +1,5 @@
 """Pins for ``_schema_prompt_instruction`` — see its docstring for the
-rationale. The gate keys on the schema's shape (``internal_reasoning``
+rationale. The gate keys on the schema's shape (``evidence_trail``
 present), so these tests drive the helper with the REAL model schemas.
 
 Run:
@@ -35,7 +35,7 @@ class TestSchemaPromptInstruction:
         assert json.dumps(schema, indent=2) in text
 
     def test_inquiry_schema_omits_field_documentation(self):
-        """InquiryResponse has no internal_reasoning / milestones / outcome —
+        """InquiryResponse has no evidence_trail / milestones / outcome —
         "outcome: REQUIRED" against that schema is a contradiction."""
         text = _schema_prompt_instruction(InquiryResponse.model_json_schema())
         assert SCHEMA_INSTRUCTIONS not in text

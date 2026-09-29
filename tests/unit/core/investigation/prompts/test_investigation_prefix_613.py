@@ -193,7 +193,7 @@ class TestTemplateStructure:
         )
         pointer = (
             "Compose your answer under the ASSISTANT ROLE, ACTION IMPACT, "
-            "CONCISENESS and REASONING-FIRST rules above, and DIAGNOSTIC "
+            "CONCISENESS and EVIDENCE-FIRST rules above, and DIAGNOSTIC "
             "REASONING where this prompt includes it."
         )
         assert rendered[:rules].rstrip().endswith(pointer)

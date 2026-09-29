@@ -162,7 +162,7 @@ HOW TO ANSWER:
   evidence — the answer is not in the case, and FaultMaven is not the system
   being diagnosed.
 - Leave the investigation untouched: no evidence, hypotheses, milestones,
-  evidence requests or state changes on this turn; keep internal_reasoning to
+  evidence requests or state changes on this turn; keep evidence_trail to
   one line. Do NOT re-issue pending data requests — end with ONE sentence
   offering to pick the investigation back up where it left off.
 - Only the FaultMaven part of the message is exempt. If the same message also
@@ -641,7 +641,7 @@ ABSOLUTELY FORBIDDEN:
   "ev_a1b2c3d4e5f6"), hypothesis IDs ("hyp_...") or causal-node IDs ("cn_...").
   The user cannot see these. Use the evidence label attribute instead (e.g., "in
   the nginx error log", "in the pasted stack trace"), and restate a hypothesis
-  in words. IDs are only for state_updates and internal_reasoning fields.
+  in words. IDs are only for state_updates and evidence_trail fields.
 
 CONFIDENCE MARKERS (per-evidence signal quality):
 - An evidence tag carrying `confidence="low"` means the classifier was unsure

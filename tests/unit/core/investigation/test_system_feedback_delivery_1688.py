@@ -75,7 +75,7 @@ from faultmaven.utils.token_estimation import estimate_tokens
 
 pytestmark = pytest.mark.unit
 
-NOTICE = "REASONING VALIDATION: probe-1688 — root_cause_identified was NOT recorded"
+NOTICE = "EVIDENCE VALIDATION: probe-1688 — root_cause_identified was NOT recorded"
 SUBSTANTIVE = "what does the etcd member log show around the time of the alerts?"
 FROM_PREVIOUS_TURN = "IMPORTANT - SYSTEM FEEDBACK FROM PREVIOUS TURN:"
 #: The seeded notice is written on turn 3 (``_with_notice``).
@@ -391,7 +391,7 @@ def _llm_reply(**state_updates) -> str:
     return json.dumps(
         {
             "agent_response": "Let's look at the unit file.",
-            "internal_reasoning": {
+            "evidence_trail": {
                 "evidence_analyzed": [],
                 "conclusions": [],
                 "milestone_justifications": {},
@@ -491,7 +491,7 @@ class TestTheFallbackRendersTheNotice:
         "notice",
         [
             # Log-dense English, and CJK: the scripts that tokenize densest.
-            "REASONING VALIDATION: rejected claim citing "
+            "EVIDENCE VALIDATION: rejected claim citing "
             "2026-09-24T12:11:24.986Z pod/payments-7f9c4d-x2k8q req=9f3a1c7e-44b2; "
             * 12,
             "支付服务在部署后开始返回错误，节点上的容器因内存不足被终止。" * 30,
