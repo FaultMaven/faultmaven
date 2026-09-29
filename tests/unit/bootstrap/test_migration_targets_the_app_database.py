@@ -95,6 +95,33 @@ def test_the_subprocess_is_handed_the_settings_url_not_the_environment(
     assert seen["env"]["DATABASE_URL"] == app_url
 
 
+def test_the_subprocess_gets_the_override_as_the_only_spelling(monkeypatch, tmp_path):
+    """The child's settings bind ``DATABASE_URL`` in any letter case, and the
+    last spelling in the environment wins. Overriding only the exact name left
+    a later ``database_url`` in the parent's environment to override the app's
+    URL in the child, so the migration built another file (#1636 again)."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:////somewhere/else.db")
+    monkeypatch.setenv("database_url", "sqlite+aiosqlite:///./app.db")
+    seen = {}
+
+    def _run(*args, **kwargs):
+        seen["env"] = kwargs.get("env")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    with (
+        patch(
+            "faultmaven.config.settings.get_settings",
+            return_value=_settings("sqlite+aiosqlite:///./app.db"),
+        ),
+        patch("subprocess.run", side_effect=_run),
+    ):
+        assert data_init.run_alembic_migrations() is True
+
+    spellings = {k: v for k, v in seen["env"].items() if k.upper() == "DATABASE_URL"}
+    assert spellings == {"DATABASE_URL": f"sqlite+aiosqlite:///{tmp_path}/app.db"}
+
+
 @pytest.mark.integration
 def test_a_real_migration_under_a_cleared_environment_builds_the_app_database(
     monkeypatch, tmp_path

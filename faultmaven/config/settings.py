@@ -16,10 +16,20 @@ import os
 import secrets
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Set, Type, Union
+from typing import (
+    Any,
+    Dict,
+    List,
+    Literal,
+    MutableMapping,
+    Optional,
+    Set,
+    Type,
+    Union,
+)
 
 from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, EnvSettingsSource
 
 # =============================================================================
 # ENVIRONMENT AND LOGGING ENUMS
@@ -962,6 +972,50 @@ def persistent_database_configured(database_url: Optional[str]) -> bool:
     return not _sqlite_url_is_ephemeral(url)
 
 
+def configured_database_url() -> Optional[str]:
+    """The ``DATABASE_URL`` the environment configures, read as the settings read it.
+
+    Read through ``DatabaseSettings``' own environment source — the source the
+    class ``FaultMavenSettings.database`` is built from uses — so it binds the
+    variable in every flat spelling the settings do (pydantic-settings is
+    case-insensitive: ``database_url`` counts, and the last spelling wins). It
+    reads that one value and validates nothing else: a caller that judges only
+    the URL must not refuse on a database field it never uses (#1778 review).
+
+    ``DatabaseSettings``' effective sources are the environment only: no
+    ``env_file``, no ``secrets_dir``, default ``settings_customise_sources``.
+    If that ever changes, this reader must follow; a test pins it.
+
+    Its one caller is ``alembic/env.py``, which must judge the URL without
+    building the whole application's settings; an exact-name ``os.environ``
+    read there disagreed with the app on a lowercase spelling (#1704). A nested
+    JSON ``DATABASE`` reaches the app's settings but not this reader (#1785).
+    The app itself never calls it: it judges the built settings' URL.
+
+    Returns:
+        The configured value, the empty string included, or ``None`` when the
+        environment does not set it and the field default (the persistent
+        SQLite file) applies.
+    """
+    return EnvSettingsSource(DatabaseSettings)().get("database_url")
+
+
+def set_env_var(env: MutableMapping[str, str], name: str, value: str) -> None:
+    """Set ``name`` in ``env`` as its ONLY spelling, in any letter case.
+
+    pydantic-settings binds a variable case-insensitively, and when several
+    spellings are present the last one in the environment wins. Setting only
+    the exact name leaves an older ``database_url`` or ``jwt_secret_key`` in
+    place to override it in the next reader — a child process, or a settings
+    object built later. So every key whose ``.upper()`` matches is removed
+    first. Used for the startup migration's ``DATABASE_URL`` and the exported
+    local ``JWT_SECRET_KEY``.
+    """
+    for key in [key for key in env if key.upper() == name.upper()]:
+        del env[key]
+    env[name] = value
+
+
 #: Query parameters whose value may be shown when a database URL is printed:
 #: SQLite's URI parameters and the pysqlite connect arguments, which name how
 #: the database is opened and never carry a secret. Every other value is
@@ -1053,13 +1107,6 @@ class DatabaseSettings(BaseSettings):
     redis_db: int = Field(default=0)
     redis_password: Optional[SecretStr] = Field(default=None)
     redis_url: Optional[str] = Field(default=None)
-
-    model_config = {
-        "env_file": ".env",
-        "env_file_encoding": "utf-8",
-        "case_sensitive": False,
-        "extra": "ignore",
-    }
 
     # ============================================
     # ChromaDB Configuration
@@ -1264,54 +1311,86 @@ class CaseSettings(BaseSettings):
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
-def ensure_local_jwt_secret_env() -> None:
-    """Ensure an HS256 JWT secret exists for standalone (local-auth) startup.
+def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
+    """Give local auth its HS256 secret, on the BUILT settings (#1703).
 
     Local auth requires a JWT secret. Rather than make the user set one (or ship a
     shared dev secret — which would let every install forge each other's tokens),
-    generate a unique secret once on first run, persist it to data/.jwt_secret, and
-    export it as JWT_SECRET_KEY so the settings pick it up.
+    generate a unique secret once on first run, persist it to data/.jwt_secret,
+    and reuse it on every later run.
 
-    Called once from get_settings() (after load_dotenv, before settings are
-    constructed) — deliberately NOT a per-field default_factory, so there's no
-    repeated or racy filesystem I/O on every settings instantiation.
+    Called once from get_settings(), after ``FaultMavenSettings()`` has validated
+    and before the instance is published. It decides from that object — the one
+    every persistent-database gate reads — so it cannot disagree with the gate:
+    a run whose settings do not validate raises before anything is written, and
+    the database it judges is ``settings.database.database_url`` exactly, in every
+    spelling pydantic binds (a lowercase ``database_url``, a nested JSON
+    ``DATABASE``). An earlier version ran before the settings were built and read
+    the environment by name, so a refused boot or fm-* command left
+    data/.jwt_secret behind.
 
-    No-ops when:
-      - JWT_SECRET_KEY is already set (an explicit value always wins), or
-      - AUTH_MODE is not 'local' (OAuth uses RS256 key files, not this secret).
-    On a filesystem error it logs a warning and returns — local auth then fails
-    with a clear "JWT_SECRET_KEY not configured" message rather than the server
-    crashing at import time.
+    Does nothing when:
+      - ``settings.security.jwt_secret_key`` is set (an explicit value always
+        wins), or
+      - ``settings.auth.auth_mode`` is not local (OAuth uses RS256 keys).
+    Otherwise it reads the secret file (``JWT_SECRET_FILE``, else
+    data/.jwt_secret) or generates a secret, and writes the file (0600) only
+    when the database is persistent. A process with no persistent database has
+    nothing durable for a durable secret to protect, so it creates nothing and
+    signs with the existing file's value or a per-process one. The value is set
+    on ``settings.security.jwt_secret_key`` and exported as ``JWT_SECRET_KEY``
+    (every other letter case of the name removed) for child processes and
+    settings built later.
+
+    A gate that runs after get_settings() (deployment coherence) and refuses a
+    persistent-database run can still follow a write here — of the same file a
+    corrected run writes. Moving persistence behind every gate is a lifecycle
+    redesign left to the owner (#1778 review, R6).
+
+    On a filesystem error in the persistent path it logs a warning and sets no
+    secret — local auth then fails with a clear "JWT_SECRET_KEY not configured"
+    message rather than the server crashing at startup.
     """
-    if os.environ.get("JWT_SECRET_KEY"):
+    # Truthy, not "not None": an empty secret is no secret to every consumer
+    # (``if not secret`` in the token generator), so it is minted over.
+    if settings.security.jwt_secret_key:
         return
-    if os.environ.get("AUTH_MODE", "local").strip().lower() != "local":
+    if settings.auth.auth_mode is not AuthMode.LOCAL:
         return
 
     logger = logging.getLogger(__name__)
+    persist = persistent_database_configured(settings.database.database_url)
     secret_path = Path(os.environ.get("JWT_SECRET_FILE", "data/.jwt_secret"))
     try:
-        secret_path.parent.mkdir(parents=True, exist_ok=True)
         value = (
             secret_path.read_text(encoding="utf-8").strip()
-            if secret_path.exists()
+            if secret_path.is_file()
             else ""
         )
         if not value:
             value = secrets.token_urlsafe(48)
-            secret_path.write_text(value, encoding="utf-8")
-            try:
-                secret_path.chmod(0o600)
-            except OSError as exc:
-                logger.debug("Could not chmod %s to 0600: %s", secret_path, exc)
-        os.environ["JWT_SECRET_KEY"] = value
+            if persist:
+                secret_path.parent.mkdir(parents=True, exist_ok=True)
+                secret_path.write_text(value, encoding="utf-8")
+                try:
+                    secret_path.chmod(0o600)
+                except OSError as exc:
+                    logger.debug("Could not chmod %s to 0600: %s", secret_path, exc)
     except OSError as exc:
-        logger.warning(
-            "Could not generate/persist a local JWT secret at %s (%s); set "
-            "JWT_SECRET_KEY in .env if local auth fails to start.",
-            secret_path,
-            exc,
-        )
+        if persist:
+            logger.warning(
+                "Could not generate/persist a local JWT secret at %s (%s); set "
+                "JWT_SECRET_KEY in .env if local auth fails to start.",
+                secret_path,
+                exc,
+            )
+            return
+        # Nothing is written without a persistent database; an unreadable file
+        # leaves this process a per-process secret.
+        value = secrets.token_urlsafe(48)
+
+    settings.security.jwt_secret_key = SecretStr(value)
+    set_env_var(os.environ, "JWT_SECRET_KEY", value)
 
 
 #: Schema maximum for ``JWT_ACCESS_TOKEN_EXPIRY_MINUTES`` (1 day).
@@ -1384,14 +1463,16 @@ class SecuritySettings(BaseSettings):
     jwt_public_key_path: Optional[str] = Field(default=None)
     jwt_private_key: Optional[SecretStr] = Field(default=None)
     jwt_public_key: Optional[str] = Field(default=None)
-    # HS256 secret for local auth. In local mode get_settings() auto-generates and
-    # persists it (data/.jwt_secret) via ensure_local_jwt_secret_env() before the
-    # settings are built, so a standalone install needs no JWT_SECRET_KEY — set the
-    # env var to override. OAuth/RS256 ignores this.
+    # HS256 secret for local auth. In local mode get_settings() provides it via
+    # resolve_local_jwt_secret() once the settings are built, so a standalone
+    # install needs no JWT_SECRET_KEY — set the env var to override. It is
+    # generated and persisted (data/.jwt_secret) only when the database is
+    # persistent; otherwise an existing file is read, or an ephemeral per-process
+    # secret is used (#1703). OAuth/RS256 ignores this.
     jwt_secret_key: Optional[SecretStr] = Field(
         default=None,
         validation_alias="JWT_SECRET_KEY",
-        description="HS256 secret for local auth; auto-generated+persisted in local mode by get_settings() if unset (override via JWT_SECRET_KEY). Unused in OAuth/RS256 mode.",
+        description="HS256 secret for local auth; if unset in local mode, get_settings() generates and persists one (data/.jwt_secret) when the database is persistent, and otherwise reads an existing file or uses an ephemeral per-process secret (override via JWT_SECRET_KEY). Unused in OAuth/RS256 mode.",
     )
     # NOTE: token expiry is deliberately NOT declared here. It lives once, on
     # AuthSettings, and every minting path takes it from there (#888). This half
@@ -3511,10 +3592,6 @@ def get_settings() -> FaultMavenSettings:
             # This preserves the standard precedence order: OS env > .env.
             load_dotenv()
 
-            # Standalone convenience: ensure a local JWT secret exists (once,
-            # here — not on every settings construction) before building settings.
-            ensure_local_jwt_secret_env()
-
             # Apply preset defaults for zero-config experience
             # Presets are applied AFTER .env but BEFORE settings instantiation
             # This allows env vars to override preset values
@@ -3544,9 +3621,15 @@ def get_settings() -> FaultMavenSettings:
 
             # When running tests, allow bypassing .env file to prevent credential leakage
             if os.getenv("FAULTMAVEN_SKIP_DOTENV"):
-                _settings_instance = FaultMavenSettings(_env_file=None)
+                settings = FaultMavenSettings(_env_file=None)
             else:
-                _settings_instance = FaultMavenSettings()
+                settings = FaultMavenSettings()
+
+            # Standalone convenience: the local JWT secret, resolved once, here,
+            # from the settings just built and validated — the object every gate
+            # reads — and before they are published (#1703).
+            resolve_local_jwt_secret(settings)
+            _settings_instance = settings
         except Exception as e:
             from faultmaven.models.exceptions import ConfigurationError
 

@@ -12,14 +12,19 @@ Features:
 - Automatic driver conversion (asyncpg -> psycopg2 for sync operations)
 
 Environment Variables:
-    DATABASE_URL: The database to migrate. Unset: ``data/faultmaven.db``
-        (SQLite) under the project root.
+    DATABASE_URL: The database to migrate, bound as the app's settings bind it
+        (in any case). Unset: ``data/faultmaven.db``
+        (SQLite) under the project root. Set to a value that configures no
+        persistent database (empty, ``:memory:``, an in-memory SQLite URL, a
+        value that does not parse), an online migration refuses and exits 1
+        (#1704); offline (``--sql``) opens no database and only takes the
+        dialect from it. Only the URL is read: no other database setting is
+        validated here.
 
 Usage:
     alembic upgrade head
 """
 
-import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path
@@ -46,23 +51,42 @@ if config.config_file_name is not None:
 sys.path.insert(0, str(project_root))
 
 # Target metadata for autogenerate - import from models
+from faultmaven.cli._database_gate import require_persistent_database_url_or_exit
+from faultmaven.config.settings import configured_database_url
 from faultmaven.infrastructure.persistence.models import Base
 
 target_metadata = Base.metadata
 
 
-def get_database_url() -> str:
+def get_database_url(*, require_persistent: bool) -> str:
     """
     Get the database URL to migrate.
 
     Priority:
-    1. Environment: DATABASE_URL (async drivers converted to sync ones)
+    1. Environment: DATABASE_URL (async drivers converted to sync ones),
+       refused unless it configures a persistent database when
+       ``require_persistent`` (online mode)
     2. Default: SQLite ``data/faultmaven.db`` under the project root
+
+    The value is read through ``configured_database_url()`` — the environment
+    source of ``DatabaseSettings``, the class the app's settings are built from
+    — so the migration binds the variable in the flat spellings the app does
+    (``database_url`` included). Only the URL is read; no other database field
+    is validated, so a setting alembic never uses cannot refuse a migration.
+
+    Offline (``--sql``) opens no database: the URL only names the dialect, so it
+    is not refused, and an empty value falls back to the default file URL.
 
     Returns:
         str: Database connection URL
     """
-    url = os.getenv("DATABASE_URL")
+    url = configured_database_url()
+    if require_persistent and url is not None:
+        # Set but EMPTY refuses too, rather than falling back to the default
+        # file: the app's predicate refuses an empty URL, and the migration must
+        # agree with the app on which database a value names (#1704). Judged on
+        # the raw value, before any driver conversion.
+        require_persistent_database_url_or_exit(url)
     if url:
         return _convert_async_url(url)
 
@@ -109,7 +133,7 @@ def run_migrations_offline() -> None:
     Calls to context.execute() here emit the given string to the
     script output.
     """
-    url = get_database_url()
+    url = get_database_url(require_persistent=False)
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -128,7 +152,7 @@ def run_migrations_online() -> None:
     Creates an Engine and associates a connection with the context.
     """
     # Get database URL
-    url = get_database_url()
+    url = get_database_url(require_persistent=True)
 
     # Build engine configuration
     configuration = config.get_section(config.config_ini_section, {})

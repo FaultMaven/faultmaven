@@ -239,7 +239,7 @@ def test_importing_call_sites_has_no_side_effects():
     singleton.
 
     get_settings() runs load_dotenv(), applies presets that mutate os.environ,
-    and writes data/.jwt_secret via ensure_local_jwt_secret_env(). An
+    and writes data/.jwt_secret via resolve_local_jwt_secret(). An
     import-time gate read made a plain `import faultmaven...router` write a
     secret file into the process's cwd and freeze settings from the ambient
     environment — ahead of the conftest fixtures that exist to clear it. The

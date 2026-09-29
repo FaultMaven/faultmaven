@@ -18,19 +18,21 @@ printed. ``tests/unit/cli/test_database_gate.py`` holds the
 structural census. This file is the behavioural half, because a check on the
 source says nothing about what the process does.
 
-``JWT_SECRET_KEY`` is set in the child. Without it, ``get_settings()`` writes
-``data/.jwt_secret`` on its first call in local auth mode (the standalone
-convenience), whichever command runs and whatever ``DATABASE_URL`` says. The
-gate reads settings, so that write would land ahead of the refusal. The API
-boot refused by the same gate writes it too, and its probe
-(``test_boot_refuses_nonpersistent_database.py``) also sets the key.
-``PYTHON_DOTENV_DISABLED`` keeps the child from loading a ``.env`` above the
-checkout.
+``JWT_SECRET_KEY`` is NOT set in the child. Under local auth ``get_settings()``
+then mints the standalone JWT secret on its first call, ahead of the gate, and
+it used to persist it to ``data/.jwt_secret`` whatever ``DATABASE_URL`` said, so
+a refused run left that file behind (#1703). Every refused run here pins that it
+no longer does. One refused run sets the URL ONLY as lowercase
+``database_url``, which the settings bind and the gate refuses, so the secret's
+skip must read it the same way. ``PYTHON_DOTENV_DISABLED`` keeps the child from
+loading a ``.env`` above the checkout.
 
-The positive control runs a command with a file URL relative to the same
-working directory. It gets past the gate, and the database file it creates
-shows up in the cwd listing. So an empty listing after a refusal means the
-refusal came first, not that the probe was looking in the wrong place.
+The positive control runs a command with a persistent database: a file URL
+relative to the same working directory, and ``DATABASE_URL`` unset (the shipped
+default, also cwd-relative). It gets past the gate, and the database it opens
+and the persisted JWT secret show up in the cwd listing. So an empty listing
+after a refusal means the refusal came first, not that the probe was looking in
+the wrong place.
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ import sys
 import tempfile
 import tomllib
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -156,11 +159,19 @@ def oauth_keys():
     shutil.rmtree(root, ignore_errors=True)
 
 
-def _run(code: str, database_url: str, extra_env: dict | None = None):
+def _run(
+    code: str,
+    database_url: Optional[str],
+    extra_env: dict | None = None,
+    *,
+    url_name: str = "DATABASE_URL",
+):
     """Run ``code`` in a clean child whose cwd is an empty directory.
 
-    Returns the completed process and the cwd's entries afterwards, less the
-    one input file a command reads (``ids.txt``).
+    ``database_url`` is set under ``url_name`` (any case the settings bind), or
+    left unset when ``None``. Returns the completed process and every path
+    under the cwd afterwards, relative to it, less the one input file a command
+    reads (``ids.txt``).
     """
     root = Path(tempfile.mkdtemp(prefix="fm-cligate-"))
     try:
@@ -171,16 +182,18 @@ def _run(code: str, database_url: str, extra_env: dict | None = None):
             "HOME": str(root),
             "PATH": "/usr/bin:/bin",
             "PYTHONPATH": str(TREE),
-            "DATABASE_URL": database_url,
             "DEPLOYMENT_MODE": "standalone",
             "AUTH_MODE": "local",
-            "JWT_SECRET_KEY": "cligate-probe-secret-please-ignore-00001",
+            # No JWT_SECRET_KEY: local auth mints its own ahead of the gate, and
+            # a refused run must not persist it (#1703).
             # Hermetic: settings' load_dotenv() otherwise walks up from the
             # faultmaven package when __main__ has a __file__ (runpy), and in
             # a nested worktree finds the parent checkout's .env.
             "PYTHON_DOTENV_DISABLED": "1",
             **(extra_env or {}),
         }
+        if database_url is not None:
+            env[url_name] = database_url
         completed = subprocess.run(
             [sys.executable, "-c", code],
             cwd=cwd,
@@ -190,7 +203,9 @@ def _run(code: str, database_url: str, extra_env: dict | None = None):
             stdin=subprocess.DEVNULL,
             timeout=600,
         )
-        entries = sorted(p.name for p in cwd.iterdir() if p.name != "ids.txt")
+        entries = sorted(
+            str(p.relative_to(cwd)) for p in cwd.rglob("*") if p != cwd / "ids.txt"
+        )
         return completed, entries
     finally:
         shutil.rmtree(root, ignore_errors=True)
@@ -316,13 +331,34 @@ def test_dev_script_refuses_an_empty_database_url(run):
     _assert_refused(_run_id(run), completed, entries)
 
 
-def test_positive_control_a_file_database_gets_past_the_gate_and_writes_here():
-    """Same child, same cwd layout, a file URL: the gate lets it through, and
-    the database the command opens appears in the listing the refusals left
-    empty."""
-    command = "fm-reset-kb"
+def test_a_lowercase_only_database_url_is_refused_and_writes_nothing():
+    """The settings bind ``database_url`` and the gate refuses it. The JWT
+    secret's skip read ``DATABASE_URL`` by exact name, missed it, and persisted
+    the secret ahead of the refusal (#1703 review). The issue's own command."""
     completed, entries = _run(
-        _command_code(command, ["--dry-run"]), "sqlite+aiosqlite:///./fm.db"
+        _command_code("fm-promote-platform-admin", ["admin"]),
+        "sqlite+aiosqlite:///:memory:",
+        url_name="database_url",
     )
+    _assert_refused("database_url=sqlite+aiosqlite:///:memory:", completed, entries)
+
+
+@pytest.mark.parametrize(
+    "database_url, database_file",
+    [
+        ("sqlite+aiosqlite:///./fm.db", "fm.db"),
+        (None, "data/faultmaven.db"),
+    ],
+    ids=["file-url", "unset-is-the-file-default"],
+)
+def test_positive_control_a_persistent_database_gets_past_the_gate_and_writes_here(
+    database_url, database_file
+):
+    """Same child, same cwd layout, a persistent database: the gate lets it
+    through, and the database the command opens and the persisted JWT secret
+    appear in the listing the refusals left empty."""
+    command = "fm-reset-kb"
+    completed, entries = _run(_command_code(command, ["--dry-run"]), database_url)
     assert REFUSAL not in completed.stderr, completed.stderr[-2000:]
-    assert "fm.db" in entries, (entries, completed.stderr[-2000:])
+    assert database_file in entries, (entries, completed.stderr[-2000:])
+    assert "data/.jwt_secret" in entries, (entries, completed.stderr[-2000:])

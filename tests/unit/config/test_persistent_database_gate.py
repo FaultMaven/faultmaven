@@ -14,13 +14,20 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from pydantic_settings import BaseSettings
 
 from faultmaven.config.persistent_database import (
     DEFAULT_DATABASE_URL,
     NonPersistentDatabaseError,
     require_persistent_database,
+    require_persistent_database_url,
 )
-from faultmaven.config.settings import persistent_database_configured
+from faultmaven.config.settings import (
+    DatabaseSettings,
+    configured_database_url,
+    persistent_database_configured,
+)
+from tests.utils import delenv_every_spelling
 
 
 def _settings(url):
@@ -75,6 +82,103 @@ def test_refuses_every_non_persistent_url(url):
 def test_accepts_every_persistent_url(url):
     assert persistent_database_configured(url) is True
     require_persistent_database(_settings(url))  # does not raise
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("url", NON_PERSISTENT)
+def test_the_bare_url_form_refuses_every_non_persistent_url_with_the_same_message(
+    url,
+):
+    """``require_persistent_database_url`` is what ``alembic/env.py`` calls, with
+    no settings to hand (#1704). It must refuse the same rows with the same
+    message as the settings form, so there is one rule and one message."""
+    with pytest.raises(NonPersistentDatabaseError) as bare:
+        require_persistent_database_url(url)
+    with pytest.raises(NonPersistentDatabaseError) as from_settings:
+        require_persistent_database(_settings(url))
+    assert str(bare.value) == str(from_settings.value)
+    assert DEFAULT_DATABASE_URL in str(bare.value)
+    assert "needs a database" in str(bare.value)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("url", PERSISTENT)
+def test_the_bare_url_form_accepts_every_persistent_url(url):
+    require_persistent_database_url(url)  # does not raise
+
+
+@pytest.fixture
+def no_database_url(monkeypatch):
+    """Remove every spelling of DATABASE_URL: the settings bind it in any case,
+    and the xdist worker sets one."""
+    delenv_every_spelling(monkeypatch, "DATABASE_URL")
+
+
+@pytest.mark.unit
+def test_configured_database_url_is_none_when_nothing_sets_it(no_database_url):
+    """Unset means the field default applies: the persistent SQLite file."""
+    assert configured_database_url() is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "name, value",
+    [
+        ("DATABASE_URL", "sqlite+aiosqlite:////srv/fm.db"),
+        ("database_url", "sqlite+aiosqlite:////srv/fm.db"),
+        ("Database_Url", "sqlite+aiosqlite:///:memory:"),
+        ("DATABASE_URL", ""),
+    ],
+    ids=["uppercase", "lowercase", "mixed-case", "set-but-empty"],
+)
+def test_configured_database_url_reads_every_spelling_the_settings_bind(
+    no_database_url, monkeypatch, name, value
+):
+    """The reader ``alembic/env.py`` judges the URL through, without the full
+    settings. An exact-name read missed the lowercase spelling the app's gate
+    refuses (#1704)."""
+    monkeypatch.setenv(name, value)
+    assert configured_database_url() == value
+
+
+@pytest.mark.unit
+def test_configured_database_url_takes_the_last_spelling_as_the_settings_do(
+    no_database_url, monkeypatch
+):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///a.db")
+    monkeypatch.setenv("database_url", "")
+
+    assert configured_database_url() == ""
+    assert DatabaseSettings().database_url == ""  # the settings bind the same
+
+
+@pytest.mark.unit
+def test_configured_database_url_validates_no_other_field(no_database_url, monkeypatch):
+    """It reads the URL and nothing else. Validating the whole
+    ``DatabaseSettings`` made the startup migration refuse on ``REDIS_PORT``, a
+    field alembic never uses, when the environment it inherited no longer
+    matched the app's cached settings (#1778 review)."""
+    delenv_every_spelling(monkeypatch, "REDIS_PORT")
+    monkeypatch.setenv("REDIS_PORT", "not_a_number")
+
+    assert configured_database_url() is None
+    monkeypatch.setenv("database_url", "sqlite:///:memory:")
+    assert configured_database_url() == "sqlite:///:memory:"
+
+
+@pytest.mark.unit
+def test_database_settings_read_the_environment_only():
+    """``configured_database_url`` reads ``DatabaseSettings``' environment source
+    alone, which is the whole of what the class binds only while it declares no
+    ``env_file`` or ``secrets_dir`` and keeps the default source order. A class
+    that gains another source must take this reader with it."""
+    config = DatabaseSettings.model_config
+    assert config.get("env_file") is None, config.get("env_file")
+    assert config.get("secrets_dir") is None, config.get("secrets_dir")
+    assert (
+        DatabaseSettings.settings_customise_sources.__func__
+        is BaseSettings.settings_customise_sources.__func__
+    )
 
 
 @pytest.mark.unit

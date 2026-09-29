@@ -25,7 +25,14 @@ Called from these entrypoints, before any of them writes anything:
   the API used to;
 - every ``fm-*`` operator command and the dev scripts that reach the database,
   through ``faultmaven/cli/_database_gate.py`` (#1659), which turns the
-  refusal into exit 1 and the message on stderr rather than a traceback.
+  refusal into exit 1 and the message on stderr rather than a traceback;
+- the migration entrypoint (``alembic/env.py``), which never builds the full
+  settings: it reads the URL through
+  :func:`~faultmaven.config.settings.configured_database_url` (the
+  ``DatabaseSettings`` reader) and, in online mode, refuses through the same
+  exit helper as the operator commands, which raises
+  :func:`require_persistent_database_url` (#1704). Offline (``--sql``) opens
+  no database and is not refused.
 
 Cloud never reaches the refusal in practice: deployment coherence already
 requires PostgreSQL there. It is not special-cased, because the rule does not
@@ -34,7 +41,7 @@ depend on the mode.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from faultmaven.config.settings import (
     describe_database_url,
@@ -60,6 +67,20 @@ def require_persistent_database(settings: Any) -> None:
             says False for ``settings.database.database_url``.
     """
     database_url = getattr(getattr(settings, "database", None), "database_url", None)
+    require_persistent_database_url(database_url)
+
+
+def require_persistent_database_url(database_url: Optional[str]) -> None:
+    """The rule and its message for a bare URL, for a caller that has no settings.
+
+    ``alembic/env.py`` never builds the full settings, so it cannot call
+    :func:`require_persistent_database`. Both refuse through this function, so
+    there is one predicate and one message (#1704).
+
+    Raises:
+        NonPersistentDatabaseError: when ``persistent_database_configured``
+            says False for ``database_url``.
+    """
     if persistent_database_configured(database_url):
         return
     raise NonPersistentDatabaseError(

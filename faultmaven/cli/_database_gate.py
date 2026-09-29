@@ -32,6 +32,7 @@ command calls it.
 from __future__ import annotations
 
 import sys
+from typing import NoReturn, Optional
 
 
 def require_persistent_database_or_exit() -> None:
@@ -41,14 +42,36 @@ def require_persistent_database_or_exit() -> None:
     command reads afterwards, so the gate cannot judge a different URL from
     the one the command would have used.
     """
-    from faultmaven.config.persistent_database import (
-        NonPersistentDatabaseError,
-        require_persistent_database,
-    )
     from faultmaven.config.settings import get_settings
 
+    require_persistent_database_url_or_exit(get_settings().database.database_url)
+
+
+def require_persistent_database_url_or_exit(database_url: Optional[str]) -> None:
+    """Exit 1 with the boot gate's message unless ``database_url`` is persistent.
+
+    The one copy of the refusal an entrypoint without a traceback owes its
+    caller: the message on stderr, nothing on stdout, exit 1. The operator
+    commands reach it through :func:`require_persistent_database_or_exit`, and
+    ``alembic/env.py`` calls it with the URL it read through
+    ``configured_database_url()`` (#1704).
+    """
+    from faultmaven.config.persistent_database import (
+        NonPersistentDatabaseError,
+        require_persistent_database_url,
+    )
+
     try:
-        require_persistent_database(get_settings())
+        require_persistent_database_url(database_url)
     except NonPersistentDatabaseError as exc:
-        print(f"❌ Refusing to run: {exc}", file=sys.stderr, flush=True)
-        sys.exit(1)
+        exit_refusing(str(exc))
+
+
+def exit_refusing(reason: str) -> NoReturn:
+    """Print ``❌ Refusing to run: <reason>`` on stderr, nothing on stdout, and exit 1.
+
+    The one copy of the refusal's shape, used by the persistence gate above,
+    which ``alembic/env.py`` also calls.
+    """
+    print(f"❌ Refusing to run: {reason}", file=sys.stderr, flush=True)
+    sys.exit(1)

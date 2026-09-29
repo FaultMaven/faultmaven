@@ -406,15 +406,15 @@ def test_a_persistent_database_passes_silently(url, capsys):
 
 
 def test_the_gate_judges_the_settings_the_command_reads():
-    """The rule is the boot gate's, applied to the ``get_settings()`` singleton
-    every command reads afterwards — not a second reading of the environment
-    that could judge a different URL."""
-    sentinel = _settings(DEFAULT_DATABASE_URL)
+    """The rule is the boot gate's, applied to the URL of the ``get_settings()``
+    singleton every command reads afterwards — not a second reading of the
+    environment that could judge a different URL."""
+    sentinel = _settings("sqlite+aiosqlite:////srv/sentinel.db")
     with (
         patch("faultmaven.config.settings.get_settings", return_value=sentinel),
         patch(
-            "faultmaven.config.persistent_database.require_persistent_database"
+            "faultmaven.config.persistent_database.require_persistent_database_url"
         ) as boot_gate,
     ):
         require_persistent_database_or_exit()
-    boot_gate.assert_called_once_with(sentinel)
+    boot_gate.assert_called_once_with("sqlite+aiosqlite:////srv/sentinel.db")

@@ -174,7 +174,7 @@ class TestLocalDeploymentComposes:
 class TestCompositionWithNoSigningKey:
     """Local mode where the JWT secret never resolved.
 
-    Reachable in production, not hypothetical: ``ensure_local_jwt_secret_env``
+    Reachable in production, not hypothetical: ``resolve_local_jwt_secret``
     warns and returns when it cannot write ``data/.jwt_secret``, leaving
     ``JWT_SECRET_KEY`` unset. Everything that does not sign must survive it —
     the admin user routes read ``app.state.user_service`` and raise a bare
