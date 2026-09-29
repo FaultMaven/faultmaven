@@ -657,7 +657,7 @@ def _recover_leaked_parameter(content_obj: dict, schema_model: Any) -> Optional[
     except ValidationError:
         try:
             decoded = json.loads(raw)
-        except ValueError:
+        except (ValueError, RecursionError):
             return None
 
     result: dict = {key: decoded}

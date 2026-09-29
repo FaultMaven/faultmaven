@@ -54,6 +54,9 @@ LEAKED_SIBLING_TEXT = LEAKED_SIBLING_ARGS["state_updates"].split('">', 1)[1].str
 SCHEMA = "TerminalResponse"
 DROP_EVENT = "structured_output_state_updates_dropped"
 
+# A non-text field's value nested past the JSON decoder's recursion limit.
+TOO_DEEP = '<parameter name="documentation_links">' + "[" * 1200
+
 
 def _body(state_updates, **extra) -> dict:
     return {"agent_response": "x", "state_updates": state_updates, **extra}
@@ -127,10 +130,16 @@ def test_recovers_the_leaked_parameter(schema, state_updates, expected):
             InvestigationResponse_Diagnosis,
             '<parameter name="milestones"><parameter name="symptom_verified">true',
         ),
+        (
+            TerminalResponse,
+            '<parameter name="final_summary_update">A'
+            '<parameter name="documentation_links">[]',
+        ),
         (TerminalResponse, 'Here: <parameter name="final_summary_update">x'),
         (TerminalResponse, "Root cause: disk"),
         (TerminalResponse, '{"final_summary_update": "x'),
         (TerminalResponse, "<parameter name='final_summary_update'>x"),
+        (TerminalResponse, TOO_DEEP),
     ],
     ids=[
         "a-closer-never-occurs",
@@ -138,10 +147,12 @@ def test_recovers_the_leaked_parameter(schema, state_updates, expected):
         "list-field-not-json",
         "not-a-state-field",
         "nested-tag",
+        "nested-tag-on-a-text-field",
         "text-before-the-tag",
         "prose",
         "truncated-json",
         "single-quoted-name",
+        "nested-too-deep",
     ],
 )
 def test_declines_everything_else(schema, state_updates):
@@ -274,6 +285,14 @@ def test_tool_call_other_string_is_dropped_counted_and_logged_without_content(
         len(secret),
         False,
     )
+
+
+def test_tool_call_too_deep_value_is_dropped_not_raised(counters):
+    parsed = _parse_schema_tool_call(_tool_call(TOO_DEEP), TerminalResponse)
+    assert parsed.state_updates.final_summary_update is None
+    assert parsed.state_updates.documentation_links == []
+    assert parsed.state_updates.model_fields_set == set()
+    assert counters.repairs() == [_repair("string_dropped")]
 
 
 def test_tool_call_absent_state_updates_is_defaulted_and_counted(counters):
