@@ -530,19 +530,29 @@ an item drifts from what was approved.
 every item twice — before its lane and after it — so a round's size counts
 both, not review alone. It stays efficient by pipelining: each lane starts
 as soon as its plan is posted, is verified as it returns, and takes its fix
-commits with its context intact; the owning agent reads CI once per pull
-request, in the background, and never waits in the foreground for
-anything a lane or a runner is doing.
+commits with its context intact. The owning agent starts reading a head's CI
+when it starts that head's review, since CI has run since the push, so a red
+context joins the same ruling rather than costing a loop of its own. It
+never waits in the foreground for anything a lane or a runner is doing.
 
 **Nothing is done twice.** Every step leaves a record that a later step, or
 a re-entry after a session dies, reads instead of redoing: the plan on the
 issue, and on the pull request a `## Review — <head>` comment per review
-round and the `## Merge-ready — <head>` comment. A delta review reads only
+round, whose fix list is what the lane is sent, and the
+`## Merge-ready — <head>` comment. A delta review reads only
 what is new since the last reviewed head — the head's diff against that head
 plus the `main` it now contains, which shows every fix, resolution, foreign
 merge or rewrite and nothing `main` brought in — since the rest has not
-changed since it was read. A review round's fixes go back as one push, so CI
-runs once per round, not once per finding. And `main` is merged in as the
+changed since it was read. It reads that diff **against the ruling that asked
+for it**, never as a fresh review of the pull request.
+- **Round 21 measured the difference.** A pull-request-scoped review tool,
+  run as the "delta", re-read the whole pull request every time: four passes
+  over #1776 raised 47 findings, most in code round 1 had already ruled on.
+- **The owning agent's own delta checks** of four small revisions took
+  minutes, and missed nothing that the review or CI found later.
+
+A review round's fixes go back as one push, so CI runs once per round, not
+once per finding. And `main` is merged in as the
 lane returns, so verification, review and CI all see the code as it will
 merge, and after that the merge queue keeps it current, so nothing merges
 `main` in again unless a conflict or a queue removal calls for it.
@@ -802,7 +812,8 @@ not an exit.
 Gates for building an item, each from a failure that cost real time. The
 owning agent holds the ones that decide what to build and whether it is
 right — *Root before scope*, *State N*, *Enumerate the consumers*, *Measure
-an over-approximation's cost*, and every gate on review, verification and CI
+an over-approximation's cost*, *State the invariant*, *Probe the mechanism*,
+and every gate on review, verification and CI
 — and its plan carries their results to the lane. The lane holds the rest: a
 worktree per lane on a base fetched now; a guard's test drives the path that
 runs it; a false-positive count is measured and reported, never judged; the
@@ -926,13 +937,49 @@ reads them all:
   four rounds, its responses ran to twice its size, and it should have shipped
   after the first round. A review loop with no scope gate generates the
   defects it then finds.
+- **State the invariant, and let it draw the fix line from the first
+  round.** Every plan says, in a sentence or two, what must hold once the pull
+  request merges. Review and the defeat pass are briefed with it, and every
+  finding lands in one of three places:
+  - **fixed**: a defect in the invariant, or a reachable crash, wrong result
+    or regression the diff introduces;
+  - **filed**: true, but outside that line;
+  - **declined**: in one line, with the reason.
+
+  Round 21 improvised this rule only in its second or third review round.
+  Before it, rounds of 10–13 findings each went back to the lanes, and their
+  fixes drew the next round's findings. Rounds run under it had 0–3 fixable
+  findings out of 10–13.
+- **Probe the mechanism before a lane builds it.** A plan that chooses a
+  mechanism is an argument until it has run: a classifier's rule, the source
+  a reader binds, a guard's predicate, a library behaviour it leans on.
+  - **How:** the owning agent runs it against an adversarial input list
+    before any lane is sent, starting with negatives that share the
+    positives' tokens, then the spellings, orders and nestings real input
+    takes. The list becomes the lane's test table.
+  - **Revisions too:** a revision that changes the mechanism is probed again.
+    When a fix breaks its own invariant, the next revision's probe starts
+    from the inputs that broke it. A second such fix pulls the item.
+  - **Why:** in round 21, every in-invariant defect found after a first
+    review was in a revision's mechanism, not in a lane's code, and a few
+    lines of input refuted each one:
+    - a confirmation classifier that labelled `yes, don't close it yet` as
+      explicit, then `ok :+1:` as prefixed;
+    - a settings reader that missed a nested `DATABASE` and a later lowercase
+      spelling;
+    - then a reader that validated fields a migration never uses.
+  - **What it is:** the proposal's premise check, carried from the premise
+    to the mechanism.
 
 - **Enumerate the consumers before changing a producer.** When a field's
   meaning, a written value or a placeholder changes, list what reads it and
   show the search that found them. This is the regression class here — the
   code that breaks is old code that read the old meaning.
 - **Review on the final head.** A fix written to answer a review is new code
-  nobody has reviewed, so run the review again after it. A finding that
+  nobody has reviewed, so review it again after it. Review it as a delta: the
+  fix commits, read against the ruling that asked for them. The rest of the
+  pull request was read once already, and re-reading it is how a fix round
+  becomes a fresh review. A finding that
   survives two rounds is escalated rather than iterated — **unless it blocks
   the merge**, because escalation hands the owner a pull request, and a pull
   request that refuses a fresh install or answers 500 where it promises 401

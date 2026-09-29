@@ -727,6 +727,19 @@ what the proposal's premise check already read, and write the plan:
   found them;
 - the tests that will prove it — for a guard, one that drives it through the
   path that runs it — and the commands that run them;
+- **the invariant**: one or two sentences saying what must hold once this
+  merges ("a refused run writes nothing"; "every KB chunk the service writes
+  carries its row's tenant"). Review and the defeat pass are briefed with it,
+  and it is the fix line for every ruling in *Review* and *Delta* below;
+- for every **mechanism** the change chooses (a classifier's rule, the source
+  a reader binds, a guard's predicate, a library behaviour it relies on), the
+  inputs you ran it against and what it returned, **before any lane is sent**.
+  Start with negatives that share the positives' tokens, then the spellings,
+  orders and nestings the real input can take, and go through the path that
+  runs it. The list goes into the plan as the lane's test table. In round 21
+  every in-invariant defect found after a first review was in a revision's
+  mechanism, and a few lines of input refuted each one. A revision that changes a mechanism
+  is probed the same way before it goes back to a lane;
 - every choice you made, with its reason. A choice any of the four triggers
   under *What escalates* reserves for the owner — what a user sees, a
   documented decision overridden, two options of materially different
@@ -736,10 +749,13 @@ what the proposal's premise check already read, and write the plan:
 Post it on the issue as a comment headed `## Plan — round <N>`, its first
 line `Tier: <tier>`, where the owner can read it and the lane is built from
 it — and with no heading inside it starting `Ruling`, `Ruled`, `Owner ruling`
-or `Decision record`, which the metrics read as an owner's ruling. A revision is posted the same way, so the
+or `Decision record`, which the metrics read as an owner's ruling. A revision that changes the root or a mechanism is posted the same way, so the
 newest such comment since this round's proposal is the plan in force and its
 tier the lane's; a re-entry reads that and builds from it rather than
-planning again. A read-only search may be sent out to find where something
+planning again. A review round's fix list is **not** a revision: it lives in
+that round's `## Review — <head>` comment on the pull request (*Review*
+below). That comment is the one ruling artifact the lane is sent, rather than
+a second copy on the issue. A read-only search may be sent out to find where something
 lives; what it means is yours — read the code points before they go into a
 plan.
 
@@ -813,8 +829,9 @@ Mechanics the prompt adds:
 
 - **The lane implements the plan and does not re-plan.** Where the code
   disagrees with the plan, it stops and reports what it found. *Building*'s
-  planning gates — root before scope, state N, enumerate the consumers — are
-  done, and their results are the plan; the rest bind the lane.
+  planning gates — root before scope, state N, enumerate the consumers, the
+  invariant, the mechanism probe — are done, and their results are the plan
+  (the probe's inputs are the lane's test table); the rest bind the lane.
 - Every lane works in a fresh worktree on `origin/main` fetched now:
   `git worktree add -b fix/<n>-<slug> .claude/worktrees/<n> origin/main`.
   Before pushing: `black`, `ruff`, `lint-imports`, the tests that cover the
@@ -886,23 +903,40 @@ calls for it.
    anything else goes back to the lane to come out, once. A diff that still
    carries a hunk the plan does not cover is a lane failure, as is a re-run
    that does not match the lane's report; both are handled as above.
-2. **Review.** Run `/code-review xhigh <n>` on the pull request's final head —
-   never a bare call, which reuses whatever level was typed last, and never
-   lower for a `sonnet` lane, whose author is the weaker one. The verdict on
-   every finding is yours, reached by running it. A round's on-seam defects go
-   back together — one fix plan from you, one fix commit, one push, so CI runs
-   once per round rather than once per finding — to the lane, or to a `full`
-   lane, as the item's second, if this one is `sonnet`, with the fix plan
-   posted as a revision. A design call is never a mid-round interruption: if
-   the change depends on its answer, pull the item; otherwise file it, like an
-   off-seam defect, as a new issue carrying `Found while working on #<n>`, and
-   step 2 places it — in *Needs your call* when it trips *What escalates*. Post
-   the round's verdict on the pull request as `## Review — <head>`: each
-   finding and what became of it. A re-entry that finds one naming the current
-   head resumes from its verdict rather than verifying or reviewing again: a
-   clean one goes on to *Merge-ready*, and open on-seam defects go back to a
-   lane as above. One naming an earlier head takes a delta review of what came
-   after it.
+2. **Review: once, whole, at xhigh.** Run `/code-review xhigh <n>` on the pull
+   request's head. Never make a bare call, which reuses whatever level was
+   typed last, and never go lower for a `sonnet` lane, whose author is the
+   weaker one. Brief it with the plan's invariant. **Start the CI watch in
+   the same breath** (the command under *Merge-ready*, in the background): CI
+   has been running since the lane pushed, so a red required context reaches
+   this ruling and not the next one. In round 21 a head sat red, unread,
+   through a review and a defeat pass.
+
+   The verdict on every finding is yours, reached by running it, and each
+   finding lands in exactly one of three places:
+   - **fix**: a defect in the invariant, or a crash, wrong result or
+     regression that the diff introduces on a reachable path;
+   - **file**: anything true outside that line. It becomes a new issue
+     carrying `Found while working on #<n>`, with findings that share a root
+     sharing one issue;
+   - **decline**: said in one line, with the reason. Unreachable, already
+     ruled, or a simplification that changes no outcome.
+
+   The fixes go back together (one fix list, one fix commit, one push, so CI
+   runs once per round rather than once per finding) to the lane. If this
+   lane is `sonnet`, they go to a `full` lane as the item's second. A design
+   call is never a mid-round interruption: if the change depends on its
+   answer, pull the item; otherwise file it, and step 2 places it in *Needs
+   your call* when it trips *What escalates*.
+
+   Post the round's verdict on the pull request as `## Review — <head>`: each
+   finding and where it landed, then the fix list under `### Revision <k>`.
+   That comment is what the lane is sent; the issue gets no second copy.
+
+   A re-entry that finds one naming the current head resumes from its verdict
+   rather than verifying or reviewing again: a clean one goes on to
+   *Merge-ready*, and an open fix list goes back to a lane as above. One naming
+   an earlier head takes a delta of what came after it.
 
    **If the pull request ships a guard, the brief is to defeat the guard** —
    what can be re-introduced without it noticing, in the shapes this codebase
@@ -910,13 +944,33 @@ calls for it.
    guard's answer on the current tree is a different activity and does not
    substitute: four rounds running the defect was in the guard the pull
    request installed, and every time it had already passed that check.
-3. **Delta.** Review only what is new since the last `## Review` head: the
-   current head's diff against what that head plus the `main` it now contains
-   would be. Clean merges of `main` and empty commits show nothing; fix
-   commits, a conflict's resolution, a merge of any other branch and a
-   rewritten history all show, and are read at the same level — the rest has
-   not changed since it was read, and the fix commits are where review
-   responses breed defects. An empty diff is a clean delta:
+3. **Delta: the fix commits, against the ruling.** A fix round is never
+   reviewed whole again. `/code-review <n>` reads the entire pull request, so
+   it re-rules what round 1 settled. In round 21, four such passes over one
+   pull request raised 47 findings, and each in-invariant defect among them
+   was in the previous round's fix.
+
+   Read only what is new since the last `## Review` head: the current head's
+   diff against what that head plus the `main` it now contains would be.
+   Check it against that round's fix list and the invariant:
+   - does each fix do what the ruling asked?
+   - does any of it break the invariant, or introduce a reachable defect?
+
+   Read the diff yourself when it is small (under about 300 changed lines, or
+   tests and docs only). Otherwise send one reviewer agent, briefed with the
+   commit range, the fix list and the invariant, and never with the pull
+   request number. A guard whose mechanism the fix changed also gets a delta
+   defeat pass on the same terms. The landings are *Review*'s three, and a
+   delta with nothing to fix is clean.
+
+   **A fix that breaks its own invariant is a design the plan did not
+   understand.** The next revision goes through the plan's mechanism probe
+   first, extended by the inputs the delta found. A second such fix pulls the
+   item, as a lane failure would.
+
+   Clean merges of `main` and empty commits show nothing. Fix commits, a
+   conflict's resolution, a merge of any other branch and a rewritten history
+   all show. An empty diff is a clean delta:
 
    ```bash
    git fetch -q origin main
@@ -931,10 +985,11 @@ calls for it.
    before it lands, so the head brought up to date as the lane returned is
    current enough. Merge `main` in again only when the pull request conflicts
    with it, which the queue cannot resolve; the resolution is code, and goes
-   through *Review*'s fix path above. Then read CI, started in the background
-   when the review ends and never polled in the foreground: every required
-   context on the head must read `SUCCESS` or `SKIPPED`, and `ci_verdict` from
-   *Building* compares the head with its merge base.
+   through *Review*'s fix path above. Then read CI. Its watch started with the
+   review (or the delta) on this head, in the background and never polled in
+   the foreground, so it has usually finished by now: every required context on
+   the head must read `SUCCESS` or `SKIPPED`, and `ci_verdict` from *Building*
+   compares the head with its merge base.
 
    ```bash
    req=$(gh api repos/FaultMaven/faultmaven/rules/branches/main --jq \
@@ -998,7 +1053,7 @@ calls for it.
 
    ```
    ## Merge-ready — <final head, 9 characters>
-   Base: main@<sha> · Plan: <link> · Review: <n> rounds at xhigh, <m> findings filed rather than fixed
+   Base: main@<sha> · Plan: <link> · Review: 1 round at xhigh + <k> deltas, <m> findings filed rather than fixed
    Verified: <the commands you re-ran, with their tail>
    Checks: <every required context=conclusion> · base <ci_verdict>
    ```
