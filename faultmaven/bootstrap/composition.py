@@ -351,6 +351,19 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
 
     app.state.operator_grant_repository = SessionlessOperatorGrantRepository()
 
+    # The LLM usage ledger (#640): where every billed call's spend is
+    # persisted, per tenant. Installed rather than attached to app.state
+    # because its writer is the synchronous metering chokepoint, which no
+    # request object reaches. Fails OPEN by contract — a failed write is
+    # counted, never raised — so installing it cannot fail composition. The
+    # lifespan drains its in-flight writes and uninstalls it on shutdown.
+    from faultmaven.infrastructure.llm.usage_ledger import (
+        SqlUsageLedger,
+        install_usage_ledger,
+    )
+
+    install_usage_ledger(SqlUsageLedger())
+
     # Shared Redis client (real Redis in cloud, FakeRedis in standalone).
     # Single source of truth for Redis-dependent middleware (deduplication,
     # idempotency), which resolve it lazily from app.state on first request —

@@ -431,6 +431,21 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down FaultMaven API server...")
 
+    # Finish the LLM usage ledger's in-flight own-row writes (#640) while the
+    # database is still open, then uninstall it: calls metered after this point
+    # are counted as not persisted rather than scheduled against a closing
+    # engine. Never raises; a write still pending at the timeout is counted.
+    try:
+        from faultmaven.infrastructure.llm.usage_ledger import (
+            drain_pending_usage_writes,
+            install_usage_ledger,
+        )
+
+        await drain_pending_usage_writes(timeout_s=5)
+        install_usage_ledger(None)
+    except Exception as e:
+        logger.warning(f"LLM usage ledger drain failed (non-critical): {e}")
+
     # Stop funnel metrics collector
     _funnel_task = getattr(app.state, "funnel_metrics_task", None)
     if _funnel_task is not None:

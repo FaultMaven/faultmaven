@@ -43,11 +43,19 @@ _CHILD = textwrap.dedent("""
     from faultmaven.main import app
     from faultmaven.config.settings import get_settings
 
+    from faultmaven.infrastructure.llm.usage_ledger import get_installed_usage_ledger
+
     result = {"gate_live": not _is_test_environment(get_settings())}
     try:
         with TestClient(app) as client:
             result["health_status"] = client.get("/health").status_code
+            result["usage_ledger_serving"] = type(
+                get_installed_usage_ledger()
+            ).__name__
         result["booted"] = True
+        result["usage_ledger_after_shutdown"] = type(
+            get_installed_usage_ledger()
+        ).__name__
     except Exception as exc:
         result["booted"] = False
         result["error"] = f"{type(exc).__name__}: {exc}"
@@ -60,9 +68,11 @@ _CHILD = textwrap.dedent("""
         names = [r[0] for r in con.execute(
             "select name from sqlite_master where type='table'")]
         result["token_revocations_exists"] = "token_revocations" in names
+        result["llm_usage_tables"] = sorted(n for n in names if n.startswith("llm_"))
         result["table_count"] = len(names)
     else:
         result["token_revocations_exists"] = False
+        result["llm_usage_tables"] = []
         result["table_count"] = 0
     print("RESULT " + json.dumps(result))
     """)
@@ -118,23 +128,30 @@ def _boot_a_fresh_install(root: Path) -> dict:
     )
 
 
+@pytest.fixture(scope="class")
+def fresh_boot() -> dict:
+    """One boot of a fresh install, shared by the class — a boot is the cost.
+
+    Its own temp root rather than ``tmp_path``, because pytest's contains
+    "test" and that is enough to skip the gate in the child.
+    """
+    root = Path(tempfile.mkdtemp(prefix="fm-fresh-"))
+    try:
+        yield _boot_a_fresh_install(root)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 @pytest.mark.slow
 @pytest.mark.integration
 class TestAFirstEverInstallBoots:
-    def test_a_clean_machine_boots_and_serves(self):
+    def test_a_clean_machine_boots_and_serves(self, fresh_boot):
         """`cp .env.example .env && ./faultmaven.sh start`, essentially.
 
         Asserts the gate was ACTIVE first: with it skipped this test would pass
         against the very ordering it exists to forbid.
-
-        Its own temp root rather than ``tmp_path``, because pytest's contains
-        "test" and that is enough to skip the gate in the child.
         """
-        root = Path(tempfile.mkdtemp(prefix="fm-fresh-"))
-        try:
-            result = _boot_a_fresh_install(root)
-        finally:
-            shutil.rmtree(root, ignore_errors=True)
+        result = fresh_boot
 
         assert result["gate_live"] is True, (
             "the revocation storage gate was skipped, so this test proves "
@@ -147,6 +164,17 @@ class TestAFirstEverInstallBoots:
             "bootstrap did not create the schema, so nothing about the gate's "
             f"position was exercised: {result}"
         )
+
+    def test_the_usage_ledger_lives_as_long_as_the_app(self, fresh_boot):
+        """#640: a fresh install migrates to the ledger's tables, the composition
+        root installs the shipped ledger for the life of the app, and shutdown
+        uninstalls it after draining. Without the install every billed call is
+        counted ``not_composed`` and nothing is ever persisted — silently, since
+        that reason logs nothing."""
+        assert fresh_boot["booted"] is True, fresh_boot.get("error")
+        assert fresh_boot["llm_usage_tables"] == ["llm_turn_spend", "llm_usage_daily"]
+        assert fresh_boot["usage_ledger_serving"] == "SqlUsageLedger"
+        assert fresh_boot["usage_ledger_after_shutdown"] == "NoneType"
 
 
 class TestTheGateRunsAfterTheMigrationsItDependsOn:
