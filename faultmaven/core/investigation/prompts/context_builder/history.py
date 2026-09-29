@@ -127,9 +127,18 @@ Turns: {turns_total} total, {turns_since_progress} since last progress
 def _build_turn_summary(turn) -> str:
     """Build a compact summary from a TurnProgress record.
 
-    Format: TURN {n}: {user_summary} → {structural_metadata} | Agent: {response_summary}
+    Returns one of three shapes:
 
-    Includes both structural metadata (milestones, evidence counts) AND the
+    - ``TURN {n}: {user_summary} → {structural_metadata} | Agent: {response_summary}``
+      for an ordinary record — the ``→`` part is omitted when there is no
+      structural metadata, and the ``| Agent:`` part becomes ``| NO_ANSWER_LINE``
+      when the reply was a server placeholder (#1451);
+    - ``TURN {n}: ASIDE_LINE`` for an aside (#1329);
+    - ``TURN {n}: NOT_RECORDED_LINE`` for a placeholder the server backfilled
+      for a turn it never recorded (#1666).
+
+    Neither summary is read for the last two. An ordinary record includes both
+    structural metadata (milestones, evidence counts) AND the
     agent_response_summary so the LLM knows WHAT was analyzed, not just counts.
     """
     # An aside (#1329) is summarised as what it was, not as what was said: the
@@ -239,8 +248,11 @@ NO_ANSWER_LINE = "(no answer — the assistant produced no usable reply this tur
 #: rendered like ``ASIDE_LINE`` and ``NO_ANSWER_LINE``: a bare line, never
 #: ``User:`` or ``Agent:``. Both of the placeholder's summaries are server
 #: text, so quoting either would read as the user's or the agent's own words
-#: (#1434, #1451, #1666).
-NOT_RECORDED_LINE = "(turn not recorded — recovered after an interrupted turn)"
+#: (#1434, #1451, #1666). Deliberately different from both of them, so a test
+#: can tell this marker from an echo of the placeholder, and silent on why the
+#: record is missing: the server does not know (a gap may be an interrupted
+#: turn or a consumed one).
+NOT_RECORDED_LINE = "(no record of this turn)"
 
 #: Truncation for a turn's one-line EARLIER TURNS preview. ONE value: the two
 #: call sites used 100 and 150, so the same turn rendered at two lengths

@@ -21,7 +21,9 @@ over one. Each site is declared below, with a count, as either
   condition; test ``agent_response_synthesized`` on the same record whose reply
   summary it reads; or test ``is_skipped`` on the same record whose summaries
   it reads, since both of a backfilled placeholder's summaries are server
-  text (#1666); or
+  text (#1666). A summary guard is withheld when the function also reads one
+  of its fields in a shape no record can be tied to — a subscript, ``getattr``
+  or ``.get`` by key, or a whole-record dump; or
 * another reader, with the reason it puts nothing in front of a model.
 
 A new read site, a moved one or a changed count fails until it is declared.
@@ -42,7 +44,13 @@ What this does NOT see, stated so nobody mistakes it for more:
   reached through a variable (``getattr(case, name)``);
 * whether a guard's branch actually skips or marks the row. The guard check
   proves the predicate is applied, as a condition, to the row being iterated;
-  what the branch then does is what each surface's behavioural tests prove.
+  what the branch then does is what each surface's behavioural tests prove;
+* a guard receiver is matched by spelling, not by binding: a name tested and
+  then rebound (reassigned, or shadowed by a comprehension or nested function)
+  counts as the same record (#1767);
+* serializers it does not recognise: ``to_json_compatible``,
+  ``str()``/``repr()``/f-string of a whole record, ``json.dumps`` over the turn
+  list (#1767).
 """
 
 from __future__ import annotations
@@ -82,6 +90,12 @@ _FLAG = frozenset({"agent_response_synthesized"})
 #: A turn record ``Case.reconcile_turn_sequence`` backfilled: BOTH summaries
 #: are server text, so a reader of either must screen it (#1666).
 _SKIP = frozenset({"is_skipped"})
+
+#: The fields each summary guard screens. Named, not borrowed from
+#: ``_TURN_CARRIES``: what a dump carries and what a guard covers are two
+#: questions, and a widened dump set must not silently widen a guard.
+_FLAG_READS = frozenset({"agent_response_summary"})
+_SKIP_READS = frozenset({"user_message_summary", "agent_response_summary"})
 
 _CTX = "faultmaven/core/investigation/prompts/context_builder/history.py"
 _CASE_SERVICE = "faultmaven/modules/case/domain/services/case_service.py"
@@ -249,7 +263,7 @@ def _literal_keys(node: ast.AST | None) -> set | None:
 
 
 def _dump_carries(node: ast.Call, turn_names: set[str]) -> bool:
-    """A dump of a case or a turn record that carries rows or reply summaries."""
+    """A dump of a case or a turn record that carries rows or summaries."""
     func = node.func
     if isinstance(func, ast.Attribute) and func.attr in _DUMP_METHODS:
         kind = _kind_of(func.value, turn_names)
@@ -375,6 +389,34 @@ def _in_condition(node: ast.AST, parents: dict) -> bool:
     return False
 
 
+def _reads_untied(fn: ast.AST, fields: frozenset[str]) -> bool:
+    """Whether *fn* reads one of *fields* in a shape no record can be tied to.
+
+    A subscript (Load) or ``.get`` by a constant key, ``getattr`` by a constant
+    name, or a whole-record dump ``_dump_carries`` counts. A summary guard
+    matches a screen to a read by receiver; none of these has one, so any of
+    them in the function withholds the guard rather than passing a read the
+    screen never covered.
+    """
+    turn_names = _turn_loop_names(fn)
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Subscript) and isinstance(n.ctx, ast.Load):
+            if isinstance(n.slice, ast.Constant) and n.slice.value in fields:
+                return True
+        elif isinstance(n, ast.Call):
+            func = n.func
+            key = None
+            if isinstance(func, ast.Name) and func.id == "getattr" and len(n.args) >= 2:
+                key = n.args[1]
+            elif isinstance(func, ast.Attribute) and func.attr == "get" and n.args:
+                key = n.args[0]
+            if isinstance(key, ast.Constant) and key.value in fields:
+                return True
+            if _dump_carries(n, turn_names):
+                return True
+    return False
+
+
 def _applied_guards(fn: ast.AST) -> set[str]:
     """What *fn* actually applies, not merely mentions.
 
@@ -384,7 +426,9 @@ def _applied_guards(fn: ast.AST) -> set[str]:
       ``X.agent_response_synthesized`` tested as a condition on the same ``X``;
     * the skip screen counts when every ``X.user_message_summary`` and
       ``X.agent_response_summary`` it reads has ``X.is_skipped`` tested as a
-      condition on the same ``X``.
+      condition on the same ``X``;
+    * neither summary guard counts when the function also reads one of its
+      fields untied to a receiver (``_reads_untied``).
     """
     parents = {c: n for n in ast.walk(fn) for c in ast.iter_child_nodes(n)}
     rows = {
@@ -415,14 +459,37 @@ def _applied_guards(fn: ast.AST) -> set[str]:
             and (not tested or _in_condition(n, parents))
         }
 
-    for guard, read in (
-        (_FLAG, frozenset({"agent_response_summary"})),
-        (_SKIP, _TURN_CARRIES),
-    ):
+    for guard, read in ((_FLAG, _FLAG_READS), (_SKIP, _SKIP_READS)):
         summaries = receivers(read)
-        if summaries and summaries <= receivers(guard, tested=True):
+        if (
+            summaries
+            and summaries <= receivers(guard, tested=True)
+            and not _reads_untied(fn, read)
+        ):
             applied |= guard
     return applied
+
+
+def _missing_screens(fn: ast.AST, declared: frozenset[str]) -> set[str]:
+    """The summary screens *fn*'s reads require that *declared* omits.
+
+    Derived, not declared: a reader of either of a turn record's summaries
+    needs ``_SKIP``, and a reader of the reply summary needs ``_FLAG``. The
+    guard check only verifies what ``PROMPT_READERS`` declares, so a
+    declaration that left a screen out was a requirement nothing enforced.
+    """
+
+    def reads(fields: frozenset[str]) -> bool:
+        return any(
+            isinstance(n, ast.Attribute) and n.attr in fields for n in ast.walk(fn)
+        )
+
+    required: set[str] = set()
+    if reads(_SKIP_READS):
+        required |= _SKIP
+    if reads(_FLAG_READS):
+        required |= _FLAG
+    return required - declared
 
 
 class TestTheDetector:
@@ -573,6 +640,22 @@ class TestTheGuardCheck:
     def test_the_skip_screen_does_not_when_it_gates_something_else(self, src):
         assert self._applied(src) == set()
 
+    @pytest.mark.parametrize(
+        "src",
+        [
+            "def f(turn, d):\n    if turn.is_skipped:\n        return ''\n"
+            "    return d['user_message_summary'] + turn.agent_response_summary",
+            "def f(turn):\n    if turn.is_skipped:\n        return ''\n"
+            "    return getattr(turn, 'user_message_summary')"
+            " + turn.agent_response_summary",
+            "def f(turn):\n    if turn.is_skipped:\n        return ''\n"
+            "    return str(turn.model_dump()) + turn.user_message_summary",
+        ],
+    )
+    def test_an_untied_read_withholds_the_summary_guard(self, src):
+        """A read no receiver can be named for sits beside a screened one."""
+        assert self._applied(src) == set()
+
     def test_the_flag_counts_when_it_gates_the_same_record(self):
         src = (
             "def f(turn):\n    if turn.agent_response_synthesized:\n        return ''\n"
@@ -614,12 +697,15 @@ def test_every_read_site_is_declared():
     }
 
     assert not undeclared, (
-        "new reads of case message rows or a turn record's reply summary:\n  "
+        "new reads of case message rows or a turn record's summaries "
+        "(user_message_summary, agent_response_summary):\n  "
         + "\n  ".join(f"{f}::{s} ({n})" for (f, s), n in sorted(undeclared.items()))
-        + "\nIf one puts text in front of a model, it must not quote a row the "
-        "server wrote (#1434, #1451): apply is_server_written_user_row / "
-        "is_server_written_assistant_row, or read agent_response_synthesized. "
-        "Then declare it in PROMPT_READERS; otherwise in OTHER_READERS, with why."
+        + "\nIf one puts text in front of a model, it must not quote text the "
+        "server wrote as a party's words (#1434, #1451, #1666): for message rows "
+        "apply is_server_written_user_row / is_server_written_assistant_row; for "
+        "a reply summary test agent_response_synthesized; for either of a turn "
+        "record's summaries test is_skipped. Then declare it in PROMPT_READERS; "
+        "otherwise in OTHER_READERS, with why."
     )
     assert not stale, f"declared but no longer read (moved or renamed?): {stale}"
     assert not recounted, (
@@ -638,3 +724,28 @@ def test_every_prompt_reader_is_guarded(site):
     for qualname, required in guards.items():
         missing = required - _applied_guards(_function(path, qualname))
         assert not missing, f"{path}::{qualname} does not apply {sorted(missing)}"
+
+
+def test_the_derived_requirement_catches_a_screen_left_out_of_a_declaration():
+    """Positive control for the test below: the exact mis-declaration a
+    defeat pass leaked at runtime — a reader of ``user_message_summary``
+    declared as needing only the reply flag."""
+    fn = _parse(
+        "def f(turn):\n    if turn.agent_response_synthesized:\n        return ''\n"
+        "    return turn.user_message_summary"
+    ).body[0]
+    assert _missing_screens(fn, _FLAG) == _SKIP
+
+
+@pytest.mark.parametrize("site", sorted(PROMPT_READERS), ids=lambda s: s[1])
+def test_a_reader_of_turn_summaries_requires_their_screens(site):
+    """What a guard function reads decides which screens it must declare:
+    ``_SKIP`` for either summary, ``_FLAG`` for the reply."""
+    path, _ = site
+    _, guards = PROMPT_READERS[site]
+    for qualname, required in guards.items():
+        missing = _missing_screens(_function(path, qualname), required)
+        assert not missing, (
+            f"{path}::{qualname} reads a turn record's summaries but its "
+            f"declaration omits {sorted(missing)}"
+        )

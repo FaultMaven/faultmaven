@@ -2,11 +2,16 @@
 
 ``Case.reconcile_turn_sequence`` repairs a gap in ``turn_history`` by inserting
 a ``SKIPPED`` placeholder (``TurnProgress.is_skipped``) whose two summaries are
-server text: ``"(turn not recorded)"`` and ``"(turn not recorded — recovered
-after an interrupted turn)"``. The EARLIER TURNS summary used to render it as
-``TURN 2: (turn not recorded) → … | Agent: (turn not recorded — …)`` — the
+server text. The EARLIER TURNS summary used to render it as
+``TURN 2: <user placeholder> → … | Agent: <agent placeholder>`` — the
 server's words presented as the user's (#1434's rule) and as the agent's
 (#1451's rule), for a turn whose real message rows may still exist.
+
+The placeholder's two texts are read off a record the writer actually made,
+never copied here, so a change to the writer cannot leave these checks looking
+for a string nobody writes. And each check that expects the marker also checks
+that neither text appears: that is what tells "render the marker" from "echo
+the placeholder".
 
 Three readers of a turn record's summaries, and each is pinned here:
 
@@ -28,12 +33,6 @@ from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 
 pytestmark = pytest.mark.unit
 
-#: What the writer puts in a placeholder's summaries. Asserted against the
-#: writer's own record below, so a change to the writer's text shows up here
-#: rather than leaving these checks looking for a string nobody writes.
-WRITER_USER_TEXT = "(turn not recorded)"
-WRITER_AGENT_TEXT = "(turn not recorded — recovered after an interrupted turn)"
-
 #: The real question the user asked on the turn the record was lost for.
 TURN_2_QUESTION = "why is /var full on db-2"
 
@@ -50,6 +49,38 @@ def _record(n: int) -> TurnProgress:
 
 def _row(turn: int, role: str, content: str) -> dict:
     return {"turn_number": turn, "role": role, "content": content, "metadata": {}}
+
+
+def _writer_placeholder() -> TurnProgress:
+    """The turn 2 placeholder the writer makes for a ``[1, 3]`` history."""
+    case = Case(enterprise_id="org1", title="t")
+    case.turn_history = [_record(1), _record(3)]
+    case.current_turn = 3
+    case.reconcile_turn_sequence()
+    placeholder = {t.turn_number: t for t in case.turn_history}[2]
+    assert placeholder.is_skipped
+    return placeholder
+
+
+def _placeholder_texts() -> tuple[str, str]:
+    """The writer's two summaries, checked usable for a "not in" assertion.
+
+    Positive control: the marker must differ from both texts, and neither may
+    contain the other, or "marker present, text absent" could not tell
+    rendering the marker from echoing the placeholder.
+    """
+    placeholder = _writer_placeholder()
+    texts = (placeholder.user_message_summary, placeholder.agent_response_summary)
+    for text in texts:
+        assert text
+        assert text not in cb.NOT_RECORDED_LINE
+        assert cb.NOT_RECORDED_LINE not in text
+    return texts
+
+
+def _assert_no_placeholder_text(out: str) -> None:
+    for text in _placeholder_texts():
+        assert text not in out, text
 
 
 def _reconciled_case(*, turn_2_user_row: bool = True) -> Case:
@@ -78,8 +109,10 @@ def _reconciled_case(*, turn_2_user_row: bool = True) -> Case:
     # the texts the assertions below look for.
     placeholder = {t.turn_number: t for t in case.turn_history}[2]
     assert placeholder.is_skipped
-    assert placeholder.user_message_summary == WRITER_USER_TEXT
-    assert placeholder.agent_response_summary == WRITER_AGENT_TEXT
+    assert (
+        placeholder.user_message_summary,
+        placeholder.agent_response_summary,
+    ) == _placeholder_texts()
     return case
 
 
@@ -94,8 +127,7 @@ class TestEarlierTurns:
 
         assert "EARLIER TURNS:" in out
         assert _line(out, 2) == f"TURN 2: {TURN_2_QUESTION}"
-        assert WRITER_USER_TEXT not in out
-        assert "Agent: (turn not recorded" not in out
+        _assert_no_placeholder_text(out)
         # A real record beside it still renders from the record: this is a
         # screen on the placeholder, not a switch away from turn records.
         assert _line(out, 1).startswith("TURN 1: record summary for turn 1")
@@ -107,8 +139,7 @@ class TestEarlierTurns:
 
         assert "EARLIER TURNS:" in out
         assert _line(out, 2) == "TURN 2: ..."
-        assert WRITER_USER_TEXT not in out
-        assert WRITER_AGENT_TEXT not in out
+        _assert_no_placeholder_text(out)
 
 
 class TestTurnSummary:
@@ -118,25 +149,20 @@ class TestTurnSummary:
         case = _reconciled_case()
         placeholder = {t.turn_number: t for t in case.turn_history}[2]
 
-        assert cb._build_turn_summary(placeholder) == f"TURN 2: {cb.NOT_RECORDED_LINE}"
+        line = cb._build_turn_summary(placeholder)
+
+        assert line == f"TURN 2: {cb.NOT_RECORDED_LINE}"
+        _assert_no_placeholder_text(line)
 
 
 class TestCompactHistory:
     def test_a_placeholder_as_the_previous_turn_renders_the_marker_line(self):
-        """Hand-built: the writer inserts a placeholder only BETWEEN two
+        """Hand-placed: the writer inserts a placeholder only BETWEEN two
         records, so it never produces one as the last record. The rule is per
-        record, not per position, and this pins it where the writer cannot."""
+        record, not per position, and this pins it where the writer cannot —
+        with the record the writer made, moved to the last position."""
         case = Case(enterprise_id="org1", title="t")
-        case.turn_history = [
-            _record(1),
-            TurnProgress(
-                turn_number=2,
-                outcome=TurnOutcome.SKIPPED,
-                progress_made=False,
-                user_message_summary=WRITER_USER_TEXT,
-                agent_response_summary=WRITER_AGENT_TEXT,
-            ),
-        ]
+        case.turn_history = [_record(1), _writer_placeholder()]
         case.current_turn = 2
 
         out = cb._build_compact_history(case, "and now?", PromptFence(mint_token()))
@@ -144,4 +170,4 @@ class TestCompactHistory:
         body = out.split("<previous_turn>\n", 1)[1].split("</previous_turn>", 1)[0]
         assert body == f"{cb.NOT_RECORDED_LINE}\n"
         assert "Agent:" not in out
-        assert WRITER_USER_TEXT not in out
+        _assert_no_placeholder_text(out)
