@@ -1279,6 +1279,13 @@ def ensure_local_jwt_secret_env() -> None:
     No-ops when:
       - JWT_SECRET_KEY is already set (an explicit value always wins), or
       - AUTH_MODE is not 'local' (OAuth uses RS256 key files, not this secret).
+    Persists nothing when DATABASE_URL is set and configures no persistent
+    database (``persistent_database_configured``): it exports an ephemeral secret
+    and creates no directory and no file (#1703). A process with nothing durable
+    has nothing for a durable secret to protect, and every gate that refuses such
+    a URL reads it through get_settings(), which calls this first — so a refused
+    boot or fm-* command used to leave data/.jwt_secret behind. An UNSET
+    DATABASE_URL is the persistent file default and persists as before.
     On a filesystem error it logs a warning and returns — local auth then fails
     with a clear "JWT_SECRET_KEY not configured" message rather than the server
     crashing at import time.
@@ -1289,6 +1296,16 @@ def ensure_local_jwt_secret_env() -> None:
         return
 
     logger = logging.getLogger(__name__)
+    if "DATABASE_URL" in os.environ and not persistent_database_configured(
+        os.environ["DATABASE_URL"]
+    ):
+        os.environ["JWT_SECRET_KEY"] = secrets.token_urlsafe(48)
+        logger.debug(
+            "DATABASE_URL configures no persistent database, so no durable JWT "
+            "secret is written; this process signs with an ephemeral one."
+        )
+        return
+
     secret_path = Path(os.environ.get("JWT_SECRET_FILE", "data/.jwt_secret"))
     try:
         secret_path.parent.mkdir(parents=True, exist_ok=True)

@@ -19,6 +19,7 @@ from faultmaven.config.persistent_database import (
     DEFAULT_DATABASE_URL,
     NonPersistentDatabaseError,
     require_persistent_database,
+    require_persistent_database_url,
 )
 from faultmaven.config.settings import persistent_database_configured
 
@@ -75,6 +76,29 @@ def test_refuses_every_non_persistent_url(url):
 def test_accepts_every_persistent_url(url):
     assert persistent_database_configured(url) is True
     require_persistent_database(_settings(url))  # does not raise
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("url", NON_PERSISTENT)
+def test_the_bare_url_form_refuses_every_non_persistent_url_with_the_same_message(
+    url,
+):
+    """``require_persistent_database_url`` is what ``alembic/env.py`` calls, with
+    no settings to hand (#1704). It must refuse the same rows with the same
+    message as the settings form, so there is one rule and one message."""
+    with pytest.raises(NonPersistentDatabaseError) as bare:
+        require_persistent_database_url(url)
+    with pytest.raises(NonPersistentDatabaseError) as from_settings:
+        require_persistent_database(_settings(url))
+    assert str(bare.value) == str(from_settings.value)
+    assert DEFAULT_DATABASE_URL in str(bare.value)
+    assert "needs a database" in str(bare.value)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("url", PERSISTENT)
+def test_the_bare_url_form_accepts_every_persistent_url(url):
+    require_persistent_database_url(url)  # does not raise
 
 
 @pytest.mark.unit

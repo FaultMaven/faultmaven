@@ -25,13 +25,19 @@ now applies the same rule to them, and this file pins two things:
 
 Each command is also driven for real, in a child process, by
 ``tests/integration/test_operator_commands_refuse_nonpersistent_database.py``,
-because a structural check says nothing about what the process does.
+because a structural check says nothing about what the process does. That file
+sets ``JWT_SECRET_KEY`` in its children; section 4 here runs the issue's
+reproduction without it (#1703).
 """
 
 from __future__ import annotations
 
 import ast
 import importlib
+import shutil
+import subprocess
+import sys
+import tempfile
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -39,6 +45,7 @@ from unittest.mock import patch
 
 import pytest
 
+import faultmaven
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
 from faultmaven.config.persistent_database import DEFAULT_DATABASE_URL
 
@@ -418,3 +425,62 @@ def test_the_gate_judges_the_settings_the_command_reads():
     ):
         require_persistent_database_or_exit()
     boot_gate.assert_called_once_with(sentinel)
+
+
+# ---------------------------------------------------------------------------
+# 4. A refused command leaves the working directory as it found it (#1703)
+# ---------------------------------------------------------------------------
+
+
+def test_a_refused_command_writes_no_jwt_secret():
+    """The issue's reproduction, run for real: ``fm-promote-platform-admin admin``
+    on an in-memory ``DATABASE_URL`` under local auth with ``JWT_SECRET_KEY``
+    UNSET, from an empty directory.
+
+    The gate reads the URL through ``get_settings()``, whose first call used to
+    persist a local JWT secret, so the refusal left ``data/.jwt_secret`` behind.
+    Its own temp root, never pytest's ``tmp_path``, whose path contains "test"
+    (see ``test_boot_refuses_nonpersistent_database.py``).
+    """
+    tree = Path(faultmaven.__file__).resolve().parent.parent
+    module_path, _, attr = DECLARED["fm-promote-platform-admin"].partition(":")
+    code = (
+        "import sys, faultmaven\n"
+        f"assert faultmaven.__file__.startswith({str(tree)!r}), faultmaven.__file__\n"
+        "sys.argv = ['fm-promote-platform-admin', 'admin']\n"
+        f"from {module_path} import {attr}\n"
+        f"{attr}()\n"
+    )
+    root = Path(tempfile.mkdtemp(prefix="fm-jwtgate-"))
+    try:
+        cwd = root / "run"
+        cwd.mkdir()
+        completed = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=cwd,
+            env={
+                "HOME": str(root),
+                "PATH": "/usr/bin:/bin",
+                "PYTHONPATH": str(tree),
+                "DATABASE_URL": "sqlite+aiosqlite:///:memory:",
+                "DEPLOYMENT_MODE": "standalone",
+                "AUTH_MODE": "local",
+                # No JWT_SECRET_KEY: its absence is the subject.
+                "PYTHON_DOTENV_DISABLED": "1",
+            },
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=600,
+        )
+        entries = sorted(str(p.relative_to(cwd)) for p in cwd.rglob("*"))
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+    detail = f"stdout:\n{completed.stdout[-2000:]}\nstderr:\n{completed.stderr[-3000:]}"
+    assert completed.returncode == 1, detail
+    assert "❌ Refusing to run: " in completed.stderr, detail
+    assert "configures no persistent database" in completed.stderr, detail
+    assert DEFAULT_DATABASE_URL in completed.stderr, detail
+    assert completed.stdout == "", detail
+    assert entries == [], f"the refused command wrote {entries}\n{detail}"

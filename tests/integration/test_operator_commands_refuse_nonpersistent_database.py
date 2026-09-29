@@ -18,12 +18,13 @@ printed. ``tests/unit/cli/test_database_gate.py`` holds the
 structural census. This file is the behavioural half, because a check on the
 source says nothing about what the process does.
 
-``JWT_SECRET_KEY`` is set in the child. Without it, ``get_settings()`` writes
-``data/.jwt_secret`` on its first call in local auth mode (the standalone
-convenience), whichever command runs and whatever ``DATABASE_URL`` says. The
-gate reads settings, so that write would land ahead of the refusal. The API
-boot refused by the same gate writes it too, and its probe
-(``test_boot_refuses_nonpersistent_database.py``) also sets the key.
+``JWT_SECRET_KEY`` is set in the child. Without it, ``get_settings()`` mints the
+standalone JWT secret on its first call in local auth mode, ahead of the gate.
+It used to persist it to ``data/.jwt_secret`` whatever ``DATABASE_URL`` said, so
+a refused run left that file behind. Since #1703 it persists nothing when
+``DATABASE_URL`` configures no persistent database; the run without the key is
+pinned in ``tests/unit/cli/test_database_gate.py`` and, for the API boot, in
+``test_boot_refuses_nonpersistent_database.py``.
 ``PYTHON_DOTENV_DISABLED`` keeps the child from loading a ``.env`` above the
 checkout.
 
