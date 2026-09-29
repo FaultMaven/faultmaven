@@ -137,6 +137,13 @@ def _build_turn_summary(turn) -> str:
     # invites the model to treat the exchange as a thread to pick back up.
     if turn.is_out_of_band:
         return f"TURN {turn.turn_number}: {ASIDE_LINE}"
+    # A placeholder the server backfilled for a turn it never recorded (#1666):
+    # both of its summaries are server text, so neither is read — quoting them
+    # would present the server's words as the user's (#1434) and the agent's
+    # (#1451). EARLIER TURNS routes one to the message preview instead; this is
+    # the function's own guard, so no caller can render one.
+    if turn.is_skipped:
+        return f"TURN {turn.turn_number}: {NOT_RECORDED_LINE}"
 
     parts = []
 
@@ -226,6 +233,14 @@ ASIDE_LINE = "(aside — not part of the investigation)"
 #: server text and would read as the model's own words (#1434's rule). One line
 #: whatever the stop reason; the reason chose the placeholder, not this.
 NO_ANSWER_LINE = "(no answer — the assistant produced no usable reply this turn)"
+
+#: One line for a turn RECORD the server backfilled because the turn was never
+#: recorded (``Case.reconcile_turn_sequence``, ``TurnProgress.is_skipped``) —
+#: rendered like ``ASIDE_LINE`` and ``NO_ANSWER_LINE``: a bare line, never
+#: ``User:`` or ``Agent:``. Both of the placeholder's summaries are server
+#: text, so quoting either would read as the user's or the agent's own words
+#: (#1434, #1451, #1666).
+NOT_RECORDED_LINE = "(turn not recorded — recovered after an interrupted turn)"
 
 #: Truncation for a turn's one-line EARLIER TURNS preview. ONE value: the two
 #: call sites used 100 and 150, so the same turn rendered at two lengths
@@ -324,10 +339,15 @@ def _build_graduated_history(case: Case, fence: PromptFence) -> str:
 
         result += "EARLIER TURNS:\n"
         for turn_num in summary_turns:
-            if turn_num in turn_index:
-                result += _build_turn_summary(turn_index[turn_num]) + "\n"
+            record = turn_index.get(turn_num)
+            if record is not None and not record.is_skipped:
+                result += _build_turn_summary(record) + "\n"
             else:
-                # Turn record missing — minimal fallback from messages
+                # Turn record missing — minimal fallback from messages. A
+                # placeholder the server backfilled for a turn it never
+                # recorded (#1666) is not a record either: its summaries are
+                # server text, while the turn's real rows may still exist and
+                # name it by what the user actually said.
                 result += (
                     f"TURN {turn_num}: "
                     f"{_preview_turn_from_messages(messages, turn_num, asides)}\n"
@@ -496,14 +516,20 @@ def _build_compact_history(
     if case.turn_history:
         last_turn = case.turn_history[-1]
         recent_history += "\n\n<previous_turn>\n"
-        last_is_aside = last_turn.is_out_of_band
-        if last_is_aside:
+        if last_turn.is_skipped:
+            # A placeholder the server backfilled (#1666): neither summary is
+            # read. The writer inserts one only BETWEEN records, so today the
+            # last record is never one — but the rule is per record, not per
+            # position.
+            recent_history += f"{NOT_RECORDED_LINE}\n"
+        elif last_turn.is_out_of_band:
             recent_history += f"{ASIDE_LINE}\n"  # #1329
-        elif last_turn.evidence_added:
-            recent_history += (
-                f"User provided: {len(last_turn.evidence_added)} evidence artifacts\n"
-            )
-        if not last_is_aside:
+        else:
+            if last_turn.evidence_added:
+                recent_history += (
+                    f"User provided: {len(last_turn.evidence_added)} "
+                    "evidence artifacts\n"
+                )
             if last_turn.agent_response_synthesized:
                 recent_history += f"{NO_ANSWER_LINE}\n"  # #1451
             elif last_turn.agent_response_summary:

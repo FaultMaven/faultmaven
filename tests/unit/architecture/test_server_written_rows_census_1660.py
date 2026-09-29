@@ -1,5 +1,5 @@
-"""Every read of a case's message rows, or of a turn record's reply summary, is
-accounted for (#1660).
+"""Every read of a case's message rows, or of a turn record's summaries, is
+accounted for (#1660, #1666).
 
 #1451's rule — no row the server wrote is rendered to a model as something a
 party SAID — lives at each place that puts those rows in front of a model. PR
@@ -9,17 +9,19 @@ were found by reading, not by anything that would have failed. This is the
 scan that found them, shipped so a seventh cannot arrive silently.
 
 The unit is a READ SITE: a function that takes rows out of a case
-(``case.messages``, ``get_messages``) or a reply summary out of a turn record
-(``agent_response_summary``) — by name, or by DUMPING the whole record:
-``model_dump``/``model_dump_json``/``dict``/``json`` on a case or a turn record
-whose include set, or implicit full dump, carries those fields, and
-``dict(...)``, ``vars(...)``, ``.__dict__`` and ``json.dumps(...)`` over one.
-Each site is declared below, with a count, as either
+(``case.messages``, ``get_messages``) or a summary out of a turn record
+(``user_message_summary``, ``agent_response_summary``) — by name, or by DUMPING
+the whole record: ``model_dump``/``model_dump_json``/``dict``/``json`` on a
+case or a turn record whose include set, or implicit full dump, carries those
+fields, and ``dict(...)``, ``vars(...)``, ``.__dict__`` and ``json.dumps(...)``
+over one. Each site is declared below, with a count, as either
 
 * a PROMPT reader, naming the function that guards it and what that guard must
   do — call an ``is_server_written_*`` predicate on the row it iterates, as a
-  condition, or test ``agent_response_synthesized`` on the same record whose
-  summary it reads; or
+  condition; test ``agent_response_synthesized`` on the same record whose reply
+  summary it reads; or test ``is_skipped`` on the same record whose summaries
+  it reads, since both of a backfilled placeholder's summaries are server
+  text (#1666); or
 * another reader, with the reason it puts nothing in front of a model.
 
 A new read site, a moved one or a changed count fails until it is declared.
@@ -60,12 +62,14 @@ _ROOT = Path(__file__).resolve().parents[3]
 _PACKAGE = _ROOT / "faultmaven"
 
 #: What a read site reads.
-_FIELDS = frozenset({"messages", "get_messages", "agent_response_summary"})
+_FIELDS = frozenset(
+    {"messages", "get_messages", "user_message_summary", "agent_response_summary"}
+)
 
 #: What a whole-record dump carries: a case's rows, and its turn records (whose
-#: summaries are reply text); a turn record's summary.
+#: summaries are what was said); a turn record's summaries.
 _CASE_CARRIES = frozenset({"messages", "turn_history"})
-_TURN_CARRIES = frozenset({"agent_response_summary"})
+_TURN_CARRIES = frozenset({"user_message_summary", "agent_response_summary"})
 _DUMP_METHODS = frozenset({"model_dump", "model_dump_json", "dict", "json"})
 _CASE_NAME = re.compile(r"^(?:.*_)?case(?:_updated|_obj|_copy)?$")
 _TURN_NAME = re.compile(r"^(?:.*_)?(?:turn|record)$")
@@ -75,6 +79,9 @@ _USER = "is_server_written_user_row"
 _ASSISTANT = "is_server_written_assistant_row"
 _BOTH = frozenset({_USER, _ASSISTANT})
 _FLAG = frozenset({"agent_response_synthesized"})
+#: A turn record ``Case.reconcile_turn_sequence`` backfilled: BOTH summaries
+#: are server text, so a reader of either must screen it (#1666).
+_SKIP = frozenset({"is_skipped"})
 
 _CTX = "faultmaven/core/investigation/prompts/context_builder/history.py"
 _CASE_SERVICE = "faultmaven/modules/case/domain/services/case_service.py"
@@ -94,8 +101,11 @@ PROMPT_READERS: dict[tuple[str, str], tuple[int, dict[str, frozenset[str]]]] = {
             "_preview_turn_from_messages": frozenset({_USER}),
         },
     ),
-    (_CTX, "_build_turn_summary"): (2, {"_build_turn_summary": _FLAG}),
-    (_CTX, "_build_compact_history"): (2, {"_build_compact_history": _FLAG}),
+    (_CTX, "_build_turn_summary"): (3, {"_build_turn_summary": _FLAG | _SKIP}),
+    (_CTX, "_build_compact_history"): (
+        2,
+        {"_build_compact_history": _FLAG | _SKIP},
+    ),
     # The auto-titler's context.
     (_CASE_SERVICE, "CaseService.get_case_conversation_context"): (
         1,
@@ -371,7 +381,10 @@ def _applied_guards(fn: ast.AST) -> set[str]:
     * a predicate counts when it is CALLED on a variable the function iterates
       (a ``for``/comprehension target) and the call is a condition;
     * the flag counts when every ``X.agent_response_summary`` it reads has
-      ``X.agent_response_synthesized`` tested as a condition on the same ``X``.
+      ``X.agent_response_synthesized`` tested as a condition on the same ``X``;
+    * the skip screen counts when every ``X.user_message_summary`` and
+      ``X.agent_response_summary`` it reads has ``X.is_skipped`` tested as a
+      condition on the same ``X``.
     """
     parents = {c: n for n in ast.walk(fn) for c in ast.iter_child_nodes(n)}
     rows = {
@@ -392,20 +405,23 @@ def _applied_guards(fn: ast.AST) -> set[str]:
         and n.args[0].id in rows
         and _in_condition(n, parents)
     }
-    summaries = {
-        ast.dump(n.value)
-        for n in ast.walk(fn)
-        if isinstance(n, ast.Attribute) and n.attr == "agent_response_summary"
-    }
-    tested = {
-        ast.dump(n.value)
-        for n in ast.walk(fn)
-        if isinstance(n, ast.Attribute)
-        and n.attr == "agent_response_synthesized"
-        and _in_condition(n, parents)
-    }
-    if summaries and summaries <= tested:
-        applied |= _FLAG
+
+    def receivers(attrs: frozenset[str], *, tested: bool = False) -> set[str]:
+        return {
+            ast.dump(n.value)
+            for n in ast.walk(fn)
+            if isinstance(n, ast.Attribute)
+            and n.attr in attrs
+            and (not tested or _in_condition(n, parents))
+        }
+
+    for guard, read in (
+        (_FLAG, frozenset({"agent_response_summary"})),
+        (_SKIP, _TURN_CARRIES),
+    ):
+        summaries = receivers(read)
+        if summaries and summaries <= receivers(guard, tested=True):
+            applied |= guard
     return applied
 
 
@@ -422,6 +438,11 @@ class TestTheDetector:
             "def f(data):\n    return data['messages']",
             "def f(data):\n    return data.get('messages')",
             "def f(turn):\n    return turn.agent_response_summary",
+            "def f(turn):\n    return turn.user_message_summary",
+            "def f(data):\n    return data['user_message_summary']",
+            # Excluding the reply summary alone still dumps what the user said.
+            "def f(turn):\n    return turn.model_dump("
+            "exclude={'agent_response_summary'})",
             "def f(row):\n    return row.model_dump()['agent_response_summary']",
             "def f(case):\n    return list(case.messages)",
             # Whole-record dumps. The first two are the shapes review probed
@@ -469,7 +490,8 @@ class TestTheDetector:
         [
             "def f(case):\n    return case.model_dump(include={'title', 'state'})",
             "def f(case):\n    return case.model_dump(exclude={'messages', 'turn_history'})",
-            "def f(turn):\n    return turn.model_dump(exclude={'agent_response_summary'})",
+            "def f(turn):\n    return turn.model_dump("
+            "exclude={'agent_response_summary', 'user_message_summary'})",
             "def f(case):\n    return case.inquiry.model_dump()",
             "def f(evidence):\n    return evidence.model_dump()",
             "def f(response):\n    return response.json()",
@@ -520,6 +542,35 @@ class TestTheGuardCheck:
         ],
     )
     def test_a_predicate_merely_present_does_not(self, src):
+        assert self._applied(src) == set()
+
+    @pytest.mark.parametrize(
+        "src",
+        [
+            "def f(turn):\n    if turn.is_skipped:\n        return ''\n"
+            "    return turn.user_message_summary",
+            "def f(turn):\n    if turn.is_skipped:\n        return ''\n"
+            "    return turn.user_message_summary + turn.agent_response_summary",
+        ],
+    )
+    def test_the_skip_screen_counts_when_it_gates_the_same_record(self, src):
+        assert self._applied(src) == _SKIP
+
+    @pytest.mark.parametrize(
+        "src",
+        [
+            # tested on a different record than the one whose summary is read
+            "def f(turn, other):\n    if other.is_skipped:\n        return ''\n"
+            "    return turn.user_message_summary",
+            # mentioned outside a condition
+            "def f(t):\n    x = t.is_skipped\n    return t.user_message_summary",
+            # screens the record whose reply it reads, not the one whose user
+            # summary it reads
+            "def f(turn, other):\n    if turn.is_skipped:\n        return ''\n"
+            "    return other.user_message_summary + turn.agent_response_summary",
+        ],
+    )
+    def test_the_skip_screen_does_not_when_it_gates_something_else(self, src):
         assert self._applied(src) == set()
 
     def test_the_flag_counts_when_it_gates_the_same_record(self):
