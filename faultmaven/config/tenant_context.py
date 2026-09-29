@@ -66,6 +66,35 @@ def get_current_billing_organization_id() -> Optional[str]:
     return _current_billing_organization_id.get()
 
 
+#: The account a request acts as, for **attribution only** (#640) — or ``None``.
+#:
+#: Set by ``api/v1/auth_dependencies.require_authentication`` once it has
+#: resolved the user, in both deployment modes, so it is present wherever that
+#: dependency ran: the endpoint and every task the endpoint spawns (a task
+#: copies the context it was created in). Its one reader is the LLM usage
+#: ledger, which stamps it on a billed call made outside an engine turn.
+#:
+#: **Attribution, never a predicate**, the same rule the billing organization
+#: above carries: nothing may read this to decide what a caller may see or do.
+#: The authorization decision is ``require_authentication``'s own return value,
+#: not this echo of it. A route that authenticates some other way leaves it
+#: unset, so its calls are recorded with no actor — attribution lost, never
+#: attribution to the wrong account.
+_current_actor_user_id: ContextVar[Optional[str]] = ContextVar(
+    "current_actor_user_id", default=None
+)
+
+
+def set_current_actor_user_id(user_id: Optional[str]) -> None:
+    """Record the account this execution context acts as (attribution only)."""
+    _current_actor_user_id.set(user_id or None)
+
+
+def get_current_actor_user_id() -> Optional[str]:
+    """Return the acting account's id, or ``None`` when none was resolved."""
+    return _current_actor_user_id.get()
+
+
 #: What a caller is told when :func:`usable_tenant_id` answers ``None`` on a path
 #: that refuses rather than degrades. It lives beside the predicate so the rule
 #: and its announcement stay together: both the request front door

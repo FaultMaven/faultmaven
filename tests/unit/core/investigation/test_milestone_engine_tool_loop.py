@@ -1302,7 +1302,14 @@ class TestToolLoopSpendBound:
             for bucket, value in per_call_buckets[len(offered)].items():
                 setattr(resp, bucket, value)
             offered.append(names)
-            tracker.add(resp)
+            tracker.add(
+                resp,
+                provider="anthropic",
+                model="claude-sonnet-4-6",
+                outcome="kept",
+                cost_usd=0.0,
+                priced=True,
+            )
             return resp
 
         mock_provider = AsyncMock()

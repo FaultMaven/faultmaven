@@ -36,6 +36,7 @@ from faultmaven.api.middleware.auth import get_auth_service
 from faultmaven.config.tenant_context import (
     UNSCOPED_REQUEST_MSG,
     get_current_enterprise_id,
+    set_current_actor_user_id,
     usable_tenant_id,
 )
 from faultmaven.modules.auth.domain.models.auth import DevUser
@@ -338,6 +339,12 @@ async def require_authentication(
         )
 
     logger.debug(f"Authentication successful for user: {user.user_id}")
+    # Attribution for the LLM usage ledger (#640): a billed call this request
+    # makes outside an engine turn is recorded against this account. Set here
+    # because this is the one place a request's user is resolved in both
+    # deployment modes, and it runs in the endpoint's task. It changes no auth
+    # decision and nothing may read it as one — see set_current_actor_user_id.
+    set_current_actor_user_id(user.user_id)
     return user
 
 

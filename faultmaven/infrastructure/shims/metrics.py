@@ -579,6 +579,18 @@ llm_unpriced_calls = Counter(
     labelnames=["provider", "model"],
 )
 
+# The gap between llm_provider_calls_total and the calls the LLM usage ledger
+# persisted (#640). The ledger's writes fail OPEN — a failed write never fails a
+# call — so this counter is what keeps the gap observable instead of silent.
+llm_usage_unpersisted_calls = Counter(
+    "llm_usage_unpersisted_calls_total",
+    "Billed LLM calls the usage ledger did not persist, by reason. "
+    "store_error: the write failed; no_tenant: no usable enterprise under "
+    "multi-tenancy; no_loop: metered with no running event loop; "
+    "not_composed: no ledger installed (the composition root did not run).",
+    labelnames=["reason"],
+)
+
 # SLA gauges — exported from the SLA tracker at /metrics scrape time so the
 # values behind /health/sla become alertable. Status mapping: 3=meeting,
 # 2=at_risk, 1=breached, 0=unknown (alert on `sla_status < 3`).
