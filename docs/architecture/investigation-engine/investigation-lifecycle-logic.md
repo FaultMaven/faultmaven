@@ -202,7 +202,7 @@ def _apply_inquiry_updates(case: Case, updates: Any, metadata: Dict[str, Any],
     (`user_confirms()`) was removed in commit 06cfa834 (2026-03-17)
     when intent-routing for explicit clicks became the canonical
     confirmation path. Typed responses that match a confirmation
-    pattern only fire on a TERMINAL case via `_user_confirms_transition`
+    pattern only fire on a TERMINAL case via `confirmation_token_class`
     (see terminal_transitions handling — disposition paths only).
     """
 
@@ -1082,7 +1082,7 @@ Let me start by verifying the scope and impact. What services are affected?"
 This routes through `IntentType.CONFIRMATION` → deterministic `pending_transition` handling,
 bypassing the tool loop and pattern matching entirely.
 
-**Typed responses** (user types instead of clicking) fall back to `_user_confirms_transition()`
+**Typed responses** (user types instead of clicking) fall back to `confirmation_token_class()` (consent is "not `None`")
 pattern matching with a 100-char length guard.
 
 ---

@@ -424,6 +424,7 @@ class TestAMidTurnReclassificationSurvivesTheTurn:
             intent_type: Optional[str] = None,
             intent_data: Optional[dict[str, Any]] = None,
             user_id: Optional[str] = None,
+            typed: bool = False,
         ) -> dict[str, Any]:
             # The shape ``MilestoneEngine._build_tool_context`` produces: the
             # tool is handed the case object the turn is holding.

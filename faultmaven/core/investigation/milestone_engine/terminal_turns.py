@@ -66,18 +66,26 @@ class TerminalCardAction(str, Enum):
     CONFIRM_RUNBOOK = "confirm_runbook"
 
 
-def terminal_card_action(user_message: str) -> Optional[TerminalCardAction]:
-    """The terminal card ``user_message`` is the exact payload of, or None.
+def terminal_card_action(
+    user_message: str, case_state: CaseState
+) -> Optional[TerminalCardAction]:
+    """The terminal card ``user_message`` acts as on a case in ``case_state``, or None.
 
     The ONE recogniser for these cards. They carry no ``intent``, so a click
     arrives as its payload text, and exact match is the only thing that tells
     a click from typing (INV-12). ``TerminalTurnHandler`` dispatches on it, and
     the terminal-confirmation follow-up counter excludes what it recognises
     (#1748) — so the two can never disagree about what a card click is.
+
+    The runbook cards act only on a RESOLVED case: runbooks codify a confirmed
+    root-cause-to-solution chain. On any other state their text is typed text
+    and goes to Q&A, so it is recognised as nothing here.
     """
     msg_lower = user_message.lower().strip().rstrip(".!? ")
     if msg_lower in _REPORT_REGEN_PATTERNS:
         return TerminalCardAction.REGENERATE_REPORT
+    if case_state != CaseState.RESOLVED:
+        return None
     if msg_lower in _RUNBOOK_CREATION_PATTERNS:
         return TerminalCardAction.CREATE_RUNBOOK
     if msg_lower in _RUNBOOK_CONFIRM_PATTERNS:
@@ -193,7 +201,7 @@ class TerminalTurnHandler:
              troubleshooting scenarios (root cause + verified solution).
           3. User asks questions about the case → answer via TERMINAL_TEMPLATE.
         """
-        card = terminal_card_action(user_message)
+        card = terminal_card_action(user_message, case.state)
 
         # Scenario 1: Report regeneration. Strict exact-match against the
         # DECIDE suggestion payloads — free-typed paraphrases fall
@@ -205,12 +213,12 @@ class TerminalTurnHandler:
         # Scenario 2: Runbook creation. Strict exact-match (same policy
         # as regen): only the DECIDE suggestion's precomposed
         # payload triggers persisted runbook generation; paraphrases
-        # fall through to Q&A. RESOLVED-only — runbooks codify a
-        # confirmed root-cause-to-solution chain.
-        is_runbook_eligible = case.state == CaseState.RESOLVED
-        if is_runbook_eligible and card is TerminalCardAction.CREATE_RUNBOOK:
+        # fall through to Q&A. RESOLVED-only, decided inside
+        # ``terminal_card_action`` — runbooks codify a confirmed
+        # root-cause-to-solution chain.
+        if card is TerminalCardAction.CREATE_RUNBOOK:
             return await self.runbooks.handle_runbook_creation(case, metadata)
-        if is_runbook_eligible and card is TerminalCardAction.CONFIRM_RUNBOOK:
+        if card is TerminalCardAction.CONFIRM_RUNBOOK:
             return await self.runbooks.handle_runbook_creation(
                 case, metadata, dedup_confirmed=True
             )

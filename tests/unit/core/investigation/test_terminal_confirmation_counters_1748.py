@@ -26,6 +26,9 @@ import faultmaven.core.investigation.terminal_transitions as tt
 import faultmaven.modules.agent.domain.services.investigation_service.turn_messages as turn_messages
 import faultmaven.modules.case.domain.models.turn as turn_model
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.stage_gates import (
+    _gate_token_match,
+)
 from faultmaven.core.investigation.milestone_engine.terminal_replies import (
     GENERATE_RUNBOOK_PAYLOAD,
     REGENERATE_CLOSURE_SUMMARY_PAYLOAD,
@@ -38,7 +41,6 @@ from faultmaven.core.investigation.milestone_engine.terminal_turns import (
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     _EXPLICIT_CONFIRM_TOKENS,
     _WEAK_CONFIRM_TOKENS,
-    _user_confirms_transition,
     confirmation_token_class,
 )
 from faultmaven.core.investigation.schemas import TurnPayload
@@ -63,18 +65,33 @@ from faultmaven.modules.case.exceptions import StaleCaseException
 
 pytestmark = pytest.mark.unit
 
-#: Replies that open on a weak token and say more. What follows may confirm or
-#: refuse, and the class never guesses which: every one is ``weak_prefixed``.
-#: The refusals are review F1/F2's replies; the gate executes on them (#1783).
-WEAK_PREFIXED = [
-    "ok go ahead",
-    "sure, close it",
-    "ok yes",
-    "lgtm, confirmed",
-    "ok, don't close it yet",
-    "ok no",
-    "sure, do it later",
-]
+#: The label table. BARE means no letter or digit after the matched token, so
+#: punctuation, emoji and emoticons keep a reply bare; any further word makes it
+#: prefixed. The prefixed rows include refusals and deferrals the gate still
+#: executes on (#1783) — the labels never guess which.
+LABEL_TABLE = {
+    "weak_token": ["ok", "ok!", "ok :)", "ok 👍", "ok =)", "lgtm", "sure.", "  Okay  "],
+    "weak_prefixed": [
+        "ok go ahead",
+        "ok ok",
+        "looks good to me",
+        "ok, don't close it yet",
+        "sure, close it",
+        "ok yes",
+        "lgtm, confirmed",
+        "ok no",
+        "sure, do it later",
+        "sure thing",
+    ],
+    "explicit_token": ["yes", "yes 👍", "go ahead", "that's right", "yes!"],
+    "explicit_prefixed": [
+        "yes, don't close it yet",
+        "do it later",
+        "confirm later",
+        "yes please close it",
+        "yes ok",
+    ],
+}
 
 #: What "Yes, mark as resolved" sends when clicked.
 CONFIRM_CARD = _resolution_confirmation_suggestions()[0]
@@ -124,19 +141,15 @@ def _main_confirms(user_message: str) -> bool:
     return any(re.match(rf"{re.escape(t)}\b", msg) for t in _MAIN_CONFIRM_PATTERNS)
 
 
-#: Every token alone, the review's refusal and deferral replies, the shapes the
-#: label rule distinguishes, and the negatives.
+#: Every token alone, every labelled reply, the review's probes, and negatives.
 VERDICT_CORPUS = [
     *_MAIN_CONFIRM_PATTERNS,
-    *WEAK_PREFIXED,
+    *(m for rows in LABEL_TABLE.values() for m in rows),
     "okay i'll confirm with the team",
     "lgtm, not approved yet",
     "that\u2019s right",
-    "OK.",
-    "ok!",
-    "ok 👍",
-    "Sure.",
-    "yes ok",
+    "that works",
+    "ok_",
     "well, yes",
     "ok but what is the root cause?",
     "yesterday",
@@ -146,42 +159,31 @@ VERDICT_CORPUS = [
     "   ",
 ]
 
+_ALL_TOKENS = _EXPLICIT_CONFIRM_TOKENS + _WEAK_CONFIRM_TOKENS
+
 
 class TestTheClassifier:
     @pytest.mark.parametrize(
-        "message", ["ok", "ok!", "lgtm", "sure.", "OK.", "  Okay  "]
+        "label, message",
+        [(label, m) for label, rows in LABEL_TABLE.items() for m in rows],
     )
-    def test_a_bare_weak_token_is_weak(self, message):
-        assert confirmation_token_class(message) == "weak_token"
+    def test_the_label_table(self, label, message):
+        assert confirmation_token_class(message) == label
 
     @pytest.mark.parametrize("token", _WEAK_CONFIRM_TOKENS)
     def test_each_weak_token_alone_is_weak(self, token):
         assert confirmation_token_class(token) == "weak_token"
 
-    @pytest.mark.parametrize(
-        "message", ["yes", "go ahead", "close it", "that's right", "yes ok"]
-    )
-    def test_a_reply_opening_with_an_explicit_token_is_explicit(self, message):
-        assert confirmation_token_class(message) == "explicit_token"
-
     @pytest.mark.parametrize("token", _EXPLICIT_CONFIRM_TOKENS)
     def test_each_explicit_token_alone_is_explicit(self, token):
         assert confirmation_token_class(token) == "explicit_token"
 
-    @pytest.mark.parametrize("message", WEAK_PREFIXED)
-    def test_a_weak_opener_that_says_more_is_weak_prefixed(self, message):
-        """Never guessed from the words that follow (review F2): "ok, don't
-        close it yet" carries "close it" and is not an explicit consent."""
-        assert confirmation_token_class(message) == "weak_prefixed"
-
-    def test_an_emoji_after_the_weak_token_is_not_bare(self):
-        assert confirmation_token_class("ok 👍") == "weak_prefixed"
+    @pytest.mark.parametrize("message", ["that works", "", "ok_", "yesterday"])
+    def test_what_the_gate_does_not_read_as_consent_is_none(self, message):
+        assert confirmation_token_class(message) is None
 
     def test_a_substantive_reply_is_not_a_confirmation(self):
         assert confirmation_token_class("ok but what is the root cause?") is None
-
-    def test_a_word_sharing_a_prefix_is_not_a_confirmation(self):
-        assert confirmation_token_class("yesterday") is None
 
     def test_a_token_later_in_the_reply_does_not_confirm(self):
         assert confirmation_token_class("well, yes") is None
@@ -189,10 +191,37 @@ class TestTheClassifier:
     @pytest.mark.parametrize("message", VERDICT_CORPUS)
     def test_no_verdict_moves_from_mains_rule(self, message):
         """Review F10: checked against a frozen copy, not against itself."""
-        assert _user_confirms_transition(message) == _main_confirms(message)
         assert (confirmation_token_class(message) is not None) == _main_confirms(
             message
         )
+
+    def test_no_two_tokens_can_both_open_one_message(self):
+        """Two tokens can both match at a message's start only if one matches
+        at the start of the other, so checking the tokens against each other
+        covers every message. None does today: the class never depends on the
+        longest-match rule. A token added that overlaps another fails here, and
+        whoever adds it decides the class knowingly."""
+        overlapping = [
+            (a, b)
+            for a in _ALL_TOKENS
+            for b in _ALL_TOKENS
+            if a != b and _gate_token_match(a, (b,)) is not None
+        ]
+        assert overlapping == []
+
+    def test_the_longest_opening_token_wins(self):
+        assert _gate_token_match("go ahead now", ("go", "go ahead")) == (
+            "go ahead",
+            8,
+        )
+        assert _gate_token_match("go ahead now", ("go ahead", "go")) == (
+            "go ahead",
+            8,
+        )
+
+    def test_the_match_keeps_the_word_boundary(self):
+        assert _gate_token_match("ok_", ("ok",)) is None
+        assert _gate_token_match("okay", ("ok",)) is None
 
     def test_the_weak_set_is_exactly_723s_note_1_list(self):
         assert _WEAK_CONFIRM_TOKENS == (
@@ -231,36 +260,52 @@ class TestTheClassifier:
 
     def test_the_two_sets_are_mains_list_split(self):
         assert not set(_WEAK_CONFIRM_TOKENS) & set(_EXPLICIT_CONFIRM_TOKENS)
-        assert sorted(_WEAK_CONFIRM_TOKENS + _EXPLICIT_CONFIRM_TOKENS) == sorted(
-            _MAIN_CONFIRM_PATTERNS
-        )
+        assert sorted(_ALL_TOKENS) == sorted(_MAIN_CONFIRM_PATTERNS)
+
+
+@pytest.fixture
+def fresh_warnings(monkeypatch):
+    """The warn-once memory is per process; each test starts with none."""
+    monkeypatch.setattr(turn_model, "_WARNED_UNKNOWN_CHANNELS", set())
+
+
+def _record(via):
+    return TurnProgress(
+        turn_number=3,
+        progress_made=False,
+        outcome=TurnOutcome.CONVERSATION,
+        terminal_confirmed_via=via,
+    )
 
 
 class TestAStoredChannelNeverBreaksALoad:
     """The loaders rebuild every record with ``TurnProgress(**t)``, so a value
     the ``Literal`` rejected would make the whole case unloadable (review F8)."""
 
-    def test_an_unknown_stored_channel_loads_as_none_and_says_so(self, caplog):
+    def test_an_unknown_stored_channel_loads_as_none_and_says_so(
+        self, caplog, fresh_warnings
+    ):
         with caplog.at_level(logging.WARNING, logger=turn_model.__name__):
-            record = TurnProgress(
-                turn_number=3,
-                progress_made=False,
-                outcome=TurnOutcome.CONVERSATION,
-                terminal_confirmed_via="bare_weak",
-            )
+            record = _record("bare_weak")
         assert record.terminal_confirmed_via is None
         assert [r.levelno for r in caplog.records] == [logging.WARNING]
         assert "'bare_weak'" in caplog.records[0].getMessage()
 
-    @pytest.mark.parametrize("via", [*get_args(TerminalConfirmedVia), None])
-    def test_every_known_channel_survives_silently(self, via, caplog):
+    def test_the_same_stale_value_warns_once(self, caplog, fresh_warnings):
+        """Review F11: a stale record is re-read on every load of its case."""
         with caplog.at_level(logging.WARNING, logger=turn_model.__name__):
-            record = TurnProgress(
-                turn_number=3,
-                progress_made=True,
-                outcome=TurnOutcome.CONVERSATION,
-                terminal_confirmed_via=via,
-            )
+            _record("bare_weak")
+            _record("bare_weak")
+            _record("retired_channel")
+        assert [r.getMessage().split()[1] for r in caplog.records] == [
+            "'bare_weak'",
+            "'retired_channel'",
+        ]
+
+    @pytest.mark.parametrize("via", [*get_args(TerminalConfirmedVia), None])
+    def test_every_known_channel_survives_silently(self, via, caplog, fresh_warnings):
+        with caplog.at_level(logging.WARNING, logger=turn_model.__name__):
+            record = _record(via)
         assert record.terminal_confirmed_via == via
         assert not caplog.records
 
@@ -305,18 +350,22 @@ class _Store:
 
     def __init__(self, case: Case) -> None:
         self._rows = {case.case_id: case.model_copy(deep=True)}
-        self._failures: list[Exception] = []
+        self._failures: list[tuple] = []
 
-    def fail_next_save(self, exc: Exception) -> None:
-        self._failures.append(exc)
+    def fail_next_save(self, exc: Exception, when=lambda case: True) -> None:
+        """Raise ``exc`` on the next save for which ``when(case)`` holds."""
+        self._failures.append((when, exc))
 
     async def get(self, case_id: str):
         row = self._rows.get(case_id)
         return row.model_copy(deep=True) if row is not None else None
 
     async def save(self, case: Case) -> Case:
-        if self._failures:
-            raise self._failures.pop(0)
+        for armed in list(self._failures):
+            when, exc = armed
+            if when(case):
+                self._failures.remove(armed)
+                raise exc
         self._rows[case.case_id] = case.model_copy(deep=True)
         return case
 
@@ -414,6 +463,58 @@ class TestTheConfirmationCounter:
             via="weak_prefixed", to_state="resolved"
         )
 
+    async def test_an_explicit_opener_that_says_more_counts_as_explicit_prefixed(
+        self, counters
+    ):
+        confirmation, _ = counters
+        store = _Store(_investigating_case())
+
+        await _turn(_service(store), "yes please close it")
+
+        confirmation.labels.assert_called_once_with(
+            via="explicit_prefixed", to_state="resolved"
+        )
+
+    async def test_a_confirming_turn_whose_final_save_fails_is_not_counted(
+        self, counters
+    ):
+        """Review F12, pinning what the metrics doc says. The gate commits the
+        transition at the engine's own saves; the service's final save then
+        conflicts. The confirmation is never counted, and the channel record the
+        engine already saved makes the user's retry count as its follow-up."""
+        confirmation, followup = counters
+        store = _Store(_investigating_case())
+        svc = _service(store)
+        store.fail_next_save(
+            StaleCaseException(CASE_ID, 3, 4),
+            # The service's final save is the only one made after the agent's
+            # reply row is appended.
+            when=lambda case: case.messages[-1]["role"] == "assistant",
+        )
+
+        with pytest.raises(StaleCaseException):
+            await _turn(svc, "ok")
+
+        assert store.row().state == CaseState.RESOLVED
+        assert store.row().turn_history[-1].terminal_confirmed_via == "weak_token"
+        confirmation.labels.assert_not_called()
+        followup.labels.assert_not_called()
+
+        # The retry finds a RESOLVED case: its "ok" is a terminal Q&A turn.
+        answered = AsyncMock(
+            side_effect=lambda case, user_message, metadata, user_id=None: {
+                "agent_response": "It is resolved.",
+                "case_updated": case,
+                "metadata": metadata,
+            }
+        )
+        with patch.object(TerminalTurnHandler, "_process_terminal_qa", new=answered):
+            await _turn(svc, "ok")
+
+        answered.assert_awaited_once()
+        confirmation.labels.assert_not_called()
+        followup.labels.assert_called_once_with(via="weak_token", to_state="resolved")
+
     async def test_an_ok_the_resolver_minted_into_an_intent_is_still_weak(
         self, counters
     ):
@@ -429,9 +530,12 @@ class TestTheConfirmationCounter:
         await _turn(svc, "ok")
 
         # The mint happened and reached the gate as an intent — otherwise this
-        # measures the plain typed path and cannot tell a click from a mint.
+        # measures the plain typed path and cannot tell a click from a mint —
+        # and ``typed`` travelled as the engine's own keyword, never inside the
+        # client-filled ``intent_data`` (review F10).
         assert engine.await_args.kwargs["intent_type"] == "confirmation"
-        assert engine.await_args.kwargs["intent_data"]["typed"] is True
+        assert engine.await_args.kwargs["typed"] is True
+        assert "typed" not in engine.await_args.kwargs["intent_data"]
         confirmation.labels.assert_called_once_with(
             via="weak_token", to_state="resolved"
         )
@@ -461,6 +565,7 @@ class TestTheConfirmationCounter:
 
         await _turn(svc, CONFIRM_CARD["payload"], intent=_click_confirm())
 
+        assert engine.await_args.kwargs["typed"] is False
         assert "typed" not in engine.await_args.kwargs["intent_data"]
         confirmation.labels.assert_called_once_with(via="intent", to_state="resolved")
         assert store.row().turn_history[-1].terminal_confirmed_via == "intent"
@@ -605,6 +710,44 @@ class TestTheFollowUpCounter:
         regenerated.assert_awaited_once()
         followup.labels.assert_not_called()
 
+    @pytest.mark.parametrize("query", ["", "   "])
+    async def test_an_empty_turn_is_not_a_follow_up(self, counters, query):
+        """Review F3: an empty turn (a bare Slack mention) is an orientation
+        request, answered on the greeting route with no intent."""
+        _, followup = counters
+        store = _Store(_investigating_case("closed"))
+        svc = _service(store)
+        await _turn(svc, "yes")
+        assert store.row().state == CaseState.CLOSED
+
+        await _turn(svc, query)
+
+        assert store.row().messages[-2]["metadata"].get("orientation") == "empty"
+        followup.labels.assert_not_called()
+
+    async def test_the_runbook_text_on_a_closed_case_is_typed(self, counters):
+        """Review F9: the runbook card acts only on a RESOLVED case, so on a
+        CLOSED one its text goes to Q&A like any typed message — and is counted
+        like one, by the same eligibility the handler dispatches on."""
+        _, followup = counters
+        store = _Store(_investigating_case("closed"))
+        svc = _service(store)
+        await _turn(svc, "yes")
+        assert store.row().state == CaseState.CLOSED
+        answered = AsyncMock(
+            side_effect=lambda case, user_message, metadata, user_id=None: {
+                "agent_response": "Runbooks need a resolved case.",
+                "case_updated": case,
+                "metadata": metadata,
+            }
+        )
+
+        with patch.object(TerminalTurnHandler, "_process_terminal_qa", new=answered):
+            await _turn(svc, GENERATE_RUNBOOK_PAYLOAD)
+
+        answered.assert_awaited_once()  # Q&A answered it: not a card here
+        followup.labels.assert_called_once_with(via="explicit_token", to_state="closed")
+
     async def test_a_client_sent_greeting_is_typed(self, counters):
         """Review F8: the service ignores a client-sent GREETING and re-derives
         the intent from the text, so the user typed "hi" — the effective intent
@@ -616,21 +759,3 @@ class TestTheFollowUpCounter:
 
         assert store.row().messages[-2]["metadata"].get("orientation") == "greeting"
         followup.labels.assert_called_once_with(via="weak_token", to_state="resolved")
-
-
-async def test_the_transitions_path_stamps_the_channel_on_its_metadata():
-    """``check_automatic_transitions`` is reached directly: the engine gate
-    consumes every pending confirmation before it, so no ``process_turn``
-    message arrives here. What it stamps is read onto the turn's record by
-    ``_apply_turn_response``, and counted from there like any other."""
-    store = _Store(_investigating_case())
-    engine = _service(store).engine
-    case = await store.get(CASE_ID)
-    metadata: dict = {}
-
-    await engine.transitions.check_automatic_transitions(
-        case=case, metadata=metadata, user_message="sure"
-    )
-
-    assert case.state == CaseState.RESOLVED
-    assert metadata["terminal_confirmed_via"] == "weak_token"

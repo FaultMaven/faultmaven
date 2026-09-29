@@ -83,7 +83,6 @@ def _create_turn_record(
     repair_pattern: str | None = None,
     validation_repairs: list[str] | None = None,
     agent_response_synthesized: bool = False,
-    terminal_confirmed_via: TerminalConfirmedVia | None = None,
 ) -> TurnProgress:
     """Create turn progress record."""
     # Multiple backstops (path-conditional emission rejection, milestone
@@ -110,7 +109,6 @@ def _create_turn_record(
         user_message_summary=summarize_for_turn_record(user_message, 200),
         agent_response_summary=summarize_for_turn_record(agent_response, 500),
         agent_response_synthesized=agent_response_synthesized,
-        terminal_confirmed_via=terminal_confirmed_via,
         system_feedback=system_feedback,
         momentum=momentum,
         blocked_reasons=blocked_reasons or [],

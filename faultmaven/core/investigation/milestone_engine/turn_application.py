@@ -228,7 +228,6 @@ async def _apply_turn_response(
             is_agent_response_synthesized(response_obj)
             or not response_obj.agent_response.strip()
         ),
-        terminal_confirmed_via=metadata.get("terminal_confirmed_via"),
         system_feedback=metadata.get("system_feedback"),
         momentum=progress_metrics.investigation_momentum,
         blocked_reasons=progress_metrics.blocked_reasons,

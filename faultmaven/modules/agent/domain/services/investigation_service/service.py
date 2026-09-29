@@ -1024,8 +1024,9 @@ class InvestigationService:
                 invisible to the engine (#1229).
             typed: True when the intent was minted from typed text by the
                 intent resolver, not sent by a click. Passed to the engine as
-                ``intent_data["typed"]``, which names how a terminal transition
-                was confirmed (#1748); a clicked intent carries no such key.
+                its own ``typed`` keyword, which names how a terminal transition
+                was confirmed (#1748) — never inside ``intent_data``, which the
+                client's intent payload fills.
 
         Returns:
             Result dict with agent response and updated case
@@ -1079,9 +1080,9 @@ class InvestigationService:
                 "from_state": from_state,
                 "to_state": to_state,
                 "user_confirmed": user_confirmed,
-                **({"typed": True} if typed else {}),
             },
             user_id=user_id,
+            typed=typed,
         )
 
         return result
@@ -1120,11 +1121,9 @@ class InvestigationService:
             user_message=user_message,
             attachments=attachments,
             intent_type="confirmation",
-            intent_data={
-                "value": confirmation_value,
-                **({"typed": True} if typed else {}),
-            },
+            intent_data={"value": confirmation_value},
             user_id=user_id,
+            typed=typed,
         )
 
         return result

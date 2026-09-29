@@ -32,8 +32,8 @@ import pytest
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.errors import MilestoneEngineError
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
-    _user_confirms_transition,
     _user_declines_transition,
+    confirmation_token_class,
 )
 from faultmaven.core.investigation.terminal_transitions import (
     closure_verdict,
@@ -412,7 +412,7 @@ class TestGateAnswerMatchers:
     def test_confirm_matcher_accepts_bare_confirmations(self):
         engine = _engine()
         for msg in ("yes", "ok", "yes, it's resolved, the error is gone"):
-            assert _user_confirms_transition(msg), msg
+            assert confirmation_token_class(msg) is not None, msg
 
     def test_confirm_matcher_rejects_substantive_or_prefix_matches(self):
         engine = _engine()
@@ -422,7 +422,7 @@ class TestGateAnswerMatchers:
             "yesterday the pod restarted",
             "yes?",
         ):
-            assert not _user_confirms_transition(msg), msg
+            assert confirmation_token_class(msg) is None, msg
 
     def test_decline_matcher_accepts_bare_declines(self):
         engine = _engine()

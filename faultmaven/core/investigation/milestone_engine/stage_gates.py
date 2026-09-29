@@ -37,17 +37,31 @@ from faultmaven.modules.case.contracts import (
 logger = logging.getLogger(__name__)
 
 
-def _matches_gate_token(msg: str, tokens: Sequence[str]) -> bool:
-    """Word-boundary prefix match for typed gate answers.
+def _gate_token_match(msg: str, tokens: Sequence[str]) -> Optional[tuple[str, int]]:
+    """The token a typed gate answer opens with, and where its match ends.
 
-    Bare ``startswith`` also matched words that merely share the prefix —
-    "note db latency spiked…" read as "no", "yesterday the pod restarted…"
-    as "yes" — turning evidence-bearing messages into gate answers.
-    Requiring a word boundary after the token keeps the intended matches
-    ("no", "no.", "nope!", "yes, it's resolved") while rejecting the
-    prefix-sharing words. ``msg`` must already be stripped/lowercased.
+    Word-boundary prefix match. Bare ``startswith`` also matched words that
+    merely share the prefix — "note db latency spiked…" read as "no",
+    "yesterday the pod restarted…" as "yes" — turning evidence-bearing
+    messages into gate answers. Requiring a word boundary after the token
+    keeps the intended matches ("no", "no.", "nope!", "yes, it's resolved")
+    while rejecting the prefix-sharing words. When several tokens match at
+    the start, the LONGEST wins, so the end reported is where the answer's
+    token really ends. ``msg`` must already be stripped/lowercased.
     """
-    return any(re.match(rf"{re.escape(t)}\b", msg) for t in tokens)
+    best: Optional[tuple[str, int]] = None
+    for token in tokens:
+        match = re.match(rf"{re.escape(token)}\b", msg)
+        if match and (best is None or match.end() > best[1]):
+            best = (token, match.end())
+    return best
+
+
+def _matches_gate_token(msg: str, tokens: Sequence[str]) -> bool:
+    """Whether ``msg`` opens with one of ``tokens`` — :func:`_gate_token_match`'s
+    verdict, so the gate and anything that reads the matched token share one
+    grammar."""
+    return _gate_token_match(msg, tokens) is not None
 
 
 #: Milestone names the ENGINE derives rather than the LLM claiming them. They

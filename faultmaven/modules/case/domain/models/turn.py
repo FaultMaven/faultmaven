@@ -128,16 +128,26 @@ class InvestigationMomentum(str, Enum):
 NON_INVESTIGATIVE_OUTCOMES = frozenset({"conversation", "other", "out_of_band"})
 
 #: How a user confirmed the terminal transition a turn executed (#1748): a
-#: clicked intent (a DECIDE card, or the dropdown pick repeated), typed text
-#: opening with an explicit token ("yes", "go ahead"), a typed BARE weak token
-#: ("ok", "lgtm!"), typed text opening with a weak token and saying more ("ok
-#: go ahead", "ok, don't close it yet" — left unclassified), or typed text the
-#: intent resolver accepted that is no known token ("that works"). The ONE copy
-#: of the label set: ``TurnProgress`` stores it and the terminal-confirmation
-#: counters are labelled by it.
+#: clicked intent (a DECIDE card, or the dropdown pick repeated); typed text
+#: opening with an explicit token, bare ("yes", "go ahead!") or saying more
+#: ("yes, don't close it yet"); typed text opening with a weak token, bare
+#: ("ok", "lgtm 👍") or saying more ("ok go ahead"); or typed text the intent
+#: resolver accepted that is no known token ("that works"). The prefixed labels
+#: are left unclassified. The ONE copy of the label set: ``TurnProgress``
+#: stores it and the terminal-confirmation counters are labelled by it.
 TerminalConfirmedVia = Literal[
-    "intent", "explicit_token", "weak_token", "weak_prefixed", "typed_other"
+    "intent",
+    "explicit_token",
+    "explicit_prefixed",
+    "weak_token",
+    "weak_prefixed",
+    "typed_other",
 ]
+
+#: Unknown channel values already warned about in this process (#1748): a stale
+#: record is re-read on every load of its case, and one WARNING per distinct
+#: value says everything a repeat would.
+_WARNED_UNKNOWN_CHANNELS: set[str] = set()
 
 
 class TurnProgress(BaseModel):
@@ -194,8 +204,8 @@ class TurnProgress(BaseModel):
         default=None,
         description=(
             "How the user confirmed the terminal transition this turn executed "
-            "(clicked intent, typed explicit token, typed bare weak token, typed "
-            "weak token with more text, or other typed text the resolver "
+            "(clicked intent; typed text opening with an explicit or a weak "
+            "token, bare or with more text; or other typed text the resolver "
             "accepted). None on every turn that executed no terminal transition."
         ),
     )
@@ -292,13 +302,17 @@ class TurnProgress(BaseModel):
 
         Never silently: it runs on construction too, so a producer writing a
         value the set does not name would otherwise mute that channel with
-        nothing to show for it. The WARNING carries the value.
+        nothing to show for it. The WARNING carries the value, once per
+        distinct value per process — a stale record is re-read on every load.
         """
         if v is None or v in get_args(TerminalConfirmedVia):
             return v
-        logger.warning(
-            "terminal_confirmed_via %r is not a known channel; recorded as None", v
-        )
+        if repr(v) not in _WARNED_UNKNOWN_CHANNELS:
+            _WARNED_UNKNOWN_CHANNELS.add(repr(v))
+            logger.warning(
+                "terminal_confirmed_via %r is not a known channel; recorded as None",
+                v,
+            )
         return None
 
     # ============================================================

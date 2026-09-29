@@ -104,7 +104,7 @@ def is_substantive_reply(user_message: "str | None") -> bool:
     transition.
 
     This is the single source of truth for the confirm-side substance test:
-    ``MilestoneEngine._user_confirms_transition`` (typed pattern matching) and
+    ``transition_consent.confirmation_token_class`` (typed pattern matching) and
     the IntentResolver adoption guard in ``investigation_service`` (#721,
     classifier-minted confirmation intents) both apply it. An empty message is
     not substantive — it is also not consent; callers reject it separately.

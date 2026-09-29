@@ -274,10 +274,8 @@ class TransitionManager:
                     confirm_pending_transition,
                 )
 
-                # Use the user_message parameter directly, not from metadata.
-                # Classified once: whether the text confirms, and how (#1748).
-                token_class = confirmation_token_class(user_message)
-                if token_class is not None:
+                # Use the user_message parameter directly, not from metadata
+                if confirmation_token_class(user_message) is not None:
                     # Gap #6: Checkpoint before terminal transition
                     if self.deps.checkpoint_service:
                         to_state = case.pending_transition.get("to_state", "unknown")
@@ -292,11 +290,6 @@ class TransitionManager:
                     executed = confirm_pending_transition(case, case.user_id)
                     if executed:
                         metadata["status_transitioned"] = True
-                        # Read onto this turn's record by ``_apply_turn_response``
-                        # and counted after the save (#1748). This branch
-                        # confirms on the typed text alone, so the text's token
-                        # class is the channel.
-                        metadata["terminal_confirmed_via"] = token_class
                     else:
                         # INV-37 resolve-preservation: the pending CLOSE pivoted
                         # to a RESOLVED proposal because the case became

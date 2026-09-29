@@ -1,11 +1,11 @@
 """Whether a user turn confirms or declines a proposed stage transition, read from the same gate-token matcher stage_gates.py uses."""
 
-import unicodedata
 from typing import Optional
 
 from faultmaven.modules.case.contracts import TerminalConfirmedVia
 
 from .stage_gates import (
+    _gate_token_match,
     _matches_gate_token,
 )
 
@@ -39,30 +39,13 @@ _EXPLICIT_CONFIRM_TOKENS = (
 )
 
 
-def _is_bare_weak_token(msg: str) -> bool:
-    """``msg`` is one weak token and nothing after it but whitespace and
-    punctuation (Unicode category ``P*``) — "ok", "ok!", "Sure.", "lgtm ...".
-
-    ``msg`` is the gate's normalisation (stripped, lowercased). An emoji is a
-    symbol, not punctuation, so "ok 👍" is not bare; neither is anything with a
-    letter or digit after the token.
-    """
-    return any(
-        msg.startswith(token)
-        and all(
-            c.isspace() or unicodedata.category(c).startswith("P")
-            for c in msg[len(token) :]
-        )
-        for token in _WEAK_CONFIRM_TOKENS
-    )
-
-
 def confirmation_token_class(user_message: str) -> Optional[TerminalConfirmedVia]:
     """Which class of typed confirmation ``user_message`` is, or None for none.
 
     The typed-confirmation matcher itself (not DECIDE clicks): None means the
-    gate does not read the message as consent, and ``_user_confirms_transition``
-    is exactly "this is not None".
+    gate does not read the message as consent, and anything else means it
+    does. Its callers take consent from ``is not None``; there is no second
+    predicate to drift from this one.
 
     DECIDE suggestion clicks now carry intent metadata and route
     through IntentType.CONFIRMATION deterministically. This matcher
@@ -83,16 +66,24 @@ def confirmation_token_class(user_message: str) -> Optional[TerminalConfirmedVia
     the IntentResolver adoption site (#721), so the two confirm lanes
     cannot drift apart.
 
-    The class is read by the gate's own rule, the OPENING token, and never
-    guessed from what follows it (#1748):
+    The class comes from ONE scan with the gate's own grammar
+    (``_gate_token_match``, longest match at the start), and is never guessed
+    from the words that follow (#1748). The matched token's set says explicit
+    or weak; the rest of the message says bare or prefixed. BARE means no
+    letter or digit anywhere after the matched token, so punctuation, emoji
+    and emoticons keep a reply bare ("ok!", "ok 👍", "ok =)", "yes :)"), and
+    any further word makes it prefixed ("ok ok", "looks good to me", "yes,
+    don't close it yet"):
 
-    * ``"explicit_token"`` — the message opens with an explicit token;
-    * ``"weak_token"`` — the message is a BARE weak token (#723's term): the
-      token and nothing after it but whitespace and punctuation;
-    * ``"weak_prefixed"`` — it opens with a weak token and says more. Left
-      unclassified on purpose: what follows may confirm ("ok go ahead") or
-      refuse ("ok, don't close it yet"), and a word scan cannot tell those
-      apart. That the gate executes on the refusals is #1783, not this label.
+    * ``"explicit_token"`` / ``"explicit_prefixed"`` — opens with an explicit
+      token, bare or with more;
+    * ``"weak_token"`` / ``"weak_prefixed"`` — opens with a weak token, bare
+      (#723's "bare weak token") or with more.
+
+    The prefixed labels are left unclassified on purpose: what follows may
+    confirm ("ok go ahead") or refuse ("ok, don't close it yet", "do it
+    later"), and a word scan cannot tell which. That the gate executes on the
+    refusals is #1783, not these labels.
     """
     from faultmaven.core.investigation.terminal_transitions import (
         is_substantive_reply,
@@ -103,21 +94,14 @@ def confirmation_token_class(user_message: str) -> Optional[TerminalConfirmedVia
     if is_substantive_reply(user_message):
         return None
     msg = user_message.strip().lower()
-    if not _matches_gate_token(msg, _EXPLICIT_CONFIRM_TOKENS + _WEAK_CONFIRM_TOKENS):
+    match = _gate_token_match(msg, _EXPLICIT_CONFIRM_TOKENS + _WEAK_CONFIRM_TOKENS)
+    if match is None:
         return None
-    if _matches_gate_token(msg, _EXPLICIT_CONFIRM_TOKENS):
-        return "explicit_token"
-    if _is_bare_weak_token(msg):
-        return "weak_token"
-    return "weak_prefixed"
-
-
-def _user_confirms_transition(user_message: str) -> bool:
-    """Fallback check for typed confirmations (not DECIDE clicks).
-
-    The verdict of :func:`confirmation_token_class`, which carries the rules.
-    """
-    return confirmation_token_class(user_message) is not None
+    token, end = match
+    bare = not any(c.isalnum() for c in msg[end:])
+    if token in _EXPLICIT_CONFIRM_TOKENS:
+        return "explicit_token" if bare else "explicit_prefixed"
+    return "weak_token" if bare else "weak_prefixed"
 
 
 def _user_declines_transition(user_message: str) -> bool:

@@ -110,6 +110,7 @@ def engine(seen):
         intent_type: Optional[str] = None,
         intent_data: Optional[dict[str, Any]] = None,
         user_id: Optional[str] = None,
+        typed: bool = False,
     ) -> dict[str, Any]:
         seen["attachments"] = copy.deepcopy(attachments)
         seen["intent_type"] = intent_type

@@ -218,13 +218,15 @@ def _count_terminal_confirmation(updated_case, *, intent, user_message) -> None:
       record carries a channel. Every later turn finds a predecessor that
       carries none, so it needs no flag.
 
-    The follow-up counts only a message the user typed: no effective ``intent``
-    (the one ``_build_user_message`` settled on, so a client-sent GREETING it
-    re-derives from the text counts as typed), and not the payload of one of the
-    ack turn's own cards (runbook, regenerate), which carry no intent and arrive
-    as their text — recognised by ``terminal_card_action``, the same function
-    the terminal handler dispatches on. A click in that turn means this
-    confirmation gets no follow-up count at all.
+    The follow-up counts only a message the user typed: non-blank text (an
+    empty turn — a bare Slack mention — is an orientation request, not a
+    follow-up); no effective ``intent`` (the one ``_build_user_message`` settled
+    on, so a client-sent GREETING it re-derives from the text counts as typed);
+    and not the payload of one of the ack turn's own cards (runbook,
+    regenerate), which carry no intent and arrive as their text — recognised by
+    ``terminal_card_action`` with the case's state, exactly as the terminal
+    handler dispatches on it. A click in that turn means this confirmation gets
+    no follow-up count at all.
 
     A metric must never fail a turn: the turn is already saved, and a
     registry failure here is logged and dropped.
@@ -239,8 +241,9 @@ def _count_terminal_confirmation(updated_case, *, intent, user_message) -> None:
         if (
             len(history) >= 2
             and history[-2].terminal_confirmed_via
+            and user_message.strip()
             and intent is None
-            and terminal_card_action(user_message) is None
+            and terminal_card_action(user_message, updated_case.state) is None
         ):
             terminal_followup_total.labels(
                 via=history[-2].terminal_confirmed_via, to_state=to_state

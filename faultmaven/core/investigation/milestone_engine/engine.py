@@ -300,6 +300,7 @@ class MilestoneEngine:
         intent_type: str | None = None,
         intent_data: dict[str, Any] | None = None,
         user_id: str | None = None,
+        typed: bool = False,
     ) -> dict[str, Any]:
         """
         Process a single conversation turn with optional structured intent.
@@ -322,6 +323,13 @@ class MilestoneEngine:
                 allowlist handed to the agent's tools (owner + team arms,
                 ADR-013 §D4). ``None`` means no principal — an engine-internal
                 turn — and collapses the allowlist to the global corpus.
+            typed: True when the service MINTED ``intent_type`` from typed text
+                (the intent resolver) rather than receiving it from a click. It
+                names how a terminal transition was confirmed (#1748): a typed
+                "ok" the resolver turned into a confirmation is not a click. A
+                keyword of its own, not an ``intent_data`` key: that dict is
+                filled from the client's intent payload, and server facts never
+                ride in it (the same reason ``user_id`` is kept out).
 
         Returns:
             {
@@ -376,6 +384,7 @@ class MilestoneEngine:
                     intent_type,
                     intent_data,
                     user_id=user_id,
+                    typed=typed,
                 )
             finally:
                 active_token_tracker.reset(token)
@@ -439,6 +448,7 @@ class MilestoneEngine:
         intent_type: str | None = None,
         intent_data: dict[str, Any] | None = None,
         user_id: str | None = None,
+        typed: bool = False,
     ) -> dict[str, Any]:
         """Inner implementation of process_turn, called under per-case lock."""
         # Refused FIRST, before any state is touched. INVESTIGATING is not a
@@ -630,12 +640,11 @@ class MilestoneEngine:
                     if user_confirms:
                         # How the user confirmed, for the turn record (#1748). A
                         # click is ``intent``. An intent the service minted from
-                        # typed text carries ``typed`` and is NOT a click: it is
-                        # named by its tokens, and ``typed_other`` when the
-                        # resolver accepted text that is no known token ("that
-                        # works").
+                        # typed text (``typed``) is NOT a click: it is named by
+                        # its tokens, and ``typed_other`` when the resolver
+                        # accepted text that is no known token ("that works").
                         confirmed_via: TerminalConfirmedVia
-                        if intent_confirms and not (intent_data or {}).get("typed"):
+                        if intent_confirms and not typed:
                             confirmed_via = "intent"
                         else:
                             confirmed_via = token_class or "typed_other"
@@ -754,7 +763,7 @@ class MilestoneEngine:
             # fallback (below)" with a 2026-02-08 fix for "close as
             # unresolved" matching resolution patterns. There is no such
             # fallback below, and there is no natural-language transition
-            # detector anywhere: ``_user_confirms_transition`` /
+            # detector anywhere: ``confirmation_token_class`` /
             # ``_user_declines_transition`` only answer a STANDING pending, and
             # ``IntentResolver`` matches typed text against suggestions already
             # on screen. A typed "mark this resolved" with nothing standing
