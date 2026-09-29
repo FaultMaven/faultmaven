@@ -57,7 +57,7 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from faultmaven.config.tenant_context import (
     get_current_billing_organization_id,
@@ -69,9 +69,6 @@ from faultmaven.infrastructure.protection.tenant_turn_cap import (
     utc_day,
 )
 from faultmaven.infrastructure.shims import llm_usage_unpersisted_calls
-
-if TYPE_CHECKING:  # the tracker imports this module; the reverse is types only
-    from faultmaven.infrastructure.llm.metering import TurnTokenTracker
 
 logger = logging.getLogger(__name__)
 
@@ -477,13 +474,17 @@ def schedule_call_write(bucket: CallBucket, *, actor_user_id: str) -> None:
 
 
 async def flush_turn(
-    tracker: "TurnTokenTracker",
+    tracker: Any,
     *,
     case_id: str,
     turn_number: int,
     investigation_turn: int,
 ) -> None:
     """Persist one engine turn's spend. Awaited at the turn's end; never raises.
+
+    ``tracker`` is the turn's ``metering.TurnTokenTracker`` — typed loosely
+    because ``metering`` imports this module, and a reverse import, even for
+    types only, is a cycle.
 
     The tracker is marked flushed right after its buckets are copied, with no
     await in between: a call that completes while the write is in flight must
