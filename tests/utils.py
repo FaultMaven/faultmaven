@@ -59,6 +59,22 @@ def get_live_settings():
     return settings_module.get_settings()
 
 
+def delenv_every_spelling(monkeypatch, *names: str) -> None:
+    """Remove every letter-case spelling of each name from ``os.environ``.
+
+    pydantic-settings binds a variable case-insensitively, so an ambient
+    ``database_url`` — or the xdist worker's ``DATABASE_URL`` — still steers a
+    test that cleared only the exact name. The rule is
+    :func:`faultmaven.config.settings.set_env_var`'s: every key whose
+    ``.upper()`` matches. Through ``monkeypatch``, so each removal is undone.
+    """
+    import os
+
+    wanted = {name.upper() for name in names}
+    for key in [key for key in os.environ if key.upper() in wanted]:
+        monkeypatch.delenv(key)
+
+
 # Fields carrying the single-source JWT token expiry (#888). Field names, not env
 # names — the env names are derived from their declared aliases below.
 JWT_EXPIRY_FIELDS = ("jwt_access_token_expire_minutes", "jwt_refresh_token_expire_days")

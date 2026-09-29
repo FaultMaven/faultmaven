@@ -360,6 +360,7 @@ def run_alembic_migrations() -> bool:
         describe_database_url,
         get_settings,
         persistent_database_configured,
+        set_env_var,
     )
 
     # An empty DATABASE_URL, ``:memory:`` or an in-memory SQLite spelling selects
@@ -410,8 +411,11 @@ def run_alembic_migrations() -> bool:
         logger.info(f"Python executable: {sys.executable}")
 
         # The migration targets the database the app will open, never one the
-        # subprocess re-derives from its own environment (#1636).
-        env = {**os.environ, "DATABASE_URL": migration_database_url()}
+        # subprocess re-derives from its own environment (#1636). Every other
+        # letter case of the name goes: the child's settings bind them all, and
+        # an inherited ``database_url`` would otherwise override this one.
+        env = dict(os.environ)
+        set_env_var(env, "DATABASE_URL", migration_database_url())
 
         result = subprocess.run(
             [sys.executable, "-m", "alembic", "upgrade", "head"],

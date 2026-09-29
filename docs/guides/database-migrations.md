@@ -58,6 +58,9 @@ it migrates `data/faultmaven.db` under the project root. Set to an empty or
 non-persistent value (`:memory:`, an in-memory SQLite URL, a value that does not
 parse), `alembic upgrade head` refuses with the app's message and exits 1
 (#1704), rather than migrating a database that vanishes with the process.
+`--sql` opens no database, so it only takes the dialect from the URL and is not
+refused. Database settings the app would reject also exit 1, naming the invalid
+fields.
 
 ```bash
 # Standalone default (the same file the app opens when run from the repo root)

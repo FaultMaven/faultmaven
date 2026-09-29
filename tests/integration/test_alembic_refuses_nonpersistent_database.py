@@ -10,17 +10,22 @@ migration Job reported success. A set-but-empty value fell back to
 
 ``env.py`` now reads the URL through ``configured_database_url()`` — the
 ``DatabaseSettings`` reader the app's settings are built from, so a lowercase
-``database_url`` counts as it does for the app — and refuses through the same
-exit helper as the ``fm-*`` commands, exiting 1.
+``database_url`` counts as it does for the app — and, in online mode, refuses
+through the same exit helper as the ``fm-*`` commands, exiting 1. Offline
+(``--sql``) opens no database, so it is not refused. Database settings that do
+not validate exit 1 naming the invalid fields, never their values.
 
 Each case runs the real command, ``python -m alembic -c <copy>/alembic.ini
 upgrade head``, on a COPY of ``alembic.ini`` and ``alembic/`` in ``tmp_path``,
 with ``PYTHONPATH`` pinned to this checkout so ``env.py`` imports the tree under
 test. ``env.py`` resolves its project root from its own path, so on the copy a
 regressed fallback would migrate ``tmp_path/data/faultmaven.db``, never the
-checkout's own database, and there is no ``.env`` there to load. The positive
-control migrates a temporary file with the same child, so a refusal is the
-gate and not a child that cannot migrate anything.
+checkout's own database, and there is no ``.env`` there to load. The copy's
+``data/`` is created up front: SQLite creates a database file but not its
+directory, so without it a regressed fallback would fail before creating
+anything and the "no fallback database" assertion could never fail. The
+positive control migrates a temporary file with the same child, so a refusal is
+the gate and not a child that cannot migrate anything.
 
 ``DATABASE_URL`` UNSET is deliberately not run: its fallback is the project
 root's ``data/faultmaven.db``, unchanged by #1704.
@@ -38,6 +43,7 @@ from pathlib import Path
 import pytest
 
 from faultmaven.config.persistent_database import DEFAULT_DATABASE_URL
+from faultmaven.config.settings import set_env_var
 
 pytestmark = pytest.mark.integration
 
@@ -49,21 +55,26 @@ REFUSAL = "configures no persistent database"
 @pytest.fixture
 def alembic_copy(tmp_path) -> Path:
     """``alembic.ini`` and ``alembic/`` copied into ``tmp_path``: the root the
-    child's ``env.py`` resolves its fallback database against."""
+    child's ``env.py`` resolves its fallback database against, with its
+    ``data/`` directory already there."""
     shutil.copy2(PROJECT_ROOT / "alembic.ini", tmp_path / "alembic.ini")
     shutil.copytree(
         PROJECT_ROOT / "alembic",
         tmp_path / "alembic",
         ignore=shutil.ignore_patterns("__pycache__"),
     )
+    (tmp_path / "data").mkdir()
     return tmp_path
 
 
-def _upgrade_head(root: Path, database_env: dict[str, str]):
-    # Every ambient spelling of the variable goes (the xdist worker sets one,
-    # and the settings bind any case), so ``database_env`` is the whole of it.
-    env = {k: v for k, v in os.environ.items() if k.upper() != "DATABASE_URL"}
-    env.update(database_env)
+def _upgrade_head(root: Path, database_env: dict[str, str], *extra: str):
+    # Each variable is set as its ONLY spelling (the xdist worker sets a
+    # DATABASE_URL, and the settings bind any case), so ``database_env`` is the
+    # whole of it. Every case names the URL in some spelling.
+    assert any(name.upper() == "DATABASE_URL" for name in database_env)
+    env = dict(os.environ)
+    for name, value in database_env.items():
+        set_env_var(env, name, value)
     existing = env.get("PYTHONPATH")
     env["PYTHONPATH"] = (
         f"{PROJECT_ROOT}{os.pathsep}{existing}" if existing else str(PROJECT_ROOT)
@@ -71,7 +82,7 @@ def _upgrade_head(root: Path, database_env: dict[str, str]):
     env["PYTHON_DOTENV_DISABLED"] = "1"
     return subprocess.run(
         [sys.executable, "-m", "alembic", "-c", str(root / "alembic.ini")]
-        + ["upgrade", "head"],
+        + ["upgrade", "head", *extra],
         cwd=root,
         env=env,
         capture_output=True,
@@ -111,7 +122,43 @@ def test_upgrade_head_refuses_a_non_persistent_database_url(alembic_copy, databa
     assert DEFAULT_DATABASE_URL in result.stderr, detail
     assert "Running upgrade" not in result.stdout + result.stderr, detail
     assert "Traceback" not in result.stderr, detail
-    assert not (alembic_copy / "data").exists(), "the refused run fell back to a file"
+    assert not (
+        alembic_copy / "data" / "faultmaven.db"
+    ).exists(), "the refused run fell back to the default file"
+
+
+def test_offline_sql_opens_no_database_and_is_not_refused(alembic_copy):
+    """``upgrade head --sql`` only takes the dialect from the URL: an in-memory
+    one is fine there, as on ``main`` (#1778 review, R3)."""
+    result = _upgrade_head(alembic_copy, {"DATABASE_URL": "sqlite://"}, "--sql")
+
+    assert result.returncode == 0, result.stderr[-3000:]
+    assert REFUSAL not in result.stderr
+    assert "CREATE TABLE" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "value", ["0", "not-a-number-marker-7731"], ids=["out-of-range", "unparseable"]
+)
+def test_database_settings_that_do_not_validate_exit_1_naming_the_field(
+    alembic_copy, value
+):
+    """alembic validates the database settings the app validates. A bad one is
+    refused like the app refuses it — exit 1, not a traceback — and the message
+    names the field, never its value (#1778 review, R9)."""
+    db = alembic_copy / "valid.db"
+    result = _upgrade_head(
+        alembic_copy,
+        {"DATABASE_URL": f"sqlite+aiosqlite:///{db}", "KB_REPAIR_MAX_ROWS": value},
+    )
+    detail = f"stdout:\n{result.stdout[-2000:]}\nstderr:\n{result.stderr[-3000:]}"
+
+    assert result.returncode == 1, detail
+    assert "❌ Refusing to run: " in result.stderr, detail
+    assert "KB_REPAIR_MAX_ROWS" in result.stderr, detail
+    assert "not-a-number-marker-7731" not in result.stdout + result.stderr, detail
+    assert "Traceback" not in result.stderr, detail
+    assert not db.exists(), "the migration ran on settings the app refuses"
 
 
 def test_positive_control_a_file_database_is_migrated(alembic_copy):
