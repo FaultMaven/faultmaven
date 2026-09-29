@@ -232,7 +232,7 @@ class TestTheRecordDoesNotDestroyWhatTurnHistoryFeeds:
                 turn_number=1,
                 progress_made=True,
                 outcome=TurnOutcome.CONVERSATION,
-                system_feedback="REASONING VALIDATION: provide milestone_justifications.",
+                system_feedback="EVIDENCE VALIDATION: provide milestone_justifications.",
             )
         ]
         case.current_turn = 2
@@ -242,7 +242,7 @@ class TestTheRecordDoesNotDestroyWhatTurnHistoryFeeds:
         )
 
         assert case.turn_history[-1].system_feedback == (
-            "REASONING VALIDATION: provide milestone_justifications."
+            "EVIDENCE VALIDATION: provide milestone_justifications."
         ), "the greeting swallowed feedback the next engine turn still needs"
 
     def test_it_records_the_real_text(self, sample_case):

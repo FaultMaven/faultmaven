@@ -314,7 +314,7 @@ The milestone engine validates evidence claims for **progress indicators** (non-
 **How progress milestone validation works:**
 
 1. LLM sets progress milestone = True in structured output
-2. System extracts evidence IDs from `evidence_trail.evidence_analyzed`
+2. System reads turn references (`turn_N`) from `evidence_trail.evidence_analyzed`; evidence collected on a cited turn counts alongside the current turn's
 3. System counts cited evidence matching expected categories
 4. If count < minimum: warning logged (milestone still set, but flagged)
 

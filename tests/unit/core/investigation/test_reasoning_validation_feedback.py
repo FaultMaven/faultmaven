@@ -289,7 +289,7 @@ class TestStripReachesNextPrompt:
         assert case.progress.symptom_verified is False, "the claim was stripped"
         # At the head of the record: the record truncates from the tail.
         assert case.turn_history[-1].system_feedback.startswith(
-            f"REASONING VALIDATION: {_NOTICE}"
+            f"EVIDENCE VALIDATION: {_NOTICE}"
         )
 
         mock_llm.generate.reset_mock()
@@ -316,6 +316,6 @@ class TestStripReachesNextPrompt:
         updated = result["case_updated"]
 
         assert updated.progress.symptom_verified is True
-        assert "REASONING VALIDATION" not in (
+        assert "EVIDENCE VALIDATION" not in (
             updated.turn_history[-1].system_feedback or ""
         )

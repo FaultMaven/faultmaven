@@ -220,7 +220,7 @@ class ResponseApplier:
             )
             _add_system_feedback(
                 metadata,
-                f"REASONING VALIDATION: {not_recorded}" + " ".join(validation_errors),
+                f"EVIDENCE VALIDATION: {not_recorded}" + " ".join(validation_errors),
                 prepend=True,
             )
 
