@@ -352,7 +352,7 @@ nvidia-nvshmem-cu13==3.4.5
     # via torch
 nvidia-nvtx==13.0.85
     # via cuda-toolkit
-oauthlib==3.3.1
+oauthlib==4.0.0
     # via requests-oauthlib
 onnxruntime==1.24.4
     # via chromadb
@@ -456,7 +456,7 @@ pygments==2.20.0
     # via
     #   pytest
     #   rich
-pyjwt==2.13.0
+pyjwt==2.15.1
     # via faultmaven (pyproject.toml)
 pylogrus==0.4.0
     # via faultmaven (pyproject.toml)
