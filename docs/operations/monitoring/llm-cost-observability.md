@@ -21,6 +21,7 @@ which are the most common cause of a runaway bill.
 | `llm_call_tokens_total` | `provider`, `model`, `token_type` | Tokens per API call, split into `input` / `output` / `cache_read` / `cache_write`. Buckets are disjoint. |
 | `llm_provider_calls_total` | `provider`, `model`, `outcome` | API calls by disposition. `outcome=kept` = returned to caller; `outcome=low_confidence` = **billed then discarded** by the fallback chain (pure waste). |
 | `llm_unpriced_calls_total` | `provider`, `model` | Calls whose `(provider, model)` had no price entry. **Non-zero ⇒ `llm_cost_usd_total` under-reports** — add the model to the price table. |
+| `llm_usage_unpersisted_calls_total` | `reason` | Billed calls the [usage ledger](#the-usage-ledger) did not persist. **Non-zero ⇒ the ledger under-reports** by exactly this many calls. |
 
 These sit alongside the pre-existing `llm_requests_total` (per-route outcome,
 including `status="cached"` for local `LLMResponseCache` hits), `llm_latency`, and
@@ -65,6 +66,112 @@ usage, unpriced-call flagging, and cost. Stdlib only.
 
 Each LLM span carries `usage` (`prompt_tokens` / `completion_tokens` /
 `total_tokens`) plus `prompt_cache_hit` and cache-token metadata.
+
+## The usage ledger
+
+Everything above is either per process (Prometheus), per log line or per
+trace, and none of it carries a tenant. The usage ledger is the persisted,
+tenant-attributed record of the same spend (#640): two tables in the
+application database, written at the same chokepoint, surviving restarts and
+summing correctly across replicas because every write is an atomic
+`INSERT … ON CONFLICT DO UPDATE SET col = col + excluded.col`. It needs no
+Prometheus. The in-product view over it — `GET /admin/llm/usage` and the
+Dashboard's Usage page — is filed as #1764 and #1765.
+
+| Table | One row per | Holds |
+|---|---|---|
+| `llm_usage_daily` | enterprise, UTC day, billing subject, actor, `provider`, `model`, `outcome` | the four token buckets, `estimated_cost_usd`, `calls`, `unpriced_calls` |
+| `llm_turn_spend` | engine turn that made a billed call, addressed by `(enterprise_id, case_id, turn_number)` | the same buckets, `spend_weighted_tokens`, `calls`, `low_confidence_calls`, `unpriced_calls`, `estimated_cost_usd`, `investigation_turn`, the actor and payer, `occurred_at` |
+
+**How a call reaches a row.** Inside an engine turn every billed call accrues to
+the turn's tracker, and the end of `process_turn` writes the turn in one
+transaction: one `llm_usage_daily` increment per `(provider, model, outcome)`
+plus the `llm_turn_spend` row. Every other billed call — title generation, a
+KB suggestion, an out-of-band aside, tier-2 preprocessing, and a call made
+after its turn already flushed (the fire-and-forget runbook conversion) —
+writes a daily row of its own. Every billed call lands in exactly one daily
+row. A turn that made no billed call writes no turn row.
+
+**Who it is attributed to**, captured when the spend is incurred:
+
+- the **enterprise** bound to the request (the RLS key);
+- the **billing subject** from the same rule the turn cap charges with — the
+  account's organization when it has one, else the account — or `none` when
+  there is neither (a job);
+- the **actor**: the turn's user inside an engine turn; otherwise the user
+  `require_authentication` resolved for the request; otherwise `''`. A route
+  that authenticates another way records no actor — attribution lost, never
+  misattributed.
+
+**What the figures mean.**
+
+- `estimated_cost_usd` is estimated **at call time** from the price table then
+  in force, over priced calls only. `unpriced_calls` counts the calls it leaves
+  out, so a row with unpriced calls is a lower bound. Tokens are always stored,
+  so the figures can be re-priced. Self-hosted providers are priced at $0, not
+  unpriced.
+- `usage_date` is the **UTC day at write time**: a turn's flush, or the call
+  for its own row. A turn that spans midnight is charged to the day it ended.
+- `outcome=low_confidence` rows are the fallback chain's billed-and-discarded
+  attempts, kept apart as on the Prometheus counter.
+- The tables **start empty** when this ships. There is no backfill, because
+  neither Prometheus nor the logs carry a tenant; a window before the first row
+  is "not recorded", never "no spend".
+
+**Deletions.**
+
+- Deleting a case deletes its `llm_turn_spend` rows (`ON DELETE CASCADE`). The
+  daily rows name no case and keep the spend, so after a case deletion the
+  per-turn figures shrink and the daily totals do not.
+- A deleted user's id **stays** in both tables — there is no foreign key on the
+  actor or the billing subject, as for `turn_usage`. `SET NULL` would merge a
+  deleted user's rows into the no-actor rows and `CASCADE` would erase their
+  spend from the enterprise's totals.
+
+**It does not reconcile with `turn_usage`.** The turn cap's ledger counts
+turns, is written before the model runs, fails closed, and is written only
+under multi-tenancy for engine turns. This ledger records spend for every
+billed call in both modes, asides and jobs included, after the call. It will
+always name more subjects than `turn_usage`; do not expect the two to agree.
+
+### When a write fails
+
+The ledger **fails open**: a failed write never fails a call or a turn. Every
+billed call that does not reach a row increments
+`llm_usage_unpersisted_calls_total{reason}`, so the gap between
+`llm_provider_calls_total` and the persisted calls is observable:
+
+| `reason` | Meaning |
+|---|---|
+| `store_error` | The write raised (the database was unreachable or locked). Also logged at WARNING as `llm_usage_unpersisted`, naming the reason and the exception type — never the row. A write still in flight when shutdown's 5-second drain gives up is counted here too. |
+| `no_tenant` | Under `TENANT_PROVIDER=multi`, a call with no usable enterprise bound. RLS would refuse the row, so none is attempted. |
+| `no_loop` | A call outside any turn metered with no running event loop to write it from. |
+| `not_composed` | No ledger is installed — the composition root did not run (a unit test, or a process that never booted the app). Not logged. |
+
+### Retention
+
+| Variable | Default | Deletes |
+|---|---|---|
+| `LLM_USAGE_DAILY_RETENTION_DAYS` | 400 | `llm_usage_daily` rows whose UTC `usage_date` is older than today minus this |
+| `LLM_USAGE_TURN_RETENTION_DAYS` | 90 | `llm_turn_spend` rows whose `occurred_at` is older than now minus this |
+
+Thirteen months of daily rows puts the same month last year beside this one;
+the turn rows are what grows, so they keep less. Both must be at least 1. The
+prune is the `llm_usage_retention` job:
+
+```bash
+python -m faultmaven.jobs.run llm_usage_retention
+```
+
+- **Cloud (`TENANT_PROVIDER=multi`)**: the job is `cross_tenant`, so it runs only
+  on the audited maintenance path (`--cross-tenant-maintenance`, as the
+  `faultmaven_maintenance` role, which needs `DELETE` on both tables). The
+  CronJob is `faultmaven-enterprise-infra` work, filed as #1766.
+- **Standalone**: with `RUN_SCHEDULER=true` the API prunes in-process, once at
+  start and every 24 hours. `RUN_SCHEDULER` is **off by default, so a default
+  standalone install does not prune.** At 100 turns a day the ledger grows by
+  about 2 MB per 90 days; run the job from cron, or set `RUN_SCHEDULER=true`,
+  if that matters.
 
 ## The price table
 
@@ -126,3 +233,10 @@ Metering is at the registry chokepoint, so it covers all router-routed calls
 (the default, and every capability-override path). A dedicated concrete DA
 provider (`DA_PROVIDER` set) bypasses the registry on the tool-loop path; that
 one call site meters itself directly, so DA-turn spend is still counted.
+
+One billed call is not metered: the LLM connection test
+(`POST /admin/llm/config/test`, a single 50-token "Say hello" an operator
+triggers). Every provider call site in the package is declared — router,
+self-metering, the chokepoint, or this one exception — by
+`tests/unit/architecture/test_llm_call_metering_census.py`, so a new unmetered
+call fails a test rather than going unseen.

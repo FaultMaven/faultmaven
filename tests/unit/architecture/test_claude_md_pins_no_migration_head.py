@@ -71,8 +71,9 @@ def test_the_migration_chain_declares_revisions_we_can_detect() -> None:
     itself an instance of.
 
     The threshold is 1, not the chain length it once was: ADR-017 collapsed the
-    chain to a single baseline, and a count that encoded "there are dozens"
-    would fail on the collapse rather than on the thing it guards.
+    chain to one baseline (additive revisions have followed it since), and a
+    count that encoded "there are dozens" would fail on a collapse rather than
+    on the thing it guards.
     """
     revisions = _known_revisions()
     assert revisions, "the detector parsed no revision ids at all"
@@ -83,21 +84,22 @@ def test_the_migration_chain_declares_revisions_we_can_detect() -> None:
 def test_the_detector_would_catch_a_pinned_revision() -> None:
     """Positive control: a document that DOES pin one is reported.
 
-    Stated as a property over a *supplied* pinnable set rather than over the
-    chain's own, because the chain is currently one baseline — every revision
-    in it is a root, so ``_pinnable_revisions()`` is legitimately empty and an
-    instance drawn from it would only prove the chain's shape. What has to hold
-    is the detector's mechanics: a document naming a pinnable revision is
-    reported, and one naming an exempt root is not.
+    The chain now carries additive revisions on top of its baseline (the first
+    is 002, #640), so the instance is drawn from the chain itself: a document
+    naming a real non-root revision is reported, and one naming the exempt root
+    is not. The pinnable set being non-empty is part of the control — while the
+    chain was one baseline it was empty, and the guard below could not fail.
     """
-    pinnable = "aaaaaaaaaaaa"
+    pinnable = _pinnable_revisions()
+    assert pinnable, "every revision is a root, so the guard below is vacuous"
+    head = sorted(pinnable)[0]
     exempt = sorted(_root_revisions())[0]
 
     def _pinned(text: str, candidates: set[str]) -> set[str]:
         return {rev for rev in candidates if rev in text}
 
-    assert _pinned(f"Current head: `{pinnable}`.\n", {pinnable}) == {pinnable}
-    assert _pinned(f"Baseline (revision {exempt}).\n", _pinnable_revisions()) == set()
+    assert _pinned(f"Current head: `{head}`.\n", pinnable) == {head}
+    assert _pinned(f"Baseline (revision {exempt}).\n", pinnable) == set()
 
 
 def _pinned_in(text: str) -> set[str]:

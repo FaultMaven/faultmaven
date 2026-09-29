@@ -25,11 +25,14 @@ if the data has any value.
 **Any database already stamped at `a1e0c17bd001` must be dropped and re-created,
 not upgraded.**
 
-There is exactly one migration — `001_enterprise_baseline` — and while the
-ADR-017 campaign is in flight it is edited **in place** rather than appended to.
+The chain starts at `001_enterprise_baseline`, and while the ADR-017 campaign
+was in flight that baseline was edited **in place** rather than appended to.
 That is the campaign's own rule (ADR-017, "No data migration, no compatibility
 layer"): the schema is rebuilt clean, no deployment holds data worth keeping,
-and this wipe is how the live one gets there.
+and this wipe is how the live one gets there. Revisions after the baseline are
+ordinary additive migrations (the first is `002_llm_usage_ledger`, #640) that
+`alembic upgrade head` delivers normally; the warning here is about the
+baseline's in-place amendments only.
 
 The consequence an operator has to know: a database that ran the baseline
 *before* an amendment landed carries the revision id `a1e0c17bd001` and will
