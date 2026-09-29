@@ -2115,3 +2115,48 @@ class TestMessageReadOrderAgrees:
             "earlier in time, higher turn",
             "later in time, lower turn",
         ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_terminal_confirmed_via_survives_a_save_and_load(sqlite_session):
+    """#1748: ``turn_history`` is persisted whole, so the channel that confirmed
+    a terminal transition needs no column - and comes back from the row."""
+    from faultmaven.modules.case.domain.models.case import Case
+    from faultmaven.modules.case.domain.models.documentation import DocumentationData
+    from faultmaven.modules.case.domain.models.lifecycle import CaseState
+    from faultmaven.modules.case.domain.models.problem import InquiryData
+    from faultmaven.modules.case.domain.models.progress import InvestigationProgress
+    from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
+    from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
+        SQLiteCaseRepository,
+    )
+
+    repo = SQLiteCaseRepository(sqlite_session)
+    case_id = f"case_{uuid4().hex[:12]}"
+    case = Case(
+        case_id=case_id,
+        user_id="test_user_123",
+        enterprise_id="test_ent_123",
+        title="Terminal confirmation channel",
+        state=CaseState.INQUIRY,
+        inquiry=InquiryData(),
+        documentation=DocumentationData(),
+        progress=InvestigationProgress(),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    case.current_turn = 1
+    case.turn_history.append(
+        TurnProgress(
+            turn_number=1,
+            progress_made=True,
+            outcome=TurnOutcome.CONVERSATION,
+            terminal_confirmed_via="weak_token",
+        )
+    )
+
+    await repo.save(case)
+    loaded = await repo.get(case_id)
+
+    assert loaded.turn_history[-1].terminal_confirmed_via == "weak_token"

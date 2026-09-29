@@ -41,6 +41,7 @@ from faultmaven.core.investigation.cause_assurance import (
 from faultmaven.core.investigation.lifecycle_metrics import (
     close_pivoted_to_resolve_total,
     resolution_cause_leg_total,
+    terminal_confirmation_total,
 )
 from faultmaven.core.investigation.verification_status import (
     assess_verification_status,
@@ -775,7 +776,13 @@ def propose_transition(
     )
 
 
-def confirm_pending_transition(case: Case, user_id: str) -> bool:
+#: How a user's confirmation of a terminal transition arrived: a DECIDE click or
+#: repeated dropdown click (``intent``), a typed explicit token, or a typed bare
+#: weak token. The label set of ``terminal_confirmation_total`` (#1748).
+TERMINAL_CONFIRMED_VIA = ("intent", "explicit_token", "weak_token")
+
+
+def confirm_pending_transition(case: Case, user_id: str, *, confirmed_via: str) -> bool:
     """
     Execute a pending transition after user confirmation.
 
@@ -794,7 +801,13 @@ def confirm_pending_transition(case: Case, user_id: str) -> bool:
     Args:
         case: Case with pending_transition
         user_id: User confirming the transition
+        confirmed_via: One of ``TERMINAL_CONFIRMED_VIA``; counted on execution.
     """
+    if confirmed_via not in TERMINAL_CONFIRMED_VIA:
+        raise ValueError(
+            f"confirmed_via must be one of {TERMINAL_CONFIRMED_VIA}, "
+            f"got {confirmed_via!r}"
+        )
     if not hasattr(case, "pending_transition") or not case.pending_transition:
         return False
 
@@ -849,6 +862,7 @@ def confirm_pending_transition(case: Case, user_id: str) -> bool:
 
     # Clear pending transition only after successful execution
     case.pending_transition = None
+    terminal_confirmation_total.labels(via=confirmed_via, to_state=to_state).inc()
     return True
 
 

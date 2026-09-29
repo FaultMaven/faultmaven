@@ -6,6 +6,7 @@ from typing import Any
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     _user_confirms_transition,
     _user_declines_transition,
+    confirmation_token_class,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -287,9 +288,13 @@ class TransitionManager:
                                 "to_state": to_state,
                             },
                         )
-                    executed = confirm_pending_transition(case, case.user_id)
+                    confirmed_via = confirmation_token_class(user_message)
+                    executed = confirm_pending_transition(
+                        case, case.user_id, confirmed_via=confirmed_via
+                    )
                     if executed:
                         metadata["status_transitioned"] = True
+                        metadata["terminal_confirmed_via"] = confirmed_via
                     else:
                         # INV-37 resolve-preservation: the pending CLOSE pivoted
                         # to a RESOLVED proposal because the case became

@@ -685,7 +685,9 @@ class TestDeferredImplementationClose:
         )
 
         # Confirm pivots CLOSED -> RESOLVED without committing anything.
-        executed = confirm_pending_transition(case, "user_test")
+        executed = confirm_pending_transition(
+            case, "user_test", confirmed_via="explicit_token"
+        )
         assert executed is False
         assert case.pending_transition["to_state"] == "resolved"
 

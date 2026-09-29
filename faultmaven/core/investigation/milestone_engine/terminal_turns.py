@@ -3,6 +3,7 @@
 import logging
 from typing import Any, Optional
 
+from faultmaven.core.investigation.lifecycle_metrics import terminal_followup_total
 from faultmaven.core.investigation.milestone_engine.redaction import _should_redact
 from faultmaven.core.investigation.milestone_engine.regeneration import (
     _remaining_regens_for,
@@ -164,6 +165,14 @@ class TerminalTurnHandler:
              troubleshooting scenarios (root cause + verified solution).
           3. User asks questions about the case → answer via TERMINAL_TEMPLATE.
         """
+        # The last record is the turn that confirmed the terminal transition
+        # exactly when this is the FIRST message since (#1748): every later
+        # message finds its own predecessor's record, which names no channel.
+        if case.turn_history and case.turn_history[-1].terminal_confirmed_via:
+            terminal_followup_total.labels(
+                via=case.turn_history[-1].terminal_confirmed_via
+            ).inc()
+
         msg_lower = user_message.lower().strip().rstrip(".!? ")
 
         # Scenario 1: Report regeneration. Strict exact-match against the

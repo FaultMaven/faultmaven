@@ -287,3 +287,26 @@ Any new counter added to `lifecycle_metrics.py` should follow the same shape:
 4. **Document the load-bearing query.** A counter without a documented ratio query is half-instrumentation. Future on-call needs to know what to compute, not just what to look at.
 
 Composition seams (cross-tier dependencies in the matrix) are the natural candidates — they're where prompt-only enforcement and code-guarded enforcement cooperate, which is exactly the seam class most prone to dynamic drift.
+
+## Terminal confirmation channel (#1748, observable behind #723)
+
+**Question:** was a terminal transition confirmed by a bare weak token (`ok`, `okay`, `sure`, `sounds good`, `looks good`, `lgtm`) and did it prove spurious?
+
+**Counters:**
+
+- `faultmaven_terminal_confirmation_total{via, to_state}` — one increment per terminal transition the engine executed on a user's confirmation. `via` is `intent` (a DECIDE click or a repeated dropdown click), `explicit_token` (a typed `yes`, `go ahead`, …) or `weak_token` (a bare weak token only; `yes ok` is explicit). `to_state` is `resolved` or `closed`. The INV-37 close-to-resolve pivot executes nothing and counts nothing.
+- `faultmaven_terminal_followup_total{via}` — one increment for the **first** message a user sends on a case after that confirmation, by the same `via`. The confirming turn's record carries `terminal_confirmed_via`; later messages find their own records and count nothing.
+
+Both label sets are bounded enums, never the user's text.
+
+**#723 trigger 1, as a query** — the follow-up rate per channel over 30 days:
+
+```promql
+sum by (via) (increase(faultmaven_terminal_followup_total[30d]))
+  /
+sum by (via) (increase(faultmaven_terminal_confirmation_total[30d]))
+```
+
+The signal is the `weak_token` rate against the `explicit_token` rate, not either alone: a follow-up is not proof of a spurious close ("thanks" is a follow-up).
+
+**#723 trigger 2 cannot occur.** A dropdown INQUIRY → INVESTIGATING is refused at engine entry since #1624 (`earned_edge_refusal`; from INQUIRY, `USER_SELECTABLE_ACTIONS` offers only CLOSED), so no counter exists for it.

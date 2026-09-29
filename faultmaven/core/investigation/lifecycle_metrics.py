@@ -526,6 +526,34 @@ close_pivoted_to_resolve_total = Counter(
     "preservation / INV-37). One increment per confirm-time pivot.",
 )
 
+# Terminal-confirmation telemetry (#1748, the observable behind #723). A
+# rule-fire and outcome pair: ``faultmaven_terminal_confirmation_total`` counts
+# every terminal transition the engine EXECUTED on a user's confirmation,
+# labelled by ``via`` (how the user confirmed: ``intent`` = a DECIDE click or a
+# repeated dropdown click, ``explicit_token`` = typed "yes"/"go ahead"/...,
+# ``weak_token`` = a bare "ok"/"sure"/"lgtm"/...) and ``to_state``
+# (``resolved`` | ``closed``). ``faultmaven_terminal_followup_total`` counts the
+# FIRST message a user sends on a case after that confirmation, by the same
+# ``via``. The load-bearing signal is the follow-up rate per channel; a weak
+# token's rate well above the explicit token's is what #723 defers on. A
+# follow-up alone is not proof of a spurious close ("thanks" is one). Labels
+# are bounded enums, never user text. The INV-37 pivot executes nothing and
+# counts nothing.
+terminal_confirmation_total = Counter(
+    "faultmaven_terminal_confirmation_total",
+    "Terminal transitions executed on a user confirmation, by how the user "
+    "confirmed (intent|explicit_token|weak_token) and the state reached "
+    "(resolved|closed).",
+    ["via", "to_state"],
+)
+
+terminal_followup_total = Counter(
+    "faultmaven_terminal_followup_total",
+    "First user message on a case after a confirmed terminal transition, by "
+    "how that transition was confirmed (intent|explicit_token|weak_token).",
+    ["via"],
+)
+
 # INV-43 resolution-offer telemetry. The RESOLVED handshake had exactly three
 # openers — the LLM's ``proposed_transition``, the user's own request, and the
 # DEFERRED-feasibility proposer — so a case carrying a QUALIFYING

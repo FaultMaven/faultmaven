@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from enum import Enum
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -175,6 +175,17 @@ class TurnProgress(BaseModel):
     # ============================================================
     # User Interaction
     # ============================================================
+    terminal_confirmed_via: Optional[
+        Literal["intent", "explicit_token", "weak_token"]
+    ] = Field(
+        default=None,
+        description=(
+            "How the user confirmed the terminal transition this turn executed "
+            "(DECIDE/dropdown intent, typed explicit token, or typed bare weak "
+            "token). None on every turn that executed no terminal transition."
+        ),
+    )
+
     user_message_summary: Optional[str] = Field(
         default=None, description="Summary of user message", max_length=500
     )

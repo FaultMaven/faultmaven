@@ -33,6 +33,7 @@ from faultmaven.core.investigation.milestone_engine.terminal_turns import (
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     _user_confirms_transition,
     _user_declines_transition,
+    confirmation_token_class,
 )
 from faultmaven.core.investigation.milestone_engine.transition_turns import (
     _close_on_explicit_intent,
@@ -626,6 +627,11 @@ class MilestoneEngine:
                     )
 
                     if user_confirms:
+                        confirmed_via = (
+                            "intent"
+                            if intent_confirms
+                            else confirmation_token_class(user_message)
+                        )
                         return await _confirm_pending_transition(
                             self.deps.checkpoint_service,
                             self.deps.report_service,
@@ -634,6 +640,7 @@ class MilestoneEngine:
                             case=case,
                             upload_report=upload_report,
                             user_message=user_message,
+                            confirmed_via=confirmed_via,
                         )
                     elif user_declines:
                         # Record the refusal BEFORE cancelling: the cancel is

@@ -1,7 +1,38 @@
 """Whether a user turn confirms or declines a proposed stage transition, read from the same gate-token matcher stage_gates.py uses."""
 
+from typing import Optional
+
 from .stage_gates import (
     _matches_gate_token,
+)
+
+# Bare tokens that carry little intent on their own: #723's Note 1 list. Kept
+# apart from the explicit set so a terminal transition confirmed by one of
+# these alone is countable (#1748). Matching behaviour is the union of both.
+_WEAK_CONFIRM_TOKENS = ("ok", "okay", "sure", "sounds good", "looks good", "lgtm")
+
+_EXPLICIT_CONFIRM_TOKENS = (
+    "yes",
+    "yeah",
+    "yep",
+    "yup",
+    "correct",
+    "confirmed",
+    "confirm",
+    "approve",
+    "approved",
+    "absolutely",
+    "go ahead",
+    "go for it",
+    "do it",
+    "please do",
+    "proceed",
+    "mark as resolved",
+    "mark it as resolved",
+    "resolve it",
+    "close it",
+    "that's right",
+    "that's correct",
 )
 
 
@@ -36,36 +67,26 @@ def _user_confirms_transition(user_message: str) -> bool:
     if is_substantive_reply(user_message):
         return False
     msg = user_message.strip().lower()
-    confirm_patterns = [
-        "yes",
-        "yeah",
-        "yep",
-        "yup",
-        "correct",
-        "confirmed",
-        "confirm",
-        "approve",
-        "approved",
-        "ok",
-        "okay",
-        "sure",
-        "absolutely",
-        "go ahead",
-        "go for it",
-        "do it",
-        "please do",
-        "proceed",
-        "mark as resolved",
-        "mark it as resolved",
-        "resolve it",
-        "close it",
-        "that's right",
-        "that's correct",
-        "sounds good",
-        "looks good",
-        "lgtm",
-    ]
-    return _matches_gate_token(msg, confirm_patterns)
+    return _matches_gate_token(msg, list(_EXPLICIT_CONFIRM_TOKENS)) or (
+        _matches_gate_token(msg, list(_WEAK_CONFIRM_TOKENS))
+    )
+
+
+def confirmation_token_class(user_message: str) -> Optional[str]:
+    """Which class of typed token confirmed, or None when nothing did.
+
+    Returns None exactly when ``_user_confirms_transition`` returns False.
+    Otherwise ``"explicit_token"`` if any explicit token matches, and
+    ``"weak_token"`` when only a weak one does, so "yes ok" is explicit.
+    Same matcher and same substance screen as ``_user_confirms_transition``;
+    this only reports which set matched (#1748, the observable behind #723).
+    """
+    if not _user_confirms_transition(user_message):
+        return None
+    msg = user_message.strip().lower()
+    if _matches_gate_token(msg, list(_EXPLICIT_CONFIRM_TOKENS)):
+        return "explicit_token"
+    return "weak_token"
 
 
 def _user_declines_transition(user_message: str) -> bool:

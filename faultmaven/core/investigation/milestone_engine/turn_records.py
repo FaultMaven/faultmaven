@@ -82,6 +82,7 @@ def _create_turn_record(
     repair_pattern: str | None = None,
     validation_repairs: list[str] | None = None,
     agent_response_synthesized: bool = False,
+    terminal_confirmed_via: str | None = None,
 ) -> TurnProgress:
     """Create turn progress record."""
     # Multiple backstops (path-conditional emission rejection, milestone
@@ -108,6 +109,7 @@ def _create_turn_record(
         user_message_summary=summarize_for_turn_record(user_message, 200),
         agent_response_summary=summarize_for_turn_record(agent_response, 500),
         agent_response_synthesized=agent_response_synthesized,
+        terminal_confirmed_via=terminal_confirmed_via,
         system_feedback=system_feedback,
         momentum=momentum,
         blocked_reasons=blocked_reasons or [],
@@ -145,6 +147,7 @@ def _finish_deterministic_turn(
     milestones_completed: list[str] | None = None,
     progress_made: bool = False,
     status_transitioned: bool = False,
+    terminal_confirmed_via: str | None = None,
 ) -> dict[str, Any]:
     """Close out a deterministic early-return turn: ONE progress decision,
     applied to all three surfaces that report it (#1229).
@@ -218,6 +221,7 @@ def _finish_deterministic_turn(
         agent_response=agent_response,
         progress_made=metadata["progress_made"],
         milestones_completed=metadata["milestones_completed"],
+        terminal_confirmed_via=terminal_confirmed_via,
     )
     # #1142: the same handoff the generation path builds, so a deterministic
     # turn is a ROW in the stream rather than a gap. A gap is worse than an

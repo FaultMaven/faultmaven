@@ -30,6 +30,7 @@ async def _confirm_pending_transition(
     case,
     upload_report,
     user_message,
+    confirmed_via,
 ):
     """Execute a confirmed pending transition: checkpoint, commit, generate the closure/resolution report and the ack turn."""
     from faultmaven.core.investigation.terminal_transitions import (
@@ -47,7 +48,9 @@ async def _confirm_pending_transition(
             },
         )
 
-    executed = confirm_pending_transition(case, case.user_id)
+    executed = confirm_pending_transition(
+        case, case.user_id, confirmed_via=confirmed_via
+    )
     if not executed and (case.pending_transition or {}).get("to_state") == "resolved":
         # INV-37 resolve-preservation: the pending CLOSE
         # pivoted to a RESOLVED proposal (the case became
@@ -101,7 +104,7 @@ async def _confirm_pending_transition(
         agent_response,
         upload_report,
         progress_made=True,
-        **confirmed_transition_arms(case, executed),
+        **confirmed_transition_arms(case, executed, confirmed_via),
     )
     await repository.save(case)
 

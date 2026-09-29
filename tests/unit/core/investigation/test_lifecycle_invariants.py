@@ -165,7 +165,9 @@ class TestINV03_DispositionHandshake:
         assert case.pending_transition is None
         assert case.state == CaseState.INVESTIGATING
 
-        result = confirm_pending_transition(case, user_id="user_test")
+        result = confirm_pending_transition(
+            case, user_id="user_test", confirmed_via="explicit_token"
+        )
 
         # Confirm returns False and mutates nothing
         assert result is False
@@ -196,7 +198,9 @@ class TestINV03_DispositionHandshake:
         assert case.state == CaseState.INVESTIGATING  # NOT yet resolved
 
         # Turn N+1: user confirms via explicit confirm call
-        result = confirm_pending_transition(case, user_id="user_test")
+        result = confirm_pending_transition(
+            case, user_id="user_test", confirmed_via="explicit_token"
+        )
 
         # Now and only now does state change
         assert result is True
@@ -788,7 +792,9 @@ class TestINV06_KBResolutionUsesPendingTransition:
 
         # Step 2: explicit confirm (next turn, or via intent-routed click)
         # is the ONLY thing that completes the transition.
-        result = confirm_pending_transition(case, user_id="user_test")
+        result = confirm_pending_transition(
+            case, user_id="user_test", confirmed_via="explicit_token"
+        )
 
         assert result is True
         assert case.state == CaseState.RESOLVED
