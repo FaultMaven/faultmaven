@@ -49,6 +49,7 @@ the schema clean and the prompt asking for a field that no longer exists.
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib
 import pkgutil
 import re
@@ -202,11 +203,25 @@ def _probe(kind: str, text: str) -> str:
     return _normalise(text)
 
 
+def _digest(probe: str) -> str:
+    """The first 12 hex digits of SHA-256 over a normalised full string."""
+    return hashlib.sha256(probe.encode("utf-8")).hexdigest()[:12]
+
+
 def _census(tool: dict[str, Any], schema_name: str) -> dict[tuple, int]:
+    """Hits keyed by where they are, the token, and the WHOLE string they sit in.
+
+    The digest is what binds an allowlisted hit to the text that was measured:
+    a count alone lets a measured-safe string be rewritten into an extraction
+    request that keeps its token count (the round-20 delta review did exactly
+    that to ``suggested_follow_ups[].body``). Any edit to such a string now
+    reports a new hit and a stale entry.
+    """
     counts: dict[tuple, int] = {}
     for path, kind, text in _walk_tool(tool):
-        for match in VOCABULARY.finditer(_probe(kind, text)):
-            key = (schema_name, path, kind, match.group(0))
+        probe = _probe(kind, text)
+        for match in VOCABULARY.finditer(probe):
+            key = (schema_name, path, kind, match.group(0), _digest(probe))
             counts[key] = counts.get(key, 0) + 1
     return counts
 
@@ -250,8 +265,11 @@ def _drift(table: dict[tuple, tuple]) -> list[str]:
 
 
 # Today's hits, measured safe. A ``# <schema> (n): <basis>`` line opens a
-# schema's rows; each row is ``path | kind | matched text | plain strict``, the
-# counts under pydantic_to_openai_tools and pydantic_to_strict_openai_tools.
+# schema's rows; each row is ``path | kind | matched text | digest | plain
+# strict``. The digest is ``_digest`` of the normalised full string the hit sits
+# in (for a key, the key itself), so the entry allowlists that string as it was
+# measured and no other; the counts are under pydantic_to_openai_tools and
+# pydantic_to_strict_openai_tools.
 # ``required[]`` rows are strict-only where the plain schema leaves the field
 # optional. The bases: #1768's live check sent InquiryResponse and
 # InvestigationResponse_Diagnosis to the three models (Diagnosis reached only
@@ -263,140 +281,142 @@ def _drift(table: dict[tuple, tuple]) -> list[str]:
 # measured_text holds that true).
 _ALLOWLIST_TABLE = """
 # InquiryResponse (2): tool_use on claude-opus-5, claude-opus-5-5 and claude-fable-5-1 in #1768's live check (setup turns); on claude-opus-5-5 in #1751's bisection
-state_updates.proposed_transition                           | description | reason       | 1 1
-suggested_follow_ups[].body                                 | description | reason       | 1 1
+state_updates.proposed_transition                           | description | reason       | 9e2de6d7389b | 1 1
+suggested_follow_ups[].body                                 | description | reason       | b9369e54eb23 | 1 1
 # TerminalResponse (1): tool_use on claude-opus-5-5 in #1751's bisection
-suggested_follow_ups[].body                                 | description | reason       | 1 1
+suggested_follow_ups[].body                                 | description | reason       | b9369e54eb23 | 1 1
 # InvestigationResponse_Diagnosis (36): tool_use on claude-opus-5 and claude-opus-5-5 in #1768's live check, and in #1751's bisection
-state_updates.causal_edges_to_add[]                         | required[]  | reason       | 0 1
-state_updates.causal_edges_to_add[].reasoning               | key         | reason       | 1 1
-state_updates.causal_edges_to_add[].reasoning               | title       | reason       | 1 1
-state_updates.deductive_validations[]                       | required[]  | rationale    | 1 1
-state_updates.deductive_validations[].exhaustive_rationale  | key         | rationale    | 1 1
-state_updates.deductive_validations[].exhaustive_rationale  | title       | rationale    | 1 1
-state_updates.evidence_need_updates[]                       | required[]  | rationale    | 0 1
-state_updates.evidence_need_updates[]                       | required[]  | reason       | 0 1
-state_updates.evidence_need_updates[].rationale             | description | rationale    | 1 1
-state_updates.evidence_need_updates[].rationale             | key         | rationale    | 1 1
-state_updates.evidence_need_updates[].rationale             | title       | rationale    | 1 1
-state_updates.evidence_need_updates[].state                 | description | reason       | 1 1
-state_updates.evidence_need_updates[].superseded_reason     | key         | reason       | 1 1
-state_updates.evidence_need_updates[].superseded_reason     | title       | reason       | 1 1
-state_updates.evidence_to_add[]                             | description | deliberat    | 1 1
-state_updates.evidence_to_add[].category                    | description | deliberat    | 1 1
-state_updates.hypotheses_to_add[]                           | required[]  | rationale    | 1 1
-state_updates.hypotheses_to_add[].rationale                 | key         | rationale    | 1 1
-state_updates.hypotheses_to_add[].rationale                 | title       | rationale    | 1 1
-state_updates.hypotheses_to_update[]                        | description | reason       | 2 2
-state_updates.hypotheses_to_update[]                        | required[]  | reason       | 0 1
-state_updates.hypotheses_to_update[].refutation_reason      | description | reason       | 2 2
-state_updates.hypotheses_to_update[].refutation_reason      | key         | reason       | 1 1
-state_updates.hypotheses_to_update[].refutation_reason      | title       | reason       | 1 1
-state_updates.hypothesis_evidence_links[]                   | required[]  | reason       | 1 1
-state_updates.hypothesis_evidence_links[].reasoning         | key         | reason       | 1 1
-state_updates.hypothesis_evidence_links[].reasoning         | title       | reason       | 1 1
-state_updates.node_evidence_links[]                         | description | step-by-step | 1 1
-state_updates.node_evidence_links[]                         | required[]  | reason       | 1 1
-state_updates.node_evidence_links[].reasoning               | key         | reason       | 1 1
-state_updates.node_evidence_links[].reasoning               | title       | reason       | 1 1
-state_updates.proposed_transition                           | description | reason       | 1 1
-state_updates.verification_updates                          | required[]  | rationale    | 0 1
-state_updates.verification_updates.rca_infeasible_rationale | key         | rationale    | 1 1
-state_updates.verification_updates.rca_infeasible_rationale | title       | rationale    | 1 1
-suggested_follow_ups[].body                                 | description | reason       | 1 1
+state_updates.causal_edges_to_add[]                         | required[]  | reason       | 0c4d01e81bb3 | 0 1
+state_updates.causal_edges_to_add[].reasoning               | key         | reason       | 0c4d01e81bb3 | 1 1
+state_updates.causal_edges_to_add[].reasoning               | title       | reason       | 0c4d01e81bb3 | 1 1
+state_updates.deductive_validations[]                       | required[]  | rationale    | 609bcec6c9a3 | 1 1
+state_updates.deductive_validations[].exhaustive_rationale  | key         | rationale    | 98273c1a80c5 | 1 1
+state_updates.deductive_validations[].exhaustive_rationale  | title       | rationale    | 98273c1a80c5 | 1 1
+state_updates.evidence_need_updates[]                       | required[]  | rationale    | f350895acb59 | 0 1
+state_updates.evidence_need_updates[]                       | required[]  | reason       | eec86fb17b2e | 0 1
+state_updates.evidence_need_updates[].rationale             | description | rationale    | 8ba2dcb32a9c | 1 1
+state_updates.evidence_need_updates[].rationale             | key         | rationale    | f350895acb59 | 1 1
+state_updates.evidence_need_updates[].rationale             | title       | rationale    | f350895acb59 | 1 1
+state_updates.evidence_need_updates[].state                 | description | reason       | 13a9c6522149 | 1 1
+state_updates.evidence_need_updates[].superseded_reason     | key         | reason       | 05c55fa70218 | 1 1
+state_updates.evidence_need_updates[].superseded_reason     | title       | reason       | 05c55fa70218 | 1 1
+state_updates.evidence_to_add[]                             | description | deliberat    | c8328800d4a9 | 1 1
+state_updates.evidence_to_add[].category                    | description | deliberat    | a226544e1e9f | 1 1
+state_updates.hypotheses_to_add[]                           | required[]  | rationale    | f350895acb59 | 1 1
+state_updates.hypotheses_to_add[].rationale                 | key         | rationale    | f350895acb59 | 1 1
+state_updates.hypotheses_to_add[].rationale                 | title       | rationale    | f350895acb59 | 1 1
+state_updates.hypotheses_to_update[]                        | description | reason       | 4c53faaa6606 | 2 2
+state_updates.hypotheses_to_update[]                        | required[]  | reason       | 1e7baccbb097 | 0 1
+state_updates.hypotheses_to_update[].refutation_reason      | description | reason       | 2cf222ce0a69 | 2 2
+state_updates.hypotheses_to_update[].refutation_reason      | key         | reason       | ee73da7edee0 | 1 1
+state_updates.hypotheses_to_update[].refutation_reason      | title       | reason       | ee73da7edee0 | 1 1
+state_updates.hypothesis_evidence_links[]                   | required[]  | reason       | 0c4d01e81bb3 | 1 1
+state_updates.hypothesis_evidence_links[].reasoning         | key         | reason       | 0c4d01e81bb3 | 1 1
+state_updates.hypothesis_evidence_links[].reasoning         | title       | reason       | 0c4d01e81bb3 | 1 1
+state_updates.node_evidence_links[]                         | description | step-by-step | 862ce8401aa4 | 1 1
+state_updates.node_evidence_links[]                         | required[]  | reason       | 0c4d01e81bb3 | 1 1
+state_updates.node_evidence_links[].reasoning               | key         | reason       | 0c4d01e81bb3 | 1 1
+state_updates.node_evidence_links[].reasoning               | title       | reason       | 0c4d01e81bb3 | 1 1
+state_updates.proposed_transition                           | description | reason       | 9e2de6d7389b | 1 1
+state_updates.verification_updates                          | required[]  | rationale    | 620a5898364c | 0 1
+state_updates.verification_updates.rca_infeasible_rationale | key         | rationale    | b28c2f0137cc | 1 1
+state_updates.verification_updates.rca_infeasible_rationale | title       | rationale    | b28c2f0137cc | 1 1
+suggested_follow_ups[].body                                 | description | reason       | b9369e54eb23 | 1 1
 # InvestigationResponse_Mitigation (12): not sent live; each hit is Diagnosis's text at the same path
-state_updates.evidence_need_updates[]                       | required[]  | rationale    | 0 1
-state_updates.evidence_need_updates[]                       | required[]  | reason       | 0 1
-state_updates.evidence_need_updates[].rationale             | description | rationale    | 1 1
-state_updates.evidence_need_updates[].rationale             | key         | rationale    | 1 1
-state_updates.evidence_need_updates[].rationale             | title       | rationale    | 1 1
-state_updates.evidence_need_updates[].state                 | description | reason       | 1 1
-state_updates.evidence_need_updates[].superseded_reason     | key         | reason       | 1 1
-state_updates.evidence_need_updates[].superseded_reason     | title       | reason       | 1 1
-state_updates.evidence_to_add[]                             | description | deliberat    | 1 1
-state_updates.evidence_to_add[].category                    | description | deliberat    | 1 1
-state_updates.proposed_transition                           | description | reason       | 1 1
-suggested_follow_ups[].body                                 | description | reason       | 1 1
+state_updates.evidence_need_updates[]                       | required[]  | rationale    | f350895acb59 | 0 1
+state_updates.evidence_need_updates[]                       | required[]  | reason       | eec86fb17b2e | 0 1
+state_updates.evidence_need_updates[].rationale             | description | rationale    | 8ba2dcb32a9c | 1 1
+state_updates.evidence_need_updates[].rationale             | key         | rationale    | f350895acb59 | 1 1
+state_updates.evidence_need_updates[].rationale             | title       | rationale    | f350895acb59 | 1 1
+state_updates.evidence_need_updates[].state                 | description | reason       | 13a9c6522149 | 1 1
+state_updates.evidence_need_updates[].superseded_reason     | key         | reason       | 05c55fa70218 | 1 1
+state_updates.evidence_need_updates[].superseded_reason     | title       | reason       | 05c55fa70218 | 1 1
+state_updates.evidence_to_add[]                             | description | deliberat    | c8328800d4a9 | 1 1
+state_updates.evidence_to_add[].category                    | description | deliberat    | a226544e1e9f | 1 1
+state_updates.proposed_transition                           | description | reason       | 9e2de6d7389b | 1 1
+suggested_follow_ups[].body                                 | description | reason       | b9369e54eb23 | 1 1
 # InvestigationResponse_Treatment (30): not sent live; each hit is Diagnosis's text at the same path
-state_updates.causal_edges_to_add[]                         | required[]  | reason       | 0 1
-state_updates.causal_edges_to_add[].reasoning               | key         | reason       | 1 1
-state_updates.causal_edges_to_add[].reasoning               | title       | reason       | 1 1
-state_updates.evidence_need_updates[]                       | required[]  | rationale    | 0 1
-state_updates.evidence_need_updates[]                       | required[]  | reason       | 0 1
-state_updates.evidence_need_updates[].rationale             | description | rationale    | 1 1
-state_updates.evidence_need_updates[].rationale             | key         | rationale    | 1 1
-state_updates.evidence_need_updates[].rationale             | title       | rationale    | 1 1
-state_updates.evidence_need_updates[].state                 | description | reason       | 1 1
-state_updates.evidence_need_updates[].superseded_reason     | key         | reason       | 1 1
-state_updates.evidence_need_updates[].superseded_reason     | title       | reason       | 1 1
-state_updates.evidence_to_add[]                             | description | deliberat    | 1 1
-state_updates.evidence_to_add[].category                    | description | deliberat    | 1 1
-state_updates.hypotheses_to_add[]                           | required[]  | rationale    | 1 1
-state_updates.hypotheses_to_add[].rationale                 | key         | rationale    | 1 1
-state_updates.hypotheses_to_add[].rationale                 | title       | rationale    | 1 1
-state_updates.hypotheses_to_update[]                        | description | reason       | 2 2
-state_updates.hypotheses_to_update[]                        | required[]  | reason       | 0 1
-state_updates.hypotheses_to_update[].refutation_reason      | description | reason       | 2 2
-state_updates.hypotheses_to_update[].refutation_reason      | key         | reason       | 1 1
-state_updates.hypotheses_to_update[].refutation_reason      | title       | reason       | 1 1
-state_updates.hypothesis_evidence_links[]                   | required[]  | reason       | 1 1
-state_updates.hypothesis_evidence_links[].reasoning         | key         | reason       | 1 1
-state_updates.hypothesis_evidence_links[].reasoning         | title       | reason       | 1 1
-state_updates.node_evidence_links[]                         | description | step-by-step | 1 1
-state_updates.node_evidence_links[]                         | required[]  | reason       | 1 1
-state_updates.node_evidence_links[].reasoning               | key         | reason       | 1 1
-state_updates.node_evidence_links[].reasoning               | title       | reason       | 1 1
-state_updates.proposed_transition                           | description | reason       | 1 1
-suggested_follow_ups[].body                                 | description | reason       | 1 1
+state_updates.causal_edges_to_add[]                         | required[]  | reason       | 0c4d01e81bb3 | 0 1
+state_updates.causal_edges_to_add[].reasoning               | key         | reason       | 0c4d01e81bb3 | 1 1
+state_updates.causal_edges_to_add[].reasoning               | title       | reason       | 0c4d01e81bb3 | 1 1
+state_updates.evidence_need_updates[]                       | required[]  | rationale    | f350895acb59 | 0 1
+state_updates.evidence_need_updates[]                       | required[]  | reason       | eec86fb17b2e | 0 1
+state_updates.evidence_need_updates[].rationale             | description | rationale    | 8ba2dcb32a9c | 1 1
+state_updates.evidence_need_updates[].rationale             | key         | rationale    | f350895acb59 | 1 1
+state_updates.evidence_need_updates[].rationale             | title       | rationale    | f350895acb59 | 1 1
+state_updates.evidence_need_updates[].state                 | description | reason       | 13a9c6522149 | 1 1
+state_updates.evidence_need_updates[].superseded_reason     | key         | reason       | 05c55fa70218 | 1 1
+state_updates.evidence_need_updates[].superseded_reason     | title       | reason       | 05c55fa70218 | 1 1
+state_updates.evidence_to_add[]                             | description | deliberat    | c8328800d4a9 | 1 1
+state_updates.evidence_to_add[].category                    | description | deliberat    | a226544e1e9f | 1 1
+state_updates.hypotheses_to_add[]                           | required[]  | rationale    | f350895acb59 | 1 1
+state_updates.hypotheses_to_add[].rationale                 | key         | rationale    | f350895acb59 | 1 1
+state_updates.hypotheses_to_add[].rationale                 | title       | rationale    | f350895acb59 | 1 1
+state_updates.hypotheses_to_update[]                        | description | reason       | 4c53faaa6606 | 2 2
+state_updates.hypotheses_to_update[]                        | required[]  | reason       | 1e7baccbb097 | 0 1
+state_updates.hypotheses_to_update[].refutation_reason      | description | reason       | 2cf222ce0a69 | 2 2
+state_updates.hypotheses_to_update[].refutation_reason      | key         | reason       | ee73da7edee0 | 1 1
+state_updates.hypotheses_to_update[].refutation_reason      | title       | reason       | ee73da7edee0 | 1 1
+state_updates.hypothesis_evidence_links[]                   | required[]  | reason       | 0c4d01e81bb3 | 1 1
+state_updates.hypothesis_evidence_links[].reasoning         | key         | reason       | 0c4d01e81bb3 | 1 1
+state_updates.hypothesis_evidence_links[].reasoning         | title       | reason       | 0c4d01e81bb3 | 1 1
+state_updates.node_evidence_links[]                         | description | step-by-step | 862ce8401aa4 | 1 1
+state_updates.node_evidence_links[]                         | required[]  | reason       | 0c4d01e81bb3 | 1 1
+state_updates.node_evidence_links[].reasoning               | key         | reason       | 0c4d01e81bb3 | 1 1
+state_updates.node_evidence_links[].reasoning               | title       | reason       | 0c4d01e81bb3 | 1 1
+state_updates.proposed_transition                           | description | reason       | 9e2de6d7389b | 1 1
+suggested_follow_ups[].body                                 | description | reason       | b9369e54eb23 | 1 1
 # InvestigationResponse_General (33): not sent live; each hit is Diagnosis's text at the same path
-state_updates.causal_edges_to_add[]                         | required[]  | reason       | 0 1
-state_updates.causal_edges_to_add[].reasoning               | key         | reason       | 1 1
-state_updates.causal_edges_to_add[].reasoning               | title       | reason       | 1 1
-state_updates.evidence_need_updates[]                       | required[]  | rationale    | 0 1
-state_updates.evidence_need_updates[]                       | required[]  | reason       | 0 1
-state_updates.evidence_need_updates[].rationale             | description | rationale    | 1 1
-state_updates.evidence_need_updates[].rationale             | key         | rationale    | 1 1
-state_updates.evidence_need_updates[].rationale             | title       | rationale    | 1 1
-state_updates.evidence_need_updates[].state                 | description | reason       | 1 1
-state_updates.evidence_need_updates[].superseded_reason     | key         | reason       | 1 1
-state_updates.evidence_need_updates[].superseded_reason     | title       | reason       | 1 1
-state_updates.evidence_to_add[]                             | description | deliberat    | 1 1
-state_updates.evidence_to_add[].category                    | description | deliberat    | 1 1
-state_updates.hypotheses_to_add[]                           | required[]  | rationale    | 1 1
-state_updates.hypotheses_to_add[].rationale                 | key         | rationale    | 1 1
-state_updates.hypotheses_to_add[].rationale                 | title       | rationale    | 1 1
-state_updates.hypotheses_to_update[]                        | description | reason       | 2 2
-state_updates.hypotheses_to_update[]                        | required[]  | reason       | 0 1
-state_updates.hypotheses_to_update[].refutation_reason      | description | reason       | 2 2
-state_updates.hypotheses_to_update[].refutation_reason      | key         | reason       | 1 1
-state_updates.hypotheses_to_update[].refutation_reason      | title       | reason       | 1 1
-state_updates.hypothesis_evidence_links[]                   | required[]  | reason       | 1 1
-state_updates.hypothesis_evidence_links[].reasoning         | key         | reason       | 1 1
-state_updates.hypothesis_evidence_links[].reasoning         | title       | reason       | 1 1
-state_updates.node_evidence_links[]                         | description | step-by-step | 1 1
-state_updates.node_evidence_links[]                         | required[]  | reason       | 1 1
-state_updates.node_evidence_links[].reasoning               | key         | reason       | 1 1
-state_updates.node_evidence_links[].reasoning               | title       | reason       | 1 1
-state_updates.proposed_transition                           | description | reason       | 1 1
-state_updates.verification_updates                          | required[]  | rationale    | 0 1
-state_updates.verification_updates.rca_infeasible_rationale | key         | rationale    | 1 1
-state_updates.verification_updates.rca_infeasible_rationale | title       | rationale    | 1 1
-suggested_follow_ups[].body                                 | description | reason       | 1 1
+state_updates.causal_edges_to_add[]                         | required[]  | reason       | 0c4d01e81bb3 | 0 1
+state_updates.causal_edges_to_add[].reasoning               | key         | reason       | 0c4d01e81bb3 | 1 1
+state_updates.causal_edges_to_add[].reasoning               | title       | reason       | 0c4d01e81bb3 | 1 1
+state_updates.evidence_need_updates[]                       | required[]  | rationale    | f350895acb59 | 0 1
+state_updates.evidence_need_updates[]                       | required[]  | reason       | eec86fb17b2e | 0 1
+state_updates.evidence_need_updates[].rationale             | description | rationale    | 8ba2dcb32a9c | 1 1
+state_updates.evidence_need_updates[].rationale             | key         | rationale    | f350895acb59 | 1 1
+state_updates.evidence_need_updates[].rationale             | title       | rationale    | f350895acb59 | 1 1
+state_updates.evidence_need_updates[].state                 | description | reason       | 13a9c6522149 | 1 1
+state_updates.evidence_need_updates[].superseded_reason     | key         | reason       | 05c55fa70218 | 1 1
+state_updates.evidence_need_updates[].superseded_reason     | title       | reason       | 05c55fa70218 | 1 1
+state_updates.evidence_to_add[]                             | description | deliberat    | c8328800d4a9 | 1 1
+state_updates.evidence_to_add[].category                    | description | deliberat    | a226544e1e9f | 1 1
+state_updates.hypotheses_to_add[]                           | required[]  | rationale    | f350895acb59 | 1 1
+state_updates.hypotheses_to_add[].rationale                 | key         | rationale    | f350895acb59 | 1 1
+state_updates.hypotheses_to_add[].rationale                 | title       | rationale    | f350895acb59 | 1 1
+state_updates.hypotheses_to_update[]                        | description | reason       | 4c53faaa6606 | 2 2
+state_updates.hypotheses_to_update[]                        | required[]  | reason       | 1e7baccbb097 | 0 1
+state_updates.hypotheses_to_update[].refutation_reason      | description | reason       | 2cf222ce0a69 | 2 2
+state_updates.hypotheses_to_update[].refutation_reason      | key         | reason       | ee73da7edee0 | 1 1
+state_updates.hypotheses_to_update[].refutation_reason      | title       | reason       | ee73da7edee0 | 1 1
+state_updates.hypothesis_evidence_links[]                   | required[]  | reason       | 0c4d01e81bb3 | 1 1
+state_updates.hypothesis_evidence_links[].reasoning         | key         | reason       | 0c4d01e81bb3 | 1 1
+state_updates.hypothesis_evidence_links[].reasoning         | title       | reason       | 0c4d01e81bb3 | 1 1
+state_updates.node_evidence_links[]                         | description | step-by-step | 862ce8401aa4 | 1 1
+state_updates.node_evidence_links[]                         | required[]  | reason       | 0c4d01e81bb3 | 1 1
+state_updates.node_evidence_links[].reasoning               | key         | reason       | 0c4d01e81bb3 | 1 1
+state_updates.node_evidence_links[].reasoning               | title       | reason       | 0c4d01e81bb3 | 1 1
+state_updates.proposed_transition                           | description | reason       | 9e2de6d7389b | 1 1
+state_updates.verification_updates                          | required[]  | rationale    | 620a5898364c | 0 1
+state_updates.verification_updates.rca_infeasible_rationale | key         | rationale    | b28c2f0137cc | 1 1
+state_updates.verification_updates.rca_infeasible_rationale | title       | rationale    | b28c2f0137cc | 1 1
+suggested_follow_ups[].body                                 | description | reason       | b9369e54eb23 | 1 1
 """
 
 
-def _parse_allowlist(table: str) -> dict[tuple[str, str, str, str], tuple[int, int]]:
+def _parse_allowlist(
+    table: str,
+) -> dict[tuple[str, str, str, str, str], tuple[int, int]]:
     """``# <schema> (...)`` opens a schema's rows; a row is
-    ``path | kind | matched text | plain strict``."""
-    parsed: dict[tuple[str, str, str, str], tuple[int, int]] = {}
+    ``path | kind | matched text | digest | plain strict``."""
+    parsed: dict[tuple[str, str, str, str, str], tuple[int, int]] = {}
     schema = ""
     for line in table.strip().splitlines():
         if line.startswith("# "):
             schema = line[2:].split(" ", 1)[0]
             continue
-        path, kind, text, counts = (cell.strip() for cell in line.split("|"))
+        path, kind, text, digest, counts = (cell.strip() for cell in line.split("|"))
         plain, strict = (int(n) for n in counts.split())
-        key = (schema, path, kind, text)
+        key = (schema, path, kind, text, digest)
         assert key not in parsed, key
         parsed[key] = (plain, strict)
     return parsed
@@ -521,6 +541,25 @@ def _inject_nonbreaking_hyphens(tools):
     ] = "Work step‑by‑step."
 
 
+#: The delta review's rewrite of a measured-safe string: the ``reason`` count is
+#: unchanged, and a count-only census passed it.
+_MEASURED_BODY = "Reasoning text shown on card (why the user should take this action)"
+_REWRITTEN_BODY = "Write out your full reasoning for this action, in detail"
+
+
+def _follow_up_body(tool):
+    items = _branch(_props(tool)["suggested_follow_ups"], "items")["items"]
+    return items["properties"]["body"]
+
+
+def _rewrite_measured_body(tools):
+    """The edit as a source change would make it: under both converters."""
+    for converter in range(len(CONVERTERS)):
+        body = _follow_up_body(tools[("InvestigationResponse_Diagnosis", converter)])
+        assert body["description"] == _MEASURED_BODY
+        body["description"] = _REWRITTEN_BODY
+
+
 def _inject_inquiry_internal_reasoning(tools):
     _props(tools[("InquiryResponse", 0)])["internal_reasoning"] = {"type": "string"}
 
@@ -537,6 +576,7 @@ _CONTROLS = {
     "json_schema_extra string": _inject_schema_extra,
     "U+2011 step-by-step": _inject_nonbreaking_hyphens,
     "InquiryResponse gains internal_reasoning": _inject_inquiry_internal_reasoning,
+    "rewrite of a measured-safe string, count kept": _rewrite_measured_body,
 }
 
 
@@ -548,6 +588,20 @@ def test_the_census_catches_each_missed_shape(inject):
     before = set(_drift(_table(tools)))
     inject(tools)
     assert set(_drift(_table(tools))) - before
+
+
+def test_a_count_preserving_rewrite_reads_as_new_hit_and_stale_entry():
+    """The rewrite keeps the token count, so only the digest can see it."""
+    tokens = [m.group(0) for m in VOCABULARY.finditer(_normalise(_MEASURED_BODY))]
+    assert tokens == [
+        m.group(0) for m in VOCABULARY.finditer(_normalise(_REWRITTEN_BODY))
+    ]
+    tools = _tools()
+    before = set(_drift(_table(tools)))
+    _rewrite_measured_body(tools)
+    added = set(_drift(_table(tools))) - before
+    assert any(line.startswith("new hit") for line in added), added
+    assert any(line.startswith("stale entry") for line in added), added
 
 
 def test_normalisation_is_what_catches_the_nonbreaking_hyphen():
