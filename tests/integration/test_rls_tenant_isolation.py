@@ -479,6 +479,9 @@ async def test_rls_enabled_and_policy_present(superuser_engine):
             "team_invitations",
             # the turn ledger, re-keyed on a billing subject (ADR-017 D5)
             "turn_usage",
+            # the LLM usage ledger, revision 002 (#640)
+            "llm_usage_daily",
+            "llm_turn_spend",
             # no enterprise_id of its own: one hop through teams
             "team_members",
         ):
