@@ -116,6 +116,7 @@ JOB_SPECIFIC_FLAGS: Dict[str, str] = {
 AVAILABLE_JOBS: Dict[str, str] = {
     "case_cleanup": "faultmaven.jobs.case_cleanup",
     "kb_seed": "faultmaven.jobs.kb_seed",
+    "llm_usage_retention": "faultmaven.jobs.llm_usage_retention",
     "storage_cleanup": "faultmaven.modules.agent.jobs.storage_cleanup",
 }
 
