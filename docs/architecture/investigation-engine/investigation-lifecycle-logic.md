@@ -463,10 +463,19 @@ classified before any LLM call:
   ("yesterday…" is not "yes"), and a message carrying a question mark or a
   contrastive " but " ("ok but what is the root cause?") is substantive input, not
   consent — it takes the escape lane below instead of executing a terminal
-  transition
+  transition. **Consent is the whole reply (#1783):** all of it must be
+  confirmation tokens, the fillers `please` / `thanks` / `thank you`, and
+  characters that are not letters or digits (curly apostrophes read as straight),
+  so "ok go ahead" and "yes, please close it" confirm while "ok no" and "sure —
+  tomorrow" are re-asked. A refusal or deferral anywhere ("ok, don't close it
+  yet", "sure, do it later") never confirms, and it vetoes a confirmation intent
+  the resolver minted from the same typed text; a clicked intent is never vetoed,
+  and a minted decline outranks a typed token
 - **Bare no** (word-boundary token match or intent metadata, below the substantive
   bound) → cancel transition, acknowledge deterministically ("note…"/"stopped…" do
-  not read as "no"/"stop")
+  not read as "no"/"stop"). A reply that opens with a decline token, or refuses or
+  defers anywhere (`don't`, `not yet`, `later`, `wait`, `cancel`, `never mind`, …;
+  #1783), is a decline
 - **Decline carrying substance** (decline token followed by data, a question, a
   redirection) → cancel transition, then process the message as a normal turn so
   its content is not lost
@@ -1083,7 +1092,9 @@ This routes through `IntentType.CONFIRMATION` → deterministic `pending_transit
 bypassing the tool loop and pattern matching entirely.
 
 **Typed responses** (user types instead of clicking) fall back to `confirmation_token_class()` (consent is "not `None`")
-pattern matching with a 100-char length guard.
+pattern matching with a 100-char length guard. It reads the **whole reply** (#1783): consent only when every word is a
+confirmation token or a filler (`please`, `thanks`, `thank you`), and never when a refusal or deferral appears anywhere
+in it — "ok, don't close it yet" declines rather than confirms.
 
 ---
 

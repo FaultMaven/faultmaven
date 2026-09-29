@@ -31,6 +31,7 @@ from faultmaven.core.investigation.milestone_engine.terminal_turns import (
     TerminalTurnHandler,
 )
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
+    _reply_refuses,
     _user_declines_transition,
     confirmation_token_class,
 )
@@ -632,7 +633,13 @@ class MilestoneEngine:
                     # The typed matcher, read once: its verdict is whether
                     # the text confirms, its class names how (#1748).
                     token_class = confirmation_token_class(user_message)
-                    user_confirms = intent_confirms or token_class is not None
+                    # A refusal in the text vetoes an intent the resolver
+                    # MINTED from that text, never a click; and a minted
+                    # decline outranks a typed token (#1783). "ok, don't close
+                    # it yet" confirms by neither lane and declines below.
+                    user_confirms = (
+                        intent_confirms and not (typed and _reply_refuses(user_message))
+                    ) or (token_class is not None and not intent_declines)
                     user_declines = intent_declines or _user_declines_transition(
                         user_message
                     )

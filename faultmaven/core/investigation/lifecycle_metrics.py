@@ -539,19 +539,20 @@ close_pivoted_to_resolve_total = Counter(
 # how the user confirmed:
 #   ``intent``            a click;
 #   ``explicit_token``    typed text that is a BARE explicit token ("yes!");
-#   ``explicit_prefixed`` typed text opening with an explicit token and saying
-#                         more ("yes, don't close it yet", "do it later");
+#   ``explicit_prefixed`` typed consent whose first token is explicit, saying
+#                         more ("yes please close it", "yes, mark as resolved");
 #   ``weak_token``        a typed BARE weak token ("ok", "ok 👍", "ok :+1:") —
 #                         #723's term;
-#   ``weak_prefixed``     typed text opening with a weak token and saying more
-#                         ("ok go ahead", "ok, don't close it yet");
-#   ``typed_other``       typed text the intent resolver accepted that is no
-#                         known token ("that works").
-# BARE means no letter or digit after the matched token once Slack emoji
-# shortcodes (":+1:") are removed, so a Slack reply labels as the same reply
-# with the Unicode emoji does; an emoticon written with a letter or digit
-# (":D", "XD", "<3") makes a reply prefixed. The prefixed labels are reported
-# beside the others and never merged into either side.
+#   ``weak_prefixed``     typed consent whose first token is weak, saying more
+#                         ("ok go ahead", "ok thanks");
+#   ``typed_other``       typed text the intent resolver accepted that is not
+#                         a whole-reply consent ("that works").
+# Typed text is consent only when the WHOLE reply is (#1783): tokens, fillers
+# and non-alphanumerics, with no refusal anywhere, so "ok, don't close it yet"
+# counts nowhere. BARE means no letter or digit after the first token once Slack
+# emoji shortcodes (":+1:") are removed, so a Slack reply labels as the same
+# reply with the Unicode emoji does. The prefixed labels are reported beside the
+# others and never merged into either side.
 # ``faultmaven_terminal_followup_total`` counts the turn IMMEDIATELY after the
 # confirming turn, by the same ``via`` and the case's state, when the user
 # typed it: non-blank text, no effective intent, not one of the ack turn's own

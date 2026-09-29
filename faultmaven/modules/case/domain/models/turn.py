@@ -128,13 +128,14 @@ class InvestigationMomentum(str, Enum):
 NON_INVESTIGATIVE_OUTCOMES = frozenset({"conversation", "other", "out_of_band"})
 
 #: How a user confirmed the terminal transition a turn executed (#1748): a
-#: clicked intent (a DECIDE card, or the dropdown pick repeated); typed text
-#: opening with an explicit token, bare ("yes", "go ahead!") or saying more
-#: ("yes, don't close it yet"); typed text opening with a weak token, bare
+#: clicked intent (a DECIDE card, or the dropdown pick repeated); typed consent
+#: whose first token is explicit, bare ("yes", "go ahead!") or saying more
+#: ("yes please close it"); typed consent whose first token is weak, bare
 #: ("ok", "lgtm 👍") or saying more ("ok go ahead"); or typed text the intent
-#: resolver accepted that is no known token ("that works"). The prefixed labels
-#: are left unclassified. The ONE copy of the label set: ``TurnProgress``
-#: stores it and the terminal-confirmation counters are labelled by it.
+#: resolver accepted that is not a whole-reply consent ("that works"). A typed
+#: refusal confirms nothing (#1783), so it has no label. The ONE copy of the
+#: label set: ``TurnProgress`` stores it and the terminal-confirmation counters
+#: are labelled by it.
 TerminalConfirmedVia = Literal[
     "intent",
     "explicit_token",
