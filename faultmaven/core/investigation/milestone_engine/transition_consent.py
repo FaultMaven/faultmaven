@@ -1,9 +1,11 @@
 """Whether a user turn confirms or declines a proposed stage transition, read from the same gate-token matcher stage_gates.py uses."""
 
+import unicodedata
 from typing import Optional
 
+from faultmaven.modules.case.contracts import TerminalConfirmedVia
+
 from .stage_gates import (
-    _contains_gate_token,
     _matches_gate_token,
 )
 
@@ -37,7 +39,25 @@ _EXPLICIT_CONFIRM_TOKENS = (
 )
 
 
-def confirmation_token_class(user_message: str) -> Optional[str]:
+def _is_bare_weak_token(msg: str) -> bool:
+    """``msg`` is one weak token and nothing after it but whitespace and
+    punctuation (Unicode category ``P*``) — "ok", "ok!", "Sure.", "lgtm ...".
+
+    ``msg`` is the gate's normalisation (stripped, lowercased). An emoji is a
+    symbol, not punctuation, so "ok 👍" is not bare; neither is anything with a
+    letter or digit after the token.
+    """
+    return any(
+        msg.startswith(token)
+        and all(
+            c.isspace() or unicodedata.category(c).startswith("P")
+            for c in msg[len(token) :]
+        )
+        for token in _WEAK_CONFIRM_TOKENS
+    )
+
+
+def confirmation_token_class(user_message: str) -> Optional[TerminalConfirmedVia]:
     """Which class of typed confirmation ``user_message`` is, or None for none.
 
     The typed-confirmation matcher itself (not DECIDE clicks): None means the
@@ -63,11 +83,16 @@ def confirmation_token_class(user_message: str) -> Optional[str]:
     the IntentResolver adoption site (#721), so the two confirm lanes
     cannot drift apart.
 
-    Whether the message confirms is decided by its OPENING token, over both
-    sets. Which class it is reads the WHOLE message (#1748): ``"explicit_token"``
-    when an explicit token appears anywhere in it — "ok, go ahead" and
-    "sure, close it" open on a weak token and still say what they mean — and
-    ``"weak_token"`` only when none does.
+    The class is read by the gate's own rule, the OPENING token, and never
+    guessed from what follows it (#1748):
+
+    * ``"explicit_token"`` — the message opens with an explicit token;
+    * ``"weak_token"`` — the message is a BARE weak token (#723's term): the
+      token and nothing after it but whitespace and punctuation;
+    * ``"weak_prefixed"`` — it opens with a weak token and says more. Left
+      unclassified on purpose: what follows may confirm ("ok go ahead") or
+      refuse ("ok, don't close it yet"), and a word scan cannot tell those
+      apart. That the gate executes on the refusals is #1783, not this label.
     """
     from faultmaven.core.investigation.terminal_transitions import (
         is_substantive_reply,
@@ -80,9 +105,11 @@ def confirmation_token_class(user_message: str) -> Optional[str]:
     msg = user_message.strip().lower()
     if not _matches_gate_token(msg, _EXPLICIT_CONFIRM_TOKENS + _WEAK_CONFIRM_TOKENS):
         return None
-    if _contains_gate_token(msg, _EXPLICIT_CONFIRM_TOKENS):
+    if _matches_gate_token(msg, _EXPLICIT_CONFIRM_TOKENS):
         return "explicit_token"
-    return "weak_token"
+    if _is_bare_weak_token(msg):
+        return "weak_token"
+    return "weak_prefixed"
 
 
 def _user_confirms_transition(user_message: str) -> bool:

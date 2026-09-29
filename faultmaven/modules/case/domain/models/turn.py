@@ -1,8 +1,11 @@
+import logging
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, List, Literal, Optional, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+logger = logging.getLogger(__name__)
 
 # ============================================================
 # Turn Tracking Models (Section 8)
@@ -125,12 +128,16 @@ class InvestigationMomentum(str, Enum):
 NON_INVESTIGATIVE_OUTCOMES = frozenset({"conversation", "other", "out_of_band"})
 
 #: How a user confirmed the terminal transition a turn executed (#1748): a
-#: clicked intent (a DECIDE card, or the dropdown pick repeated), a typed
-#: explicit token ("yes", "go ahead"), a typed bare weak token ("ok", "lgtm"),
-#: or typed text the intent resolver accepted that is no known token ("that
-#: works"). The ONE copy of the label set: ``TurnProgress`` stores it and the
-#: terminal-confirmation counters are labelled by it.
-TerminalConfirmedVia = Literal["intent", "explicit_token", "weak_token", "typed_other"]
+#: clicked intent (a DECIDE card, or the dropdown pick repeated), typed text
+#: opening with an explicit token ("yes", "go ahead"), a typed BARE weak token
+#: ("ok", "lgtm!"), typed text opening with a weak token and saying more ("ok
+#: go ahead", "ok, don't close it yet" — left unclassified), or typed text the
+#: intent resolver accepted that is no known token ("that works"). The ONE copy
+#: of the label set: ``TurnProgress`` stores it and the terminal-confirmation
+#: counters are labelled by it.
+TerminalConfirmedVia = Literal[
+    "intent", "explicit_token", "weak_token", "weak_prefixed", "typed_other"
+]
 
 
 class TurnProgress(BaseModel):
@@ -187,9 +194,9 @@ class TurnProgress(BaseModel):
         default=None,
         description=(
             "How the user confirmed the terminal transition this turn executed "
-            "(clicked intent, typed explicit token, typed bare weak token, or "
-            "other typed text the resolver accepted). None on every turn that "
-            "executed no terminal transition."
+            "(clicked intent, typed explicit token, typed bare weak token, typed "
+            "weak token with more text, or other typed text the resolver "
+            "accepted). None on every turn that executed no terminal transition."
         ),
     )
 
@@ -282,8 +289,17 @@ class TurnProgress(BaseModel):
         A value the label set no longer names (a renamed or retired channel)
         is a record of a confirmation nobody can count any more; None says
         exactly that.
+
+        Never silently: it runs on construction too, so a producer writing a
+        value the set does not name would otherwise mute that channel with
+        nothing to show for it. The WARNING carries the value.
         """
-        return v if v in get_args(TerminalConfirmedVia) else None
+        if v is None or v in get_args(TerminalConfirmedVia):
+            return v
+        logger.warning(
+            "terminal_confirmed_via %r is not a known channel; recorded as None", v
+        )
+        return None
 
     # ============================================================
     # Computed Properties

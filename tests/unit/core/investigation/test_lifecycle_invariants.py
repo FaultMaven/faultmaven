@@ -1492,14 +1492,16 @@ class TestINV12_FreeTextRoutesToQA:
             REGENERATE_RESOLUTION_SUMMARY_PAYLOAD,
         )
         from faultmaven.core.investigation.milestone_engine.terminal_turns import (
-            TerminalTurnHandler,
+            _REPORT_REGEN_PATTERNS,
+            _RUNBOOK_CREATION_PATTERNS,
         )
 
-        # Patterns are stored on the class (lowercased). #1707: moved from
-        # MilestoneEngine to TerminalTurnHandler, the collaborator that reads
-        # them.
-        regen_patterns = TerminalTurnHandler._REPORT_REGEN_PATTERNS
-        runbook_patterns = TerminalTurnHandler._RUNBOOK_CREATION_PATTERNS
+        # Patterns are module constants (lowercased) read by
+        # ``terminal_card_action``, the one recogniser the handler dispatches on
+        # (#1748; #1707 had moved them from MilestoneEngine to
+        # TerminalTurnHandler).
+        regen_patterns = _REPORT_REGEN_PATTERNS
+        runbook_patterns = _RUNBOOK_CREATION_PATTERNS
 
         # Every DECIDE payload must appear in the dispatcher's tuple
         # (lowercased, since user_message is lower-cased before matching)

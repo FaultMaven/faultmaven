@@ -73,6 +73,7 @@ from faultmaven.modules.agent.tools.vectorize_file_tool import VECTORIZED_SYSTEM
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
+    TerminalConfirmedVia,
     TurnOutcome,
 )
 from faultmaven.modules.case.domain.services.case_action_manager import (
@@ -633,6 +634,7 @@ class MilestoneEngine:
                         # named by its tokens, and ``typed_other`` when the
                         # resolver accepted text that is no known token ("that
                         # works").
+                        confirmed_via: TerminalConfirmedVia
                         if intent_confirms and not (intent_data or {}).get("typed"):
                             confirmed_via = "intent"
                         else:

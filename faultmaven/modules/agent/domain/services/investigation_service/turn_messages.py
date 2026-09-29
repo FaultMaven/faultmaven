@@ -12,6 +12,9 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     terminal_confirmation_total,
     terminal_followup_total,
 )
+from faultmaven.core.investigation.milestone_engine.terminal_turns import (
+    terminal_card_action,
+)
 from faultmaven.models.api_models import IntentType
 from faultmaven.modules.agent.domain.services.orientation import OrientationKind
 from faultmaven.modules.case.contracts import (
@@ -106,6 +109,7 @@ async def _save_and_emit_turn(
     *,
     agent_response_text,
     attachment_metadata,
+    intent,
     intent_type,
     oob_kind,
     payload,
@@ -136,7 +140,7 @@ async def _save_and_emit_turn(
     # conflicts and is retried counts once, and a route that never reaches the
     # engine (GREETING) counts like any other.
     _count_terminal_confirmation(
-        updated_case, payload=payload, was_terminal=was_terminal
+        updated_case, intent=intent, user_message=payload.query or ""
     )
 
     # 4b. #1142: one row per consumed turn, on every route. Emitted
@@ -196,26 +200,31 @@ async def _save_and_emit_turn(
     return agent_response_text
 
 
-def _count_terminal_confirmation(updated_case, *, payload, was_terminal) -> None:
-    """Count a confirmed terminal transition, and the first message after it (#1748).
+def _count_terminal_confirmation(updated_case, *, intent, user_message) -> None:
+    """Count a confirmed terminal transition, and the turn after it (#1748).
 
     Read from the SAVED turn records. By this point ``turn_history[-1]`` is this
     turn's own record on every route — the engine writes it on the routes that
     reach its bookkeeping and ``_backfill_consumed_turn`` writes it on the rest
     (greeting, file reclassification, out-of-band, the terminal short-circuit) —
     and ``terminal_confirmed_via`` is set only on the record of a turn whose
-    confirmation executed a terminal transition. So:
+    confirmation EXECUTED a terminal transition. Terminal states have no
+    outgoing transition, so a record carrying a channel also says the case is
+    terminal now, and — one record back — that this turn began terminal. No
+    separate state check is needed for either count:
 
     * this turn confirmed one when its own record carries a channel;
-    * this turn is the first message after one when it began on a terminal case
-      and the PREVIOUS record carries a channel. Every later message finds a
-      predecessor that carries none, so it needs no flag.
+    * this turn is the one immediately after a confirmation when the PREVIOUS
+      record carries a channel. Every later turn finds a predecessor that
+      carries none, so it needs no flag.
 
-    The follow-up counts only a message with no structured intent
-    (``payload.intent is None``): typed text, not a click on a card that sends
-    an intent — the confirmation card clicked again, say. A card that carries
-    no intent (the ack turn's runbook or regenerate card) arrives as its text
-    and is counted.
+    The follow-up counts only a message the user typed: no effective ``intent``
+    (the one ``_build_user_message`` settled on, so a client-sent GREETING it
+    re-derives from the text counts as typed), and not the payload of one of the
+    ack turn's own cards (runbook, regenerate), which carry no intent and arrive
+    as their text — recognised by ``terminal_card_action``, the same function
+    the terminal handler dispatches on. A click in that turn means this
+    confirmation gets no follow-up count at all.
 
     A metric must never fail a turn: the turn is already saved, and a
     registry failure here is logged and dropped.
@@ -223,15 +232,15 @@ def _count_terminal_confirmation(updated_case, *, payload, was_terminal) -> None
     try:
         history = updated_case.turn_history
         to_state = updated_case.state.value
-        if updated_case.is_terminal and history and history[-1].terminal_confirmed_via:
+        if history and history[-1].terminal_confirmed_via:
             terminal_confirmation_total.labels(
                 via=history[-1].terminal_confirmed_via, to_state=to_state
             ).inc()
         if (
-            was_terminal
-            and len(history) >= 2
+            len(history) >= 2
             and history[-2].terminal_confirmed_via
-            and payload.intent is None
+            and intent is None
+            and terminal_card_action(user_message) is None
         ):
             terminal_followup_total.labels(
                 via=history[-2].terminal_confirmed_via, to_state=to_state

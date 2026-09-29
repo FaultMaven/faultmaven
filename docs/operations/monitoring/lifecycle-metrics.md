@@ -294,28 +294,36 @@ Composition seams (cross-tier dependencies in the matrix) are the natural candid
 
 **Counters:**
 
-- `faultmaven_terminal_confirmation_total{via, to_state}` — one increment per terminal transition a user's confirmation executed. `via` is how the user confirmed:
+- `faultmaven_terminal_confirmation_total{via, to_state}` — one increment per terminal transition a user's confirmation executed. `to_state` is `resolved` or `closed`. `via` is how the user confirmed, read by the gate's own rule (the opening token) and never guessed from what follows it:
   - `intent` — a click (the DECIDE confirmation card, or the dropdown pick repeated);
-  - `explicit_token` — typed text carrying an explicit token anywhere (`yes`, `go ahead`, …; `ok, go ahead` and `yes ok` are explicit);
-  - `weak_token` — typed text opening on a weak token and carrying no explicit one;
+  - `explicit_token` — typed text opening with an explicit token (`yes`, `go ahead`, `close it`, …);
+  - `weak_token` — a typed **bare** weak token, #723's term: the token and nothing after it but whitespace and punctuation (`ok`, `ok!`, `Sure.`). An emoji after it is not bare;
+  - `weak_prefixed` — typed text opening with a weak token and saying more (`ok go ahead`, `ok, don't close it yet`). What follows may confirm or refuse, and a word scan cannot tell which, so this label is reported beside the others and never merged into either. That the gate executes on the refusals is #1783;
   - `typed_other` — typed text the intent resolver accepted as a confirmation that is no known token ("that works").
 
-  A typed reply the resolver turned into a confirmation intent is still typed, and is named by its tokens, never `intent`. `to_state` is `resolved` or `closed`. The INV-37 close-to-resolve pivot executes nothing and counts nothing.
-- `faultmaven_terminal_followup_total{via, to_state}` — one increment for the **first** message a user sends on the case after that confirmation, by the same `via` and the state the case is in. Only a message with no structured intent counts: typed text, not a click on a card that sends one (the confirmation card clicked again). A card that carries no intent — the ack turn's runbook and regenerate cards — arrives as its text and is counted.
-
-**When they count.** Both are counted by the investigation service after the turn's save (`turn_messages._save_and_emit_turn`), the one point every route passes through, and read from the saved turn records: the confirming turn's record carries `terminal_confirmed_via`, so the next message finds it on its predecessor and every later message finds a predecessor that carries none. A turn that fails or conflicts and is retried counts once, and a route that never reaches the engine (a greeting) counts like any other.
+  A typed reply the resolver turned into a confirmation intent is still typed, and is named by its tokens, never `intent`. The INV-37 close-to-resolve pivot executes nothing and counts nothing.
+- `faultmaven_terminal_followup_total{via, to_state}` — one increment when the turn **immediately after** the confirming turn is a message the user typed, by the same `via` and the state the case is in. Typed means no effective intent (the one the service settles on, so a client-sent GREETING it re-derives from the text counts) and not one of the ack turn's own cards: the runbook and regenerate cards carry no intent and arrive as their text, and are recognised by `terminal_card_action`, the function the terminal handler dispatches on.
 
 Both label sets are bounded enums (`TerminalConfirmedVia`, `CaseState`), never the user's text.
 
-**#723 trigger 1, as a query** — the follow-up rate per channel over 30 days:
+**When they count.** Both are counted by the investigation service after the turn's **final** save (`turn_messages._save_and_emit_turn`), the one point every route passes through, and read from the saved turn records: the confirming turn's record carries `terminal_confirmed_via`, so the next turn finds it on its predecessor and every later turn finds a predecessor that carries none. A turn that fails at that save and is retried counts once, and a route that never reaches the engine (a greeting) counts like any other.
+
+**What is not counted.** The loss below does not depend on the channel, so it does not bias the `weak_token`-against-`explicit_token` comparison.
+
+- **A confirmation whose turn fails or is cancelled after the engine committed the transition, but before the final save.** The two causes, and what each leaves for the retry:
+  - *A report-generation timeout* (the turn deadline cancelling `auto_generate_report`). On the pre-LLM gate path, which almost every confirmation takes, the engine saves the terminal state **before** it generates the report and before it records the turn, so no channel record is left and the retry is not counted as a follow-up either. On the `transitions.py` path the turn's record is saved at the engine's own save **before** the report, so the channel record is left and the retry is counted as the follow-up.
+  - *A save conflict at the final save.* On both paths the engine has already saved the channel record, so the retry is counted as the follow-up.
+- **The follow-up of a confirmation whose next turn was a click** (a card, or any message carrying an intent). The follow-up is the turn immediately after the confirming turn only; a typed message after that click is not counted.
+
+**#723 trigger 1, as a query** — the follow-up rate of a bare weak token against an explicit token, over 30 days:
 
 ```promql
-sum by (via, to_state) (increase(faultmaven_terminal_followup_total[30d]))
+sum by (via, to_state) (increase(faultmaven_terminal_followup_total{via=~"weak_token|explicit_token"}[30d]))
   /
-sum by (via, to_state) (increase(faultmaven_terminal_confirmation_total[30d]))
+sum by (via, to_state) (increase(faultmaven_terminal_confirmation_total{via=~"weak_token|explicit_token"}[30d]))
 ```
 
-The signal is the `weak_token` rate against the `explicit_token` rate, not either alone: a follow-up is not proof of a spurious close ("thanks" is a follow-up).
+The signal is the `weak_token` rate against the `explicit_token` rate, not either alone: a follow-up is not proof of a spurious close ("thanks" is a follow-up). `weak_prefixed` is read on its own, never folded into either side.
 
 **#723 trigger 2 cannot occur.** A dropdown INQUIRY → INVESTIGATING is refused at engine entry since #1624 (`earned_edge_refusal`; from INQUIRY, `USER_SELECTABLE_ACTIONS` offers only CLOSED), so no counter exists for it.
 

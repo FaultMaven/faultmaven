@@ -475,6 +475,9 @@ class InvestigationService:
                 self.repository,
                 agent_response_text=agent_response_text,
                 attachment_metadata=attachment_metadata,
+                # The intent ``_build_user_message`` settled on — the client's,
+                # minus a GREETING it re-derives from the text — not a mint.
+                intent=intent,
                 intent_type=intent_type,
                 oob_kind=oob_kind,
                 payload=payload,

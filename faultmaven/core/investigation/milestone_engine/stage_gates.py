@@ -50,19 +50,6 @@ def _matches_gate_token(msg: str, tokens: Sequence[str]) -> bool:
     return any(re.match(rf"{re.escape(t)}\b", msg) for t in tokens)
 
 
-def _contains_gate_token(msg: str, tokens: Sequence[str]) -> bool:
-    """The search form of :func:`_matches_gate_token`: a token ANYWHERE in ``msg``.
-
-    Same grammar — the escaped token between word boundaries, so "yesterday"
-    still does not contain "yes" — anchored at any word instead of the first.
-    It decides nothing on its own: the prefix form says whether a reply is a
-    gate answer at all, and this one only asks which tokens the answer
-    carries ("ok, go ahead" opens on "ok" and carries "go ahead", #1748).
-    ``msg`` must already be stripped/lowercased.
-    """
-    return any(re.search(rf"\b{re.escape(t)}\b", msg) for t in tokens)
-
-
 #: Milestone names the ENGINE derives rather than the LLM claiming them. They
 #: enter ``metadata["milestones_completed"]`` from the engine's own recompute
 #: (#1284), which makes them real per-turn progress — but NOT evidence claims.

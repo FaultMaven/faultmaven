@@ -527,38 +527,45 @@ close_pivoted_to_resolve_total = Counter(
 )
 
 # Terminal-confirmation telemetry (#1748, the observable behind #723). A
-# rule-fire and outcome pair, both counted by the investigation service AFTER
-# the turn's save (``turn_messages._save_and_emit_turn``) from the saved turn
-# records, so a turn that fails or conflicts and is retried counts once.
-# ``faultmaven_terminal_confirmation_total`` counts every terminal transition a
-# user's confirmation executed, labelled by ``via`` (how the user confirmed:
-# ``intent`` = a click, ``explicit_token`` = typed "yes"/"go ahead"/...,
-# ``weak_token`` = typed "ok"/"sure"/"lgtm"/... with no explicit token,
-# ``typed_other`` = typed text the intent resolver accepted that is no known
-# token) and ``to_state`` (``resolved`` | ``closed``).
-# ``faultmaven_terminal_followup_total`` counts the FIRST message a user sends
-# on the case after that confirmation carrying no structured intent (typed
-# text, not a click on a card that sends one), by the same ``via`` and the
-# state the case is in. The load-bearing signal is the follow-up rate per channel; a weak
-# token's rate well above the explicit token's is what #723 defers on. A
-# follow-up alone is not proof of a spurious close ("thanks" is one). Labels are
-# bounded enums (``TerminalConfirmedVia``, ``CaseState``), never user text. The
-# INV-37 pivot executes nothing and counts nothing.
+# rule-fire and outcome pair, both counted by the investigation service after
+# the turn's FINAL save (``turn_messages._save_and_emit_turn``) from the saved
+# turn records, so a turn that fails at that save and is retried counts once.
+# ``faultmaven_terminal_confirmation_total`` counts terminal transitions a
+# user's confirmation executed, labelled by ``via`` and ``to_state``
+# (``resolved`` | ``closed``). ``via`` is how the user confirmed:
+#   ``intent``         a click;
+#   ``explicit_token`` typed text opening with an explicit token ("yes", ...);
+#   ``weak_token``     a typed BARE weak token ("ok", "lgtm!") — #723's term;
+#   ``weak_prefixed``  typed text opening with a weak token and saying more
+#                      ("ok go ahead", "ok, don't close it yet"), reported beside
+#                      the others and never merged into either;
+#   ``typed_other``    typed text the intent resolver accepted that is no known
+#                      token ("that works").
+# ``faultmaven_terminal_followup_total`` counts the turn IMMEDIATELY after the
+# confirming turn, by the same ``via`` and the case's state, when the user
+# typed it: no effective intent and not one of the ack turn's own cards. The
+# load-bearing signal is #723's comparison, the ``weak_token`` follow-up rate
+# against the ``explicit_token`` one. A follow-up alone is not proof of a
+# spurious close ("thanks" is one). Not counted: a confirmation whose turn
+# fails or is cancelled after the engine committed the transition but before
+# the final save (a report-generation timeout, a save conflict), and the
+# follow-up of a confirmation whose next turn was a click. Labels are bounded
+# enums (``TerminalConfirmedVia``, ``CaseState``), never user text. The INV-37
+# pivot executes nothing and counts nothing.
 terminal_confirmation_total = Counter(
     "faultmaven_terminal_confirmation_total",
     "Terminal transitions executed on a user confirmation, by how the user "
-    "confirmed (intent|explicit_token|weak_token|typed_other) and the state "
-    "reached (resolved|closed).",
+    "confirmed (intent|explicit_token|weak_token|weak_prefixed|typed_other) and "
+    "the state reached (resolved|closed).",
     ["via", "to_state"],
 )
 
 terminal_followup_total = Counter(
     "faultmaven_terminal_followup_total",
-    "First user message without a structured intent on a case after a "
-    "confirmed terminal transition, "
-    "by how that transition was confirmed "
-    "(intent|explicit_token|weak_token|typed_other) and the case's state "
-    "(resolved|closed).",
+    "Typed user message on the turn immediately after a confirmed terminal "
+    "transition, by how that transition was confirmed "
+    "(intent|explicit_token|weak_token|weak_prefixed|typed_other) and the "
+    "case's state (resolved|closed).",
     ["via", "to_state"],
 )
 
