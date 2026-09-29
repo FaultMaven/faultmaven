@@ -262,11 +262,11 @@ class TestMilestoneEngine:
             )
         )
 
-        # Mock LLM response with structured output (including internal_reasoning)
+        # Mock LLM response with structured output (including evidence_trail)
         mock_response_content = json.dumps(
             {
                 "agent_response": "I have verified the symptom.",
-                "internal_reasoning": {
+                "evidence_trail": {
                     "evidence_analyzed": ["ev_001122334455"],
                     "conclusions": [
                         {
@@ -329,7 +329,7 @@ class TestMilestoneEngine:
         mock_llm.generate.return_value = json.dumps(
             {
                 "agent_response": "Here is a hypothesis.",
-                "internal_reasoning": {
+                "evidence_trail": {
                     "evidence_analyzed": [],
                     "conclusions": [],
                     "milestone_justifications": {},
@@ -431,9 +431,9 @@ class TestMilestoneEngine:
             validate_reasoning_first,
         )
         from faultmaven.core.investigation.schemas import (
-            InternalReasoning,
+            EvidenceConclusion,
+            EvidenceTrail,
             InvestigationResponse_Diagnosis,
-            ReasoningConclusion,
         )
         from faultmaven.modules.case.contracts import (
             Evidence,
@@ -460,13 +460,13 @@ class TestMilestoneEngine:
             )
         )
 
-        # Create response with proper internal reasoning
+        # Create response with a proper evidence trail
         response = InvestigationResponse_Diagnosis(
             agent_response="Symptom verified",
-            internal_reasoning=InternalReasoning(
+            evidence_trail=EvidenceTrail(
                 evidence_analyzed=["ev_001122334455"],
                 conclusions=[
-                    ReasoningConclusion(
+                    EvidenceConclusion(
                         observation="Errors in logs",
                         inference="System is failing",
                         confidence=0.9,
@@ -499,7 +499,7 @@ class TestMilestoneEngine:
             MilestoneUpdates,
         )
 
-        # Create response with milestone but NO internal reasoning
+        # Create response with milestone but NO evidence trail
         response = InvestigationResponse_Diagnosis(
             agent_response="Symptom verified",
             state_updates=InvestigationResponse_Diagnosis.DiagnosisStateUpdate(
@@ -511,7 +511,7 @@ class TestMilestoneEngine:
         is_valid, errors, offending = validate_reasoning_first(response, base_case)
         assert not is_valid
         assert len(errors) > 0
-        assert "internal_reasoning" in errors[0].lower()
+        assert "evidence_trail" in errors[0].lower()
 
     @pytest.mark.asyncio
     async def test_blocker_detection_surfaces_system_feedback(
@@ -2094,7 +2094,7 @@ class TestRootCauseConclusionPersistence:
         mock_llm.generate.return_value = json.dumps(
             {
                 "agent_response": "Root cause identified.",
-                "internal_reasoning": {
+                "evidence_trail": {
                     "evidence_analyzed": [],
                     "conclusions": [
                         {

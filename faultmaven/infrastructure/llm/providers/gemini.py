@@ -1259,7 +1259,7 @@ class GeminiProvider(BaseLLMProvider):
 
             # Resolve $ref
             if "$ref" in node:
-                ref_path = node["$ref"]  # e.g. "#/$defs/InternalReasoning"
+                ref_path = node["$ref"]  # e.g. "#/$defs/EvidenceTrail"
                 ref_name = ref_path.rsplit("/", 1)[-1]
                 if ref_name in defs:
                     resolved = copy.deepcopy(defs[ref_name])

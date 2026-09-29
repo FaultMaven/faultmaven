@@ -62,7 +62,7 @@ def _response(justification=None):
     reasoning = SimpleNamespace(
         milestone_justifications=MilestoneJustifications(symptom_verified=justification)
     )
-    return SimpleNamespace(internal_reasoning=reasoning)
+    return SimpleNamespace(evidence_trail=reasoning)
 
 
 def _apply(case, claimed, justification=None):

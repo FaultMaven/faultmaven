@@ -373,8 +373,8 @@ class NullTolerantModel(BaseModel):
         return {k: v for k, v in data.items() if k not in dropped}
 
 
-class ReasoningConclusion(BaseModel):
-    """Single reasoning step in the internal analysis."""
+class EvidenceConclusion(BaseModel):
+    """One conclusion drawn from the evidence."""
 
     observation: str = Field(description="What was observed in the evidence")
     inference: str = Field(description="What this implies about the problem")
@@ -395,13 +395,13 @@ def _coerce_justification_to_text(v: Any) -> Any:
     the enclosing schema strict-representable, but it also narrowed a type that
     used to be ``Dict[str, Any]`` — under which ANY value validated. That
     narrowing had no recovery path: the error location
-    (``internal_reasoning.milestone_justifications.<milestone>``) carries no
-    list index; the ``state_updates`` rung leaves ``internal_reasoning`` just
+    (``evidence_trail.milestone_justifications.<milestone>``) carries no
+    list index; the ``state_updates`` rung leaves ``evidence_trail`` just
     as invalid; and the ``agent_response`` rung does not fire when the model
     DID answer, so ``_validate_with_degradation`` re-raised and the turn 500ed.
     Since fm#1502 the ladder nulls an invalid OPTIONAL sub-object instead
     (``_prune_invalid_sub_records``), which here would discard the whole
-    ``internal_reasoning`` — every justification and conclusion for one badly
+    ``evidence_trail`` — every justification and conclusion for one badly
     typed reason. Coercing the value keeps them, so it stays the answer.
 
     A justification is prose that is only ever read as "is this milestone
@@ -471,21 +471,25 @@ class MilestoneJustifications(NullTolerantModel):
         }
 
 
-class InternalReasoning(NullTolerantModel):
-    """
-    Internal reasoning that must be completed BEFORE state_updates.
-    Forces LLM to justify decisions with evidence trail.
-
-    Reference: Prompt Engineering Guide Section 13
-    """
+# Forces the LLM to justify each state change with its evidence before making
+# it. Reference: Prompt Engineering Guide Section 13.
+#
+# A docstring on this class, and on EvidenceConclusion, is sent to the model:
+# it becomes the tool schema's description, and the class name its title.
+# Anthropic's reasoning_extraction classifier refuses a schema that asks the
+# model to write out its reasoning, by name or by wording (fm#1751), so the
+# model-facing text here speaks of evidence, never of reasoning.
+# test_evidence_trail_wording_1751.py pins it.
+class EvidenceTrail(NullTolerantModel):
+    """The evidence behind this turn's state changes: what was observed, what it implies, and which milestone each piece of evidence justifies. Filled in BEFORE state_updates."""
 
     evidence_analyzed: Optional[List[str]] = Field(
         default_factory=list,
         description="Evidence IDs that were considered in this turn",
     )
-    conclusions: Optional[List[ReasoningConclusion]] = Field(
+    conclusions: Optional[List[EvidenceConclusion]] = Field(
         default_factory=list,
-        description="Step-by-step reasoning from evidence to conclusions",
+        description="Each conclusion, with the observation that supports it.",
     )
     milestone_justifications: MilestoneJustifications = Field(
         default_factory=MilestoneJustifications,
@@ -1886,9 +1890,9 @@ class InvestigationResponse_Diagnosis(BaseInteractionResponse):
             description="Classification of this turn's outcome. Server recomputes from actual state changes; omit if unsure.",
         )
 
-    internal_reasoning: Optional[InternalReasoning] = Field(
+    evidence_trail: Optional[EvidenceTrail] = Field(
         None,
-        description="REQUIRED when completing milestones, otherwise optional. Justification BEFORE state changes.",
+        description="REQUIRED when completing milestones, otherwise optional. The evidence behind each state change, given BEFORE state_updates.",
     )
     state_updates: DiagnosisStateUpdate
 
@@ -1935,9 +1939,9 @@ class InvestigationResponse_Mitigation(BaseInteractionResponse):
             description="Classification of this turn's outcome. Server recomputes from actual state changes; omit if unsure.",
         )
 
-    internal_reasoning: Optional[InternalReasoning] = Field(
+    evidence_trail: Optional[EvidenceTrail] = Field(
         None,
-        description="REQUIRED when completing milestones, otherwise optional. Justification BEFORE state changes.",
+        description="REQUIRED when completing milestones, otherwise optional. The evidence behind each state change, given BEFORE state_updates.",
     )
     state_updates: MitigationStateUpdate
 
@@ -1997,9 +2001,9 @@ class InvestigationResponse_Treatment(BaseInteractionResponse):
             description="Classification of this turn's outcome. Server recomputes from actual state changes; omit if unsure.",
         )
 
-    internal_reasoning: Optional[InternalReasoning] = Field(
+    evidence_trail: Optional[EvidenceTrail] = Field(
         None,
-        description="REQUIRED when completing milestones, otherwise optional. Justification BEFORE state changes.",
+        description="REQUIRED when completing milestones, otherwise optional. The evidence behind each state change, given BEFORE state_updates.",
     )
     state_updates: TreatmentStateUpdate
 
@@ -2066,9 +2070,9 @@ class InvestigationResponse_General(BaseInteractionResponse):
             description="Classification of this turn's outcome. Server recomputes from actual state changes; omit if unsure.",
         )
 
-    internal_reasoning: Optional[InternalReasoning] = Field(
+    evidence_trail: Optional[EvidenceTrail] = Field(
         None,
-        description="REQUIRED when completing milestones, otherwise optional. Justification BEFORE state changes.",
+        description="REQUIRED when completing milestones, otherwise optional. The evidence behind each state change, given BEFORE state_updates.",
     )
     state_updates: GeneralStateUpdate
 

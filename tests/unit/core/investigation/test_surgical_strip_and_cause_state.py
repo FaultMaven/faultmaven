@@ -25,7 +25,7 @@ from faultmaven.core.investigation.milestone_engine.milestone_inference import (
 from faultmaven.core.investigation.milestone_engine.structured_output import (
     _validate_with_degradation,
 )
-from faultmaven.core.investigation.schemas import InternalReasoning, MilestoneUpdates
+from faultmaven.core.investigation.schemas import EvidenceTrail, MilestoneUpdates
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
@@ -45,11 +45,9 @@ from faultmaven.modules.case.contracts import (
 
 def _response(milestones: MilestoneUpdates, justifications: dict):
     """Minimal duck-typed investigation response (not Inquiry/Terminal)."""
-    ir = InternalReasoning(
-        milestone_justifications=justifications, evidence_analyzed=[]
-    )
+    ir = EvidenceTrail(milestone_justifications=justifications, evidence_analyzed=[])
     state_updates = SimpleNamespace(milestones=milestones, evidence_to_add=[])
-    return SimpleNamespace(internal_reasoning=ir, state_updates=state_updates)
+    return SimpleNamespace(evidence_trail=ir, state_updates=state_updates)
 
 
 def _case(*, evidence=True):
@@ -81,10 +79,10 @@ class TestSurgicalStrip:
         # mitigation_accepted was justified -> NOT stripped.
         assert "mitigation_accepted" not in offending
 
-    def test_no_internal_reasoning_strips_all_completed(self):
+    def test_no_evidence_trail_strips_all_completed(self):
         milestones = MilestoneUpdates(symptom_verified=True, mitigation_accepted=True)
         resp = _response(milestones, {})
-        resp.internal_reasoning = None
+        resp.evidence_trail = None
 
         is_valid, errors, offending = validate_reasoning_first(resp, _case())
 

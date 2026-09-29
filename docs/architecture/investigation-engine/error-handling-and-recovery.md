@@ -578,7 +578,7 @@ Validation errors from multiple sources are merged into `system_feedback` on the
 
 | Source | Feedback Key | Content |
 |--------|-------------|---------|
-| Reasoning-first validator | none: the strip in `_process_response_structured` prepends it, so truncation keeps it | The milestones that were not recorded and why (no justification, no `internal_reasoning`, no evidence) |
+| Reasoning-first validator | none: the strip in `_process_response_structured` prepends it, so truncation keeps it | The milestones that were not recorded and why (no justification, no `evidence_trail`, no evidence) |
 | Progress monitor | `breakout_action` (turn metadata; the monitor result also carries a `prompt_injection` field) | Transparency guidance + repair-pattern injection (e.g., "try different category" on anchoring) |
 
 This ensures the LLM receives corrective instructions for the next turn even when the current turn's issues are non-fatal.

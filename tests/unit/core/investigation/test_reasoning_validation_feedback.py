@@ -28,7 +28,7 @@ from faultmaven.core.investigation.milestone_engine.milestone_inference import (
     _milestone_already_recorded,
     validate_reasoning_first,
 )
-from faultmaven.core.investigation.schemas import InternalReasoning, MilestoneUpdates
+from faultmaven.core.investigation.schemas import EvidenceTrail, MilestoneUpdates
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
     StructuredOutputMode,
@@ -73,12 +73,12 @@ def _response(milestones: MilestoneUpdates, justifications: dict | None):
     ir = (
         None
         if justifications is None
-        else InternalReasoning(
+        else EvidenceTrail(
             milestone_justifications=justifications, evidence_analyzed=[]
         )
     )
     state_updates = SimpleNamespace(milestones=milestones, evidence_to_add=[])
-    return SimpleNamespace(internal_reasoning=ir, state_updates=state_updates)
+    return SimpleNamespace(evidence_trail=ir, state_updates=state_updates)
 
 
 def _validator_case(progress: InvestigationProgress):
@@ -162,7 +162,7 @@ class TestRestatementIsNotJudged:
         assert is_valid is False
         assert offending == {"solution_accepted"}
 
-    def test_restatement_alone_needs_no_internal_reasoning(self):
+    def test_restatement_alone_needs_no_evidence_trail(self):
         progress = InvestigationProgress(symptom_verified=True)
 
         is_valid, _, offending = validate_reasoning_first(
@@ -259,7 +259,7 @@ def _claims_symptom_verified_unjustified() -> str:
     return json.dumps(
         {
             "agent_response": "The service fails at exec.",
-            "internal_reasoning": {
+            "evidence_trail": {
                 "evidence_analyzed": [],
                 "conclusions": [],
                 "milestone_justifications": _NO_JUSTIFICATIONS,

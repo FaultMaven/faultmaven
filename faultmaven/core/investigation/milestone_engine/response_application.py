@@ -199,7 +199,7 @@ class ResponseApplier:
                 # justification is setting its field to None rather than popping
                 # a key — ``as_dict()`` then omits it, which is what "dropped"
                 # meant when this was a dict (fm#1057).
-                ir = getattr(response_obj, "internal_reasoning", None)
+                ir = getattr(response_obj, "evidence_trail", None)
                 justifications = getattr(ir, "milestone_justifications", None)
                 if justifications is not None:
                     for field_name in stripped:
@@ -764,7 +764,7 @@ class ResponseApplier:
                 validate_milestone_claims,
             )
 
-            reasoning = getattr(response_obj, "internal_reasoning", None)
+            reasoning = getattr(response_obj, "evidence_trail", None)
             validation_results = validate_milestone_claims(case, reviewable, reasoning)
             for result in validation_results:
                 if not result.is_valid:

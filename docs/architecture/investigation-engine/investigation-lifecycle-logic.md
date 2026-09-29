@@ -1598,13 +1598,13 @@ now validation-only.
 def validate_milestone_claims(
     case: Case,
     milestones_claimed: List[str],
-    reasoning: Optional[InternalReasoning] = None,
+    reasoning: Optional[EvidenceTrail] = None,
 ) -> List[MilestoneValidationResult]:
     """
     Validate that LLM milestone claims are supported by cited evidence.
 
     This does NOT advance milestones. It checks whether the LLM's claims
-    are justified by the evidence IDs cited in internal_reasoning.
+    are justified by the evidence IDs cited in evidence_trail.
 
     Called: After LLM sets milestones in structured output
     """

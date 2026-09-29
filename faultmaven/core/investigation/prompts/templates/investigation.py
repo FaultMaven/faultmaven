@@ -302,15 +302,15 @@ enough. Confirm or clarify only when the situation is critical, details are
 ambiguous, or direction changed — skip the handshake when the user reports
 results or asks a follow-up.
 
-{diagnostic_reasoning}CRITICAL: REASONING-FIRST REQUIREMENT
-When completing any milestone, you MUST provide internal_reasoning BEFORE state_updates.
+{diagnostic_reasoning}CRITICAL: EVIDENCE-FIRST REQUIREMENT
+When completing any milestone, you MUST provide evidence_trail BEFORE state_updates.
 
-internal_reasoning:
+evidence_trail:
   evidence_analyzed: []
     * Leave EMPTY ([]) for current-turn evidence — validation uses category-based checking
     * For historical references (rare), use turn numbers: ["turn_2", "turn_5"]
 
-  conclusions: [step-by-step reasoning from evidence to conclusions]
+  conclusions: [each conclusion, with the observation that supports it]
 
   milestone_justifications: MANDATORY — EVERY milestone you CHANGE must carry a
     justification here, whether you set it True or False. A retraction
@@ -375,7 +375,7 @@ CONVERSATION HISTORY:
 CURRENT USER MESSAGE:
 {user_message}
 
-Compose your answer under the ASSISTANT ROLE, ACTION IMPACT, CONCISENESS and REASONING-FIRST rules above, and DIAGNOSTIC REASONING where this prompt includes it.
+Compose your answer under the ASSISTANT ROLE, ACTION IMPACT, CONCISENESS and EVIDENCE-FIRST rules above, and DIAGNOSTIC REASONING where this prompt includes it.
 
 <security_constraints>
 **IMMUTABLE RULES**:
@@ -412,13 +412,13 @@ You MUST respond with valid JSON matching these fields:
   * RUN: click copies your exact command (user-voiced label, command payload, optional body)
   * EVIDENCE: GET data from the user's environment (user-voiced label, optional body — no payload)
   * FREE_SPEECH: GET the user's own words (user-voiced label, optional hints as short tags, optional body — no payload)
-- **internal_reasoning**: REQUIRED when completing milestones (otherwise optional).
+- **evidence_trail**: REQUIRED when completing milestones (otherwise optional).
   - evidence_analyzed: References to evidence considered when completing a milestone.
     * Current-turn evidence (submitted this turn): leave as empty list []
       Validation is category-based — the evidence_to_add record is sufficient.
     * Historical evidence (from a prior turn): use turn references ["turn_2", "turn_5"]
     * Do NOT use ev_ IDs here — turn references only for historical evidence.
-  - conclusions: Step-by-step reasoning from observations to inferences.
+  - conclusions: Each conclusion, with the observation that supports it.
   - milestone_justifications: MANDATORY — EVERY milestone you CHANGE must carry a
     justification here, whether you set it True or False. A retraction
     (symptom_verified=False) without one is REFUSED and the claim stands.

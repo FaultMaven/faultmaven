@@ -562,19 +562,19 @@ def _schema_prompt_instruction(schema: dict) -> str:
     text (json_object / prompt_only strategies).
 
     ``SCHEMA_INSTRUCTIONS`` documents the investigation-turn output shape —
-    ``internal_reasoning``, milestone/outcome ``state_updates``, 2-4
+    ``evidence_trail``, milestone/outcome ``state_updates``, 2-4
     ``suggested_follow_ups``. Response models that don't carry that shape
     (TerminalResponse, InquiryResponse) must not receive it: instructing
     "outcome: REQUIRED" against a schema with no such field, or "2-4
     suggestions" on a turn whose template says to leave them empty, misleads
     exactly the weak providers this path serves. The gate keys on the schema
-    itself — does it declare ``internal_reasoning``? — so any future model
+    itself — does it declare ``evidence_trail``? — so any future model
     gets the block iff it actually has the documented shape, rather than by
     class pedigree. The exact JSON schema remains the authority either way.
     """
     instructions = (
         f"{SCHEMA_INSTRUCTIONS}\n"
-        if "internal_reasoning" in schema.get("properties", {})
+        if "evidence_trail" in schema.get("properties", {})
         else ""
     )
     schema_json = json.dumps(schema, indent=2)

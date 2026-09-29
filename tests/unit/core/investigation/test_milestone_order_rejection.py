@@ -172,7 +172,7 @@ def _llm_response_setting_milestones(
     return json.dumps(
         {
             "agent_response": agent_response,
-            "internal_reasoning": {
+            "evidence_trail": {
                 "evidence_analyzed": [],
                 "conclusions": [],
                 "milestone_justifications": {

@@ -117,7 +117,7 @@ async def test_evidence_linking_to_milestones(mock_llm, mock_repo, base_case):
     mock_response = json.dumps(
         {
             "agent_response": "Found logs.",
-            "internal_reasoning": {
+            "evidence_trail": {
                 "evidence_analyzed": ["ev_001122334455"],
                 "conclusions": [],
                 "milestone_justifications": {"symptom_verified": "See evidence"},
@@ -188,7 +188,7 @@ async def test_turn_outcome_logic(mock_llm, mock_repo, base_case):
     mock_llm.generate.return_value = json.dumps(
         {
             "agent_response": "Done",
-            "internal_reasoning": {
+            "evidence_trail": {
                 "evidence_analyzed": ["ev_001122334455"],
                 "conclusions": [],
                 "milestone_justifications": {"symptom_verified": "ok"},

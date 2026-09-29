@@ -51,7 +51,7 @@ def _apply_symptom_retraction(
        "absent" and "false" are distinguishable; a model that omits it (the
        overwhelmingly common case) changes nothing.
     2. A justification for the retraction must be present in
-       ``internal_reasoning.milestone_justifications``. Providers differ in how
+       ``evidence_trail.milestone_justifications``. Providers differ in how
        eagerly they populate optional booleans, and some will emit ``false`` by
        habit rather than by judgement; requiring the model to also write down
        WHY separates a decision from a default. This reuses the justification
@@ -65,7 +65,7 @@ def _apply_symptom_retraction(
     if not case.progress or not case.progress.symptom_verified:
         return False  # nothing to retract
 
-    reasoning = getattr(response_obj, "internal_reasoning", None)
+    reasoning = getattr(response_obj, "evidence_trail", None)
     justifications = getattr(reasoning, "milestone_justifications", None)
     rationale = (
         justifications.as_dict().get("symptom_verified") if justifications else None
@@ -286,7 +286,7 @@ def validate_reasoning_first(
     response_obj: BaseInteractionResponse, case: Case
 ) -> tuple[bool, list[str], set[str]]:
     """
-    Validate that milestone completions are justified with internal reasoning.
+    Validate that milestone completions are justified in the evidence trail.
 
     This function enforces the "Reasoning-First" pattern where the LLM must provide
     justifications for milestone completions BEFORE setting state updates. This prevents
@@ -309,7 +309,7 @@ def validate_reasoning_first(
         The caller strips ONLY ``offending_milestones`` from the emission — a
         single unjustified milestone no longer wipes co-emitted valid ones
         (the S1 collateral-wipe fix; redesign §5). Global failures (no
-        internal_reasoning, no actionable evidence) implicate every completed
+        evidence_trail, no actionable evidence) implicate every completed
         milestone; per-milestone justification gaps implicate only that one.
         Turn-reference format errors implicate no milestone (advisory only).
         A milestone the case already records is not a completion, so it is
@@ -341,8 +341,8 @@ def validate_reasoning_first(
         logger.debug("Skipping reasoning validation (case already in terminal state)")
         return True, [], set()
 
-    # Check if response has internal_reasoning field
-    internal_reasoning = getattr(response_obj, "internal_reasoning", None)
+    # Check if response has evidence_trail field
+    evidence_trail = getattr(response_obj, "evidence_trail", None)
     milestones = getattr(response_obj.state_updates, "milestones", None)
 
     if not milestones:
@@ -385,12 +385,12 @@ def validate_reasoning_first(
             )
             return True, [], set()
 
-    # If milestones are being completed, internal_reasoning is REQUIRED.
+    # If milestones are being completed, evidence_trail is REQUIRED.
     # Global failure: none of the completed milestones are justified.
-    if not internal_reasoning:
+    if not evidence_trail:
         errors.append(
-            f"Milestones {completed_milestones} completed without internal_reasoning. "
-            "You MUST provide internal_reasoning with justifications when completing milestones."
+            f"Milestones {completed_milestones} completed without evidence_trail. "
+            "You MUST provide evidence_trail with justifications when completing milestones."
         )
         return False, errors, set(completed_milestones)
 
@@ -405,14 +405,14 @@ def validate_reasoning_first(
     # One message for all of them, not one each: the errors are delivered to
     # the next turn through ``system_feedback``, which the turn record caps at
     # 1000 characters, so their size must not grow with the milestone count.
-    justifications = internal_reasoning.milestone_justifications.as_dict()
+    justifications = evidence_trail.milestone_justifications.as_dict()
     unjustified = [m for m in completed_milestones if m not in justifications]
     if unjustified:
         offending.update(unjustified)
         errors.append(
             f"Milestones {unjustified} completed without justification. To "
             "claim one, set it True again and set "
-            "internal_reasoning.milestone_justifications.<milestone> to the "
+            "evidence_trail.milestone_justifications.<milestone> to the "
             "evidence that shows it, citing evidence IDs; null or blank is "
             "no justification."
         )
@@ -444,7 +444,7 @@ def validate_reasoning_first(
 
     # Check 3: Validate turn references if provided (optional)
     # If evidence_analyzed contains turn references (e.g., "turn_2"), validate format
-    for ref in internal_reasoning.evidence_analyzed:
+    for ref in evidence_trail.evidence_analyzed:
         if isinstance(ref, str) and ref.startswith("turn_"):
             try:
                 turn_num = int(ref.split("_")[1])

@@ -391,7 +391,7 @@ def _llm_reply(**state_updates) -> str:
     return json.dumps(
         {
             "agent_response": "Let's look at the unit file.",
-            "internal_reasoning": {
+            "evidence_trail": {
                 "evidence_analyzed": [],
                 "conclusions": [],
                 "milestone_justifications": {},

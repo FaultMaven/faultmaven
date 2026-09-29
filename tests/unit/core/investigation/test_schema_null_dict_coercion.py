@@ -25,14 +25,14 @@ from faultmaven.core.investigation.milestone_engine.structured_output import (
 pytestmark = pytest.mark.unit
 
 
-def test_internal_reasoning_tolerates_null_milestone_justifications():
-    ir = s.InternalReasoning.model_validate({"milestone_justifications": None})
+def test_evidence_trail_tolerates_null_milestone_justifications():
+    ir = s.EvidenceTrail.model_validate({"milestone_justifications": None})
     assert ir.milestone_justifications.as_dict() == {}
 
 
-def test_internal_reasoning_keeps_a_real_justification():
+def test_evidence_trail_keeps_a_real_justification():
     """Tolerance must not clobber a populated value."""
-    ir = s.InternalReasoning.model_validate(
+    ir = s.EvidenceTrail.model_validate(
         {"milestone_justifications": {"symptom_verified": "per ev_abc123"}}
     )
     assert ir.milestone_justifications.as_dict() == {
@@ -46,7 +46,7 @@ def test_a_nulled_milestone_is_not_reported_as_justified():
     ``as_dict`` must report that as "no justifications" — reporting it as four
     justified milestones is what would make the reasoning gate stop firing.
     """
-    ir = s.InternalReasoning.model_validate(
+    ir = s.EvidenceTrail.model_validate(
         {
             "milestone_justifications": {
                 "symptom_verified": "per ev_abc123",
@@ -68,7 +68,7 @@ def test_a_blank_justification_does_not_count_as_one(blank):
     Before strict it simply omitted the key. Treating blank as absent keeps
     "justified" meaning what it meant.
     """
-    ir = s.InternalReasoning.model_validate(
+    ir = s.EvidenceTrail.model_validate(
         {"milestone_justifications": {"symptom_verified": blank}}
     )
     assert ir.milestone_justifications.as_dict() == {}
@@ -108,12 +108,12 @@ def test_a_non_string_justification_does_not_500_the_turn(emitted, expected):
     ``milestone_justifications`` used to be ``Dict[str, Any]``, under which any
     value validated. Declaring four ``Optional[str]`` fields narrowed that, and
     the resulting error is the one shape the never-500 backstop cannot repair:
-    the loc (``internal_reasoning.milestone_justifications.<name>``) carries no
+    the loc (``evidence_trail.milestone_justifications.<name>``) carries no
     list index, so nothing is prunable; blanking ``state_updates`` leaves
-    ``internal_reasoning`` just as invalid; and the ``agent_response`` rung does
+    ``evidence_trail`` just as invalid; and the ``agent_response`` rung does
     not fire when the model DID answer. The turn 500s.
     """
-    ir = s.InternalReasoning.model_validate(
+    ir = s.EvidenceTrail.model_validate(
         {"milestone_justifications": {"symptom_verified": emitted}}
     )
     assert ir.milestone_justifications.as_dict() == {"symptom_verified": expected}
@@ -129,7 +129,7 @@ def test_a_non_string_justification_survives_the_real_backstop():
     parsed = _validate_with_degradation(
         {
             "agent_response": "Symptom confirmed.",
-            "internal_reasoning": {
+            "evidence_trail": {
                 "milestone_justifications": {
                     "symptom_verified": ["47 errors in ev_abc"]
                 }
@@ -154,6 +154,6 @@ def test_a_non_string_justification_survives_the_real_backstop():
     # backstop's own fallback rung would have answered without raising while
     # discarding every state update.
     assert len(parsed.state_updates.evidence_to_add) == 1
-    assert parsed.internal_reasoning.milestone_justifications.as_dict() == {
+    assert parsed.evidence_trail.milestone_justifications.as_dict() == {
         "symptom_verified": "47 errors in ev_abc"
     }
