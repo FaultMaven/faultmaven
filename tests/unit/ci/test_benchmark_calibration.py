@@ -2504,6 +2504,13 @@ def _fixed_then_linear(fixed: int):
     return fn
 
 
+#: Where the linear fixed-cost control starts: one step higher than the
+#: quadratic column's ``small=2``. Its fixed cost is built larger than any
+#: caller's, and raising ``small`` is what the helper's refusal tells such a
+#: caller to do (#1760).
+_FIXED_COST_LINEAR_SMALL = 16
+
+
 def _assert_failed_as_super_linear(fn, payload_at, small: int, label: str) -> None:
     """A quadratic control: the check must fail it as super-linear.
 
@@ -2813,26 +2820,77 @@ class TestTheGrowthHelper:
         """The other column: it escalates until the work shows, then passes.
 
         This control's fixed cost is built larger than any production
-        caller's, so it gets one window more than they do: at the callers'
-        last window, ``1024, 8192, 65536``, ``t(8n) - t(n)`` is a small
-        difference of two large numbers, and a loaded CI runner left the pass
-        side's ceiling straddling the bound — undecided, so refused (#1760).
-        One more window multiplies the work by 8 against the same fixed cost.
-        The bound and both allowances are untouched, and the quadratic column
-        above keeps the callers' budget.
+        caller's. From ``small=2``, the callers' last window is ``1024, 8192,
+        65536``, and there these fixed costs are still ~1-3x the work at the
+        window's smallest size. So the pass side's 20% allowance, charged on
+        ``t1 + t2``, takes 31-42% of the first difference with exact minima,
+        and #1758's per-size error (``t1`` ~1.5x high relative to ``t2``)
+        raised that to 53% and left the ceiling straddling the bound:
+        undecided, so refused (#1760).
+
+        Starting at ``_FIXED_COST_LINEAR_SMALL`` puts the top window at
+        ``8192, 65536, 524288``, where the replay below decides linear. The
+        bound and both allowances are untouched, and the quadratic column
+        above keeps the callers' configuration. A false super-linear at an
+        early window is a different root, in the helper: #1781.
         """
         from tests.wallclock import assert_linear_growth
-        from tests.wallclock.growth import MAX_ESCALATIONS
+        from tests.wallclock.growth import DEFAULT_STEP, MAX_ESCALATIONS
 
         growth = assert_linear_growth(
             _fixed_then_linear(fixed),
             lambda n: n,
-            small=2,
+            small=_FIXED_COST_LINEAR_SMALL,
             label=f"linear after {fixed} fixed iterations",
-            max_escalations=MAX_ESCALATIONS + 1,
         )
-        # Moved up by whole steps of 8 from 2: escalated at least once.
-        assert growth.sizes[0] in {16, 128, 1024, 8192}, growth.describe()
+        # Escalated at least once: the first window never decides for these
+        # fixed costs (total growth under 4).
+        escalated = {
+            _FIXED_COST_LINEAR_SMALL * DEFAULT_STEP**k
+            for k in range(1, MAX_ESCALATIONS + 1)
+        }
+        assert growth.sizes[0] in escalated, growth.describe()
+
+    def test_the_fixed_cost_control_decides_under_ci_measured_noise(self, monkeypatch):
+        """#1758's CI error, replayed at every window the control can reach.
+
+        The replay is #1758's merge-group reading of ``[2000]``, turned into a
+        per-size error against the control's model cost ``2000 + n`` and
+        applied at every window. It pins that the control's configuration
+        reaches a window where that error decides, and that the callers'
+        configuration, ``small=2`` on the same budget, does not (#1760).
+        """
+        from tests.wallclock import assert_linear_growth
+        from tests.wallclock import growth as growth_module
+        from tests.wallclock.growth import LINEAR, UNDECIDED, Growth, measure_growth
+
+        fixed = 2000
+        measured_sizes = (1024, 8192, 65536)
+        measured_seconds = (0.3699e-3, 0.8152e-3, 6.4609e-3)
+        # Each size's reading per unit of model cost, relative to the middle
+        # size's: about (1.529, 1.0, 1.196).
+        per_unit = [t / (fixed + n) for n, t in zip(measured_sizes, measured_seconds)]
+        multipliers = tuple(unit / per_unit[1] for unit in per_unit)
+
+        def replayed(fn, payload_at, small, step, repetitions):
+            sizes = (small, small * step, small * step * step)
+            return Growth(
+                sizes,
+                tuple((fixed + n) * m for n, m in zip(sizes, multipliers)),
+                step,
+            )
+
+        monkeypatch.setattr(growth_module, "_measure_window", replayed)
+        control = _fixed_then_linear(fixed)
+
+        decided = measure_growth(control, lambda n: n, small=_FIXED_COST_LINEAR_SMALL)
+        assert decided.verdict == LINEAR, decided.describe()
+        assert decided.sizes[0] == 8192, decided.describe()
+
+        callers = measure_growth(control, lambda n: n, small=2)
+        assert callers.verdict == UNDECIDED, callers.describe()
+        with pytest.raises(AssertionError, match="could not decide"):
+            assert_linear_growth(control, lambda n: n, small=2, label="pre-#1760")
 
     def test_a_call_that_never_shows_its_work_is_refused(self):
         """Miscalibrated, not linear: nothing grew across a 32768x input.
