@@ -328,9 +328,12 @@ marked "docs":
 |---|---|---|---|---|---|
 | `temperature` sent (`_SAMPLING_ACCEPTED_THROUGH`) | 4.6 | 4.6 | 4.5 | — | — |
 | forced `tool_choice` sent (`_FORCED_TOOL_CHOICE_ACCEPTED_THROUGH`) | 5.0 | 5.0 | 4.5 | 5.0 | 5.0 (docs) |
+| `budget_tokens` (`enabled` thinking) accepted (`_BUDGET_TOKENS_ACCEPTED_THROUGH`) | 4.6 | 4.6 | 4.5 | — | — |
+| `adaptive` thinking rejected (`_ADAPTIVE_THINKING_REJECTED_THROUGH`) | 4.5 | 4.5 | 4.5 | — | — |
 
 A model accepts a property only when its family has an entry and its version
-is at or below it. Otherwise:
+is at or below it (the `adaptive` row inverts this: a model accepts `adaptive`
+unless it is at or below the entry). Otherwise:
 
 - **`temperature` is omitted** from the request.
 - **Forcing is put into words.** A `tool_choice="required"` (or a native
@@ -371,6 +374,23 @@ ceiling once at INFO, naming what it drops.
 `pydantic_to_openai_tools` builds them, none carries `additionalProperties:
 false` and five carry those constraints. Making them compatible is part of
 #1116's structured-output decision.
+
+**Thinking shape.**
+
+The `thinking` shape is also a property of the model (#1756). Measured live
+2026-09-29 with one tool, `tool_choice: auto`, `max_tokens` 2048, and only the
+shape varied (`enabled` with `budget_tokens` 1024, or `adaptive`):
+
+| model | `enabled` | `adaptive` |
+|---|---|---|
+| `claude-haiku-4-5`, `claude-sonnet-4-5`, `claude-opus-4-5` | 200 | **400** "adaptive thinking is not supported on this model" |
+| `claude-sonnet-4-6`, `claude-opus-4-6` | 200 | 200 |
+| `claude-opus-4-7`, `-4-8`, `claude-opus-5`, `claude-sonnet-5`, `claude-fable-5`, `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-fable-5-1` | **400** "`thinking.type.enabled` is not supported for this model. Use `thinking.type.adaptive`" | 200 |
+
+`ANTHROPIC_THINKING_MODE=enabled` is therefore sent as `adaptive` on a model
+that rejects `budget_tokens`, and `adaptive` as `enabled` (with the configured
+budget) on a model that rejects adaptive, each with one WARNING per model id
+and mode per process. The substituted shape's own guards apply.
 
 ### HuggingFace Inference API
 - Does not support OpenAI-compatible tool calling
