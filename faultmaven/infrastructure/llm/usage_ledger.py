@@ -37,13 +37,24 @@ write here must never fail a call or a turn. Every call that does not reach a
 row is counted on ``llm_usage_unpersisted_calls_total{reason}`` instead, so the
 gap between ``llm_provider_calls_total`` and the persisted calls is observable:
 
-``store_error``   the write raised (also logged at WARNING, naming the reason
-                  and the exception type, never the row)
-``no_tenant``     no usable enterprise under multi-tenancy — RLS would refuse
-                  the row anyway
-``no_loop``       a call outside a turn was metered with no running event loop
-``not_composed``  no ledger installed: the composition root did not run (a unit
-                  test, a job). Counted without a log line.
+``store_error``        the write raised or was cancelled (a raise is also logged
+                       at WARNING, naming the reason and the exception type,
+                       never the row). A turn row that fails alone counts here
+                       too: its savepoint rolls back and the turn's daily
+                       increments still commit.
+``no_tenant``          no usable enterprise under multi-tenancy — RLS would
+                       refuse the row anyway
+``attribution_error``  capturing who pays raised, so there is nothing to stamp
+                       the row with (logged at WARNING with the exception type)
+``no_loop``            a call outside a turn was metered with no running event
+                       loop
+``not_composed``       no ledger installed: the composition root did not run (a
+                       unit test, or a process that never booted the app).
+                       Counted without a log line.
+
+Jobs are not in the ledger. No job calls an LLM today, and ``jobs/run.py``
+composes no ledger, so a job's call would count ``not_composed``. A job that
+starts calling an LLM must install the ledger in the runner.
 
 This ledger and ``turn_usage`` do not reconcile. ``turn_usage`` counts turns,
 is written before the model runs, and only under multi-tenancy for engine
@@ -68,18 +79,20 @@ from faultmaven.infrastructure.protection.tenant_turn_cap import (
     billing_subject_for,
     utc_day,
 )
-from faultmaven.infrastructure.shims import llm_usage_unpersisted_calls
+from faultmaven.infrastructure.shims.metrics import llm_usage_unpersisted_calls
 
 logger = logging.getLogger(__name__)
 
 #: The third billing-subject kind, beside the turn cap's ``organization`` and
-#: ``account``: spend with nobody to charge (a job). Metering records it rather
-#: than refusing, which is the one place this ledger's vocabulary differs.
+#: ``account``: a call with no paying organization and no actor — for example a
+#: standalone call made outside an authenticated request. Metering records it
+#: rather than refusing, which is the one place this ledger's vocabulary differs.
 SUBJECT_NONE = "none"
 
 #: ``llm_usage_unpersisted_calls_total`` reasons. See the module docstring.
 REASON_STORE_ERROR = "store_error"
 REASON_NO_TENANT = "no_tenant"
+REASON_ATTRIBUTION_ERROR = "attribution_error"
 REASON_NO_LOOP = "no_loop"
 REASON_NOT_COMPOSED = "not_composed"
 
@@ -280,11 +293,25 @@ class SqlUsageLedger(IUsageLedger):
         from faultmaven.infrastructure.persistence.database import get_db_session
 
         async with get_db_session() as session:
-            for bucket in buckets:
+            # In one fixed order. Two flushes that share daily keys (two turns
+            # of one account on two replicas) take the rows' locks in the order
+            # they upsert them; a stable order is what keeps them from
+            # deadlocking on each other.
+            for bucket in sorted(buckets, key=lambda b: b.key):
                 await session.execute(
                     self._daily_upsert(session, attribution, bucket, usage_date)
                 )
-            await session.execute(self._turn_upsert(session, attribution, turn))
+            # The turn row in a SAVEPOINT: it is the one write here that can
+            # fail on its own (its case deleted mid-turn, so the FK refuses),
+            # and it must not take the day's spend down with it. The daily
+            # increments above still commit; only the turn row is lost, and
+            # that is counted.
+            try:
+                async with session.begin_nested():
+                    await session.execute(self._turn_upsert(session, attribution, turn))
+            except Exception as exc:
+                count_unpersisted(REASON_STORE_ERROR, turn.calls)
+                _warn_store_error("turn_row", turn.calls, exc)
 
     async def record_call(self, attribution, bucket, usage_date) -> None:
         from faultmaven.infrastructure.persistence.database import get_db_session
@@ -427,6 +454,16 @@ def _warn_store_error(unit: str, calls: int, exc: BaseException) -> None:
     )
 
 
+def warn_attribution_error(exc: BaseException) -> None:
+    """Log a failed attribution capture: the exception type, never its text."""
+    logger.warning(
+        "llm_usage_unpersisted: capturing who pays for LLM spend failed "
+        "(reason=%s, error=%s)",
+        REASON_ATTRIBUTION_ERROR,
+        type(exc).__name__,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Writes
 # ---------------------------------------------------------------------------
@@ -444,6 +481,10 @@ async def _write_call(
 ) -> None:
     try:
         await ledger.record_call(attribution, bucket, usage_date)
+    except asyncio.CancelledError:
+        # Counted, then re-raised: cancellation belongs to whoever asked for it.
+        count_unpersisted(REASON_STORE_ERROR, bucket.calls)
+        raise
     except Exception as exc:
         count_unpersisted(REASON_STORE_ERROR, bucket.calls)
         _warn_store_error("call", bucket.calls, exc)
@@ -459,7 +500,12 @@ def schedule_call_write(bucket: CallBucket, *, actor_user_id: str) -> None:
     if ledger is None:
         count_unpersisted(REASON_NOT_COMPOSED, bucket.calls)
         return
-    attribution = capture_attribution(actor_user_id)
+    try:
+        attribution = capture_attribution(actor_user_id)
+    except Exception as exc:
+        count_unpersisted(REASON_ATTRIBUTION_ERROR, bucket.calls)
+        warn_attribution_error(exc)
+        return
     if attribution is None:
         count_unpersisted(REASON_NO_TENANT, bucket.calls)
         return
@@ -504,7 +550,14 @@ async def flush_turn(
             return
         attribution = tracker.attribution
         if attribution is None:
-            count_unpersisted(REASON_NO_TENANT, calls)
+            count_unpersisted(
+                (
+                    REASON_ATTRIBUTION_ERROR
+                    if tracker.attribution_failed
+                    else REASON_NO_TENANT
+                ),
+                calls,
+            )
             return
         now = datetime.now(timezone.utc)
         turn = TurnSpend(
@@ -523,6 +576,11 @@ async def flush_turn(
             occurred_at=now,
         )
         await ledger.record_turn(attribution, turn, buckets, utc_day(now))
+    except asyncio.CancelledError:
+        # Counted, then re-raised: cancellation belongs to whoever asked for it.
+        tracker.flushed = True
+        count_unpersisted(REASON_STORE_ERROR, calls)
+        raise
     except Exception as exc:
         tracker.flushed = True
         count_unpersisted(REASON_STORE_ERROR, calls)
@@ -532,19 +590,39 @@ async def flush_turn(
 async def drain_pending_usage_writes(timeout_s: float = 5.0) -> int:
     """Await the in-flight own-row writes, up to ``timeout_s``. Never raises.
 
-    Returns how many were still pending when the wait gave up; those are
-    cancelled and counted as ``store_error``, since shutdown is what lost them.
+    Only tasks on the running loop can be awaited here. A task from another
+    loop (one that has since closed, as a test's or a previous app's does) is
+    dropped from the set and, if it never finished, counted ``store_error`` once
+    and cancelled — guarded, because cancelling a task whose loop has closed
+    raises. Writes still in flight when the wait gives up are cancelled, and
+    each counts itself as ``store_error`` on the way out (``_write_call``).
+    Returns how many were cancelled.
     """
-    pending: List["asyncio.Task[None]"] = [t for t in _pending_writes if not t.done()]
-    if not pending:
+    loop = asyncio.get_running_loop()
+    ours: List["asyncio.Task[None]"] = []
+    for task in list(_pending_writes):
+        if task.get_loop() is not loop:
+            _pending_writes.discard(task)
+            if not task.done():
+                count_unpersisted(REASON_STORE_ERROR)
+                try:
+                    task.cancel()
+                except Exception:
+                    pass
+            continue
+        if not task.done():
+            ours.append(task)
+    if not ours:
         return 0
-    try:
-        _done, still = await asyncio.wait(pending, timeout=timeout_s)
-    except Exception:
-        return len(pending)
+    _done, still = await asyncio.wait(ours, timeout=timeout_s)
     for task in still:
-        task.cancel()
-        count_unpersisted(REASON_STORE_ERROR)
+        try:
+            task.cancel()
+        except Exception:
+            pass
+    if still:
+        # Let each cancellation reach its task, which is where it is counted.
+        await asyncio.wait(still, timeout=1.0)
     return len(still)
 
 

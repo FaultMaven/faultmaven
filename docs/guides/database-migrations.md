@@ -521,8 +521,9 @@ does not reach (vectors, object storage, Redis) — see
 `downgrade()` drops everything, and its docstring carries the reasoning per
 table group.
 
-Since then the chain grows by **additive revisions**, and the baseline is not
-amended (ruled 2026-09-28, #640). Each revision parents onto the head before
+Since then new tables arrive as **additive revisions** (ruled 2026-09-28 for
+#640); once one exists, amending the baseline in place would also miss every
+database stamped at a later revision. Each revision parents onto the head before
 it, adds its tables with their RLS enrolment on PostgreSQL, and its
 `downgrade()` drops only what it added. The first is `002_llm_usage_ledger`
 (`llm_usage_daily`, `llm_turn_spend`). A tenant-scoped table added this way is

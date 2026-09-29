@@ -585,9 +585,10 @@ llm_unpriced_calls = Counter(
 llm_usage_unpersisted_calls = Counter(
     "llm_usage_unpersisted_calls_total",
     "Billed LLM calls the usage ledger did not persist, by reason. "
-    "store_error: the write failed; no_tenant: no usable enterprise under "
-    "multi-tenancy; no_loop: metered with no running event loop; "
-    "not_composed: no ledger installed (the composition root did not run).",
+    "store_error: the write failed or was cancelled; no_tenant: no usable "
+    "enterprise under multi-tenancy; attribution_error: capturing who pays "
+    "raised; no_loop: metered with no running event loop; not_composed: no "
+    "ledger installed (the composition root did not run).",
     labelnames=["reason"],
 )
 

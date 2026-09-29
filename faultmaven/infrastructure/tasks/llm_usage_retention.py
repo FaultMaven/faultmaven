@@ -32,10 +32,10 @@ async def prune_llm_usage_once() -> None:
         from faultmaven.config.settings import get_settings
         from faultmaven.infrastructure.llm.usage_ledger import prune_expired_usage
 
-        auth = get_settings().auth
+        observability = get_settings().observability
         pruned = await prune_expired_usage(
-            daily_retention_days=auth.llm_usage_daily_retention_days,
-            turn_retention_days=auth.llm_usage_turn_retention_days,
+            daily_retention_days=observability.llm_usage_daily_retention_days,
+            turn_retention_days=observability.llm_usage_turn_retention_days,
         )
         logger.info(
             "LLM usage retention: deleted %d daily and %d turn row(s)",

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -65,6 +66,7 @@ from faultmaven.infrastructure.llm.providers.registry import (
     ProviderState,
 )
 from faultmaven.infrastructure.llm.usage_ledger import (
+    REASON_ATTRIBUTION_ERROR,
     REASON_STORE_ERROR,
     SqlUsageLedger,
     drain_pending_usage_writes,
@@ -246,12 +248,29 @@ async def _turns(url: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def _case(current_turn: int = 4) -> Case:
+@pytest.fixture
+def unpersisted(monkeypatch) -> dict:
+    """``llm_usage_unpersisted_calls_total`` as ``{reason: calls}``."""
+    counted: dict[str, float] = {}
+
+    class _Counter:
+        def labels(self, *, reason):
+            self.reason = reason
+            return self
+
+        def inc(self, amount=1):
+            counted[self.reason] = counted.get(self.reason, 0) + amount
+
+    monkeypatch.setattr(usage_ledger, "llm_usage_unpersisted_calls", _Counter())
+    return counted
+
+
+def _case(current_turn: int = 4, case_id: str = CASE_ID) -> Case:
     """A case whose clock is at 4 with one aside behind it, so the message
     clock (4) and the investigation turn (3) differ and a swap would show."""
     now = datetime.now(timezone.utc)
     return Case(
-        case_id=CASE_ID,
+        case_id=case_id,
         user_id=USER,
         enterprise_id=ENTERPRISE,
         title="Checkout 500s",
@@ -435,20 +454,8 @@ class TestAnEngineTurn:
         assert late[0]["actor_user_id"] == USER, "it carries the turn's actor"
 
     async def test_a_ledger_failure_costs_the_turn_nothing(
-        self, usage_db, router, monkeypatch
+        self, usage_db, router, monkeypatch, unpersisted
     ):
-        counted: dict[str, float] = {}
-
-        class _Counter:
-            def labels(self, *, reason):
-                self.reason = reason
-                return self
-
-            def inc(self, amount=1):
-                counted[self.reason] = counted.get(self.reason, 0) + amount
-
-        monkeypatch.setattr(usage_ledger, "llm_usage_unpersisted_calls", _Counter())
-
         async def _refuse(self, *args, **kwargs):
             raise RuntimeError("database is locked")
 
@@ -463,8 +470,57 @@ class TestAnEngineTurn:
         result = await engine.process_turn(_case(), "why?", user_id=USER)
 
         assert result["agent_response"] == "the answer"
-        assert counted == {REASON_STORE_ERROR: 2}
+        assert unpersisted == {REASON_STORE_ERROR: 2}
         assert await _turns(usage_db) == []
+
+    async def test_a_turn_row_that_cannot_be_written_keeps_the_days_spend(
+        self, usage_db, router, unpersisted, caplog
+    ):
+        """The turn row is the one write that can fail alone — here its case
+        does not exist, so the FK refuses it. It rolls back in its savepoint;
+        the day's increments commit, and only the turn row is counted lost."""
+        engine = _engine(router)
+        _stand_in(engine, lambda: _route(router))
+
+        with caplog.at_level(logging.WARNING, logger=usage_ledger.__name__):
+            result = await engine.process_turn(
+                _case(case_id="case_ffff0640dead"), "why?", user_id=USER
+            )
+
+        assert result["agent_response"] == "the answer"
+        assert await _turns(usage_db) == []
+        (row,) = await _daily(usage_db)
+        assert row["calls"] == 1, "the day's spend went down with the turn row"
+        assert unpersisted == {REASON_STORE_ERROR: 1}
+        warnings = [
+            r
+            for r in caplog.records
+            if r.name == usage_ledger.__name__ and r.levelno == logging.WARNING
+        ]
+        assert len(warnings) == 1 and "store_error" in warnings[0].getMessage()
+
+    async def test_an_attribution_failure_costs_the_turn_nothing(
+        self, usage_db, router, monkeypatch, unpersisted
+    ):
+        def _raise(_user_id):
+            raise RuntimeError("tenant provider unreadable")
+
+        monkeypatch.setattr(
+            "faultmaven.core.investigation.milestone_engine.engine.capture_attribution",
+            _raise,
+        )
+        engine = _engine(router)
+
+        async def body():
+            await _route(router)
+            await _route(router)
+
+        _stand_in(engine, body)
+        result = await engine.process_turn(_case(), "why?", user_id=USER)
+
+        assert result["agent_response"] == "the answer"
+        assert unpersisted == {REASON_ATTRIBUTION_ERROR: 2}
+        assert await _turns(usage_db) == [] and await _daily(usage_db) == []
 
 
 class TestARestart:

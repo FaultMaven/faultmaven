@@ -1886,32 +1886,6 @@ class AuthSettings(BaseSettings):
         ),
     )
 
-    # Retention of the LLM usage ledger (#640, Q6). The daily rows' horizon is
-    # thirteen months so a billing view can put the same month last year beside
-    # this one; the per-turn rows are what grows, so they keep 90 days. Pruned
-    # by the ``llm_usage_retention`` job (a CronJob in cloud) or, in standalone,
-    # by the in-process scheduler — which is opt-in (RUN_SCHEDULER), so a
-    # default standalone install does not prune at all. A bad value fails
-    # startup rather than deleting a year of spend.
-    llm_usage_daily_retention_days: int = Field(
-        default=400,
-        ge=1,
-        validation_alias="LLM_USAGE_DAILY_RETENTION_DAYS",
-        description=(
-            "Days of llm_usage_daily rows the retention job keeps: a row goes "
-            "when its UTC usage_date is older than today minus this."
-        ),
-    )
-    llm_usage_turn_retention_days: int = Field(
-        default=90,
-        ge=1,
-        validation_alias="LLM_USAGE_TURN_RETENTION_DAYS",
-        description=(
-            "Days of llm_turn_spend rows the retention job keeps: a row goes "
-            "when its occurred_at is older than now minus this."
-        ),
-    )
-
     sso_jit_personal_tenant_max_per_hour: int = Field(
         default=20,
         ge=1,
@@ -2131,6 +2105,32 @@ class ObservabilitySettings(BaseSettings):
     # Metrics
     # COMMUNITY DEFAULT: Disabled (enterprise feature)
     metrics_enabled: bool = Field(default=False)
+
+    # Retention of the LLM usage ledger (#640, Q6). The daily rows' horizon is
+    # thirteen months so a billing view can put the same month last year beside
+    # this one; the per-turn rows are what grows, so they keep 90 days. Pruned
+    # by the ``llm_usage_retention`` job (a CronJob in cloud) or, in standalone,
+    # by the in-process scheduler — which is opt-in (RUN_SCHEDULER), so a
+    # default standalone install does not prune at all. A bad value fails
+    # startup rather than deleting a year of spend.
+    llm_usage_daily_retention_days: int = Field(
+        default=400,
+        ge=1,
+        validation_alias="LLM_USAGE_DAILY_RETENTION_DAYS",
+        description=(
+            "Days of llm_usage_daily rows the retention job keeps: a row goes "
+            "when its UTC usage_date is older than today minus this."
+        ),
+    )
+    llm_usage_turn_retention_days: int = Field(
+        default=90,
+        ge=1,
+        validation_alias="LLM_USAGE_TURN_RETENTION_DAYS",
+        description=(
+            "Days of llm_turn_spend rows the retention job keeps: a row goes "
+            "when its occurred_at is older than now minus this."
+        ),
+    )
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 

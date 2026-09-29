@@ -204,11 +204,11 @@ class TestTheJob:
     def test_a_horizon_below_one_day_fails_startup(self, monkeypatch, name):
         from pydantic import ValidationError
 
-        from faultmaven.config.settings import AuthSettings
+        from faultmaven.config.settings import ObservabilitySettings
 
         monkeypatch.setenv(name, "0")
         with pytest.raises(ValidationError):
-            AuthSettings()
+            ObservabilitySettings()
 
 
 class TestTheInProcessScheduler:

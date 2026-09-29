@@ -7,23 +7,35 @@ line will ever show. Metering happens at ONE chokepoint,
 ``LLMRouter`` reaches. A call that goes to a concrete provider directly
 bypasses it, and must meter itself.
 
-So this census collects every place the package makes a provider call, in
-every shape the codebase writes one:
+So this census collects every place the package reaches a provider's billed
+method, in every shape the codebase writes one:
 
 * ``<x>.generate(...)`` and ``<x>.route_request(...)``;
+* ``<x>.generate`` / ``<x>.route_request`` read WITHOUT being called — a bound
+  method stored (``gen = p.generate``), passed (``call_func=...``) or bound
+  (``partial(p.generate)``, under any name ``partial`` is imported as). An
+  assignment target is not a read;
+* ``getattr(<x>, "generate")`` (and ``"route_request"``), called on the spot or
+  not, and ``methodcaller("generate")``;
 * ``generate_with_truncation_retry(...)`` — the retry helper, whose callable
-  argument makes the call;
-* ``getattr(<x>, "generate")(...)`` (and ``"route_request"``);
-* ``functools.partial(<x>.generate, ...)`` / ``partial(<x>.generate, ...)``.
+  argument makes the call.
 
 Each ``(file, function)`` that holds one is declared below, with its count and
 one classification:
 
 * ``ROUTER`` — the receiver is the container's ``LLMRouter``, metered at the
   chokepoint. A DECLARATION: the scan cannot prove what a receiver is bound to.
-* ``METERS_ITSELF`` — VERIFIED: the declared function (including functions
-  nested in it) calls ``record_provider_call``.
-* ``CHOKEPOINT`` — ``ProviderRegistry.route_request`` itself.
+* ``METERS_ITSELF`` — the declared function (including functions nested in it)
+  calls ``record_provider_call``. This proves the meter is PRESENT, not that
+  the call path reaches it: a meter behind a dead branch still passes here.
+  The path proof for the one such site, the dedicated DA provider's tool-loop
+  call, is behavioural —
+  ``tests/integration/test_llm_usage_ledger_coverage.py::TestAnEngineTurn::test_the_da_direct_call_is_metered_once``
+  and
+  ``tests/unit/core/investigation/test_milestone_engine_tool_loop.py::TestToolLoopTruncationLadder::test_the_retry_is_metered_too``
+  both fail when the meter is put behind ``if False:``.
+* ``CHOKEPOINT`` — ``ProviderRegistry.route_request`` itself, and the router
+  handing it to ``call_external``.
 * ``UNMETERED`` — with the reason. Only the connection test.
 
 A new site, a moved one or a changed count fails until it is declared. The
@@ -33,16 +45,23 @@ scan fails if it read no files there or found none of the declared sites.
 What this does NOT see, stated so nobody mistakes it for more:
 
 * a receiver swapped to a concrete provider inside a function declared
-  ``ROUTER``, with the call count unchanged — ``ROUTER`` is taken on trust;
-* a call through a variable holding the bound method (``gen = p.generate;
-  await gen()``), a ``getattr`` whose name is not a literal, and ``**kwargs``
-  indirection that hands a provider's ``generate`` to something else to call;
-* the retry helper imported under another name;
-* a billed call made by a provider method other than ``generate`` — every
-  provider bills through ``generate`` today (``BaseLLMProvider``).
+  ``ROUTER``, with the count unchanged — ``ROUTER`` is taken on trust;
+* a provider's private transport reached from outside the provider
+  (``OpenAIProvider._post_chat_completion`` and its siblings), or raw HTTP to a
+  provider's API from anywhere else;
+* a billed provider method not named ``generate`` — every provider bills
+  through ``generate`` today (``BaseLLMProvider``), and a future one (a
+  streaming method, say) is NOT classified free in advance: it must be added to
+  the collected names when it is written;
+* a ``getattr`` or ``methodcaller`` whose name is not a literal, and the retry
+  helper imported under another name.
 
 It also does not see ``.route(...)``: that is ``LLMRouter``'s own entry point,
 no provider has one, and everything it calls goes through the chokepoint.
+
+Out of scope: ``core/preprocessing/tier2/external.py``'s
+``ExternalTier2Client``, which calls an external search service whose LLM spend,
+if any, is that service's own.
 """
 
 from __future__ import annotations
@@ -83,6 +102,12 @@ SITES: dict[tuple[str, str], tuple[int, str, str]] = {
         "faultmaven/infrastructure/llm/providers/registry.py",
         "ProviderRegistry.route_request",
     ): (1, CHOKEPOINT, "the registry's own provider.generate()"),
+    # ...and the router handing it on, as a bound method, to call_external.
+    ("faultmaven/infrastructure/llm/router.py", "LLMRouter.route"): (
+        1,
+        CHOKEPOINT,
+        "the chokepoint handed to call_external",
+    ),
     # The engine's tool loop: a dedicated DA provider is concrete, so the
     # closure meters it; with none set, the provider is the router.
     (_GENERATION, "StructuredOutputGenerator._tool_augmented_generate"): (
@@ -138,35 +163,39 @@ SITES: dict[tuple[str, str], tuple[int, str, str]] = {
 }
 
 
-def _is_site(node: ast.AST) -> bool:
-    """Whether ``node`` is a provider call in one of the collected shapes."""
+def _names(func: ast.AST) -> str | None:
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+def _literal_billed(node: ast.Call, index: int) -> bool:
+    return (
+        len(node.args) > index
+        and isinstance(node.args[index], ast.Constant)
+        and node.args[index].value in _BILLED
+    )
+
+
+def _is_site(node: ast.AST, parents: dict) -> bool:
+    """Whether ``node`` reaches a provider's billed method in a collected shape."""
+    if isinstance(node, ast.Attribute):
+        # ``x.generate`` read, whether called on the spot or not; a store or a
+        # del is not a read. The call form is counted HERE, once — its Call
+        # node is not counted again below.
+        return node.attr in _BILLED and isinstance(node.ctx, ast.Load)
     if not isinstance(node, ast.Call):
         return False
-    func = node.func
-    if isinstance(func, ast.Attribute) and func.attr in _BILLED:
+    name = _names(node.func)
+    if name == _RETRY:
         return True
-    if (isinstance(func, ast.Name) and func.id == _RETRY) or (
-        isinstance(func, ast.Attribute) and func.attr == _RETRY
-    ):
-        return True
-    if (
-        isinstance(func, ast.Call)
-        and isinstance(func.func, ast.Name)
-        and func.func.id == "getattr"
-        and len(func.args) >= 2
-        and isinstance(func.args[1], ast.Constant)
-        and func.args[1].value in _BILLED
-    ):
-        return True
-    is_partial = (isinstance(func, ast.Name) and func.id == "partial") or (
-        isinstance(func, ast.Attribute) and func.attr == "partial"
-    )
-    return (
-        is_partial
-        and bool(node.args)
-        and isinstance(node.args[0], ast.Attribute)
-        and node.args[0].attr in _BILLED
-    )
+    if name == "getattr":
+        return _literal_billed(node, 1)
+    if name == "methodcaller":
+        return _literal_billed(node, 0)
+    return False
 
 
 def _parse(source: str) -> ast.Module:
@@ -190,7 +219,7 @@ def call_sites(source: str) -> Counter:
                 names.append(node.name)
         return ".".join(reversed(names)) or "<module>"
 
-    return Counter(scope_of(node) for node in ast.walk(tree) if _is_site(node))
+    return Counter(scope_of(node) for node in ast.walk(tree) if _is_site(node, parents))
 
 
 @lru_cache(maxsize=1)
@@ -259,6 +288,15 @@ class TestTheDetector:
             "def f(p):\n    return partial(p.generate, prompt='x')",
             "async def f(p):\n"
             "    return await asyncio.wait_for(p.generate(prompt='x'), 5)",
+            # A billed method read without being called: stored, passed, bound.
+            "async def f(p):\n    gen = p.generate\n    return await gen(prompt='x')",
+            "async def f(self):\n"
+            "    return await self.call_external(call_func=self.registry.route_request)",
+            "from functools import partial as bind\n"
+            "def f(p):\n    return bind(p.generate, prompt='x')",
+            "def f(p):\n    m = getattr(p, 'generate')\n    return m",
+            "def f():\n    return operator.methodcaller('generate', prompt='x')",
+            "def f():\n    return methodcaller('route_request', 'x')",
         ],
     )
     def test_every_call_shape_is_collected(self, snippet):
@@ -274,9 +312,11 @@ class TestTheDetector:
             '"""Example:\n    >>> await llm_provider.generate(prompt="x")\n"""',
             # The router's own entry point, and other methods that bill nothing.
             "async def f(router):\n    return await router.route(prompt='x')",
-            "async def f(p):\n    return await p.generate_stream('x')",
             "def f(fn):\n    return partial(fn, prompt='x')",
             "async def f(p):\n    return await getattr(p, 'is_available')()",
+            # Writing the attribute is not reading the method.
+            "def f(p, mock):\n    p.generate = mock",
+            "def f(p):\n    del p.generate",
         ],
     )
     def test_non_calls_are_not_collected(self, snippet):
@@ -363,9 +403,16 @@ def test_every_self_metering_site_meters(site):
     ), f"{path}::{qualname} is declared METERS_ITSELF but never calls {_METER}"
 
 
-def test_there_is_one_chokepoint_and_every_classification_is_known():
+def test_the_chokepoint_is_one_method_and_every_classification_is_known():
+    """``CHOKEPOINT`` names the registry's method and the one hand-off of it."""
     kinds = Counter(v[1] for v in SITES.values())
-    assert kinds[CHOKEPOINT] == 1
+    assert {k for k, v in SITES.items() if v[1] == CHOKEPOINT} == {
+        (
+            "faultmaven/infrastructure/llm/providers/registry.py",
+            "ProviderRegistry.route_request",
+        ),
+        ("faultmaven/infrastructure/llm/router.py", "LLMRouter.route"),
+    }
     assert set(kinds) <= {ROUTER, METERS_ITSELF, CHOKEPOINT, UNMETERED}
     for key, (_count, kind, reason) in SITES.items():
         assert reason.strip(), f"{key} has no reason"

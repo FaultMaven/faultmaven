@@ -20,10 +20,13 @@ if the data has any value.
 
 ---
 
-## ⚠️ The baseline migration is amended in place until the cutover
+## ⚠️ The baseline was amended in place during the ADR-017 campaign
 
-**Any database already stamped at `a1e0c17bd001` must be dropped and re-created,
-not upgraded.**
+**A database stamped at `a1e0c17bd001` before the baseline's last in-place
+amendment (commit `20815cbdd`, 2026-09-16, #1469) never received that amendment
+and must be dropped and re-created, not upgraded.** One stamped at or after it
+upgrades normally: `alembic upgrade head` delivers `002_llm_usage_ledger` and
+every revision after it.
 
 The chain starts at `001_enterprise_baseline`, and while the ADR-017 campaign
 was in flight that baseline was edited **in place** rather than appended to.
@@ -49,11 +52,13 @@ startup migration. The database still holds the *old* schema entirely. This is
 not hypothetical; it is what a developer machine looks like the first time it
 meets this campaign.
 
-So, for any environment that is not being wiped anyway:
+So, for a database stamped before `20815cbdd` or at the retired chain, in any
+environment that is not being wiped anyway:
 
 ```bash
-# NOT `alembic upgrade head` — from an earlier `a1e0c17bd001` it does nothing
-# and says it worked; from the retired chain it cannot locate the revision.
+# NOT `alembic upgrade head` — from an `a1e0c17bd001` stamped before 20815cbdd
+# it never delivers the amendment and says it worked; from the retired chain it
+# cannot locate the revision.
 dropdb faultmaven && createdb faultmaven
 alembic upgrade head
 ```
@@ -62,7 +67,10 @@ To tell which case you are in before dropping anything:
 
 ```bash
 psql -d faultmaven -c "SELECT version_num FROM alembic_version;"
-# a1e0c17bd001  -> the baseline, but possibly an older amendment of it
+# a1e0c17bd001  -> the baseline, but possibly an older amendment of it: it is
+#                  at or after 20815cbdd iff the token_revocations table exists,
+#                  which that amendment created; then `alembic upgrade head`
+# a revision in `alembic history` -> the current chain; `alembic upgrade head`
 # anything else -> the retired chain; nothing will migrate it forward
 # (no such table) -> never provisioned; `alembic upgrade head` is enough
 ```

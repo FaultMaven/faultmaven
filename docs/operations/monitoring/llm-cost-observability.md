@@ -97,7 +97,8 @@ row. A turn that made no billed call writes no turn row.
 - the **enterprise** bound to the request (the RLS key);
 - the **billing subject** from the same rule the turn cap charges with — the
   account's organization when it has one, else the account — or `none` when
-  there is neither (a job);
+  there is neither: a call with no paying organization and no actor, for
+  example a standalone call made outside an authenticated request;
 - the **actor**: the turn's user inside an engine turn; otherwise the user
   `require_authentication` resolved for the request; otherwise `''`. A route
   that authenticates another way records no actor — attribution lost, never
@@ -131,8 +132,14 @@ row. A turn that made no billed call writes no turn row.
 **It does not reconcile with `turn_usage`.** The turn cap's ledger counts
 turns, is written before the model runs, fails closed, and is written only
 under multi-tenancy for engine turns. This ledger records spend for every
-billed call in both modes, asides and jobs included, after the call. It will
-always name more subjects than `turn_usage`; do not expect the two to agree.
+billed call the API process makes, in both modes and asides included, after the
+call. It will always name more subjects than `turn_usage`; do not expect the two
+to agree.
+
+**Jobs are not in the ledger.** No job calls an LLM today, and the job runner
+(`python -m faultmaven.jobs.run`) installs no ledger, so a job's call would be
+counted `not_composed`. A job that starts calling an LLM must install the ledger
+in the runner.
 
 ### When a write fails
 
@@ -143,8 +150,9 @@ billed call that does not reach a row increments
 
 | `reason` | Meaning |
 |---|---|
-| `store_error` | The write raised (the database was unreachable or locked). Also logged at WARNING as `llm_usage_unpersisted`, naming the reason and the exception type — never the row. A write still in flight when shutdown's 5-second drain gives up is counted here too. |
+| `store_error` | The write raised (the database was unreachable or locked) or was cancelled. A raise is also logged at WARNING as `llm_usage_unpersisted`, naming the reason and the exception type — never the row. A write still in flight when shutdown's 5-second drain gives up is cancelled and counted here. A turn row that fails on its own (its case was deleted mid-turn) counts here too: it is written in a savepoint, so it rolls back alone and the turn's daily increments still commit. |
 | `no_tenant` | Under `TENANT_PROVIDER=multi`, a call with no usable enterprise bound. RLS would refuse the row, so none is attempted. |
+| `attribution_error` | Capturing who pays raised, so there is nothing to stamp the row with. Logged at WARNING with the exception type. The turn or call itself carries on. |
 | `no_loop` | A call outside any turn metered with no running event loop to write it from. |
 | `not_composed` | No ledger is installed — the composition root did not run (a unit test, or a process that never booted the app). Not logged. |
 

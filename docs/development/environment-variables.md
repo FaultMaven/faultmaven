@@ -387,8 +387,9 @@ OPENAI_API_KEY=sk-prod-key-...  # Different key!
 
 ## LLM Usage Ledger Retention
 
-How long the LLM usage ledger keeps its rows (#640). Both are pruned by the
-`llm_usage_retention` job; see
+How long the LLM usage ledger keeps its rows (#640). Both are
+`ObservabilitySettings` fields (`settings.observability`), and both are pruned
+by the `llm_usage_retention` job; see
 [LLM cost observability](../operations/monitoring/llm-cost-observability.md#the-usage-ledger)
 for when that job runs.
 

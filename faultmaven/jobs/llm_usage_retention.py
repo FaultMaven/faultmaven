@@ -42,8 +42,8 @@ async def run(
     """
     from faultmaven.infrastructure.llm.usage_ledger import prune_expired_usage
 
-    daily_days = settings.auth.llm_usage_daily_retention_days
-    turn_days = settings.auth.llm_usage_turn_retention_days
+    daily_days = settings.observability.llm_usage_daily_retention_days
+    turn_days = settings.observability.llm_usage_turn_retention_days
     result: Dict[str, Any] = {
         "job": JOB_NAME,
         "status": "completed",

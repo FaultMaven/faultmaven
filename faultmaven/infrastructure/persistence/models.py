@@ -564,8 +564,9 @@ class TurnUsageModel(Base):
 
 #: The subject kinds a usage row may name. ``turn_usage`` has two; this ledger
 #: has a third, ``none``, because metering must not refuse: a billed call with no
-#: actor and no billing organization (a job) is still spend, and dropping it
-#: would make the totals lie. ``turn_usage`` never meets that case because the
+#: actor and no billing organization (for example a standalone call made outside
+#: an authenticated request) is still spend, and dropping it would make the
+#: totals lie. ``turn_usage`` never meets that case because the
 #: cap refuses a turn with no subject.
 _USAGE_SUBJECT_KIND_CHECK = (
     "billing_subject_kind IN ('organization', 'account', 'none')"
@@ -586,7 +587,7 @@ class LlmUsageDailyModel(Base):
     across replicas because every write is an atomic database increment.
 
     **No key column is nullable.** ``actor_user_id`` is ``''`` when there is no
-    actor (a job) and ``billing_subject_id`` is ``''`` when the kind is ``none``.
+    actor and ``billing_subject_id`` is ``''`` when the kind is ``none``.
     A NULL in an ``ON CONFLICT`` target never conflicts on SQLite — NULL is
     distinct from NULL — so a nullable key would insert a new row per flush
     instead of incrementing one, and the totals would still be right while the

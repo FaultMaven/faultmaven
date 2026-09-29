@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from dataclasses import dataclass
 
@@ -43,6 +44,7 @@ from faultmaven.infrastructure.llm.metering import (
 )
 from faultmaven.infrastructure.llm.pricing import estimate_cost_usd
 from faultmaven.infrastructure.llm.usage_ledger import (
+    REASON_ATTRIBUTION_ERROR,
     REASON_NO_LOOP,
     REASON_NO_TENANT,
     REASON_NOT_COMPOSED,
@@ -291,6 +293,26 @@ class TestTheThreeBranches:
 # =============================================================================
 
 
+class TestANoneResponse:
+    """A ``None`` response is recorded by neither arm: there was no call."""
+
+    async def test_the_turn_arm_adds_nothing(self, ledger, unpersisted):
+        tracker = TurnTokenTracker()
+        _in_turn(
+            tracker,
+            lambda: record_provider_call("anthropic", "claude-sonnet-4-6", None, 1.0),
+        )
+        assert tracker.total_calls == 0 and not tracker.buckets
+        assert not usage_ledger._pending_writes
+
+    async def test_the_own_row_arm_writes_nothing(self, ledger, unpersisted):
+        record_provider_call("anthropic", "claude-sonnet-4-6", None, 1.0)
+        assert not usage_ledger._pending_writes
+        await drain_pending_usage_writes()
+        assert ledger.call_writes == 0 and not ledger.daily
+        assert unpersisted.counts == {}
+
+
 class TestAttribution:
     def test_standalone_is_a_tenant(self):
         assert capture_attribution("u1") == UsageAttribution(
@@ -391,11 +413,86 @@ class TestFailingOpen:
         assert tracker.flushed
         assert any("store_error" in r.getMessage() for r in caplog.records)
 
+    async def test_an_own_row_whose_attribution_raises_is_counted(
+        self, ledger, unpersisted, monkeypatch, caplog
+    ):
+        def _raise(_actor):
+            raise RuntimeError("settings unreadable")
+
+        monkeypatch.setattr(usage_ledger, "capture_attribution", _raise)
+        with caplog.at_level(logging.WARNING, logger=usage_ledger.__name__):
+            record_provider_call("anthropic", "claude-sonnet-4-6", _Resp(1, 1), 1.0)
+        assert unpersisted.counts == {REASON_ATTRIBUTION_ERROR: 1}
+        assert ledger.call_writes == 0
+        assert any(
+            "attribution_error" in r.getMessage() and "RuntimeError" in r.getMessage()
+            for r in caplog.records
+        )
+
+    async def test_a_turn_whose_attribution_failed_is_counted_as_such(
+        self, ledger, unpersisted
+    ):
+        tracker = TurnTokenTracker(attribution=None, attribution_failed=True)
+        _in_turn(
+            tracker,
+            lambda: record_provider_call(
+                "anthropic", "claude-sonnet-4-6", _Resp(1, 1), 1.0
+            ),
+        )
+        await flush_turn(tracker, case_id="c1", turn_number=1, investigation_turn=1)
+        assert unpersisted.counts == {REASON_ATTRIBUTION_ERROR: 1}
+        assert ledger.turn_writes == 0
+
     def test_no_running_loop_is_counted(self, ledger, unpersisted):
         # A synchronous caller: nothing to schedule the write on.
         record_provider_call("anthropic", "claude-sonnet-4-6", _Resp(100, 10), 1.0)
         assert unpersisted.counts == {REASON_NO_LOOP: 1}
         assert ledger.call_writes == 0
+
+
+# =============================================================================
+# A cancelled write is counted, and stays cancelled
+# =============================================================================
+
+
+class _Hung(InMemoryUsageLedger):
+    async def record_call(self, attribution, bucket, usage_date):
+        await asyncio.sleep(60)
+
+    async def record_turn(self, attribution, turn, buckets, usage_date):
+        await asyncio.sleep(60)
+
+
+class TestACancelledWrite:
+    async def test_an_own_row_write(self, unpersisted):
+        install_usage_ledger(_Hung())
+        record_provider_call("anthropic", "claude-sonnet-4-6", _Resp(1, 1), 1.0)
+        (task,) = usage_ledger._pending_writes
+        await asyncio.sleep(0)  # in flight
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert task.cancelled(), "the cancellation must not be swallowed"
+        assert unpersisted.counts == {REASON_STORE_ERROR: 1}
+
+    async def test_a_turn_flush(self, unpersisted):
+        install_usage_ledger(_Hung())
+        tracker = TurnTokenTracker(attribution=capture_attribution("u1"))
+
+        def calls():
+            for _ in range(2):
+                record_provider_call("anthropic", "claude-sonnet-4-6", _Resp(1, 1), 1.0)
+
+        _in_turn(tracker, calls)
+        task = asyncio.get_running_loop().create_task(
+            flush_turn(tracker, case_id="c1", turn_number=1, investigation_turn=1)
+        )
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert task.cancelled()
+        assert unpersisted.counts == {REASON_STORE_ERROR: 2}
 
 
 # =============================================================================
@@ -484,6 +581,41 @@ class TestTheDrain:
         assert time.monotonic() - started < 2
         assert abandoned == 1
         assert unpersisted.counts == {REASON_STORE_ERROR: 1}
+
+
+def _a_task_left_by_a_closed_loop() -> "asyncio.Task[None]":
+    """A write task that started on another loop, which then closed under it.
+
+    Built on its own thread, because this test's loop is running on this one.
+    """
+    box: dict = {}
+
+    def run() -> None:
+        loop = asyncio.new_event_loop()
+
+        async def hang() -> None:
+            await asyncio.sleep(3600)
+
+        box["task"] = loop.create_task(hang())
+        loop.run_until_complete(asyncio.sleep(0.01))
+        loop.close()
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    thread.join()
+    return box["task"]
+
+
+async def test_the_drain_drops_a_task_from_a_closed_loop(unpersisted):
+    foreign = _a_task_left_by_a_closed_loop()
+    assert not foreign.done()
+    usage_ledger._pending_writes.add(foreign)
+    try:
+        assert await drain_pending_usage_writes(timeout_s=0.1) == 0
+        assert foreign not in usage_ledger._pending_writes
+        assert unpersisted.counts == {REASON_STORE_ERROR: 1}
+    finally:
+        usage_ledger._pending_writes.discard(foreign)
 
 
 def test_schedule_call_write_is_the_one_path_for_an_own_row(ledger, unpersisted):

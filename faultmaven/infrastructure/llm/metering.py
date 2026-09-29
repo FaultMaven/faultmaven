@@ -69,7 +69,9 @@ class TurnTokenTracker:
     ``buckets`` splits the same calls by ``(provider, model, outcome)``: they
     become the turn's ``llm_usage_daily`` increments when the turn is flushed.
     ``actor_user_id`` and ``attribution`` are captured when the turn begins, in
-    the context its calls run in. After the flush (``flushed``), a call that
+    the context its calls run in; ``attribution_failed`` records that capturing
+    them raised, so the flush counts the turn as ``attribution_error`` rather
+    than ``no_tenant``. After the flush (``flushed``), a call that
     still reaches this tracker — a task the turn spawned and did not await —
     writes a row of its own instead (``record_provider_call``), so it is
     neither lost nor added to a total already written.
@@ -93,6 +95,7 @@ class TurnTokenTracker:
     buckets: Dict[Tuple[str, str, str], CallBucket] = field(default_factory=dict)
     actor_user_id: str = ""
     attribution: Optional[UsageAttribution] = None
+    attribution_failed: bool = False
     flushed: bool = False
 
     def add(
@@ -217,35 +220,38 @@ def record_provider_call(
         # Persistence (#640). Inside a live turn the call accrues to the turn's
         # tracker, which the turn flushes once. Anything else — no turn, or a
         # turn that has already flushed — is written as a row of its own, so
-        # no billed call is lost and none is counted twice.
+        # no billed call is lost and none is counted twice. A ``None`` response
+        # is persisted by neither arm: there is no call to record, which is
+        # also what ``TurnTokenTracker.add`` concludes on its own.
         tracker = active_token_tracker.get()
-        if tracker is not None and not tracker.flushed:
-            tracker.add(
-                response,
-                provider=provider,
-                model=model,
-                outcome=outcome,
-                cost_usd=cost_usd,
-                priced=priced,
-            )
-        else:
-            call = CallBucket(provider, model, outcome)
-            call.add(
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cache_read_tokens=cache_read,
-                cache_write_tokens=cache_write,
-                cost_usd=cost_usd,
-                priced=priced,
-            )
-            schedule_call_write(
-                call,
-                actor_user_id=(
-                    tracker.actor_user_id
-                    if tracker is not None
-                    else get_current_actor_user_id() or ""
-                ),
-            )
+        if response is not None:
+            if tracker is not None and not tracker.flushed:
+                tracker.add(
+                    response,
+                    provider=provider,
+                    model=model,
+                    outcome=outcome,
+                    cost_usd=cost_usd,
+                    priced=priced,
+                )
+            else:
+                call = CallBucket(provider, model, outcome)
+                call.add(
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read_tokens=cache_read,
+                    cache_write_tokens=cache_write,
+                    cost_usd=cost_usd,
+                    priced=priced,
+                )
+                schedule_call_write(
+                    call,
+                    actor_user_id=(
+                        tracker.actor_user_id
+                        if tracker is not None
+                        else get_current_actor_user_id() or ""
+                    ),
+                )
 
         # Per-call structured forensics. DEBUG, not INFO: this fires on every
         # billed call (dozens per turn once tool loops and fallback are counted),
