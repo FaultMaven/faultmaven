@@ -1,5 +1,6 @@
 """Whether a user turn confirms or declines a proposed stage transition, read from the same gate-token matcher stage_gates.py uses."""
 
+import re
 from typing import Optional
 
 from faultmaven.modules.case.contracts import TerminalConfirmedVia
@@ -8,6 +9,11 @@ from .stage_gates import (
     _gate_token_match,
     _matches_gate_token,
 )
+
+#: A Slack emoji as it arrives on the wire (``:+1:``, ``:white_check_mark:``).
+#: Removed before the bare test so a Slack reply labels as the same reply typed
+#: with the Unicode emoji does (#1748). Applied to the lowercased message.
+_SLACK_EMOJI_SHORTCODE = re.compile(r":[a-z0-9_+-]+:")
 
 # Bare tokens that carry little intent on their own: #723's Note 1 list. Kept
 # apart from the explicit set so a terminal transition confirmed by one of
@@ -70,10 +76,13 @@ def confirmation_token_class(user_message: str) -> Optional[TerminalConfirmedVia
     (``_gate_token_match``, longest match at the start), and is never guessed
     from the words that follow (#1748). The matched token's set says explicit
     or weak; the rest of the message says bare or prefixed. BARE means no
-    letter or digit anywhere after the matched token, so punctuation, emoji
-    and emoticons keep a reply bare ("ok!", "ok 👍", "ok =)", "yes :)"), and
-    any further word makes it prefixed ("ok ok", "looks good to me", "yes,
-    don't close it yet"):
+    letter or digit anywhere after the matched token, once Slack emoji
+    shortcodes (``:+1:``, ``:white_check_mark:``) are removed: punctuation,
+    Unicode emoji and emoticons made of punctuation keep a reply bare ("ok!",
+    "ok 👍", "ok :+1:", "ok =)", "yes :)"). An emoticon written with a letter or
+    digit ("ok :D", "ok XD", "yes :P", "ok <3", "ok (y)") makes it prefixed, as
+    any further word does ("ok ok", "looks good to me", "yes, don't close it
+    yet"):
 
     * ``"explicit_token"`` / ``"explicit_prefixed"`` — opens with an explicit
       token, bare or with more;
@@ -98,7 +107,8 @@ def confirmation_token_class(user_message: str) -> Optional[TerminalConfirmedVia
     if match is None:
         return None
     token, end = match
-    bare = not any(c.isalnum() for c in msg[end:])
+    rest = _SLACK_EMOJI_SHORTCODE.sub("", msg[end:])
+    bare = not any(c.isalnum() for c in rest)
     if token in _EXPLICIT_CONFIRM_TOKENS:
         return "explicit_token" if bare else "explicit_prefixed"
     return "weak_token" if bare else "weak_prefixed"

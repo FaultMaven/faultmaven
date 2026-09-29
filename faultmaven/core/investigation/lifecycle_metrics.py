@@ -24,7 +24,10 @@ Adding a metric here:
   the graceful-degradation policy.
 """
 
+from typing import get_args
+
 from faultmaven.infrastructure.shims.metrics import Counter
+from faultmaven.modules.case.contracts import CaseState, TerminalConfirmedVia
 
 # INV-01 outcome telemetry. The ratio
 # ``gate1_statement_composed_total / engine_owned_affordance_served_total
@@ -538,17 +541,22 @@ close_pivoted_to_resolve_total = Counter(
 #   ``explicit_token``    typed text that is a BARE explicit token ("yes!");
 #   ``explicit_prefixed`` typed text opening with an explicit token and saying
 #                         more ("yes, don't close it yet", "do it later");
-#   ``weak_token``        a typed BARE weak token ("ok", "ok 👍") — #723's term;
+#   ``weak_token``        a typed BARE weak token ("ok", "ok 👍", "ok :+1:") —
+#                         #723's term;
 #   ``weak_prefixed``     typed text opening with a weak token and saying more
 #                         ("ok go ahead", "ok, don't close it yet");
 #   ``typed_other``       typed text the intent resolver accepted that is no
 #                         known token ("that works").
-# BARE means no letter or digit after the matched token. The prefixed labels
-# are reported beside the others and never merged into either side.
+# BARE means no letter or digit after the matched token once Slack emoji
+# shortcodes (":+1:") are removed, so a Slack reply labels as the same reply
+# with the Unicode emoji does; an emoticon written with a letter or digit
+# (":D", "XD", "<3") makes a reply prefixed. The prefixed labels are reported
+# beside the others and never merged into either side.
 # ``faultmaven_terminal_followup_total`` counts the turn IMMEDIATELY after the
 # confirming turn, by the same ``via`` and the case's state, when the user
-# typed it: non-blank text, no effective intent, and not one of the ack turn's
-# own cards. The load-bearing signal is #723's comparison, bare against bare:
+# typed it: non-blank text, no effective intent, not one of the ack turn's own
+# cards, and not a resubmission of the confirming message. The load-bearing
+# signal is #723's comparison, bare against bare:
 # the ``weak_token`` follow-up rate against the ``explicit_token`` one. A
 # follow-up alone is not proof of a spurious close ("thanks" is one). Not
 # counted: a confirmation whose turn fails or is cancelled anywhere between the
@@ -560,7 +568,10 @@ terminal_confirmation_total = Counter(
     "faultmaven_terminal_confirmation_total",
     "Terminal transitions executed on a user confirmation, by how the user "
     "confirmed (intent|explicit_token|explicit_prefixed|weak_token|"
-    "weak_prefixed|typed_other) and the state reached (resolved|closed).",
+    "weak_prefixed|typed_other) and the state reached (resolved|closed). "
+    "*_token is a bare token: no letter or digit after it once Slack :shortcode: "
+    "emoji are removed; an emoticon with a letter or digit (:D, XD, <3) is "
+    "*_prefixed.",
     ["via", "to_state"],
 )
 
@@ -572,6 +583,16 @@ terminal_followup_total = Counter(
     "state (resolved|closed).",
     ["via", "to_state"],
 )
+
+# Every child of the pair exists from import, at 0. A labelled counter creates
+# a series on its first ``.labels()``, so a series born by an increment is born
+# AT 1 — and the documented ``increase()`` query cannot see that first
+# increment. #723's series are the rare ones, so they would lose the most.
+# Through the shim, so this is a no-op when metrics are disabled.
+for _via in get_args(TerminalConfirmedVia):
+    for _to_state in (CaseState.RESOLVED.value, CaseState.CLOSED.value):
+        terminal_confirmation_total.labels(via=_via, to_state=_to_state)
+        terminal_followup_total.labels(via=_via, to_state=_to_state)
 
 # INV-43 resolution-offer telemetry. The RESOLVED handshake had exactly three
 # openers — the LLM's ``proposed_transition``, the user's own request, and the

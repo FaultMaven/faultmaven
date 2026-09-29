@@ -228,6 +228,11 @@ def _count_terminal_confirmation(updated_case, *, intent, user_message) -> None:
     handler dispatches on it. A click in that turn means this confirmation gets
     no follow-up count at all.
 
+    Nor is a RESUBMISSION a follow-up: text equal, stripped and lowercased, to
+    the confirming turn's own message (its record's ``user_message_summary``)
+    is a double submit or a retry of the confirmation, and carries nothing new
+    about whether the close held.
+
     A metric must never fail a turn: the turn is already saved, and a
     registry failure here is logged and dropped.
     """
@@ -244,6 +249,9 @@ def _count_terminal_confirmation(updated_case, *, intent, user_message) -> None:
             and user_message.strip()
             and intent is None
             and terminal_card_action(user_message, updated_case.state) is None
+            # A resubmitted confirmation carries nothing new.
+            and user_message.strip().lower()
+            != (history[-2].user_message_summary or "").strip().lower()
         ):
             terminal_followup_total.labels(
                 via=history[-2].terminal_confirmed_via, to_state=to_state

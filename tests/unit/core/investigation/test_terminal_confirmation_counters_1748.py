@@ -14,9 +14,14 @@ driven here through ``InvestigationService.process_turn`` — the path a click o
 a typed reply actually takes — with only the LLM and the database doubled.
 """
 
+import json
 import logging
+import os
 import re
+import subprocess
+import sys
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import get_args
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -70,7 +75,23 @@ pytestmark = pytest.mark.unit
 #: prefixed. The prefixed rows include refusals and deferrals the gate still
 #: executes on (#1783) — the labels never guess which.
 LABEL_TABLE = {
-    "weak_token": ["ok", "ok!", "ok :)", "ok 👍", "ok =)", "lgtm", "sure.", "  Okay  "],
+    "weak_token": [
+        "ok",
+        "ok!",
+        "ok :)",
+        "ok 👍",
+        "ok =)",
+        "lgtm",
+        "sure.",
+        "  Okay  ",
+        # Slack's wire form of an emoji labels as the Unicode emoji does.
+        "ok :+1:",
+        "lgtm :rocket:",
+        "OK :THUMBSUP:",
+        # No space: the gate still reads "ok" (a word boundary before ":"), and
+        # what follows is only a shortcode.
+        "ok:+1:",
+    ],
     "weak_prefixed": [
         "ok go ahead",
         "ok ok",
@@ -82,14 +103,28 @@ LABEL_TABLE = {
         "ok no",
         "sure, do it later",
         "sure thing",
+        # Emoticons written with a letter or digit are not bare.
+        "ok :D",
+        "ok XD",
+        "ok <3",
+        "ok (y)",
+        "ok :+1: go ahead",
     ],
-    "explicit_token": ["yes", "yes 👍", "go ahead", "that's right", "yes!"],
+    "explicit_token": [
+        "yes",
+        "yes 👍",
+        "go ahead",
+        "that's right",
+        "yes!",
+        "yes :white_check_mark:",
+    ],
     "explicit_prefixed": [
         "yes, don't close it yet",
         "do it later",
         "confirm later",
         "yes please close it",
         "yes ok",
+        "yes :P",
     ],
 }
 
@@ -480,8 +515,10 @@ class TestTheConfirmationCounter:
     ):
         """Review F12, pinning what the metrics doc says. The gate commits the
         transition at the engine's own saves; the service's final save then
-        conflicts. The confirmation is never counted, and the channel record the
-        engine already saved makes the user's retry count as its follow-up."""
+        conflicts. The confirmation is never counted — and stays lost: the
+        user's retry resubmits the same "ok", which is not a follow-up either
+        (review F1 of e98382937), although the engine already saved the
+        confirming turn's channel record."""
         confirmation, followup = counters
         store = _Store(_investigating_case())
         svc = _service(store)
@@ -513,7 +550,7 @@ class TestTheConfirmationCounter:
 
         answered.assert_awaited_once()
         confirmation.labels.assert_not_called()
-        followup.labels.assert_called_once_with(via="weak_token", to_state="resolved")
+        followup.labels.assert_not_called()
 
     async def test_an_ok_the_resolver_minted_into_an_intent_is_still_weak(
         self, counters
@@ -748,6 +785,42 @@ class TestTheFollowUpCounter:
         answered.assert_awaited_once()  # Q&A answered it: not a card here
         followup.labels.assert_called_once_with(via="explicit_token", to_state="closed")
 
+    async def _answered_on_terminal(self, svc, message):
+        answered = AsyncMock(
+            side_effect=lambda case, user_message, metadata, user_id=None: {
+                "agent_response": "It is resolved.",
+                "case_updated": case,
+                "metadata": metadata,
+            }
+        )
+        with patch.object(TerminalTurnHandler, "_process_terminal_qa", new=answered):
+            await _turn(svc, message)
+        answered.assert_awaited_once()
+
+    @pytest.mark.parametrize("again", ["ok", "OK", " ok "])
+    async def test_a_resubmitted_confirmation_is_not_a_follow_up(self, counters, again):
+        """Review F1 of e98382937: a double submit carries nothing new."""
+        confirmation, followup = counters
+        store, svc = await self._resolved_on_ok(counters)
+
+        await self._answered_on_terminal(svc, again)
+
+        confirmation.labels.assert_called_once_with(
+            via="weak_token", to_state="resolved"
+        )
+        followup.labels.assert_not_called()
+
+    async def test_a_different_message_after_the_confirmation_is_a_follow_up(
+        self, counters
+    ):
+        """The positive control for the resubmission screen."""
+        _, followup = counters
+        store, svc = await self._resolved_on_ok(counters)
+
+        await self._answered_on_terminal(svc, "wait, it's still failing")
+
+        followup.labels.assert_called_once_with(via="weak_token", to_state="resolved")
+
     async def test_a_client_sent_greeting_is_typed(self, counters):
         """Review F8: the service ignores a client-sent GREETING and re-derives
         the intent from the text, so the user typed "hi" — the effective intent
@@ -759,3 +832,72 @@ class TestTheFollowUpCounter:
 
         assert store.row().messages[-2]["metadata"].get("orientation") == "greeting"
         followup.labels.assert_called_once_with(via="weak_token", to_state="resolved")
+
+
+_SERIES_CHILD = r"""
+import json
+from typing import get_args
+
+from prometheus_client import REGISTRY
+
+import faultmaven.core.investigation.lifecycle_metrics as lifecycle_metrics
+
+series = {}
+for family in REGISTRY.collect():
+    if family.name not in (
+        "faultmaven_terminal_confirmation",
+        "faultmaven_terminal_followup",
+    ):
+        continue
+    for sample in family.samples:
+        if sample.name.endswith("_total"):
+            key = f"{family.name}|{sample.labels['via']}|{sample.labels['to_state']}"
+            series[key] = sample.value
+print("@@RESULT@@" + json.dumps({"file": lifecycle_metrics.__file__, "series": series}))
+"""
+
+
+def test_every_series_is_exposed_at_zero_before_any_turn():
+    """Review F2 of e98382937: a series born by its first increment is born at
+    1, and the documented ``increase()`` query never sees that event. Every
+    child of both counters must exist at 0 from import.
+
+    A subprocess, because the shim decides real-or-NoOp when the counters are
+    CREATED, at import: ``ENABLE_METRICS`` has to be set before that, and
+    ``prometheus-client`` is a cloud extra (``.venv-cloud``), so the
+    standalone leg skips.
+    """
+    pytest.importorskip("prometheus_client")
+    repo_root = Path(__file__).resolve().parents[4]
+    env = dict(os.environ)
+    env["ENABLE_METRICS"] = "true"
+    env["PYTHONPATH"] = os.pathsep.join(
+        p for p in (str(repo_root), env.get("PYTHONPATH")) if p
+    )
+
+    proc = subprocess.run(
+        [sys.executable, "-c", _SERIES_CHILD],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    line = next(
+        line for line in proc.stdout.splitlines() if line.startswith("@@RESULT@@")
+    )
+    result = json.loads(line[len("@@RESULT@@") :])
+
+    # The child measured THIS tree, not an editable install elsewhere.
+    assert result["file"].startswith(str(repo_root))
+    expected = {
+        f"{family}|{via}|{to_state}": 0.0
+        for family in (
+            "faultmaven_terminal_confirmation",
+            "faultmaven_terminal_followup",
+        )
+        for via in get_args(TerminalConfirmedVia)
+        for to_state in (CaseState.RESOLVED.value, CaseState.CLOSED.value)
+    }
+    assert result["series"] == expected
