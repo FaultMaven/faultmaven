@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.models import KnowledgeBaseDocument
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
@@ -71,7 +72,9 @@ async def test_old_vectors_survive_when_embedding_fails():
 
     with patch(_EMBED_TEXTS, new=AsyncMock(return_value=None)):
         with pytest.raises(KnowledgeBaseError):
-            await service._index_document_in_vector_store(_document())
+            await service._index_document_in_vector_store(
+                _document(), enterprise_id=STANDALONE_ENTERPRISE_ID
+            )
 
     assert service._vector_store.delete_documents_by_parent_id.await_count == 0, (
         "the old vectors were deleted before a replacement existed — the "
@@ -88,7 +91,9 @@ async def test_unchunkable_content_also_deletes_nothing():
 
     with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
         with pytest.raises(KnowledgeBaseError):
-            await service._index_document_in_vector_store(document)
+            await service._index_document_in_vector_store(
+                document, enterprise_id=STANDALONE_ENTERPRISE_ID
+            )
 
     assert service._vector_store.delete_documents_by_parent_id.await_count == 0
 
@@ -100,7 +105,9 @@ async def test_the_swap_still_happens_on_the_success_path():
     service = _service()
 
     with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
-        chunks = await service._index_document_in_vector_store(_document())
+        chunks = await service._index_document_in_vector_store(
+            _document(), enterprise_id=STANDALONE_ENTERPRISE_ID
+        )
 
     assert chunks >= 1
     assert service._vector_store.delete_documents_by_parent_id.await_count == 1
@@ -118,7 +125,9 @@ async def test_indexing_failure_raises_rather_than_returning_zero():
 
     with patch(_EMBED_TEXTS, new=AsyncMock(return_value=None)):
         with pytest.raises(KnowledgeBaseError) as excinfo:
-            await service._index_document_in_vector_store(_document())
+            await service._index_document_in_vector_store(
+                _document(), enterprise_id=STANDALONE_ENTERPRISE_ID
+            )
 
     assert excinfo.value.error_code == "KNOWLEDGE_EMBEDDER_UNAVAILABLE"
 
@@ -136,7 +145,9 @@ async def test_the_trailing_blanket_handler_does_not_restore_the_sentinel():
     with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
         result = None
         try:
-            result = await service._index_document_in_vector_store(_document())
+            result = await service._index_document_in_vector_store(
+                _document(), enterprise_id=STANDALONE_ENTERPRISE_ID
+            )
         except KnowledgeBaseError:
             pass
 
@@ -268,3 +279,41 @@ async def test_semantic_search_says_unavailable_not_zero_results():
     assert result["total_results"] == 0
     assert "unavailable" in result["error"].lower()
     assert "not a result of zero matches" in result["error"].lower()
+
+
+# ---------------------------------------------------------------------------
+# The tenant stamp is checked before the destructive delete too (#1168)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enterprise_id", ["", "   "], ids=["empty", "blank"])
+async def test_a_blank_enterprise_is_refused_before_the_old_vectors_go(enterprise_id):
+    """The store refuses a KB chunk that names no tenant. Were that the only
+    check, the refusal would land AFTER the indexer had deleted the old chunks
+    and leave the document with none — the #945 shape. The indexer checks the
+    stamp alongside the undeclared-key refusal, before the delete."""
+    service = _service()
+
+    with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
+        with pytest.raises(KnowledgeBaseError, match="carries no enterprise_id"):
+            await service._index_document_in_vector_store(
+                _document(), enterprise_id=enterprise_id
+            )
+
+    assert service._vector_store.delete_documents_by_parent_id.await_count == 0
+    assert service._vector_store.add_documents.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_every_chunk_carries_the_enterprise_it_was_given():
+    service = _service()
+
+    with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
+        await service._index_document_in_vector_store(
+            _document(), enterprise_id="ent-given"
+        )
+
+    (documents,), _ = service._vector_store.add_documents.await_args
+    assert documents, "nothing was written"
+    assert {d["metadata"]["enterprise_id"] for d in documents} == {"ent-given"}

@@ -26,12 +26,19 @@ class VectorMetadata(BaseModel):
     # unshare (it would match no filter branch). ADR-013 §D4 / ADR-011 D3.
     scope: Optional[str] = None
     owner_id: Optional[str] = None
-    # Owning tenant. No KB retrieval path filters on this key today: runbook
-    # dedup (``RunbookKnowledgeBase``) scopes by the same
-    # ``scope``/``owner_id``/``parent_document_id`` allowlist as every other KB
-    # read (fm#1030), and global rows are the org-free platform tier. Declared
-    # so a writer that stamps it is not silently dropped.
-    organization_id: Optional[str] = None
+    # The owning tenant: the ``enterprise_id`` of the ``knowledge_items`` row
+    # this chunk belongs to, stamped on every KB write since #1168 (and refused
+    # by ``KnowledgeVectorStore.add_documents`` when absent). Global-tier rows
+    # carry the platform (Standalone) value their SQL row carries. No read path
+    # filters on it yet: slice 2 (#1775) conjuncts it onto every KB read,
+    # outside the ``$or``, once the backfill of chunks written before the stamp
+    # existed (#1777) reports none left unstamped.
+    #
+    # There is deliberately NO ``organization_id``. Under ADR-017 the
+    # organization bills and is never a visibility predicate, and a declared
+    # key that nothing stamped and nothing filtered on looked like a tenant
+    # control without being one (#1167, #1168). Undeclared, it is now refused.
+    enterprise_id: Optional[str] = None
     # There is deliberately NO ``report_type`` and no runbook-identity block
     # (``case_id``/``case_title``/``runbook_source``/``document_title``/
     # ``original_document_id``) here. #912 declared those for
@@ -107,6 +114,37 @@ class VectorMetadata(BaseModel):
                 f"to_chroma_metadata) or stop writing them."
             )
 
+    @classmethod
+    def require_enterprise_id(
+        cls, md: Optional[Dict[str, Any]], *, document_id: Any = None
+    ) -> None:
+        """Raise unless ``md`` names its owning tenant (#1168).
+
+        Every chunk in the KB collection carries the ``enterprise_id`` of the
+        ``knowledge_items`` row it belongs to. Slice 2 (#1775) conjuncts that
+        key onto every KB read, so a chunk written without it would silently
+        fall out of every tenant's results — and until then it would be one
+        more chunk the backfill has to find. Refusing the write is what keeps a
+        future writer from skipping the stamp.
+
+        A non-blank string only: an empty or whitespace value names no tenant,
+        and a non-string would be stringified by the store into a value no
+        read conjunct will ever match.
+
+        Same placement rule as :meth:`reject_undeclared_keys`: callers invoke
+        it BEFORE any retry/circuit-breaker wrapper, because the failure is a
+        deterministic programming error.
+        """
+        value = (md or {}).get("enterprise_id")
+        if not (isinstance(value, str) and value.strip()):
+            raise ValueError(
+                f"KB vector metadata for document {document_id!r} carries no "
+                f"enterprise_id (got {value!r}). Every chunk in the KB "
+                f"collection must name the enterprise of the knowledge_items "
+                f"row it belongs to (#1168) — pass the row's own enterprise_id "
+                f"to the indexer."
+            )
+
     @field_validator("tags", mode="before")
     @classmethod
     def _coerce_tags(cls, v: Any) -> List[str]:
@@ -124,7 +162,7 @@ class VectorMetadata(BaseModel):
         "source_url",
         "scope",
         "owner_id",
-        "organization_id",
+        "enterprise_id",
         "domain",
         "service",
         "last_updated",
@@ -154,8 +192,8 @@ class VectorMetadata(BaseModel):
             data["scope"] = self.scope
         if self.owner_id:
             data["owner_id"] = self.owner_id
-        if self.organization_id:
-            data["organization_id"] = self.organization_id
+        if self.enterprise_id:
+            data["enterprise_id"] = self.enterprise_id
         if self.created_at:
             data["created_at"] = to_json_compatible(self.created_at)
         if self.updated_at:

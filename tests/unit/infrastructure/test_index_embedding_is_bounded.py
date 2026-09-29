@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.infrastructure import embedding_guard
 from faultmaven.infrastructure.embedding_guard import (
     EMBED_BATCH_LOAD_SECONDS,
@@ -198,7 +199,9 @@ async def test_the_indexing_path_is_bounded_by_default():
         with patch.object(embedding_guard, "EMBED_BATCH_LOAD_SECONDS", 0.05):
             with patch.object(embedding_guard, "EMBED_BATCH_PER_TEXT_SECONDS", 0.0):
                 with pytest.raises(KnowledgeBaseError) as excinfo:
-                    await service._index_document_in_vector_store(_document())
+                    await service._index_document_in_vector_store(
+                        _document(), enterprise_id=STANDALONE_ENTERPRISE_ID
+                    )
 
     assert excinfo.value.error_code == "KNOWLEDGE_EMBEDDER_TIMEOUT"
     assert (

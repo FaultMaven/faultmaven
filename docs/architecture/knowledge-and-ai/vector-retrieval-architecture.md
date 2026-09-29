@@ -202,6 +202,7 @@ The full list of fields stored on each chunk is canonical in [knowledge-base-arc
 | Field | Used by | Purpose |
 | ----- | ------- | ------- |
 | `scope`, `owner_id`, `parent_document_id` | `where` clause | Scope filter (built by `build_kb_scope_filter`; team arm is a `parent_document_id` `$in` allowlist resolved from `resource_shares`, not a `team_id` metadata match) |
+| `enterprise_id` | Nothing yet | Stamped on every KB chunk since #1168 (the row's tenant; `add_documents` refuses a KB chunk without it). #1775 conjuncts it onto the scope filter, outside the `$or`, once the backfill (#1777) reports no unstamped chunk |
 | `domain`, `service` | Reranker metadata-match signal (soft boost, wired) + hard pre-filter (`filter_mode="hard"`, mechanism only) | `service` fed from the case's `problem_verification.affected_services[0]` as a soft boost; `domain` not yet supplied by the engine |
 | `symptom_class`, `severity` | Reranker metadata-match signal | Boost chunks whose taxonomy aligns with the query's failure-mode classification |
 | `status` | Reranker status weighting | `verified` +0.40, `in-review` +0.10, `draft` -0.10, `stale` -0.20, `deprecated` -0.30 |
@@ -470,7 +471,7 @@ This maps onto FaultMaven's existing hypothesis lifecycle (CAPTURED → ACTIVE �
 | Fast search mode | **Not done** | Declared in the `search_mode` property docstring, but no config returns `"fast"` and nothing dispatches it. Planned low-latency path (§3 Dual Retrieval Paths). |
 | Scope tiebreaking | **Implemented** | personal > team > global secondary sort in `_rerank()` |
 | Staleness-aware synthesis | **Implemented** | `_staleness_note()` + system prompt: "provide step-by-step instructions when procedures are available" (the "preserve procedural detail" instruction is in the synthesis prompt — see §4 "Relay vs synthesis") |
-| Scope filtering (pre-filtering) | **Implemented** | ChromaDB `where` clause pre-filters before ANN search. `_require_kb_filter_present()` raises `ValueError` when the clause names no scope key — a presence check, not a tenant check (#1168). |
+| Scope filtering (pre-filtering) | **Implemented** | ChromaDB `where` clause pre-filters before ANN search. `_require_kb_filter_present()` raises `ValueError` when the clause names no scope key — a presence check, not a tenant check. The tenant key is stamped on write (#1168); the read conjunct is #1775. |
 | Case context → KB soft rerank boost | **Implemented** | Engine derives the affected service (`derive_kb_context_metadata()`) onto `ToolContext.kb_context_metadata`; threaded through `KBToolAdapter` → `AnswerFromKB` → `DocumentQATool` → `hybrid_search(context_metadata=…, filter_mode="soft")`. `service` only; `domain` not yet supplied by the case model. |
 | Copilot high-confidence context → hard pre-filter | **Deferred** | `hybrid_search()` accepts `context_metadata` + `filter_mode="hard"`, but no live caller selects `"hard"`. Requires copilot page-comprehension → API → `KBToolAdapter` cross-repo wiring. |
 | True BM25 | **Partial** | The IDF half now exists (`CorpusTermStats`, weighting the reranker's overlap signal). There is still no term-frequency or length-normalisation component, and ChromaDB exposes no BM25 index — a full implementation would need `rank_bm25` or a separate index. |

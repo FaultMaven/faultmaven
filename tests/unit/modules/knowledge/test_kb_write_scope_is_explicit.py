@@ -58,6 +58,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.models.api import KnowledgeBaseDocument
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.modules.knowledge.domain.services.ingestion import KnowledgeIngester
@@ -217,7 +218,9 @@ async def test_the_live_indexer_refuses_a_document_with_no_tier(scope):
         new=_embed,
     ):
         with pytest.raises(KnowledgeBaseError) as exc:
-            await service._index_document_in_vector_store(_tierless_document(scope))
+            await service._index_document_in_vector_store(
+                _tierless_document(scope), enterprise_id=STANDALONE_ENTERPRISE_ID
+            )
 
     assert exc.value.error_code == "KNOWLEDGE_SCOPE_REQUIRED"
     assert added == [], "chunks were written for a document with no tier"
@@ -296,7 +299,9 @@ async def test_the_indexer_refuses_before_it_looks_for_a_vector_store():
     service._vector_store = None
 
     with pytest.raises(KnowledgeBaseError) as exc:
-        await service._index_document_in_vector_store(_tierless_document())
+        await service._index_document_in_vector_store(
+            _tierless_document(), enterprise_id=STANDALONE_ENTERPRISE_ID
+        )
     assert exc.value.error_code == "KNOWLEDGE_SCOPE_REQUIRED"
 
 
@@ -366,7 +371,9 @@ async def test_the_stamp_comes_from_the_value_that_was_validated():
         "faultmaven.infrastructure.embedding_guard.embed_texts_or_raise",
         new=_embed,
     ):
-        await service._index_document_in_vector_store(_TwoFaced())
+        await service._index_document_in_vector_store(
+            _TwoFaced(), enterprise_id=STANDALONE_ENTERPRISE_ID
+        )
 
     assert added[0][0]["metadata"]["scope"] == "personal", (
         "the stamp used a re-read of document.scope, not the validated value — "
@@ -407,7 +414,9 @@ async def test_a_stated_tier_is_stamped_exactly_as_before(stated, stamped):
         "faultmaven.infrastructure.embedding_guard.embed_texts_or_raise",
         new=_embed,
     ):
-        chunks = await service._index_document_in_vector_store(document)
+        chunks = await service._index_document_in_vector_store(
+            document, enterprise_id=STANDALONE_ENTERPRISE_ID
+        )
 
     assert chunks == 1
     assert added[0][0]["metadata"]["scope"] == stamped

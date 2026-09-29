@@ -9,8 +9,9 @@ and is designed for ephemeral per-case evidence collections.
 Filter-presence check: a query against faultmaven_kb MUST name at least one
 scope key in its `where` clause or it is rejected with ValueError. That is a
 presence check and not a tenant check — see `_require_kb_filter_present`. The
-tenant control is `build_kb_scope_filter`; giving ChromaDB a tenant dimension
-of its own is #1168.
+tenant control is `build_kb_scope_filter`. ChromaDB's own tenant dimension is
+the `enterprise_id` every KB chunk is stamped with (#1168, refused on write in
+`add_documents` when absent); conjuncting it on read is #1775.
 
 Hybrid search: Two-stage retrieval + reranking pipeline:
   Stage 1 — Recall: Casts a wide net with two sequential retrieval arms that
@@ -130,12 +131,14 @@ _GLOBAL_TIER = {"scope": "global"}
 # `test_the_guards_key_set_is_the_read_filters_key_set` pins this set as a
 # superset of the read filter's. Team visibility is no longer a metadata key —
 # it is resolved to an id allowlist (parent_document_id ∈ {...}) from the share
-# table (ADR-013 §D4). `organization_id` is the odd one out: nothing stamps it
-# into vector metadata and no read filter names it (ADR-017 makes it billing
-# attribution, not a visibility predicate). Left in deliberately — dropping a
-# key narrows what the check accepts, which is a behaviour change, and #1167
-# was a naming fix.
-SCOPE_FILTER_KEYS = {"scope", "owner_id", "organization_id", "parent_document_id"}
+# table (ADR-013 §D4). There is deliberately no `organization_id`: no chunk ever
+# carried it, `VectorMetadata` no longer declares it (a write naming it is
+# refused), and ADR-017 makes it billing attribution, never a visibility
+# predicate — so a clause keyed on it alone named a "scope" that matched
+# nothing, and is now refused as unscoped (#1168). Nor is `enterprise_id` here
+# yet: it is stamped on every KB write since #1168, and #1775 conjuncts it on
+# read.
+SCOPE_FILTER_KEYS = {"scope", "owner_id", "parent_document_id"}
 
 # Common English stop words for term overlap scoring
 _STOP_WORDS = frozenset(
@@ -278,7 +281,9 @@ class KnowledgeVectorStore(BaseExternalClient):
     ``SCOPE_FILTER_KEYS`` in its `where` clause — see
     :meth:`_require_kb_filter_present`, which checks that a filter is *present*
     and not that it is *scoped*. It is not the tenant control; the tenant
-    control is ``build_kb_scope_filter`` (#1168 is the vector-layer one).
+    control is ``build_kb_scope_filter``. The vector-layer one is the
+    ``enterprise_id`` stamp every KB write carries (#1168), which #1775
+    conjuncts on read.
 
     Case evidence collections (case_{case_id}) are exempt from the check
     since they are already scoped by case ownership.
@@ -432,10 +437,11 @@ class KnowledgeVectorStore(BaseExternalClient):
         forgot to filter at all cannot run.* Isolation itself comes from
         ``build_kb_scope_filter``, whose output is keyed on the caller's own
         identifiers, plus the AST pin that every filtered KB read derives its
-        clause from it. Giving ChromaDB a tenant dimension of its own —
-        stamping ``enterprise_id`` into chunk metadata and conjuncting it on
-        read — is **#1168**, and that is the control this check is sometimes
-        mistaken for.
+        clause from it. Giving ChromaDB a tenant dimension of its own is the
+        control this check is sometimes mistaken for: every KB write now
+        stamps ``enterprise_id`` into chunk metadata (**#1168**, refused in
+        :meth:`add_documents` when absent), and conjuncting it on read, outside
+        the ``$or``, is **#1775**. Until that lands, no read consults the stamp.
 
         Exactly where the line falls is exercised against a live ChromaDB in
         ``tests/integration/security/test_kb_tenant_isolation_probe.py``
@@ -1250,7 +1256,9 @@ class KnowledgeVectorStore(BaseExternalClient):
                 carries a key ``VectorMetadata`` does not declare. The schema
                 is an allowlist, so an undeclared key would otherwise be
                 dropped in silence and read back later as the reader's
-                fallback (#912).
+                fallback (#912). Also, for the KB collection only, if any
+                document's metadata lacks a non-blank ``enterprise_id``
+                (#1168) — see :meth:`VectorMetadata.require_enterprise_id`.
         """
         # Refused OUTSIDE call_external, deliberately (fm#1035). A malformed
         # metadata dict is a deterministic programming error, not a ChromaDB
@@ -1282,6 +1290,12 @@ class KnowledgeVectorStore(BaseExternalClient):
                     f"before the external-call machinery sees it."
                 )
             VectorMetadata.reject_undeclared_keys(md)
+            # Every KB chunk names its owning tenant (#1168): the key slice 2
+            # (#1775) conjuncts on read. Refused here, at the one store every
+            # KB write goes through, so a future writer cannot skip the stamp.
+            # Case-evidence collections are scoped by case and carry no stamp.
+            if collection_name == KB_COLLECTION:
+                VectorMetadata.require_enterprise_id(md, document_id=doc.get("id"))
             metadatas.append(md)
 
         # `id` and `content` are read out here for the same reason the metadata

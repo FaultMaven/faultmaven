@@ -970,10 +970,19 @@ class KnowledgeService:
         self,
         document: KnowledgeBaseDocument,
         prechunked: Optional[List[tuple[str, List[float]]]] = None,
+        *,
+        enterprise_id: str,
     ) -> int:
         """Index a document's chunks + embeddings into the vector store.
 
         Args:
+            enterprise_id: REQUIRED — the ``enterprise_id`` of the persisted
+                ``knowledge_items`` row this document is, stamped onto every
+                chunk (#1168). Always the ROW's own value, never the ambient
+                request tenant: a global-tier row carries the platform
+                (Standalone) enterprise, and a repair or re-index may run with
+                no request bound at all. ``KnowledgeBaseDocument`` has no such
+                field (it is an API model), which is why it travels here.
             prechunked: Build-time ``(chunk_text, embedding)`` pairs from a KB
                 pack. When supplied, the document is NOT re-chunked or
                 re-embedded — these exact chunk texts and vectors are written.
@@ -999,6 +1008,8 @@ class KnowledgeService:
                 Also raised when ``document`` names no knowledge tier
                 (``KNOWLEDGE_SCOPE_REQUIRED``) or names one that does not exist
                 (``KNOWLEDGE_SCOPE_INVALID``) — see :func:`require_write_scope`.
+                And (``KNOWLEDGE_INDEXING_FAILED``) when ``enterprise_id`` is
+                blank — refused before the old chunks are deleted (#1168).
         """
         # The live KB writer's tier check (#1166). ``KnowledgeBaseDocument.scope``
         # is required, which stops an omission at construction; this is the belt
@@ -1081,6 +1092,7 @@ class KnowledgeService:
                     source_url=document.source_url,
                     scope=_meta_scope,
                     owner_id=getattr(document, "owner_id", None),
+                    enterprise_id=enterprise_id,
                     created_at=document.created_at,
                     updated_at=document.updated_at,
                     domain=fm_meta.get("domain"),
@@ -1108,8 +1120,12 @@ class KnowledgeService:
             # at least kept it searchable. Unreachable for dicts built by
             # to_chroma_metadata() (it emits only declared keys), so this is
             # ordering insurance, not a second authority (fm#1035 review).
+            # The tenant stamp is checked here for the same reason (#1168):
+            # the store refuses a KB chunk without one, and a refusal after
+            # the delete would leave the document with no vectors at all.
             for d in doc_dicts:
                 VectorMetadata.reject_undeclared_keys(d["metadata"])
+                VectorMetadata.require_enterprise_id(d["metadata"], document_id=d["id"])
 
             # Replacement is fully in hand (embeddings + validated chunk
             # dicts) — only now remove the old chunks. The vector store
@@ -1248,6 +1264,7 @@ class KnowledgeService:
             else:
                 await self._index_document_in_vector_store(
                     self._build_index_model(observed),
+                    enterprise_id=observed.enterprise_id,
                 )
         except Exception as restore_error:
             logger.error(
@@ -1486,8 +1503,9 @@ class KnowledgeService:
             updated_at=to_json_compatible(now),
         )
         try:
+            # The value just written to the row's NOT NULL enterprise_id.
             chunks_created = await self._index_document_in_vector_store(
-                doc_model, prechunked=prechunked
+                doc_model, prechunked=prechunked, enterprise_id=enterprise_id
             )
         except Exception:
             await self._delete_knowledge_item_row(document_id)
@@ -1587,7 +1605,7 @@ class KnowledgeService:
         )
         try:
             return await self._index_document_in_vector_store(
-                doc_model, prechunked=None
+                doc_model, prechunked=None, enterprise_id=row.enterprise_id
             )
         except KnowledgeBaseError as e:
             # Deliberate, documented tolerance — see the docstring. A failed
@@ -2800,6 +2818,7 @@ class KnowledgeService:
                 item.updated_at = datetime.now(timezone.utc)
                 await self._index_document_in_vector_store(
                     self._build_index_model(item),
+                    enterprise_id=item.enterprise_id,
                 )
 
             # Everything from here is compensated as one unit. The vectors

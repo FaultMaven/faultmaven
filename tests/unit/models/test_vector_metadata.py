@@ -52,3 +52,60 @@ class TestVectorMetadataRAGFields:
         chroma = meta.to_chroma_metadata()
         assert chroma["domain"] == "123"
         assert chroma["service"] == "True"
+
+
+class TestTheTenantKey:
+    """#1168: the schema carries ``enterprise_id`` and no ``organization_id``.
+
+    ``organization_id`` was declared, stamped by nothing and filtered on by
+    nothing — a key that looked like a tenant control without being one. Under
+    ADR-017 the organization bills and is never a visibility predicate, so it
+    is removed rather than wired, and the allowlist now refuses it. The tenant
+    key is ``enterprise_id``: declared, emitted, and required on every KB chunk
+    (the store half of that is pinned in ``test_knowledge_vector_store.py``).
+    """
+
+    def test_organization_id_is_no_longer_a_declared_key(self):
+        assert "organization_id" not in VectorMetadata.model_fields
+
+        with pytest.raises(ValueError, match="organization_id"):
+            VectorMetadata.reject_undeclared_keys(
+                {"scope": "personal", "organization_id": "org-1"}
+            )
+
+    def test_enterprise_id_is_declared_and_stored(self):
+        VectorMetadata.reject_undeclared_keys({"enterprise_id": "ent-1"})
+
+        chroma = VectorMetadata(
+            scope="personal", enterprise_id="ent-1"
+        ).to_chroma_metadata()
+
+        assert chroma["enterprise_id"] == "ent-1"
+
+    def test_an_absent_enterprise_id_is_not_emitted_as_a_blank(self):
+        """A missing stamp stays MISSING, never ``""`` — the store guard and the
+        #1775 read conjunct both key on the absence, and an empty string would
+        be a value no enterprise matches that the guard still had to catch."""
+        assert (
+            "enterprise_id" not in VectorMetadata(scope="global").to_chroma_metadata()
+        )
+
+    @pytest.mark.parametrize(
+        "md",
+        [
+            None,
+            {},
+            {"scope": "global"},
+            {"enterprise_id": None},
+            {"enterprise_id": ""},
+            {"enterprise_id": "   "},
+            {"enterprise_id": 7},
+        ],
+        ids=["none", "empty", "absent", "null", "blank", "whitespace", "non-string"],
+    )
+    def test_require_enterprise_id_refuses_every_shape_that_names_no_tenant(self, md):
+        with pytest.raises(ValueError, match="carries no enterprise_id"):
+            VectorMetadata.require_enterprise_id(md, document_id="doc_chunk_0")
+
+    def test_require_enterprise_id_admits_a_named_tenant(self):
+        VectorMetadata.require_enterprise_id({"enterprise_id": "ent-1"})
