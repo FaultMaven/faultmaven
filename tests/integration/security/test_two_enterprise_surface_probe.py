@@ -1607,7 +1607,10 @@ async def _seed_kb_chunks(chroma_store, rows_spec) -> None:
 
     Rows go in through ``KnowledgeVectorStore.add_documents``, including its
     ``VectorMetadata`` allowlist, so a metadata key production never stamps
-    cannot be smuggled in here. #1168 is the reason this exists at all: the
+    cannot be smuggled in here — and, since #1168, its refusal of a KB chunk
+    that names no ``enterprise_id``, so each row carries its SQL row's
+    enterprise exactly as the live indexer stamps it. No read filters on that
+    stamp until #1775. #1168 is the reason this exists at all: the
     vector layer has no tenant dimension, so a SQL-surface pass says nothing
     about retrieval — and under ADR-017 it says even less, because in arms 2 and
     3 the two parties share an enterprise and RLS separates nothing.
@@ -1630,11 +1633,12 @@ async def _seed_kb_chunks(chroma_store, rows_spec) -> None:
                 "chunk_index": 0,
                 "total_chunks": 1,
                 "owner_id": owner_id,
+                "enterprise_id": enterprise_id,
                 "domain": "database",
                 "service": "postgres",
             },
         }
-        for item_id, title, owner_id in rows_spec
+        for item_id, title, owner_id, enterprise_id in rows_spec
     ]
     await chroma_store.add_documents(
         rows, embeddings=[list(_VEC) for _ in rows], collection_name=KB_COLLECTION
@@ -1979,11 +1983,16 @@ async def _wall_world(probe_app, arm: str):
         await _seed_kb_chunks(
             vector_store,
             [
-                (p.kb_personal_id, f"{p.secret}-runbook-personal", p.user_id)
+                (
+                    p.kb_personal_id,
+                    f"{p.secret}-runbook-personal",
+                    p.user_id,
+                    p.enterprise_id,
+                )
                 for p in (party_a, party_b)
             ]
             + [
-                (p.kb_team_id, f"{p.secret}-runbook-team", p.user_id)
+                (p.kb_team_id, f"{p.secret}-runbook-team", p.user_id, p.enterprise_id)
                 for p in (party_a, party_b)
             ],
         )
@@ -2246,7 +2255,10 @@ async def shared_world(probe_app):
         app.state.knowledge_service._vector_store = vector_store
         await _seed_kb_chunks(
             vector_store,
-            [(kb_shared_id, SHARED_KB, user_a), (kb_private_id, PRIVATE_KB, user_a)],
+            [
+                (kb_shared_id, SHARED_KB, user_a, enterprise),
+                (kb_private_id, PRIVATE_KB, user_a, enterprise),
+            ],
         )
 
         auth_service = app.state.auth_service

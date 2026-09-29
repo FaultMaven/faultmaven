@@ -5,8 +5,8 @@ the one method all three production publishers call (the shipped pack, uploads,
 and the case-conversion flywheel) — is found by runbook dedup afterwards.
 
 **The store pairing here is the production one.** The container gives
-``KnowledgeService`` a ``KnowledgeVectorStore`` (``knowledge_vector_store or
-vector_store``, and ``knowledge_vector_store`` IS registered), whose
+``KnowledgeService`` a ``KnowledgeVectorStore`` (``knowledge_vector_store``,
+with no fallback since #1168), whose
 ``add_documents`` targets the hardcoded ``KB_COLLECTION`` and sanitizes inline
 — since fm#1035 it refuses undeclared keys via the ``VectorMetadata``
 allowlist, but it still does NOT normalize values through the schema the way

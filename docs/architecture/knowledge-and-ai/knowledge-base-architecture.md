@@ -66,6 +66,8 @@ All knowledge tiers share **one ChromaDB collection** (`faultmaven_kb`). Scope i
 
 **Team visibility is not a metadata tag.** A team-shared item keeps its personal floor in ChromaDB metadata (`scope=personal`, `owner_id=<author>`) — no `team`/`team_id` is ever written. Team membership becomes visibility at query time: the `resource_shares` table (ADR-013 §D4) is the single source of truth, and its `knowledge_item` ids for the caller's teams (`resolve_shared_kb_ids`) are injected as the `parent_document_id` `$in` allowlist arm. This makes sharing unshare-proof — dropping a share row removes visibility with nothing to clean up in the vector store.
 
+**Every chunk carries its tenant (#1168).** Each KB chunk's metadata holds the `enterprise_id` of the `knowledge_items` row it belongs to — the ADR-017 isolation key, stamped by the one live writer (`KnowledgeService._index_document_in_vector_store`, which takes it as a required keyword from each caller as the row's own value, never the ambient request tenant). Global-tier chunks carry the platform (Standalone) enterprise their SQL row carries. The indexer refuses a missing or non-string tenant before it does any work, and `KnowledgeVectorStore.add_documents` — the only store the container wires into `KnowledgeService` — refuses a KB chunk without a non-blank `enterprise_id`, so every write the service makes carries the stamp. Two dead writers bypass that store (`KnowledgeIngester` and `scripts/migration_backfill_scopes.py`, neither with a live caller): #1782. There is no `organization_id` in vector metadata: ADR-017 makes it billing attribution, never a visibility predicate, and `VectorMetadata` refuses it. **No read consults the stamp yet** — conjuncting it onto every KB read, outside the `$or`, is #1775, and it lands after the backfill of chunks written before the stamp existed (#1777) reports none left unstamped. Until then the tenant control is `build_kb_scope_filter` alone.
+
 **Why one collection, not separate collections per tier:**
 
 1. **No N+1 query problem** — A user in 5 teams would require 7 separate queries (global + personal + 5 teams) with per-tier collections, then manual merge/dedup/sort in Python. One collection = one query.
@@ -77,9 +79,11 @@ All knowledge tiers share **one ChromaDB collection** (`faultmaven_kb`). Scope i
 ChromaDB Instance
 │
 ├── faultmaven_kb                    # ALL knowledge tiers (permanent)
-│   ├── scope=global                 # Pre-built troubleshooting guides (org-free platform tier)
+│   ├── scope=global                 # Pre-built troubleshooting guides (org-free platform tier;
+│   │                                #   enterprise_id = the Standalone enterprise)
 │   ├── scope=personal, owner_id=alice  # Alice's private runbooks (team shares stay on this floor)
 │   └── scope=personal, owner_id=bob    # Bob's private procedures
+│   #  Every chunk also carries enterprise_id = its knowledge_items row's (#1168).
 │   #  No scope=team rows: team visibility is resolved at query time from the
 │   #  resource_shares id-allowlist, not stored as vector metadata.
 │
@@ -89,7 +93,7 @@ ChromaDB Instance
 └── ...
 ```
 
-**Filter-presence check:** `KnowledgeVectorStore.search()` refuses a query against `faultmaven_kb` whose `where` clause names none of the `SCOPE_FILTER_KEYS` (`scope`, `owner_id`, `organization_id`, `parent_document_id`) — `_require_kb_filter_present()` in `infrastructure/knowledge/knowledge_vector_store.py` raises `ValueError`. It checks that a filter is **present**, never that it is **scoped**: `{"scope": {"$ne": "no-such-scope"}}` names a scope key and returns the whole corpus, and passes. What it buys is that a query which forgot to filter at all cannot run. The tenant control is `build_kb_scope_filter` below, plus the AST pin that every filtered KB read derives its clause from it; giving ChromaDB a tenant dimension of its own (stamping `enterprise_id` into chunk metadata and conjuncting it on read) is **#1168**.
+**Filter-presence check:** `KnowledgeVectorStore.search()` refuses a query against `faultmaven_kb` whose `where` clause names none of the `SCOPE_FILTER_KEYS` (`scope`, `owner_id`, `parent_document_id`) — `_require_kb_filter_present()` in `infrastructure/knowledge/knowledge_vector_store.py` raises `ValueError`. It checks that a filter is **present**, never that it is **scoped**: `{"scope": {"$ne": "no-such-scope"}}` names a scope key and returns the whole corpus, and passes. What it buys is that a query which forgot to filter at all cannot run. (`organization_id` left the key set in #1168: no chunk carries it, so a clause keyed on it alone is refused as unscoped.) The tenant control is `build_kb_scope_filter` below, plus the AST pin that every filtered KB read derives its clause from it. ChromaDB's own tenant dimension is the `enterprise_id` stamp every KB write the service makes carries since **#1168**; conjuncting it on read is **#1775**.
 
 **A typical scoped query** for a user who belongs to the SRE team (built by `build_kb_scope_filter`):
 
@@ -214,6 +218,7 @@ This difference affects how runbook content is authored — each `### Cause` sub
 |-------|---------|
 | `document_id` | Unique runbook identifier |
 | `title` | Runbook title |
+| `enterprise_id` | Owning tenant: the `knowledge_items` row's `enterprise_id` (the Standalone enterprise for the global tier). Required on every KB write the service makes since #1168; read conjunct #1775 |
 | `domain` | Engineering vertical (database, networking, compute, etc.) |
 | `service` | Specific technology (postgresql, kubernetes, redis, etc.) |
 | `symptom_class` | Failure modes addressed (comma-joined list) |
@@ -241,7 +246,8 @@ For the canonical implementation status of the retrieval pipeline (hybrid search
 | ------- | ------ | ----- |
 | Federated search across tiers | Implemented | Single `answer_from_kb` tool searches all scopes (global + personal + team) via `$or` filter |
 | Single-collection storage | Implemented | One `faultmaven_kb` collection with metadata-based scope filtering |
-| Filter-presence check | Implemented | `_require_kb_filter_present()` raises `ValueError` when a KB `where` clause names no scope key. Presence, not tenancy — the vector-layer tenant control is #1168 |
+| Filter-presence check | Implemented | `_require_kb_filter_present()` raises `ValueError` when a KB `where` clause names no scope key. Presence, not tenancy — the vector-layer tenant control is the `enterprise_id` stamp (#1168) |
+| Tenant stamp on every KB chunk | Write side implemented (#1168) | Every KB chunk carries its row's `enterprise_id`; `add_documents` refuses a KB chunk without one. Backfill of older chunks: #1777. Read conjunct: #1775 — not yet consulted by any read |
 
 #### Current Tool Architecture
 
@@ -444,7 +450,7 @@ receives the resolved ids (see Remaining work 1):
 - `TeamService.list_all_user_team_ids(user_id)` resolves all team memberships across orgs
 - `KbPrefetcher.prefetch_kb_context` (`milestone_engine/kb_prefetch.py`) resolves the **case owner's** teams (keyed on `case.user_id`, deliberately not the session user, so one user's case can never surface another's shares) to shared `knowledge_item` ids via `resolve_shared_kb_ids` against `resource_shares`, and passes them to `build_kb_scope_filter` — so the **engine KB prefetch** does see team-shared items
 - The unified `answer_from_kb` tool builds the combined filter via `build_kb_scope_filter`, whose team arm is `{"parent_document_id": {"$in": shared_ids}}`
-- ChromaDB metadata stores only the immutable floor (`scope` = `global`/`personal` + `owner_id`) at ingestion time — never `team_id`; team visibility lives in the `resource_shares` table (ADR-013 §D4)
+- ChromaDB metadata stores only the immutable floor (`scope` = `global`/`personal` + `owner_id`, plus the tenant's `enterprise_id`, #1168) at ingestion time — never `team_id`; team visibility lives in the `resource_shares` table (ADR-013 §D4)
 - API endpoints (`GET /knowledge/documents`) support `scope=team` filter with team membership check
 
 **Remaining work:**

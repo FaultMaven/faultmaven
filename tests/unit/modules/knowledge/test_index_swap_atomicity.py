@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.models import KnowledgeBaseDocument
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
@@ -71,7 +72,9 @@ async def test_old_vectors_survive_when_embedding_fails():
 
     with patch(_EMBED_TEXTS, new=AsyncMock(return_value=None)):
         with pytest.raises(KnowledgeBaseError):
-            await service._index_document_in_vector_store(_document())
+            await service._index_document_in_vector_store(
+                _document(), enterprise_id=STANDALONE_ENTERPRISE_ID
+            )
 
     assert service._vector_store.delete_documents_by_parent_id.await_count == 0, (
         "the old vectors were deleted before a replacement existed — the "
@@ -88,7 +91,9 @@ async def test_unchunkable_content_also_deletes_nothing():
 
     with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
         with pytest.raises(KnowledgeBaseError):
-            await service._index_document_in_vector_store(document)
+            await service._index_document_in_vector_store(
+                document, enterprise_id=STANDALONE_ENTERPRISE_ID
+            )
 
     assert service._vector_store.delete_documents_by_parent_id.await_count == 0
 
@@ -100,7 +105,9 @@ async def test_the_swap_still_happens_on_the_success_path():
     service = _service()
 
     with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
-        chunks = await service._index_document_in_vector_store(_document())
+        chunks = await service._index_document_in_vector_store(
+            _document(), enterprise_id=STANDALONE_ENTERPRISE_ID
+        )
 
     assert chunks >= 1
     assert service._vector_store.delete_documents_by_parent_id.await_count == 1
@@ -118,7 +125,9 @@ async def test_indexing_failure_raises_rather_than_returning_zero():
 
     with patch(_EMBED_TEXTS, new=AsyncMock(return_value=None)):
         with pytest.raises(KnowledgeBaseError) as excinfo:
-            await service._index_document_in_vector_store(_document())
+            await service._index_document_in_vector_store(
+                _document(), enterprise_id=STANDALONE_ENTERPRISE_ID
+            )
 
     assert excinfo.value.error_code == "KNOWLEDGE_EMBEDDER_UNAVAILABLE"
 
@@ -136,7 +145,9 @@ async def test_the_trailing_blanket_handler_does_not_restore_the_sentinel():
     with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
         result = None
         try:
-            result = await service._index_document_in_vector_store(_document())
+            result = await service._index_document_in_vector_store(
+                _document(), enterprise_id=STANDALONE_ENTERPRISE_ID
+            )
         except KnowledgeBaseError:
             pass
 
@@ -153,6 +164,7 @@ async def test_update_document_metadata_does_not_report_success_on_failure():
 
     item = MagicMock()
     item.item_id = "doc-1"
+    item.enterprise_id = STANDALONE_ENTERPRISE_ID  # NOT NULL on every row (#1168)
     item.title = "Draining a node"
     item.content = "# Draining a node\n\nCordon, then drain."
     item.item_type = MagicMock(value="runbook")
@@ -204,6 +216,7 @@ async def test_boot_repair_still_tolerates_an_unavailable_embedder():
 
     row = MagicMock()
     row.item_id = "doc-1"
+    row.enterprise_id = STANDALONE_ENTERPRISE_ID  # NOT NULL on every row (#1168)
     row.title = "Draining a node"
     row.content = "# Draining a node\n\nCordon, then drain."
     row.item_type = "runbook"
@@ -227,6 +240,56 @@ async def test_boot_repair_still_tolerates_an_unavailable_embedder():
 
     assert chunks == 0, "boot repair must degrade, not raise"
     assert service._vector_store.delete_documents_by_parent_id.await_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "enterprise_id", ["", "   ", None], ids=["empty", "blank", "none"]
+)
+async def test_boot_repair_counts_a_row_with_no_tenant_as_a_failed_repair(
+    enterprise_id, caplog
+):
+    """``reindex_missing_vectors`` promises "fail-safe 0 (no raise)". The
+    indexer's #1168 tenant check raises ``ValueError`` before any work, outside
+    the ``KnowledgeBaseError`` handling — so a row naming no usable tenant must
+    be caught here, logged at ERROR with its item id, and returned as a failed
+    repair (0), never allowed to abort the boot pass. Unreachable from a real
+    row (the column is NOT NULL), which is why only a double can reach it."""
+    service = _service()
+
+    row = MagicMock()
+    row.item_id = "doc-no-tenant"
+    row.enterprise_id = enterprise_id
+    row.title = "Draining a node"
+    row.content = "# Draining a node\n\nCordon, then drain."
+    row.item_type = "runbook"
+    row.tags = []
+    row.source_url = None
+    row.scope = "global"
+    row.owner_id = None
+    row.created_at = "2026-01-01T00:00:00Z"
+    row.updated_at = "2026-01-01T00:00:00Z"
+
+    result = MagicMock()
+    result.scalar_one_or_none = MagicMock(return_value=row)
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result)
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    service._db_session_factory = MagicMock(return_value=session)
+    embed = AsyncMock(return_value=[[0.1] * 1024])
+
+    with caplog.at_level("ERROR"), patch(_EMBED_TEXTS, new=embed):
+        chunks = await service.reindex_missing_vectors("doc-no-tenant")
+
+    assert chunks == 0, "a refused repair must degrade to 0, not raise"
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert any(
+        "doc-no-tenant" in r.getMessage() for r in errors
+    ), "the refused repair was not logged at ERROR with its item id"
+    embed.assert_not_awaited()
+    assert service._vector_store.delete_documents_by_parent_id.await_count == 0
+    assert service._vector_store.add_documents.await_count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -268,3 +331,78 @@ async def test_semantic_search_says_unavailable_not_zero_results():
     assert result["total_results"] == 0
     assert "unavailable" in result["error"].lower()
     assert "not a result of zero matches" in result["error"].lower()
+
+
+# ---------------------------------------------------------------------------
+# The tenant argument is checked first, before any work (#1168)
+# ---------------------------------------------------------------------------
+
+#: Every shape that names no tenant. ``7`` and ``b"ent"`` are the non-strings a
+#: stringifying layer would have turned into a value that passes a non-blank
+#: check and matches no enterprise.
+_NO_TENANT = ["", "   ", None, 7, b"ent"]
+_NO_TENANT_IDS = ["empty", "blank", "none", "int", "bytes"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enterprise_id", _NO_TENANT, ids=_NO_TENANT_IDS)
+async def test_no_tenant_is_refused_before_the_embedder_is_awaited(enterprise_id):
+    """Refused before chunking or embedding — a call that cannot be written must
+    not pay for a cold BGE-M3 load first — and before the destructive delete,
+    so the old vectors are untouched. A ``ValueError``: the caller's programming
+    error, not the transient ``KNOWLEDGE_INDEXING_FAILED``."""
+    service = _service()
+    embed = AsyncMock(return_value=[[0.1] * 1024])
+
+    with patch(_EMBED_TEXTS, new=embed):
+        with pytest.raises(ValueError, match="carries no enterprise_id"):
+            await service._index_document_in_vector_store(
+                _document(), enterprise_id=enterprise_id
+            )
+
+    embed.assert_not_awaited()
+    assert service._vector_store.delete_documents_by_parent_id.await_count == 0
+    assert service._vector_store.add_documents.await_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enterprise_id", _NO_TENANT, ids=_NO_TENANT_IDS)
+async def test_no_tenant_is_refused_even_with_no_vector_store_wired(enterprise_id):
+    """Ahead of the ``if not self._vector_store: return 0`` exit, like the tier
+    check: a refusal that only fires in deployments with a store is not a
+    guard, and the caller's omission is the same omission either way."""
+    service = _service()
+    service._vector_store = None
+
+    with pytest.raises(ValueError, match="carries no enterprise_id"):
+        await service._index_document_in_vector_store(
+            _document(), enterprise_id=enterprise_id
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_named_tenant_with_no_store_is_still_the_quiet_zero():
+    """Positive control for the test above: the early exit itself survives."""
+    service = _service()
+    service._vector_store = None
+
+    assert (
+        await service._index_document_in_vector_store(
+            _document(), enterprise_id="ent-given"
+        )
+        == 0
+    )
+
+
+@pytest.mark.asyncio
+async def test_every_chunk_carries_the_enterprise_it_was_given():
+    service = _service()
+
+    with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
+        await service._index_document_in_vector_store(
+            _document(), enterprise_id="ent-given"
+        )
+
+    (documents,), _ = service._vector_store.add_documents.await_args
+    assert documents, "nothing was written"
+    assert {d["metadata"]["enterprise_id"] for d in documents} == {"ent-given"}

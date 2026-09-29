@@ -970,10 +970,19 @@ class KnowledgeService:
         self,
         document: KnowledgeBaseDocument,
         prechunked: Optional[List[tuple[str, List[float]]]] = None,
+        *,
+        enterprise_id: str,
     ) -> int:
         """Index a document's chunks + embeddings into the vector store.
 
         Args:
+            enterprise_id: REQUIRED — the ``enterprise_id`` of the persisted
+                ``knowledge_items`` row this document is, stamped onto every
+                chunk (#1168). Always the ROW's own value, never the ambient
+                request tenant: a global-tier row carries the platform
+                (Standalone) enterprise, and a repair or re-index may run with
+                no request bound at all. ``KnowledgeBaseDocument`` has no such
+                field (it is an API model), which is why it travels here.
             prechunked: Build-time ``(chunk_text, embedding)`` pairs from a KB
                 pack. When supplied, the document is NOT re-chunked or
                 re-embedded — these exact chunk texts and vectors are written.
@@ -999,6 +1008,10 @@ class KnowledgeService:
                 Also raised when ``document`` names no knowledge tier
                 (``KNOWLEDGE_SCOPE_REQUIRED``) or names one that does not exist
                 (``KNOWLEDGE_SCOPE_INVALID``) — see :func:`require_write_scope`.
+            ValueError: If ``enterprise_id`` is not a non-blank string (#1168)
+                — refused first, before any store check, chunking, embedding
+                or deletion, with the same rule and message as the store's own
+                refusal (:meth:`VectorMetadata.require_enterprise_id_value`).
         """
         # The live KB writer's tier check (#1166). ``KnowledgeBaseDocument.scope``
         # is required, which stops an omission at construction; this is the belt
@@ -1015,6 +1028,21 @@ class KnowledgeService:
         # second one is the unchecked one.
         _scope = require_write_scope(
             getattr(document, "document_id", None), getattr(document, "scope", None)
+        )
+
+        # The tenant check (#1168), for the same reasons and in the same place:
+        # ahead of the ``_vector_store`` early exit, because a refusal that only
+        # fires in deployments with a store is not a guard; before any chunking
+        # or embedding, because a call that cannot be written must not pay for
+        # a cold model load first; and OUTSIDE the ``try`` below, because a
+        # missing tenant is the caller's programming error, not the transient
+        # ``KNOWLEDGE_INDEXING_FAILED`` that handler reports. The RAW argument
+        # is checked, and this check is what refuses a non-string or blank
+        # tenant: ``VectorMetadata`` alone decodes bytes (``b"ent"`` becomes
+        # ``"ent"``) and admits whitespace. The store re-checks each chunk's
+        # metadata as a second layer.
+        VectorMetadata.require_enterprise_id_value(
+            enterprise_id, document_id=getattr(document, "document_id", None)
         )
 
         if not self._vector_store:
@@ -1081,6 +1109,7 @@ class KnowledgeService:
                     source_url=document.source_url,
                     scope=_meta_scope,
                     owner_id=getattr(document, "owner_id", None),
+                    enterprise_id=enterprise_id,
                     created_at=document.created_at,
                     updated_at=document.updated_at,
                     domain=fm_meta.get("domain"),
@@ -1248,6 +1277,7 @@ class KnowledgeService:
             else:
                 await self._index_document_in_vector_store(
                     self._build_index_model(observed),
+                    enterprise_id=observed.enterprise_id,
                 )
         except Exception as restore_error:
             logger.error(
@@ -1486,8 +1516,9 @@ class KnowledgeService:
             updated_at=to_json_compatible(now),
         )
         try:
+            # The value just written to the row's NOT NULL enterprise_id.
             chunks_created = await self._index_document_in_vector_store(
-                doc_model, prechunked=prechunked
+                doc_model, prechunked=prechunked, enterprise_id=enterprise_id
             )
         except Exception:
             await self._delete_knowledge_item_row(document_id)
@@ -1529,8 +1560,11 @@ class KnowledgeService:
         query-compatible — a retrievable runbook beats a silently missing one.
 
         Returns the number of chunks indexed. Fail-safe 0 (no raise) when the
-        row is absent, no vector store is wired, or the embedding model is
-        unavailable — leaving the row orphaned for a later boot to repair.
+        row is absent, no vector store is wired, the embedding model is
+        unavailable, or the row names no usable tenant (the indexer's #1168
+        ``ValueError``, logged at ERROR with the item id) — leaving the row
+        orphaned for a later boot to repair, which the caller counts as a failed
+        repair.
 
         This is the ONE caller that legitimately tolerates an indexing failure,
         because it runs as a bounded best-effort repair pass during boot and a
@@ -1587,7 +1621,7 @@ class KnowledgeService:
         )
         try:
             return await self._index_document_in_vector_store(
-                doc_model, prechunked=None
+                doc_model, prechunked=None, enterprise_id=row.enterprise_id
             )
         except KnowledgeBaseError as e:
             # Deliberate, documented tolerance — see the docstring. A failed
@@ -1596,6 +1630,17 @@ class KnowledgeService:
             logger.warning(
                 f"reindex_missing_vectors: repair failed for {item_id}: {e} — "
                 "leaving the row orphaned for a later boot to retry"
+            )
+            return 0
+        except ValueError as e:
+            # The indexer's tenant check (#1168), refused before any work. Not
+            # reachable from a real row — ``knowledge_items.enterprise_id`` is
+            # NOT NULL — but this method promises no raise, so a row that names
+            # no usable tenant is a failed repair like any other: loud, per row,
+            # and never an aborted startup.
+            logger.error(
+                f"reindex_missing_vectors: repair refused for {item_id}: {e} — "
+                "the row names no usable enterprise_id; leaving it orphaned"
             )
             return 0
 
@@ -2800,6 +2845,7 @@ class KnowledgeService:
                 item.updated_at = datetime.now(timezone.utc)
                 await self._index_document_in_vector_store(
                     self._build_index_model(item),
+                    enterprise_id=item.enterprise_id,
                 )
 
             # Everything from here is compensated as one unit. The vectors

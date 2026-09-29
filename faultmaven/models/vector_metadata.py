@@ -26,12 +26,23 @@ class VectorMetadata(BaseModel):
     # unshare (it would match no filter branch). ADR-013 §D4 / ADR-011 D3.
     scope: Optional[str] = None
     owner_id: Optional[str] = None
-    # Owning tenant. No KB retrieval path filters on this key today: runbook
-    # dedup (``RunbookKnowledgeBase``) scopes by the same
-    # ``scope``/``owner_id``/``parent_document_id`` allowlist as every other KB
-    # read (fm#1030), and global rows are the org-free platform tier. Declared
-    # so a writer that stamps it is not silently dropped.
-    organization_id: Optional[str] = None
+    # The owning tenant: the ``enterprise_id`` of the ``knowledge_items`` row
+    # this chunk belongs to, stamped on every KB write since #1168 (and refused
+    # by ``KnowledgeVectorStore.add_documents`` when absent). Global-tier rows
+    # carry the platform (Standalone) value their SQL row carries. No read path
+    # filters on it yet: slice 2 (#1775) conjuncts it onto every KB read,
+    # outside the ``$or``, once the backfill of chunks written before the stamp
+    # existed (#1777) reports none left unstamped.
+    #
+    # There is deliberately NO ``organization_id``. Under ADR-017 the
+    # organization bills and is never a visibility predicate, and a declared
+    # key that nothing stamped and nothing filtered on looked like a tenant
+    # control without being one (#1167, #1168). Undeclared, it is now refused.
+    #
+    # Deliberately NOT in ``_coerce_str`` below: a non-string tenant (``7``,
+    # ``True``) is refused by the model rather than stringified into a value
+    # that would pass every non-blank check and match no enterprise.
+    enterprise_id: Optional[str] = None
     # There is deliberately NO ``report_type`` and no runbook-identity block
     # (``case_id``/``case_title``/``runbook_source``/``document_title``/
     # ``original_document_id``) here. #912 declared those for
@@ -43,9 +54,12 @@ class VectorMetadata(BaseModel):
     # ``owner_id``, ``title``, ``parent_document_id``). The schema earns a key
     # only when a live reader needs it, and ``reject_undeclared_keys`` makes a
     # write of an undeclared key fail loudly rather than silently — on the
-    # writers that consult it: ``ChromaDBVectorStore`` and
-    # ``KnowledgeVectorStore.add_documents``, which is every vector write with
-    # a live production caller. It is NOT every writer in the codebase:
+    # writers that consult it: ``KnowledgeVectorStore.add_documents``, the one
+    # store ``KnowledgeService`` writes through and so every KB vector write
+    # with a live production caller (it also refuses a chunk with no tenant
+    # stamp, #1168); and ``ChromaDBVectorStore``, which is still registered
+    # over the same collection but has no live KB writer and checks no tenant
+    # stamp — #1782. It is NOT every writer in the codebase:
     # ``KnowledgeIngester._process_and_store`` writes the same collection
     # directly (stamping ``document_id``, which only its own read/delete
     # methods filter on) and bypasses this guard — that whole subsystem has no
@@ -107,6 +121,37 @@ class VectorMetadata(BaseModel):
                 f"to_chroma_metadata) or stop writing them."
             )
 
+    @staticmethod
+    def require_enterprise_id_value(value: Any, *, document_id: Any = None) -> None:
+        """Raise unless ``value`` names an owning tenant (#1168). THE rule.
+
+        Every chunk in the KB collection carries the ``enterprise_id`` of the
+        ``knowledge_items`` row it belongs to. Slice 2 (#1775) conjuncts that
+        key onto every KB read, so a chunk written without it would silently
+        fall out of every tenant's results — and until then it would be one
+        more chunk the backfill (#1777) has to find.
+
+        A non-blank ``str`` only: an empty or whitespace value names no tenant,
+        and a non-string (``7``, ``b"ent"``, ``True``) is not an enterprise id
+        — stringified or decoded downstream, it would become a value no read
+        conjunct matches.
+
+        One rule, two callers: the indexer checks its raw argument with this
+        before it does any work, and the store checks each chunk's
+        ``metadata.get("enterprise_id")`` with it (an absent key arrives as
+        ``None``). Both raise this ``ValueError``, BEFORE any retry or
+        circuit-breaker wrapper — the failure is a deterministic programming
+        error, not a transient one.
+        """
+        if not (isinstance(value, str) and value.strip()):
+            raise ValueError(
+                f"KB write for document {document_id!r} carries no "
+                f"enterprise_id (got {value!r}). Every chunk in the KB "
+                f"collection must name the enterprise of the knowledge_items "
+                f"row it belongs to (#1168) — pass the row's own enterprise_id "
+                f"to the indexer."
+            )
+
     @field_validator("tags", mode="before")
     @classmethod
     def _coerce_tags(cls, v: Any) -> List[str]:
@@ -124,7 +169,6 @@ class VectorMetadata(BaseModel):
         "source_url",
         "scope",
         "owner_id",
-        "organization_id",
         "domain",
         "service",
         "last_updated",
@@ -154,8 +198,8 @@ class VectorMetadata(BaseModel):
             data["scope"] = self.scope
         if self.owner_id:
             data["owner_id"] = self.owner_id
-        if self.organization_id:
-            data["organization_id"] = self.organization_id
+        if self.enterprise_id:
+            data["enterprise_id"] = self.enterprise_id
         if self.created_at:
             data["created_at"] = to_json_compatible(self.created_at)
         if self.updated_at:

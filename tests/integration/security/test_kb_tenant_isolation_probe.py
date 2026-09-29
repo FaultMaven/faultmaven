@@ -24,10 +24,11 @@ caller's own identifiers and nothing else::
              {"owner_id": <caller>},                    # the caller's own items
              {"parent_document_id": {"$in": <ids>}}]}   # shared to caller's teams
 
-Note what is absent: ``enterprise_id``. It is a declared ``VectorMetadata``
-field that **no read path filters on** and no writer stamps, so ChromaDB carries
-no tenant dimension at all. Cross-tenant isolation is therefore *derived* from
-three separate properties, and the probe attacks each one:
+Note what is absent: ``enterprise_id``. Every KB write stamps it since #1168's
+first slice (``add_documents`` refuses a KB chunk without it), but **no read
+path filters on it** until #1775 conjuncts it on read — so ChromaDB still
+enforces no tenant dimension of its own. Cross-tenant isolation is therefore
+*derived* from three separate properties, and the probe attacks each one:
 
 1. ``owner_id`` is a per-user identifier, so an owner arm can only ever name one
    tenant's user (Attack 1).
@@ -178,8 +179,13 @@ from faultmaven.providers.tenancy.factory import BUILTIN_MULTI, BUILTIN_SINGLE
 pytestmark = [pytest.mark.integration, pytest.mark.security]
 
 # --- The two tenants -------------------------------------------------------
-# Orgs are named for the narrative and for the share-resolution arm, which is
-# the ONLY place an org id reaches a KB read. Nothing in ChromaDB carries them.
+# Enterprises isolate (ADR-017). Each seeded tenant chunk carries its
+# enterprise as the ``enterprise_id`` stamp (#1168), exactly as the live
+# indexer writes it; the platform and "system" rows carry the Standalone
+# enterprise, the value production writes for the global tier. No read filters
+# on the stamp until #1775. The share-resolution arm is the one place these ids
+# reach a KB read today. Organizations bill and appear nowhere in vector
+# metadata.
 ENTERPRISE_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"  # the caller's own tenant
 ENTERPRISE_B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"  # the tenant being attacked
 
@@ -258,6 +264,7 @@ def _chunk(
     text: str,
     *,
     scope: str,
+    enterprise_id: str,
     owner_id: str | None = None,
     domain: str = "database",
     service: str = "postgres",
@@ -265,15 +272,17 @@ def _chunk(
     """A chunk carrying the key set the LIVE writer stamps.
 
     Mirrors ``KnowledgeService._index_document_in_vector_store``: the immutable
-    scope floor (never ``team``), ``owner_id``, ``parent_document_id``, chunk
-    tracking, and the frontmatter-derived RAG fields. ``add_documents`` refuses
-    any key ``VectorMetadata`` does not declare, so a dict that drifts from the
-    production stamp fails here rather than seeding a row production could
-    never write.
+    scope floor (never ``team``), ``owner_id``, the owning tenant's
+    ``enterprise_id`` (#1168), ``parent_document_id``, chunk tracking, and the
+    frontmatter-derived RAG fields. ``add_documents`` refuses any key
+    ``VectorMetadata`` does not declare, and a KB chunk with no
+    ``enterprise_id``, so a dict that drifts from the production stamp fails
+    here rather than seeding a row production could never write.
     """
     metadata: dict[str, Any] = {
         "document_type": "runbook",
         "scope": scope,
+        "enterprise_id": enterprise_id,
         "title": f"Runbook {parent}",
         "parent_document_id": parent,
         "chunk_index": 0,
@@ -309,14 +318,43 @@ async def store() -> KnowledgeVectorStore:
     """The production vector store over a real, freshly seeded ChromaDB."""
     kb = KnowledgeVectorStore(_ephemeral_client())
     rows = [
-        _chunk(DOC_A_PERSONAL, SECRET_A, scope="personal", owner_id=USER_A),
-        _chunk(DOC_B_PERSONAL, SECRET_B, scope="personal", owner_id=USER_B),
-        _chunk(DOC_B_TEAM, SECRET_B_TEAM, scope="personal", owner_id=USER_B),
-        _chunk(DOC_PLATFORM, PLATFORM_TEXT, scope="global"),
+        _chunk(
+            DOC_A_PERSONAL,
+            SECRET_A,
+            scope="personal",
+            enterprise_id=ENTERPRISE_A,
+            owner_id=USER_A,
+        ),
+        _chunk(
+            DOC_B_PERSONAL,
+            SECRET_B,
+            scope="personal",
+            enterprise_id=ENTERPRISE_B,
+            owner_id=USER_B,
+        ),
+        _chunk(
+            DOC_B_TEAM,
+            SECRET_B_TEAM,
+            scope="personal",
+            enterprise_id=ENTERPRISE_B,
+            owner_id=USER_B,
+        ),
+        _chunk(
+            DOC_PLATFORM,
+            PLATFORM_TEXT,
+            scope="global",
+            enterprise_id=STANDALONE_ENTERPRISE_ID,
+        ),
         # Nothing writes this today. It is seeded because the tool context
         # defaults an unresolved principal to the "system" sentinel and builds
         # an owner arm from it — see the F3-adjacent case in Attack 2.
-        _chunk(DOC_SYSTEM_OWNED, SYSTEM_TEXT, scope="personal", owner_id="system"),
+        _chunk(
+            DOC_SYSTEM_OWNED,
+            SYSTEM_TEXT,
+            scope="personal",
+            enterprise_id=STANDALONE_ENTERPRISE_ID,
+            owner_id="system",
+        ),
     ]
     await kb.add_documents(rows, embeddings=[list(_VEC) for _ in rows])
     return kb
@@ -884,7 +922,21 @@ async def test_what_each_stated_tier_means_to_a_tenant_that_did_not_author_it(
         "faultmaven.infrastructure.embedding_guard.embed_texts_or_raise",
         new=_embed_texts,
     ):
-        assert await service._index_document_in_vector_store(document) == 1
+        assert (
+            await service._index_document_in_vector_store(
+                document,
+                # The value production writes: a global row carries the
+                # Standalone enterprise, a tenant row its author's. Stamping a
+                # global chunk with a tenant would be a shape production never
+                # writes, and #1775's conjunct would judge it differently.
+                enterprise_id=(
+                    STANDALONE_ENTERPRISE_ID
+                    if stated_tier == "global"
+                    else ENTERPRISE_A
+                ),
+            )
+            == 1
+        )
 
     await store.add_documents([captured[0][0]], embeddings=[list(_VEC)])
     chunk_id = captured[0][0]["id"]

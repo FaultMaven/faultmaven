@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
+    KB_COLLECTION,
     RERANK_WEIGHT_FRESHNESS,
     RERANK_WEIGHT_FRESHNESS_ID,
     RERANK_WEIGHT_METADATA,
@@ -13,9 +14,18 @@ from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     RERANK_WEIGHT_TERM_OVERLAP_ID,
     RERANK_WEIGHT_VECTOR,
     RERANK_WEIGHT_VECTOR_ID,
+    SCOPE_FILTER_KEYS,
     SCOPE_PRIORITY,
     KnowledgeVectorStore,
 )
+
+#: The tenant stamp every KB chunk must carry since #1168 — ``add_documents``
+#: refuses a KB write without it, so a KB-collection write in these tests that
+#: is about something else carries it.
+_ENTERPRISE = "ent-0001"
+#: A case-evidence collection: scoped by case, never stamped, and so the
+#: collection the "no metadata" normalisation tests write to.
+_CASE_COLLECTION = "case_abc123"
 
 
 def _make_result(
@@ -527,7 +537,11 @@ class TestAddDocumentsAllowlistRefusal:
                 {
                     "id": "doc1",
                     "content": "Test content",
-                    "metadata": {"title": "Test Doc", "chunk_index": 0},
+                    "metadata": {
+                        "title": "Test Doc",
+                        "chunk_index": 0,
+                        "enterprise_id": _ENTERPRISE,
+                    },
                 }
             ]
         )
@@ -535,7 +549,9 @@ class TestAddDocumentsAllowlistRefusal:
         collection.add.assert_called_once_with(
             ids=["doc1"],
             documents=["Test content"],
-            metadatas=[{"title": "Test Doc", "chunk_index": 0}],
+            metadatas=[
+                {"title": "Test Doc", "chunk_index": 0, "enterprise_id": _ENTERPRISE}
+            ],
         )
 
     # "No metadata" has four spellings — absent key, empty dict, explicit
@@ -544,7 +560,9 @@ class TestAddDocumentsAllowlistRefusal:
     # re-derived `doc.get("metadata", {})`, so a present-but-null key passed
     # the guard and then raised AttributeError INSIDE call_external — the
     # breaker-poisoning path the guard exists to close. All four shapes are
-    # pinned here so no two expressions can disagree about them again.
+    # pinned here so no two expressions can disagree about them again. They
+    # write to a CASE collection: a KB chunk with no metadata names no tenant
+    # and is refused since #1168 (``TestKbWriteRequiresEnterpriseStamp``).
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -559,7 +577,7 @@ class TestAddDocumentsAllowlistRefusal:
     async def test_no_metadata_in_any_spelling_writes_an_empty_dict(self, doc):
         store, collection = self._store()
 
-        await store.add_documents([doc])
+        await store.add_documents([doc], collection_name=_CASE_COLLECTION)
 
         collection.add.assert_called_once_with(
             ids=["doc1"], documents=["c"], metadatas=[{}]
@@ -578,7 +596,10 @@ class TestAddDocumentsAllowlistRefusal:
         """
         store, collection = self._store()
 
-        await store.add_documents([{"id": "doc1", "content": "c", "metadata": None}])
+        await store.add_documents(
+            [{"id": "doc1", "content": "c", "metadata": None}],
+            collection_name=_CASE_COLLECTION,
+        )
 
         assert store.circuit_breaker.failure_count == 0
         assert store.circuit_breaker.state == "closed"
@@ -601,7 +622,7 @@ class TestAddDocumentsAllowlistRefusal:
         leaving these two inside would have fixed one third of the class.
         """
         store, collection = self._store()
-        doc = {"id": "doc1", "content": "c", "metadata": {}}
+        doc = {"id": "doc1", "content": "c", "metadata": {"enterprise_id": _ENTERPRISE}}
         del doc[missing]
 
         with pytest.raises(ValueError, match="missing required field"):
@@ -639,11 +660,19 @@ class TestAddDocumentsAllowlistRefusal:
         store, collection = self._store()
 
         documents = [
-            {"id": "doc1", "content": "ok", "metadata": {"title": "Fine"}},
+            {
+                "id": "doc1",
+                "content": "ok",
+                "metadata": {"title": "Fine", "enterprise_id": _ENTERPRISE},
+            },
             {
                 "id": "doc2",
                 "content": "bad",
-                "metadata": {"title": "Doc", "not_a_schema_field": "value"},
+                "metadata": {
+                    "title": "Doc",
+                    "enterprise_id": _ENTERPRISE,
+                    "not_a_schema_field": "value",
+                },
             },
         ]
 
@@ -710,6 +739,169 @@ class TestAddDocumentsAllowlistRefusal:
         assert store.connection_metrics["total_calls"] == 0
         assert store.connection_metrics["failed_calls"] == 0
         collection.add.assert_not_called()  # zero attempts — no retry occurred
+
+
+class TestKbWriteRequiresEnterpriseStamp:
+    """#1168: every chunk written to the KB collection names its owning tenant.
+
+    ``add_documents`` is the one store every KB write goes through, so the
+    refusal lives here and a future writer cannot skip the stamp. Refused
+    OUTSIDE ``call_external``, for the ``reject_undeclared_keys`` reason: the
+    failure is a deterministic programming error, and raised inside the wrapper
+    it would burn the retry budget and charge the breaker the KB read path
+    shares. Case-evidence collections are scoped by case and are unaffected.
+    """
+
+    def _store(self):
+        store = KnowledgeVectorStore(client=MagicMock())
+        collection = MagicMock()
+        store._get_or_create_collection = MagicMock(return_value=collection)
+        return store, collection
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "doc",
+        [
+            {"id": "doc1", "content": "c"},
+            {"id": "doc1", "content": "c", "metadata": None},
+            {"id": "doc1", "content": "c", "metadata": {}},
+            {"id": "doc1", "content": "c", "metadata": {"scope": "personal"}},
+            {"id": "doc1", "content": "c", "metadata": {"enterprise_id": None}},
+            {"id": "doc1", "content": "c", "metadata": {"enterprise_id": ""}},
+            {"id": "doc1", "content": "c", "metadata": {"enterprise_id": "  "}},
+        ],
+        ids=["absent", "null", "empty", "unstamped", "stamp-null", "blank", "space"],
+    )
+    async def test_an_unstamped_kb_write_is_refused_before_any_retry(self, doc):
+        store, collection = self._store()
+
+        with patch.object(
+            KnowledgeVectorStore, "call_external", new=AsyncMock()
+        ) as mock_call:
+            with pytest.raises(ValueError, match="carries no enterprise_id"):
+                await store.add_documents([doc])
+
+        mock_call.assert_not_called()
+        collection.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_refusal_leaves_the_breaker_and_call_metrics_untouched(self):
+        """The same refusal on the REAL call path (nothing patched)."""
+        store, collection = self._store()
+
+        with pytest.raises(ValueError, match="carries no enterprise_id"):
+            await store.add_documents(
+                [{"id": "doc1", "content": "c", "metadata": {"scope": "global"}}]
+            )
+
+        assert store.circuit_breaker.failure_count == 0
+        assert store.circuit_breaker.state == "closed"
+        assert store.connection_metrics["total_calls"] == 0
+        assert store.connection_metrics["failed_calls"] == 0
+        collection.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_one_unstamped_chunk_refuses_the_whole_batch(self):
+        """A partial write is the silent gap with extra steps: the stamped
+        chunks would land and the unstamped one would be missing from nothing
+        anyone checks."""
+        store, collection = self._store()
+
+        with pytest.raises(ValueError, match="doc2"):
+            await store.add_documents(
+                [
+                    {
+                        "id": "doc1",
+                        "content": "ok",
+                        "metadata": {"enterprise_id": _ENTERPRISE},
+                    },
+                    {"id": "doc2", "content": "bad", "metadata": {"scope": "global"}},
+                ]
+            )
+
+        collection.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_stamped_kb_write_stores_the_stamp(self):
+        """Positive control: the guard does not fail closed on a stamped chunk."""
+        store, collection = self._store()
+
+        await store.add_documents(
+            [
+                {
+                    "id": "doc1",
+                    "content": "c",
+                    "metadata": {"scope": "global", "enterprise_id": _ENTERPRISE},
+                }
+            ]
+        )
+
+        collection.add.assert_called_once_with(
+            ids=["doc1"],
+            documents=["c"],
+            metadatas=[{"scope": "global", "enterprise_id": _ENTERPRISE}],
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_case_collection_write_needs_no_stamp(self):
+        """Case evidence is scoped by the case it belongs to, not by a KB
+        tenant stamp — the refusal is for the KB collection only."""
+        store, collection = self._store()
+
+        await store.add_documents(
+            [{"id": "ev1", "content": "log line", "metadata": {"title": "t"}}],
+            collection_name=_CASE_COLLECTION,
+        )
+
+        collection.add.assert_called_once_with(
+            ids=["ev1"], documents=["log line"], metadatas=[{"title": "t"}]
+        )
+
+
+class TestTheFilterPresenceKeySet:
+    """#1168 removed ``organization_id`` from ``SCOPE_FILTER_KEYS``.
+
+    No chunk ever carried it and ``VectorMetadata`` no longer declares it, so a
+    clause keyed on it alone named a "scope" that could only ever match
+    nothing. Dropping it tightens the presence check: such a clause is now
+    refused as unscoped, like any other clause naming no scope key.
+    """
+
+    def test_organization_id_is_not_a_scope_key(self):
+        assert "organization_id" not in SCOPE_FILTER_KEYS
+
+    @pytest.mark.parametrize(
+        "where",
+        [
+            {"organization_id": "org-1"},
+            {"$or": [{"organization_id": "org-1"}]},
+            {"$and": [{"organization_id": "org-1"}, {"domain": "database"}]},
+        ],
+        ids=["bare", "in-or", "in-and"],
+    )
+    def test_a_filter_keyed_only_on_organization_id_is_refused(self, where):
+        store = KnowledgeVectorStore(client=MagicMock())
+
+        with pytest.raises(ValueError, match="require scope filter"):
+            store._require_kb_filter_present(KB_COLLECTION, where)
+
+    @pytest.mark.asyncio
+    async def test_a_search_keyed_only_on_organization_id_never_runs(self):
+        """Through the read path that runs the check: refused before the query
+        is embedded or ChromaDB is touched."""
+        client = MagicMock()
+        store = KnowledgeVectorStore(client=client)
+
+        with patch.object(
+            KnowledgeVectorStore, "_embed_query_or_raise", new=AsyncMock()
+        ) as embed:
+            with pytest.raises(ValueError, match="require scope filter"):
+                await store.search(
+                    KB_COLLECTION, "pool", k=3, where={"organization_id": "org-1"}
+                )
+
+        embed.assert_not_called()
+        client.get_or_create_collection.assert_not_called()
 
 
 class TestDeleteDocumentsByParentId:
