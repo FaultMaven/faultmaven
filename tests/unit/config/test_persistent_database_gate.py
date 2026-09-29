@@ -14,6 +14,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from pydantic_settings import BaseSettings
 
 from faultmaven.config.persistent_database import (
     DEFAULT_DATABASE_URL,
@@ -22,6 +23,7 @@ from faultmaven.config.persistent_database import (
     require_persistent_database_url,
 )
 from faultmaven.config.settings import (
+    DatabaseSettings,
     configured_database_url,
     persistent_database_configured,
 )
@@ -137,6 +139,46 @@ def test_configured_database_url_reads_every_spelling_the_settings_bind(
     refuses (#1704)."""
     monkeypatch.setenv(name, value)
     assert configured_database_url() == value
+
+
+@pytest.mark.unit
+def test_configured_database_url_takes_the_last_spelling_as_the_settings_do(
+    no_database_url, monkeypatch
+):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///a.db")
+    monkeypatch.setenv("database_url", "")
+
+    assert configured_database_url() == ""
+    assert DatabaseSettings().database_url == ""  # the settings bind the same
+
+
+@pytest.mark.unit
+def test_configured_database_url_validates_no_other_field(no_database_url, monkeypatch):
+    """It reads the URL and nothing else. Validating the whole
+    ``DatabaseSettings`` made the startup migration refuse on ``REDIS_PORT``, a
+    field alembic never uses, when the environment it inherited no longer
+    matched the app's cached settings (#1778 review)."""
+    delenv_every_spelling(monkeypatch, "REDIS_PORT")
+    monkeypatch.setenv("REDIS_PORT", "not_a_number")
+
+    assert configured_database_url() is None
+    monkeypatch.setenv("database_url", "sqlite:///:memory:")
+    assert configured_database_url() == "sqlite:///:memory:"
+
+
+@pytest.mark.unit
+def test_database_settings_read_the_environment_only():
+    """``configured_database_url`` reads ``DatabaseSettings``' environment source
+    alone, which is the whole of what the class binds only while it declares no
+    ``env_file`` or ``secrets_dir`` and keeps the default source order. A class
+    that gains another source must take this reader with it."""
+    config = DatabaseSettings.model_config
+    assert config.get("env_file") is None, config.get("env_file")
+    assert config.get("secrets_dir") is None, config.get("secrets_dir")
+    assert (
+        DatabaseSettings.settings_customise_sources.__func__
+        is BaseSettings.settings_customise_sources.__func__
+    )
 
 
 @pytest.mark.unit

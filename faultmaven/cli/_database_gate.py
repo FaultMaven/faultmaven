@@ -70,8 +70,8 @@ def require_persistent_database_url_or_exit(database_url: Optional[str]) -> None
 def exit_refusing(reason: str) -> NoReturn:
     """Print ``❌ Refusing to run: <reason>`` on stderr, nothing on stdout, and exit 1.
 
-    The one copy of the refusal's shape, for the persistence gate above and for
-    ``alembic/env.py`` when its database settings do not validate.
+    The one copy of the refusal's shape, used by the persistence gate above,
+    which ``alembic/env.py`` also calls.
     """
     print(f"❌ Refusing to run: {reason}", file=sys.stderr, flush=True)
     sys.exit(1)

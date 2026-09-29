@@ -29,7 +29,7 @@ from typing import (
 )
 
 from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, EnvSettingsSource
 
 # =============================================================================
 # ENVIRONMENT AND LOGGING ENUMS
@@ -975,28 +975,29 @@ def persistent_database_configured(database_url: Optional[str]) -> bool:
 def configured_database_url() -> Optional[str]:
     """The ``DATABASE_URL`` the environment configures, read as the settings read it.
 
-    Built through ``DatabaseSettings``, the class ``FaultMavenSettings.database``
-    is built from, so it binds the variable in every flat spelling the settings
-    do (pydantic-settings is case-insensitive: ``database_url`` counts). Its one
-    caller is ``alembic/env.py``, which must judge the URL without building the
-    whole application's settings; an exact-name ``os.environ`` read there
-    disagreed with the app on a lowercase spelling (#1704). A nested JSON
-    ``DATABASE`` reaches the app's settings but not this reader (#1785). The app
-    itself never calls it: it judges the built settings' URL.
+    Read through ``DatabaseSettings``' own environment source — the source the
+    class ``FaultMavenSettings.database`` is built from uses — so it binds the
+    variable in every flat spelling the settings do (pydantic-settings is
+    case-insensitive: ``database_url`` counts, and the last spelling wins). It
+    reads that one value and validates nothing else: a caller that judges only
+    the URL must not refuse on a database field it never uses (#1778 review).
+
+    ``DatabaseSettings``' effective sources are the environment only: no
+    ``env_file``, no ``secrets_dir``, default ``settings_customise_sources``.
+    If that ever changes, this reader must follow; a test pins it.
+
+    Its one caller is ``alembic/env.py``, which must judge the URL without
+    building the whole application's settings; an exact-name ``os.environ``
+    read there disagreed with the app on a lowercase spelling (#1704). A nested
+    JSON ``DATABASE`` reaches the app's settings but not this reader (#1785).
+    The app itself never calls it: it judges the built settings' URL.
 
     Returns:
         The configured value, the empty string included, or ``None`` when the
         environment does not set it and the field default (the persistent
         SQLite file) applies.
-
-    Raises:
-        pydantic.ValidationError: when the environment's database settings do
-            not validate; the settings refuse the same environment.
     """
-    database = DatabaseSettings()
-    if "database_url" not in database.model_fields_set:
-        return None
-    return database.database_url
+    return EnvSettingsSource(DatabaseSettings)().get("database_url")
 
 
 def set_env_var(env: MutableMapping[str, str], name: str, value: str) -> None:

@@ -12,8 +12,8 @@ migration Job reported success. A set-but-empty value fell back to
 ``DatabaseSettings`` reader the app's settings are built from, so a lowercase
 ``database_url`` counts as it does for the app — and, in online mode, refuses
 through the same exit helper as the ``fm-*`` commands, exiting 1. Offline
-(``--sql``) opens no database, so it is not refused. Database settings that do
-not validate exit 1 naming the invalid fields, never their values.
+(``--sql``) opens no database, so it is not refused. Only the URL is read: a
+database setting alembic never uses does not refuse a migration.
 
 Each case runs the real command, ``python -m alembic -c <copy>/alembic.ini
 upgrade head``, on a COPY of ``alembic.ini`` and ``alembic/`` in ``tmp_path``,
@@ -137,28 +137,48 @@ def test_offline_sql_opens_no_database_and_is_not_refused(alembic_copy):
     assert "CREATE TABLE" in result.stdout
 
 
+@pytest.mark.parametrize("mode", ["online", "offline-sql"])
 @pytest.mark.parametrize(
-    "value", ["0", "not-a-number-marker-7731"], ids=["out-of-range", "unparseable"]
+    "name, value",
+    [
+        ("KB_REPAIR_MAX_ROWS", "0"),
+        ("KB_REPAIR_MAX_ROWS", "not-a-number-marker-7731"),
+        ("REDIS_PORT", "tcp://10.0.0.1:6379"),
+    ],
+    ids=["kb-repair-out-of-range", "kb-repair-unparseable", "redis-port-k8s-link"],
 )
-def test_database_settings_that_do_not_validate_exit_1_naming_the_field(
-    alembic_copy, value
+def test_a_database_setting_alembic_never_uses_does_not_refuse(
+    alembic_copy, name, value, mode
 ):
-    """alembic validates the database settings the app validates. A bad one is
-    refused like the app refuses it — exit 1, not a traceback — and the message
-    names the field, never its value (#1778 review, R9)."""
+    """alembic reads only the URL. Validating every database field made the
+    startup migration refuse on ``REDIS_PORT`` whenever the environment the
+    subprocess inherited no longer matched the app's cached settings, and made
+    ``--sql``, which opens no database, refuse on a field unrelated to it
+    (#1778 review). ``tcp://…`` is the value Kubernetes service links inject."""
     db = alembic_copy / "valid.db"
+    extra = ("--sql",) if mode == "offline-sql" else ()
+
     result = _upgrade_head(
-        alembic_copy,
-        {"DATABASE_URL": f"sqlite+aiosqlite:///{db}", "KB_REPAIR_MAX_ROWS": value},
+        alembic_copy, {"DATABASE_URL": f"sqlite+aiosqlite:///{db}", name: value}, *extra
     )
     detail = f"stdout:\n{result.stdout[-2000:]}\nstderr:\n{result.stderr[-3000:]}"
 
-    assert result.returncode == 1, detail
-    assert "❌ Refusing to run: " in result.stderr, detail
-    assert "KB_REPAIR_MAX_ROWS" in result.stderr, detail
-    assert "not-a-number-marker-7731" not in result.stdout + result.stderr, detail
-    assert "Traceback" not in result.stderr, detail
-    assert not db.exists(), "the migration ran on settings the app refuses"
+    assert result.returncode == 0, detail
+    assert "Refusing to run" not in result.stderr, detail
+    if mode == "offline-sql":
+        assert "CREATE TABLE" in result.stdout, detail
+    else:
+        connection = sqlite3.connect(db)
+        try:
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "select name from sqlite_master where type='table'"
+                )
+            }
+        finally:
+            connection.close()
+        assert "alembic_version" in tables, sorted(tables)
 
 
 def test_positive_control_a_file_database_is_migrated(alembic_copy):

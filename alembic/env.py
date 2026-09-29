@@ -18,8 +18,8 @@ Environment Variables:
         persistent database (empty, ``:memory:``, an in-memory SQLite URL, a
         value that does not parse), an online migration refuses and exits 1
         (#1704); offline (``--sql``) opens no database and only takes the
-        dialect from it. Database settings that do not validate exit 1 too,
-        naming the invalid fields.
+        dialect from it. Only the URL is read: no other database setting is
+        validated here.
 
 Usage:
     alembic upgrade head
@@ -30,8 +30,6 @@ from logging.config import fileConfig
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import ValidationError
-from pydantic_settings import SettingsError
 from sqlalchemy import engine_from_config, pool, text
 
 from alembic import context
@@ -53,10 +51,7 @@ if config.config_file_name is not None:
 sys.path.insert(0, str(project_root))
 
 # Target metadata for autogenerate - import from models
-from faultmaven.cli._database_gate import (
-    exit_refusing,
-    require_persistent_database_url_or_exit,
-)
+from faultmaven.cli._database_gate import require_persistent_database_url_or_exit
 from faultmaven.config.settings import configured_database_url
 from faultmaven.infrastructure.persistence.models import Base
 
@@ -73,11 +68,11 @@ def get_database_url(*, require_persistent: bool) -> str:
        ``require_persistent`` (online mode)
     2. Default: SQLite ``data/faultmaven.db`` under the project root
 
-    The value is read through ``configured_database_url()`` — ``DatabaseSettings``,
-    the class the app's settings are built from — so the migration binds the
-    variable in the flat spellings the app does (``database_url`` included) and
-    validates it the same way. Settings that do not validate end the run with
-    exit 1, as they end the app's boot.
+    The value is read through ``configured_database_url()`` — the environment
+    source of ``DatabaseSettings``, the class the app's settings are built from
+    — so the migration binds the variable in the flat spellings the app does
+    (``database_url`` included). Only the URL is read; no other database field
+    is validated, so a setting alembic never uses cannot refuse a migration.
 
     Offline (``--sql``) opens no database: the URL only names the dialect, so it
     is not refused, and an empty value falls back to the default file URL.
@@ -85,7 +80,7 @@ def get_database_url(*, require_persistent: bool) -> str:
     Returns:
         str: Database connection URL
     """
-    url = _configured_database_url_or_exit()
+    url = configured_database_url()
     if require_persistent and url is not None:
         # Set but EMPTY refuses too, rather than falling back to the default
         # file: the app's predicate refuses an empty URL, and the migration must
@@ -98,27 +93,6 @@ def get_database_url(*, require_persistent: bool) -> str:
     # Default to SQLite for development
     sqlite_path = project_root / "data" / "faultmaven.db"
     return f"sqlite:///{sqlite_path}"
-
-
-def _configured_database_url_or_exit():
-    """``configured_database_url()``, or exit 1 naming the invalid fields.
-
-    Only the field names (each error's ``loc``) are printed, never the values:
-    a database setting can carry a credential. ``SettingsError`` messages name
-    the field and the source, not the value.
-    """
-    try:
-        return configured_database_url()
-    except ValidationError as exc:
-        fields = sorted(
-            {".".join(str(part) for part in error["loc"]) for error in exc.errors()}
-        )
-        exit_refusing(
-            "the database settings do not validate (invalid: "
-            f"{', '.join(fields)}); the application refuses the same environment."
-        )
-    except SettingsError as exc:
-        exit_refusing(f"the database settings could not be read: {exc}")
 
 
 def _convert_async_url(url: str) -> str:
