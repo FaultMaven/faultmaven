@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, Mock
 
 import jwt
 import pytest
+from jwt.utils import base64url_decode, base64url_encode
 
 from faultmaven.models.exceptions import InvalidGrantError
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
@@ -326,8 +327,22 @@ class TestTokenValidation:
             TEST_PRIVATE_KEY,
             algorithm="RS256",
         )
-        # Corrupt the signature by modifying last character
-        invalid_token = valid_token[:-5] + "xxxxx"
+        # Corrupt the signature canonically: flip one bit of its first byte and
+        # re-encode. Overwriting trailing characters is not a signature
+        # corruption under PyJWT >= 2.14, which refuses the non-canonical
+        # base64url as malformed before any signature check runs.
+        header, payload, signature = valid_token.split(".")
+        corrupted = bytearray(base64url_decode(signature))
+        corrupted[0] ^= 0x01
+        invalid_token = ".".join(
+            [header, payload, base64url_encode(bytes(corrupted)).decode("ascii")]
+        )
+
+        # The header and payload decode unchanged: the corruption touched only
+        # the signature bytes, not the token's encoding.
+        assert jwt.decode(invalid_token, options={"verify_signature": False}) == (
+            jwt.decode(valid_token, options={"verify_signature": False})
+        )
 
         # Validation should return None
         result = await token_generator.validate_access_token(invalid_token)

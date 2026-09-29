@@ -68,7 +68,7 @@ dependencies = [
     # select 4.13.0 again and reintroduce both advisories with CI still green.
     "anyio>=4.15.1",
     "requests>=2.31.0",
-    "PyJWT>=2.14.0",  # >=2.13.0: GHSA key-confusion (HS256 forgery) fix; >=2.14.0: CVE-2026-102274
+    "PyJWT>=2.15.1",  # >=2.13.0: GHSA key-confusion (HS256 forgery) fix; >=2.14.0: CVE-2026-102274 / GHSA-w6j9-cwv2-h6wq (JWK-set parsing; not reachable here, pinned to keep the audit clean); >=2.15.1: floor = lock pin (#1518)
     # RS256 JWT keys; >=50.0.0: PKCS#7 EnvelopedData Bleichenbacher oracle
     # (GHSA-g6cj-pr64-35w5). Reachable only once workos 10.1.1 relaxed its
     # own cryptography~=49.0 pin — the two floors move together.
