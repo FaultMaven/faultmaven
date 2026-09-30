@@ -920,11 +920,12 @@ class TestStructuredOutputDegradation:
         assert parsed.agent_response == ""  # blanked, no 500
 
     def test_fallback_logs_non_prunable_errors(self, caplog):
-        # A NON-prunable error (loc has no list index) forces the conversational
-        # fallback; that branch must log the offending loc/msg so each fallback is
-        # self-diagnosing (S4 observability). Here evidence_to_add is the wrong
-        # TYPE (a string, not a list) -> loc ('state_updates','evidence_to_add')
-        # has no int index -> not prunable.
+        # A NON-prunable error forces the conversational fallback; that branch
+        # must log the offending loc/msg so each fallback is self-diagnosing
+        # (S4 observability). Every error INSIDE a state_updates object is
+        # placed by a prune rung (an invalid state field costs only that field,
+        # fm#1803), so the trigger here is state_updates itself being the wrong
+        # TYPE -> loc ('state_updates',) names no entry, sub-object or field.
         import logging
 
         from faultmaven.core.investigation.schemas import (
@@ -934,7 +935,7 @@ class TestStructuredOutputDegradation:
         eng = self._engine()
         content = {
             "agent_response": "hi",
-            "state_updates": {"evidence_to_add": "should-be-a-list"},
+            "state_updates": "should-be-an-object",
         }
         with caplog.at_level(
             logging.WARNING, logger="faultmaven.core.investigation.milestone_engine"
@@ -949,4 +950,4 @@ class TestStructuredOutputDegradation:
         assert degraded, "fallback must emit a degraded warning"
         non_prunable = getattr(degraded[0], "non_prunable_errors", None)
         assert non_prunable, "fallback must log the non-prunable errors"
-        assert any("evidence_to_add" in loc for loc, _msg in non_prunable)
+        assert any(loc == ["state_updates"] for loc, _msg in non_prunable)
