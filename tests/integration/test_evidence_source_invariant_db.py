@@ -26,6 +26,8 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+from faultmaven.config.settings import set_env_var
+
 pytestmark = pytest.mark.integration
 
 
@@ -35,7 +37,7 @@ async def _setup_fresh_db(db_path: str) -> AsyncSession:
     import sys
 
     env = os.environ.copy()
-    env["DATABASE_URL"] = f"sqlite+aiosqlite:///{db_path}"
+    set_env_var(env, "DATABASE_URL", f"sqlite+aiosqlite:///{db_path}")
     # Use the running interpreter rather than hardcoding ``.venv/bin/python``;
     # the local-dev venv path does not exist in the CI runner (Python lives
     # at /opt/hostedtoolcache/Python/.../python there).

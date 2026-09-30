@@ -41,6 +41,8 @@ from pathlib import Path
 import pytest
 import sqlalchemy as sa
 
+from faultmaven.config.settings import set_env_var
+
 pytestmark = pytest.mark.integration
 
 #: The value migration 040 was written to erase. Kept as a literal so this
@@ -63,7 +65,7 @@ def migrated_columns() -> dict:
         db_path = handle.name
     try:
         env = os.environ.copy()
-        env["DATABASE_URL"] = f"sqlite+aiosqlite:///{db_path}"
+        set_env_var(env, "DATABASE_URL", f"sqlite+aiosqlite:///{db_path}")
         subprocess.run(
             [sys.executable, "-m", "alembic", "upgrade", "head"],
             cwd=_REPO_ROOT,

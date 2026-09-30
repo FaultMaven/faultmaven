@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 
+from faultmaven.config.settings import set_env_var
 from faultmaven.models.rbac import ROLE_PERMISSIONS, Permission, Role
 from faultmaven.models.rbac_seed import SYSTEM_ROLE_IDS
 
@@ -80,7 +81,7 @@ def run_alembic(command: str, database_url: str) -> subprocess.CompletedProcess:
     environment holds an editable install pointing at a different checkout.
     """
     env = os.environ.copy()
-    env["DATABASE_URL"] = database_url
+    set_env_var(env, "DATABASE_URL", database_url)
     existing_pythonpath = env.get("PYTHONPATH")
     env["PYTHONPATH"] = (
         f"{PROJECT_ROOT}{os.pathsep}{existing_pythonpath}"
@@ -108,7 +109,7 @@ def run_helper_script(args: str, database_url: str) -> subprocess.CompletedProce
     ``run_alembic``.
     """
     env = os.environ.copy()
-    env["DATABASE_URL"] = database_url
+    set_env_var(env, "DATABASE_URL", database_url)
     env["PATH"] = f"{Path(sys.executable).parent}{os.pathsep}{env.get('PATH', '')}"
     existing_pythonpath = env.get("PYTHONPATH")
     env["PYTHONPATH"] = (
