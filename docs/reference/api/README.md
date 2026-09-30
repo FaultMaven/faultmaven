@@ -5620,7 +5620,7 @@ Read-only environment configuration status for dashboard display.
 **Properties:**
 
 - `auth_mode` (string, required) — 'local' or 'oauth'
-- `db_backend` (string, required) — 'sqlite' or 'postgresql' — the backend of DATABASE_URL, the URL the engine is built from; 'unrecognized' for any other scheme
+- `db_backend` (string, required) — 'sqlite' or 'postgresql' — the dialect of the database engine the running process built; 'not initialized' before it has built one
 - `deployment` (string, required) — 'standalone' or 'cloud' — from DEPLOYMENT_MODE (ADR-004)
 - `features` (object, optional) — Optional features and their configuration status
 - `llm_provider` (string, required) — Primary LLM provider name
@@ -5629,7 +5629,7 @@ Read-only environment configuration status for dashboard display.
 - `rate_limit_enabled` (boolean, required) — Rate limiting middleware is installed on this deployment. Read from the running middleware stack rather than from configuration: no rate-limit setting exists, the protection presets decide by environment name, and no environment variable turns it off. A deployment reports false here only if protection setup raised and the development carve-out let it boot anyway.
 - `session_storage` (string, required) — 'redis' or 'fakeredis (inmemory)' — the Redis client the session store actually uses, not the configured one; 'not initialized' before the composition root has set it
 - `timestamp` (string, required)
-- `vector_storage` (string, required) — 'inmemory' or 'chromadb'
+- `vector_storage` (string, required) — What the running process's KB and evidence ChromaDB clients talk to: 'chromadb (server)', 'chromadb (persistent, split: kb + evidence)', 'disabled' when neither was built, or a per-client breakdown when they differ
 
 ---
 

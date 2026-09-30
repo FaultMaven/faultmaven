@@ -756,7 +756,7 @@ def _ready(value):
 
 
 def test_a_local_client_is_not_mistaken_for_the_external_server():
-    """``_is_server_backed`` must answer from the client that was created.
+    """``is_server_backed`` must answer from the client that was created.
     ``chromadb.HttpClient`` raises at construction when the server is down, so
     the factory falls back to a local PersistentClient — and a caller that
     inferred "external" from CHROMADB_URL would sweep the wrong store."""
@@ -773,11 +773,13 @@ def test_a_local_client_is_not_mistaken_for_the_external_server():
         def get_settings(self):
             raise RuntimeError("unknown chromadb shape")
 
-    assert wd._is_server_backed(_Local()) is False
-    assert wd._is_server_backed(_Http()) is True
+    from faultmaven.infrastructure.chroma_client import is_server_backed
+
+    assert is_server_backed(_Local()) is False
+    assert is_server_backed(_Http()) is True
     # Unknown shapes answer False: the caller then keeps BOTH local clients
     # rather than collapsing to one and missing a store.
-    assert wd._is_server_backed(_Opaque()) is False
+    assert is_server_backed(_Opaque()) is False
 
 
 async def test_a_chroma_fallback_is_reported_as_not_inspected(monkeypatch):

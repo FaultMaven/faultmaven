@@ -533,27 +533,6 @@ def _alembic_head() -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _is_server_backed(client) -> bool:
-    """Whether this client talks to a ChromaDB *server* rather than a local tree.
-
-    Asked of the client that was actually created, never of the configuration.
-    ``chromadb.HttpClient`` raises at construction when the server is
-    unreachable, so ``_create_chromadb_client`` catches that and — on standalone
-    — falls back to a local ``PersistentClient``. A caller that inferred "this is
-    the external server" from ``CHROMADB_URL`` being set would then mislabel a
-    local tree as the shared server and sweep the wrong store.
-
-    ``chroma_server_host`` is populated by ``HttpClient`` and left unset by
-    ``PersistentClient`` (verified against the pinned chromadb). Unknown shapes
-    answer ``False``, which is the safe direction: the caller then keeps BOTH
-    local clients instead of collapsing to one.
-    """
-    try:
-        return bool(getattr(client.get_settings(), "chroma_server_host", None))
-    except Exception:
-        return False
-
-
 def _chroma_clients(settings) -> tuple[list, str]:
     """The ChromaDB clients to sweep, and a description of what they resolved to.
 
@@ -570,6 +549,7 @@ def _chroma_clients(settings) -> tuple[list, str]:
         create_evidence_chromadb_client,
         create_kb_chromadb_client,
     )
+    from faultmaven.infrastructure.chroma_client import is_server_backed
 
     clients = [
         c
@@ -582,7 +562,7 @@ def _chroma_clients(settings) -> tuple[list, str]:
     if not clients:
         return [], "(no client could be created)"
 
-    if any(_is_server_backed(c) for c in clients):
+    if any(is_server_backed(c) for c in clients):
         url = (getattr(settings.database, "chromadb_url", "") or "").strip()
         return clients, f"external server {url}"
 
@@ -627,12 +607,15 @@ def _fell_back_to_local(settings, clients: list) -> bool:
     — where it still means the wipe would sweep a tree the deployment does not
     read from.
     """
-    from faultmaven.infrastructure.chroma_client import is_external_chroma_configured
+    from faultmaven.infrastructure.chroma_client import (
+        is_external_chroma_configured,
+        is_server_backed,
+    )
 
     return (
         bool(clients)
         and is_external_chroma_configured(settings)
-        and not any(_is_server_backed(c) for c in clients)
+        and not any(is_server_backed(c) for c in clients)
     )
 
 

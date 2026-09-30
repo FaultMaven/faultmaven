@@ -37,6 +37,23 @@ class TestCompositionRootPattern:
                 app.state, service_name
             ), f"app.state should have {service_name} attribute after startup"
 
+    def test_app_state_publishes_the_clients_the_status_panel_reads(
+        self, booted_app_client
+    ):
+        """``GET /admin/config/status`` names the storage backends from these
+        objects, so an unpublished one reads as "not initialized" or "disabled"
+        while the store is in use. They must be the container's own clients."""
+        from faultmaven.container import container
+        from faultmaven.main import app
+
+        assert app.state.redis_client is container.get_redis_client()
+        assert app.state.kb_chromadb_client is getattr(
+            container, "kb_chromadb_client", None
+        )
+        assert app.state.evidence_chromadb_client is getattr(
+            container, "evidence_chromadb_client", None
+        )
+
     def test_dependency_uses_app_state_not_container(self):
         """Test that dependencies use request.app.state, not container.get_*"""
         import inspect

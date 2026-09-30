@@ -38,6 +38,7 @@ __all__ = [
     "chroma_token_auth_kwargs",
     "is_external_chroma_configured",
     "is_host_only_chroma_configured",
+    "is_server_backed",
     "local_chroma_or_fail",
 ]
 
@@ -155,3 +156,24 @@ def local_chroma_or_fail(reason: str, settings: Any) -> None:
             "without vectors, per-replica search results). Check CHROMADB_URL / "
             "VECTOR_STORAGE_TYPE and connectivity to the ChromaDB service."
         )
+
+
+def is_server_backed(client: Any) -> bool:
+    """Whether this client talks to a ChromaDB *server* rather than a local tree.
+
+    Asked of the client that was actually created, never of the configuration.
+    ``chromadb.HttpClient`` raises at construction when the server is
+    unreachable, so the container's factory catches that and — on standalone —
+    falls back to a local ``PersistentClient``. A caller that inferred "this is
+    the external server" from ``CHROMADB_URL`` being set would then mislabel a
+    local tree as the shared server.
+
+    ``chroma_server_host`` is populated by ``HttpClient`` and left unset by
+    ``PersistentClient`` (verified against the pinned chromadb). Unknown shapes
+    answer ``False``: a caller sweeping stores then keeps BOTH local clients
+    instead of collapsing to one.
+    """
+    try:
+        return bool(getattr(client.get_settings(), "chroma_server_host", None))
+    except Exception:
+        return False

@@ -2624,7 +2624,7 @@
             "type": "string"
           },
           "db_backend": {
-            "description": "'sqlite' or 'postgresql' \u2014 the backend of DATABASE_URL, the URL the engine is built from; 'unrecognized' for any other scheme",
+            "description": "'sqlite' or 'postgresql' \u2014 the dialect of the database engine the running process built; 'not initialized' before it has built one",
             "title": "Db Backend",
             "type": "string"
           },
@@ -2670,7 +2670,7 @@
             "type": "string"
           },
           "vector_storage": {
-            "description": "'inmemory' or 'chromadb'",
+            "description": "What the running process's KB and evidence ChromaDB clients talk to: 'chromadb (server)', 'chromadb (persistent, split: kb + evidence)', 'disabled' when neither was built, or a per-client breakdown when they differ",
             "title": "Vector Storage",
             "type": "string"
           }

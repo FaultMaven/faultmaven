@@ -197,7 +197,6 @@ def mock_settings():
     settings.auth.sso_jit_personal_tenant_max_per_hour = 20
     settings.agent.tenant_daily_turn_cap = 30
     settings.database.case_storage_type = "sqlite"
-    settings.database.database_url = "sqlite+aiosqlite:///./data/faultmaven.db"
     settings.database.session_storage_type = "inmemory"
     settings.database.vector_storage_type = "chromadb"
     settings.protection.protection_enabled = False
@@ -874,17 +873,97 @@ class TestLLMConnectionCheck:
 # ============================================================
 
 
+class _ChromaServerClient:
+    """Stands in for ``chromadb.HttpClient``, which cannot be constructed
+    without a reachable server. Its settings are chromadb's own ``Settings``,
+    carrying the one field ``is_server_backed`` reads."""
+
+    def get_settings(self):
+        from chromadb.config import Settings
+
+        return Settings(chroma_server_host="chroma.internal")
+
+
+@pytest.fixture
+async def live_backends(monkeypatch, tmp_path):
+    """Builds the live objects ``GET /admin/config/status`` reads, and closes them.
+
+    The endpoint reads the engine ``get_engine`` built and the Redis and ChromaDB
+    clients the composition root put on ``app.state`` — never settings — so
+    these are what a test must control. ``install`` puts them in place for one
+    test; every client opened here is closed at teardown.
+    """
+    from types import SimpleNamespace
+
+    import chromadb
+    from fakeredis import aioredis as fake_aioredis
+    from redis.asyncio import Redis
+    from sqlalchemy import create_mock_engine
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from faultmaven.infrastructure.persistence import database
+
+    closers = []
+
+    def sqlite_engine():
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        closers.append(engine.dispose)
+        return engine
+
+    def postgresql_engine():
+        # The standalone test lockfile ships no PostgreSQL driver, and the
+        # dialect is all the endpoint reads — a mock engine carries the real one.
+        return create_mock_engine(
+            "postgresql://app@db.internal/faultmaven", executor=lambda *a, **k: None
+        )
+
+    def fake_redis():
+        client = fake_aioredis.FakeRedis()
+        closers.append(client.aclose)
+        return client
+
+    def real_redis():
+        client = Redis(host="redis.internal")  # never connects
+        closers.append(client.aclose)
+        return client
+
+    def local_chroma(name):
+        return chromadb.PersistentClient(path=str(tmp_path / name))
+
+    def install(app, *, engine, redis, kb, evidence):
+        monkeypatch.setattr(database, "_engine", engine)
+        app.state.redis_client = redis
+        app.state.kb_chromadb_client = kb
+        app.state.evidence_chromadb_client = evidence
+
+    yield SimpleNamespace(
+        sqlite_engine=sqlite_engine,
+        postgresql_engine=postgresql_engine,
+        fake_redis=fake_redis,
+        real_redis=real_redis,
+        local_chroma=local_chroma,
+        server_chroma=_ChromaServerClient,
+        install=install,
+    )
+    for close in reversed(closers):
+        await close()
+
+
 class TestGetEnvConfigStatus:
     """Tests for get_env_config_status endpoint."""
 
     @pytest.mark.asyncio
     async def test_returns_env_config(
-        self, mock_admin_user, mock_settings, rate_limited_app
+        self, mock_admin_user, mock_settings, rate_limited_app, live_backends
     ):
         """Returns all environment configuration fields."""
-        from fakeredis import aioredis as fake_aioredis
-
-        rate_limited_app.state.redis_client = fake_aioredis.FakeRedis()
+        live_backends.install(
+            rate_limited_app,
+            engine=live_backends.sqlite_engine(),
+            redis=live_backends.fake_redis(),
+            kb=live_backends.local_chroma("kb"),
+            evidence=live_backends.local_chroma("evidence"),
+        )
 
         with patch(SETTINGS_PATCH, return_value=mock_settings):
             result = await get_env_config_status(
@@ -895,7 +974,7 @@ class TestGetEnvConfigStatus:
         assert result.deployment == "standalone"
         assert result.db_backend == "sqlite"
         assert result.session_storage == "fakeredis (inmemory)"
-        assert result.vector_storage == "chromadb"
+        assert result.vector_storage == "chromadb (persistent, split: kb + evidence)"
         assert result.llm_provider == "anthropic"
         assert result.pii_redaction_enabled is False
         assert result.rate_limit_enabled is True
@@ -903,102 +982,176 @@ class TestGetEnvConfigStatus:
 
     @pytest.mark.asyncio
     async def test_cloud_config(
-        self, mock_admin_user, mock_settings, rate_limited_app, tmp_path, monkeypatch
+        self,
+        mock_admin_user,
+        mock_settings,
+        rate_limited_app,
+        live_backends,
+        tmp_path,
+        monkeypatch,
     ):
-        """Reports PostgreSQL and real Redis for the shape a cloud pod runs.
+        """Reports the backends a cloud pod actually holds.
 
-        The shape is the deployed one on the two axes this endpoint used to
-        misread: the server is named by ``REDIS_HOST`` with no ``REDIS_URL``,
-        and the process runs beside an ``alembic.ini`` whose ``sqlalchemy.url``
-        is the SQLite placeholder ``alembic/env.py`` overrides at run time. The
-        old reads answered "sqlite" and "fakeredis (inmemory)" for exactly this.
+        Run beside an ``alembic.ini`` whose ``sqlalchemy.url`` is the SQLite
+        placeholder ``alembic/env.py`` overrides at run time — the file this
+        endpoint used to read, which made every such pod report "sqlite". The
+        storage settings are deliberately left at their standalone values: the
+        endpoint reads none of them, so they cannot be what produces the answer.
+        (Whether ``REDIS_HOST`` alone yields a real Redis client is the Redis
+        factory's contract, not this endpoint's.)
         """
-        from redis.asyncio import Redis
-
         mock_settings.auth.auth_mode = "oauth"
         mock_settings.is_cloud = True
         mock_settings.server.environment = MagicMock(value="production")
-        mock_settings.database.case_storage_type = "postgresql"
-        mock_settings.database.database_url = (
-            "postgresql+asyncpg://app:secret@postgres.internal:5432/faultmaven"
-        )
-        mock_settings.database.session_storage_type = "redis"
-        mock_settings.database.redis_url = None
-        mock_settings.database.redis_host = "redis.internal"
-        mock_settings.database.vector_storage_type = "chromadb"
         mock_settings.protection.protection_enabled = True
-
         (tmp_path / "alembic.ini").write_text(
             "[alembic]\nsqlalchemy.url = sqlite:///data/faultmaven.db\n"
         )
         monkeypatch.chdir(tmp_path)
-        redis_client = Redis(host="redis.internal")  # never connects
-        rate_limited_app.state.redis_client = redis_client
+        live_backends.install(
+            rate_limited_app,
+            engine=live_backends.postgresql_engine(),
+            redis=live_backends.real_redis(),
+            kb=live_backends.server_chroma(),
+            evidence=live_backends.server_chroma(),
+        )
 
-        try:
-            with patch(SETTINGS_PATCH, return_value=mock_settings):
-                result = await get_env_config_status(
-                    request=_request_for(rate_limited_app),
-                    current_user=mock_admin_user,
-                )
-        finally:
-            await redis_client.aclose()
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
 
         assert result.auth_mode == "oauth"
         assert result.deployment == "cloud"
         assert result.db_backend == "postgresql"
         assert result.session_storage == "redis"
-        assert result.vector_storage == "chromadb"
+        assert result.vector_storage == "chromadb (server)"
         assert result.pii_redaction_enabled is True
 
     @pytest.mark.asyncio
-    async def test_session_storage_reports_the_stand_in_the_process_holds(
-        self, mock_admin_user, mock_settings, rate_limited_app
+    @pytest.mark.parametrize(
+        ("is_cloud", "client", "expected"),
+        [
+            (False, "real_redis", "redis"),
+            (False, "fake_redis", "fakeredis (inmemory)"),
+            (True, "real_redis", "redis"),
+            (True, "fake_redis", "fakeredis (inmemory)"),
+        ],
+    )
+    async def test_session_storage_is_the_client_not_the_deployment_mode(
+        self,
+        mock_admin_user,
+        mock_settings,
+        rate_limited_app,
+        live_backends,
+        is_cloud,
+        client,
+        expected,
     ):
-        """Settings naming a Redis do not make the process hold one.
+        """Every mode against every client, so an answer inferred from the mode
+        cannot pass: a standalone install pointed at a real Redis must read
+        "redis", and a stand-in must read as one whatever the mode says."""
+        mock_settings.is_cloud = is_cloud
+        live_backends.install(
+            rate_limited_app,
+            engine=live_backends.sqlite_engine(),
+            redis=getattr(live_backends, client)(),
+            kb=None,
+            evidence=None,
+        )
 
-        Standalone serves from the in-process FakeRedis when its configured
-        Redis is unusable (``fakeredis_or_fail``), and that substitution is the
-        fact an operator reading this panel needs.
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        assert result.session_storage == expected
+
+    @pytest.mark.asyncio
+    async def test_db_backend_is_the_engine_not_the_configured_url(
+        self, mock_admin_user, mock_settings, rate_limited_app, live_backends
+    ):
+        """``get_engine`` accepts an override, so the configured URL is only a
+        claim about which database serves queries; the engine's dialect is the
+        fact."""
+        mock_settings.database.database_url = "sqlite+aiosqlite:///./faultmaven.db"
+        live_backends.install(
+            rate_limited_app,
+            engine=live_backends.postgresql_engine(),
+            redis=live_backends.fake_redis(),
+            kb=None,
+            evidence=None,
+        )
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        assert result.db_backend == "postgresql"
+
+    @pytest.mark.asyncio
+    async def test_vector_storage_is_the_clients_not_the_configuration(
+        self, mock_admin_user, mock_settings, rate_limited_app, live_backends
+    ):
+        """A configured server that fell back to local trees reads as local.
+
+        ``CHROMADB_URL`` set is what the old read believed; standalone's factory
+        substitutes a ``PersistentClient`` when that server is unreachable.
         """
-        from fakeredis import aioredis as fake_aioredis
-
-        mock_settings.database.session_storage_type = "redis"
-        mock_settings.database.redis_url = "redis://redis.internal:6379"
-        rate_limited_app.state.redis_client = fake_aioredis.FakeRedis()
+        mock_settings.database.vector_storage_type = "chromadb"
+        mock_settings.database.chromadb_url = "http://chroma.internal:8000"
+        live_backends.install(
+            rate_limited_app,
+            engine=live_backends.sqlite_engine(),
+            redis=live_backends.fake_redis(),
+            kb=live_backends.local_chroma("kb"),
+            evidence=live_backends.local_chroma("evidence"),
+        )
 
         with patch(SETTINGS_PATCH, return_value=mock_settings):
             result = await get_env_config_status(
                 request=_request_for(rate_limited_app), current_user=mock_admin_user
             )
 
-        assert result.session_storage == "fakeredis (inmemory)"
+        assert result.vector_storage == "chromadb (persistent, split: kb + evidence)"
 
     @pytest.mark.asyncio
-    async def test_session_storage_before_the_composition_root_has_run(
-        self, mock_admin_user, mock_settings
+    async def test_vector_storage_reports_clients_that_disagree(
+        self, mock_admin_user, mock_settings, rate_limited_app, live_backends
     ):
-        """No shared client on ``app.state`` is reported, not guessed at."""
+        """The server dropping between the two constructions leaves one of each."""
+        live_backends.install(
+            rate_limited_app,
+            engine=live_backends.sqlite_engine(),
+            redis=live_backends.fake_redis(),
+            kb=live_backends.server_chroma(),
+            evidence=live_backends.local_chroma("evidence"),
+        )
+
         with patch(SETTINGS_PATCH, return_value=mock_settings):
             result = await get_env_config_status(
-                request=_request_for(FastAPI()), current_user=mock_admin_user
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
             )
 
+        assert result.vector_storage == "chromadb (kb: server, evidence: persistent)"
+
+    @pytest.mark.asyncio
+    async def test_backends_before_anything_was_built(
+        self, mock_admin_user, mock_settings, live_backends
+    ):
+        """Nothing built is reported as such, not guessed from settings."""
+        app = FastAPI()
+        live_backends.install(app, engine=None, redis=None, kb=None, evidence=None)
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(app), current_user=mock_admin_user
+            )
+
+        assert result.db_backend == "not initialized"
         assert result.session_storage == "not initialized"
-
-    @pytest.mark.asyncio
-    async def test_db_backend_names_no_backend_for_an_unknown_scheme(
-        self, mock_admin_user, mock_settings, rate_limited_app
-    ):
-        """A URL the engine's predicates do not classify is not called SQLite."""
-        mock_settings.database.database_url = "mysql://db.internal/faultmaven"
-
-        with patch(SETTINGS_PATCH, return_value=mock_settings):
-            result = await get_env_config_status(
-                request=_request_for(rate_limited_app), current_user=mock_admin_user
-            )
-
-        assert result.db_backend == "unrecognized"
+        assert result.vector_storage == "disabled"
 
     @pytest.mark.asyncio
     async def test_request_protection_is_reported_hardened_by_default(
