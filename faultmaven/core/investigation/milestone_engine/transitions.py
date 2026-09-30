@@ -307,7 +307,7 @@ class TransitionManager:
                         # closing. The pending_transition now targets "resolved".
                         metadata["close_pivoted_to_resolve"] = True
                         metadata["override_suggestions"] = (
-                            _resolution_confirmation_suggestions()
+                            _resolution_confirmation_suggestions(case)
                         )
                         metadata["closure_readiness_verdict"] = (
                             ClosureReadiness.SUGGEST_RESOLVE
@@ -521,10 +521,12 @@ class TransitionManager:
                 # at the final assembly point.
                 if effective_to_status == "resolved":
                     metadata["override_suggestions"] = (
-                        _resolution_confirmation_suggestions()
+                        _resolution_confirmation_suggestions(case)
                     )
                 else:  # closed
-                    metadata["override_suggestions"] = _close_confirmation_suggestions()
+                    metadata["override_suggestions"] = _close_confirmation_suggestions(
+                        case
+                    )
                 logger.info(
                     f"Agent proposed transition → {effective_to_status} "
                     f"(pending user confirmation)"

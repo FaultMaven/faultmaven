@@ -44,6 +44,11 @@ from .stage_gates import (
     _refresh_working_conclusion,
     _withdraw_unlicensed_solution_offers,
 )
+from .transition_consent import (
+    TYPED_CONFIRMATION_LINE,
+    gate1_offer_key,
+    offer_intent_fields,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -126,34 +131,48 @@ def _gate1_statement_presentation(case: "Case") -> str:
     # "Not quite, let me clarify", so a question here is one the user may have
     # answered a message earlier. "Awaiting your confirmation" stays true on
     # the first presentation, after a decline, and on every repeat.
+    #
+    # The last line says what a typed confirmation must look like (#1814,
+    # ruling (b)): Gate 1 commits only on its click or a bare consent token
+    # (#1794). True on every pending turn, so it needs no turn-scoped flag.
     return (
         "Here is the problem statement awaiting your confirmation:\n\n"
         f"{quoted}\n\n"
         "Confirm it to start the focused investigation, or tell me what to "
-        "change."
+        f"change.\n\n{TYPED_CONFIRMATION_LINE}"
     )
 
 
-def _investigation_confirmation_suggestions() -> list:
+def _investigation_confirmation_suggestions(case) -> list:
     """Generate DECIDE follow-up suggestions for investigation confirmation.
 
     Used when the dropdown triggers INQUIRY → INVESTIGATING and a problem
     statement already exists. One positive (confirm) and one mild negative (refine).
+
+    Both intents name the offer by the key of the statement shown,
+    ``case.inquiry.proposed_problem_statement`` (#1812): the offer IS that
+    wording, so a card from before a revision is refused rather than
+    committing the revised text.
     """
+    inquiry = getattr(case, "inquiry", None)
+    statement = (getattr(inquiry, "proposed_problem_statement", None) or "").strip()
+    offer = offer_intent_fields(
+        gate1_offer_key(statement) if statement else None, case=case, gate="gate1"
+    )
     return [
         {
             "label": "Yes, let's investigate",
             "action_type": "DECIDE",
             "payload": "Yes, that's correct. Let's investigate.",
             "body": "Confirm the problem statement and start the investigation.",
-            "intent": {"type": "confirmation", "confirmation_value": True},
+            "intent": {"type": "confirmation", "confirmation_value": True, **offer},
         },
         {
             "label": "Not quite, let me clarify",
             "action_type": "DECIDE",
             "payload": "Not quite — let me clarify the problem before we investigate.",
             "body": "Refine the problem statement before starting the investigation.",
-            "intent": {"type": "confirmation", "confirmation_value": False},
+            "intent": {"type": "confirmation", "confirmation_value": False, **offer},
         },
     ]
 

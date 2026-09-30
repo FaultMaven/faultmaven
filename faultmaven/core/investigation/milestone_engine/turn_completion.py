@@ -176,7 +176,7 @@ async def _compose_turn_reply(
             "Thanks for the additional details.\n\n"
             + _build_resolution_confirmation(case_updated),
         )
-        follow_ups = _resolution_confirmation_suggestions()
+        follow_ups = _resolution_confirmation_suggestions(case_updated)
         gate_prose_appended = True
     elif metadata.get("resolution_suggest_close"):
         # User didn't provide required info — suggest Close instead.
@@ -184,7 +184,7 @@ async def _compose_turn_reply(
             agent_response_text,
             metadata["resolution_readiness_message"],
         )
-        follow_ups = _close_confirmation_suggestions()
+        follow_ups = _close_confirmation_suggestions(case_updated)
         gate_prose_appended = True
     elif metadata.get("resolution_needs_info_first_pass"):
         # LLM proposed RESOLVED but readiness check returned NEEDS_INFO.
@@ -209,7 +209,7 @@ async def _compose_turn_reply(
             agent_response_text,
             (case_updated.pending_transition or {}).get("summary", ""),
         )
-        follow_ups = _resolution_confirmation_suggestions()
+        follow_ups = _resolution_confirmation_suggestions(case_updated)
         gate_prose_appended = True
     elif metadata.get("rca_infeasible_closure_message"):
         # Stage-gate side effect: mitigation_verified + rca_infeasible=True.

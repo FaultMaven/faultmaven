@@ -11,7 +11,11 @@ Metrics are exposed via Prometheus and gated on `ENABLE_METRICS=true` plus the `
 **Counters:**
 
 - `faultmaven_gate1_statement_composed_total` — increments each time the engine composed the standing statement into a reply because Gate 1 was serving.
-- `faultmaven_inquiry_handshake_deferred_total` — increments each time the consent guard refused a confirmation: the statement was written this turn, or REVISED this turn, so the user has not seen the wording they are confirming.
+- `faultmaven_inquiry_handshake_deferred_total{reason}` — increments each time the consent guard refused a typed confirmation, by `reason`:
+  - `same_turn` — the statement was written this turn, or REVISED this turn, so the user has not seen the wording they are confirming;
+  - `not_bare` — the LLM's `user_confirmed_investigation`, or a resolver-minted confirmation, arrived on a turn whose typed text is not one bare consent token (#1794, ruling (a)): "yes but it's the primary too", "ok, don't start yet", the Gate-1 card's own payload typed out. Gate 1 commits only on its click or on a bare consent token, so the turn commits nothing and Gate 1 stays pending. A turn whose click already committed Gate 1 is not counted, although the LLM, handed the card's payload text, usually sets the flag on it.
+
+  Both series exist from import, at 0.
 
 **Load-bearing query:**
 
@@ -330,6 +334,38 @@ The signal is the `weak_token` rate against the `explicit_token` rate, not eithe
 **#723 trigger 2 cannot occur.** A dropdown INQUIRY → INVESTIGATING is refused at engine entry since #1624 (`earned_edge_refusal`; from INQUIRY, `USER_SELECTABLE_ACTIONS` offers only CLOSED), so no counter exists for it.
 
 Matrix row: INV-03 in `investigation-invariants.md`.
+
+## Refused confirmation clicks (#1812)
+
+**Question:** how often does a user click a confirmation card for an offer that is no longer the one standing, and does any client send clicks that name no offer?
+
+Every confirmation card names the offer it presents: its intent carries `proposal_id`, the pending proposal's `proposed_at` for a terminal offer (fresh on every proposal, the INV-37 CLOSE→RESOLVE pivot included), and a digest of the statement shown for Gate 1. A click (an untyped `confirmation`, either value) executes only when it names the offer standing when it arrives. Any other click executes nothing, withdraws nothing and records nothing; the reply is "That button was for an earlier offer that's no longer open." followed by the standing offer and its card, or the line alone when nothing a click can answer is standing, with no LLM call. A typed reply is not a click: the resolver may mint an intent carrying some card's key, and the text decides it.
+
+**Counter:**
+
+- `faultmaven_confirmation_click_refused_total{gate, reason}` — one increment per refused click. `gate` is what was standing: `terminal` (a pending RESOLVED or CLOSED), `gate1` (the problem-statement confirmation) or `none`. `reason` is `stale` (the click named another offer) or `untargeted` (it named none). Every series exists from import, at 0.
+
+An `untargeted` click gets the same "earlier offer" line as a stale one: from the user's side both are a button for an offer that is not the one open now. It comes from a card rendered before the keys shipped, or from a client that builds a confirmation intent by hand instead of forwarding a suggestion's intent verbatim (Copilot's marker-rendered buttons, faultmaven-copilot#291).
+
+A refused click on Gate 1 re-shows the statement and its pair, so it also increments `faultmaven_engine_owned_affordance_served_total{gate="gate1"}` and `faultmaven_gate1_statement_composed_total` once each; INV-01's ratio above is unaffected.
+
+**Queries:**
+
+```promql
+# Clicks that named no offer, by what was standing. A sustained non-zero
+# rate after cards rendered before the change have aged out means a client
+# is not forwarding the suggestion's intent verbatim.
+sum by (gate) (increase(faultmaven_confirmation_click_refused_total{reason="untargeted"}[24h]))
+
+# Stale clicks per terminal offer answered by a click.
+sum(increase(faultmaven_confirmation_click_refused_total{gate="terminal", reason="stale"}[7d]))
+  /
+sum(increase(faultmaven_terminal_confirmation_total{via="intent"}[7d]))
+```
+
+The Gate-1 key changes whenever the model re-emits the statement with any internal edit, so a card from before the edit is refused once; a sustained `gate1`/`stale` rate is that cost, measured.
+
+Matrix row: INV-26 in `investigation-invariants.md`.
 
 ## Case duration and terminal-summary reliability (#791)
 

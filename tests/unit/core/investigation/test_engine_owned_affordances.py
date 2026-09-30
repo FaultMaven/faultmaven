@@ -28,6 +28,9 @@ from faultmaven.core.investigation.milestone_engine.affordances import (
     _insufficient_evidence_handoff_pending,
     engine_owned_affordances,
 )
+from faultmaven.core.investigation.milestone_engine.transition_consent import (
+    gate1_offer_key,
+)
 from faultmaven.core.investigation.verification_status import (
     VerificationStatus,
     assess_verification_status,
@@ -161,10 +164,14 @@ class TestEngineOwnedAffordances:
         assert gate == "gate1"
         labels = [s["label"] for s in affordances]
         assert "Yes, let's investigate" in labels
+        # Both cards name the offer: the statement shown (#1812).
+        key = gate1_offer_key(case.inquiry.proposed_problem_statement)
         assert any(
-            s["intent"] == {"type": "confirmation", "confirmation_value": True}
+            s["intent"]
+            == {"type": "confirmation", "confirmation_value": True, "proposal_id": key}
             for s in affordances
         )
+        assert all(s["intent"]["proposal_id"] == key for s in affordances)
 
     def test_override_suggestions_takes_priority(self):
         """Imperative override (set by propose_transition during turn processing)

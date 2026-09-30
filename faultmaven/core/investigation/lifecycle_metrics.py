@@ -67,13 +67,37 @@ inquiry_classified_without_statement_total = Counter(
 
 inquiry_handshake_deferred_total = Counter(
     "faultmaven_inquiry_handshake_deferred_total",
-    "INV-01: the Gate-1 consent guard refused a confirmation because the "
-    "statement had not stood, unchanged, since the turn began — the LLM "
-    "either wrote it and confirmed it in one shot, or REVISED it and "
-    "confirmed the revision the user has not seen (#1607 widened the guard "
-    "to the second shape). Gate 1 simply stays pending and the engine "
+    "INV-01: the Gate-1 consent guard refused a typed confirmation, by "
+    "reason. same_turn: the statement had not stood, unchanged, since the "
+    "turn began — the LLM either wrote it and confirmed it in one shot, or "
+    "REVISED it and confirmed the revision the user has not seen (#1607 "
+    "widened the guard to the second shape). not_bare: the LLM's "
+    "user_confirmed_investigation, or a resolver-minted confirmation, arrived "
+    "on a turn whose typed text is not one bare consent token, so it commits "
+    "nothing (#1794). Either way Gate 1 simply stays pending and the engine "
     "composes the statement into the next turn, so there is no separate "
     "recovery path and no recovery counter to divide by.",
+    ["reason"],
+)
+
+
+# Stale-click telemetry (#1812, ruling (a)). A confirmation card names the
+# offer it presents (``proposal_id``), and a click executes only when it names
+# the offer standing when it arrives. Every other click executes nothing,
+# withdraws nothing and records nothing; the reply says the button was for an
+# earlier offer and re-shows the standing one. ``gate`` is what was standing:
+# ``terminal`` (a pending RESOLVED/CLOSED), ``gate1`` (the problem-statement
+# confirmation) or ``none`` (nothing a click can answer). ``reason`` is
+# ``stale`` (the click named another offer) or ``untargeted`` (it named none:
+# a card rendered before the keys shipped, or a client that hand-builds the
+# intent). A sustained ``untargeted`` rate means a client is not forwarding a
+# suggestion's intent verbatim.
+confirmation_click_refused_total = Counter(
+    "faultmaven_confirmation_click_refused_total",
+    "Confirmation clicks refused because they did not name the offer standing "
+    "when they arrived, by gate (terminal|gate1|none) and reason "
+    "(stale|untargeted). Nothing executed, was withdrawn or was recorded.",
+    ["gate", "reason"],
 )
 
 
@@ -808,3 +832,10 @@ terminal_summary_total = Counter(
 for _summary_type in ("resolution_summary", "closure_summary"):
     for _outcome in ("generated", "empty", "failed", "skipped"):
         terminal_summary_total.labels(summary_type=_summary_type, outcome=_outcome)
+
+# The same for the two consent-refusal counters above (#1794, #1812).
+for _reason in ("same_turn", "not_bare"):
+    inquiry_handshake_deferred_total.labels(reason=_reason)
+for _gate in ("terminal", "gate1", "none"):
+    for _refusal in ("stale", "untargeted"):
+        confirmation_click_refused_total.labels(gate=_gate, reason=_refusal)

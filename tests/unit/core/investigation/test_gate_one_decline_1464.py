@@ -50,6 +50,10 @@ from faultmaven.core.investigation.milestone_engine.cause_state import (
     _investigation_confirmation_suggestions,
 )
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.transition_consent import (
+    gate1_offer_key,
+    terminal_offer_key,
+)
 from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
@@ -69,10 +73,6 @@ from faultmaven.modules.case.contracts import Case, CaseState, InquiryData
 PROPOSED = "Read replica db-2 is lagging behind the primary by >30s since 09:00 UTC"
 REFINED = "Read replica db-2 serves stale rows to the checkout API since 09:00 UTC"
 
-#: The canned payload behind "Not quite, let me clarify".
-DECLINE_PAYLOAD = _investigation_confirmation_suggestions()[1]["payload"]
-#: The canned payload behind "Yes, let's investigate".
-CONFIRM_PAYLOAD = _investigation_confirmation_suggestions()[0]["payload"]
 #: A decline carrying substance — long enough, and a question. 0b routes it
 #: through its substantive-decline arm rather than the canned-acknowledgment
 #: one, so the turn reaches 0c. fm#918 measured the exposure on this message.
@@ -133,6 +133,20 @@ def _inquiry_case_awaiting_gate_one() -> Case:
     return case
 
 
+#: The Gate-1 pair as the engine offers it on the statement above.
+_GATE1_PAIR = _investigation_confirmation_suggestions(_inquiry_case_awaiting_gate_one())
+#: The canned payload behind "Not quite, let me clarify".
+DECLINE_PAYLOAD = _GATE1_PAIR[1]["payload"]
+#: The canned payload behind "Yes, let's investigate".
+CONFIRM_PAYLOAD = _GATE1_PAIR[0]["payload"]
+
+
+def _gate1_click(value, statement: str = PROPOSED) -> dict:
+    """``intent_data`` for a click on the Gate-1 card presenting ``statement``:
+    it names that offer (#1812), as the engine-built card does."""
+    return {"value": value, "proposal_id": gate1_offer_key(statement)}
+
+
 def _repo(case):
     repo = MagicMock()
     repo.get = AsyncMock(return_value=case)
@@ -153,15 +167,13 @@ async def _decide_click(case: Case, confirmation_value: bool, payload_text: str)
     handed to the engine directly. Only the LLM provider is a double.
     """
     svc = InvestigationService(_engine(case), _repo(case))
+    # The card's own intent, forwarded verbatim as clients do: it names the
+    # offer it presents (#1812).
+    card = _GATE1_PAIR[0 if confirmation_value else 1]
     return await svc.process_turn(
         case_id=case.case_id,
         user_id=case.user_id,
-        payload=TurnPayload(
-            query=payload_text,
-            intent=QueryIntent(
-                type=IntentType.CONFIRMATION, confirmation_value=confirmation_value
-            ),
-        ),
+        payload=TurnPayload(query=payload_text, intent=QueryIntent(**card["intent"])),
     )
 
 
@@ -211,7 +223,8 @@ class TestGateOneCommitsOnConsentOnly:
             case=case,
             user_message="hmm",
             intent_type="confirmation",
-            intent_data={},
+            # Names the standing offer, so the value rule is what decides.
+            intent_data={"proposal_id": gate1_offer_key(PROPOSED)},
         )
         _assert_gate_one_uncommitted(case)
 
@@ -234,7 +247,7 @@ class TestGateOneCommitsOnConsentOnly:
             case=case,
             user_message=DECLINE_PAYLOAD,
             intent_type="confirmation",
-            intent_data={"value": False},
+            intent_data=_gate1_click(False),
         )
 
         assert llm.calls > 0, "the decline never reached the LLM — it was a no-op turn"
@@ -254,7 +267,11 @@ class TestGateOneCommitsOnConsentOnly:
         "pending",
         [
             None,
-            {"to_state": "closed", "summary": "close it?"},
+            {
+                "to_state": "closed",
+                "summary": "close it?",
+                "proposed_at": "2026-09-30T00:00:00+00:00",
+            },
             {"needs_info": True, "to_state": "closed"},
         ],
         ids=["no-pending", "pending-close", "pending-needs-info"],
@@ -279,11 +296,19 @@ class TestGateOneCommitsOnConsentOnly:
         case = _inquiry_case_awaiting_gate_one()
         case.pending_transition = dict(pending) if pending else None
         engine = _engine(case)
+        # The Not-yet card of the offer that is standing (#1812): the pending
+        # close's own card where 0b answers it, Gate 1's where 0c does. A
+        # needs_info pending is not click-answerable, and 0c reads Gate 1.
+        answerable = pending if pending and not pending.get("needs_info") else None
         await engine.process_turn(
             case=case,
             user_message=SUBSTANTIVE_DECLINE,
             intent_type="confirmation",
-            intent_data={"value": False},
+            intent_data=(
+                {"value": False, "proposal_id": terminal_offer_key(answerable)}
+                if answerable
+                else _gate1_click(False)
+            ),
         )
         _assert_gate_one_uncommitted(case)
 
@@ -313,6 +338,8 @@ class TestGateOneCommitsOnConsentOnly:
             user_message="not quite - is the problem statement about the replica or the primary?",
             intent_type="confirmation",
             intent_data={"value": False},
+            # ADOPTED from typed text: a mint, not a click.
+            typed=True,
         )
         _assert_gate_one_uncommitted(case)
 

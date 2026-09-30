@@ -1,7 +1,13 @@
-"""The pending-transition confirm/decline turns and the explicit status_transition intent to 'closed'."""
+"""The pending-transition confirm/decline turns, the refused confirmation click, and the explicit status_transition intent to 'closed'."""
 
 import logging
+from typing import Optional
 
+from faultmaven.core.investigation.lifecycle_metrics import (
+    confirmation_click_refused_total,
+    engine_owned_affordance_served_total,
+    gate1_statement_composed_total,
+)
 from faultmaven.core.investigation.milestone_engine.regeneration import (
     _remaining_regens_for,
 )
@@ -10,6 +16,10 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
 )
 from faultmaven.modules.case.contracts import CaseState
 
+from .cause_state import (
+    _gate1_statement_presentation,
+    _investigation_confirmation_suggestions,
+)
 from .progress import confirmed_transition_arms
 from .stage_gates import _close_confirmation_suggestions
 from .terminal_replies import (
@@ -17,8 +27,15 @@ from .terminal_replies import (
     _resolution_confirmation_suggestions,
     _select_ack_follow_ups,
 )
+from .transition_consent import TYPED_CONFIRMATION_LINE, OfferRefusal
 
 logger = logging.getLogger(__name__)
+
+#: The first line of the reply to a confirmation click that names no standing
+#: offer (#1812, ruling (a)). Also the reply to a click that named no offer at
+#: all (``untargeted``): from the user's side both are a button for an offer
+#: that is not the one open now.
+STALE_OFFER_LINE = "That button was for an earlier offer that's no longer open."
 
 
 async def _confirm_pending_transition(
@@ -73,7 +90,7 @@ async def _confirm_pending_transition(
         await repository.save(case)
         return {
             "agent_response": resolve_msg,
-            "suggested_follow_ups": (_resolution_confirmation_suggestions()),
+            "suggested_follow_ups": _resolution_confirmation_suggestions(case),
             "case_updated": case,
             "metadata": turn_metadata,
         }
@@ -145,6 +162,25 @@ async def _decline_bare_reply(repository, *, case, upload_report, user_message):
     }
 
 
+def _pending_transition_reask(case) -> tuple[str, list]:
+    """The standing terminal offer's re-ask text and its confirmation pair.
+
+    The pair names the offer by its current key (#1812). The last paragraph
+    says what a typed confirmation must look like (#1814, ruling (b)), since a
+    typed reply executes only when it is one bare consent token (#1783).
+    """
+    to_state = case.pending_transition.get("to_state", "resolved")
+    summary = case.pending_transition.get("summary", "")
+
+    ask = f"Please select one of the options above to continue.\n\n{TYPED_CONFIRMATION_LINE}"
+    agent_response = ask if not summary else f"{summary}\n\n{ask}"
+    if to_state == "resolved":
+        follow_ups = _resolution_confirmation_suggestions(case)
+    else:
+        follow_ups = _close_confirmation_suggestions(case)
+    return agent_response, follow_ups
+
+
 async def _represent_pending_transition(
     repository, *, case, upload_report, user_message
 ):
@@ -153,18 +189,7 @@ async def _represent_pending_transition(
     Every time it is asked for, and recording nothing: a re-ask is never a
     refusal and never withdraws the proposal (#1783, ruling (a)).
     """
-    to_state = case.pending_transition.get("to_state", "resolved")
-    summary = case.pending_transition.get("summary", "")
-
-    agent_response = (
-        "Please select one of the options above to continue."
-        if not summary
-        else f"{summary}\n\nPlease select one of the options above to continue."
-    )
-    if to_state == "resolved":
-        follow_ups = _resolution_confirmation_suggestions()
-    else:
-        follow_ups = _close_confirmation_suggestions()
+    agent_response, follow_ups = _pending_transition_reask(case)
 
     turn_metadata = _finish_deterministic_turn(
         case,
@@ -174,6 +199,78 @@ async def _represent_pending_transition(
         progress_made=False,
     )
     await repository.save(case)
+
+    return {
+        "agent_response": agent_response,
+        "suggested_follow_ups": follow_ups,
+        "case_updated": case,
+        "metadata": turn_metadata,
+    }
+
+
+async def _refuse_offer_click(
+    repository,
+    *,
+    case,
+    upload_report,
+    user_message,
+    standing: Optional[str],
+    reason: OfferRefusal,
+):
+    """Refuse a confirmation click that does not name the offer standing now (#1812).
+
+    Nothing executes, nothing is withdrawn and no refusal is recorded. The
+    reply is ``STALE_OFFER_LINE`` and then the standing offer again, exactly as
+    the gate re-asks any non-answer: ``standing="terminal"`` re-shows the
+    pending transition with its pair, ``"gate1"`` re-shows the problem
+    statement with its pair, and ``None`` (nothing a click can answer is
+    standing) is the line alone. No LLM call on any of them.
+    """
+    follow_ups: list = []
+    agent_response = STALE_OFFER_LINE
+    presented_statement: Optional[str] = None
+    if standing == "terminal":
+        reask, follow_ups = _pending_transition_reask(case)
+        agent_response = f"{STALE_OFFER_LINE}\n\n{reask}"
+    elif standing == "gate1":
+        presented_statement = (case.inquiry.proposed_problem_statement or "").strip()
+        agent_response = f"{STALE_OFFER_LINE}\n\n{_gate1_statement_presentation(case)}"
+        follow_ups = _investigation_confirmation_suggestions(case)
+
+    confirmation_click_refused_total.labels(
+        gate=standing or "none", reason=reason
+    ).inc()
+    logger.info(
+        "confirmation_click_refused",
+        extra={
+            "case_id": case.case_id,
+            "turn": case.current_turn,
+            "gate": standing or "none",
+            "reason": reason,
+        },
+    )
+
+    turn_metadata = _finish_deterministic_turn(
+        case,
+        user_message or "",
+        agent_response,
+        upload_report,
+        progress_made=False,
+    )
+    await repository.save(case)
+
+    if standing == "gate1":
+        # INV-01's pair, one for one, as ``_compose_turn_reply`` counts a
+        # Gate-1 turn: the affordance served, and the statement verified in
+        # the text actually returned.
+        engine_owned_affordance_served_total.labels(gate="gate1").inc()
+        if presented_statement and presented_statement in agent_response:
+            gate1_statement_composed_total.inc()
+        else:
+            logger.error(
+                "gate1_statement_missing_from_reply",
+                extra={"case_id": case.case_id, "turn": case.current_turn},
+            )
 
     return {
         "agent_response": agent_response,
@@ -230,7 +327,7 @@ async def _close_on_explicit_intent(
         await repository.save(case)
         return {
             "agent_response": closure.message,
-            "suggested_follow_ups": _resolution_confirmation_suggestions(),
+            "suggested_follow_ups": _resolution_confirmation_suggestions(case),
             "case_updated": case,
             "metadata": turn_metadata,
         }
@@ -260,7 +357,7 @@ async def _close_on_explicit_intent(
     await repository.save(case)
     return {
         "agent_response": closure.message,
-        "suggested_follow_ups": _close_confirmation_suggestions(),
+        "suggested_follow_ups": _close_confirmation_suggestions(case),
         "case_updated": case,
         "metadata": turn_metadata,
     }

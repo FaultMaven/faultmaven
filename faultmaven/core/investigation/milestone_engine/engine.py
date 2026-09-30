@@ -11,6 +11,9 @@ logger = logging.getLogger(__name__)
 
 
 from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
+from faultmaven.core.investigation.lifecycle_metrics import (
+    inquiry_handshake_deferred_total,
+)
 from faultmaven.core.investigation.llm_error_handler import LLMErrorHandler
 from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.errors import MilestoneEngineError
@@ -31,12 +34,18 @@ from faultmaven.core.investigation.milestone_engine.terminal_turns import (
     TerminalTurnHandler,
 )
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
+    _consent_prefix,
+    gate1_bare_consent,
+    gate1_offer_key,
+    offer_click_refusal,
     pending_gate_verdict,
+    terminal_offer_key,
 )
 from faultmaven.core.investigation.milestone_engine.transition_turns import (
     _close_on_explicit_intent,
     _confirm_pending_transition,
     _decline_bare_reply,
+    _refuse_offer_click,
     _represent_pending_transition,
 )
 from faultmaven.core.investigation.milestone_engine.transitions import TransitionManager
@@ -80,7 +89,7 @@ from faultmaven.modules.case.domain.services.case_action_manager import (
 from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.knowledge.contracts import IKnowledgeService
 
-from .affordances import gate1_statement_is_confirmable
+from .affordances import _gate1_is_pending, gate1_statement_is_confirmable
 from .response_synthesis import (
     _DISPOSITION_GATE_ANSWERED_KEY,
     _note_engine_disposition_withdrawn,
@@ -546,6 +555,12 @@ class MilestoneEngine:
                     case, user_message, metadata, user_id=user_id
                 )
 
+            # Set when section 0b answered this turn's confirmation click: it
+            # named the standing offer, and the gate executed or declined it. A
+            # declined click whose payload is substantive falls through to 0c
+            # with no offer left standing, and 0c must not refuse it there.
+            click_answered_by_gate = False
+
             # 0b. Pending transition confirmation — short-circuit before LLM
             # When a pending transition exists (User-Agent Handshake), check if
             # the user is confirming or declining BEFORE calling the LLM. This
@@ -554,7 +569,9 @@ class MilestoneEngine:
             #
             # Two detection paths (checked in order):
             # 1. Intent-based: DECIDE suggestion clicks carry
-            #    intent_type="confirmation" + confirmation_value — deterministic
+            #    intent_type="confirmation" + confirmation_value — deterministic,
+            #    and the offer the card presents (``proposal_id``). A click
+            #    naming any other offer is refused before the verdict (#1812).
             # 2. Pattern-based: fallback for users who type instead of clicking.
             #    Only a BARE consent token executes (#1783); a longer typed
             #    reply is re-asked.
@@ -635,6 +652,26 @@ class MilestoneEngine:
                         if intent_confirms or status_transition_confirms
                         else False if intent_declines else None
                     )
+                    # A CLICK answers only the offer it names (#1812, ruling
+                    # (a)). One that names another offer, or none, executes
+                    # nothing, withdraws nothing and records nothing: the reply
+                    # says so and re-shows the standing offer. A minted intent
+                    # (``typed``) is not a click, so the text decides and the
+                    # key is not consulted.
+                    if (intent_confirms or intent_declines) and not typed:
+                        refusal = offer_click_refusal(
+                            intent_data, terminal_offer_key(case.pending_transition)
+                        )
+                        if refusal is not None:
+                            return await _refuse_offer_click(
+                                self.deps.repository,
+                                case=case,
+                                upload_report=upload_report,
+                                user_message=user_message,
+                                standing="terminal",
+                                reason=refusal,
+                            )
+                        click_answered_by_gate = True
                     # One verdict from the text and the intent together
                     # (#1783, ruling (a)). A terminal proposal executes only
                     # on its click or on a BARE typed consent token; an
@@ -733,7 +770,15 @@ class MilestoneEngine:
                             # otherwise re-take the affordances on this very
                             # turn (fm#1122). An upload is not a refusal: it
                             # is withdrawn and recorded only by the text rule.
-                            if text_escapes and "?" not in stripped_message:
+                            # A reply that OPENS with consent is not a
+                            # deflection either (#1808): "Yes, go ahead and
+                            # close it. We verified …" is withdrawn and
+                            # processed, and the offer may come back.
+                            if (
+                                text_escapes
+                                and "?" not in stripped_message
+                                and not _consent_prefix(stripped_message)
+                            ):
                                 _record_deferred_disposition_decline(case)
                             _note_engine_disposition_withdrawn(case, metadata)
                             cancel_pending_transition(case)
@@ -850,6 +895,36 @@ class MilestoneEngine:
                     f"{bool(case.inquiry.proposed_problem_statement)})"
                 )
 
+                # A CLICK answers only the offer it names (#1812, ruling (a)).
+                # Not one 0b answered (``click_answered_by_gate``), and not on a
+                # standing ``needs_info`` pending, which 0b skips and which
+                # falls through to the LLM as it always did. Otherwise the only
+                # offer a click can answer here is Gate 1; with Gate 1 not
+                # pending, nothing a click can answer is standing.
+                if (
+                    not typed
+                    and not click_answered_by_gate
+                    and not (case.pending_transition or {}).get("needs_info")
+                ):
+                    gate1_standing = _gate1_is_pending(case)
+                    refusal = offer_click_refusal(
+                        intent_data,
+                        (
+                            gate1_offer_key(case.inquiry.proposed_problem_statement)
+                            if gate1_standing
+                            else None
+                        ),
+                    )
+                    if refusal is not None:
+                        return await _refuse_offer_click(
+                            self.deps.repository,
+                            case=case,
+                            upload_report=upload_report,
+                            user_message=user_message,
+                            standing="gate1" if gate1_standing else None,
+                            reason=refusal,
+                        )
+
                 if case.state != CaseState.INQUIRY:
                     logger.warning(
                         f"Received confirmation intent for case {case.case_id} but status is {case.state.value}"
@@ -896,6 +971,18 @@ class MilestoneEngine:
                             f"value ({confirmation_value!r}) — Gate 1 not committed. "
                             f"Only an explicit True is consent"
                         )
+                elif typed and not gate1_bare_consent(user_message):
+                    # A MINTED confirmation commits Gate 1 only on a bare
+                    # consent token (#1794, ruling (a)), the same screen as
+                    # the LLM's flag and the adoption guard. Nothing commits;
+                    # the turn is processed normally, Gate 1 stays pending and
+                    # the engine composes its card (#1607).
+                    inquiry_handshake_deferred_total.labels(reason="not_bare").inc()
+                    logger.info(
+                        f"Case {case.case_id}: minted Gate 1 confirmation on "
+                        f"text that is not one bare consent token — not "
+                        f"committed, processing the message normally"
+                    )
                 else:
                     # Gate 1 commit (problem-statement confirmation). There is
                     # no path fork (redesign R5) — the investigation proceeds

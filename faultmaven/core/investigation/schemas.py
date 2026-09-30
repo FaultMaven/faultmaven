@@ -1766,7 +1766,13 @@ class InquiryResponse(BaseInteractionResponse):
                 "corrects the statement; the user asks a diagnostic or follow-up "
                 "question or provides more data WITHOUT directing you to proceed "
                 "(answer it and stay in INQUIRY — engagement is not confirmation); "
-                "or the message is unrelated."
+                "or the message is unrelated. This is an honest reading of the "
+                "user's intent: the engine commits the confirmation only on the "
+                "Yes click or when the user's whole reply is one bare consent "
+                "word ('yes', 'ok', 'correct'). On any longer confirmation set it "
+                "honestly anyway, but do not narrate or act as if the "
+                "investigation has started — the statement stays awaiting "
+                "confirmation."
             ),
         )
         proposed_transition: Optional[ProposedTransition] = Field(

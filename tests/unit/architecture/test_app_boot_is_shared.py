@@ -60,7 +60,8 @@ CENSUS_COMMAND = 'grep -rn "with TestClient(" tests/ --include=*.py'
 #: ``client_cm = TestClient(...)`` then ``with client_cm``; that one is now
 #: written as ``with TestClient(...)``, so the grep counts it. fm#1647 added two
 #: (one real, one in a child-process string literal), both boot-refusal tests.
-EXPECTED_TOTAL_SITES = 42
+#: #1812 added one scratch site (the turns route mounted for its K13).
+EXPECTED_TOTAL_SITES = 43
 
 #: Of those, the ones that enter the real application's lifespan. Was 25.
 EXPECTED_REAL_APP_SITES = 9
@@ -126,6 +127,11 @@ EXPECTED: dict[str, dict[str, tuple[str, int]]] = {
         "test_health_reports_no_component_figure_it_did_not_measure": ("real", 1),
     },
     # -- drives an app the test built itself --------------------------------
+    "tests/integration/api/test_turns_route_carries_the_offer_key_1812.py": {
+        # #1812's K13: the case router mounted on a FastAPI() built in the
+        # fixture, with the real investigation service behind it.
+        "mounted": ("scratch", 1),
+    },
     "tests/integration/api/test_no_unauthenticated_operations.py": {
         "test_a_gate_declared_after_a_service_parameter_is_not_a_gate": ("scratch", 1),
         # NOT faultmaven.main.app: a fresh application rebuilt by

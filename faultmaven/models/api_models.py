@@ -967,6 +967,14 @@ class QueryIntent(BaseModel):
     confirmation_value: Optional[bool] = Field(
         default=None, description="For confirmation: yes/no value"
     )
+    proposal_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "For confirmation: the offer this answer is for, as the card that "
+            "carried it names it. A confirmation click is executed only when it "
+            "names the offer standing when it arrives."
+        ),
+    )
     file_id: Optional[str] = Field(
         default=None,
         description=(
