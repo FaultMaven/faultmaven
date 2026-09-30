@@ -74,6 +74,6 @@ def test_test_dependencies_include_code_quality():
     ]
 
     # Code quality tools should be in test dependencies for CI
-    code_quality_tools = ["black", "isort", "flake8"]
+    code_quality_tools = ["black", "ruff", "flake8"]
     for tool in code_quality_tools:
         assert tool in dep_names, f"Missing code quality tool in test deps: {tool}"

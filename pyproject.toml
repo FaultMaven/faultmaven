@@ -224,7 +224,6 @@ test = [
 
     # Code quality (for CI checks)
     "black==26.3.1",  # Pinned for consistent formatting across environments
-    "isort==5.13.2",   # Pinned for consistent import sorting across environments
     "ruff==0.9.10",    # Pinned — CI env-check gates on this exact version in the lockfile
     # Installed, but NOT configured and NOT invoked: ruff replaced flake8 here in
     # #179, and no CI job, pre-commit hook or script runs it. There is deliberately
@@ -247,7 +246,6 @@ dev = [
     # Code quality and formatting
     "ruff==0.9.10",             # Fast Python linter and formatter (pinned to match CI)
     "black==26.3.1",           # Code formatter (pinned to match CI)
-    "isort==5.13.2",            # Import sorting (pinned to match CI)
     "mypy>=1.8.0",              # Type checking
 
     # Pre-commit hooks
@@ -445,10 +443,6 @@ ignore = [
 line-length = 88
 target-version = ["py311"]
 include = '\.pyi?$'
-
-[tool.isort]
-profile = "black"
-line_length = 88
 
 [tool.mypy]
 python_version = "3.11"
