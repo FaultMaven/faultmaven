@@ -192,14 +192,25 @@ class MitigationRecord(BaseModel):
 
 class InvestigationProgress(BaseModel):
     """
-    Evidence-driven progress tracking with two distinct milestone types:
+    Evidence-driven progress tracking with three kinds of state, each under
+    its own banner below (investigation-data-models.md §1.2):
 
-    1. STAGE-GATE MILESTONES (4): Drive stage transitions.
-       Set by the LLM in structured output when it detects user compliance
-       with a ProposedAction (Framework §4.1). The LLM is the compliance
-       detector — the user's action is the trigger; the LLM recognizes it.
-    2. PROGRESS INDICATORS (6): Provide LLM context and analytics.
-       Set by LLM in structured output. Do NOT drive stage transitions.
+    1. ACTION-COMPLIANCE GATES (the STAGE-GATE MILESTONES banner:
+       ``mitigation``, ``solution_accepted``, ``solution_verified``). Drive the
+       derived stage label and the resolution handshake. Materialized from the
+       LLM's compliance signals (Framework §4.1): the user's action is the
+       trigger; the LLM recognizes it. The mitigation gate is a single record,
+       not booleans.
+    2. PROGRESS INDICATORS (``symptom_verified``, ``solution_proposed``).
+       Provide LLM context and analytics. Non-driving. ``symptom_verified`` is
+       set by the LLM in structured output; ``solution_proposed`` is
+       engine-derived from the standing SOLUTION proposal.
+    3. ASSESSMENT VARIABLES (engine-derived: ``cause_state``,
+       ``verification_status``, ``cause_assurance`` and the rest of that
+       section). Truth signals the engine recomputes every turn. NEVER
+       path-stripped. Drive whether the diagnostic machinery runs.
+
+    Root-cause metadata and milestone completion timestamps follow them.
     """
 
     # ============================================================
@@ -235,7 +246,8 @@ class InvestigationProgress(BaseModel):
 
     # ============================================================
     # PROGRESS INDICATORS (LLM context, non-stage-driving)
-    # Set by LLM in structured output. Advisory, not controlling.
+    # Advisory, not controlling. symptom_verified is set by the LLM in
+    # structured output; solution_proposed is engine-derived (see its field).
     # ============================================================
     symptom_verified: bool = Field(
         default=False,
