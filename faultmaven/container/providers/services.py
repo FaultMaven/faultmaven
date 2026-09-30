@@ -150,7 +150,6 @@ def create_milestone_engine(
             da_model=da_model,
             sanitizer=sanitizer,
             redis_client=redis_client,
-            trace_enabled=True,
             runbook_kb=runbook_kb,
             knowledge_service=knowledge_service,
             report_service=report_service,

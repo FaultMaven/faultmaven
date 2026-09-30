@@ -936,58 +936,6 @@ class InvestigationService:
             )
         return attachment_metadata, intent_type, oob_kind, result
 
-    @trace("investigation_service_get_progress")
-    async def get_progress(self, case_id: str, user_id: str) -> Dict[str, Any]:
-        """
-        Get current investigation progress.
-
-        Args:
-            case_id: Case identifier
-            user_id: User making the request
-
-        Returns:
-            Progress summary with:
-            - case_id, status, current_stage
-            - milestones_completed, pending_milestones
-            - current_turn
-
-        Raises:
-            NotFoundError: If case not found
-            PermissionDeniedException: If user not authorized
-        """
-        try:
-            # Retrieve case
-            case = await self.repository.get(case_id)
-            if not case:
-                raise NotFoundError("Case", case_id)
-
-            # Check permissions
-            if case.user_id != user_id:
-                logger.warning(
-                    f"User {user_id} denied access to case {case_id} (owner: {case.user_id})"
-                )
-                raise PermissionDeniedException(
-                    f"User {user_id} not authorized for case {case_id}"
-                )
-
-            # Return progress summary
-            return {
-                "case_id": case.case_id,
-                "state": case.state.value,
-                "current_stage": (
-                    case.current_stage.value if case.current_stage else None
-                ),
-                "milestones_completed": case.progress.completed_milestones,
-                "pending_milestones": case.progress.pending_milestones,
-                "current_turn": case.current_turn,
-            }
-
-        except (NotFoundError, PermissionDeniedException):
-            raise
-        except Exception as e:
-            logger.error(f"Failed to get progress for case {case_id}: {e}")
-            raise ServiceException(f"Progress retrieval failed: {str(e)}") from e
-
     # ============================================================
     # Attachment Preprocessing
     # ============================================================
