@@ -672,7 +672,8 @@ def clean_test_environment():
 # The declaration is enforced at runtime, by object identity, by the
 # ``TestClient.__enter__`` guard below (fm#1628): in a module that borrows the
 # shared boot, a test that enters ``faultmaven.main.app`` without taking
-# ``unshared_app_boot`` fails at the moment it enters.
+# ``unshared_app_boot`` fails at the moment it enters, and so does any entry
+# made from a fixture scoped wider than one test.
 # ``tests/unit/architecture/test_app_boot_is_shared.py`` holds the census, which
 # is the boot BUDGET: it fails on an unlisted site, but it no longer decides
 # whether a site is safe.
@@ -800,6 +801,19 @@ def unshared_app_boot(_real_app_boot):
 # before its module's first borrower fails exactly as one placed after it, and
 # every xdist worker collects the whole session, so a test sent to a different
 # worker from its module's borrowers fails too.
+#
+# Two more rules close what that one cannot see:
+#   * No lifespan on the real app outside a test's function scope. The running
+#     test is recorded by a function-scoped fixture, so a fixture scoped wider
+#     than one test is set up before it and would read no context. Such a
+#     fixture cannot take the function-scoped ``unshared_app_boot`` either, and
+#     its lifespan outlives the test that set it up (a session-scoped one
+#     outlives its module), so an entry with no test context recorded fails,
+#     whatever the module. Only the shared broker opens a lifespan from a
+#     wider scope, and it is exempt by its mark.
+#   * A test takes ``booted_app_client`` or ``unshared_app_boot``, never both.
+#     One borrows the shared boot and the other stands it down, so whether
+#     their lifespans overlap would depend on fixture order.
 
 import functools  # noqa: E402 - kept beside the guard that uses it
 import textwrap  # noqa: E402
@@ -815,7 +829,11 @@ APP_BOOT_GUIDANCE = textwrap.dedent("""
       * a test whose SUBJECT is the lifespan (a boot under a patched
         environment, or one asserted to refuse) keeps its own TestClient
         context AND takes the `unshared_app_boot` fixture, which stands the
-        module's shared boot down first;
+        module's shared boot down first, and does not also take
+        `booted_app_client`;
+      * a boot of faultmaven.main.app happens inside a test or a
+        function-scoped fixture. Only the shared boot is opened from a
+        fixture scoped wider than one test;
       * every TestClient context is listed in EXPECTED in
         tests/unit/architecture/test_app_boot_is_shared.py, the boot budget:
         "real" with the reason if it boots faultmaven.main.app, "scratch" if
@@ -857,15 +875,27 @@ def _install_app_boot_guard() -> SimpleNamespace:
             main is not None
             and self.app is getattr(main, "app", None)
             and not getattr(self, "_fm_shared_boot", False)
-            and context.borrows
-            and not context.declares_unshared
         ):
-            pytest.fail(
-                f"{context.test} enters the lifespan of faultmaven.main.app in "
-                "a module that borrows the shared boot (`booted_app_client`), "
-                "without taking `unshared_app_boot`.\n" + APP_BOOT_GUIDANCE,
-                pytrace=False,
-            )
+            if context.test is None:
+                during = os.environ.get("PYTEST_CURRENT_TEST")
+                pytest.fail(
+                    "the lifespan of faultmaven.main.app is entered outside any "
+                    "test's function scope"
+                    + (f" (during {during})" if during else "")
+                    + ": by a fixture scoped wider than one test, or at import. "
+                    "Only the shared boot is opened from there; a wider-scoped "
+                    "fixture cannot take `unshared_app_boot`, and its lifespan "
+                    "would outlive the test that set it up.\n" + APP_BOOT_GUIDANCE,
+                    pytrace=False,
+                )
+            if context.borrows and not context.declares_unshared:
+                pytest.fail(
+                    f"{context.test} enters the lifespan of faultmaven.main.app "
+                    "in a module that borrows the shared boot "
+                    "(`booted_app_client`), without taking `unshared_app_boot`.\n"
+                    + APP_BOOT_GUIDANCE,
+                    pytrace=False,
+                )
         return enter(self)
 
     guarded_enter._fm_app_boot_context = context
@@ -902,7 +932,18 @@ def _app_boot_guard(request):
     A fixture rather than a collection hook, so that a directory carrying its
     own ``pytest.ini`` gets the guard by the same re-export that gives it the
     shared boot (``tests/integration/conftest.py``).
+
+    Also refuses, at setup, a test that requests both ``booted_app_client``
+    and ``unshared_app_boot``. It is autouse, so it is set up before either.
     """
+    if {"booted_app_client", "unshared_app_boot"} <= set(request.fixturenames):
+        pytest.fail(
+            f"{request.node.nodeid} requests both `booted_app_client` and "
+            "`unshared_app_boot`. One borrows the shared boot and the other "
+            "stands it down, so whether their lifespans overlap would depend "
+            "on fixture order.\n" + APP_BOOT_GUIDANCE,
+            pytrace=False,
+        )
     module = getattr(request.node, "module", None)
     context = _APP_BOOT_CONTEXT
     context.test = request.node.nodeid

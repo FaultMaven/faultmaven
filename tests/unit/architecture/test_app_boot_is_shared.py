@@ -36,8 +36,10 @@ database engine the first client is still serving from. That rule is enforced
 at runtime, by object identity, in ``tests/conftest.py``: the wrapped
 ``TestClient.__enter__`` compares the client's application with
 ``faultmaven.main.app`` itself, whatever name, alias or entry form reached it
-(fm#1628). It used to be checked here, by the resolver below, and it is not any
-more.
+(fm#1628). The same guard refuses a real-app lifespan opened from a fixture
+scoped wider than one test (only the shared boot is), and a test that takes
+both ``booted_app_client`` and ``unshared_app_boot``. The rule used to be
+checked here, by the resolver below, and it is not any more.
 
 The budget still tells real from scratch that way, by matching the argument's
 TEXT against the module's aliases for the app, and text is not scope. Its two
@@ -74,14 +76,15 @@ CENSUS_COMMAND = 'grep -rn "with TestClient(" tests/ --include=*.py'
 #: ``client_cm = TestClient(...)`` then ``with client_cm``; that one is now
 #: written as ``with TestClient(...)``, so the grep counts it. fm#1647 added two
 #: (one real, one in a child-process string literal), both boot-refusal tests.
-#: fm#1628 added five, the controls of the runtime guard in ``tests/conftest.py``.
-EXPECTED_TOTAL_SITES = 47
+#: fm#1628 added seven, the controls of the runtime guard in ``tests/conftest.py``:
+#: six in code and one in a child-process string literal.
+EXPECTED_TOTAL_SITES = 49
 
 #: Of those, the ones the resolver reads as entering the real application's
-#: lifespan. Was 25. fm#1628's controls added five; two of them are boots the
+#: lifespan. Was 25. fm#1628's controls added six; three of them are boots the
 #: suite pays, and three are not (two are caught before the lifespan starts, and
 #: one is the scratch app the resolver misreads as real, the known residual).
-EXPECTED_REAL_APP_SITES = 14
+EXPECTED_REAL_APP_SITES = 15
 
 #: Sites that call ``TestClient.__enter__`` by hand rather than through a
 #: ``with``, which a scan for ``with`` statements cannot see, so
@@ -175,6 +178,9 @@ EXPECTED: dict[str, dict[str, tuple[str, int]]] = {
         # A real boot in a module that never borrows the shared boot: it needs
         # no declaration, so the guard lets it through, and it is paid.
         "test_a_module_that_never_borrows_may_boot_the_real_app": ("real", 1),
+        # The same from a function-scoped fixture, which is set up inside the
+        # test's scope: let through, and paid.
+        "function_scoped_real_boot": ("real", 1),
     },
     # -- drives an app the test built itself --------------------------------
     "tests/integration/api/test_no_unauthenticated_operations.py": {
@@ -290,6 +296,11 @@ EXPECTED_SITES_IN_STRING_LITERALS = {
     # in-memory DATABASE_URL before anything is written, plus its positive
     # control on a file URL.
     "tests/integration/test_boot_refuses_nonpersistent_database.py": 1,
+    # fm#1628's child-suite source for the runtime guard's setup-time refusals:
+    # a module-scoped fixture entering the real app, run under pytester in a
+    # child process and refused before the lifespan starts. Shared by two
+    # controls, so it is written once.
+    "tests/unit/test_app_boot_runtime_guard_setup_errors.py": 1,
 }
 
 #: The mirror image: sites the AST walk classifies that the text census cannot
@@ -443,10 +454,10 @@ FORM_ENTER_CONTEXT = "enter_context"
 FORM_BOUND_THEN_WITH = "bound-then-with"
 
 
-def boot_sites(tree: ast.Module) -> list[tuple[ast.AST | None, str, str, int, str]]:
+def boot_sites(tree: ast.Module) -> list[tuple[str, str, int, str]]:
     """Every place a ``TestClient`` context is entered in this module.
 
-    ``(enclosing_function, qualname, "real"|"scratch", lineno, form)``. This is
+    ``(qualname, "real"|"scratch", lineno, form)``. This is
     the ONE resolver the census and the real-app count both read, so neither
     can recognise a shape the other misses. It resolves names by text, so it
     budgets boots and does not decide whether one is safe: that is checked by
@@ -501,7 +512,6 @@ def boot_sites(tree: ast.Module) -> list[tuple[ast.AST | None, str, str, int, st
                 if is_client_call(expr):
                     sites.append(
                         (
-                            enclosing(node),
                             qualname(node),
                             kind_of(expr),
                             node.lineno,
@@ -513,7 +523,6 @@ def boot_sites(tree: ast.Module) -> list[tuple[ast.AST | None, str, str, int, st
                     if call is not None:
                         sites.append(
                             (
-                                enclosing(node),
                                 qualname(node),
                                 kind_of(call),
                                 node.lineno,
@@ -529,7 +538,6 @@ def boot_sites(tree: ast.Module) -> list[tuple[ast.AST | None, str, str, int, st
         ):
             sites.append(
                 (
-                    enclosing(node),
                     qualname(node),
                     kind_of(node.args[0]),
                     node.lineno,
@@ -543,7 +551,7 @@ def scan_source(source: str) -> list[tuple[str, str, int]]:
     """``(qualname, "real"|"scratch", lineno)`` for every entered ``TestClient``."""
     return [
         (qualname, kind, lineno)
-        for _func, qualname, kind, lineno, _form in boot_sites(_parse(source))
+        for qualname, kind, lineno, _form in boot_sites(_parse(source))
     ]
 
 
