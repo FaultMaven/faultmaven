@@ -381,6 +381,37 @@ class TestTheClassifier:
         rather than as a space."""
         assert confirmation_token_class(message, to_state) is None
 
+    @pytest.mark.parametrize(
+        "message, to_state",
+        [
+            ("o\U0001f3fdk", "resolved"),
+            ("y\U0001f3fdes", "resolved"),
+            ("o\ufe0fk", "resolved"),
+            ("clo\ufe0fse it", "closed"),
+            ("ok :+\U0001f3fb1:", "resolved"),
+            ("ok :\ufe0f)", "resolved"),
+        ],
+    )
+    def test_an_emoji_modifier_inside_a_word_never_reassembles_a_token(
+        self, message, to_state
+    ):
+        """Review round 1: a skin tone or the emoji presentation selector
+        (U+FE0F) is replaced by a space like a decoration, never deleted, so
+        one inside a word or a decoration splits it."""
+        assert confirmation_token_class(message, to_state) is None
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "\U0001f44d\U0001f3fd ok",
+            "ok \U0001f44d\U0001f3fd",
+            "yes \u2714\ufe0f",
+            "\u2714\ufe0f yes",
+        ],
+    )
+    def test_an_emoji_modifier_on_a_positive_emoji_keeps_a_reply_bare(self, message):
+        assert confirmation_token_class(message, "resolved") is not None
+
     def test_the_target_map_is_pinned(self):
         assert _TARGET_SCOPED_TOKENS == OWN_TARGET
 

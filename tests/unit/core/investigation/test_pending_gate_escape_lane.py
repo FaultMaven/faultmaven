@@ -406,6 +406,87 @@ class TestWithdrawalRecordsTheEngineOffer:
         assert case.progress.deferred_disposition_declined_signatures == []
 
 
+#: One novel file on the turn, as the service hands it to the engine.
+_UPLOAD = [
+    {"file_id": "f_1", "filename": "app.log", "data_type": "log", "is_novel": True}
+]
+_SIGNATURE = "SUGGEST_CLOSE|1|chain"
+
+
+def _signed_pending_close() -> Case:
+    """A pending CLOSE carrying the signature an ENGINE proposer writes, so a
+    recorded refusal is visible and "nothing recorded" is not vacuous."""
+    case = _investigating_case_with_pending_close()
+    case.pending_transition["justifying_signature"] = _SIGNATURE
+    return case
+
+
+class TestAnUploadTurnIsNeverConsumed:
+    """Review round 1 on #1783: with the one-re-present cap gone, a turn
+    carrying an upload and a short caption was re-asked forever and the file
+    never analysed. An upload turn now always escapes the gate: the proposal
+    is withdrawn and the turn processed normally. A refusal is recorded only
+    by the text rule (a decline, or a non-answer over 40 characters with no
+    "?"), never for the upload itself."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "message, declined",
+        [
+            ("logs", []),
+            ("", []),
+            ("ok here are the logs", []),
+            ("what does this log show?", []),
+            ("no", [_SIGNATURE]),
+            (
+                "we will apply it in friday's maintenance window as planned",
+                [_SIGNATURE],
+            ),
+        ],
+    )
+    async def test_an_upload_turn_withdraws_and_reaches_the_llm(
+        self, message, declined
+    ):
+        engine = _engine()
+        case = _signed_pending_close()
+
+        with pytest.raises(MilestoneEngineError):
+            await engine.process_turn(
+                case=case, user_message=message, attachments=_UPLOAD
+            )
+
+        assert case.pending_transition is None
+        assert engine.generator.generate_structured_output.called
+        assert case.progress.deferred_disposition_declined_signatures == declined
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("message", ["hmm", "logs", "ok go ahead"])
+    async def test_the_same_text_without_an_upload_is_re_presented(self, message):
+        engine = _engine()
+        case = _signed_pending_close()
+
+        result = await engine.process_turn(case=case, user_message=message)
+
+        assert "Please select one of the options above" in result["agent_response"]
+        assert case.pending_transition is not None
+        assert not engine.generator.generate_structured_output.called
+        assert case.progress.deferred_disposition_declined_signatures == []
+
+    @pytest.mark.asyncio
+    async def test_a_bare_no_without_an_upload_is_declined_without_an_llm_call(
+        self,
+    ):
+        engine = _engine()
+        case = _signed_pending_close()
+
+        result = await engine.process_turn(case=case, user_message="no")
+
+        assert "remains open" in result["agent_response"]
+        assert case.pending_transition is None
+        assert not engine.generator.generate_structured_output.called
+        assert case.progress.deferred_disposition_declined_signatures == [_SIGNATURE]
+
+
 class TestGateAnswerMatchers:
     """Word-boundary + bare-confirmation contracts on the typed matchers."""
 

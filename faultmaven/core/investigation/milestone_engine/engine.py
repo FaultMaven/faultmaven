@@ -106,15 +106,17 @@ from .response_synthesis import (
 #   Tier 3: LLM can override with explicit specification (handles 10% edge cases)
 
 
-# On a pending-transition turn, a typed reply that matches neither the confirm
-# nor the decline patterns is either a short ambiguous answer to the gate
-# ("why?", "hm") or a message that isn't answering the gate at all — new
-# evidence, a question, an instruction to keep investigating. Above this length
-# the message is treated as the latter: the proposal is withdrawn and the
-# message is processed as a normal investigation turn, so the gate can never
-# swallow substantive input. (The confirm matcher's own 100-char guard already
-# encodes the same idea in the opposite direction: long messages are not
-# gate answers.)
+# The pending-transition gate's consumption rule (#1783, ruling (a)). Without
+# an LLM turn, it answers with the proposal's buttons, every time and never
+# recording a refusal: a consent-shaped reply that is not bare and that
+# ``is_substantive_reply`` does not call substantive (the set the gate used to
+# execute on); a reply whose text and minted intent disagree; a minted
+# confirmation on text that is not bare; and a short (at most this many
+# characters) question-free non-answer ("hm"). It NEVER consumes a turn carrying
+# an upload, nor a non-answer longer than this or containing "?" — new
+# evidence, a question, an instruction to keep investigating: those withdraw
+# the proposal and are processed as a normal investigation turn, so the gate
+# can never swallow them.
 _PENDING_GATE_SUBSTANTIVE_LEN = 40
 
 # KB pre-fetch (`_prefetch_kb_context`) fetch depth vs. prompt-surface cap.
@@ -646,6 +648,11 @@ class MilestoneEngine:
                         intent_value=intent_value,
                         typed=typed,
                     )
+                    # A turn carrying an upload is never consumed by the gate:
+                    # the file is new data and must be analysed, whatever the
+                    # caption says ("logs", "", "ok here are the logs"). Only
+                    # a consent executes on it, as it always did.
+                    turn_carries_upload = bool(attachments)
 
                     if verdict == "confirm":
                         return await _confirm_pending_transition(
@@ -665,17 +672,17 @@ class MilestoneEngine:
                         _note_engine_disposition_withdrawn(case, metadata)
                         cancel_pending_transition(case)
 
-                        if message_is_substantive:
+                        if message_is_substantive or turn_carries_upload:
                             # The decline carries substance beyond a bare
                             # "no" — new data, a question, a redirection
                             # ("no, we did not do anything yet — did you
-                            # see anything wrong?"). The proposal is
-                            # withdrawn; the message itself must still be
-                            # processed as a normal turn so nothing the
-                            # user said is swallowed by the gate.
+                            # see anything wrong?"), or an upload. The
+                            # proposal is withdrawn; the message itself must
+                            # still be processed as a normal turn so nothing
+                            # the user said or sent is swallowed by the gate.
                             logger.info(
                                 f"Pending transition declined with a "
-                                f"substantive message for case "
+                                f"substantive message or an upload for case "
                                 f"{case.case_id} — proposal withdrawn, "
                                 f"processing message normally"
                             )
@@ -691,20 +698,24 @@ class MilestoneEngine:
                         # ``reask`` (consent-shaped but not bare, or text and
                         # minted intent disagree), or ``not_an_answer``. A
                         # SUBSTANTIVE non-answer (long, or carrying a question)
-                        # is not an answer to the gate at all: holding the
-                        # gate against those swallowed every typed turn with
-                        # no LLM call and bricked the case (#656, turns
-                        # 12-13). The proposal is withdrawn instead and the
-                        # message processed as a normal turn; the engine can
-                        # always re-propose later from fresher state.
-                        # Everything else — a re-ask, a short question-free
-                        # reply ("hmm"), blank input — is answered with the
-                        # proposal's buttons again, every time it is sent,
-                        # and never recorded as a refusal: every proposal is
-                        # terminal, and a re-ask must never become a decline
-                        # (#1783, ruling (a); the one-re-present cap #656
-                        # added is gone). None of these is worth an LLM turn.
-                        if verdict == "not_an_answer" and message_is_substantive:
+                        # is not an answer to the gate at all, and neither is
+                        # a turn carrying an upload: holding the gate against
+                        # those swallowed every typed turn with no LLM call
+                        # and bricked the case (#656, turns 12-13). The
+                        # proposal is withdrawn instead and the message
+                        # processed as a normal turn; the engine can always
+                        # re-propose later from fresher state. Everything else
+                        # — a re-ask, a short question-free reply ("hmm"),
+                        # blank input — is answered with the proposal's
+                        # buttons again, every time it is sent, and never
+                        # recorded as a refusal: every proposal is terminal,
+                        # and a re-ask must never become a decline (#1783,
+                        # ruling (a); the one-re-present cap #656 added is
+                        # gone). None of these is worth an LLM turn.
+                        text_escapes = (
+                            verdict == "not_an_answer" and message_is_substantive
+                        )
+                        if text_escapes or turn_carries_upload:
                             # The offer is withdrawn either way; whether that
                             # is a REFUSAL splits on the two halves of
                             # message_is_substantive, which the gate
@@ -720,8 +731,9 @@ class MilestoneEngine:
                             # the turn, because the fall-through below reaches
                             # _maybe_propose_deferred_close again and would
                             # otherwise re-take the affordances on this very
-                            # turn (fm#1122).
-                            if "?" not in stripped_message:
+                            # turn (fm#1122). An upload is not a refusal: it
+                            # is withdrawn and recorded only by the text rule.
+                            if text_escapes and "?" not in stripped_message:
                                 _record_deferred_disposition_decline(case)
                             _note_engine_disposition_withdrawn(case, metadata)
                             cancel_pending_transition(case)
@@ -729,7 +741,8 @@ class MilestoneEngine:
                                 f"Pending transition withdrawn for case "
                                 f"{case.case_id}: message is not a gate "
                                 f"answer (substantive="
-                                f"{message_is_substantive}) — processing "
+                                f"{message_is_substantive}, upload="
+                                f"{turn_carries_upload}) — processing "
                                 f"message normally"
                             )
                             # Fall through to normal processing (section 0c)

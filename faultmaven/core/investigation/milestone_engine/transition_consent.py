@@ -111,9 +111,10 @@ _POSITIVE_DECORATIONS: tuple[str, ...] = tuple(
 )
 
 #: Code points that only modify the emoji before them: the emoji presentation
-#: selector and the five skin tones. Removed outright, so ``✔️`` and ``👍🏽``
-#: read as ``✔`` and ``👍``.
-_EMOJI_MODIFIERS = frozenset({"️", *(chr(c) for c in range(0x1F3FB, 0x1F400))})
+#: selector and the five skin tones. Each is replaced by a space, like a
+#: decoration and never by nothing, so one inside a word splits it (``o🏽k`` is
+#: not ``ok``), while after an emoji (``✔️``, ``👍🏽``) the space is harmless.
+_EMOJI_MODIFIERS = frozenset({"\ufe0f", *(chr(c) for c in range(0x1F3FB, 0x1F400))})
 
 PendingGateVerdict = Literal["confirm", "decline", "reask", "not_an_answer"]
 
@@ -133,17 +134,25 @@ def confirmation_token_class(
 
     ``"explicit_token"`` or ``"weak_token"`` (#723's bare weak token), and
     nothing else: a reply is consent only when the WHOLE of it is one consent
-    token (#1783, ruling (a)). Around the token it may carry only trailing
-    ``.``, ``!`` and ``,``, whitespace, and the positive decorations
-    (``_POSITIVE_DECORATIONS``): ``yes``, ``ok!``, ``lgtm 👍``, ``ok :+1:``,
-    ``yes :-)``. Anything more is not consent, whatever it says: ``ok go
-    ahead``, ``ok, don't close it yet``, ``ok 👎``, ``❌ close it``, ``ok?``.
-    Such a reply is re-asked, never executed (``pending_gate_verdict``).
+    token (#1783, ruling (a)). Exactly, once ``_normalize_reply`` has stripped
+    and lowercased it and made curly single quotes straight, a BARE reply is
+    the token's words, with:
 
-    A decoration is replaced by a space, never by nothing, so a decoration
-    inside a word cannot reassemble a token (``clo(y)se it``, ``o👍k``). A
-    target-scoped token (``_TARGET_SCOPED_TOKENS``) consents only to its own
-    target.
+    * any whitespace, any listed positive decoration
+      (``_POSITIVE_DECORATIONS``) and any emoji modifier
+      (``_EMOJI_MODIFIERS``) before, between or after them;
+    * and only ``.``, ``!`` and ``,`` trailing, after the last word.
+
+    So ``yes``, ``ok!``, ``lgtm 👍``, ``👍🏽 ok``, ``✔️ yes``, ``ok :+1:``,
+    ``yes :-)`` and ``go 👍 ahead`` are consent. Anything more is not, whatever
+    it says: ``ok go ahead``, ``ok, don't close it yet``, ``ok 👎``, ``❌ close
+    it``, ``ok?``. Such a reply is re-asked, never executed
+    (``pending_gate_verdict``).
+
+    A decoration or a modifier is replaced by a space, never by nothing, so
+    one inside a word splits the word and cannot reassemble a token
+    (``clo(y)se it``, ``o👍k``, ``o🏽k``, ``clo️se it``). A target-scoped token
+    (``_TARGET_SCOPED_TOKENS``) consents only to its own target.
 
     The shared substance screen runs first: ``is_substantive_reply`` is the
     predicate the IntentResolver adoption guard applies to minted intents
@@ -156,7 +165,7 @@ def confirmation_token_class(
     if not user_message or is_substantive_reply(user_message):
         return None
     text = "".join(
-        c for c in _normalize_reply(user_message) if c not in _EMOJI_MODIFIERS
+        " " if c in _EMOJI_MODIFIERS else c for c in _normalize_reply(user_message)
     )
     for decoration in _POSITIVE_DECORATIONS:
         text = text.replace(decoration, " ")

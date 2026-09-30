@@ -190,9 +190,14 @@ def _finish_deterministic_turn(
     Nothing releases a pending gate on ``turns_without_progress``, so
     resetting it cannot change how long one stands: a pending terminal
     proposal stands until the user answers it (a click, a bare consent token
-    or a decline) or sends a substantive message, which the gate's own escape
-    lane withdraws it for. A short non-answer is re-asked every time and never
-    withdraws it (#1783).
+    or a decline), or sends a turn the gate never consumes — one carrying an
+    upload, or a non-answer over 40 characters or containing "?" — which the
+    gate's own escape lane withdraws it for. Everything else the gate answers
+    with the proposal's buttons, every time and never recording a refusal: a
+    consent-shaped reply that is not bare and that ``is_substantive_reply``
+    does not call substantive, a reply whose text and minted intent disagree,
+    a minted confirmation on text that is not bare, and a short (at most 40
+    characters) question-free non-answer (#1783).
     """
     metadata: dict[str, Any] = {
         "turn_number": case.current_turn,

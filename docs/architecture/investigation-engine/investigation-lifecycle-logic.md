@@ -468,35 +468,46 @@ together, first match wins:
   status pick, sent by the client rather than minted) → execute the transition; the
   Not-yet card → decline, as below
 - **Bare yes** → execute transition. The WHOLE reply must be one consent token
-  valid for the proposal's target, with only trailing `.` `!` `,` and positive
-  emoji, Slack shortcodes or emoticons around it (`yes`, `ok!`, `lgtm 👍`,
-  `ok :+1:`); curly apostrophes read as straight (`that’s right`). `close it`
+  valid for the proposal's target. Exactly, a bare reply is the token's words,
+  with any whitespace, any listed positive decoration (emoji, Slack shortcode or
+  emoticon) and any emoji modifier (U+FE0F, the skin tones) before, between or
+  after the token's words, and only `.` `!` `,` trailing (`yes`, `ok!`,
+  `lgtm 👍`, `👍🏽 ok`, `ok :+1:`). A decoration or modifier inside a word splits
+  it (`o🏽k` is not `ok`), and curly apostrophes read as straight
+  (`that’s right`). `close it`
   consents only to a CLOSE, and `resolve it` / `mark (it) as resolved` only to a
   RESOLVE. A bare token the intent resolver minted a confirmation from executes
   the same way; a minted *decline* on a bare consent token disagrees with its text,
   and is re-asked
-- **Consent-shaped but not bare** ("ok go ahead", "ok, don't close it yet",
-  "yes please close it", "ok 👎", "close it" on a pending RESOLVE), and any reply
-  whose text and minted intent disagree, including a minted confirmation on text
-  that is not a bare token ("that works") → **re-ask**: re-present the
-  confirmation with DECIDE suggestions (clickable Yes/No with intent metadata)
+- **Consent-shaped but not bare, and not substantive per `is_substantive_reply`**
+  (the set the gate used to execute on: "ok go ahead", "ok, don't close it yet",
+  "yes please close it", "ok 👎", "close it" on a pending RESOLVE), any reply
+  whose text and minted intent disagree, and a minted confirmation on text that
+  is not a bare token ("that works") → **re-ask**: re-present the confirmation
+  with DECIDE suggestions (clickable Yes/No with intent metadata)
 - **Bare no** (word-boundary token match or intent metadata, below the substantive
-  bound) → cancel transition, acknowledge deterministically ("note…"/"stopped…" do
-  not read as "no"/"stop")
-- **Decline carrying substance** (decline token followed by data, a question, a
-  redirection) → cancel transition, then process the message as a normal turn so
-  its content is not lost
-- **Short question-free ambiguous reply** ("hmm maybe") and **blank input**
-  (whitespace-only slips past the route's empty-payload guard) → re-ask, as above
-- **Anything else — a substantive message (long, or containing a question)** → the
-  message is *not an answer to the gate*: the proposal is **withdrawn**
-  (`cancel_pending_transition`) and the message processed as a normal
-  investigation turn. The engine can always re-propose later from fresher state.
+  bound, no upload) → cancel transition, acknowledge deterministically
+  ("note…"/"stopped…" do not read as "no"/"stop")
+- **Decline carrying substance or an upload** (decline token followed by data, a
+  question, a redirection, or sent with a file) → cancel transition, then process
+  the message as a normal turn so its content is not lost
+- **Short (≤40 characters) question-free non-answer** ("hmm maybe") and **blank
+  input** (whitespace-only slips past the route's empty-payload guard) → re-ask,
+  as above
+- **A turn carrying an upload, or a non-answer over 40 characters or containing a
+  question** → the message is *not an answer to the gate*: the proposal is
+  **withdrawn** (`cancel_pending_transition`) and the message processed as a
+  normal investigation turn. It is recorded as a refusal only when the text is
+  such a non-answer without a `?` (an upload alone records nothing). The engine
+  can always re-propose later from fresher state.
 
-A re-ask repeats **every time** it is earned and **never records a refusal or
-withdraws the proposal**: a terminal proposal must not turn into a decline because
-the user typed more than one word. The one-re-present cap #656 added (a second
-non-answer withdrew the proposal and recorded it as a refusal) is gone.
+So the gate's consumption rule is exact: without an LLM turn it answers only the
+re-asks above (and a bare decline), and it **never** consumes a turn carrying an
+upload, nor a non-answer over 40 characters or containing `?`. A re-ask repeats
+**every time** it is earned and **never records a refusal or withdraws the
+proposal**: a terminal proposal must not turn into a decline because the user
+typed more than one word. The one-re-present cap #656 added (a second non-answer
+withdrew the proposal and recorded it as a refusal) is gone.
 
 The escape lane is load-bearing for NO-COLLAPSE: the earlier "re-present on anything
 else" rule held the gate against substantive typed input indefinitely — no LLM call, no
@@ -504,9 +515,9 @@ state change, identical canned reply every turn (#656, `case_5db5417fe445` turns
 "I refuse to do that. you must continue to investigate" and "what is the root cause?"
 were both swallowed). And the bare-confirmation rule is its confirm-side mirror: without
 it, a confirm-prefixed substantive message ("ok but what is the root cause?") did not
-merely swallow the input — it *executed* the terminal transition on it. Only short,
-question-free replies are answered with the cheap re-present; nothing
-substantive is ever consumed by the gate. The short-message re-present also preserves
+merely swallow the input — it *executed* the terminal transition on it. The cheap
+re-present answers only the replies listed above; a turn carrying an upload, and a
+non-answer over 40 characters or containing `?`, are never consumed by the gate. The short-message re-present also preserves
 the original motivation of the deterministic path — not sending a bare "hmm" through
 the LLM tool loop. The IntentResolver's LLM classifier tier can map typed text to the
 Yes suggestion: the adoption guard (#721) drops such a mint from substantive text, and
@@ -1102,7 +1113,8 @@ bypassing the tool loop and pattern matching entirely.
 
 **Typed responses** (user types instead of clicking) fall back to `confirmation_token_class()` (consent is "not `None`"),
 read through `pending_gate_verdict()`: only a reply that is, as a whole, one bare consent token
-for the proposal's target executes (#1783). Any longer typed reply is re-asked with these cards.
+for the proposal's target executes (#1783). A consent-shaped reply that says more is re-asked with these cards;
+what the gate consumes and what it sends on as a normal turn is stated under *Pending transition confirmation* above.
 
 ---
 
