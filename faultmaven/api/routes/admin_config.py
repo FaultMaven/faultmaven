@@ -1399,9 +1399,11 @@ async def get_env_config_status(
         elif kb_active:
             vector_storage = "chromadb (persistent, kb only)"
 
-        # Session storage: the client every Redis consumer shares, set on
-        # ``app.state`` by the composition root, judged by the one FakeRedis
-        # predicate. Settings cannot answer this: a server named by
+        # Session storage: the container's Redis client — the one the session
+        # store is built with, set on ``app.state`` by the composition root —
+        # judged by the one FakeRedis predicate. It answers for sessions only:
+        # the rate limiter and config propagation can hold clients of their own.
+        # Settings cannot answer this: a server named by
         # ``REDIS_HOST`` has no ``redis_url``, and standalone serves from the
         # in-process stand-in when its configured Redis is unusable.
         from faultmaven.infrastructure.redis_client import is_fakeredis

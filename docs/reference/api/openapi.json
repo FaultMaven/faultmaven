@@ -2660,7 +2660,7 @@
             "type": "boolean"
           },
           "session_storage": {
-            "description": "'redis' or 'fakeredis (inmemory)' \u2014 the Redis client the running process actually holds, not the configured one; 'not initialized' before the composition root has set it",
+            "description": "'redis' or 'fakeredis (inmemory)' \u2014 the Redis client the session store actually uses, not the configured one; 'not initialized' before the composition root has set it",
             "title": "Session Storage",
             "type": "string"
           },

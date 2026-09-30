@@ -627,8 +627,8 @@ class EnvConfigStatusResponse(BaseModel):
     )
     session_storage: str = Field(
         description=(
-            "'redis' or 'fakeredis (inmemory)' — the Redis client the running "
-            "process actually holds, not the configured one; 'not initialized' "
+            "'redis' or 'fakeredis (inmemory)' — the Redis client the session "
+            "store actually uses, not the configured one; 'not initialized' "
             "before the composition root has set it"
         )
     )
