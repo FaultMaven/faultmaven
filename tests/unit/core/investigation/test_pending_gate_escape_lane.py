@@ -10,10 +10,12 @@ swallowed every turn; the case was unrecoverable from the keyboard.
 Contract pinned here (the escape lane):
 
 - A message that is not a gate answer (longer than the substantive-length
-  bound, or ANY second non-answer) withdraws the pending proposal and the
+  bound, or carrying a question) withdraws the pending proposal and the
   turn proceeds to normal processing — the LLM seam is reached.
-- A short ambiguous reply ("why?") re-presents the confirmation at most
-  ONCE, then the next non-answer withdraws.
+- A short question-free non-answer ("hmm") re-presents the confirmation,
+  every time it is sent, and records no refusal: every pending proposal is
+  terminal, and a re-ask must never become a decline (#1783, ruling (a)). The
+  one-re-present cap #656 added is gone.
 - A bare decline still gets the cheap canned acknowledgment; a decline
   carrying substance ("No. we did not do anything yet. …did you see
   anything wrong?") is processed normally after the cancel so its content
@@ -119,7 +121,7 @@ def _resolution_ready_case() -> Case:
     return case
 
 
-def _investigating_case_with_pending_close(re_presented: bool = False) -> Case:
+def _investigating_case_with_pending_close() -> Case:
     case = Case(
         case_id="case_5db5417fe445",
         title="Escape-lane regression",
@@ -145,8 +147,6 @@ def _investigating_case_with_pending_close(re_presented: bool = False) -> Case:
         "evidence_ids": [],
         "proposed_at": datetime.now(UTC).isoformat(),
     }
-    if re_presented:
-        case.pending_transition["re_presented"] = True
     return case
 
 
@@ -177,7 +177,7 @@ async def test_incident_question_withdraws_pending_and_reaches_llm():
 
 
 @pytest.mark.asyncio
-async def test_short_ambiguous_reply_re_presents_once_without_llm():
+async def test_short_ambiguous_reply_re_presents_without_an_llm_call():
     engine = _engine()
     case = _investigating_case_with_pending_close()
 
@@ -185,7 +185,6 @@ async def test_short_ambiguous_reply_re_presents_once_without_llm():
 
     assert "Please select one of the options above" in result["agent_response"]
     assert case.pending_transition is not None
-    assert case.pending_transition.get("re_presented") is True
     assert not engine.generator.generate_structured_output.called
 
 
@@ -229,8 +228,8 @@ async def test_confirm_word_prefix_does_not_confirm():
 @pytest.mark.asyncio
 async def test_decline_word_prefix_is_not_swallowed_as_bare_decline():
     """Review finding: 'note db latency spiked to 5s' must not read as a
-    bare 'no' decline (canned ack, evidence dropped). It is a non-answer:
-    re-presented once, then processed normally."""
+    bare 'no' decline (canned ack, evidence dropped). It is a short
+    non-answer, so it is re-presented."""
     engine = _engine()
     case = _investigating_case_with_pending_close()
 
@@ -240,16 +239,15 @@ async def test_decline_word_prefix_is_not_swallowed_as_bare_decline():
 
     assert "remains open" not in result["agent_response"]
     assert case.pending_transition is not None  # not cancelled by a fake decline
-    assert case.pending_transition.get("re_presented") is True
+    assert "Please select one of the options above" in result["agent_response"]
 
 
 @pytest.mark.asyncio
 async def test_whitespace_only_message_never_reaches_llm():
     """Blank input (whitespace-only slips past the route's empty-payload
-    guard) re-presents deterministically even after the re-present
-    allowance is spent — it is never worth an LLM turn."""
+    guard) re-presents deterministically — it is never worth an LLM turn."""
     engine = _engine()
-    case = _investigating_case_with_pending_close(re_presented=True)
+    case = _investigating_case_with_pending_close()
 
     result = await engine.process_turn(case=case, user_message="   ")
 
@@ -325,18 +323,20 @@ class TestWithdrawalRecordsTheEngineOffer:
         assert case.progress.deferred_disposition_declined_signatures == []
 
     @pytest.mark.asyncio
-    async def test_second_non_answer_records_the_refusal(self):
-        """The withdrawal on the second non-answer (the spent re-present
-        allowance) goes through the same branch and must record too."""
+    async def test_a_second_short_non_answer_is_re_asked_and_records_nothing(self):
+        """#1783, ruling (a): the one-re-present cap (#656) withdrew the offer
+        on a second non-answer and recorded it as a refusal. A re-ask is never
+        a refusal, so a second "hmm maybe" is re-asked like the first."""
         engine = _engine()
         case = self._engine_proposed_case()
-        case.pending_transition["re_presented"] = True
 
-        await _run_expecting_fall_through(engine, case, "hmm maybe")
+        for _ in range(2):
+            result = await engine.process_turn(case=case, user_message="hmm maybe")
+            assert "Please select one of the options above" in result["agent_response"]
+            assert case.pending_transition is not None
 
-        assert case.progress.deferred_disposition_declined_signatures == [
-            "SUGGEST_CLOSE|1|chain"
-        ]
+        assert case.progress.deferred_disposition_declined_signatures == []
+        assert not engine.generator.generate_structured_output.called
 
     @pytest.mark.asyncio
     async def test_contradicting_status_pick_on_a_resolvable_case_records_nothing(
@@ -406,27 +406,111 @@ class TestWithdrawalRecordsTheEngineOffer:
         assert case.progress.deferred_disposition_declined_signatures == []
 
 
+#: One novel file on the turn, as the service hands it to the engine.
+_UPLOAD = [
+    {"file_id": "f_1", "filename": "app.log", "data_type": "log", "is_novel": True}
+]
+_SIGNATURE = "SUGGEST_CLOSE|1|chain"
+
+
+def _signed_pending_close() -> Case:
+    """A pending CLOSE carrying the signature an ENGINE proposer writes, so a
+    recorded refusal is visible and "nothing recorded" is not vacuous."""
+    case = _investigating_case_with_pending_close()
+    case.pending_transition["justifying_signature"] = _SIGNATURE
+    return case
+
+
+class TestAnUploadTurnIsNeverConsumed:
+    """Review round 1 on #1783: with the one-re-present cap gone, a turn
+    carrying an upload and a short caption was re-asked forever and the file
+    never analysed. An upload turn now always escapes the gate: the proposal
+    is withdrawn and the turn processed normally. A refusal is recorded only
+    by the text rule (a decline, or a non-answer over 40 characters with no
+    "?"), never for the upload itself."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "message, declined",
+        [
+            ("logs", []),
+            ("", []),
+            ("ok here are the logs", []),
+            ("what does this log show?", []),
+            ("no", [_SIGNATURE]),
+            (
+                "we will apply it in friday's maintenance window as planned",
+                [_SIGNATURE],
+            ),
+        ],
+    )
+    async def test_an_upload_turn_withdraws_and_reaches_the_llm(
+        self, message, declined
+    ):
+        engine = _engine()
+        case = _signed_pending_close()
+
+        with pytest.raises(MilestoneEngineError):
+            await engine.process_turn(
+                case=case, user_message=message, attachments=_UPLOAD
+            )
+
+        assert case.pending_transition is None
+        assert engine.generator.generate_structured_output.called
+        assert case.progress.deferred_disposition_declined_signatures == declined
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("message", ["hmm", "logs", "ok go ahead"])
+    async def test_the_same_text_without_an_upload_is_re_presented(self, message):
+        engine = _engine()
+        case = _signed_pending_close()
+
+        result = await engine.process_turn(case=case, user_message=message)
+
+        assert "Please select one of the options above" in result["agent_response"]
+        assert case.pending_transition is not None
+        assert not engine.generator.generate_structured_output.called
+        assert case.progress.deferred_disposition_declined_signatures == []
+
+    @pytest.mark.asyncio
+    async def test_a_bare_no_without_an_upload_is_declined_without_an_llm_call(
+        self,
+    ):
+        engine = _engine()
+        case = _signed_pending_close()
+
+        result = await engine.process_turn(case=case, user_message="no")
+
+        assert "remains open" in result["agent_response"]
+        assert case.pending_transition is None
+        assert not engine.generator.generate_structured_output.called
+        assert case.progress.deferred_disposition_declined_signatures == [_SIGNATURE]
+
+
 class TestGateAnswerMatchers:
     """Word-boundary + bare-confirmation contracts on the typed matchers."""
 
     def test_confirm_matcher_accepts_bare_confirmations(self):
         engine = _engine()
-        for msg in ("yes", "ok", "yes, it's resolved, the error is gone"):
-            assert confirmation_token_class(msg) is not None, msg
+        for msg in ("yes", "ok", "ok!", "lgtm 👍", "close it"):
+            assert confirmation_token_class(msg, "closed") is not None, msg
 
     def test_confirm_matcher_rejects_substantive_or_prefix_matches(self):
+        """A consent is BARE: the whole reply is one token (#1783), so a
+        reply that says more is not consent however it continues."""
         engine = _engine()
         for msg in (
             "ok but what is the root cause?",
             "yes, but first can you check the etcd disk latency?",
             "yesterday the pod restarted",
             "yes?",
+            "yes, it's resolved, the error is gone",
         ):
-            assert confirmation_token_class(msg) is None, msg
+            assert confirmation_token_class(msg, "closed") is None, msg
 
     def test_decline_matcher_accepts_bare_declines(self):
         engine = _engine()
-        for msg in ("no", "no.", "no way", "not yet", "nope!"):
+        for msg in ("no", "no.", "no way", "not yet", "nope!", "don\u2019t close it"):
             assert _user_declines_transition(msg), msg
 
     def test_decline_matcher_rejects_prefix_sharing_words(self):
@@ -440,10 +524,20 @@ class TestGateAnswerMatchers:
 
 
 @pytest.mark.asyncio
-async def test_second_non_answer_withdraws_even_when_short():
+async def test_a_short_non_answer_is_re_asked_every_time():
+    """#1783, ruling (a): no count of short non-answers withdraws a terminal
+    proposal. (A short QUESTION such as "hm?" is substantive and takes the
+    escape lane on its first send, which did not move:
+    ``test_short_question_is_substantive_and_reaches_llm_first_time``.)"""
     engine = _engine()
-    case = _investigating_case_with_pending_close(re_presented=True)
-    await _run_expecting_fall_through(engine, case, "hm?")
+    case = _investigating_case_with_pending_close()
+
+    for _ in range(3):
+        result = await engine.process_turn(case=case, user_message="hm")
+        assert "Please select one of the options above" in result["agent_response"]
+        assert case.pending_transition is not None
+
+    assert not engine.generator.generate_structured_output.called
 
 
 @pytest.mark.asyncio

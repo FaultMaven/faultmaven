@@ -4,8 +4,7 @@ import logging
 from typing import Any
 
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
-    _user_declines_transition,
-    confirmation_token_class,
+    pending_gate_verdict,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -274,8 +273,17 @@ class TransitionManager:
                     confirm_pending_transition,
                 )
 
-                # Use the user_message parameter directly, not from metadata
-                if confirmation_token_class(user_message) is not None:
+                # Use the user_message parameter directly, not from metadata.
+                # The same reader as the engine's 0b gate, with no intent: only
+                # a bare consent token executes (#1783), and anything else that
+                # is not a decline leaves the proposal standing.
+                verdict, _ = pending_gate_verdict(
+                    user_message,
+                    case.pending_transition.get("to_state"),
+                    intent_value=None,
+                    typed=True,
+                )
+                if verdict == "confirm":
                     # Gap #6: Checkpoint before terminal transition
                     if self.deps.checkpoint_service:
                         to_state = case.pending_transition.get("to_state", "unknown")
@@ -305,7 +313,7 @@ class TransitionManager:
                             ClosureReadiness.SUGGEST_RESOLVE
                         )
                     return case
-                elif _user_declines_transition(user_message):
+                elif verdict == "decline":
                     cancel_pending_transition(case)
                     # Continue normal processing
                 # else: user said something ambiguous, let LLM handle it

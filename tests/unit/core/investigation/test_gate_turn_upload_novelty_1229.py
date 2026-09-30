@@ -10,7 +10,17 @@ turn was invisible: no ``files_uploaded``, no ``novel_files_uploaded``, and
 warnings lived in the same unreachable block, so the degradation was
 unobservable there as well.
 
-**The gate-semantics answer pinned here: a gate turn DOES count upload
+**Which branch stands for them here (#1783).** Since #1783 a turn carrying an
+upload always escapes the pending gate: the proposal is withdrawn and the turn
+goes to generation, whatever its caption says, so the pending gate's re-ask —
+this file's deterministic path until then — can no longer carry an upload at
+all. The representative deterministic early return an upload still reaches
+without executing a transition is the dropdown handler: a ``status_transition``
+pick of CLOSED with nothing pending, which proposes the close and answers with
+no LLM call. ``_gate_turn`` drives that branch, and ``TestBothPathsAgree`` pins
+that the escaped pending-gate turn reads the same as generation.
+
+**The gate-semantics answer pinned here: a deterministic turn DOES count upload
 progress.** ``check_if_progress_made`` defines progress as *advancement, not
 activity* — "an artifact the case did not already hold" — and a file that
 survived content-hash dedup is exactly that. Whether the user accepted a
@@ -137,10 +147,25 @@ def _investigating_case(*, pending: Optional[str] = None) -> Case:
 
 
 async def _gate_turn(engine: MilestoneEngine, case: Case, attachments) -> dict:
-    """A short, question-free non-answer to a pending gate: the re-present
-    branch, which returns without ever reaching the LLM."""
+    """A deterministic turn carrying ``attachments``: the dropdown handler, a
+    ``status_transition`` pick of CLOSED with nothing pending, which proposes
+    the close and returns without ever reaching the LLM or executing a
+    transition.
+
+    It is the representative deterministic early return because an upload
+    turn always escapes the pending gate (#1783): the gate's re-ask, which this
+    helper used to drive with ``"hmm"``, now sends an upload to generation.
+    """
+    assert not case.pending_transition, (
+        "with a CLOSE pending, a CLOSE pick is a click that EXECUTES it — the "
+        "representative branch needs nothing pending"
+    )
     result = await engine.process_turn(
-        case=case, user_message="hmm", attachments=attachments
+        case=case,
+        user_message="closing this out",
+        attachments=attachments,
+        intent_type="status_transition",
+        intent_data={"to_state": "closed"},
     )
     assert not engine.generator.generate_structured_output.called, (
         "this turn must short-circuit on the deterministic gate branch — if it "
@@ -150,10 +175,10 @@ async def _gate_turn(engine: MilestoneEngine, case: Case, attachments) -> dict:
 
 
 class TestAGateTurnCarryingANovelUpload:
-    """ "not yet — here's the new log", answered while a close is pending."""
+    """A close picked from the dropdown with a new log attached."""
 
     async def test_the_upload_is_reported(self):
-        case = _investigating_case(pending="closed")
+        case = _investigating_case()
 
         metadata = await _gate_turn(_engine(), case, [_novel()])
 
@@ -163,7 +188,7 @@ class TestAGateTurnCarryingANovelUpload:
     async def test_it_counts_as_progress(self):
         """The gate-semantics answer. ``progress_made`` is API-visible
         (``TurnResponse.progress_made``), so this is what the client is told."""
-        case = _investigating_case(pending="closed")
+        case = _investigating_case()
 
         metadata = await _gate_turn(_engine(), case, [_novel()])
 
@@ -172,7 +197,7 @@ class TestAGateTurnCarryingANovelUpload:
     async def test_it_resets_the_stall_counter(self):
         """And the persisted counter agrees with the boolean above — the
         deterministic branches save the case, so this is what is stored."""
-        case = _investigating_case(pending="closed")
+        case = _investigating_case()
 
         await _gate_turn(_engine(), case, [_novel()])
 
@@ -182,7 +207,7 @@ class TestAGateTurnCarryingANovelUpload:
         """The reset is applied above the fork, so it precedes the branch's own
         ``save`` rather than being computed after it."""
         engine = _engine()
-        case = _investigating_case(pending="closed")
+        case = _investigating_case()
         saved: list[int] = []
         engine.deps.repository.save = AsyncMock(
             side_effect=lambda c: saved.append(c.turns_without_progress) or c
@@ -198,21 +223,21 @@ class TestAGateTurnCarryingADuplicateUpload:
     holds is activity, not advancement, and must not arm the stall net."""
 
     async def test_the_upload_is_still_reported(self):
-        case = _investigating_case(pending="closed")
+        case = _investigating_case()
 
         metadata = await _gate_turn(_engine(), case, [_duplicate()])
 
         assert metadata["files_uploaded"] == ["file_bbbbbbbbbbbb"]
 
     async def test_it_is_not_novel(self):
-        case = _investigating_case(pending="closed")
+        case = _investigating_case()
 
         metadata = await _gate_turn(_engine(), case, [_duplicate()])
 
         assert "novel_files_uploaded" not in metadata
 
     async def test_it_does_not_count_as_progress(self):
-        case = _investigating_case(pending="closed")
+        case = _investigating_case()
 
         metadata = await _gate_turn(_engine(), case, [_duplicate()])
 
@@ -229,7 +254,7 @@ class TestAGateTurnCarryingADuplicateUpload:
         This is also the half of the issue's stated symptom that does NOT
         reproduce — it asserted the counter increments on such a turn.
         """
-        case = _investigating_case(pending="closed")
+        case = _investigating_case()
 
         await _gate_turn(_engine(), case, [_duplicate()])
 
@@ -238,7 +263,7 @@ class TestAGateTurnCarryingADuplicateUpload:
 
 class TestAnUndeterminedNoveltySignal:
     async def test_it_is_scored_as_not_novel(self):
-        case = _investigating_case(pending="closed")
+        case = _investigating_case()
 
         metadata = await _gate_turn(_engine(), case, [_undetermined()])
 
@@ -250,7 +275,7 @@ class TestAnUndeterminedNoveltySignal:
         """#1224's warning lived inside the block these paths never run, so
         this silence was total. An undetermined signal on a gate turn now says
         so."""
-        case = _investigating_case(pending="closed")
+        case = _investigating_case()
 
         with caplog.at_level(logging.WARNING, logger=_UPLOADS_LOGGER):
             await _gate_turn(_engine(), case, [_undetermined()])
@@ -265,7 +290,7 @@ class TestAnUndeterminedNoveltySignal:
 
 class TestAnAttachmentWithNoFileId:
     async def test_it_is_not_reported_and_says_so(self, caplog):
-        case = _investigating_case(pending="closed")
+        case = _investigating_case()
 
         with caplog.at_level(logging.WARNING, logger=_UPLOADS_LOGGER):
             metadata = await _gate_turn(_engine(), case, [_no_file_id()])
@@ -276,45 +301,6 @@ class TestAnAttachmentWithNoFileId:
             r.name == _UPLOADS_LOGGER and "carries no file_id" in r.getMessage()
             for r in caplog.records
         ), [(r.name, r.getMessage()) for r in caplog.records]
-
-
-class TestTheDropdownTransitionBranch:
-    """The other family of deterministic returns: an explicit
-    ``status_transition`` intent that proposes a terminal transition and
-    answers without an LLM call."""
-
-    async def test_a_novel_upload_riding_a_close_click_is_reported(self):
-        engine = _engine()
-        case = _investigating_case()
-
-        result = await engine.process_turn(
-            case=case,
-            user_message="closing this out",
-            attachments=[_novel()],
-            intent_type="status_transition",
-            intent_data={"to_state": "closed"},
-        )
-
-        assert not engine.generator.generate_structured_output.called
-        assert result["metadata"]["novel_files_uploaded"] == ["file_aaaaaaaaaaaa"]
-        assert result["metadata"]["progress_made"] is True
-        assert case.turns_without_progress == 0
-
-    async def test_a_duplicate_riding_a_close_click_does_not_count(self):
-        engine = _engine()
-        case = _investigating_case()
-
-        result = await engine.process_turn(
-            case=case,
-            user_message="closing this out",
-            attachments=[_duplicate()],
-            intent_type="status_transition",
-            intent_data={"to_state": "closed"},
-        )
-
-        assert result["metadata"]["files_uploaded"] == ["file_bbbbbbbbbbbb"]
-        assert result["metadata"]["progress_made"] is False
-        assert case.turns_without_progress == STANDING_STALL
 
 
 class TestTheTerminalShortCircuit:
@@ -516,9 +502,7 @@ class TestBothPathsAgree:
         return result["metadata"]
 
     async def test_a_novel_upload_reads_the_same_on_both_paths(self):
-        gate = await _gate_turn(
-            _engine(), _investigating_case(pending="closed"), [_novel()]
-        )
+        gate = await _gate_turn(_engine(), _investigating_case(), [_novel()])
         generation = await self._generation(_novel())
 
         assert self._upload_keys(gate) == self._upload_keys(generation)
@@ -528,13 +512,34 @@ class TestBothPathsAgree:
         }
 
     async def test_a_duplicate_reads_the_same_on_both_paths(self):
-        gate = await _gate_turn(
-            _engine(), _investigating_case(pending="closed"), [_duplicate()]
-        )
+        gate = await _gate_turn(_engine(), _investigating_case(), [_duplicate()])
         generation = await self._generation(_duplicate())
 
         assert self._upload_keys(gate) == self._upload_keys(generation)
         assert "novel_files_uploaded" not in self._upload_keys(gate)
+
+    async def test_an_upload_on_a_pending_gate_escapes_and_reads_as_generation(
+        self,
+    ):
+        """#1783: a turn carrying an upload always escapes the pending gate. A
+        short non-answer ("hmm") with a new log, while a close is pending,
+        reaches generation with the proposal withdrawn, and reads exactly as a
+        plain generation turn does."""
+        engine = _generating_engine()
+        case = _investigating_case(pending="closed")
+
+        result = await engine.process_turn(
+            case=case, user_message="hmm", attachments=[_novel()]
+        )
+
+        assert engine.generator.generate_structured_output.called
+        assert case.pending_transition is None
+        generation = await self._generation(_novel())
+        assert self._upload_keys(result["metadata"]) == self._upload_keys(generation)
+        assert self._upload_keys(result["metadata"]) == {
+            "files_uploaded": ["file_aaaaaaaaaaaa"],
+            "novel_files_uploaded": ["file_aaaaaaaaaaaa"],
+        }
 
 
 class TestTheStoredTurnAgreesWithTheReportedTurn:
@@ -544,7 +549,7 @@ class TestTheStoredTurnAgreesWithTheReportedTurn:
     ``progress_made=False``."""
 
     async def test_a_novel_upload_is_progress_on_all_three(self):
-        case = _investigating_case(pending="closed")
+        case = _investigating_case()
 
         metadata = await _gate_turn(_engine(), case, [_novel()])
 
@@ -553,7 +558,7 @@ class TestTheStoredTurnAgreesWithTheReportedTurn:
         assert case.turns_without_progress == 0
 
     async def test_a_duplicate_is_not_progress_on_all_three(self):
-        case = _investigating_case(pending="closed")
+        case = _investigating_case()
 
         metadata = await _gate_turn(_engine(), case, [_duplicate()])
 
@@ -566,7 +571,7 @@ class TestTheStoredTurnAgreesWithTheReportedTurn:
         future lands on the deterministic paths too, instead of on the
         generation path alone."""
         engine = _engine()
-        case = _investigating_case(pending="closed")
+        case = _investigating_case()
         scored: list[dict] = []
         # Spy the MODULE function, not a bound method: #1270 routed the
         # deterministic write through the shared ``score_progress``, which calls

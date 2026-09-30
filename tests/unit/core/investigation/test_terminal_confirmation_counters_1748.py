@@ -12,12 +12,16 @@ read from the saved records by the investigation service after its save
 (``turn_messages._save_and_emit_turn``). So everything that decides a count is
 driven here through ``InvestigationService.process_turn`` — the path a click or
 a typed reply actually takes — with only the LLM and the database doubled.
+
+#1783 (ruling (a)) narrowed what a channel can be: a terminal proposal executes
+only on its click or on a BARE typed consent token, so the verdict corpus and
+the gate table below are the pin for consent, and
+``TestOnlyAClickOrABareTokenExecutes`` drives the rule through the service.
 """
 
 import json
 import logging
 import os
-import re
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -45,14 +49,13 @@ from faultmaven.core.investigation.milestone_engine.terminal_turns import (
 )
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     _EXPLICIT_CONFIRM_TOKENS,
+    _TARGET_SCOPED_TOKENS,
     _WEAK_CONFIRM_TOKENS,
     confirmation_token_class,
+    pending_gate_verdict,
 )
 from faultmaven.core.investigation.schemas import TurnPayload
-from faultmaven.core.investigation.terminal_transitions import (
-    is_substantive_reply,
-    propose_transition,
-)
+from faultmaven.core.investigation.terminal_transitions import propose_transition
 from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
@@ -70,10 +73,9 @@ from faultmaven.modules.case.exceptions import StaleCaseException
 
 pytestmark = pytest.mark.unit
 
-#: The label table. BARE means no letter or digit after the matched token, so
-#: punctuation, emoji and emoticons keep a reply bare; any further word makes it
-#: prefixed. The prefixed rows include refusals and deferrals the gate still
-#: executes on (#1783) — the labels never guess which.
+#: The label table. Only a BARE token is consent (#1783, ruling (a)): the whole
+#: reply is one token, with only trailing punctuation and positive emoji,
+#: shortcodes or emoticons around it. So there are only two typed labels.
 LABEL_TABLE = {
     "weak_token": [
         "ok",
@@ -86,112 +88,251 @@ LABEL_TABLE = {
         "  Okay  ",
         # Slack's wire form of an emoji labels as the Unicode emoji does.
         "ok :+1:",
-        "lgtm :rocket:",
         "OK :THUMBSUP:",
-        # No space: the gate still reads "ok" (a word boundary before ":"), and
-        # what follows is only a shortcode.
+        # No space: what is left once the shortcode is removed is only "ok".
         "ok:+1:",
-    ],
-    "weak_prefixed": [
-        "ok go ahead",
-        "ok ok",
-        "looks good to me",
-        "ok, don't close it yet",
-        "sure, close it",
-        "ok yes",
-        "lgtm, confirmed",
-        "ok no",
-        "sure, do it later",
-        "sure thing",
-        # Emoticons written with a letter or digit are not bare.
-        "ok :D",
-        "ok XD",
-        "ok <3",
-        "ok (y)",
-        "ok :+1: go ahead",
     ],
     "explicit_token": [
         "yes",
         "yes 👍",
+        "yes :+1:",
         "go ahead",
         "that's right",
+        "that\u2019s right",
         "yes!",
         "yes :white_check_mark:",
     ],
-    "explicit_prefixed": [
-        "yes, don't close it yet",
-        "do it later",
-        "confirm later",
-        "yes please close it",
-        "yes ok",
-        "yes :P",
-    ],
 }
+
+#: The labels #1783 removed: a typed reply that says more than one token is
+#: re-asked, so nothing can produce them.
+REMOVED_LABELS = ("explicit_prefixed", "weak_prefixed", "typed_other")
 
 #: What "Yes, mark as resolved" sends when clicked.
 CONFIRM_CARD = _resolution_confirmation_suggestions()[0]
+#: What "Not yet, continue investigating" sends when clicked.
+DECLINE_CARD = _resolution_confirmation_suggestions()[1]
 
-# ``main``'s confirm rule at cb30b2455, FROZEN: its token list in its order and
-# its matcher, copied as literals so no edit to the live module can move both
-# sides of the comparison at once. The substance screen is the shared, unchanged
-# ``is_substantive_reply``. #1748 splits the tokens for labelling only; a single
-# moved verdict is a change to consent, which is #1783's, not this PR's.
-_MAIN_CONFIRM_PATTERNS = [
+#: The target each target-scoped token consents to, pinned literally. Every
+#: other token consents to either target.
+OWN_TARGET = {
+    "close it": "closed",
+    "resolve it": "resolved",
+    "mark as resolved": "resolved",
+    "mark it as resolved": "resolved",
+}
+
+# The #1783 mechanism probe's corpus (round 24, ``probe_1783.py``), verbatim:
+# the values are the probe's, and only the invisible characters (U+200B, U+200D,
+# U+FEFF) are written as escapes so a reader can see them. A trailing
+# ``[closed]``/``[resolved]`` names the target to test against; the default is
+# ``resolved``.
+MUST_EXECUTE = [
+    "ok",
+    "ok!",
+    "OK.",
+    "Ok",
+    "okay",
+    "sure",
+    "lgtm",
+    "sounds good",
+    "looks good",
     "yes",
-    "yeah",
+    "yes!",
+    "Yes.",
+    "YES",
+    "yes!!",
     "yep",
     "yup",
-    "correct",
+    "yeah",
     "confirmed",
     "confirm",
     "approve",
     "approved",
-    "ok",
-    "okay",
-    "sure",
     "absolutely",
+    "correct",
+    "proceed",
     "go ahead",
     "go for it",
     "do it",
     "please do",
-    "proceed",
+    "that's right",
+    "that’s right",
+    "that’s correct",
+    "that's correct",
+    "ok 👍",
+    "👍 ok",
+    "ok 👍🏽",
+    "yes ✅",
+    "yes ✔️",
+    "lgtm 👍",
+    "ok :+1:",
+    "ok :+1::skin-tone-3:",
+    "yes :white_check_mark:",
+    "ok :)",
+    "yes :-)",
+    "ok (y)",
+    "  yes  ",
+    "yes\n",
+    "ok,",
+    "ok...",
+    "go ahead",
+    "go  ahead",
     "mark as resolved",
     "mark it as resolved",
     "resolve it",
-    "close it",
-    "that's right",
-    "that's correct",
-    "sounds good",
-    "looks good",
-    "lgtm",
+]
+MUST_NOT_EXECUTE = [
+    "ok, don't close it yet",
+    "ok, don’t close it yet",
+    "ok no",
+    "ok, no",
+    "sure, do it later",
+    "okay i'll confirm with the team",
+    "lgtm, not approved yet",
+    "ok. mark as resolved later",
+    "yes, don't close it yet",
+    "do it later",
+    "confirm later",
+    "ok, wait",
+    "ok not now",
+    "ok hold on",
+    "yes no",
+    "ok stop",
+    "ok cancel that",
+    "ok never mind",
+    "yes... actually no",
+    "okay, let me double check first",
+    "ok after lunch",
+    "sure — tomorrow",
+    "ok, the issue is back",
+    "ok the case is fine as is",
+    "yes it is not fixed",
+    "❌ close it",
+    "❌ ok",
+    "!ok",
+    "~~ok~~",
+    "[ ] close it",
+    "- ok",
+    "> ok",
+    "`ok`",
+    "**yes**",
+    '"yes"',
+    "ok 👎",
+    "👎 ok",
+    "ok :-1:",
+    "ok :thumbsdown:",
+    "ok :x:",
+    "ok :(",
+    "yes :(",
+    "ok >:(",
+    "ok :/",
+    "ok ⏳",
+    "ok 🤔",
+    "ok :thinking_face:",
+    "yes 🛑",
+    "ok >:)",
+    "ok?",
+    "yes?",
+    "ok？",
+    "ok¿",
+    "ok ؟",
+    "ok but what is the root cause?",
+    "оk",
+    "ｏｋ",
+    "ok\u200b",
+    "\u200bok",
+    "o\u200bk",
+    "ye\u200bs",
+    "yes\u200dno",
+    "ok\ufeff",
+    "ok go ahead",
+    "yes please",
+    "yes please close it",
+    "ok ok",
+    "yes, go ahead",
+    "sure, close it",
+    "lgtm, confirmed",
+    "ok thanks",
+    "looks good to me",
+    "yes thank you",
+    "clo(y)se it",
+    "y:)es",
+    "o👍k",
+    "resolve it[closed]",
+    "close it[resolved]",
+    "ok 1",
+    "yes2",
+    "ok :d",
+    "ok xd",
+    "ok <3",
+    "yesterday it was fine",
 ]
 
 
-def _main_confirms(user_message: str) -> bool:
-    if not user_message:
-        return False
-    if is_substantive_reply(user_message):
-        return False
-    msg = user_message.strip().lower()
-    return any(re.match(rf"{re.escape(t)}\b", msg) for t in _MAIN_CONFIRM_PATTERNS)
+def _with_target(entry: str) -> tuple[str, str]:
+    for target in ("closed", "resolved"):
+        suffix = f"[{target}]"
+        if entry.endswith(suffix):
+            return entry[: -len(suffix)], target
+    return entry, "resolved"
 
 
-#: Every token alone, every labelled reply, the review's probes, and negatives.
-VERDICT_CORPUS = [
-    *_MAIN_CONFIRM_PATTERNS,
-    *(m for rows in LABEL_TABLE.values() for m in rows),
-    "okay i'll confirm with the team",
-    "lgtm, not approved yet",
-    "that\u2019s right",
-    "that works",
-    "ok_",
-    "well, yes",
-    "ok but what is the root cause?",
-    "yesterday",
-    "note the db latency spiked",
-    "hmm",
-    "",
-    "   ",
+#: ``pending_gate_verdict`` against a pending RESOLVED: the reply, the answer
+#: its intent carries (None: no intent), ``typed`` (False only for a click),
+#: and the verdict and channel expected. A typed row with an intent is one the
+#: resolver MINTED from the text.
+GATE_TABLE = [
+    ("ok", None, True, "confirm", "weak_token"),
+    ("ok", True, True, "confirm", "weak_token"),
+    ("ok", False, True, "reask", None),
+    ("ok go ahead", None, True, "reask", None),
+    ("ok go ahead", True, True, "reask", None),
+    ("ok go ahead", False, True, "reask", None),
+    ("ok, don't close it yet", None, True, "reask", None),
+    ("ok, don't close it yet", False, True, "reask", None),
+    ("no", None, True, "decline", None),
+    ("no", True, True, "reask", None),
+    (
+        "no, we did not do anything yet \u2014 did you see anything wrong?",
+        None,
+        True,
+        "decline",
+        None,
+    ),
+    ("hmm", None, True, "not_an_answer", None),
+    ("the pod restarted", None, True, "not_an_answer", None),
+    ("that works", True, True, "reask", None),
+    ("not now thanks", False, True, "decline", None),
+    (
+        "yes, go ahead and close it, verified the fix in staging and prod",
+        None,
+        True,
+        "reask",
+        None,
+    ),
+    (
+        "we will do it in friday's maintenance window instead of now",
+        None,
+        True,
+        "not_an_answer",
+        None,
+    ),
+    ("what happens to the runbook if I close this?", None, True, "not_an_answer", None),
+    (
+        "ok so here's what I found: the pod restarted at 3pm and the logs show OOM "
+        "kills at the same time, memory limit 512Mi",
+        None,
+        True,
+        "not_an_answer",
+        None,
+    ),
+    ("   ", None, True, "not_an_answer", None),
+    # A click is read from the intent alone: the card's own text, or anything.
+    (CONFIRM_CARD["payload"], True, False, "confirm", "intent"),
+    ("ok, don't close it yet", True, False, "confirm", "intent"),
+    (DECLINE_CARD["payload"], False, False, "decline", None),
+    ("ok", False, False, "decline", None),
 ]
 
 _ALL_TOKENS = _EXPLICIT_CONFIRM_TOKENS + _WEAK_CONFIRM_TOKENS
@@ -203,32 +344,120 @@ class TestTheClassifier:
         [(label, m) for label, rows in LABEL_TABLE.items() for m in rows],
     )
     def test_the_label_table(self, label, message):
-        assert confirmation_token_class(message) == label
+        assert confirmation_token_class(message, "resolved") == label
 
+    @pytest.mark.parametrize("to_state", ["resolved", "closed"])
     @pytest.mark.parametrize("token", _WEAK_CONFIRM_TOKENS)
-    def test_each_weak_token_alone_is_weak(self, token):
-        assert confirmation_token_class(token) == "weak_token"
+    def test_each_weak_token_alone_is_weak(self, token, to_state):
+        assert confirmation_token_class(token, to_state) == "weak_token"
 
     @pytest.mark.parametrize("token", _EXPLICIT_CONFIRM_TOKENS)
     def test_each_explicit_token_alone_is_explicit(self, token):
-        assert confirmation_token_class(token) == "explicit_token"
+        to_state = OWN_TARGET.get(token, "resolved")
+        assert confirmation_token_class(token, to_state) == "explicit_token"
+
+    def test_a_target_scoped_token_consents_only_to_its_own_target(self):
+        assert confirmation_token_class("close it", "closed") == "explicit_token"
+        assert confirmation_token_class("close it", "resolved") is None
+        assert confirmation_token_class("resolve it", "closed") is None
+        assert confirmation_token_class("mark as resolved", "closed") is None
+        assert confirmation_token_class("mark it as resolved", "closed") is None
+        assert confirmation_token_class("yes", "closed") == "explicit_token"
+
+    @pytest.mark.parametrize(
+        "message, to_state",
+        [
+            ("clo(y)se it", "closed"),
+            ("y:)es", "resolved"),
+            ("o\U0001f44dk", "resolved"),
+        ],
+    )
+    def test_a_decoration_inside_a_word_never_reassembles_a_token(
+        self, message, to_state
+    ):
+        """Each against a target the reassembled token WOULD consent to. The
+        corpus tests ``clo(y)se it`` against ``resolved``, where target scoping
+        refuses ``close it`` anyway and so hides a decoration removed as ``""``
+        rather than as a space."""
+        assert confirmation_token_class(message, to_state) is None
+
+    @pytest.mark.parametrize(
+        "message, to_state",
+        [
+            ("o\U0001f3fdk", "resolved"),
+            ("y\U0001f3fdes", "resolved"),
+            ("o\ufe0fk", "resolved"),
+            ("clo\ufe0fse it", "closed"),
+            ("ok :+\U0001f3fb1:", "resolved"),
+            ("ok :\ufe0f)", "resolved"),
+        ],
+    )
+    def test_an_emoji_modifier_inside_a_word_never_reassembles_a_token(
+        self, message, to_state
+    ):
+        """Review round 1: a skin tone or the emoji presentation selector
+        (U+FE0F) is replaced by a space like a decoration, never deleted, so
+        one inside a word or a decoration splits it."""
+        assert confirmation_token_class(message, to_state) is None
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "\U0001f44d\U0001f3fd ok",
+            "ok \U0001f44d\U0001f3fd",
+            "yes \u2714\ufe0f",
+            "\u2714\ufe0f yes",
+        ],
+    )
+    def test_an_emoji_modifier_on_a_positive_emoji_keeps_a_reply_bare(self, message):
+        assert confirmation_token_class(message, "resolved") is not None
+
+    def test_the_target_map_is_pinned(self):
+        assert _TARGET_SCOPED_TOKENS == OWN_TARGET
 
     @pytest.mark.parametrize("message", ["that works", "", "ok_", "yesterday"])
     def test_what_the_gate_does_not_read_as_consent_is_none(self, message):
-        assert confirmation_token_class(message) is None
+        assert confirmation_token_class(message, "resolved") is None
 
     def test_a_substantive_reply_is_not_a_confirmation(self):
-        assert confirmation_token_class("ok but what is the root cause?") is None
+        assert (
+            confirmation_token_class("ok but what is the root cause?", "resolved")
+            is None
+        )
 
     def test_a_token_later_in_the_reply_does_not_confirm(self):
-        assert confirmation_token_class("well, yes") is None
+        assert confirmation_token_class("well, yes", "resolved") is None
 
-    @pytest.mark.parametrize("message", VERDICT_CORPUS)
-    def test_no_verdict_moves_from_mains_rule(self, message):
-        """Review F10: checked against a frozen copy, not against itself."""
-        assert (confirmation_token_class(message) is not None) == _main_confirms(
-            message
+    @pytest.mark.parametrize("entry", MUST_EXECUTE)
+    def test_every_bare_consent_is_consent(self, entry):
+        message, to_state = _with_target(entry)
+        assert confirmation_token_class(message, to_state) is not None
+
+    @pytest.mark.parametrize("entry", MUST_NOT_EXECUTE)
+    def test_nothing_but_a_bare_consent_is_consent(self, entry):
+        """#1783: the replies that open with a token and then refuse or defer,
+        the vocabulary combinations and symbol games that broke the two word
+        grammars before ruling (a), negative decorations, questions, lookalikes,
+        and multi-token consents, which are re-asked rather than executed."""
+        message, to_state = _with_target(entry)
+        assert confirmation_token_class(message, to_state) is None
+
+    @pytest.mark.parametrize(
+        "message, intent_value, typed, verdict, via",
+        GATE_TABLE,
+    )
+    def test_the_gate_verdict_table(self, message, intent_value, typed, verdict, via):
+        assert pending_gate_verdict(
+            message, "resolved", intent_value=intent_value, typed=typed
+        ) == (verdict, via)
+
+    def test_the_removed_labels_are_gone(self):
+        assert get_args(TerminalConfirmedVia) == (
+            "intent",
+            "explicit_token",
+            "weak_token",
         )
+        assert not set(REMOVED_LABELS) & set(get_args(TerminalConfirmedVia))
 
     def test_no_two_tokens_can_both_open_one_message(self):
         """Two tokens can both match at a message's start only if one matches
@@ -293,9 +522,8 @@ class TestTheClassifier:
             "that's correct",
         )
 
-    def test_the_two_sets_are_mains_list_split(self):
+    def test_the_two_sets_are_disjoint(self):
         assert not set(_WEAK_CONFIRM_TOKENS) & set(_EXPLICIT_CONFIRM_TOKENS)
-        assert sorted(_ALL_TOKENS) == sorted(_MAIN_CONFIRM_PATTERNS)
 
 
 @pytest.fixture
@@ -317,14 +545,16 @@ class TestAStoredChannelNeverBreaksALoad:
     """The loaders rebuild every record with ``TurnProgress(**t)``, so a value
     the ``Literal`` rejected would make the whole case unloadable (review F8)."""
 
+    @pytest.mark.parametrize("stale", REMOVED_LABELS)
     def test_an_unknown_stored_channel_loads_as_none_and_says_so(
-        self, caplog, fresh_warnings
+        self, caplog, fresh_warnings, stale
     ):
+        """A record written before #1783 removed its label still loads."""
         with caplog.at_level(logging.WARNING, logger=turn_model.__name__):
-            record = _record("bare_weak")
+            record = _record(stale)
         assert record.terminal_confirmed_via is None
         assert [r.levelno for r in caplog.records] == [logging.WARNING]
-        assert "'bare_weak'" in caplog.records[0].getMessage()
+        assert f"'{stale}'" in caplog.records[0].getMessage()
 
     def test_the_same_stale_value_warns_once(self, caplog, fresh_warnings):
         """Review F11: a stale record is re-read on every load of its case."""
@@ -452,6 +682,13 @@ def _spy_on_the_engine(svc: InvestigationService) -> AsyncMock:
     return spy
 
 
+def _mint(svc: InvestigationService, card: dict) -> AsyncMock:
+    """Have the intent resolver mint ``card``'s intent from whatever is typed,
+    and return a spy on the engine that shows what reached the gate."""
+    svc.intent_resolver.resolve = AsyncMock(return_value=card["intent"])
+    return _spy_on_the_engine(svc)
+
+
 class TestTheConfirmationCounter:
     async def test_a_typed_ok_counts_as_weak(self, counters):
         confirmation, followup = counters
@@ -468,7 +705,7 @@ class TestTheConfirmationCounter:
         followup.labels.assert_not_called()  # the confirming turn itself
 
     @pytest.mark.parametrize("message", ["yes", "go ahead"])
-    async def test_a_typed_reply_opening_with_an_explicit_token_counts_as_explicit(
+    async def test_a_typed_bare_explicit_token_counts_as_explicit(
         self, counters, message
     ):
         confirmation, _ = counters
@@ -480,35 +717,34 @@ class TestTheConfirmationCounter:
             via="explicit_token", to_state="resolved"
         )
 
-    # Only the replies that DO consent: the gate also executes on the refusals
-    # ("ok, don't close it yet"), which is #1783, and pinning that here would
-    # pin the defect.
+    # #1783: a typed reply that says more than one token executes nothing, so it
+    # counts nothing, whether what follows consents ("ok go ahead") or refuses
+    # ("ok, don't close it yet"). These turns were ``weak_prefixed`` and
+    # ``explicit_prefixed``; both labels are gone.
     @pytest.mark.parametrize(
-        "message", ["ok go ahead", "sure, close it", "ok yes", "lgtm, confirmed"]
+        "message",
+        [
+            "ok go ahead",
+            "sure, close it",
+            "ok yes",
+            "lgtm, confirmed",
+            "yes please close it",
+            "ok, don't close it yet",
+        ],
     )
-    async def test_a_weak_opener_that_says_more_counts_as_weak_prefixed(
+    async def test_a_token_that_says_more_executes_and_counts_nothing(
         self, counters, message
     ):
-        confirmation, _ = counters
+        confirmation, followup = counters
         store = _Store(_investigating_case())
 
         await _turn(_service(store), message)
 
-        confirmation.labels.assert_called_once_with(
-            via="weak_prefixed", to_state="resolved"
-        )
-
-    async def test_an_explicit_opener_that_says_more_counts_as_explicit_prefixed(
-        self, counters
-    ):
-        confirmation, _ = counters
-        store = _Store(_investigating_case())
-
-        await _turn(_service(store), "yes please close it")
-
-        confirmation.labels.assert_called_once_with(
-            via="explicit_prefixed", to_state="resolved"
-        )
+        assert store.row().state == CaseState.INVESTIGATING
+        assert store.row().pending_transition["to_state"] == "resolved"
+        assert store.row().turn_history[-1].terminal_confirmed_via is None
+        confirmation.labels.assert_not_called()
+        followup.labels.assert_not_called()
 
     async def test_a_confirming_turn_whose_final_save_fails_is_not_counted(
         self, counters
@@ -573,26 +809,33 @@ class TestTheConfirmationCounter:
         assert engine.await_args.kwargs["intent_type"] == "confirmation"
         assert engine.await_args.kwargs["typed"] is True
         assert "typed" not in engine.await_args.kwargs["intent_data"]
+        # A bare token, so the minted confirmation executes (#1783).
+        assert store.row().state == CaseState.RESOLVED
+        assert store.row().turn_history[-1].terminal_confirmed_via == "weak_token"
         confirmation.labels.assert_called_once_with(
             via="weak_token", to_state="resolved"
         )
 
-    async def test_typed_text_the_resolver_accepted_with_no_token_is_typed_other(
+    async def test_typed_text_the_resolver_accepted_with_no_token_executes_nothing(
         self, counters
     ):
+        """#1783: what was ``typed_other``. The resolver minted a confirmation
+        from "that works", which is not a click, and the text is no bare
+        token, so the proposal is re-asked and nothing is counted."""
         confirmation, _ = counters
         store = _Store(_investigating_case())
         _offer_the_resolution_cards(store)
         svc = _service(store)
-        svc.intent_resolver.resolve = AsyncMock(return_value=CONFIRM_CARD["intent"])
-        assert confirmation_token_class("that works") is None
+        engine = _mint(svc, CONFIRM_CARD)
+        assert confirmation_token_class("that works", "resolved") is None
 
         await _turn(svc, "that works")
 
-        assert store.row().state == CaseState.RESOLVED
-        confirmation.labels.assert_called_once_with(
-            via="typed_other", to_state="resolved"
-        )
+        assert engine.await_args.kwargs["intent_type"] == "confirmation"
+        assert engine.await_args.kwargs["typed"] is True
+        assert store.row().state == CaseState.INVESTIGATING
+        assert store.row().pending_transition["to_state"] == "resolved"
+        confirmation.labels.assert_not_called()
 
     async def test_a_click_counts_as_intent(self, counters):
         confirmation, _ = counters
@@ -604,6 +847,7 @@ class TestTheConfirmationCounter:
 
         assert engine.await_args.kwargs["typed"] is False
         assert "typed" not in engine.await_args.kwargs["intent_data"]
+        assert store.row().state == CaseState.RESOLVED
         confirmation.labels.assert_called_once_with(via="intent", to_state="resolved")
         assert store.row().turn_history[-1].terminal_confirmed_via == "intent"
 
@@ -641,6 +885,161 @@ class TestTheConfirmationCounter:
         confirmation.labels.assert_called_once()  # it did raise, here
         assert response.agent_response
         assert store.row().state == CaseState.RESOLVED
+
+
+#: The signature an ENGINE proposer writes on its offer, which a refusal is
+#: recorded against.
+_SIGNATURE = "SUGGEST_RESOLVE|1|chain"
+
+
+def _sign_the_offer(store: _Store) -> None:
+    """Sign the standing proposal as an engine proposer would. Without it,
+    "nothing recorded" would hold vacuously: the thin case here derives no
+    signature, so even a real refusal would record nothing."""
+    store.row().pending_transition["justifying_signature"] = _SIGNATURE
+
+
+def _assert_re_asked(store: _Store, response) -> None:
+    """The proposal was shown again with its buttons, still stands, executed
+    nothing, and recorded no refusal."""
+    row = store.row()
+    assert row.state == CaseState.INVESTIGATING
+    assert row.pending_transition is not None
+    assert row.pending_transition["to_state"] == "resolved"
+    assert "Please select one of the options above" in response.agent_response
+    assert [action.label for action in response.suggested_actions] == [
+        card["label"] for card in _resolution_confirmation_suggestions()
+    ]
+    assert row.progress.deferred_disposition_declined_signatures == []
+    assert row.turn_history[-1].terminal_confirmed_via is None
+
+
+class TestOnlyAClickOrABareTokenExecutes:
+    """#1783, ruling (a). A pending terminal proposal executes on its click or
+    on a BARE typed consent token, and on nothing else, whatever the intent
+    resolver minted from the text. Every other answer that is not a decline is
+    re-asked with the proposal's buttons, never reaches the LLM (the harness's
+    generator raises if it does), and records no refusal, every time it is
+    sent."""
+
+    async def test_a_typed_refusal_after_a_weak_token_is_re_asked(self, counters):
+        confirmation, _ = counters
+        store = _Store(_investigating_case())
+        _sign_the_offer(store)
+        svc = _service(store)
+
+        response = await _turn(svc, "ok, don't close it yet")
+
+        _assert_re_asked(store, response)
+        svc.engine.generator.generate_structured_output.assert_not_called()
+        confirmation.labels.assert_not_called()
+
+    @pytest.mark.parametrize("message", ["ok, don't close it yet", "hmm"])
+    async def test_the_same_non_answer_sent_twice_is_re_asked_twice(
+        self, counters, message
+    ):
+        """The one-re-present cap (#656) withdrew the proposal, and recorded a
+        refusal, on a second non-answer. A re-ask never becomes a decline."""
+        confirmation, _ = counters
+        store = _Store(_investigating_case())
+        _sign_the_offer(store)
+        svc = _service(store)
+
+        for _ in range(2):
+            response = await _turn(svc, message)
+            _assert_re_asked(store, response)
+
+        svc.engine.generator.generate_structured_output.assert_not_called()
+        confirmation.labels.assert_not_called()
+
+    async def test_a_minted_confirmation_on_more_than_a_token_is_re_asked(
+        self, counters
+    ):
+        confirmation, _ = counters
+        store = _Store(_investigating_case())
+        _sign_the_offer(store)
+        _offer_the_resolution_cards(store)
+        svc = _service(store)
+        engine = _mint(svc, CONFIRM_CARD)
+
+        response = await _turn(svc, "ok go ahead")
+
+        # The mint reached the gate as a typed confirmation, so the re-ask is
+        # the gate's answer to it, not to plain text.
+        assert engine.await_args.kwargs["intent_type"] == "confirmation"
+        assert engine.await_args.kwargs["intent_data"]["value"] is True
+        assert engine.await_args.kwargs["typed"] is True
+        _assert_re_asked(store, response)
+        confirmation.labels.assert_not_called()
+
+    async def test_a_minted_decline_on_a_bare_token_is_re_asked(self, counters):
+        """The text says yes and the mint says no: they disagree, so neither
+        wins. The card is shown again, and nothing is recorded."""
+        confirmation, _ = counters
+        store = _Store(_investigating_case())
+        _sign_the_offer(store)
+        _offer_the_resolution_cards(store)
+        svc = _service(store)
+        engine = _mint(svc, DECLINE_CARD)
+
+        response = await _turn(svc, "ok")
+
+        assert engine.await_args.kwargs["intent_type"] == "confirmation"
+        assert engine.await_args.kwargs["intent_data"]["value"] is False
+        assert engine.await_args.kwargs["typed"] is True
+        _assert_re_asked(store, response)
+        confirmation.labels.assert_not_called()
+
+    async def test_a_curly_apostrophe_consent_executes(self, counters):
+        confirmation, _ = counters
+        store = _Store(_investigating_case())
+
+        await _turn(_service(store), "that\u2019s right")
+
+        assert store.row().state == CaseState.RESOLVED
+        assert store.row().turn_history[-1].terminal_confirmed_via == "explicit_token"
+        confirmation.labels.assert_called_once_with(
+            via="explicit_token", to_state="resolved"
+        )
+
+    async def test_close_it_does_not_confirm_a_pending_resolve(self, counters):
+        confirmation, _ = counters
+        store = _Store(_investigating_case())
+        _sign_the_offer(store)
+
+        response = await _turn(_service(store), "close it")
+
+        _assert_re_asked(store, response)
+        confirmation.labels.assert_not_called()
+
+    async def test_close_it_closes_a_pending_close(self, counters):
+        """The positive control for the row above. The case is not resolvable,
+        so INV-37 does not pivot the close to a resolve."""
+        confirmation, _ = counters
+        store = _Store(_investigating_case("closed"))
+
+        await _turn(_service(store), "close it")
+
+        assert store.row().state == CaseState.CLOSED
+        confirmation.labels.assert_called_once_with(
+            via="explicit_token", to_state="closed"
+        )
+
+    async def test_a_bare_no_still_declines_and_records_the_refusal(self, counters):
+        """An explicit decline stays a decline. Also the positive control for
+        every "nothing recorded" above: on this harness a refusal records."""
+        confirmation, _ = counters
+        store = _Store(_investigating_case())
+        _sign_the_offer(store)
+
+        response = await _turn(_service(store), "no")
+
+        row = store.row()
+        assert row.state == CaseState.INVESTIGATING
+        assert row.pending_transition is None
+        assert row.progress.deferred_disposition_declined_signatures == [_SIGNATURE]
+        assert "Please select one of the options above" not in response.agent_response
+        confirmation.labels.assert_not_called()
 
 
 class TestTheFollowUpCounter:

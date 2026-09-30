@@ -132,7 +132,7 @@ class TestIsSubstantiveReply:
         )
         msg = "yes but what about the replication lag?"
         assert is_substantive_reply(msg) is True
-        assert confirmation_token_class(msg) is None
+        assert confirmation_token_class(msg, "resolved") is None
 
 
 # =============================================================================
