@@ -619,8 +619,19 @@ class EnvConfigStatusResponse(BaseModel):
     deployment: str = Field(
         description="'standalone' or 'cloud' — from DEPLOYMENT_MODE (ADR-004)"
     )
-    db_backend: str = Field(description="'sqlite' or 'postgresql'")
-    session_storage: str = Field(description="'inmemory' or 'redis'")
+    db_backend: str = Field(
+        description=(
+            "'sqlite' or 'postgresql' — the backend of DATABASE_URL, the URL the "
+            "engine is built from; 'unrecognized' for any other scheme"
+        )
+    )
+    session_storage: str = Field(
+        description=(
+            "'redis' or 'fakeredis (inmemory)' — the Redis client the running "
+            "process actually holds, not the configured one; 'not initialized' "
+            "before the composition root has set it"
+        )
+    )
     vector_storage: str = Field(description="'inmemory' or 'chromadb'")
     llm_provider: str = Field(description="Primary LLM provider name")
     pii_redaction_enabled: bool

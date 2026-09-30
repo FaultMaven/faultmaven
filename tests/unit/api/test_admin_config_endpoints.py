@@ -197,6 +197,7 @@ def mock_settings():
     settings.auth.sso_jit_personal_tenant_max_per_hour = 20
     settings.agent.tenant_daily_turn_cap = 30
     settings.database.case_storage_type = "sqlite"
+    settings.database.database_url = "sqlite+aiosqlite:///./data/faultmaven.db"
     settings.database.session_storage_type = "inmemory"
     settings.database.vector_storage_type = "chromadb"
     settings.protection.protection_enabled = False
@@ -881,6 +882,10 @@ class TestGetEnvConfigStatus:
         self, mock_admin_user, mock_settings, rate_limited_app
     ):
         """Returns all environment configuration fields."""
+        from fakeredis import aioredis as fake_aioredis
+
+        rate_limited_app.state.redis_client = fake_aioredis.FakeRedis()
+
         with patch(SETTINGS_PATCH, return_value=mock_settings):
             result = await get_env_config_status(
                 request=_request_for(rate_limited_app), current_user=mock_admin_user
@@ -900,23 +905,44 @@ class TestGetEnvConfigStatus:
     async def test_cloud_config(
         self, mock_admin_user, mock_settings, rate_limited_app, tmp_path, monkeypatch
     ):
-        """Returns correct values for cloud deployment config."""
+        """Reports PostgreSQL and real Redis for the shape a cloud pod runs.
+
+        The shape is the deployed one on the two axes this endpoint used to
+        misread: the server is named by ``REDIS_HOST`` with no ``REDIS_URL``,
+        and the process runs beside an ``alembic.ini`` whose ``sqlalchemy.url``
+        is the SQLite placeholder ``alembic/env.py`` overrides at run time. The
+        old reads answered "sqlite" and "fakeredis (inmemory)" for exactly this.
+        """
+        from redis.asyncio import Redis
+
         mock_settings.auth.auth_mode = "oauth"
         mock_settings.is_cloud = True
         mock_settings.server.environment = MagicMock(value="production")
         mock_settings.database.case_storage_type = "postgresql"
+        mock_settings.database.database_url = (
+            "postgresql+asyncpg://app:secret@postgres.internal:5432/faultmaven"
+        )
         mock_settings.database.session_storage_type = "redis"
-        mock_settings.database.redis_url = "redis://localhost:6379"
+        mock_settings.database.redis_url = None
+        mock_settings.database.redis_host = "redis.internal"
         mock_settings.database.vector_storage_type = "chromadb"
         mock_settings.protection.protection_enabled = True
 
-        # Run from temp dir so alembic.ini is not found (avoids sqlite override)
+        (tmp_path / "alembic.ini").write_text(
+            "[alembic]\nsqlalchemy.url = sqlite:///data/faultmaven.db\n"
+        )
         monkeypatch.chdir(tmp_path)
+        redis_client = Redis(host="redis.internal")  # never connects
+        rate_limited_app.state.redis_client = redis_client
 
-        with patch(SETTINGS_PATCH, return_value=mock_settings):
-            result = await get_env_config_status(
-                request=_request_for(rate_limited_app), current_user=mock_admin_user
-            )
+        try:
+            with patch(SETTINGS_PATCH, return_value=mock_settings):
+                result = await get_env_config_status(
+                    request=_request_for(rate_limited_app),
+                    current_user=mock_admin_user,
+                )
+        finally:
+            await redis_client.aclose()
 
         assert result.auth_mode == "oauth"
         assert result.deployment == "cloud"
@@ -924,6 +950,55 @@ class TestGetEnvConfigStatus:
         assert result.session_storage == "redis"
         assert result.vector_storage == "chromadb"
         assert result.pii_redaction_enabled is True
+
+    @pytest.mark.asyncio
+    async def test_session_storage_reports_the_stand_in_the_process_holds(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        """Settings naming a Redis do not make the process hold one.
+
+        Standalone serves from the in-process FakeRedis when its configured
+        Redis is unusable (``fakeredis_or_fail``), and that substitution is the
+        fact an operator reading this panel needs.
+        """
+        from fakeredis import aioredis as fake_aioredis
+
+        mock_settings.database.session_storage_type = "redis"
+        mock_settings.database.redis_url = "redis://redis.internal:6379"
+        rate_limited_app.state.redis_client = fake_aioredis.FakeRedis()
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        assert result.session_storage == "fakeredis (inmemory)"
+
+    @pytest.mark.asyncio
+    async def test_session_storage_before_the_composition_root_has_run(
+        self, mock_admin_user, mock_settings
+    ):
+        """No shared client on ``app.state`` is reported, not guessed at."""
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(FastAPI()), current_user=mock_admin_user
+            )
+
+        assert result.session_storage == "not initialized"
+
+    @pytest.mark.asyncio
+    async def test_db_backend_names_no_backend_for_an_unknown_scheme(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        """A URL the engine's predicates do not classify is not called SQLite."""
+        mock_settings.database.database_url = "mysql://db.internal/faultmaven"
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        assert result.db_backend == "unrecognized"
 
     @pytest.mark.asyncio
     async def test_request_protection_is_reported_hardened_by_default(

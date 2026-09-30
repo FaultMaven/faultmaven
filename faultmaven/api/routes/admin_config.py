@@ -1353,26 +1353,24 @@ async def get_env_config_status(
 
         # Report actual runtime state, not raw setting defaults.
         # Bootstrap may create persistent stores even when settings say "inmemory".
-        from pathlib import Path
 
-        # Database: check alembic.ini for actual DB URL (bootstrap always uses this)
-        db_backend = settings.database.case_storage_type
-        alembic_url = ""
-        alembic_config = getattr(settings.database, "alembic_config", None)
-        ini_candidates = [Path("alembic.ini")]
-        if alembic_config:
-            ini_candidates.append(Path(alembic_config))
-        for ini_path in ini_candidates:
-            if ini_path.exists():
-                for line in ini_path.read_text().splitlines():
-                    if line.strip().startswith("sqlalchemy.url"):
-                        alembic_url = line.split("=", 1)[1].strip()
-                        break
-                break
-        if "sqlite" in alembic_url:
-            db_backend = "sqlite"
-        elif "postgresql" in alembic_url:
+        # Database: the URL the engine is built from (``get_engine`` reads
+        # ``settings.database.database_url``), classified by the engine's own
+        # predicates. Not ``alembic.ini``: its ``sqlalchemy.url`` is a SQLite
+        # placeholder that ``alembic/env.py`` replaces with ``DATABASE_URL``, so
+        # reading it reported "sqlite" on every deployment that ships the file.
+        from faultmaven.infrastructure.persistence.database import (
+            is_postgresql,
+            is_sqlite,
+        )
+
+        database_url = str(settings.database.database_url or "")
+        if is_postgresql(database_url):
             db_backend = "postgresql"
+        elif is_sqlite(database_url):
+            db_backend = "sqlite"
+        else:
+            db_backend = "unrecognized"
 
         # Vector storage: check if ChromaDB PersistentClient is active
         vector_storage = settings.database.vector_storage_type
@@ -1401,13 +1399,20 @@ async def get_env_config_status(
         elif kb_active:
             vector_storage = "chromadb (persistent, kb only)"
 
-        # Session storage: FakeRedis = inmemory, real Redis = redis
-        session_storage = settings.database.session_storage_type
-        redis_url = getattr(settings.database, "redis_url", None)
-        if redis_url and "redis://" in str(redis_url):
-            session_storage = "redis"
-        else:
+        # Session storage: the client every Redis consumer shares, set on
+        # ``app.state`` by the composition root, judged by the one FakeRedis
+        # predicate. Settings cannot answer this: a server named by
+        # ``REDIS_HOST`` has no ``redis_url``, and standalone serves from the
+        # in-process stand-in when its configured Redis is unusable.
+        from faultmaven.infrastructure.redis_client import is_fakeredis
+
+        redis_client = getattr(request.app.state, "redis_client", None)
+        if redis_client is None:
+            session_storage = "not initialized"
+        elif is_fakeredis(redis_client):
             session_storage = "fakeredis (inmemory)"
+        else:
+            session_storage = "redis"
 
         return EnvConfigStatusResponse(
             auth_mode=settings.auth.auth_mode,

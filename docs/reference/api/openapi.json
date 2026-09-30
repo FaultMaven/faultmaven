@@ -2624,7 +2624,7 @@
             "type": "string"
           },
           "db_backend": {
-            "description": "'sqlite' or 'postgresql'",
+            "description": "'sqlite' or 'postgresql' \u2014 the backend of DATABASE_URL, the URL the engine is built from; 'unrecognized' for any other scheme",
             "title": "Db Backend",
             "type": "string"
           },
@@ -2660,7 +2660,7 @@
             "type": "boolean"
           },
           "session_storage": {
-            "description": "'inmemory' or 'redis'",
+            "description": "'redis' or 'fakeredis (inmemory)' \u2014 the Redis client the running process actually holds, not the configured one; 'not initialized' before the composition root has set it",
             "title": "Session Storage",
             "type": "string"
           },
