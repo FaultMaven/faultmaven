@@ -279,6 +279,23 @@ def test_tool_call_never_recovers_a_cut_response(counters, caplog):
     assert SAMPLE_TEXT[:40] not in warning.getMessage()
 
 
+@pytest.mark.parametrize("state_updates", ["\n", ""], ids=["newline", "empty"])
+def test_tool_call_a_cut_blank_state_updates_is_lost_state(
+    counters, caplog, state_updates
+):
+    """What the provider cut could have carried state, so even a blank value
+    counts as ``string_dropped`` and warns; only an uncut blank is
+    ``absent_defaulted``."""
+    with caplog.at_level(logging.WARNING, logger=so.logger.name):
+        parsed = _parse_schema_tool_call(
+            _tool_call(state_updates), TerminalResponse, cut=True
+        )
+    assert parsed.state_updates.model_fields_set == set()
+    assert counters.repairs() == [_repair("string_dropped")]
+    (warning,) = _drop_warnings(caplog)
+    assert warning.cut is True
+
+
 def test_tool_call_other_string_is_dropped_counted_and_logged_without_content(
     counters, caplog
 ):
@@ -644,8 +661,10 @@ def test_tool_call_an_invalid_state_field_costs_that_field_only(
 ):
     """fm#1803: every leaked sibling is lifted, and the ladder decides what an
     invalid one costs, as it does inside a delivered object. A list entry is
-    pruned alone, an enum typo is corrected, and any other invalid state field
-    costs that field and nothing else, never the rest of ``state_updates``."""
+    pruned alone, a typo in a property that carries a direct ``enum`` is
+    corrected, and any other invalid state field (``outcome`` with any value
+    outside its enum included) costs that field and nothing else, never the
+    rest of ``state_updates``."""
     parsed = _parse_schema_tool_call(_tool_call(state_updates, **siblings), schema)
     state = parsed.state_updates
     assert state.model_dump(mode="json", exclude_none=True, exclude_defaults=True) == (

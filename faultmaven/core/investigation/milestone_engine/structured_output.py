@@ -343,7 +343,7 @@ def _prune_invalid_sub_records(content_obj, error, schema_model=None):
       'likelihood')`` nulls ``root_cause_conclusion`` (fm#1502). Absence is
       what an optional sub-object means when the model has nothing to say.
     - Any other ``loc`` under a state field — ``('state_updates', 'outcome')``
-      for an enum value no fixer could correct, ``('state_updates',
+      for any value outside its enum, ``('state_updates',
       'documentation_links')`` for a string where a list belongs — DELETES
       that field from ``state_updates``, so the field takes its default. It
       keys on ``loc[1]`` naming a non-required field of the response's
@@ -676,10 +676,11 @@ def _recover_leaked_parameter(content_obj: dict, schema_model: Any) -> Optional[
 
     Every leaked sibling is lifted, whatever its value: the ladder decides
     what an invalid one costs, as it does for the same value inside a
-    delivered object. A list entry it rejects is pruned alone, an enum typo is
-    corrected first, and any other invalid state field costs that field and
-    nothing else (:func:`_prune_invalid_sub_records`), so a bad sibling can
-    never cost K.
+    delivered object. A list entry it rejects is pruned alone, a typo in a
+    property that carries a direct ``enum`` is corrected first
+    (:func:`_fix_enum_violations`), and any other invalid state field costs
+    that field and nothing else (:func:`_prune_invalid_sub_records`), so a bad
+    sibling can never cost K.
 
     VALUE is kept as raw text (stripped) when the field accepts it as text —
     a text field, an enum, anything Pydantic reads from a string — so no text
@@ -736,15 +737,17 @@ def _normalize_state_updates(
     is recovered, with its leaked siblings lifted back in, unless the provider
     reported the response *cut* at ``max_tokens``: a cut value looks exactly
     like the real unclosed form, so it is never recovered. Any other non-blank
-    string, and a cut one, becomes ``{}`` so the schema defaults apply, counted
-    as ``string_dropped``. A non-empty list (including a string that decoded to
-    one) becomes ``{}`` too, counted as ``non_object_dropped``, so it can
-    never fail the turn. Both are lost state, and both warn.
+    string, and any string in a cut response (a blank one included: what was
+    cut could have carried state), becomes ``{}`` so the schema defaults
+    apply, counted as ``string_dropped``. A non-empty list (including a string
+    that decoded to one) becomes ``{}`` too, counted as ``non_object_dropped``,
+    so it can never fail the turn. Both are lost state, and both warn.
 
     A value that cannot have carried a state field — missing, ``null``, a
-    blank string, ``[]``, a number or a bool — becomes ``{}`` and is counted
-    as ``absent_defaulted``, without a warning: nothing was lost. A value that
-    is already an object is left alone and not counted.
+    blank string in a response that was not cut, ``[]``, a number or a bool —
+    becomes ``{}`` and is counted as ``absent_defaulted``, without a warning:
+    nothing was lost. A value that is already an object is left alone and not
+    counted.
 
     ``xml_recovered`` counts a recovery, not a validated body: validation comes
     after this and is counted on ``faultmaven_schema_validation_total``.
@@ -755,7 +758,7 @@ def _normalize_state_updates(
     schema_name = getattr(schema_model, "__name__", str(schema_model))
     if isinstance(su, dict):
         return content_obj
-    if isinstance(su, str) and su.strip():
+    if isinstance(su, str) and (cut or su.strip()):
         recovered = (
             None if cut else _recover_leaked_parameter(content_obj, schema_model)
         )
@@ -783,8 +786,9 @@ def _normalize_state_updates(
         content_obj["state_updates"] = {}
         repair = "non_object_dropped"
     else:
-        # Missing, null, a blank string, [], a number or a bool: nothing that
-        # could have carried a state field, so nothing is lost.
+        # Missing, null, a blank string in a response that was not cut, [], a
+        # number or a bool: nothing that could have carried a state field, so
+        # nothing is lost.
         content_obj["state_updates"] = {}
         repair = "absent_defaulted"
     schema_state_updates_repairs_total.labels(schema=schema_name, repair=repair).inc()

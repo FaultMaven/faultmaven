@@ -91,11 +91,12 @@ Read as rates, never the numerator alone:
   ``non_object_dropped`` (a non-empty list, coerced to ``{}``: state LOST, and
   the turn no longer fails validation),
   ``string_dropped`` (any other non-blank string, or any string in a response
-  the provider reported cut at ``max_tokens``, coerced to ``{}``: the turn's
-  state updates are LOST, yet the body validates ``clean`` because ``{}``
-  takes the defaults) or ``absent_defaulted`` (a value that could not have
-  carried a state field — missing, null, a blank string, ``[]``, a number or
-  a bool — defaulted, nothing lost). A dict is not counted.
+  the provider reported cut at ``max_tokens``, a blank one included, coerced to
+  ``{}``: the turn's state updates are LOST, yet the body validates ``clean``
+  because ``{}`` takes the defaults) or ``absent_defaulted`` (a value that
+  could not have carried a state field — missing, null, a blank string in a
+  response that was not cut, ``[]``, a number or a bool — defaulted, nothing
+  lost). A dict is not counted.
   ``xml_recovered`` counts a recovery, not a validated body: the recovered
   body is validated afterwards and counted on
   ``faultmaven_schema_validation_total`` like any other (fm#1753).
