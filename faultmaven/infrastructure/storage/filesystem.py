@@ -1,20 +1,15 @@
 """Filesystem storage backend implementation.
 
-Provides local filesystem storage with API-based URLs for upload/download.
-For filesystem storage, "presigned URLs" are actually API endpoints that
-handle the upload/download operations.
+Provides local filesystem storage.
 
 Usage:
-    backend = FilesystemStorageBackend(
-        storage_root="./data/evidence",
-        base_url="http://localhost:8090",
-    )
-    url = await backend.generate_download_url("org123/case456/file.log")
+    backend = FilesystemStorageBackend(storage_root="./data/evidence")
+    await backend.store_file("org123/case456/file.log", data)
 """
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -23,7 +18,6 @@ import aiofiles.os
 
 from faultmaven.infrastructure.storage.base import (
     IFileStorageBackend,
-    PresignedUrl,
     StorageType,
     StoredFile,
 )
@@ -35,32 +29,17 @@ logger = logging.getLogger(__name__)
 class FilesystemStorageBackend(IFileStorageBackend):
     """Filesystem-based storage backend.
 
-    For filesystem storage, presigned URLs are API endpoints that handle
-    the actual file operations. This allows the same interface to work
-    for both local development and production S3 deployments.
-
-    URL Format:
-        - Upload: POST {base_url}/api/v1/storage/upload/{key}
-        - Download: GET {base_url}/api/v1/storage/download/{key}
-
     Attributes:
         storage_root: Root directory for file storage
-        base_url: Base URL for API endpoints (e.g., "http://localhost:8090")
     """
 
-    def __init__(
-        self,
-        storage_root: str = "./data/storage",
-        base_url: str = "http://localhost:8090",
-    ):
+    def __init__(self, storage_root: str = "./data/storage"):
         """Initialize filesystem storage backend.
 
         Args:
             storage_root: Root directory for file storage
-            base_url: Base URL for generating API endpoint URLs
         """
         self.storage_root = Path(storage_root)
-        self.base_url = base_url.rstrip("/")
 
         # No mkdir here. Construction happens lazily via get_storage_backend(),
         # which agent tools reach on a request path, and the storage root may
@@ -147,86 +126,6 @@ class FilesystemStorageBackend(IFileStorageBackend):
             logger.warning("Refusing storage key %r: %s", key, exc)
             raise PathEscape(f"Invalid storage key: {key!r}") from exc
         return candidate
-
-    async def generate_upload_url(
-        self,
-        key: str,
-        content_type: str = "application/octet-stream",
-        expires_in: timedelta = timedelta(hours=1),
-        metadata: Optional[Dict[str, str]] = None,
-    ) -> PresignedUrl:
-        """Generate an API endpoint URL for file upload.
-
-        For filesystem storage, this returns an API endpoint that accepts
-        the file upload via POST request.
-
-        Args:
-            key: Storage key/path for the file
-            content_type: Expected MIME type
-            expires_in: URL validity duration (honored by API, not URL itself)
-            metadata: Optional metadata (stored with file)
-
-        Returns:
-            PresignedUrl with POST method for uploading
-        """
-        # Encode key for URL
-        encoded_key = key.replace("/", "%2F")
-        url = f"{self.base_url}/api/v1/storage/upload/{encoded_key}"
-
-        expires_at = datetime.now(timezone.utc) + expires_in
-
-        logger.debug(f"Generated upload URL for key={key}")
-
-        return PresignedUrl(
-            url=url,
-            expires_at=expires_at,
-            method="POST",
-            headers={"Content-Type": content_type},
-        )
-
-    async def generate_download_url(
-        self,
-        key: str,
-        expires_in: timedelta = timedelta(hours=1),
-        filename: Optional[str] = None,
-    ) -> PresignedUrl:
-        """Generate an API endpoint URL for file download.
-
-        For filesystem storage, this returns an API endpoint that serves
-        the file via GET request.
-
-        Args:
-            key: Storage key/path for the file
-            expires_in: URL validity duration (honored by API, not URL itself)
-            filename: Optional filename for Content-Disposition
-
-        Returns:
-            PresignedUrl with GET method for downloading
-
-        Raises:
-            FileNotFoundError: If the file doesn't exist
-        """
-        full_path = self._get_full_path(key)
-
-        if not await aiofiles.os.path.exists(str(full_path)):
-            raise FileNotFoundError(f"File not found: {key}")
-
-        # Encode key for URL
-        encoded_key = key.replace("/", "%2F")
-        url = f"{self.base_url}/api/v1/storage/download/{encoded_key}"
-
-        if filename:
-            url += f"?filename={filename}"
-
-        expires_at = datetime.now(timezone.utc) + expires_in
-
-        logger.debug(f"Generated download URL for key={key}")
-
-        return PresignedUrl(
-            url=url,
-            expires_at=expires_at,
-            method="GET",
-        )
 
     async def store_file(
         self,
@@ -330,18 +229,6 @@ class FilesystemStorageBackend(IFileStorageBackend):
 
         logger.info(f"Deleted file: {key}")
         return True
-
-    async def file_exists(self, key: str) -> bool:
-        """Check if a file exists on filesystem.
-
-        Args:
-            key: Storage key/path for the file
-
-        Returns:
-            True if file exists, False otherwise
-        """
-        full_path = self._get_full_path(key)
-        return await aiofiles.os.path.exists(str(full_path))
 
     async def get_file_info(self, key: str) -> Optional[StoredFile]:
         """Get file metadata without downloading content.

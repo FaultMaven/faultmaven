@@ -1,23 +1,18 @@
 """Storage backends for FaultMaven.
 
-This package provides storage-neutral file storage backends with presigned
-URL support for direct client upload/download.
+This package provides storage-neutral file storage backends.
 
 Storage Backend Selection:
     Set STORAGE_BACKEND environment variable:
-    - filesystem (default): Local filesystem with API-based URLs
-    - s3: AWS S3 with native presigned URLs
+    - filesystem (default): Local filesystem
+    - s3: AWS S3
 
 Usage:
     from faultmaven.infrastructure.storage import get_storage_backend
 
     backend = get_storage_backend()
 
-    # Generate presigned URLs
-    upload_url = await backend.generate_upload_url("evidence/file.log")
-    download_url = await backend.generate_download_url("evidence/file.log")
-
-    # Direct file operations
+    # File operations
     await backend.store_file("evidence/file.log", data, content_type="text/plain")
     data = await backend.retrieve_file("evidence/file.log")
 
@@ -32,7 +27,6 @@ AWS credentials are loaded from environment or IAM role.
 
 from faultmaven.infrastructure.storage.base import (
     IFileStorageBackend,
-    PresignedUrl,
     StorageType,
     StoredFile,
 )
@@ -54,7 +48,6 @@ except ImportError:
 __all__ = [
     # Interface and types
     "IFileStorageBackend",
-    "PresignedUrl",
     "StoredFile",
     "StorageType",
     # Factory

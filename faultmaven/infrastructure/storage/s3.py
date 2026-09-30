@@ -1,14 +1,13 @@
-"""S3 storage backend implementation with presigned URL support.
+"""S3 storage backend implementation.
 
-Provides AWS S3 storage with native presigned URLs for direct client
-upload/download without proxying through the application server.
+Provides AWS S3 storage.
 
 Usage:
     backend = S3StorageBackend(
         bucket_name="my-bucket",
         region="us-east-1",
     )
-    url = await backend.generate_upload_url("evidence/file.log")
+    await backend.store_file("evidence/file.log", data)
 
 Configuration:
     AWS credentials are loaded from:
@@ -19,13 +18,12 @@ Configuration:
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from functools import partial
 from typing import Any, Dict, List, Optional
 
 from faultmaven.infrastructure.storage.base import (
     IFileStorageBackend,
-    PresignedUrl,
     StorageType,
     StoredFile,
 )
@@ -65,14 +63,7 @@ if not BOTO3_AVAILABLE:
 
 
 class S3StorageBackend(IFileStorageBackend):
-    """AWS S3 storage backend with presigned URL support.
-
-    Provides native S3 presigned URLs that allow clients to upload/download
-    directly to/from S3 without proxying through the application server.
-
-    Presigned URLs:
-        - Upload: PUT request directly to S3 with expiring signature
-        - Download: GET request directly from S3 with expiring signature
+    """AWS S3 storage backend.
 
     Attributes:
         bucket_name: S3 bucket name
@@ -153,115 +144,6 @@ class S3StorageBackend(IFileStorageBackend):
         """
         method = getattr(self._client, method_name)
         return await asyncio.to_thread(partial(method, **kwargs))
-
-    async def generate_upload_url(
-        self,
-        key: str,
-        content_type: str = "application/octet-stream",
-        expires_in: timedelta = timedelta(hours=1),
-        metadata: Optional[Dict[str, str]] = None,
-    ) -> PresignedUrl:
-        """Generate a presigned URL for file upload to S3.
-
-        Args:
-            key: Storage key/path for the file
-            content_type: Expected MIME type
-            expires_in: URL validity duration (default: 1 hour)
-            metadata: Optional metadata to attach to the object
-
-        Returns:
-            PresignedUrl with PUT method for uploading directly to S3
-        """
-        full_key = self._get_full_key(key)
-        expires_seconds = int(expires_in.total_seconds())
-
-        # Build params for presigned URL
-        params = {
-            "Bucket": self.bucket_name,
-            "Key": full_key,
-            "ContentType": content_type,
-        }
-
-        # Add metadata if provided (S3 stores as x-amz-meta-* headers)
-        if metadata:
-            params["Metadata"] = metadata
-
-        url = await self._call(
-            "generate_presigned_url",
-            ClientMethod="put_object",
-            Params=params,
-            ExpiresIn=expires_seconds,
-        )
-
-        expires_at = datetime.now(timezone.utc) + expires_in
-
-        logger.debug(f"Generated S3 upload URL for key={full_key}")
-
-        return PresignedUrl(
-            url=url,
-            expires_at=expires_at,
-            method="PUT",
-            headers={
-                "Content-Type": content_type,
-            },
-        )
-
-    async def generate_download_url(
-        self,
-        key: str,
-        expires_in: timedelta = timedelta(hours=1),
-        filename: Optional[str] = None,
-    ) -> PresignedUrl:
-        """Generate a presigned URL for file download from S3.
-
-        Args:
-            key: Storage key/path for the file
-            expires_in: URL validity duration (default: 1 hour)
-            filename: Optional filename for Content-Disposition
-
-        Returns:
-            PresignedUrl with GET method for downloading directly from S3
-
-        Raises:
-            FileNotFoundError: If the object doesn't exist
-        """
-        full_key = self._get_full_key(key)
-        expires_seconds = int(expires_in.total_seconds())
-
-        # Check if object exists
-        try:
-            await self._call("head_object", Bucket=self.bucket_name, Key=full_key)
-        except ClientError as e:
-            if e.response.get("Error", {}).get("Code") == "404":
-                raise FileNotFoundError(f"File not found: {key}")
-            raise
-
-        # Build params for presigned URL
-        params = {
-            "Bucket": self.bucket_name,
-            "Key": full_key,
-        }
-
-        # Add Content-Disposition if filename provided
-        if filename:
-            params["ResponseContentDisposition"] = f'attachment; filename="{filename}"'
-
-        url = await self._call(
-            "generate_presigned_url",
-            ClientMethod="get_object",
-            Params=params,
-            ExpiresIn=expires_seconds,
-        )
-
-        expires_at = datetime.now(timezone.utc) + expires_in
-
-        logger.debug(f"Generated S3 download URL for key={full_key}")
-
-        return PresignedUrl(
-            url=url,
-            expires_at=expires_at,
-            method="GET",
-        )
 
     async def store_file(
         self,
@@ -358,25 +240,6 @@ class S3StorageBackend(IFileStorageBackend):
 
         logger.info(f"Deleted file from S3: {full_key}")
         return True
-
-    async def file_exists(self, key: str) -> bool:
-        """Check if a file exists in S3.
-
-        Args:
-            key: Storage key/path for the file
-
-        Returns:
-            True if file exists, False otherwise
-        """
-        full_key = self._get_full_key(key)
-
-        try:
-            await self._call("head_object", Bucket=self.bucket_name, Key=full_key)
-            return True
-        except ClientError as e:
-            if e.response.get("Error", {}).get("Code") == "404":
-                return False
-            raise
 
     async def get_file_info(self, key: str) -> Optional[StoredFile]:
         """Get file metadata from S3 without downloading content.

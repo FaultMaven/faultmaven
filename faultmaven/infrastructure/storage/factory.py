@@ -96,13 +96,7 @@ def _create_filesystem_backend(settings) -> IFileStorageBackend:
     # Get storage root from evidence settings
     storage_root = settings.evidence_storage.evidence_storage_root
 
-    # Build base URL
-    base_url = f"http://{settings.server.host}:{settings.server.port}"
-
-    backend = FilesystemStorageBackend(
-        storage_root=storage_root,
-        base_url=base_url,
-    )
+    backend = FilesystemStorageBackend(storage_root=storage_root)
 
     logger.info(f"Filesystem storage backend created: {storage_root}")
     return backend
