@@ -23,6 +23,10 @@ Gauges (no-ops unless ``ENABLE_METRICS=true``; see ``shims/metrics.py``):
   excluded -- it did no investigation). Effort, not wall-clock. Insufficient-
   evidence closes are included because they crossed the work gate (real
   diagnostic effort) before hitting the data wall.
+- ``faultmaven_case_duration_seconds_quantile{to_state, quantile}`` -- p50/p95
+  of wall-clock seconds from creation to the terminal transition
+  (``closed_at - created_at``) over the same population. A case with no usable
+  timestamp pair contributes nothing.
 
 All cases are ONLINE today (no archive tier exists yet -- see the Case Data
 Archival & Retention problem statement). When archival lands, scope the queries
@@ -33,6 +37,8 @@ import asyncio
 import logging
 import math
 from collections.abc import Sequence
+from datetime import UTC, datetime
+from typing import Optional
 
 from sqlalchemy import text
 
@@ -84,9 +90,33 @@ resolution_turns_quantile = Gauge(
     labelnames=["to_state", "quantile"],
 )
 
+duration_seconds_quantile = Gauge(
+    "faultmaven_case_duration_seconds_quantile",
+    "Wall-clock seconds from creation to the terminal transition "
+    "(closed_at - created_at), quantiles over the investigation population "
+    "(every terminal outcome except inquiry_only).",
+    labelnames=["to_state", "quantile"],
+)
 
-def _percentile(values: Sequence[int], q: float) -> float:
-    """Nearest-rank percentile of an integer sample; 0.0 for an empty sample."""
+
+def _as_utc(value: object) -> Optional[datetime]:
+    """Read a ``cases`` timestamp as an aware UTC datetime, or None.
+
+    A raw ``text()`` select returns ISO strings on SQLite and aware datetimes on
+    PostgreSQL. A naive value is taken as UTC. None or unparseable gives None.
+    """
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _percentile(values: Sequence[float], q: float) -> float:
+    """Nearest-rank percentile of a numeric sample; 0.0 for an empty sample."""
     if not values:
         return 0.0
     ordered = sorted(values)
@@ -116,7 +146,8 @@ class FunnelMetricsCollector:
             effort_rows = (
                 await session.execute(
                     text(
-                        "SELECT state, closure_reason, current_turn FROM cases "
+                        "SELECT state, closure_reason, current_turn, created_at, "
+                        "closed_at FROM cases "
                         "WHERE state = 'resolved' OR (state = 'closed' AND "
                         "closure_reason IN ('solution_deferred', "
                         "'closed_rca_infeasible', 'mitigation_sufficient', "
@@ -126,6 +157,7 @@ class FunnelMetricsCollector:
                 )
             ).all()
             self._set_quantiles(effort_rows)
+            self._set_durations(effort_rows)
 
     def _normalize_counts(self, rows: Sequence) -> dict:
         # Seed the full bounded matrix at 0 so vanished combinations reset.
@@ -146,7 +178,7 @@ class FunnelMetricsCollector:
 
     def _set_quantiles(self, rows: Sequence) -> None:
         buckets: dict = {to_state: [] for to_state in _EFFORT_TO_STATES}
-        for state, reason, turn in rows:
+        for state, reason, turn, *_ in rows:
             # Resolved keys on state; closes key on their closure_reason (the
             # effort query admits every close reason except inquiry_only).
             to_state = "resolved" if state == "resolved" else reason
@@ -156,6 +188,22 @@ class FunnelMetricsCollector:
         for to_state in _EFFORT_TO_STATES:
             for qlabel, q in _QUANTILES:
                 resolution_turns_quantile.labels(
+                    to_state=to_state, quantile=qlabel
+                ).set(_percentile(buckets[to_state], q))
+
+    def _set_durations(self, rows: Sequence) -> None:
+        buckets: dict = {to_state: [] for to_state in _EFFORT_TO_STATES}
+        for state, reason, _turn, created_at, closed_at in rows:
+            to_state = "resolved" if state == "resolved" else reason
+            if to_state not in buckets:
+                continue
+            start, end = _as_utc(created_at), _as_utc(closed_at)
+            if start is None or end is None or end < start:
+                continue
+            buckets[to_state].append((end - start).total_seconds())
+        for to_state in _EFFORT_TO_STATES:
+            for qlabel, q in _QUANTILES:
+                duration_seconds_quantile.labels(
                     to_state=to_state, quantile=qlabel
                 ).set(_percentile(buckets[to_state], q))
 

@@ -4,6 +4,7 @@ import logging
 from enum import Enum
 from typing import Any, Optional
 
+from faultmaven.core.investigation.lifecycle_metrics import terminal_summary_total
 from faultmaven.core.investigation.milestone_engine.redaction import _should_redact
 from faultmaven.core.investigation.milestone_engine.regeneration import (
     _remaining_regens_for,
@@ -136,6 +137,9 @@ class TerminalTurnHandler:
         ):
             skip = terminal_summary_skip_reason(case)
             logger.info(f"Auto-summary skipped for case {case.case_id}: {skip}")
+            terminal_summary_total.labels(
+                summary_type="closure_summary", outcome="skipped"
+            ).inc()
             return skip, False
 
         if not self.deps.report_service:
@@ -171,13 +175,22 @@ class TerminalTurnHandler:
             if response.reports:
                 content = response.reports[0].content
                 if content:
+                    terminal_summary_total.labels(
+                        summary_type=report_type.value, outcome="generated"
+                    ).inc()
                     return content, False
+            terminal_summary_total.labels(
+                summary_type=report_type.value, outcome="empty"
+            ).inc()
             return None, False
         except Exception as e:
             logger.warning(
                 f"Auto-summary generation failed for case {case.case_id}: {e}",
                 extra={"case_id": case.case_id},
             )
+            terminal_summary_total.labels(
+                summary_type=report_type.value, outcome="failed"
+            ).inc()
             return (
                 f"{report_label} generation did not complete. "
                 f"You can retry from the **Regenerate** option.",

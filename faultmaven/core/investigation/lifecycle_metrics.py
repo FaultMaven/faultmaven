@@ -791,3 +791,26 @@ causal_and_group_regroup_refused_total = Counter(
     "``attempt`` (regroup | ungroup).",
     ["attempt"],
 )
+
+# Summary-generation reliability (§6.5, #791). Every AUTOMATIC terminal-summary
+# attempt (``TerminalTurnHandler.auto_generate_report``) increments exactly one
+# ``outcome`` series. A failure writes no ``reports`` row, so this cannot be a
+# projection of durable state; it is an event counter. ``generated`` = a report
+# with content came back; ``empty`` = generation returned no report or empty
+# content; ``failed`` = it raised; ``skipped`` = the CLOSED substance gate
+# declined. Not counted: no report service configured, an unexpected case
+# state, and regeneration or API-triggered summaries. Labels are bounded
+# literals, never user text.
+terminal_summary_total = Counter(
+    "faultmaven_terminal_summary_total",
+    "Automatic terminal-summary attempts by summary_type "
+    "(resolution_summary|closure_summary) and outcome "
+    "(generated|empty|failed|skipped).",
+    ["summary_type", "outcome"],
+)
+
+# Every child exists from import, at 0, so the first increment is visible to
+# ``increase()`` (see the terminal-confirmation pair above).
+for _summary_type in ("resolution_summary", "closure_summary"):
+    for _outcome in ("generated", "empty", "failed", "skipped"):
+        terminal_summary_total.labels(summary_type=_summary_type, outcome=_outcome)
