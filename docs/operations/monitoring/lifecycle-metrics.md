@@ -330,3 +330,19 @@ The signal is the `weak_token` rate against the `explicit_token` rate, not eithe
 **#723 trigger 2 cannot occur.** A dropdown INQUIRY → INVESTIGATING is refused at engine entry since #1624 (`earned_edge_refusal`; from INQUIRY, `USER_SELECTABLE_ACTIONS` offers only CLOSED), so no counter exists for it.
 
 Matrix row: INV-03 in `investigation-invariants.md`.
+
+## Case duration and terminal-summary reliability (#791)
+
+**Questions:** how long, on the wall clock, does a case take to reach a terminal state; and how often does the automatic terminal summary fail?
+
+**Duration gauge:** `faultmaven_case_duration_seconds_quantile{to_state, quantile}` (`quantile` is `0.5` or `0.95`), published beside `faultmaven_case_resolution_turns_quantile` by the funnel collector (`infrastructure/observability/funnel_metrics.py`), which re-queries the `cases` table every 30 seconds. Each case in the investigation population (`resolved` plus every close except `inquiry_only`) contributes `closed_at - created_at` in seconds to its `to_state`. A case with a missing or unparseable timestamp, or `closed_at < created_at`, contributes nothing. An empty `to_state` reads 0. It is a gauge over the cases currently in the table, not a rate.
+
+**Summary counter:** `faultmaven_terminal_summary_total{summary_type, outcome}`, one increment per automatic terminal-summary attempt (`TerminalTurnHandler.auto_generate_report`). `summary_type` is `resolution_summary` or `closure_summary`; `outcome` is `generated` (a report with content came back), `empty` (no report or empty content), `failed` (generation raised) or `skipped` (the CLOSED substance gate declined). Every series exists at 0 from import.
+
+`skipped` is counted whether or not a report service is configured, because the substance gate runs first. Not counted: a generation that is never attempted because no report service is configured, an unexpected case state, and regeneration or API-triggered summaries.
+
+```promql
+sum by (summary_type) (increase(faultmaven_terminal_summary_total{outcome="failed"}[7d]))
+  /
+sum by (summary_type) (increase(faultmaven_terminal_summary_total{outcome=~"generated|empty|failed"}[7d]))
+```
