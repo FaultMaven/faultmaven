@@ -43,6 +43,7 @@ from typing import Optional
 from sqlalchemy import text
 
 from faultmaven.infrastructure.shims.metrics import Gauge
+from faultmaven.utils.datetime import parse_utc_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -102,17 +103,21 @@ duration_seconds_quantile = Gauge(
 def _as_utc(value: object) -> Optional[datetime]:
     """Read a ``cases`` timestamp as an aware UTC datetime, or None.
 
-    A raw ``text()`` select returns ISO strings on SQLite and aware datetimes on
-    PostgreSQL. A naive value is taken as UTC. None or unparseable gives None.
+    A raw ``text()`` select returns ISO strings on SQLite, parsed with
+    ``parse_utc_timestamp`` (which also reads the legacy ``+00:00Z`` shape), and
+    aware datetimes on PostgreSQL. A naive value is taken as UTC; an aware one
+    is converted to UTC. None or unparseable gives None.
     """
     if isinstance(value, str):
         try:
-            value = datetime.fromisoformat(value)
+            value = parse_utc_timestamp(value)
         except ValueError:
             return None
     if not isinstance(value, datetime):
         return None
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _percentile(values: Sequence[float], q: float) -> float:

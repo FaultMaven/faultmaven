@@ -342,7 +342,7 @@ Matrix row: INV-03 in `investigation-invariants.md`.
 
 **Summary counter:** `faultmaven_terminal_summary_total{summary_type, outcome}`, one increment per automatic terminal-summary attempt (`TerminalTurnHandler.auto_generate_report`). `summary_type` is `resolution_summary` or `closure_summary`; `outcome` is `generated` (a report with content came back), `empty` (no report or empty content), `failed` (generation raised) or `skipped` (the CLOSED substance gate declined). Every series exists at 0 from import.
 
-Not counted: a turn with no report service configured, an unexpected case state, and regeneration or API-triggered summaries.
+`skipped` is counted whether or not a report service is configured, because the substance gate runs first. Not counted: a generation that is never attempted because no report service is configured, an unexpected case state, and regeneration or API-triggered summaries.
 
 ```promql
 sum by (summary_type) (increase(faultmaven_terminal_summary_total{outcome="failed"}[7d]))

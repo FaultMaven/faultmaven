@@ -177,15 +177,22 @@ def _published(rows):
 
 @pytest.mark.unit
 class TestAsUtc:
-    def test_datetime_passthrough_and_naive_is_utc(self):
+    def test_aware_is_converted_to_utc_and_naive_is_utc(self):
         aware = datetime(2026, 1, 1, tzinfo=timezone(timedelta(hours=2)))
-        assert _as_utc(aware) is aware
+        converted = _as_utc(aware)
+        assert converted == aware  # the same instant...
+        assert converted.utcoffset() == timedelta(0)  # ...expressed in UTC
+        assert converted.replace(tzinfo=None) == datetime(2025, 12, 31, 22)
         assert _as_utc(datetime(2026, 1, 1)) == datetime(2026, 1, 1, tzinfo=UTC)
 
     def test_sqlite_string_shapes(self):
         assert _as_utc("2026-09-30 00:00:00+00:00") == _T0
         assert _as_utc("2026-09-30 00:00:00") == _T0
         assert _as_utc("2026-09-29 17:00:00-07:00") == _T0
+        # legacy corrupted shape, read by the shared parse_utc_timestamp
+        assert _as_utc("2025-10-17T04:02:59+00:00Z") == datetime(
+            2025, 10, 17, 4, 2, 59, tzinfo=UTC
+        )
 
     @pytest.mark.parametrize("bad", [None, "not-a-date", "", 5])
     def test_unusable_is_none(self, bad):
@@ -242,11 +249,20 @@ class TestSetDurations:
                 "2026-09-29 17:00:00-07:00",
                 "2026-09-30 01:00:00+00:00",
             ),
+            # legacy corrupted ``+00:00Z`` shape
+            (
+                "closed",
+                "solution_deferred",
+                1,
+                "2025-10-17T04:02:59+00:00Z",
+                "2025-10-17 05:02:59+00:00",
+            ),
         ]
         out = _published(rows)
         assert out[("resolved", "0.5")] == pytest.approx(5400.000005)
         assert out[("mitigation_sufficient", "0.5")] == 7200.0
         assert out[("closed_rca_infeasible", "0.5")] == 3600.0
+        assert out[("solution_deferred", "0.5")] == 3600.0
 
     def test_naive_against_aware_does_not_raise(self):
         rows = [
@@ -284,69 +300,71 @@ class TestRefreshAgainstRealSqlite:
 
     async def test_durations_published_from_sqlite_rows(self):
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-        async with engine.begin() as conn:
-            await conn.execute(
-                text(
-                    "CREATE TABLE cases (case_id TEXT, state TEXT, "
-                    "closure_reason TEXT, current_turn INTEGER, "
-                    "created_at DATETIME, closed_at DATETIME)"
-                )
-            )
-            ins = text("INSERT INTO cases VALUES (:id, :st, :cr, :t, :c, :e)")
-            rows = [
-                # aware, naive and mixed-offset writes, as the repository does
-                ("a", "resolved", None, 3, _T0, _T0 + timedelta(minutes=90)),
-                (
-                    "b",
-                    "resolved",
-                    None,
-                    3,
-                    _T0.replace(tzinfo=None),
-                    (_T0 + timedelta(hours=2)).replace(tzinfo=None),
-                ),
-                (
-                    "c",
-                    "resolved",
-                    None,
-                    3,
-                    _T0.astimezone(timezone(timedelta(hours=-7))),
-                    _T0 + timedelta(hours=1),
-                ),
-                (
-                    "d",
-                    "closed",
-                    "closed_insufficient_evidence",
-                    2,
-                    _T0,
-                    _T0 + timedelta(seconds=30),
-                ),
-                # outside the population: never selected
-                ("e", "closed", "inquiry_only", 0, _T0, _T0 + timedelta(seconds=7)),
-                ("f", "investigating", None, 1, _T0, None),
-            ]
-            for id_, st, cr, t, c, e in rows:
+        try:
+            async with engine.begin() as conn:
                 await conn.execute(
-                    ins, {"id": id_, "st": st, "cr": cr, "t": t, "c": c, "e": e}
+                    text(
+                        "CREATE TABLE cases (case_id TEXT, state TEXT, "
+                        "closure_reason TEXT, current_turn INTEGER, "
+                        "created_at DATETIME, closed_at DATETIME)"
+                    )
                 )
+                ins = text("INSERT INTO cases VALUES (:id, :st, :cr, :t, :c, :e)")
+                rows = [
+                    # aware, naive and mixed-offset writes, as the repository does
+                    ("a", "resolved", None, 3, _T0, _T0 + timedelta(minutes=90)),
+                    (
+                        "b",
+                        "resolved",
+                        None,
+                        3,
+                        _T0.replace(tzinfo=None),
+                        (_T0 + timedelta(hours=2)).replace(tzinfo=None),
+                    ),
+                    (
+                        "c",
+                        "resolved",
+                        None,
+                        3,
+                        _T0.astimezone(timezone(timedelta(hours=-7))),
+                        _T0 + timedelta(hours=1),
+                    ),
+                    (
+                        "d",
+                        "closed",
+                        "closed_insufficient_evidence",
+                        2,
+                        _T0,
+                        _T0 + timedelta(seconds=30),
+                    ),
+                    # outside the population: never selected
+                    ("e", "closed", "inquiry_only", 0, _T0, _T0 + timedelta(seconds=7)),
+                    ("f", "investigating", None, 1, _T0, None),
+                ]
+                for id_, st, cr, t, c, e in rows:
+                    await conn.execute(
+                        ins, {"id": id_, "st": st, "cr": cr, "t": t, "c": c, "e": e}
+                    )
 
-        maker = async_sessionmaker(engine, expire_on_commit=False)
+            maker = async_sessionmaker(engine, expire_on_commit=False)
 
-        @asynccontextmanager
-        async def real_session():
-            async with maker() as session:
-                yield session
+            @asynccontextmanager
+            async def real_session():
+                async with maker() as session:
+                    yield session
 
-        with (
-            patch(
-                "faultmaven.infrastructure.persistence.database.get_db_session",
-                real_session,
-            ),
-            patch.object(funnel_metrics, "cases_gauge"),
-            patch.object(funnel_metrics, "resolution_turns_quantile"),
-            patch.object(funnel_metrics, "duration_seconds_quantile") as g,
-        ):
-            await FunnelMetricsCollector().refresh()
-        await engine.dispose()
+            with (
+                patch(
+                    "faultmaven.infrastructure.persistence.database.get_db_session",
+                    real_session,
+                ),
+                patch.object(funnel_metrics, "cases_gauge"),
+                patch.object(funnel_metrics, "resolution_turns_quantile"),
+                patch.object(funnel_metrics, "duration_seconds_quantile") as g,
+            ):
+                await FunnelMetricsCollector().refresh()
+        finally:
+            await engine.dispose()
 
         published = {
             (c.kwargs["to_state"], c.kwargs["quantile"]): v.args[0]

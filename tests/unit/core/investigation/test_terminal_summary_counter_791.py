@@ -21,6 +21,8 @@ from faultmaven.core.investigation.milestone_engine.terminal_turns import (
 )
 from faultmaven.modules.case.contracts import CaseState
 
+pytestmark = pytest.mark.unit
+
 
 def _case(state, *, substance=True):
     return SimpleNamespace(
@@ -50,14 +52,6 @@ def _service(content=None, *, reports=True, raises=False):
         )
         svc.generate_reports.return_value = resp
     return svc
-
-
-def _incs(counter):
-    """The (labels, inc-count) pairs recorded on a patched counter."""
-    return [
-        (c.kwargs, counter.labels.return_value.inc.call_count)
-        for c in counter.labels.call_args_list
-    ]
 
 
 @pytest.mark.unit
@@ -114,6 +108,18 @@ class TestTerminalSummaryCounter:
         )
         assert failed is False
         service.generate_reports.assert_not_awaited()
+        counter.labels.assert_called_once_with(
+            summary_type="closure_summary", outcome="skipped"
+        )
+        counter.labels.return_value.inc.assert_called_once_with()
+
+    async def test_skipped_counted_without_a_report_service(self):
+        # The substance gate runs before the report-service check, so a skip
+        # is counted whether or not a report service is configured.
+        (_, failed), counter = await self._run(
+            _case(CaseState.CLOSED, substance=False), None
+        )
+        assert failed is False
         counter.labels.assert_called_once_with(
             summary_type="closure_summary", outcome="skipped"
         )
