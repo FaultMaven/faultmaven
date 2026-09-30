@@ -448,6 +448,69 @@ async def test_tool_loop_forced_text_parse(counters, stop_reason, expected, repa
     assert counters.repairs() == [_repair(repair)]
 
 
+@pytest.mark.parametrize(
+    "state_updates",
+    [[], 0, False, "[]", [{}]],
+    ids=["empty-list", "zero", "false", "string-decoded-to-list", "list-of-object"],
+)
+def test_tool_call_non_object_state_updates_is_coerced_counted_not_raised(
+    counters, caplog, state_updates
+):
+    with caplog.at_level(logging.WARNING, logger=so.logger.name):
+        parsed = _parse_schema_tool_call(_tool_call(state_updates), TerminalResponse)
+    assert parsed.state_updates.model_fields_set == set()
+    assert parsed.state_updates.final_summary_update is None
+    assert counters.repairs() == [_repair("non_object_dropped")]
+    assert len(_drop_warnings(caplog)) == 1
+
+
+_LEAK_S = '<parameter name="final_summary_update">S'
+_LEAK_LINKS = '<parameter name="documentation_links">["https://x"]'
+
+
+@pytest.mark.parametrize(
+    "state_updates, sibling, expected",
+    [
+        (
+            _LEAK_S,
+            {"documentation_links": "https://x"},
+            {"final_summary_update": "S"},
+        ),
+        (
+            _LEAK_LINKS,
+            {"final_summary_update": "[1] disk full on api-3"},
+            {"documentation_links": ["https://x"]},
+        ),
+        (
+            _LEAK_S,
+            {"documentation_links": ["https://x"]},
+            {"final_summary_update": "S", "documentation_links": ["https://x"]},
+        ),
+        (
+            _LEAK_LINKS,
+            {"final_summary_update": "disk full on api-3"},
+            {
+                "documentation_links": ["https://x"],
+                "final_summary_update": "disk full on api-3",
+            },
+        ),
+    ],
+    ids=["bad-links-sibling", "bad-summary-sibling", "good-links", "good-summary"],
+)
+def test_tool_call_lifts_only_siblings_their_field_accepts(
+    counters, state_updates, sibling, expected
+):
+    parsed = _parse_schema_tool_call(
+        _tool_call(state_updates, **sibling), TerminalResponse
+    )
+    assert (
+        parsed.state_updates.model_dump(exclude_none=True, exclude_defaults=True)
+        == expected
+    )
+    assert counters.repairs() == [_repair("xml_recovered")]
+    assert counters.outcomes() == [{"schema": SCHEMA, "outcome": "clean"}]
+
+
 def test_non_dict_body_is_returned_unchanged():
     assert _normalize_state_updates([1], TerminalResponse) == [1]
 

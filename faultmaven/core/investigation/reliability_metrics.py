@@ -58,7 +58,7 @@ Read as rates, never the numerator alone:
 
   The A/B "schema-validity" metric is ``clean / total``. Read state loss as
   ``(state_dropped + response_synthesized_state_dropped +
-  faultmaven_schema_state_updates_repairs_total{repair="string_dropped"}) /
+  faultmaven_schema_state_updates_repairs_total{repair=~"string_dropped|non_object_dropped"}) /
   total`` — the last term is state lost BEFORE validation, in a body that can
   then still validate ``clean`` (fm#1753), so no outcome here shows it. The
   synthesized-and-dropped rung is deliberately NOT folded into
@@ -86,7 +86,10 @@ Read as rates, never the numerator alone:
   the engine settled before validation, by ``schema`` and ``repair`` —
   ``xml_recovered`` (the model's leaked single-parameter form,
   ``<parameter name="K">VALUE`` with no closer, recovered into the object, with
-  any state field that leaked to the top level lifted back in),
+  any state field that leaked to the top level and that its field accepts
+  lifted back in),
+  ``non_object_dropped`` (a list, number or bool, coerced to ``{}``: state
+  LOST, and the turn no longer fails validation),
   ``string_dropped`` (any other string, or any string in a response the
   provider reported cut at ``max_tokens``, coerced to ``{}``: the turn's state
   updates are LOST, yet the body validates ``clean`` because ``{}`` takes the
@@ -149,12 +152,18 @@ schema_field_repairs_total = Counter(
 )
 
 # Pinned by tests, for the same reason as SCHEMA_VALIDATION_OUTCOMES.
-STATE_UPDATES_REPAIRS = ("xml_recovered", "string_dropped", "absent_defaulted")
+STATE_UPDATES_REPAIRS = (
+    "xml_recovered",
+    "string_dropped",
+    "non_object_dropped",
+    "absent_defaulted",
+)
 
 schema_state_updates_repairs_total = Counter(
     "faultmaven_schema_state_updates_repairs_total",
     "state_updates settled before validation, labeled by ``schema`` and "
-    "``repair`` (xml_recovered | string_dropped | absent_defaulted). "
-    "string_dropped is lost state: the body still validates clean.",
+    "``repair`` (xml_recovered | string_dropped | non_object_dropped | "
+    "absent_defaulted). string_dropped and non_object_dropped are lost "
+    "state: the body still validates clean.",
     ["schema", "repair"],
 )

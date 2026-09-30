@@ -620,8 +620,10 @@ def _recover_leaked_parameter(content_obj: dict, schema_model: Any) -> Optional[
     ``claude-opus-5`` can return the schema tool's ``state_updates`` as
     ``<parameter name="K">VALUE``: one open tag, no closer, the value running
     to the end of the string, with any later state field leaked to the top
-    level of the arguments. Returns ``{K: value}`` plus those leaked siblings,
-    which are MOVED out of *content_obj*; returns ``None`` (and leaves
+    level of the arguments. Returns ``{K: value}`` plus those leaked siblings
+    whose field accepts them, which are MOVED out of *content_obj* (a sibling
+    its field rejects stays at the top level, where the schema ignores it, so
+    it cannot cost K when the ladder drops the state); returns ``None`` (and leaves
     *content_obj* untouched) unless the string is exactly that form, VALUE
     holds no other parameter tag, and K is a field of the response's
     state-update model.
@@ -668,6 +670,17 @@ def _recover_leaked_parameter(content_obj: dict, schema_model: Any) -> Optional[
             and k in state_model.model_fields
             and k not in result
         ):
+            try:
+                TypeAdapter(state_model.model_fields[k].annotation).validate_python(
+                    content_obj[k]
+                )
+            except ValidationError:
+                logger.debug(
+                    "structured_output_sibling_not_lifted: top-level %s is not "
+                    "accepted by its state field; left at the top level",
+                    k,
+                )
+                continue
             result[k] = content_obj.pop(k)
     return result
 
@@ -682,8 +695,10 @@ def _normalize_state_updates(
     reported the response *cut* at ``max_tokens``: a cut value looks exactly
     like the real unclosed form, so it is never recovered. Any other string,
     and a cut one, becomes ``{}``, as does a missing or null value, so the
-    schema defaults apply. A value that is already an object is left alone and
-    not counted.
+    schema defaults apply. Any other non-object value (a list, number or bool,
+    including a string that decoded to a list) also becomes ``{}``, counted as
+    ``non_object_dropped``, so it can never fail the turn. A value that is
+    already an object is left alone and not counted.
 
     ``xml_recovered`` counts a recovery, not a validated body: validation comes
     after this and is counted on ``faultmaven_schema_validation_total``.
@@ -712,8 +727,18 @@ def _normalize_state_updates(
     elif su is None:
         content_obj["state_updates"] = {}
         repair = "absent_defaulted"
-    else:
+    elif isinstance(su, dict):
         return content_obj
+    else:
+        logger.warning(
+            "structured_output_state_updates_dropped: state_updates for %s "
+            "arrived as %s, not an object; coerced to {} (state lost)",
+            schema_name,
+            type(su).__name__,
+            extra={"schema": schema_name, "type": type(su).__name__},
+        )
+        content_obj["state_updates"] = {}
+        repair = "non_object_dropped"
     schema_state_updates_repairs_total.labels(schema=schema_name, repair=repair).inc()
     return content_obj
 
