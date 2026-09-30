@@ -58,6 +58,15 @@ def test_both_functions_are_security_definer_with_pg_temp_last():
         assert f"SET search_path = {migration.SEARCH_PATH}\n" in ddl
 
 
+def test_both_functions_raise_rather_than_filter_under_row_level_security():
+    """``row_security = off``: if the owner ever stops being exempt from the
+    policies, a read they would filter RAISES instead of returning one
+    enterprise's cases as though they were all of them."""
+    migration = _load()
+    for ddl in (migration._CREATE_PAGE_FUNCTION, migration._CREATE_COUNT_FUNCTION):
+        assert "SET row_security = off\n" in ddl
+
+
 def test_execute_is_revoked_from_public_and_granted_to_the_runtime_role():
     """What the upgrade issues, in order: each function is created, PUBLIC is
     revoked, and the runtime role is granted — guarded on the role existing."""

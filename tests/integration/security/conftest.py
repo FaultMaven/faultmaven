@@ -58,7 +58,7 @@ def limited_url(superuser_url: str, role: str, password: str) -> str:
 #: The functions revision ``003_admin_case_metadata`` grants the runtime role
 #: ``EXECUTE`` on — explicitly, because they are not executable by ``PUBLIC``.
 CASE_METADATA_FUNCTIONS = (
-    "admin_case_metadata_page(text, text, integer, integer)",
+    "admin_case_metadata_page(text, text, bigint, bigint)",
     "admin_case_metadata_count(text, text)",
 )
 

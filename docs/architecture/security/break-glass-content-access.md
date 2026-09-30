@@ -207,7 +207,19 @@ RLS-scoped for everything else it does. They are `LANGUAGE sql`, `SECURITY
 DEFINER`, `SET search_path = pg_catalog, public, pg_temp` — `pg_temp` listed, and
 last, because a definer function that leaves it out searches the caller's
 temporary schema *first* for relations, and a caller's temporary `cases` would
-shadow the real table.
+shadow the real table. They also pin `row_security = off`: the functions span
+every enterprise only while their owner is exempt from the policies, and if that
+ever stops being true (`FORCE ROW LEVEL SECURITY` on `cases` or
+`resource_shares`, or a migrating role that does not own them) a read the
+policies would filter raises instead of quietly returning the caller's own
+enterprise as though it were all of them.
+
+A page is chosen on narrow columns (`case_id`, `updated_at` and the filter
+columns), newest update first with `case_id` breaking ties — the same order the
+single-tenant repository lists in, so a page boundary between cases a single
+statement updated falls in the same place on both paths — and only the page's
+rows are joined back for their JSON. `limit` and `offset` are `bigint`, because
+the API bounds neither to 32 bits.
 
 Two things bound the bypass, and it needs both.
 
@@ -245,10 +257,26 @@ this one are two paths to the same `AdminCaseMetadata` row, kept in step by a
 parity test on PostgreSQL that serves one fixture set through both and compares
 every field.
 
+**A malformed case is listed, not fatal and not dropped.** Every cast out of the
+JSON is guarded. A key that is *missing* reads as the model's default (a gate the
+blob does not record is `false`), while a value of the *wrong type* — a gate
+that is not a boolean, a turn entry that is not an object or has no integral
+`turn_number` — reads as `NULL`, and the case is served with its columns and
+with the derived fields it cannot compute left null, plus a warning naming the
+case and its enterprise. The operator list is how a broken case gets found, so
+one such row never fails the page. This is the one place the two paths differ:
+the single-tenant list cannot load such a case at all. (A case whose owner
+account was deleted is still left out on both paths, as before.)
+
 **Failure direction.** The reader is composed only under `multi`. If it is
-missing, if the database has not been migrated to `003`, or if the runtime role
-lacks `EXECUTE` on the functions, the route answers 503. It never falls back to
-the RLS-narrowed case query.
+missing, if the database has not been migrated to `003`, if the runtime role
+lacks `EXECUTE` on the functions, or if the database refuses the read for any
+other reason, the route answers 503 — each with its own log event and detail. A
+refusal (SQLSTATE `42501`) is not read as "EXECUTE is missing" on its own: a
+read row-level security would filter raises the same code under
+`row_security = off`, so the reader asks the database
+(`has_function_privilege`) which of the two it was. It never falls back to the
+RLS-narrowed case query.
 
 The rejected alternatives are the ones rejected for content above — a
 `BYPASSRLS` engine in the web process, the maintenance role in a request path —

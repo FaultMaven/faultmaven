@@ -526,6 +526,7 @@ from faultmaven.modules.case.domain.models.lifecycle import (
 from faultmaven.modules.case.domain.models.metadata import (
     CaseMetadata,
     CaseMetadataNotGrantedError,
+    CaseMetadataRefusedError,
     CaseMetadataUnavailableError,
 )
 from faultmaven.modules.case.domain.models.problem import (
@@ -593,6 +594,9 @@ class ICaseMetadataReader(Protocol):
 
         Raises:
             CaseMetadataNotGrantedError: the connected role lacks EXECUTE.
+            CaseMetadataRefusedError: the database refused the read for another
+                reason (row-level security would have filtered it, a schema
+                privilege is missing).
             CaseMetadataUnavailableError: the database function is missing
                 (and the base class of the above).
         """
@@ -617,6 +621,7 @@ __all__ = [
     "ICaseMetadataReader",
     "CaseMetadataUnavailableError",
     "CaseMetadataNotGrantedError",
+    "CaseMetadataRefusedError",
     # DTOs
     "CaseStateDTO",
     "CaseDTO",

@@ -13,39 +13,52 @@ There is deliberately no SQLite implementation and no method on
 there the operator list reads cases directly and needs no bypass.
 """
 
+import logging
 from typing import List, Optional, Tuple
 
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from faultmaven.infrastructure.persistence.database import get_db_session
+from faultmaven.infrastructure.persistence.db_errors import driver_error, sqlstate
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.metadata import (
     CaseMetadata,
     CaseMetadataNotGrantedError,
+    CaseMetadataRefusedError,
     CaseMetadataUnavailableError,
 )
+
+logger = logging.getLogger(__name__)
 
 #: PostgreSQL ``undefined_function``: the revision that creates the functions
 #: has not been applied to this database.
 _UNDEFINED_FUNCTION = "42883"
 
-#: PostgreSQL ``insufficient_privilege``: the connected role was not granted
-#: ``EXECUTE`` on the functions (they are not executable by ``PUBLIC``).
+#: PostgreSQL ``insufficient_privilege``. Not by itself "EXECUTE is missing": a
+#: query row-level security would filter raises it under the functions'
+#: ``row_security = off``, and so does a missing schema privilege. Which one it
+#: was is asked of the database, never read from the (localized) message.
 _INSUFFICIENT_PRIVILEGE = "42501"
+
+#: The two functions, by the signatures revision 003 creates.
+_FUNCTIONS = (
+    "admin_case_metadata_page(text, text, bigint, bigint)",
+    "admin_case_metadata_count(text, text)",
+)
 
 # ``SELECT *`` on purpose: every column the function returns must be a keyword
 # ``CaseMetadata.from_stored`` accepts, so a column added to the function without
 # being classified there fails loudly instead of being read and dropped.
 _PAGE = text("SELECT * FROM admin_case_metadata_page(:state, :source, :limit, :offset)")
 _COUNT = text("SELECT admin_case_metadata_count(:state, :source)")
-
-
-def _sqlstate(exc: DBAPIError) -> Optional[str]:
-    """Identified by SQLSTATE, not by message text. ``exc.orig`` is SQLAlchemy's
-    DBAPI wrapper; the driver exception carrying the code is its ``__cause__``."""
-    cause = getattr(exc.orig, "__cause__", None)
-    return getattr(cause, "sqlstate", None)
+_MAY_EXECUTE = text(
+    "SELECT "
+    + " AND ".join(
+        f"has_function_privilege(current_user, '{signature}', 'EXECUTE')"
+        for signature in _FUNCTIONS
+    )
+)
 
 
 class PostgreSQLCaseMetadataReader:
@@ -65,27 +78,40 @@ class PostgreSQLCaseMetadataReader:
         # A falsy source means "no filter", as it does on the case list.
         filters = {"state": state.value if state else None, "source": source or None}
         try:
-            total = (await self.db.execute(_COUNT, filters)).scalar_one()
-            rows = (
-                (
-                    await self.db.execute(
-                        _PAGE, {**filters, "limit": limit, "offset": offset}
+            # Inside a savepoint, so a refusal leaves the transaction usable
+            # for asking the database which refusal it was.
+            async with self.db.begin_nested():
+                total = (await self.db.execute(_COUNT, filters)).scalar_one()
+                rows = (
+                    (
+                        await self.db.execute(
+                            _PAGE, {**filters, "limit": limit, "offset": offset}
+                        )
                     )
+                    .mappings()
+                    .all()
                 )
-                .mappings()
-                .all()
-            )
         except DBAPIError as exc:
-            sqlstate = _sqlstate(exc)
-            if sqlstate == _UNDEFINED_FUNCTION:
+            code = sqlstate(exc)
+            if code == _UNDEFINED_FUNCTION:
                 raise CaseMetadataUnavailableError(
                     "the cross-enterprise case metadata functions are not "
                     "installed; apply the database migrations"
                 ) from exc
-            if sqlstate == _INSUFFICIENT_PRIVILEGE:
-                raise CaseMetadataNotGrantedError(
-                    "the application's database role lacks EXECUTE on the "
-                    "cross-enterprise case metadata functions; grant it"
+            if code == _INSUFFICIENT_PRIVILEGE:
+                if not (await self.db.execute(_MAY_EXECUTE)).scalar_one():
+                    raise CaseMetadataNotGrantedError(
+                        "the application's database role lacks EXECUTE on the "
+                        "cross-enterprise case metadata functions; grant it"
+                    ) from exc
+                logger.error(
+                    "case_metadata_read_refused: the database refused the "
+                    "cross-enterprise case read although EXECUTE is granted: %s",
+                    driver_error(exc) or exc,
+                )
+                raise CaseMetadataRefusedError(
+                    "the database refused the cross-enterprise case read for a "
+                    "reason other than the EXECUTE grant"
                 ) from exc
             raise
         return [CaseMetadata.from_stored(**row) for row in rows], int(total)

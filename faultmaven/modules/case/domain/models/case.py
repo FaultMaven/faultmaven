@@ -842,6 +842,17 @@ class Case(BaseModel):
         if not history:
             return 0
 
+        # Fast path: already consecutive → no allocation. Only keep current_turn
+        # from falling behind the last recorded turn (never lower it).
+        if all(
+            history[i].turn_number + 1 == history[i + 1].turn_number
+            for i in range(len(history) - 1)
+        ):
+            last = history[-1].turn_number
+            if self.current_turn < last:
+                self.current_turn = last
+            return 0
+
         slots, current_turn = reconcile_turn_numbers(
             [entry.turn_number for entry in history], self.current_turn
         )
@@ -882,13 +893,7 @@ class Case(BaseModel):
                 repairs += 1
             rebuilt.append(entry)
 
-        if not repairs:
-            # Already consecutive: the history stands as it is, and the clock
-            # is at most raised to its last number.
-            if current_turn != self.current_turn:
-                self.current_turn = current_turn
-            return 0
-
+        # A history that is not consecutive always needs at least one repair.
         self.turn_history = rebuilt
         if current_turn != self.current_turn:
             self.current_turn = current_turn

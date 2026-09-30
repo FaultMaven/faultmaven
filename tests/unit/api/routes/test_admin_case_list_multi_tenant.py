@@ -33,6 +33,7 @@ from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.metadata import (
     CaseMetadata,
     CaseMetadataNotGrantedError,
+    CaseMetadataRefusedError,
     CaseMetadataUnavailableError,
 )
 from faultmaven.modules.case.domain.models.problem import InvestigationStage
@@ -231,13 +232,37 @@ class TestAuditComesFirst:
 
 
 class TestFailsClosed:
-    def test_no_reader_is_a_5xx_not_the_rls_scoped_list(self, audit_repo, case_service):
-        resp = _client(audit_repo, case_service, None).get("/api/v1/admin/cases")
+    def test_no_reader_is_a_5xx_not_the_rls_scoped_list(
+        self, audit_repo, case_service, caplog
+    ):
+        with caplog.at_level("ERROR"):
+            resp = _client(audit_repo, case_service, None).get("/api/v1/admin/cases")
 
         assert resp.status_code == 503
         case_service.list_all_cases.assert_not_awaited()
         # Nothing was read, so nothing is recorded as an access.
         audit_repo.record_access.assert_not_awaited()
+        # Its own event: a composition fault, not a migration or grant one.
+        assert "admin_case_list_unwired" in caplog.text
+        assert "EXECUTE" not in caplog.text and "missing from" not in caplog.text
+
+    def test_a_refusal_other_than_the_grant_is_a_distinct_5xx(
+        self, audit_repo, case_service, reader
+    ):
+        """EXECUTE is granted but the database refused — e.g. row-level security
+        would have filtered the read. Fail closed, and do not blame the grant."""
+        reader.list_case_metadata = AsyncMock(
+            side_effect=CaseMetadataRefusedError("refused (driver)")
+        )
+
+        resp = _client(audit_repo, case_service, reader).get("/api/v1/admin/cases")
+
+        assert resp.status_code == 503
+        detail = resp.json()["detail"]
+        assert "other than the EXECUTE grant" in detail
+        assert "lacks EXECUTE" not in detail
+        assert "driver" not in resp.text
+        case_service.list_all_cases.assert_not_awaited()
 
     def test_a_database_without_the_functions_is_a_5xx(
         self, audit_repo, case_service, reader
