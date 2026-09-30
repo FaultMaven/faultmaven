@@ -188,9 +188,11 @@ def _finish_deterministic_turn(
     net firing on a turn the engine did no investigative work on.
 
     Nothing releases a pending gate on ``turns_without_progress``, so
-    resetting it cannot park one open: the gate's own escape lane keys on
-    ``pending_transition["re_presented"]`` and withdraws after at most one
-    re-present.
+    resetting it cannot change how long one stands: a pending terminal
+    proposal stands until the user answers it (a click, a bare consent token
+    or a decline) or sends a substantive message, which the gate's own escape
+    lane withdraws it for. A short non-answer is re-asked every time and never
+    withdraws it (#1783).
     """
     metadata: dict[str, Any] = {
         "turn_number": case.current_turn,

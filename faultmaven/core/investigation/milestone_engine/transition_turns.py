@@ -146,11 +146,13 @@ async def _decline_bare_reply(repository, *, case, upload_report, user_message):
 
 
 async def _represent_pending_transition(
-    repository, *, case, stripped_message, upload_report, user_message
+    repository, *, case, upload_report, user_message
 ):
-    """Re-present the pending transition's options when the user's reply answered neither yes nor no."""
-    if stripped_message:
-        case.pending_transition["re_presented"] = True
+    """Re-present the pending transition's options when the user's reply answered neither yes nor no.
+
+    Every time it is asked for, and recording nothing: a re-ask is never a
+    refusal and never withdraws the proposal (#1783, ruling (a)).
+    """
     to_state = case.pending_transition.get("to_state", "resolved")
     summary = case.pending_transition.get("summary", "")
 

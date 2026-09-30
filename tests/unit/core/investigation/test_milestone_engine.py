@@ -638,8 +638,9 @@ class TestMilestoneEngine:
 
         # User confirms the pending transition
         # This should NOT fail with reasoning validation error
-        # because pending_transition exists (case transitioning to terminal)
-        result = await engine.process_turn(base_case, "yes, go ahead")
+        # because pending_transition exists (case transitioning to terminal).
+        # A bare token: a longer typed reply is re-asked, not executed (#1783).
+        result = await engine.process_turn(base_case, "yes")
 
         # Verify transition executed via handshake confirmation
         assert result["case_updated"] is not None

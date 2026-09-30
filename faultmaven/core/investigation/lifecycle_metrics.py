@@ -539,19 +539,14 @@ close_pivoted_to_resolve_total = Counter(
 # how the user confirmed:
 #   ``intent``            a click;
 #   ``explicit_token``    typed text that is a BARE explicit token ("yes!");
-#   ``explicit_prefixed`` typed text opening with an explicit token and saying
-#                         more ("yes, don't close it yet", "do it later");
 #   ``weak_token``        a typed BARE weak token ("ok", "ok 👍", "ok :+1:") —
-#                         #723's term;
-#   ``weak_prefixed``     typed text opening with a weak token and saying more
-#                         ("ok go ahead", "ok, don't close it yet");
-#   ``typed_other``       typed text the intent resolver accepted that is no
-#                         known token ("that works").
-# BARE means no letter or digit after the matched token once Slack emoji
-# shortcodes (":+1:") are removed, so a Slack reply labels as the same reply
-# with the Unicode emoji does; an emoticon written with a letter or digit
-# (":D", "XD", "<3") makes a reply prefixed. The prefixed labels are reported
-# beside the others and never merged into either side.
+#                         #723's term.
+# BARE means the whole reply is one consent token, with only trailing
+# punctuation and positive emoji, Slack shortcodes (":+1:") or emoticons
+# (":)") around it (``transition_consent.confirmation_token_class``). Nothing
+# else executes a terminal transition (#1783, ruling (a)): a typed reply that
+# says more is re-asked, so the former ``explicit_prefixed``, ``weak_prefixed``
+# and ``typed_other`` channels no longer exist.
 # ``faultmaven_terminal_followup_total`` counts the turn IMMEDIATELY after the
 # confirming turn, by the same ``via`` and the case's state, when the user
 # typed it: non-blank text, no effective intent, not one of the ack turn's own
@@ -567,11 +562,10 @@ close_pivoted_to_resolve_total = Counter(
 terminal_confirmation_total = Counter(
     "faultmaven_terminal_confirmation_total",
     "Terminal transitions executed on a user confirmation, by how the user "
-    "confirmed (intent|explicit_token|explicit_prefixed|weak_token|"
-    "weak_prefixed|typed_other) and the state reached (resolved|closed). "
-    "*_token is a bare token: no letter or digit after it once Slack :shortcode: "
-    "emoji are removed; an emoticon with a letter or digit (:D, XD, <3) is "
-    "*_prefixed.",
+    "confirmed (intent|explicit_token|weak_token) and the state reached "
+    "(resolved|closed). *_token is a typed reply that is, as a whole, one "
+    "consent token, with only trailing punctuation and positive emoji, Slack "
+    ":shortcode: emoji or emoticons around it.",
     ["via", "to_state"],
 )
 
@@ -579,8 +573,7 @@ terminal_followup_total = Counter(
     "faultmaven_terminal_followup_total",
     "Typed user message on the turn immediately after a confirmed terminal "
     "transition, by how that transition was confirmed (intent|explicit_token|"
-    "explicit_prefixed|weak_token|weak_prefixed|typed_other) and the case's "
-    "state (resolved|closed).",
+    "weak_token) and the case's state (resolved|closed).",
     ["via", "to_state"],
 )
 

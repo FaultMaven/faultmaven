@@ -31,8 +31,7 @@ from faultmaven.core.investigation.milestone_engine.terminal_turns import (
     TerminalTurnHandler,
 )
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
-    _user_declines_transition,
-    confirmation_token_class,
+    pending_gate_verdict,
 )
 from faultmaven.core.investigation.milestone_engine.transition_turns import (
     _close_on_explicit_intent,
@@ -73,7 +72,6 @@ from faultmaven.modules.agent.tools.vectorize_file_tool import VECTORIZED_SYSTEM
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
-    TerminalConfirmedVia,
     TurnOutcome,
 )
 from faultmaven.modules.case.domain.services.case_action_manager import (
@@ -555,7 +553,9 @@ class MilestoneEngine:
             # Two detection paths (checked in order):
             # 1. Intent-based: DECIDE suggestion clicks carry
             #    intent_type="confirmation" + confirmation_value — deterministic
-            # 2. Pattern-based: fallback for users who type instead of clicking
+            # 2. Pattern-based: fallback for users who type instead of clicking.
+            #    Only a BARE consent token executes (#1783); a longer typed
+            #    reply is re-asked.
             if hasattr(case, "pending_transition") and case.pending_transition:
                 from faultmaven.core.investigation.terminal_transitions import (
                     cancel_pending_transition,
@@ -610,7 +610,7 @@ class MilestoneEngine:
                     )
                     # Fall through to normal intent processing (section 0c)
                 elif not case.pending_transition.get("needs_info"):
-                    # Resolve confirm/decline from intent or pattern matching
+                    # The answer the turn's intent carries, if any.
                     intent_confirms = (
                         intent_type == "confirmation"
                         and (intent_data or {}).get("value") is True
@@ -624,30 +624,30 @@ class MilestoneEngine:
                         and (intent_data or {}).get("to_state")
                         == case.pending_transition.get("to_state")
                     )
-                    intent_confirms = intent_confirms or status_transition_confirms
                     intent_declines = (
                         intent_type == "confirmation"
                         and (intent_data or {}).get("value") is False
                     )
-                    # The typed matcher, read once: its verdict is whether
-                    # the text confirms, its class names how (#1748).
-                    token_class = confirmation_token_class(user_message)
-                    user_confirms = intent_confirms or token_class is not None
-                    user_declines = intent_declines or _user_declines_transition(
-                        user_message
+                    intent_value: bool | None = (
+                        True
+                        if intent_confirms or status_transition_confirms
+                        else False if intent_declines else None
+                    )
+                    # One verdict from the text and the intent together
+                    # (#1783, ruling (a)). A terminal proposal executes only
+                    # on its click or on a BARE typed consent token; an
+                    # intent the service minted from typed text (``typed``)
+                    # is not a click, and never overrides the text. The
+                    # verdict also names how the user confirmed, for the
+                    # turn record (#1748).
+                    verdict, confirmed_via = pending_gate_verdict(
+                        user_message,
+                        case.pending_transition.get("to_state"),
+                        intent_value=intent_value,
+                        typed=typed,
                     )
 
-                    if user_confirms:
-                        # How the user confirmed, for the turn record (#1748). A
-                        # click is ``intent``. An intent the service minted from
-                        # typed text (``typed``) is NOT a click: it is named by
-                        # its tokens, and ``typed_other`` when the resolver
-                        # accepted text that is no known token ("that works").
-                        confirmed_via: TerminalConfirmedVia
-                        if intent_confirms and not typed:
-                            confirmed_via = "intent"
-                        else:
-                            confirmed_via = token_class or "typed_other"
+                    if verdict == "confirm":
                         return await _confirm_pending_transition(
                             self.deps.checkpoint_service,
                             self.deps.report_service,
@@ -658,7 +658,7 @@ class MilestoneEngine:
                             user_message=user_message,
                             confirmed_via=confirmed_via,
                         )
-                    elif user_declines:
+                    elif verdict == "decline":
                         # Record the refusal BEFORE cancelling: the cancel is
                         # what erases the provenance this reads (fm#1122).
                         _record_deferred_disposition_decline(case)
@@ -688,29 +688,23 @@ class MilestoneEngine:
                                 user_message=user_message,
                             )
                     else:
-                        # User said something that isn't a clear yes/no.
-                        # A SHORT question-free reply is treated as an
-                        # ambiguous answer to the confirmation and
-                        # re-presented ONCE (don't send a bare "hmm"
-                        # through the LLM tool loop). A substantive message
-                        # (long, or carrying a question) — or any second
-                        # non-answer — is not an answer to the gate at all:
-                        # holding the gate against those swallowed every
-                        # typed turn with no LLM call and bricked the case
-                        # (#656, turns 12-13). The proposal is withdrawn
-                        # instead and the message processed as a normal
-                        # turn; the engine can always re-propose later from
-                        # fresher state.
-                        already_re_presented = case.pending_transition.get(
-                            "re_presented", False
-                        )
-                        # Blank input (whitespace-only slips past the route's
-                        # empty-payload guard) is never worth an LLM turn —
-                        # it re-presents deterministically without consuming
-                        # the one re-present allowance.
-                        if stripped_message and (
-                            message_is_substantive or already_re_presented
-                        ):
+                        # ``reask`` (consent-shaped but not bare, or text and
+                        # minted intent disagree), or ``not_an_answer``. A
+                        # SUBSTANTIVE non-answer (long, or carrying a question)
+                        # is not an answer to the gate at all: holding the
+                        # gate against those swallowed every typed turn with
+                        # no LLM call and bricked the case (#656, turns
+                        # 12-13). The proposal is withdrawn instead and the
+                        # message processed as a normal turn; the engine can
+                        # always re-propose later from fresher state.
+                        # Everything else — a re-ask, a short question-free
+                        # reply ("hmm"), blank input — is answered with the
+                        # proposal's buttons again, every time it is sent,
+                        # and never recorded as a refusal: every proposal is
+                        # terminal, and a re-ask must never become a decline
+                        # (#1783, ruling (a); the one-re-present cap #656
+                        # added is gone). None of these is worth an LLM turn.
+                        if verdict == "not_an_answer" and message_is_substantive:
                             # The offer is withdrawn either way; whether that
                             # is a REFUSAL splits on the two halves of
                             # message_is_substantive, which the gate
@@ -735,9 +729,7 @@ class MilestoneEngine:
                                 f"Pending transition withdrawn for case "
                                 f"{case.case_id}: message is not a gate "
                                 f"answer (substantive="
-                                f"{message_is_substantive}, "
-                                f"already_re_presented="
-                                f"{already_re_presented}) — processing "
+                                f"{message_is_substantive}) — processing "
                                 f"message normally"
                             )
                             # Fall through to normal processing (section 0c)
@@ -745,7 +737,6 @@ class MilestoneEngine:
                             return await _represent_pending_transition(
                                 self.deps.repository,
                                 case=case,
-                                stripped_message=stripped_message,
                                 upload_report=upload_report,
                                 user_message=user_message,
                             )
@@ -763,12 +754,11 @@ class MilestoneEngine:
             # fallback (below)" with a 2026-02-08 fix for "close as
             # unresolved" matching resolution patterns. There is no such
             # fallback below, and there is no natural-language transition
-            # detector anywhere: ``confirmation_token_class`` /
-            # ``_user_declines_transition`` only answer a STANDING pending, and
-            # ``IntentResolver`` matches typed text against suggestions already
-            # on screen. A typed "mark this resolved" with nothing standing
-            # reaches the state machine solely by the MODEL emitting
-            # ``proposed_transition``.
+            # detector anywhere: ``pending_gate_verdict`` only answers a
+            # STANDING pending, and ``IntentResolver`` matches typed text
+            # against suggestions already on screen. A typed "mark this
+            # resolved" with nothing standing reaches the state machine solely
+            # by the MODEL emitting ``proposed_transition``.
             #
             # So: a structured ``status_transition`` intent is handled below
             # (CLOSE only — the earned edges are refused at the top of this
