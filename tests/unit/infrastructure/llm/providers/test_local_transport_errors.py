@@ -221,7 +221,7 @@ async def test_each_transport_classifies_from_the_error_body(
 ):
     """#509 — every transport must classify, not just the one that is tested.
 
-    The category is what the engine keys COMPRESS_MEMORY off now. A transport
+    The category is what the engine keys TOKEN_LIMIT off now. A transport
     that raises without reading its body leaves an overflow unclassified, and
     an unclassified overflow hard-fails the turn instead of degrading. Both
     rows are needed: with only the overflow row, a transport that stamped

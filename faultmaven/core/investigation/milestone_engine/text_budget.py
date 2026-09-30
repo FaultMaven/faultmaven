@@ -132,7 +132,7 @@ def _is_context_length_error(exc: Exception) -> bool:
     Two shapes reach here, and each has its own authoritative signal.
 
     The **retry-loop path** (``with_retry`` → ``handle_error`` classifies the
-    overflow as ``COMPRESS_MEMORY`` → ``_generate_structured_output_inner``
+    overflow as ``TOKEN_LIMIT`` → ``_generate_structured_output_inner``
     re-raises a ``MilestoneEngineError``) stamps the shared ``TOKEN_LIMIT``
     error_code on the raised exception. Recognizing that deterministic engine
     signal — and walking the ``__cause__`` chain in case it is wrapped — is
