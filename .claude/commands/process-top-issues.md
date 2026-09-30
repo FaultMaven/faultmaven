@@ -542,6 +542,25 @@ so the oldest member may be one. The same section lists the **hot seams**
 for you to apply rule 3 by reading; it does not apply them itself, because
 the path an issue cites is not the seam that produced it.
 
+**Then it buys the oldest residuals issue the ready query returns**
+(`Round <N> residuals`, step 4's *Review*), also ahead of rules 1-3 and on
+the same terms. A residuals issue holds none of rules 1-3 by construction: it
+unblocks nothing, nobody can hit it, and it spans seams. So without its own
+buy it would wait behind every older item in the rule-4 tier, while a new one
+arrives each round. At most one arrives a round and one is bought a round, so
+the count is bounded by the buy rate, not flat: a `Refs` delivery, a pull, or
+pins that leave no capacity each leave one more open. The proposal's
+*Measurement* reports how many are open, counted by title. The two slots never
+buy the same issue, because the rule-4 slot skips residuals issues.
+
+**Its plan's invariant is fixed: no reachable behaviour changes.** Under it
+the item counts as one seam for sizing, and its tier is `sonnet` unless a line
+touches a guard's mechanism, a storage change or a security boundary. **Never
+rank a residuals issue into the round
+whose number it carries**, pinned or not, because that round's step 4 may
+still be appending to it. A pin refused for that reason is reported under
+*Measurement*.
+
 **Then check the premise of the items you are about to list under
 *Building* — whatever their age, and before you write the comment.** `git
 fetch origin main` now and confirm each one's named code points still say
@@ -595,6 +614,7 @@ Rule-4 tier: <the script's figure> (last round: <n, or "n/a — first
 Carrying more than one pile label: <the script's line, or none>
 Read like a question: <the script's count> — <what reading each one did>
 Second lanes: <n> of last round's <m> laned items, <k> after `sonnet` — <each, and what the first lane found>
+Residuals issues open: <n> (every open `Round … residuals` issue) — <any pin refused because it carries this round's number>
 ```
 
 The rule-4 line is **quoted from the script's own *Rule-4 tier* section**,
@@ -661,7 +681,8 @@ Unanswered questions stay blocked and go in the next proposal unchanged.
 
 **The approved items** are the ones the owner approved from this round's
 proposal — the ranked head's names that made it into *Building*, plus any the
-owner pinned and the rule-4 slot, neither of which is in the head. The head is
+owner pinned, the rule-4 slot and the residuals slot, none of which is in the
+head. The head is
 their order, not their membership.
 
 Dispatch them in the order the ranked head gives,
@@ -913,14 +934,65 @@ calls for it.
    through a review and a defeat pass.
 
    The verdict on every finding is yours, reached by running it, and each
-   finding lands in exactly one of three places:
+   finding lands in exactly one of four places:
    - **fix**: a defect in the invariant, or a crash, wrong result or
-     regression that the diff introduces on a reachable path;
-   - **file**: anything true outside that line. It becomes a new issue
-     carrying `Found while working on #<n>`, with findings that share a root
-     sharing one issue;
+     regression that the diff introduces on a reachable path. A miss in a
+     guard or test **this pull request ships** is in the invariant whatever
+     its live-site count: that guard exists to stop the next instance;
+   - **file**: a defect outside that line that someone can hit — wrong
+     behaviour, a crash, a security or tenancy gap, a guard miss with live
+     sites, text that ships to a user or that a later lane reads as an
+     instruction — or a question that trips *What escalates*. It becomes a
+     new issue carrying `Found while working on #<n>`, with findings that
+     share a root sharing one issue. **When reachability cannot be shown by
+     execution, file**: a misfiled residual costs one rank, a buried defect
+     costs a user;
+   - **residual**: anything else true, which needs no ruling and which
+     nobody can hit — dead code, a comment only a reader of the source sees
+     that misstates the code, a miss with no live site in a guard or test
+     this pull request did **not** ship, a measurement worth taking. It is
+     not an issue of its own: it is one line in the round's residuals issue
+     (below);
    - **decline**: said in one line, with the reason. Unreachable, already
      ruled, or a simplification that changes no outcome.
+
+   **The round's residuals issue** is one issue per round, titled exactly
+   `Round <N> residuals`, labelled `pile:ready`, and written by you alone: a
+   lane or a reviewer that finds a line reachable, or needing a ruling,
+   reports it and you move it. Write its lines, and any filed issues,
+   **before** the `## Review — <head>` comment, which names
+   `#<the residuals issue>` beside each residual. Then a stop between the two
+   writes loses nothing, and a re-entry that resumes from that comment checks
+   with one read that its lines are there. Look for the issue by exact title
+   first, not through `--search`, whose index lags a creation as it lags a
+   label edit, and create it in one command when there is none:
+
+   ```bash
+   gh issue list --state open --limit 500 --json number,title \
+     --jq 'map(select(.title == "Round <N> residuals"))'
+   gh issue create --title "Round <N> residuals" --label pile:ready --body "<its first lines>"
+   ```
+
+   If two match, append to the lower number, and close the higher after
+   copying across only the lines it does not already hold. A review run by
+   step 1's refresh writes to the residuals issue of the round whose result
+   named that pull request. For the repair of a red `main`, which no result
+   names, it writes to the newest result's round. That round's own step 4 is
+   over, so nothing else is writing to it.
+
+   Each residual is one `- ` line: what is true, `path:line` (prefixed
+   `<repo>:` when it is in another repository), and `(#<pr> review)`. Append
+   by rewriting the body with `gh api -X PATCH` and reading it back. The issue
+   is ready work, built like any item and bought by its own reserved slot in
+   step 2. The pull request that drains it says `Closes` when it delivers
+   every line and `Refs` otherwise. With `Refs`, the lane's comment on the
+   issue names the lines it delivered, as any `Refs` comment names what was
+   delivered, and the next settlement deletes those lines, as it edits down
+   any item delivered in part. A line that is found to need a ruling, to be reachable after all,
+   or to have a dead premise at the plan's premise check leaves the list: you
+   move it out as its own filed issue, or delete it with the evidence. If that
+   was its last line, close the residuals issue, so an empty one never sits in
+   the ready pile.
 
    The fixes go back together (one fix list, one fix commit, one push, so CI
    runs once per round rather than once per finding) to the lane. If this
@@ -940,7 +1012,9 @@ calls for it.
 
    **If the pull request ships a guard, the brief is to defeat the guard** —
    what can be re-introduced without it noticing, in the shapes this codebase
-   actually uses, with the live site count for each miss. Verifying the
+   actually uses, with the live site count for each miss (which decides
+   file against residual only for a guard this pull request did not ship).
+   Verifying the
    guard's answer on the current tree is a different activity and does not
    substitute: four rounds running the defect was in the guard the pull
    request installed, and every time it had already passed that check.
@@ -960,7 +1034,7 @@ calls for it.
    tests and docs only). Otherwise send one reviewer agent, briefed with the
    commit range, the fix list and the invariant, and never with the pull
    request number. A guard whose mechanism the fix changed also gets a delta
-   defeat pass on the same terms. The landings are *Review*'s three, and a
+   defeat pass on the same terms. The landings are *Review*'s four, and a
    delta with nothing to fix is clean.
 
    **A fix that breaks its own invariant is a design the plan did not
@@ -1053,7 +1127,7 @@ calls for it.
 
    ```
    ## Merge-ready — <final head, 9 characters>
-   Base: main@<sha> · Plan: <link> · Review: 1 round at xhigh + <k> deltas, <m> findings filed rather than fixed
+   Base: main@<sha> · Plan: <link> · Review: 1 round at xhigh + <k> deltas, <m> findings filed and <r> recorded as residuals rather than fixed
    Verified: <the commands you re-ran, with their tail>
    Checks: <every required context=conclusion> · base <ci_verdict>
    ```
@@ -1119,7 +1193,8 @@ that ran, in order — `sonnet → full` where the item needed a second — or
 next proposal's *Measurement* counts the second lanes.
 
 Pulled: #N — <the question, or what stopped the lane>
-Filed on the way: …
+Filed on the way: … (defects someone can hit, and questions)
+Residuals: #<the round's residuals issue>, <k> lines — or none
 Waiting on main: #<pr>, … — main red at <sha> on <check>; merge the repair #<n> first, then run `/process-top-issues` once.
 Waiting on <service>: #<pr>, … — <the URL that did not answer>; run `/process-top-issues` once it answers.
 Waiting on you: add the pull requests above to the merge queue. Each is merge-ready at the head its
