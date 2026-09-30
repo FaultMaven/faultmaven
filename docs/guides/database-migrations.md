@@ -539,8 +539,11 @@ it, adds its tables with their RLS enrolment on PostgreSQL, and its
 enrolled in RLS by its own revision — the baseline's table list does not reach
 it. A revision can add database objects other than tables: `003_admin_case_metadata`
 creates two PostgreSQL `SECURITY DEFINER` functions for the cross-enterprise
-operator case list and is a no-op on SQLite
-([break-glass-content-access.md](../architecture/security/break-glass-content-access.md#the-cross-enterprise-list-bounded-by-its-result-type)).
+operator case list, revokes `EXECUTE` from `PUBLIC` and grants it to the runtime
+role `faultmaven_app` when that role exists, and is a no-op on SQLite
+([break-glass-content-access.md](../architecture/security/break-glass-content-access.md#the-cross-enterprise-list-bounded-by-its-result-type-and-its-grant)).
+A deployment whose runtime role has another name grants `EXECUTE` on both
+functions itself.
 
 Run `alembic heads` for the current head. Do not copy a revision id from prose:
 a lane that parents a new migration onto a revision read from a document

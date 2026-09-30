@@ -32,6 +32,7 @@ from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.metadata import (
     CaseMetadata,
+    CaseMetadataNotGrantedError,
     CaseMetadataUnavailableError,
 )
 from faultmaven.modules.case.domain.models.problem import InvestigationStage
@@ -248,6 +249,23 @@ class TestFailsClosed:
         resp = _client(audit_repo, case_service, reader).get("/api/v1/admin/cases")
 
         assert resp.status_code == 503
+        case_service.list_all_cases.assert_not_awaited()
+
+    def test_a_role_without_execute_is_a_5xx_that_names_the_fix(
+        self, audit_repo, case_service, reader
+    ):
+        """EXECUTE is granted to the runtime role, never to PUBLIC. A role that
+        lacks it gets the same fail-closed answer, with a detail that says
+        which grant is missing — fixed text, not the driver's message."""
+        reader.list_case_metadata = AsyncMock(
+            side_effect=CaseMetadataNotGrantedError("permission denied (driver)")
+        )
+
+        resp = _client(audit_repo, case_service, reader).get("/api/v1/admin/cases")
+
+        assert resp.status_code == 503
+        assert "lacks EXECUTE" in resp.json()["detail"]
+        assert "driver" not in resp.text
         case_service.list_all_cases.assert_not_awaited()
 
     def test_any_other_read_failure_is_a_5xx_too(

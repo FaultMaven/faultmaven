@@ -3,9 +3,10 @@
 Backs ``GET /api/v1/admin/cases`` under ``TENANT_PROVIDER=multi``, and nothing
 else. It reads through the two ``SECURITY DEFINER`` functions revision
 ``003_admin_case_metadata`` creates; that revision's docstring says why a definer
-function is the bound and what the result type may carry. This module adds no
-rule of its own: every derived field comes from :meth:`CaseMetadata.from_stored`,
-which applies the rules a loaded case applies.
+function, and what bounds it: the result type, and ``EXECUTE`` granted to the
+runtime role rather than ``PUBLIC``. This module adds no rule of its own: every
+derived field comes from :meth:`CaseMetadata.from_stored`, which applies the
+rules a loaded case applies.
 
 There is deliberately no SQLite implementation and no method on
 ``ICaseRepository``: SQLite is single-tenant and has no row-level security, so
@@ -21,12 +22,17 @@ from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.metadata import (
     CaseMetadata,
+    CaseMetadataNotGrantedError,
     CaseMetadataUnavailableError,
 )
 
 #: PostgreSQL ``undefined_function``: the revision that creates the functions
 #: has not been applied to this database.
 _UNDEFINED_FUNCTION = "42883"
+
+#: PostgreSQL ``insufficient_privilege``: the connected role was not granted
+#: ``EXECUTE`` on the functions (they are not executable by ``PUBLIC``).
+_INSUFFICIENT_PRIVILEGE = "42501"
 
 # ``SELECT *`` on purpose: every column the function returns must be a keyword
 # ``CaseMetadata.from_stored`` accepts, so a column added to the function without
@@ -35,11 +41,11 @@ _PAGE = text("SELECT * FROM admin_case_metadata_page(:state, :source, :limit, :o
 _COUNT = text("SELECT admin_case_metadata_count(:state, :source)")
 
 
-def _is_undefined_function(exc: DBAPIError) -> bool:
+def _sqlstate(exc: DBAPIError) -> Optional[str]:
     """Identified by SQLSTATE, not by message text. ``exc.orig`` is SQLAlchemy's
     DBAPI wrapper; the driver exception carrying the code is its ``__cause__``."""
     cause = getattr(exc.orig, "__cause__", None)
-    return getattr(cause, "sqlstate", None) == _UNDEFINED_FUNCTION
+    return getattr(cause, "sqlstate", None)
 
 
 class PostgreSQLCaseMetadataReader:
@@ -70,10 +76,16 @@ class PostgreSQLCaseMetadataReader:
                 .all()
             )
         except DBAPIError as exc:
-            if _is_undefined_function(exc):
+            sqlstate = _sqlstate(exc)
+            if sqlstate == _UNDEFINED_FUNCTION:
                 raise CaseMetadataUnavailableError(
                     "the cross-enterprise case metadata functions are not "
                     "installed; apply the database migrations"
+                ) from exc
+            if sqlstate == _INSUFFICIENT_PRIVILEGE:
+                raise CaseMetadataNotGrantedError(
+                    "the application's database role lacks EXECUTE on the "
+                    "cross-enterprise case metadata functions; grant it"
                 ) from exc
             raise
         return [CaseMetadata.from_stored(**row) for row in rows], int(total)

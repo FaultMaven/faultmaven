@@ -7,7 +7,12 @@ can answer:
 * **The bound is structural.** The page function's declared result columns are
   an exact, asserted set of ids, closed-vocabulary strings, timestamps,
   integers, booleans and arrays of those — adding a column fails here, and a
-  case whose title and description are sentinels never surfaces them.
+  case whose title and description are sentinels never surfaces them. The
+  ``search_path`` lists ``pg_temp`` last, so a caller's temporary table cannot
+  shadow ``cases``.
+* **The grant is the other half.** No role may execute either function without
+  an explicit grant — PUBLIC holds none — and a role without it gets a 503 that
+  says so, never a partial list.
 * **Parity.** One fixture set — every investigation stage, asides including a
   duplicate turn number, a terminal case, team shares, an empty case, a null
   and a missing mitigation, a clock behind its history, a deleted owner — read
@@ -24,8 +29,10 @@ can answer:
   ``CaseMetadataUnavailableError`` — which the route answers with a 503 — and
   revision 003 steps down and back up.
 
-Everything runs as a role with the deployed ``faultmaven_app`` grants and no
-ownership, because PostgreSQL exempts superusers and table owners from RLS; the
+Everything runs as a role with the deployed ``faultmaven_app`` grants —
+including ``EXECUTE`` on both functions, which revision 003 grants that role by
+name — and no ownership, because PostgreSQL exempts superusers and table owners
+from RLS; the
 fixtures are written through the production case writer under the enterprise's
 binding, and only the shapes that writer cannot produce (a stored duplicate, a
 lagging clock, a missing key) are then set as the owner.
@@ -52,8 +59,10 @@ from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.tenant_context import set_current_enterprise_id
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from tests.integration.security.conftest import (
+    CASE_METADATA_FUNCTIONS,
     create_limited_role,
     drop_limited_role,
+    drop_role_sql,
     limited_url,
 )
 
@@ -71,6 +80,8 @@ _ROLE = f"fm_casemeta_probe_{uuid.uuid4().hex[:8]}"
 _PW = "fm_casemeta_probe_pw"
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _BASELINE_REVISION = "a1e0c17bd001"
+#: The deployment's runtime role, which revision 003 grants EXECUTE by name.
+_RUNTIME_ROLE = "faultmaven_app"
 
 #: Every fixture case is updated "in 2099", so the fixtures lead the
 #: newest-first order ahead of any row another module left in the shared
@@ -228,6 +239,9 @@ async def world(limited_role_env):
     user_a, user_b = f"user_meta_a_{suffix}", f"user_meta_b_{suffix}"
     org_a = f"org_meta_a_{suffix}"
     team_1, team_2 = f"team_meta_1_{suffix}", f"team_meta_2_{suffix}"
+    # Codepoint order puts "B" before "a"; a linguistic collation (en_US, the
+    # usual database default) puts "a" first. The two paths must agree.
+    team_lower, team_upper = f"team_meta_a_{suffix}", f"team_meta_B_{suffix}"
 
     # Cleanup is armed before the first insert: a setup that fails half way
     # must not leave enterprises behind for the rest of the lane to count.
@@ -253,7 +267,7 @@ async def world(limited_role_env):
             o=org_a,
             e=ent_a,
         )
-        for team in (team_1, team_2):
+        for team in (team_1, team_2, team_lower, team_upper):
             await _as_owner(
                 owner,
                 "INSERT INTO teams (team_id, enterprise_id, name) VALUES (:t, :e, :t)",
@@ -351,6 +365,14 @@ async def world(limited_role_env):
                 turn_history=turns((1, False)),
                 current_turn=1,
             ),
+            # Shaped below: shared to two teams whose ids differ only in case.
+            "shared_mixed_case": _case(
+                ent_a,
+                user_a,
+                "shared_mixed_case",
+                turn_history=turns((1, False)),
+                current_turn=1,
+            ),
             "empty": _case(ent_a, user_a, "empty"),
             # Shaped below: an explicit null mitigation beside an accepted solution.
             "null_mitigation": _case(
@@ -438,11 +460,14 @@ async def world(limited_role_env):
             "UPDATE cases SET user_id = NULL WHERE case_id = :c",
             c=a["orphan"].case_id,
         )
-        # Two team shares and an organization-scope one, which is not a team.
-        for scope_type, scope_id in (
-            ("team", team_2),
-            ("team", team_1),
-            ("organization", org_a),
+        # Two team shares and an organization-scope one, which is not a team;
+        # and two teams whose ids differ only in case, on a second case.
+        for case_key, scope_type, scope_id in (
+            ("shared", "team", team_2),
+            ("shared", "team", team_1),
+            ("shared", "organization", org_a),
+            ("shared_mixed_case", "team", team_lower),
+            ("shared_mixed_case", "team", team_upper),
         ):
             await _as_owner(
                 owner,
@@ -450,7 +475,7 @@ async def world(limited_role_env):
                 "scope_type, scope_id, enterprise_id) "
                 "VALUES (:s, 'case', :c, :t, :i, :e)",
                 s=str(uuid.uuid4()),
-                c=a["shared"].case_id,
+                c=a[case_key].case_id,
                 t=scope_type,
                 i=scope_id,
                 e=ent_a,
@@ -472,6 +497,7 @@ async def world(limited_role_env):
             a=a,
             b=b,
             teams=sorted([team_1, team_2]),
+            mixed_case_teams=[team_upper, team_lower],
             # Newest first.
             order=[case.case_id for case in ordered],
         )
@@ -547,7 +573,12 @@ async def test_both_functions_run_as_the_table_owner_with_a_pinned_search_path(
     limited_role_env,
 ):
     """What makes them span every enterprise — and only because the policies
-    are enabled, never forced — and what keeps a caller's schema out of them."""
+    are enabled, never forced — and what keeps a caller's schema out of them.
+
+    ``pg_temp`` must be listed, and LAST: left out, PostgreSQL searches the
+    caller's temporary schema FIRST for relations, so a caller's temporary
+    ``cases`` would shadow the real table inside the owner's rights.
+    """
     rows = await _as_owner(
         limited_role_env,
         "SELECT p.proname, p.prosecdef, p.proconfig, "
@@ -556,22 +587,43 @@ async def test_both_functions_run_as_the_table_owner_with_a_pinned_search_path(
         "WHERE p.proname IN ('admin_case_metadata_page', 'admin_case_metadata_count') "
         "AND t.tablename = 'cases' AND c.relname = 'cases' ORDER BY p.proname",
     )
-    assert [tuple(row) for row in rows] == [
-        (
-            "admin_case_metadata_count",
-            True,
-            ["search_path=pg_catalog, public"],
-            True,
-            False,
-        ),
-        (
-            "admin_case_metadata_page",
-            True,
-            ["search_path=pg_catalog, public"],
-            True,
-            False,
-        ),
+    assert [row.proname for row in rows] == [
+        "admin_case_metadata_count",
+        "admin_case_metadata_page",
     ]
+    for name, definer, config, owned_by_table_owner, forced in rows:
+        assert (definer, owned_by_table_owner, forced) == (True, True, False), name
+        (setting,) = [entry for entry in config if entry.startswith("search_path=")]
+        path = [part.strip() for part in setting.split("=", 1)[1].split(",")]
+        assert path[0] == "pg_catalog", (name, path)
+        assert "pg_temp" in path and path[-1] == "pg_temp", (
+            f"{name}: pg_temp must be listed last, or a caller's temporary "
+            f"table shadows the real one: {path}"
+        )
+
+
+async def test_a_callers_temporary_table_cannot_shadow_cases(world):
+    """The pinned ``search_path``, exercised: a limited role creates a temporary
+    ``cases`` with no rows, and the function still counts the real table."""
+    engine = create_async_engine(limited_url(world.owner, _ROLE, _PW), future=True)
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(
+                text("CREATE TEMPORARY TABLE cases (state text, source text)")
+            )
+            shadowed = (
+                await conn.execute(text("SELECT count(*) FROM pg_temp.cases"))
+            ).scalar()
+            counted = (
+                await conn.execute(text("SELECT admin_case_metadata_count(NULL, NULL)"))
+            ).scalar()
+    finally:
+        await engine.dispose()
+
+    assert shadowed == 0
+    assert counted >= len(
+        world.order
+    ), "the function read the caller's temporary table instead of cases"
 
 
 async def test_no_returned_value_carries_case_content(world):
@@ -666,6 +718,10 @@ async def test_the_multi_path_serves_what_the_single_tenant_path_serves(world):
     ) == (3, 2)
     assert rows[a["empty"].case_id].current_turn == 0
     assert rows[a["shared"].case_id].shared_team_ids == world.teams
+    # Codepoint order, stated by value: "B" (0x42) before "a" (0x61).
+    assert rows[a["shared_mixed_case"].case_id].shared_team_ids == (
+        world.mixed_case_teams
+    )
     assert rows[a["diagnosis"].case_id].organization_id is not None
     # The deleted owner's case is dropped by both paths' projection, not by the
     # read: the metadata read did return it.
@@ -826,6 +882,119 @@ async def test_a_database_without_the_functions_raises_rather_than_narrows(
         await engine.dispose()
 
 
+# =============================================================================
+# Who may execute — the grant is the second half of the bound
+# =============================================================================
+
+
+async def test_no_role_holds_execute_without_an_explicit_grant(limited_role_env):
+    """Left at the PostgreSQL default, a new function is executable by PUBLIC —
+    and every login role holds CONNECT through PUBLIC — so any role able to
+    connect could read every enterprise's case metadata. Revision 003 revokes
+    PUBLIC; a fresh role with no grant of any kind must not be able to execute
+    either function, while the role granted as the deployment grants its
+    runtime role can."""
+    fresh = f"fm_casemeta_nogrant_{uuid.uuid4().hex[:8]}"
+    await _as_owner(limited_role_env, drop_role_sql(fresh))
+    await _as_owner(limited_role_env, f"CREATE ROLE {fresh} NOLOGIN")
+    try:
+        for signature in CASE_METADATA_FUNCTIONS:
+            ((fresh_may, granted_may, public_in_acl),) = await _as_owner(
+                limited_role_env,
+                "SELECT has_function_privilege(:fresh, CAST(:f AS regprocedure), "
+                "'EXECUTE'), has_function_privilege(:granted, "
+                "CAST(:f AS regprocedure), 'EXECUTE'), "
+                "EXISTS (SELECT 1 FROM pg_proc p, aclexplode(COALESCE(p.proacl, "
+                "acldefault('f', p.proowner))) a "
+                "WHERE p.oid = CAST(:f AS regprocedure) AND a.grantee = 0)",
+                fresh=fresh,
+                granted=_ROLE,
+                f=signature,
+            )
+            assert fresh_may is False, f"{signature} is executable without a grant"
+            assert public_in_acl is False, f"{signature} grants PUBLIC"
+            assert granted_may is True, f"{signature}: the granted role lost it"
+    finally:
+        await _as_owner(limited_role_env, drop_role_sql(fresh))
+
+
+class _ReaderAs:
+    """The production reader over a session of a given role."""
+
+    def __init__(self, url: str):
+        self.url = url
+
+    async def list_case_metadata(self, **filters):
+        from faultmaven.modules.case.infrastructure.case_metadata_reader import (
+            PostgreSQLCaseMetadataReader,
+        )
+
+        engine = create_async_engine(self.url, future=True)
+        try:
+            async with AsyncSession(bind=engine) as session:
+                return await PostgreSQLCaseMetadataReader(session).list_case_metadata(
+                    **filters
+                )
+        finally:
+            await engine.dispose()
+
+
+async def test_a_role_without_the_grant_gets_a_503_not_a_partial_list(
+    limited_role_env,
+):
+    """A deployment whose runtime role was never granted EXECUTE — a different
+    role name, or a role created after the migration ran. The reader names the
+    cause, and the route answers 503 without ever reaching the RLS-scoped list.
+    """
+    from unittest.mock import AsyncMock
+
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from faultmaven.api.middleware.auth import require_platform_admin
+    from faultmaven.api.routes.admin_cases import (
+        get_case_metadata_reader,
+        get_case_service,
+        get_operator_audit_repository,
+        router,
+    )
+    from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
+    from faultmaven.modules.case.domain.models.metadata import (
+        CaseMetadataNotGrantedError,
+    )
+
+    role = f"fm_casemeta_ungranted_{uuid.uuid4().hex[:8]}"
+    await create_limited_role(limited_role_env, role, _PW, grant_case_metadata=False)
+    try:
+        reader = _ReaderAs(limited_url(limited_role_env, role, _PW))
+        with pytest.raises(CaseMetadataNotGrantedError):
+            await reader.list_case_metadata(state=None, source=None, limit=10, offset=0)
+
+        case_service = AsyncMock()
+        app = FastAPI()
+        app.include_router(router)
+        app.dependency_overrides[require_platform_admin] = lambda: AuthenticatedUser(
+            user_id="op-1",
+            enterprise_id="ent-operator",
+            email="operator@example.com",
+            roles=["platform_admin"],
+            permissions=[],
+        )
+        app.dependency_overrides[get_operator_audit_repository] = lambda: AsyncMock()
+        app.dependency_overrides[get_case_service] = lambda: case_service
+        app.dependency_overrides[get_case_metadata_reader] = lambda: reader
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/v1/admin/cases")
+
+        assert response.status_code == 503, response.text
+        assert "EXECUTE" in response.json()["detail"]
+        case_service.list_all_cases.assert_not_called()
+    finally:
+        await drop_limited_role(limited_role_env, role)
+
+
 def _alembic(url: str, command: str) -> subprocess.CompletedProcess:
     env = dict(os.environ, DATABASE_URL=url)
     env["PYTHONPATH"] = f"{_PROJECT_ROOT}{os.pathsep}{env.get('PYTHONPATH', '')}"
@@ -840,7 +1009,12 @@ def _alembic(url: str, command: str) -> subprocess.CompletedProcess:
 
 async def test_revision_003_steps_down_and_up(limited_role_env):
     """In a database of its own: downgrading the shared one would pull the
-    functions out from under every other test in the lane."""
+    functions out from under every other test in the lane.
+
+    With the runtime role present, so the migration's grant branch runs — the
+    shared database was migrated before any such role existed, which exercises
+    the other one. The role is cluster-wide: it is created only if absent, and
+    dropped only if this test created it."""
     name = f"fm_casemeta_updown_{uuid.uuid4().hex[:8]}"
     admin = create_async_engine(
         limited_role_env, future=True, isolation_level="AUTOCOMMIT"
@@ -851,8 +1025,35 @@ async def test_revision_003_steps_down_and_up(limited_role_env):
         .render_as_string(hide_password=False)
     )
     async with admin.connect() as conn:
+        created_runtime_role = not (
+            await conn.execute(
+                text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :r)"),
+                {"r": _RUNTIME_ROLE},
+            )
+        ).scalar()
+        if created_runtime_role:
+            await conn.execute(text(f"CREATE ROLE {_RUNTIME_ROLE} NOLOGIN"))
         await conn.execute(text(f'CREATE DATABASE "{name}"'))
     try:
+
+        async def runtime_role_may_execute():
+            engine = create_async_engine(url, future=True)
+            try:
+                async with engine.connect() as conn:
+                    return [
+                        (
+                            await conn.execute(
+                                text(
+                                    "SELECT has_function_privilege(:r, "
+                                    "CAST(:f AS regprocedure), 'EXECUTE')"
+                                ),
+                                {"r": _RUNTIME_ROLE, "f": signature},
+                            )
+                        ).scalar()
+                        for signature in CASE_METADATA_FUNCTIONS
+                    ]
+            finally:
+                await engine.dispose()
 
         async def functions_and_ledger():
             engine = create_async_engine(url, future=True)
@@ -887,6 +1088,7 @@ async def test_revision_003_steps_down_and_up(limited_role_env):
         result = _alembic(url, "upgrade head")
         assert result.returncode == 0, result.stderr[-2000:]
         assert await functions_and_ledger() == (both, 1)
+        assert await runtime_role_may_execute() == [True, True]
 
         result = _alembic(url, "downgrade -1")
         assert result.returncode == 0, result.stderr[-2000:]
@@ -903,4 +1105,6 @@ async def test_revision_003_steps_down_and_up(limited_role_env):
     finally:
         async with admin.connect() as conn:
             await conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+            if created_runtime_role:
+                await conn.execute(text(f"DROP ROLE IF EXISTS {_RUNTIME_ROLE}"))
         await admin.dispose()

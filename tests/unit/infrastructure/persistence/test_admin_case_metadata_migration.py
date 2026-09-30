@@ -46,10 +46,48 @@ def test_the_function_body_names_the_literal_it_declares():
     ), "the page function no longer compares outcomes to OUT_OF_BAND_OUTCOME"
 
 
-def test_both_functions_are_security_definer_with_a_pinned_search_path():
-    """The baseline's precedent for definer functions: a definer function with
-    an open search_path runs whatever a caller's schema puts first."""
+def test_both_functions_are_security_definer_with_pg_temp_last():
+    """A definer function with an open search_path runs whatever a caller's
+    schema puts first — and one that leaves ``pg_temp`` out searches it FIRST
+    for relations, so it must be listed, last."""
     migration = _load()
+    path = [part.strip() for part in migration.SEARCH_PATH.split(",")]
+    assert path[0] == "pg_catalog" and path[-1] == "pg_temp", path
     for ddl in (migration._CREATE_PAGE_FUNCTION, migration._CREATE_COUNT_FUNCTION):
         assert "SECURITY DEFINER" in ddl
-        assert "SET search_path = pg_catalog, public" in ddl
+        assert f"SET search_path = {migration.SEARCH_PATH}\n" in ddl
+
+
+def test_execute_is_revoked_from_public_and_granted_to_the_runtime_role():
+    """What the upgrade issues, in order: each function is created, PUBLIC is
+    revoked, and the runtime role is granted — guarded on the role existing."""
+    migration = _load()
+    issued = []
+
+    class _Op:
+        @staticmethod
+        def get_context():
+            class _Ctx:
+                class dialect:
+                    name = "postgresql"
+
+            return _Ctx()
+
+        @staticmethod
+        def execute(sql):
+            issued.append(" ".join(str(sql).split()))
+
+    migration.op = _Op
+    migration.upgrade()
+
+    for signature in migration._SIGNATURES:
+        revoke = f"REVOKE ALL ON FUNCTION {signature} FROM PUBLIC"
+        assert revoke in issued, f"{signature}: PUBLIC keeps EXECUTE"
+        grant = f"GRANT EXECUTE ON FUNCTION {signature} TO faultmaven_app;"
+        (block,) = [sql for sql in issued if sql.startswith("DO $$")]
+        assert grant in block
+        assert issued.index(revoke) < issued.index(block)
+    assert "rolname = 'faultmaven_app'" in block
+    assert "GRANT" not in " ".join(
+        sql for sql in issued if not sql.startswith("DO $$")
+    ), "a grant outside the role-existence guard would fail without the role"

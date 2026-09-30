@@ -19,11 +19,11 @@ logging in as each user. It is gated by:
     ``TENANT_PROVIDER=multi`` an ordinary case query is scoped to the one
     enterprise the request is bound to — a list that would claim to span every
     tenant and show one. That deployment is served instead from the
-    cross-enterprise metadata read (``ICaseMetadataReader``): a ``SECURITY
-    DEFINER`` function whose result type cannot carry a title, a description or
-    any other user text, so it is metadata-only by construction. Under
-    ``single`` every row carries the Standalone enterprise, so the RLS-scoped
-    case query IS the complete list.
+    cross-enterprise metadata read (``ICaseMetadataReader``): ``SECURITY
+    DEFINER`` functions whose result has no column sourced from a title, a
+    description or any other user text, executable by the runtime role only.
+    Under ``single`` every row carries the Standalone enterprise, so the
+    RLS-scoped case query IS the complete list.
 
 Every access is recorded in the durable, append-only ``operator_access_audit``
 table before any case data is returned; see ``api/operator_audit.py`` for that
@@ -74,6 +74,7 @@ from faultmaven.models.interfaces_operator_grant import IOperatorGrantRepository
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.case.contracts import (
     CaseMetadata,
+    CaseMetadataNotGrantedError,
     CaseMetadataUnavailableError,
     ICaseMetadataReader,
 )
@@ -110,6 +111,13 @@ async def get_case_metadata_reader(request: Request) -> Optional[ICaseMetadataRe
 router = APIRouter(
     prefix="/api/v1/admin",
     tags=["Admin - Cases"],
+)
+
+#: Fixed text, never the database error: the operator needs to know which fix
+#: applies, not the driver's message.
+_NOT_GRANTED_DETAIL = (
+    "Cross-enterprise case listing is not available: the application's database "
+    "role lacks EXECUTE on the case metadata functions"
 )
 
 
@@ -174,6 +182,18 @@ async def list_all_cases(
         try:
             metadata, total = await metadata_reader.list_case_metadata(
                 state=state, source=source, limit=limit, offset=offset
+            )
+        except CaseMetadataNotGrantedError:
+            # The functions exist but this role may not execute them: EXECUTE
+            # is granted to the runtime role explicitly, never to PUBLIC. Same
+            # fail-closed answer as a missing function, with a different fix.
+            logger.error(
+                "admin_case_list_unavailable: the database role lacks EXECUTE on "
+                "the cross-enterprise case metadata functions"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=_NOT_GRANTED_DETAIL,
             )
         except CaseMetadataUnavailableError:
             # The database has not been migrated to the read. Same answer as an

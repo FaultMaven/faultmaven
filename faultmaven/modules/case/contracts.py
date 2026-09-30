@@ -525,6 +525,7 @@ from faultmaven.modules.case.domain.models.lifecycle import (
 )
 from faultmaven.modules.case.domain.models.metadata import (
     CaseMetadata,
+    CaseMetadataNotGrantedError,
     CaseMetadataUnavailableError,
 )
 from faultmaven.modules.case.domain.models.problem import (
@@ -574,9 +575,9 @@ class ICaseMetadataReader(Protocol):
     PostgreSQL only, and needed only under ``TENANT_PROVIDER=multi``: there the
     web process's database role is scoped by row-level security to one
     enterprise, so an ordinary case query cannot answer "all tenants". The
-    implementation reads through a ``SECURITY DEFINER`` function whose result
-    type has no column that can hold a title, a description or other user
-    text, which is what bounds the read.
+    implementation reads through ``SECURITY DEFINER`` functions bounded twice:
+    by a result type with no column sourced from a title, a description or
+    other user text, and by ``EXECUTE`` granted to the runtime role only.
     """
 
     async def list_case_metadata(
@@ -591,7 +592,9 @@ class ICaseMetadataReader(Protocol):
         and the number of matches in all enterprises (not the page length).
 
         Raises:
-            CaseMetadataUnavailableError: the database function is missing.
+            CaseMetadataNotGrantedError: the connected role lacks EXECUTE.
+            CaseMetadataUnavailableError: the database function is missing
+                (and the base class of the above).
         """
         ...
 
@@ -613,6 +616,7 @@ __all__ = [
     "ICaseRepository",
     "ICaseMetadataReader",
     "CaseMetadataUnavailableError",
+    "CaseMetadataNotGrantedError",
     # DTOs
     "CaseStateDTO",
     "CaseDTO",

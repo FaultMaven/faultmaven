@@ -14,19 +14,34 @@ function created here is owned by the role that runs the migrations — the tabl
 owner — and ``SECURITY DEFINER`` runs it with that role's rights, so it spans
 every enterprise.
 
-What bounds it is the **result type**, not the caller. The page function returns
-system ids, closed-vocabulary strings (``state``, ``source``,
-``closure_reason``), timestamps, integers, booleans and arrays of those; no
-column can carry a title, a description, a message or any other text a user
-typed, and no column is a JSON blob. Two derived fields an operator sees are not
+Two things bound it, and both are needed.
+
+**The result type.** The page function returns system ids, timestamps,
+integers, booleans, arrays of those, and three short strings. No column is
+sourced from a title, a description, a message or a JSON blob. Of the strings,
+``state`` is a closed vocabulary the database enforces (``cases_state_check``);
+``source`` and ``closure_reason`` are closed vocabularies the application's
+writers enforce (the ``Case`` model's ``Literal`` and its closure-reason
+validator) — the columns themselves carry no CHECK, so for those two the bound
+is the writer, not the type. Two derived fields an operator sees are not
 columns — the investigation stage (four gate milestones in ``progress``) and the
 investigation turn (the out-of-band entries of ``metadata.turn_history``) — so
 the function returns their primitive inputs and the application applies the same
 rules a loaded case applies. Neither rule is re-implemented here.
 
-``EXECUTE`` keeps PostgreSQL's default grant to ``PUBLIC``. That is deliberate:
-the deployment grants its application role table and sequence privileges only,
-and the bound above does not depend on who may call the function.
+**An explicit grant.** A new function is executable by ``PUBLIC`` by default,
+and every login role on the cluster holds ``CONNECT`` through ``PUBLIC`` — so
+left at the default, any role able to connect could read every enterprise's case
+metadata. Both functions therefore revoke ``PUBLIC`` and grant ``EXECUTE`` to
+the runtime role, ``faultmaven_app``, when that role exists at migration time.
+A deployment whose runtime role has a different name, or creates it after this
+revision ran, must grant ``EXECUTE`` on both functions itself; until it does,
+the list fails closed with a 503 that says so.
+
+``search_path`` is pinned to ``pg_catalog, public, pg_temp``. Listing
+``pg_temp`` LAST matters: left out, PostgreSQL searches the caller's temporary
+schema FIRST for relations, so a caller's temporary ``cases`` would shadow the
+real table inside a function running with the owner's rights.
 
 The rejected alternatives: a ``BYPASSRLS`` engine in the web process (bounded
 only by call-site discipline, and able to read every transcript), the offline
@@ -43,7 +58,7 @@ empty. A ``NULL`` filter matches everything.
 
 SQLite (standalone) gets nothing: it is single-tenant, has no row-level
 security and no functions, and the operator list there reads cases directly.
-``downgrade()`` drops both functions.
+``downgrade()`` drops both functions, and their grants with them.
 
 Revision ID: baa28e79ebab
 Revises: 65913afe773c
@@ -77,11 +92,19 @@ _MATCHES_FILTERS = (
     "AND (p_source IS NULL OR k.source = p_source)"
 )
 
-_DEFINER = """
+#: The runtime role the deployment connects as (the RLS-subject role the
+#: baseline's infra requirement names). Granted EXECUTE when it exists.
+RUNTIME_ROLE = "faultmaven_app"
+
+#: ``pg_temp`` LAST: when it is not listed, PostgreSQL searches it FIRST for
+#: relations, and a caller's temporary table would shadow ``cases``.
+SEARCH_PATH = "pg_catalog, public, pg_temp"
+
+_DEFINER = f"""
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = {SEARCH_PATH}
 """
 
 _CREATE_PAGE_FUNCTION = f"""
@@ -169,7 +192,9 @@ AS $$
     ) AS turns ON true
     -- The teams the case is shared to, within its own enterprise.
     LEFT JOIN LATERAL (
-        SELECT array_agg(s.scope_id::text ORDER BY s.scope_id) AS ids
+        -- Codepoint order ("C"), the order Python's sorted() gives the
+        -- single-tenant path; the database's collation may sort otherwise.
+        SELECT array_agg(s.scope_id::text ORDER BY s.scope_id COLLATE "C") AS ids
           FROM resource_shares AS s
          WHERE s.resource_type = 'case'
            AND s.resource_id = c.case_id
@@ -191,8 +216,31 @@ $$
 
 _COMMENT = (
     "Cross-enterprise operator case list (ADR-012 D9). Returns metadata only; "
-    "the result type is the bound."
+    "executable by the runtime role, not PUBLIC."
 )
+
+#: Both functions by signature, as GRANT/REVOKE/COMMENT name them.
+_SIGNATURES = (
+    f"{PAGE_FUNCTION}(text, text, integer, integer)",
+    f"{COUNT_FUNCTION}(text, text)",
+)
+
+_GRANTS = "\n        ".join(
+    f"GRANT EXECUTE ON FUNCTION {signature} TO {RUNTIME_ROLE};"
+    for signature in _SIGNATURES
+)
+
+#: Granted only if the role exists, so a database without it (a fresh test
+#: cluster, a deployment that names its role differently) still migrates.
+_GRANT_TO_RUNTIME_ROLE = f"""
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{RUNTIME_ROLE}') THEN
+        {_GRANTS}
+    END IF;
+END
+$$
+"""
 
 
 def upgrade() -> None:
@@ -201,16 +249,15 @@ def upgrade() -> None:
         return
     op.execute(_CREATE_PAGE_FUNCTION)
     op.execute(_CREATE_COUNT_FUNCTION)
-    op.execute(
-        f"COMMENT ON FUNCTION {PAGE_FUNCTION}(text, text, integer, integer) "
-        f"IS '{_COMMENT}'"
-    )
-    op.execute(f"COMMENT ON FUNCTION {COUNT_FUNCTION}(text, text) IS '{_COMMENT}'")
+    for signature in _SIGNATURES:
+        op.execute(f"REVOKE ALL ON FUNCTION {signature} FROM PUBLIC")
+        op.execute(f"COMMENT ON FUNCTION {signature} IS '{_COMMENT}'")
+    op.execute(_GRANT_TO_RUNTIME_ROLE)
 
 
 def downgrade() -> None:
-    """Drop both functions."""
+    """Drop both functions; their grants go with them."""
     if op.get_context().dialect.name != "postgresql":
         return
-    op.execute(f"DROP FUNCTION IF EXISTS {PAGE_FUNCTION}(text, text, integer, integer)")
-    op.execute(f"DROP FUNCTION IF EXISTS {COUNT_FUNCTION}(text, text)")
+    for signature in _SIGNATURES:
+        op.execute(f"DROP FUNCTION IF EXISTS {signature}")

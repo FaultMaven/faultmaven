@@ -5,7 +5,7 @@ transcript — in the Cloud deployment, and why that path is shaped the way it i
 
 This is the content row of ADR-012 D8/D9. The metadata row (the cross-tenant
 case *list*) is `GET /api/v1/admin/cases`; how it spans enterprises under
-multi-tenancy is [below](#the-cross-enterprise-list-bounded-by-its-result-type).
+multi-tenancy is [below](#the-cross-enterprise-list-bounded-by-its-result-type-and-its-grant).
 The durable audit trail both paths write to is `operator_access_audit`.
 
 ## The boundary
@@ -187,7 +187,7 @@ a false one returns no rows — but under `single` nothing exercises the claim, 
 recording it would let the audited party choose which tenant their own immutable
 row names. Attribution comes from the request, never from the assertion.
 
-## The cross-enterprise list: bounded by its result type
+## The cross-enterprise list: bounded by its result type and its grant
 
 The metadata **list** (`GET /api/v1/admin/cases`) is the one operator read that
 rebinding cannot serve under `multi`: it must span every enterprise at once, and
@@ -203,18 +203,35 @@ every enterprise. A migration creates them, so they are owned by the migrating
 role — the table owner. The baseline's policies are `ENABLE`d and never
 `FORCE`d, and PostgreSQL exempts a table's owner from a non-forced policy, so the
 functions span every enterprise while the session that calls them stays
-RLS-scoped for everything else it does. Like the baseline's definer functions
-they are `LANGUAGE sql`, `SECURITY DEFINER`, `SET search_path = pg_catalog,
-public`.
+RLS-scoped for everything else it does. They are `LANGUAGE sql`, `SECURITY
+DEFINER`, `SET search_path = pg_catalog, public, pg_temp` — `pg_temp` listed, and
+last, because a definer function that leaves it out searches the caller's
+temporary schema *first* for relations, and a caller's temporary `cases` would
+shadow the real table.
 
-**The bound is the result type.** The page function returns system ids,
-closed-vocabulary strings (`state`, `source`, `closure_reason`), timestamps,
-integers, booleans and arrays of those — nothing sourced from `title`,
-`description` or any other user text, and no JSON blob. There is no argument or
-caller that makes it return content, because it has no column to return it in.
-`tests/integration/security/test_admin_case_metadata_postgres.py` asserts the
-declared result columns against the catalog, so adding one fails until a person
-classifies it.
+Two things bound the bypass, and it needs both.
+
+**The result type.** The page function returns system ids, timestamps,
+integers, booleans, arrays of those, and three short strings — nothing sourced
+from `title`, `description` or any other user text, and no JSON blob. There is no
+argument or caller that makes it return content, because it has no column to
+return it in. Of the three strings, `state` is a closed vocabulary the database
+enforces (`cases_state_check`). `source` and `closure_reason` are closed
+vocabularies too, but the application's writers enforce them — the `Case` model's
+`Literal` for `source` and its closure-reason validator — not the column type,
+which carries no CHECK. `tests/integration/security/test_admin_case_metadata_postgres.py`
+asserts the declared result columns against the catalog, so adding one fails
+until a person classifies it.
+
+**An explicit grant.** A new PostgreSQL function is executable by `PUBLIC`, and
+every login role holds `CONNECT` on the database through `PUBLIC`, so left at the
+default any role able to connect to the cluster could read every enterprise's
+case metadata. Revision `003` revokes `EXECUTE` from `PUBLIC` on both functions
+and grants it to the runtime role `faultmaven_app` — only if that role exists
+when the migration runs, so a database without it still migrates. A deployment
+whose runtime role has a different name, or that creates the role after this
+revision ran, must grant `EXECUTE` on both functions to it itself; until it does,
+the list answers 503 and says which grant is missing.
 
 **Two fields are derived, not stored.** The row's `stage` comes from four gate
 milestones inside the `progress` JSON, and its `investigation_turn` from the
@@ -228,14 +245,10 @@ this one are two paths to the same `AdminCaseMetadata` row, kept in step by a
 parity test on PostgreSQL that serves one fixture set through both and compares
 every field.
 
-**`EXECUTE` keeps PostgreSQL's default grant to `PUBLIC`.** The deployment grants
-its application role table and sequence privileges only, so a revoke would need
-a matching grant per role; it would also add nothing, because what the functions
-can disclose is fixed by their result type, not by who calls them.
-
 **Failure direction.** The reader is composed only under `multi`. If it is
-missing, or the database has not been migrated to `003`, the route answers 503.
-It never falls back to the RLS-narrowed case query.
+missing, if the database has not been migrated to `003`, or if the runtime role
+lacks `EXECUTE` on the functions, the route answers 503. It never falls back to
+the RLS-narrowed case query.
 
 The rejected alternatives are the ones rejected for content above — a
 `BYPASSRLS` engine in the web process, the maintenance role in a request path —

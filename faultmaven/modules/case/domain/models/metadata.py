@@ -3,9 +3,10 @@
 The cross-enterprise operator list reads cases it may not load: under
 ``TENANT_PROVIDER=multi`` row-level security hides every enterprise but the
 bound one, and the one path that spans them all returns primitives only — ids,
-closed-vocabulary strings, timestamps, counters, booleans and id arrays — so
-that it has no way to carry a title, a description or anything else a user
-typed.
+timestamps, counters, booleans, id arrays and three closed-vocabulary strings —
+and no column sourced from a title, a description or anything else a user
+typed. Of those strings the database enforces ``state``; ``source`` and
+``closure_reason`` are closed by the ``Case`` model that writes them.
 
 Two of the fields an operator sees are not columns. ``stage`` is derived from
 four gate milestones inside the ``progress`` blob, and ``investigation_turn``
@@ -36,7 +37,7 @@ from .progress import investigation_stage
 
 
 class CaseMetadataUnavailableError(Exception):
-    """The cross-enterprise metadata read is not installed in this database.
+    """The cross-enterprise metadata read cannot run in this database.
 
     Raised when the database function the read goes through does not exist —
     the database has not been migrated to the revision that creates it. A
@@ -45,9 +46,18 @@ class CaseMetadataUnavailableError(Exception):
     """
 
 
+class CaseMetadataNotGrantedError(CaseMetadataUnavailableError):
+    """The functions exist, but the connected role may not execute them.
+
+    ``EXECUTE`` is granted to the runtime role explicitly, never to ``PUBLIC``;
+    a deployment whose runtime role was not granted it lands here. Same
+    fail-closed answer as a missing function, with a different fix.
+    """
+
+
 class CaseMetadata(BaseModel):
     """One case as metadata only: system ids, closed vocabularies, timestamps
-    and counts. It has no field that can hold user free text."""
+    and counts. No field is sourced from user free text."""
 
     model_config = ConfigDict(frozen=True)
 
