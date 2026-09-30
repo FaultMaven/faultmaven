@@ -173,6 +173,18 @@ def test_lifts_a_leaked_state_sibling_out_of_the_top_level():
     assert "documentation_links" not in body
 
 
+def test_lifts_a_leaked_sibling_whatever_its_value():
+    """The ladder, not the lift, decides what an invalid sibling costs."""
+    body = _body(
+        '\n<parameter name="final_summary_update">S', documentation_links="https://y"
+    )
+    assert _recover_leaked_parameter(body, TerminalResponse) == {
+        "final_summary_update": "S",
+        "documentation_links": "https://y",
+    }
+    assert "documentation_links" not in body
+
+
 def test_never_lifts_a_top_level_schema_field():
     body = _body('\n<parameter name="final_summary_update">S', suggested_follow_ups=[])
     assert _recover_leaked_parameter(body, TerminalResponse) == {
@@ -311,8 +323,15 @@ def test_tool_call_dict_state_updates_unchanged_and_uncounted(counters):
 
 @pytest.mark.parametrize(
     "state_updates, expected, repair",
-    [(REAL_SAMPLE, SAMPLE_TEXT, "xml_recovered"), ("not xml", None, "string_dropped")],
-    ids=["recovered", "dropped"],
+    [
+        (REAL_SAMPLE, SAMPLE_TEXT, "xml_recovered"),
+        ("not xml", None, "string_dropped"),
+        ([1], None, "non_object_dropped"),
+        ([], None, "absent_defaulted"),
+        ("", None, "absent_defaulted"),
+        (0, None, "absent_defaulted"),
+    ],
+    ids=["recovered", "dropped", "non-empty-list", "empty-list", "blank", "zero"],
 )
 def test_text_path(counters, state_updates, expected, repair):
     text = json.dumps({"agent_response": "Resolved.", "state_updates": state_updates})
@@ -341,8 +360,10 @@ def _llm(content: str = "", *, stop_reason: StopReason, tool_calls=None):
         (REAL_SAMPLE, StopReason.STOP, SAMPLE_TEXT, "xml_recovered"),
         ("not xml at all", StopReason.STOP, None, "string_dropped"),
         (REAL_SAMPLE, StopReason.MAX_TOKENS, None, "string_dropped"),
+        ([1], StopReason.STOP, None, "non_object_dropped"),
+        ([], StopReason.STOP, None, "absent_defaulted"),
     ],
-    ids=["recovered", "dropped", "cut-never-recovered"],
+    ids=["recovered", "dropped", "cut-never-recovered", "non-empty-list", "empty-list"],
 )
 async def test_single_shot_path(counters, state_updates, stop_reason, expected, repair):
     from faultmaven.infrastructure.llm.structured_output_capability import (
@@ -450,65 +471,211 @@ async def test_tool_loop_forced_text_parse(counters, stop_reason, expected, repa
 
 @pytest.mark.parametrize(
     "state_updates",
-    [[], 0, False, "[]", [{}]],
-    ids=["empty-list", "zero", "false", "string-decoded-to-list", "list-of-object"],
+    [[], 0, False, "", " ", 1.5, True, "[]"],
+    ids=[
+        "empty-list",
+        "zero",
+        "false",
+        "empty-string",
+        "blank-string",
+        "float",
+        "true",
+        "string-decoded-to-empty-list",
+    ],
 )
-def test_tool_call_non_object_state_updates_is_coerced_counted_not_raised(
+def test_tool_call_value_that_cannot_carry_state_is_absent_defaulted_silently(
     counters, caplog, state_updates
 ):
+    """fm#1802: nothing that could have carried a state field was lost, so it
+    is counted as ``absent_defaulted``, like ``null``, without a warning; and it
+    never fails the turn."""
     with caplog.at_level(logging.WARNING, logger=so.logger.name):
         parsed = _parse_schema_tool_call(_tool_call(state_updates), TerminalResponse)
     assert parsed.state_updates.model_fields_set == set()
-    assert parsed.state_updates.final_summary_update is None
+    assert counters.repairs() == [_repair("absent_defaulted")]
+    assert counters.outcomes() == [{"schema": SCHEMA, "outcome": "clean"}]
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
+@pytest.mark.parametrize(
+    "state_updates",
+    [[{"final_summary_update": "S"}], [1], [{}], "[1]"],
+    ids=[
+        "list-of-state-object",
+        "list-of-number",
+        "list-of-empty-object",
+        "string-decoded-to-list",
+    ],
+)
+def test_tool_call_non_empty_list_is_dropped_counted_and_warned_not_raised(
+    counters, caplog, state_updates
+):
+    """fm#1802: a non-empty list could have carried state, so it is lost state:
+    counted as such and warned once, and the turn no longer fails."""
+    with caplog.at_level(logging.WARNING, logger=so.logger.name):
+        parsed = _parse_schema_tool_call(_tool_call(state_updates), TerminalResponse)
+    assert parsed.state_updates.model_fields_set == set()
     assert counters.repairs() == [_repair("non_object_dropped")]
-    assert len(_drop_warnings(caplog)) == 1
+    assert counters.outcomes() == [{"schema": SCHEMA, "outcome": "clean"}]
+    (warning,) = _drop_warnings(caplog)
+    assert (warning.schema, warning.type) == (SCHEMA, "list")
 
 
 _LEAK_S = '<parameter name="final_summary_update">S'
 _LEAK_LINKS = '<parameter name="documentation_links">["https://x"]'
+_LEAK_LINKS_AS_TEXT = '<parameter name="documentation_links">"https://x"'
+_LEAK_MILESTONES = '<parameter name="milestones">{"symptom_verified": true}'
+_HYP = {
+    "statement": "disk full",
+    "category": "database",
+    "likelihood": 0.4,
+    "rationale": "df shows 100%",
+}
+_BAD_HYP = {**_HYP, "statement": "net", "likelihood": 500}
+_MILESTONES = {"milestones": {"symptom_verified": True}}
+_D = InvestigationResponse_Diagnosis
 
 
 @pytest.mark.parametrize(
-    "state_updates, sibling, expected",
+    "schema, state_updates, siblings, outcome, kept, reset",
     [
         (
+            TerminalResponse,
             _LEAK_S,
             {"documentation_links": "https://x"},
+            "pruned",
             {"final_summary_update": "S"},
+            ["documentation_links"],
         ),
         (
+            TerminalResponse,
             _LEAK_LINKS,
             {"final_summary_update": "[1] disk full on api-3"},
+            "pruned",
             {"documentation_links": ["https://x"]},
+            ["final_summary_update"],
         ),
         (
+            TerminalResponse,
+            _LEAK_LINKS_AS_TEXT,
+            {"final_summary_update": "S"},
+            "pruned",
+            {"final_summary_update": "S"},
+            ["documentation_links"],
+        ),
+        (
+            _D,
+            _LEAK_MILESTONES,
+            {"hypotheses_to_add": [_HYP, _BAD_HYP]},
+            "pruned",
+            {**_MILESTONES, "hypotheses_to_add": [_HYP]},
+            [],
+        ),
+        (
+            _D,
+            _LEAK_MILESTONES,
+            {"journal_entries": [{"entry_type": "findng", "content": "disk full"}]},
+            "clean",
+            {
+                **_MILESTONES,
+                "journal_entries": [{"entry_type": "finding", "content": "disk full"}],
+            },
+            [],
+        ),
+        (
+            TerminalResponse,
+            {"final_summary_update": "S", "documentation_links": "https://x"},
+            {},
+            "pruned",
+            {"final_summary_update": "S"},
+            ["documentation_links"],
+        ),
+        (
+            _D,
+            {"hypotheses_to_add": [_HYP], "outcome": "not-a-turn-outcome-value"},
+            {},
+            "pruned",
+            {"hypotheses_to_add": [_HYP]},
+            ["outcome"],
+        ),
+        (
+            TerminalResponse,
+            {"final_summary_update": "S", "documentation_links": ["https://x"]},
+            {},
+            "clean",
+            {"final_summary_update": "S", "documentation_links": ["https://x"]},
+            [],
+        ),
+        (
+            TerminalResponse,
             _LEAK_S,
             {"documentation_links": ["https://x"]},
+            "clean",
             {"final_summary_update": "S", "documentation_links": ["https://x"]},
+            [],
         ),
         (
+            TerminalResponse,
             _LEAK_LINKS,
             {"final_summary_update": "disk full on api-3"},
+            "clean",
             {
                 "documentation_links": ["https://x"],
                 "final_summary_update": "disk full on api-3",
             },
+            [],
         ),
     ],
-    ids=["bad-links-sibling", "bad-summary-sibling", "good-links", "good-summary"],
+    ids=[
+        "leaked-S-bad-links-sibling",
+        "leaked-links-sibling-decoded-to-list",
+        "leaked-K-wrong-type-good-sibling",
+        "leaked-list-sibling-one-bad-entry",
+        "leaked-sibling-enum-typo",
+        "dict-S-bad-links",
+        "dict-good-hypothesis-bad-outcome",
+        "dict-all-valid",
+        "leaked-S-good-links-sibling",
+        "leaked-links-good-summary-sibling",
+    ],
 )
-def test_tool_call_lifts_only_siblings_their_field_accepts(
-    counters, state_updates, sibling, expected
+def test_tool_call_an_invalid_state_field_costs_that_field_only(
+    counters, schema, state_updates, siblings, outcome, kept, reset
 ):
-    parsed = _parse_schema_tool_call(
-        _tool_call(state_updates, **sibling), TerminalResponse
+    """fm#1803: every leaked sibling is lifted, and the ladder decides what an
+    invalid one costs, as it does inside a delivered object. A list entry is
+    pruned alone, an enum typo is corrected, and any other invalid state field
+    costs that field and nothing else, never the rest of ``state_updates``."""
+    parsed = _parse_schema_tool_call(_tool_call(state_updates, **siblings), schema)
+    state = parsed.state_updates
+    assert state.model_dump(mode="json", exclude_none=True, exclude_defaults=True) == (
+        kept
     )
-    assert (
-        parsed.state_updates.model_dump(exclude_none=True, exclude_defaults=True)
-        == expected
+    for field in reset:
+        # Deleted, not nulled: the field takes its default and is not "set".
+        assert field not in state.model_fields_set
+        default = type(state).model_fields[field].get_default(call_default_factory=True)
+        assert getattr(state, field) == default
+    leaked = isinstance(state_updates, str)
+    assert counters.repairs() == (
+        [{"schema": schema.__name__, "repair": "xml_recovered"}] if leaked else []
     )
+    assert counters.outcomes() == [{"schema": schema.__name__, "outcome": outcome}]
+
+
+def test_text_path_an_invalid_leaked_sibling_costs_that_field_only(counters):
+    text = json.dumps(
+        {
+            "agent_response": "Resolved.",
+            "state_updates": _LEAK_S,
+            "documentation_links": "https://x",
+        }
+    )
+    parsed = _parse_text_as_schema(text, TerminalResponse)
+    assert parsed.state_updates.final_summary_update == "S"
+    assert "documentation_links" not in parsed.state_updates.model_fields_set
     assert counters.repairs() == [_repair("xml_recovered")]
-    assert counters.outcomes() == [{"schema": SCHEMA, "outcome": "clean"}]
+    assert counters.outcomes() == [{"schema": SCHEMA, "outcome": "pruned"}]
 
 
 def test_non_dict_body_is_returned_unchanged():

@@ -42,11 +42,12 @@ Read as rates, never the numerator alone:
   try, but only after an out-of-range confidence was rescaled from a percentage
   or a ``bool`` coerced — the model's meaning kept, nothing discarded; fm#1502),
   ``pruned`` (part of the body was discarded to keep the rest: an invalid list
-  entry or optional sub-object quarantined, or an out-of-range confidence
-  removed — dropped from an update-shaped record, or set aside for ingest to
-  decide on a link), ``state_dropped`` (state_updates unrecoverable,
-  conversational fallback), ``response_synthesized`` (required agent_response
-  missing, placeholder filled, state_updates KEPT),
+  entry or optional sub-object quarantined, or a state field reset to its
+  default, or an out-of-range confidence removed — dropped from an
+  update-shaped record, or set aside for ingest to decide on a link),
+  ``state_dropped`` (state_updates unrecoverable, conversational fallback),
+  ``response_synthesized`` (required agent_response missing, placeholder
+  filled, state_updates KEPT),
   ``response_synthesized_state_dropped`` (the placeholder validated only after
   dropping every state update as well), ``failed`` (unrecoverable, re-raised).
 
@@ -86,16 +87,17 @@ Read as rates, never the numerator alone:
   the engine settled before validation, by ``schema`` and ``repair`` —
   ``xml_recovered`` (the model's leaked single-parameter form,
   ``<parameter name="K">VALUE`` with no closer, recovered into the object, with
-  any state field that leaked to the top level and that its field accepts
-  lifted back in),
-  ``non_object_dropped`` (a list, number or bool, coerced to ``{}``: state
-  LOST, and the turn no longer fails validation),
-  ``string_dropped`` (any other string, or any string in a response the
-  provider reported cut at ``max_tokens``, coerced to ``{}``: the turn's state
-  updates are LOST, yet the body validates ``clean`` because ``{}`` takes the
-  defaults) or ``absent_defaulted`` (null or missing, defaulted). A dict is not
-  counted. ``xml_recovered`` counts a recovery, not a validated body: the
-  recovered body is validated afterwards and counted on
+  any state field that leaked to the top level lifted back in),
+  ``non_object_dropped`` (a non-empty list, coerced to ``{}``: state LOST, and
+  the turn no longer fails validation),
+  ``string_dropped`` (any other non-blank string, or any string in a response
+  the provider reported cut at ``max_tokens``, coerced to ``{}``: the turn's
+  state updates are LOST, yet the body validates ``clean`` because ``{}``
+  takes the defaults) or ``absent_defaulted`` (a value that could not have
+  carried a state field — missing, null, a blank string, ``[]``, a number or
+  a bool — defaulted, nothing lost). A dict is not counted.
+  ``xml_recovered`` counts a recovery, not a validated body: the recovered
+  body is validated afterwards and counted on
   ``faultmaven_schema_validation_total`` like any other (fm#1753).
 """
 
@@ -136,7 +138,10 @@ schema_validation_total = Counter(
     "(clean | repaired | pruned | state_dropped | response_synthesized | "
     "response_synthesized_state_dropped | failed). Schema-validity rate = "
     "clean / total; state-loss rate = (state_dropped + "
-    "response_synthesized_state_dropped) / total.",
+    "response_synthesized_state_dropped + "
+    "faultmaven_schema_state_updates_repairs_total{repair=~"
+    '"string_dropped|non_object_dropped"}) / total: state lost before '
+    "validation still validates clean.",
     ["schema", "outcome"],
 )
 

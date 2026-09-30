@@ -151,17 +151,22 @@ def _validate_with_degradation(content_obj, schema_model):
     class (redesign §9 / the deferred "S4" item):
 
     1. Try to validate as-is.
-    2. On failure, PRUNE the specific sub-records the ValidationError points
-       at (keyed off the error ``loc`` paths — general, not per-invariant)
-       and re-validate: the list entry for a ``loc`` with an index, or, for
-       one without, the deepest OPTIONAL sub-object on its path (nulled —
-       ``root_cause_conclusion``, ``knowledge_match``, ``milestones``; fm#1502).
-       The bad sub-records are quarantined; everything else on the turn
-       survives.
+    2. On failure, PRUNE what the ValidationError points at (keyed off the
+       error ``loc`` paths — general, not per-invariant) and re-validate: the
+       list entry for a ``loc`` with an index; for one without, the deepest
+       OPTIONAL sub-object on its path (nulled — ``root_cause_conclusion``,
+       ``knowledge_match``, ``milestones``; fm#1502), or else the state field
+       it falls under (deleted, so it takes its default — ``outcome``, a
+       ``documentation_links`` string). An invalid state field costs that
+       field and nothing else, whether it arrived in the object or as a
+       leaked sibling; everything else on the turn survives.
     3. If it still fails (an error on no prunable path), drop
        ``state_updates`` entirely and keep the conversational
        ``agent_response`` — the turn survives as a conversational reply
-       rather than a 500.
+       rather than a 500. The state models have no required field and no
+       model validator that can reject, so step 2 places every error inside
+       a ``state_updates`` object: this rung is reached by an error on
+       ``state_updates`` itself or outside it, and stays as the backstop.
     4. If even that fails, re-raise the original error (truly unrecoverable).
 
     An out-of-range confidence usually never reaches step 2: the schema's
@@ -239,10 +244,10 @@ def _validate_with_degradation(content_obj, schema_model):
                 parsed, repairs = _validate(fallback)
                 # The prune path already logs its locs ("Turn preserved"); this
                 # branch is reached only when an error the prune step could
-                # not place remains (no list index, no optional sub-object on
-                # its path) — log exactly those so each fallback is
-                # self-diagnosing (was it correctly non-prunable, or a prune
-                # gap?). Reference: S4 backstop observability.
+                # not place remains (no list index, no optional sub-object or
+                # state field on its path) — log exactly those so each
+                # fallback is self-diagnosing (was it correctly non-prunable,
+                # or a prune gap?). Reference: S4 backstop observability.
                 non_prunable = [
                     (list(e.get("loc", ())), e.get("msg", "")) for e in unhandled
                 ]
@@ -336,19 +341,33 @@ def _prune_invalid_sub_records(content_obj, error, schema_model=None):
       along its path, read from ``schema_model``, and that sub-object is
       set to ``None`` — ``('state_updates', 'root_cause_conclusion',
       'likelihood')`` nulls ``root_cause_conclusion`` (fm#1502). Absence is
-      what an optional sub-object means when the model has nothing to say,
-      so this costs that sub-object and nothing else, where the next rung
-      would drop every ``state_updates``. A required object (``state_updates``
-      itself) or a non-object field (``outcome``) is never nulled: the error
-      is returned as unhandled and falls through as before.
+      what an optional sub-object means when the model has nothing to say.
+    - Any other ``loc`` under a state field — ``('state_updates', 'outcome')``
+      for an enum value no fixer could correct, ``('state_updates',
+      'documentation_links')`` for a string where a list belongs — DELETES
+      that field from ``state_updates``, so the field takes its default. It
+      keys on ``loc[1]`` naming a non-required field of the response's
+      state-update model, not on the ``loc``'s length: a non-nullable
+      ``Union``'s error carries a trailing member tag, and a sub-object with
+      a ``default_factory`` reports a deeper ``loc``; both delete the field at
+      ``loc[1]``. The key is deleted rather than set to ``None``: a ``None``
+      would read as a value the model sent.
+
+    Each rung costs the entry, sub-object or field that carried the error and
+    nothing else, where the next rung would drop every ``state_updates``. A
+    field is reported as ``state_updates.<field>``. What none of them places
+    — an error on ``state_updates`` itself, or outside it — is returned as
+    unhandled and falls through as before.
 
     Without ``schema_model`` only list entries are pruned.
     """
     import copy
 
     obj = copy.deepcopy(content_obj)
+    state_model = _state_model_of(schema_model) if schema_model is not None else None
     to_remove: dict[tuple, set] = {}
     to_null: set[tuple] = set()
+    to_delete: dict[str, list[dict]] = {}
     unhandled: list[dict] = []
     for err in error.errors():
         loc = tuple(err.get("loc", ()))
@@ -363,10 +382,14 @@ def _prune_invalid_sub_records(content_obj, error, schema_model=None):
             if schema_model is not None
             else None
         )
-        if prefix is None:
-            unhandled.append(err)
-        else:
+        if prefix is not None:
             to_null.add(prefix)
+            continue
+        field = _invalid_state_field(state_model, loc)
+        if field is not None:
+            to_delete.setdefault(field, []).append(err)
+        else:
+            unhandled.append(err)
 
     dropped: list[str] = []
     for list_path, indices in to_remove.items():
@@ -394,7 +417,31 @@ def _prune_invalid_sub_records(content_obj, error, schema_model=None):
         if isinstance(parent, dict) and parent.get(path[-1]) is not None:
             parent[path[-1]] = None
             dropped.append(".".join(str(p) for p in path))
+
+    state = obj.get("state_updates") if isinstance(obj, dict) else None
+    for field, errs in to_delete.items():
+        if isinstance(state, dict) and field in state:
+            del state[field]
+            dropped.append(f"state_updates.{field}")
+        else:
+            unhandled.extend(errs)
     return obj, dropped, unhandled
+
+
+def _invalid_state_field(state_model, loc) -> Optional[str]:
+    """The state field a ``loc`` with no list index falls under, if any.
+
+    ``loc[1]`` when ``loc[0]`` is ``state_updates`` and ``loc[1]`` names a
+    field of *state_model* that is not required, so deleting it restores a
+    default; ``None`` otherwise, including an error on ``state_updates``
+    itself.
+    """
+    if state_model is None or len(loc) < 2 or loc[0] != "state_updates":
+        return None
+    field = state_model.model_fields.get(loc[1]) if isinstance(loc[1], str) else None
+    if field is None or field.is_required():
+        return None
+    return loc[1]
 
 
 def _optional_sub_record_prefix(schema_model, loc) -> Optional[tuple]:
@@ -407,7 +454,8 @@ def _optional_sub_record_prefix(schema_model, loc) -> Optional[tuple]:
 
     Reads resolved annotations only: a quoted forward reference pydantic
     left unresolved would hide the sub-object it names, and the error would
-    fall through to the drop-all rung. ``test_confidence_repair_1502``'s
+    cost more than that sub-object — the whole state field it falls under,
+    or every ``state_updates`` outside one. ``test_confidence_repair_1502``'s
     census fails if any field reachable from an engine schema carries one.
     """
     import types
@@ -620,13 +668,18 @@ def _recover_leaked_parameter(content_obj: dict, schema_model: Any) -> Optional[
     ``claude-opus-5`` can return the schema tool's ``state_updates`` as
     ``<parameter name="K">VALUE``: one open tag, no closer, the value running
     to the end of the string, with any later state field leaked to the top
-    level of the arguments. Returns ``{K: value}`` plus those leaked siblings
-    whose field accepts them, which are MOVED out of *content_obj* (a sibling
-    its field rejects stays at the top level, where the schema ignores it, so
-    it cannot cost K when the ladder drops the state); returns ``None`` (and leaves
+    level of the arguments. Returns ``{K: value}`` plus those leaked siblings,
+    which are MOVED out of *content_obj*; returns ``None`` (and leaves
     *content_obj* untouched) unless the string is exactly that form, VALUE
     holds no other parameter tag, and K is a field of the response's
     state-update model.
+
+    Every leaked sibling is lifted, whatever its value: the ladder decides
+    what an invalid one costs, as it does for the same value inside a
+    delivered object. A list entry it rejects is pruned alone, an enum typo is
+    corrected first, and any other invalid state field costs that field and
+    nothing else (:func:`_prune_invalid_sub_records`), so a bad sibling can
+    never cost K.
 
     VALUE is kept as raw text (stripped) when the field accepts it as text —
     a text field, an enum, anything Pydantic reads from a string — so no text
@@ -670,17 +723,6 @@ def _recover_leaked_parameter(content_obj: dict, schema_model: Any) -> Optional[
             and k in state_model.model_fields
             and k not in result
         ):
-            try:
-                TypeAdapter(state_model.model_fields[k].annotation).validate_python(
-                    content_obj[k]
-                )
-            except ValidationError:
-                logger.debug(
-                    "structured_output_sibling_not_lifted: top-level %s is not "
-                    "accepted by its state field; left at the top level",
-                    k,
-                )
-                continue
             result[k] = content_obj.pop(k)
     return result
 
@@ -693,12 +735,16 @@ def _normalize_state_updates(
     A string that is the leaked parameter form (:func:`_recover_leaked_parameter`)
     is recovered, with its leaked siblings lifted back in, unless the provider
     reported the response *cut* at ``max_tokens``: a cut value looks exactly
-    like the real unclosed form, so it is never recovered. Any other string,
-    and a cut one, becomes ``{}``, as does a missing or null value, so the
-    schema defaults apply. Any other non-object value (a list, number or bool,
-    including a string that decoded to a list) also becomes ``{}``, counted as
-    ``non_object_dropped``, so it can never fail the turn. A value that is
-    already an object is left alone and not counted.
+    like the real unclosed form, so it is never recovered. Any other non-blank
+    string, and a cut one, becomes ``{}`` so the schema defaults apply, counted
+    as ``string_dropped``. A non-empty list (including a string that decoded to
+    one) becomes ``{}`` too, counted as ``non_object_dropped``, so it can
+    never fail the turn. Both are lost state, and both warn.
+
+    A value that cannot have carried a state field — missing, ``null``, a
+    blank string, ``[]``, a number or a bool — becomes ``{}`` and is counted
+    as ``absent_defaulted``, without a warning: nothing was lost. A value that
+    is already an object is left alone and not counted.
 
     ``xml_recovered`` counts a recovery, not a validated body: validation comes
     after this and is counted on ``faultmaven_schema_validation_total``.
@@ -707,7 +753,9 @@ def _normalize_state_updates(
         return content_obj
     su = content_obj.get("state_updates")
     schema_name = getattr(schema_model, "__name__", str(schema_model))
-    if isinstance(su, str):
+    if isinstance(su, dict):
+        return content_obj
+    if isinstance(su, str) and su.strip():
         recovered = (
             None if cut else _recover_leaked_parameter(content_obj, schema_model)
         )
@@ -724,12 +772,7 @@ def _normalize_state_updates(
             )
             content_obj["state_updates"] = {}
             repair = "string_dropped"
-    elif su is None:
-        content_obj["state_updates"] = {}
-        repair = "absent_defaulted"
-    elif isinstance(su, dict):
-        return content_obj
-    else:
+    elif isinstance(su, list) and su:
         logger.warning(
             "structured_output_state_updates_dropped: state_updates for %s "
             "arrived as %s, not an object; coerced to {} (state lost)",
@@ -739,6 +782,11 @@ def _normalize_state_updates(
         )
         content_obj["state_updates"] = {}
         repair = "non_object_dropped"
+    else:
+        # Missing, null, a blank string, [], a number or a bool: nothing that
+        # could have carried a state field, so nothing is lost.
+        content_obj["state_updates"] = {}
+        repair = "absent_defaulted"
     schema_state_updates_repairs_total.labels(schema=schema_name, repair=repair).inc()
     return content_obj
 

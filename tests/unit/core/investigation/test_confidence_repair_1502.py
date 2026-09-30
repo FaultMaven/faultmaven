@@ -74,6 +74,7 @@ from faultmaven.modules.case.contracts import (
     InquiryData,
     NodeType,
     ProblemVerification,
+    TurnOutcome,
 )
 
 pytestmark = pytest.mark.unit
@@ -210,9 +211,9 @@ def test_census_can_read_every_reachable_annotation():
     """A quoted forward reference that pydantic leaves unresolved on a
     reachable field hides whatever it names from BOTH walkers that read field
     annotations: this census, and the ladder's
-    ``_optional_sub_record_prefix``, which would then drop every
-    ``state_updates`` for an error inside it. Neither can see through one, so
-    none may exist."""
+    ``_optional_sub_record_prefix``, which would then cost the whole state
+    field around it (or every ``state_updates``) for an error inside it.
+    Neither can see through one, so none may exist."""
     _, unreadable = _walk(ENGINE_SCHEMAS)
     assert unreadable == []
 
@@ -741,23 +742,62 @@ def test_an_optional_sub_object_is_nulled_for_any_error_not_just_confidence():
     assert outcomes == ["pruned"]
 
 
-def test_a_non_object_field_error_still_falls_through_to_the_drop_all_rung():
-    """Only an OPTIONAL sub-object is nulled. ``outcome`` is an enum, not an
-    object; the extension must not swallow it."""
+def test_a_non_object_state_field_error_costs_that_field_only():
+    """fm#1803: an invalid state field that is not an object (``outcome``, an
+    enum) is DELETED, so it takes its default; its siblings survive. On
+    ``main`` it fell through to the drop-all rung and took every
+    ``state_updates`` with it."""
     parsed, outcomes, _ = _ladder(
-        _diag({"outcome": "bogus", "hypotheses_to_add": [_hyp(0.5)]}), D
+        _diag({"outcome": "bogus", "hypotheses_to_add": [_hyp(0.5, "s")]}), D
     )
-    assert parsed.state_updates.hypotheses_to_add == []
-    assert outcomes == ["state_dropped"]
+    assert [h.statement for h in parsed.state_updates.hypotheses_to_add] == ["s"]
+    assert parsed.state_updates.outcome is TurnOutcome.CONVERSATION
+    assert "outcome" not in parsed.state_updates.model_fields_set
+    assert outcomes == ["pruned"]
+
+
+class _SubState(BaseModel):
+    n: int = 0
+
+
+class _ShapesState(BaseModel):
+    kept: typing.Optional[str] = None
+    tagged: typing.Union[int, typing.List[int]] = 0
+    sub: _SubState = Field(default_factory=_SubState)
+
+
+class _ShapesResponse(BaseModel):
+    agent_response: str
+    state_updates: _ShapesState
+
+
+@pytest.mark.parametrize(
+    "bad, field",
+    [
+        ({"tagged": "x"}, "tagged"),
+        ({"sub": {"n": "x"}}, "sub"),
+    ],
+    ids=["union-member-tag", "default-factory-sub-object"],
+)
+def test_the_field_rung_keys_on_the_state_field_not_the_loc_length(bad, field):
+    """A non-nullable ``Union`` reports ``('state_updates', F, <member>)`` and
+    a ``default_factory`` sub-object ``('state_updates', F, <inner>)``: both
+    are deeper than two, and both cost only ``F``."""
+    parsed, outcomes, _ = _ladder(_diag({"kept": "k", **bad}), _ShapesResponse)
+    assert parsed.state_updates.kept == "k"
+    assert field not in parsed.state_updates.model_fields_set
+    assert outcomes == ["pruned"]
 
 
 def test_the_drop_all_rung_builds_on_the_pruned_body():
     """A conclusion pruned for an unrepairable confidence must stay pruned
     when a second, unprunable error sends the body to the drop-all rung — on
     ``main`` that rung rebuilt from the ORIGINAL body, the conclusion came
-    back, and the turn failed outright."""
+    back, and the turn failed outright. The second error is on
+    ``state_updates`` itself: every error inside it is placed by a prune rung,
+    so nothing else still reaches the drop-all rung."""
     body = _diag(
-        {"evidence_to_add": "not-a-list"},
+        "not-an-object",
         evidence_trail={"conclusions": [_conclusion(float("nan"))]},
     )
     parsed, outcomes, fields = _ladder(body, D)
