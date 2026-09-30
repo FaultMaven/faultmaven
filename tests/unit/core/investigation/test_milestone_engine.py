@@ -2416,9 +2416,11 @@ class TestNeedsInfoFollowupProposesClose:
 
     @pytest.mark.asyncio
     async def test_ready_branch_unchanged(self):
-        """Control: if re-eval is READY, the path clears needs_info and
-        keeps the pending RESOLVED — must not have been broken by the
-        SUGGEST_CLOSE/NEEDS_INFO branch changes."""
+        """Control: if re-eval is READY, the pending stays RESOLVED and no
+        longer needs info — must not have been broken by the
+        SUGGEST_CLOSE/NEEDS_INFO branch changes. The ready offer is a NEW
+        offer (#1812 review finding 1): re-proposed with a fresh key, so a
+        card shipped while it needed information cannot confirm it."""
         engine = self._make_engine()
         case = self._make_case_with_pending_resolve_needs_info()
         _make_resolution_ready(case)  # adds root_cause + Solution row
@@ -2442,15 +2444,18 @@ class TestNeedsInfoFollowupProposesClose:
                 collected_at=datetime.now(UTC),
             )
         )
+        needs_info_key = case.pending_transition["proposed_at"]
         metadata = {}
         await engine.transitions.check_automatic_transitions(
             case, metadata, user_message="ok"
         )
 
-        # Pending transition stays as RESOLVED, needs_info cleared
+        # Pending transition stays as RESOLVED, and no longer needs info
         assert case.pending_transition is not None
         assert case.pending_transition["to_state"] == "resolved"
-        assert case.pending_transition.get("needs_info") is False
+        assert not case.pending_transition.get("needs_info")
+        assert case.pending_transition["proposed_at"] != needs_info_key
+        assert metadata.get("transition_proposed_this_turn") is True
         assert metadata.get("resolution_ready_for_confirmation") is True
         # The propose-close path did NOT fire
         assert metadata.get("resolution_suggest_close") is not True

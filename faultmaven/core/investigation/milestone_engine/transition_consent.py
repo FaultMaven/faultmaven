@@ -158,9 +158,13 @@ _GATE1_KEY_PREFIX = "gate1:"
 def terminal_offer_key(pending: Optional[dict[str, Any]]) -> Optional[str]:
     """The key of the terminal offer ``pending`` presents, or None when none stands.
 
-    ``proposed_at``: ``propose_transition`` is the only writer of
-    ``pending_transition`` and stamps it fresh on every proposal, the INV-37
-    CLOSE→RESOLVE pivot included, so a withdrawn offer's key never comes back.
+    ``proposed_at``: ``propose_transition`` is the only writer of a fresh
+    offer, and stamps it on every proposal. Every step that changes what is
+    offered re-proposes rather than editing the standing dict: the INV-37
+    CLOSE→RESOLVE pivot, and a ``needs_info`` RESOLVED offer becoming ready. So
+    a withdrawn or superseded offer's key never comes back. (The fields set in
+    place, ``justifying_signature`` and a first-pass ``needs_info``, are set
+    right after the proposal they belong to.)
     """
     return (pending or {}).get("proposed_at") or None
 
@@ -350,8 +354,8 @@ def _user_declines_transition(user_message: str) -> bool:
     and ``no 👍`` decline, and ``no problem, go ahead``, ``no worries``, ``no,
     not yet``, ``nope 👎`` and ``no?`` do not. Nor, as before, does a word
     that only shares a token's prefix (``note db latency spiked``, ``stopped
-    the pod``). A multi-token refusal is re-asked once; the Not-yet click
-    still declines in one step.
+    the pod``). A multi-token refusal is re-asked each time it is sent (a
+    re-ask has no cap); the Not-yet click declines in one step.
     """
     from faultmaven.core.investigation.terminal_transitions import (
         is_substantive_reply,

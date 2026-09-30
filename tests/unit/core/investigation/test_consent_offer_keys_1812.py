@@ -26,9 +26,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import faultmaven.core.investigation.milestone_engine.cause_state as cause_state
 import faultmaven.core.investigation.milestone_engine.engine as engine_module
 import faultmaven.core.investigation.milestone_engine.response_application as response_application
 import faultmaven.core.investigation.milestone_engine.transition_turns as transition_turns
+import faultmaven.core.investigation.milestone_engine.turn_completion as turn_completion
 from faultmaven.core.investigation.milestone_engine.cause_state import (
     _gate1_statement_presentation,
     _investigation_confirmation_suggestions,
@@ -42,6 +44,7 @@ from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _close_confirmation_suggestions,
 )
 from faultmaven.core.investigation.milestone_engine.terminal_replies import (
+    _build_resolution_confirmation,
     _resolution_confirmation_suggestions,
 )
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
@@ -389,12 +392,8 @@ class TestAClickAnswersOnlyTheOfferItNames:
     ):
         case = _gate1_case()
         with (
-            patch.object(
-                transition_turns, "engine_owned_affordance_served_total"
-            ) as served,
-            patch.object(
-                transition_turns, "gate1_statement_composed_total"
-            ) as composed,
+            patch.object(cause_state, "engine_owned_affordance_served_total") as served,
+            patch.object(cause_state, "gate1_statement_composed_total") as composed,
         ):
             result = await _turn(
                 _engine(),
@@ -576,6 +575,125 @@ class TestAClickAnswersOnlyTheOfferItNames:
             assert case.inquiry.problem_statement_confirmed is False
             assert case.inquiry.proposed_problem_statement == STATEMENT
 
+    async def test_a_needs_info_era_card_does_not_confirm_the_ready_offer(
+        self, refused
+    ):
+        """Review finding 1 (the reviewer's probe 6). A card shipped while the
+        RESOLVED offer still needed information names that offer. Once the
+        user supplies what was missing the offer is READY, and the ready offer
+        is a NEW offer: re-proposed with its own key, carrying the engine
+        proposer's signature and the cited evidence. The old card is then
+        stale, and a click on it executes nothing."""
+        case = _pending("resolved", cause=True, absence=True)
+        case.pending_transition["needs_info"] = True
+        case.pending_transition["evidence_ids"] = ["ev_1812aaaaaaaa"]
+        needs_info_key = terminal_offer_key(case.pending_transition)
+        old_card = _resolution_confirmation_suggestions(case)[0]
+        assert old_card["intent"]["proposal_id"] == needs_info_key
+
+        # The first click on it: a needs_info offer is not click-answerable
+        # (#1812 item 5), so the turn reaches the LLM, and the answer makes
+        # the offer ready.
+        ready = await _turn(
+            _engine(_investigation_reply()),
+            case,
+            old_card["payload"],
+            intent_type="confirmation",
+            intent_data=_click(True, needs_info_key),
+        )
+        assert case.state == CaseState.INVESTIGATING
+        assert case.pending_transition["to_state"] == "resolved"
+        assert not case.pending_transition.get("needs_info")
+        ready_key = terminal_offer_key(case.pending_transition)
+        assert ready_key != needs_info_key, "the ready offer kept the old key"
+        assert case.pending_transition["justifying_signature"] == SIGNATURE
+        assert case.pending_transition["evidence_ids"] == ["ev_1812aaaaaaaa"]
+        assert case.pending_transition["summary"] == (
+            _build_resolution_confirmation(case)
+        )
+        # The turn still renders the ready confirmation, and its pair names
+        # the ready offer.
+        assert "Thanks for the additional details." in ready["agent_response"]
+        assert _keys(ready["suggested_follow_ups"]) == [ready_key] * 2
+        refused.labels.assert_not_called()
+
+        # The second click on the same needs_info-era card.
+        before = dict(case.pending_transition)
+        result = await _turn(
+            _engine(),
+            case,
+            old_card["payload"],
+            intent_type="confirmation",
+            intent_data=_click(True, needs_info_key),
+        )
+        _assert_refused_on_terminal(result, case, before)
+        assert "Here's what I have on record" in result["agent_response"]
+        refused.labels.assert_called_once_with(gate="terminal", reason="stale")
+
+    @pytest.mark.parametrize(
+        "key, reason", [(None, "untargeted"), ("gate1:deadbeefdeadbeef", "stale")]
+    )
+    async def test_a_needs_info_pending_does_not_exempt_gate1s_key(
+        self, refused, key, reason
+    ):
+        """Review finding 5 (the reviewer's probe 4). While Gate 1 is pending,
+        a click is checked against Gate 1's key whatever else is pending; the
+        needs_info exemption applies only when Gate 1 is not."""
+        case = _gate1_case()
+        case.pending_transition = {
+            "needs_info": True,
+            "to_state": "closed",
+            "proposed_at": "2026-09-30T00:00:00+00:00",
+        }
+        result = await _turn(
+            _engine(),
+            case,
+            "Yes, that's correct. Let's investigate.",
+            intent_type="confirmation",
+            intent_data=_click(True, key),
+        )
+        assert case.inquiry.problem_statement_confirmed is False
+        assert case.state == CaseState.INQUIRY
+        assert result["agent_response"].startswith(STALE_OFFER_LINE)
+        refused.labels.assert_called_once_with(gate="gate1", reason=reason)
+
+    async def test_the_current_gate1_click_still_commits_beside_a_needs_info_pending(
+        self, refused
+    ):
+        """The control for the test above: the check is Gate 1's key, not a
+        blanket refusal."""
+        case = _gate1_case()
+        case.pending_transition = {
+            "needs_info": True,
+            "to_state": "closed",
+            "proposed_at": "2026-09-30T00:00:00+00:00",
+        }
+        await _turn(
+            _engine(InquiryResponse(agent_response=REPLY, state_updates={})),
+            case,
+            "Yes, that's correct. Let's investigate.",
+            intent_type="confirmation",
+            intent_data=_click(True, gate1_offer_key(STATEMENT)),
+        )
+        assert case.inquiry.problem_statement_confirmed is True
+        refused.labels.assert_not_called()
+
+    async def test_a_click_on_a_needs_info_offer_still_falls_through(self, refused):
+        """Ruled unchanged (#1812 item 5): with Gate 1 not pending, a click on
+        a standing needs_info offer reaches the LLM, as it always did."""
+        case = _pending("resolved")
+        case.pending_transition["needs_info"] = True
+        engine = _engine(_investigation_reply())
+        await _turn(
+            engine,
+            case,
+            "Yes, the issue is resolved.",
+            intent_type="confirmation",
+            intent_data=_click(True, None),
+        )
+        engine.generator.generate_structured_output.assert_awaited()
+        refused.labels.assert_not_called()
+
     async def test_a_refused_click_carrying_an_upload_records_the_upload(self, refused):
         """A stale or untargeted click is refused deterministically even when
         the turn carries a file, as today's click-confirm path consumes one.
@@ -603,6 +721,69 @@ class TestAClickAnswersOnlyTheOfferItNames:
         assert result["metadata"]["novel_files_uploaded"] == ["file_1812aaaaaaaa"]
         assert case.turn_history[-1].progress_made is True
         refused.labels.assert_called_once_with(gate="terminal", reason="untargeted")
+
+
+# =============================================================================
+# INV-01's pair of counters, at both sites that serve Gate 1 (review finding 11)
+# =============================================================================
+
+MULTI_LINE = "Checkout API returns 503 for EU users\nsince the 14:00 UTC deploy"
+
+
+class TestGate1CountsOneForOne:
+    """Both sites count through ``cause_state._count_gate1_turn``, which checks
+    the rendered presentation. A multi-line statement is block-quoted line by
+    line, so its raw text never appears verbatim in the reply; checking the raw
+    text miscounted it and logged a false ERROR."""
+
+    @pytest.fixture
+    def counters(self):
+        """One double behind EVERY module reference to each counter, so a
+        second count at a site that bypasses the helper is seen too."""
+        served, composed = MagicMock(), MagicMock()
+        with (
+            patch.object(cause_state, "engine_owned_affordance_served_total", served),
+            patch.object(
+                turn_completion, "engine_owned_affordance_served_total", served
+            ),
+            patch.object(cause_state, "gate1_statement_composed_total", composed),
+        ):
+            yield served, composed
+
+    @staticmethod
+    def _assert_counted_once(served, composed, caplog):
+        served.labels.assert_called_once_with(gate="gate1")
+        served.labels.return_value.inc.assert_called_once()
+        composed.inc.assert_called_once()
+        assert "gate1_statement_missing_from_reply" not in caplog.text
+
+    async def test_at_the_refused_click(self, refused, counters, caplog):
+        served, composed = counters
+        case = _gate1_case(MULTI_LINE)
+        assert MULTI_LINE not in _gate1_statement_presentation(
+            case
+        ), "premise: the presentation block-quotes each line"
+        with caplog.at_level("ERROR"):
+            await _turn(
+                _engine(),
+                case,
+                "Yes, the issue is resolved.",
+                intent_type="confirmation",
+                intent_data=_click(True, "2026-01-01T00:00:00+00:00"),
+            )
+        self._assert_counted_once(served, composed, caplog)
+
+    async def test_at_the_composed_reply(self, counters, caplog):
+        served, composed = counters
+        case = _gate1_case(MULTI_LINE)
+        with caplog.at_level("ERROR"):
+            result = await _turn(
+                _engine(InquiryResponse(agent_response=REPLY, state_updates={})),
+                case,
+                "What does a 503 mean here?",
+            )
+        assert _gate1_statement_presentation(case) in result["agent_response"]
+        self._assert_counted_once(served, composed, caplog)
 
 
 # =============================================================================

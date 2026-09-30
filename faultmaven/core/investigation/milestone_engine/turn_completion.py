@@ -11,7 +11,6 @@ from faultmaven.core.investigation.case_telemetry import (
 )
 from faultmaven.core.investigation.lifecycle_metrics import (
     engine_owned_affordance_served_total,
-    gate1_statement_composed_total,
     narration_overclaim_total,
 )
 from faultmaven.core.investigation.milestone_engine.regeneration import (
@@ -31,6 +30,7 @@ from .affordances import (
     engine_owned_affordances,
 )
 from .cause_state import (
+    _count_gate1_turn,
     _gate1_statement_presentation,
     _resolve_chat_provider_name,
 )
@@ -167,9 +167,9 @@ async def _compose_turn_reply(
     # fire there (INV-40 — a proposed transition alone does not
     # contradict a "Case resolved." narration).
     gate_prose_appended = False
-    # Set when Gate 1 composed its statement, and checked against the
-    # FINAL reply at the return boundary — see the counter there.
-    _gate1_presented_statement: str | None = None
+    # Set when Gate 1 composed its statement presentation, and checked
+    # against the FINAL reply at the return boundary — see the counter there.
+    _gate1_presentation: str | None = None
     if metadata.get("resolution_ready_for_confirmation"):
         agent_response_text = _prose_with_gate_notice(
             agent_response_text,
@@ -349,16 +349,16 @@ async def _compose_turn_reply(
         # contradict a "case resolved" over-claim. INV-40 must still be
         # free to fire on the same turn.
         if gate_name == "gate1":
-            _gate1_presented_statement = (
-                case_updated.inquiry.proposed_problem_statement or ""
-            ).strip()
+            _gate1_presentation = _gate1_statement_presentation(case_updated)
             agent_response_text = _prose_with_gate_notice(
-                agent_response_text,
-                _gate1_statement_presentation(case_updated),
+                agent_response_text, _gate1_presentation
             )
 
         follow_ups = gate_affordances
-        engine_owned_affordance_served_total.labels(gate=gate_name).inc()
+        if gate_name != "gate1":
+            # Gate 1's is counted with its outcome, at the return boundary
+            # (``_count_gate1_turn``), so INV-01's pair moves together.
+            engine_owned_affordance_served_total.labels(gate=gate_name).inc()
         logger.info(
             "engine_owned_affordances_served",
             extra={
@@ -559,17 +559,11 @@ async def _compose_turn_reply(
     # HERE instead, against the text actually returned, so anything
     # that drops or mangles the block between composition and return
     # shows up as the gap the alert is written for.
-    if _gate1_presented_statement:
-        if _gate1_presented_statement in agent_response_text:
-            gate1_statement_composed_total.inc()
-        else:
-            logger.error(
-                "gate1_statement_missing_from_reply",
-                extra={
-                    "case_id": case_updated.case_id,
-                    "turn": case_updated.current_turn,
-                },
-            )
+    # The check reads the rendered, block-quoted presentation, so a
+    # multi-line statement counts one for one; the helper is the one
+    # ``_refuse_offer_click`` uses too.
+    if _gate1_presentation is not None:
+        _count_gate1_turn(case_updated, _gate1_presentation, agent_response_text)
 
     return {
         "agent_response": agent_response_text,

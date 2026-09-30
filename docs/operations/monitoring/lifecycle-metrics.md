@@ -10,7 +10,7 @@ Metrics are exposed via Prometheus and gated on `ENABLE_METRICS=true` plus the `
 
 **Counters:**
 
-- `faultmaven_gate1_statement_composed_total` — increments each time the engine composed the standing statement into a reply because Gate 1 was serving.
+- `faultmaven_gate1_statement_composed_total` — increments each time the engine composed the standing statement into a reply because Gate 1 was serving. It and `faultmaven_engine_owned_affordance_served_total{gate="gate1"}` are counted by one helper (`cause_state._count_gate1_turn`) at both sites that serve Gate 1 — `_compose_turn_reply` and the refused-click reply (#1812) — against the rendered, block-quoted presentation in the reply actually returned, so a multi-line statement counts one for one.
 - `faultmaven_inquiry_handshake_deferred_total{reason}` — increments each time the consent guard refused a typed confirmation, by `reason`:
   - `same_turn` — the statement was written this turn, or REVISED this turn, so the user has not seen the wording they are confirming;
   - `not_bare` — the LLM's `user_confirmed_investigation`, or a resolver-minted confirmation, arrived on a turn whose typed text is not one bare consent token (#1794, ruling (a)): "yes but it's the primary too", "ok, don't start yet", the Gate-1 card's own payload typed out. Gate 1 commits only on its click or on a bare consent token, so the turn commits nothing and Gate 1 stays pending. A turn whose click already committed Gate 1 is not counted, although the LLM, handed the card's payload text, usually sets the flag on it.

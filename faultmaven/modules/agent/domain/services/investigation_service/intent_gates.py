@@ -142,10 +142,12 @@ def _minted_intent_swallows_gate_consent(
 
     # Each gate by its own screen. The terminal arm keeps the substance test:
     # the engine's pending gate already executes a typed consent only when it
-    # is bare, and re-asks anything else it adopts. Gate 1 has no such reader
-    # downstream, so its arm applies the bare test itself (#1794, ruling (a)):
-    # a mint on "ok, don't start yet" or "yes please" is dropped, and the text
-    # is processed as a normal turn, where the LLM's flag meets the same test.
+    # is bare, and re-asks anything else it adopts. The Gate-1 arm applies the
+    # bare test here (#1794, ruling (a)), and section 0c is its second reader:
+    # it screens any minted Gate-1 confirmation that reaches it the same way.
+    # So a mint on "ok, don't start yet" or "yes please" is dropped here, and
+    # the text is processed as a normal turn, where the LLM's flag meets the
+    # same test.
     return (confirms_pending_transition and is_substantive_reply(user_message)) or (
         commits_gate_one and not gate1_bare_consent(user_message)
     )

@@ -5,8 +5,6 @@ from typing import Optional
 
 from faultmaven.core.investigation.lifecycle_metrics import (
     confirmation_click_refused_total,
-    engine_owned_affordance_served_total,
-    gate1_statement_composed_total,
 )
 from faultmaven.core.investigation.milestone_engine.regeneration import (
     _remaining_regens_for,
@@ -17,6 +15,7 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
 from faultmaven.modules.case.contracts import CaseState
 
 from .cause_state import (
+    _count_gate1_turn,
     _gate1_statement_presentation,
     _investigation_confirmation_suggestions,
 )
@@ -228,13 +227,13 @@ async def _refuse_offer_click(
     """
     follow_ups: list = []
     agent_response = STALE_OFFER_LINE
-    presented_statement: Optional[str] = None
+    presentation: Optional[str] = None
     if standing == "terminal":
         reask, follow_ups = _pending_transition_reask(case)
         agent_response = f"{STALE_OFFER_LINE}\n\n{reask}"
     elif standing == "gate1":
-        presented_statement = (case.inquiry.proposed_problem_statement or "").strip()
-        agent_response = f"{STALE_OFFER_LINE}\n\n{_gate1_statement_presentation(case)}"
+        presentation = _gate1_statement_presentation(case)
+        agent_response = f"{STALE_OFFER_LINE}\n\n{presentation}"
         follow_ups = _investigation_confirmation_suggestions(case)
 
     confirmation_click_refused_total.labels(
@@ -259,18 +258,9 @@ async def _refuse_offer_click(
     )
     await repository.save(case)
 
-    if standing == "gate1":
-        # INV-01's pair, one for one, as ``_compose_turn_reply`` counts a
-        # Gate-1 turn: the affordance served, and the statement verified in
-        # the text actually returned.
-        engine_owned_affordance_served_total.labels(gate="gate1").inc()
-        if presented_statement and presented_statement in agent_response:
-            gate1_statement_composed_total.inc()
-        else:
-            logger.error(
-                "gate1_statement_missing_from_reply",
-                extra={"case_id": case.case_id, "turn": case.current_turn},
-            )
+    if presentation is not None:
+        # INV-01's pair, through the one helper ``_compose_turn_reply`` uses.
+        _count_gate1_turn(case, presentation, agent_response)
 
     return {
         "agent_response": agent_response,

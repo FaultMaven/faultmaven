@@ -28,6 +28,8 @@ from faultmaven.core.investigation.cause_assurance import (
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.lifecycle_metrics import (
     cause_identification_held_mece_total,
+    engine_owned_affordance_served_total,
+    gate1_statement_composed_total,
     work_gate_crossed_total,
 )
 from faultmaven.core.investigation.verification_status import (
@@ -141,6 +143,29 @@ def _gate1_statement_presentation(case: "Case") -> str:
         "Confirm it to start the focused investigation, or tell me what to "
         f"change.\n\n{TYPED_CONFIRMATION_LINE}"
     )
+
+
+def _count_gate1_turn(case: "Case", presentation: str, reply: str) -> None:
+    """INV-01's pair of counters for a turn that served Gate 1's card.
+
+    ``engine_owned_affordance_served_total{gate="gate1"}`` counts the card
+    served; ``gate1_statement_composed_total`` counts it only when
+    ``presentation``, the block ``_gate1_statement_presentation`` rendered, is
+    in the reply actually returned. Checked against the rendered block, not
+    the raw statement: a multi-line statement is block-quoted line by line, so
+    the raw text never appears verbatim and would miscount as missing. Every
+    Gate-1 turn counts through here, so the two track one for one; a gap is a
+    turn that shipped the buttons without their statement, and also logs
+    ``gate1_statement_missing_from_reply`` at ERROR.
+    """
+    engine_owned_affordance_served_total.labels(gate="gate1").inc()
+    if presentation and presentation in reply:
+        gate1_statement_composed_total.inc()
+    else:
+        logger.error(
+            "gate1_statement_missing_from_reply",
+            extra={"case_id": case.case_id, "turn": case.current_turn},
+        )
 
 
 def _investigation_confirmation_suggestions(case) -> list:

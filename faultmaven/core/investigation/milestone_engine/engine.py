@@ -896,17 +896,21 @@ class MilestoneEngine:
                 )
 
                 # A CLICK answers only the offer it names (#1812, ruling (a)).
-                # Not one 0b answered (``click_answered_by_gate``), and not on a
-                # standing ``needs_info`` pending, which 0b skips and which
-                # falls through to the LLM as it always did. Otherwise the only
-                # offer a click can answer here is Gate 1; with Gate 1 not
-                # pending, nothing a click can answer is standing.
+                # Not one 0b answered (``click_answered_by_gate``). The only
+                # offer a click can answer here is Gate 1: while it is pending,
+                # every other click is checked against its key, whatever else
+                # is pending. With Gate 1 not pending, a click on a standing
+                # ``needs_info`` offer (which 0b skips) falls through to the LLM
+                # as it always did, and any other click finds nothing standing.
+                gate1_standing = _gate1_is_pending(case)
                 if (
                     not typed
                     and not click_answered_by_gate
-                    and not (case.pending_transition or {}).get("needs_info")
+                    and (
+                        gate1_standing
+                        or not (case.pending_transition or {}).get("needs_info")
+                    )
                 ):
-                    gate1_standing = _gate1_is_pending(case)
                     refusal = offer_click_refusal(
                         intent_data,
                         (

@@ -5,7 +5,7 @@ carried. ``InvestigationService._handle_confirmation`` forwards
 ``intent_data={"value": confirmation_value}`` faithfully; the value then died
 at the branch, which committed ``problem_statement_confirmed`` +
 ``decided_to_investigate`` off ``intent_type`` alone. So the engine's own
-decline affordance — ``_investigation_confirmation_suggestions()``'s "Not
+decline affordance — ``_investigation_confirmation_suggestions(case)``'s "Not
 quite, let me clarify", ``confirmation_value: False`` — started the
 investigation on the statement the user was asking to refine, and
 ``_check_automatic_transitions`` fired INQUIRY → INVESTIGATING. Reachable by
