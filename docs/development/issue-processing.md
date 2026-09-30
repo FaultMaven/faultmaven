@@ -436,7 +436,7 @@ survives.
 **Who closes a verified-fixed issue:** the owning agent, after re-running
 that evidence rather than relaying it, naming the pull request that actually
 fixed it — resolved with `gh pr view`, never inferred from a narration.
-Residue is filed separately rather than held against the issue. A result
+What survives is filed separately rather than held against the issue. A result
 that is ambiguous — it reproduces only under one configuration, or the guard
 does not bite and making it bite is a design call — is not a closure: it
 goes to the blocked pile as a question, like any other pull.
@@ -569,7 +569,9 @@ are not, so a cheaper lane that costs one more review round has cost more
 than it saved. There is no third tier: every lane writes under
 *Building*'s gates and opens a pull request that full-tier review reads,
 so a tier further down saves on the cheapest part of the round and spends
-on the dearest.
+on the dearest. A residuals issue (*Picking*), whose plan invariant is that no reachable
+behaviour changes, counts as one seam and runs on the smaller model unless a
+line touches a guard's mechanism, a storage change or a security boundary.
 
 **A lane's failure goes back to the planner.** A lane that stops, or fails
 the owning agent's verification, was carrying either a plan that did not
@@ -640,7 +642,8 @@ it happened, and not this.
 
 Post the result on the proposal comment **under the heading `## Round <N> —
 result`**, spelled exactly: what merged, what was pulled and what stopped
-it, what was filed along the way. Then the next round can start — and it is
+it, what was filed along the way, and the round's residuals issue. Then the
+next round can start — and it is
 that round's *Settle the last round* that does it, because this report is
 written before the owner has merged any of them.
 
@@ -732,6 +735,22 @@ measurement rather than a rule: `scripts/backlog_metrics.py` computes the
 tier and the proposal reports its size beside the residue, a tier growing
 across four rounds says so, and the lever in the meantime is the one that
 already exists — the owner pins.
+
+**The residuals issue gets the same kind of slot.** One round's review
+findings that nobody can hit are written as lines in a single `Round <N>
+residuals` issue (*State the invariant*). It holds none of rules 1-3 by
+construction, so without a reserved buy it would join the rule-4 tier as its
+newest member. From there it would wait behind every older one, while a new
+one arrived each round. That is the leak the rule-4 slot closes, reopened one
+level down. So after the rule-4 slot, capacity buys the oldest residuals issue
+the ready query returns, never the one for the current round, which that
+round may still be appending to. The rule-4 slot skips residuals issues, so
+the two slots never buy the same one. At most one arrives a round and one is
+bought a round. That bounds the count by the buy rate; it does not hold it
+flat. A partial delivery, a pull, or pins that leave no capacity each leave
+one more open, and the proposal reports how many are. Its plan's invariant is
+fixed, *no reachable behaviour changes*, and under it the item counts as one
+seam for sizing.
 
 **That measurement did not exist for the first nine rounds, so the slot's
 own defence had never been tested.** The proxy to hand was "ready items
@@ -931,7 +950,9 @@ reads them all:
 - **Blame a finding before acting on it.** `git blame` the line to the commit
   that introduced it. A finding in code the branch added only to answer an
   earlier review round is not on the issue's seam however true it is, and the
-  test is: *would this line exist if review had never run?* If not, file it.
+  test is: *would this line exist if review had never run?* If not, it is
+  not this pull request's to fix: it is filed or recorded as a residual, by
+  the rule under *State the invariant*.
   On fm#1498 every one of round 4's fourteen findings blamed to a
   review-response commit and none to the fix — the fix had drawn no finding in
   four rounds, its responses ran to twice its size, and it should have shipped
@@ -940,16 +961,48 @@ reads them all:
 - **State the invariant, and let it draw the fix line from the first
   round.** Every plan says, in a sentence or two, what must hold once the pull
   request merges. Review and the defeat pass are briefed with it, and every
-  finding lands in one of three places:
+  finding lands in one of four places:
   - **fixed**: a defect in the invariant, or a reachable crash, wrong result
     or regression the diff introduces;
-  - **filed**: true, but outside that line;
+  - **filed**: outside that line, and either a defect someone can hit (wrong
+    behaviour, a crash, a security or tenancy gap, a guard miss with live
+    sites, text that ships to a user or that a later lane reads as an
+    instruction) or a question for the owner. One issue per root. When
+    reachability cannot be shown by execution, it is filed: a misfiled
+    residual costs a rank, a buried defect costs a user;
+  - **residual**: true, needing no ruling, and reachable by nobody — dead
+    code, a comment only a reader of the source sees that misstates the code,
+    a miss with no live site in a guard or test the pull request did **not**
+    ship, a measurement worth taking. One line in the round's residuals
+    issue, not an issue of its own. A miss in a guard or test the pull
+    request **does** ship is in its invariant whatever its live-site count,
+    and is fixed: *the defect is in the guard the pull request installed*
+    is this campaign's most reliable finding;
   - **declined**: in one line, with the reason.
 
   Round 21 improvised this rule only in its second or third review round.
   Before it, rounds of 10–13 findings each went back to the lanes, and their
   fixes drew the next round's findings. Rounds run under it had 0–3 fixable
   findings out of 10–13.
+
+  **The residual landing is the same rule applied to what is written down.**
+  Filing every true finding as its own issue is what made the backlog grow
+  while the campaign drained it. From 2026-09-15 to round 25:
+  - 205 issues were filed and 109 of them closed, beside 36 of the 61 issues
+    open when it began;
+  - about 68% of the new ones came out of review;
+  - of the 96 still open, about a third were the campaign's own overhead:
+    gaps in the guards it installed, code hygiene, CI and test machinery, and
+    process tooling.
+
+  None of that overhead is reachable by a user, yet each issue took a rank.
+  One issue per round keeps every residual written down and visible, and lets
+  one lane drain a round's worth at once. It has its own reserved buy
+  each round (*Picking*), because it holds none of rules 1-3 and would
+  otherwise wait behind the whole rule-4 tier. The test for which side of
+  the line a finding falls on is the one *filed* states: can someone hit it?
+  A residual that turns out to be reachable, or to need a ruling, leaves the
+  list as a filed issue.
 - **Probe the mechanism before a lane builds it.** A plan that chooses a
   mechanism is an argument until it has run: a classifier's rule, the source
   a reader binds, a guard's predicate, a library behaviour it leans on.
@@ -985,8 +1038,9 @@ reads them all:
   request that refuses a fresh install or answers 500 where it promises 401
   is not something to hand anyone. Blocking means the change is worse than
   the bug it fixes for someone who has not hit the bug. That exception is
-  narrow on purpose: everything non-blocking is filed, and the round says
-  how many findings it filed rather than fixed. **And it is bounded by the
+  narrow on purpose: everything non-blocking is filed or recorded as a
+  residual, and the round says how many of each it wrote down rather than
+  fixed. **And it is bounded by the
   pull rule, which reaches an open pull request as well as a lane
   mid-build:** a blocking finding **the lane cannot clear** is pulled — the
   owning agent closes the pull request, records on the issue either the
@@ -1099,7 +1153,8 @@ nothing left to re-file against.
 Each round reports `scripts/backlog_metrics.py`. The number that matters is
 the **residue**, meaning issues still open a week after filing. The raw open
 count moves with how hard the period looked rather than with how healthy the
-code is, and review alone accounts for about a third of everything filed.
+code is, and review accounted for about a third of everything filed on
+2026-09-15 and about two thirds by 2026-09-30.
 
 Five signals that this document is wrong rather than the work:
 
@@ -1121,11 +1176,16 @@ Five signals that this document is wrong rather than the work:
 **A round raising the open count is not one of them.** Round 1 closed five
 issues and filed thirteen, so the open set rose over the round, and nine of
 the thirteen came out of review. That is the process working: a review
-finding becomes an issue precisely so it is not silently carried, and the
+finding is written down precisely so it is not silently carried, and the
 residue — issues surviving a week — is what says whether they drain. Judge a
 round by what it *closed and filed*, and by whether the filed ones close
 later; an agent that keeps the count flat by not writing findings down is
-failing, not succeeding.
+failing, not succeeding. Written down is not the same as one issue each: a
+residual is written down in its round's residuals issue (*State the
+invariant*), which is as visible and costs one rank rather than one per
+finding. It is as drainable only because it has its own reserved buy each
+round. A residuals issue counts as one residue item, and that buy bounds how
+many there are.
 
 **Every fifth round, read this document as a state machine rather than as
 prose.** For each state an issue can be in, name what moves it out and who
