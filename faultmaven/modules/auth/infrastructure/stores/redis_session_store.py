@@ -178,8 +178,6 @@ class RedisSessionStore(ISessionStore):
             user_id=user_id,
             created_at=created_at,
             last_activity=created_at,
-            data_uploads=[],
-            case_history=[],
             metadata={},
         )
 

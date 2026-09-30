@@ -92,8 +92,11 @@ class SessionContext(BaseModel):
         time_since_activity = datetime.now(timezone.utc) - self.last_activity
         return time_since_activity < inactive_threshold
 
-    # json_encoders removed in Pydantic V2 - datetime serialization handled by default
-    model_config = ConfigDict()
+    # json_encoders removed in Pydantic V2 - datetime serialization handled by default.
+    # extra="forbid": a writer passing an undeclared field fails at construction
+    # instead of being silently dropped (#1638). Both session stores rebuild this
+    # model field by field, so an old stored session never reaches it as extras.
+    model_config = ConfigDict(extra="forbid")
 
 
 class DataInsightsResponse(BaseModel):
