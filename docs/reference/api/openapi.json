@@ -194,6 +194,13 @@
             ],
             "title": "Resolved At"
           },
+          "shared_team_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Shared Team Ids",
+            "type": "array"
+          },
           "source": {
             "default": "copilot",
             "title": "Source",
@@ -6822,7 +6829,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "9.0.0"
+    "version": "9.1.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -7023,7 +7030,7 @@
     },
     "/api/v1/admin/cases": {
       "get": {
-        "description": "List cases across all users/orgs for a platform-admin (ADR-012 D9).\n\nStandalone serves full summaries; cloud serves metadata-only rows. See the\nmodule docstring for why the split falls where it does.",
+        "description": "List cases across all users and enterprises for a platform-admin (ADR-012 D9).\n\nStandalone serves full summaries; cloud serves metadata-only rows. Under\nmulti-tenancy the rows come from the cross-enterprise metadata read. See the\nmodule docstring for why the split falls where it does.",
         "operationId": "list_all_cases_api_v1_admin_cases_get",
         "parameters": [
           {

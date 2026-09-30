@@ -1051,6 +1051,9 @@ def _wire_services(app, chroma) -> None:
     from faultmaven.modules.auth.domain.services.team_service import TeamService
     from faultmaven.modules.auth.domain.services.user_service import UserService
     from faultmaven.modules.case.domain.services.case_service import CaseService
+    from faultmaven.modules.case.infrastructure.case_metadata_reader import (
+        SessionlessCaseMetadataReader,
+    )
     from faultmaven.modules.case.infrastructure.sessionless_case_repository import (
         SessionlessCaseRepository,
     )
@@ -1146,6 +1149,9 @@ def _wire_services(app, chroma) -> None:
     )
     app.state.operator_audit_repository = SessionlessOperatorAuditRepository()
     app.state.operator_grant_repository = SessionlessOperatorGrantRepository()
+    # The cross-enterprise operator case list, as the composition root wires it
+    # under multi-tenancy (ADR-012 D9).
+    app.state.case_metadata_reader = SessionlessCaseMetadataReader()
     app.state.suggestion_service = SuggestionService(
         case_repository=case_repository,
         knowledge_service=knowledge_service,
@@ -3753,19 +3759,27 @@ async def test_knowledge_suggestions_are_scoped_to_the_operators_own_enterprise(
     ), "a refused approve/reject changed B's suggestion anyway"
 
 
-async def test_the_cross_tenant_case_listing_is_refused_under_multi_tenant(wall_world):
-    """``/admin/cases`` refuses rather than serving an RLS-truncated answer.
+async def test_the_cross_tenant_case_listing_spans_enterprises_as_metadata_only(
+    wall_world,
+):
+    """``/admin/cases`` lists B's case to A's operator — as metadata, never content.
 
-    The failure this guards is not a leak but its mirror: a list that claims to
-    span every tenant while RLS silently scopes it to the operator's own. An
-    operator triaging "which tenant is stuck" would be misled precisely when the
-    endpoint matters.
+    Two failures are guarded, one each way. A list RLS had silently scoped to
+    the operator's own enterprise would claim to span every tenant while
+    showing one, so B's case id MUST be there. And the read that gets it there
+    bypasses RLS, so it must be bounded by what it can return: none of B's
+    markers — title, description, transcript, evidence, report — may appear.
     """
     world = wall_world
     response = await _call(world, world.token_operator_a, "GET", "/api/v1/admin/cases")
 
-    assert response.status_code == 403
-    assert world.b.case.case_id not in response.text
+    assert response.status_code == 200, response.text[:400]
+    assert response.json()["view"] == "metadata"
+    listed = _ids(response.json(), "case_id")
+    assert {world.a.case.case_id, world.b.case.case_id} <= listed, (
+        "the operator list did not span both enterprises — an RLS-narrowed "
+        "answer under a list that claims to cover every tenant"
+    )
     assert_no_b_content(response, "GET /api/v1/admin/cases")
 
 

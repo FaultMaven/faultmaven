@@ -107,6 +107,9 @@ ignore_imports =
     faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.* -> faultmaven.modules.case.domain.owned_models.*
     faultmaven.modules.case.infrastructure.case_repository -> faultmaven.modules.case.domain.models.*
     faultmaven.modules.case.infrastructure.case_repository -> faultmaven.modules.case.domain.owned_models.*
+    # The cross-enterprise metadata reader builds CaseMetadata, whose derived
+    # fields come from the domain rules a loaded case applies (ADR-012 D9).
+    faultmaven.modules.case.infrastructure.case_metadata_reader -> faultmaven.modules.case.domain.models.*
     # investigation_session_repository ignore removed with the module: the case
     # module carried a second, IMPORT-FREE copy of the session repository that
     # nothing in faultmaven/ or tests/ ever imported. The live one is

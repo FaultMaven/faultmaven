@@ -5,8 +5,9 @@ Covers:
 - GET /api/v1/admin/cases (403) — non-admin is rejected
 - The D9 deployment split: standalone serves full summaries, cloud serves
   ambient metadata with no user free text
-- GET /api/v1/admin/cases (403) — refused under multi-tenant cloud, where RLS
-  would make an "all tenants" list silently one tenant's
+- Under multi-tenant cloud, where RLS would make an "all tenants" case query
+  silently one tenant's, the list is served from the cross-enterprise metadata
+  read — and fails closed (503), never falling back, when that read is absent
 - Query params (state/limit/offset) are forwarded to the service filter
 - The durable audit row records which of the two views was served
 """
@@ -22,6 +23,7 @@ from faultmaven.main import app as main_app
 from faultmaven.models.api_models import CASE_SUMMARY_CONTENT_FIELDS, CaseSummary
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.metadata import CaseMetadata
 from faultmaven.modules.case.domain.models.problem import InvestigationStage
 
 pytestmark = pytest.mark.integration
@@ -108,12 +110,17 @@ def mock_audit_repo():
     return AsyncMock()
 
 
-def _make_app(current_user, mock_case_service, mock_audit_repo=None):
-    """Wire overrides for require_platform_admin's user, the case service, and
-    the operator audit repository."""
+def _make_app(
+    current_user, mock_case_service, mock_audit_repo=None, metadata_reader=None
+):
+    """Wire overrides for require_platform_admin's user, the case service, the
+    operator audit repository and the cross-enterprise metadata read."""
     from faultmaven.api.middleware.auth import get_current_user
     from faultmaven.api.operator_audit import get_operator_audit_repository
-    from faultmaven.api.routes.admin_cases import get_case_service
+    from faultmaven.api.routes.admin_cases import (
+        get_case_metadata_reader,
+        get_case_service,
+    )
 
     async def _get_user():
         return current_user
@@ -124,10 +131,46 @@ def _make_app(current_user, mock_case_service, mock_audit_repo=None):
     async def _get_audit_repo():
         return mock_audit_repo if mock_audit_repo is not None else AsyncMock()
 
+    async def _get_reader():
+        return metadata_reader
+
     main_app.dependency_overrides[get_current_user] = _get_user
     main_app.dependency_overrides[get_case_service] = _get_service
     main_app.dependency_overrides[get_operator_audit_repository] = _get_audit_repo
+    main_app.dependency_overrides[get_case_metadata_reader] = _get_reader
     return main_app
+
+
+def _metadata_reader(*rows: CaseMetadata, total: int | None = None):
+    reader = AsyncMock()
+    reader.list_case_metadata = AsyncMock(
+        return_value=(list(rows), len(rows) if total is None else total)
+    )
+    return reader
+
+
+def _case_metadata(case_id: str, enterprise_id: str) -> CaseMetadata:
+    now = datetime.now(timezone.utc)
+    return CaseMetadata(
+        case_id=case_id,
+        enterprise_id=enterprise_id,
+        organization_id=None,
+        user_id=f"user-of-{enterprise_id}",
+        state=CaseState.INVESTIGATING,
+        source="copilot",
+        closure_reason=None,
+        created_at=now,
+        updated_at=now,
+        last_activity_at=now,
+        resolved_at=None,
+        closed_at=None,
+        current_turn=3,
+        investigation_turn=3,
+        stage=InvestigationStage.DIAGNOSIS,
+        turns_without_progress=0,
+        is_terminal=False,
+        shared_team_ids=[],
+    )
 
 
 @pytest.fixture
@@ -289,17 +332,20 @@ async def test_cloud_response_body_contains_no_user_free_text(
     assert "SENTINEL-ENT-METADATA" in resp.text
 
 
-async def test_admin_list_blocked_under_multi_tenant_cloud(
+async def test_admin_list_under_multi_tenant_cloud_spans_every_enterprise(
     admin_user, mock_case_service, cleanup_overrides
 ):
-    """Refused where RLS would make the cross-tenant list silently partial.
+    """Served from the cross-enterprise metadata read, not the case service.
 
     Under ``TENANT_PROVIDER=multi`` the web process's RLS-enforcing DB role
-    scopes the query to the operator's own organization, so a 200 here would
-    claim to span every tenant while showing one. Fail closed until the bounded
-    cross-tenant read lands with break-glass (#815).
+    scopes an ordinary case query to the operator's own enterprise, so a list
+    built from it would claim to span every tenant while showing one. The rows
+    come from the metadata read instead, which spans them all.
     """
-    app = _make_app(admin_user, mock_case_service)
+    reader = _metadata_reader(
+        _case_metadata("case_a", "ent_a"), _case_metadata("case_b", "ent_b")
+    )
+    app = _make_app(admin_user, mock_case_service, metadata_reader=reader)
     fake_settings, tenancy = _cloud_settings(tenant_provider="multi")
 
     with (
@@ -311,23 +357,29 @@ async def test_admin_list_blocked_under_multi_tenant_cloud(
         async with await _client(app) as client:
             resp = await client.get("/api/v1/admin/cases")
 
-    assert resp.status_code == status.HTTP_403_FORBIDDEN
-    assert "partial" in resp.json()["detail"].lower()
+    assert resp.status_code == status.HTTP_200_OK
+    body = resp.json()
+    assert body["view"] == "metadata"
+    assert {row["enterprise_id"] for row in body["cases"]} == {"ent_a", "ent_b"}
+    for row in body["cases"]:
+        for field in CASE_SUMMARY_CONTENT_FIELDS:
+            assert field not in row
     mock_case_service.list_all_cases.assert_not_called()
 
 
-async def test_multi_tenant_refusal_is_keyed_on_tenancy_not_deployment_mode(
+async def test_multi_tenant_list_is_keyed_on_tenancy_not_deployment_mode(
     admin_user, mock_case_service, cleanup_overrides
 ):
-    """The refusal follows ``multi``, not ``cloud``.
+    """The cross-enterprise read follows ``multi``, not ``cloud``.
 
     ``multi`` cannot boot outside cloud today (``create_tenant_provider``
     refuses), so the two conditions coincide — but the hazard is RLS scoping,
     which belongs to tenancy. Pinning it here means a future change that lets
-    ``multi`` run elsewhere inherits the refusal instead of silently serving a
+    ``multi`` run elsewhere gets the metadata read instead of silently serving a
     one-tenant list under a "standalone" label.
     """
-    app = _make_app(admin_user, mock_case_service)
+    reader = _metadata_reader(_case_metadata("case_a", "ent_a"))
+    app = _make_app(admin_user, mock_case_service, metadata_reader=reader)
     standalone_settings = MagicMock(is_cloud=False, deployment_mode="standalone")
 
     with (
@@ -343,18 +395,20 @@ async def test_multi_tenant_refusal_is_keyed_on_tenancy_not_deployment_mode(
         async with await _client(app) as client:
             resp = await client.get("/api/v1/admin/cases")
 
-    assert resp.status_code == status.HTTP_403_FORBIDDEN
+    assert resp.status_code == status.HTTP_200_OK
+    assert resp.json()["view"] == "metadata"
     mock_case_service.list_all_cases.assert_not_called()
 
 
-async def test_multi_tenant_refusal_records_no_access(
+async def test_multi_tenant_list_without_the_read_fails_closed(
     admin_user, mock_case_service, mock_audit_repo, cleanup_overrides
 ):
-    """A refused request read nothing, so it is not an access.
+    """No cross-enterprise read wired: a 503, and nothing recorded.
 
-    The audit table is the record of operator reads of tenant data; stamping a
-    row for a request that was denied before any query would dilute exactly the
-    evidence it exists to hold.
+    The RLS-scoped case service is right there and would answer — with one
+    enterprise's cases. That is the partial list this path exists to prevent,
+    so it is never the fallback. A request refused before any read is not an
+    access, so the trail stays clean.
     """
     app = _make_app(admin_user, mock_case_service, mock_audit_repo)
     fake_settings, tenancy = _cloud_settings(tenant_provider="multi")
@@ -368,7 +422,8 @@ async def test_multi_tenant_refusal_records_no_access(
         async with await _client(app) as client:
             resp = await client.get("/api/v1/admin/cases")
 
-    assert resp.status_code == status.HTTP_403_FORBIDDEN
+    assert resp.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    mock_case_service.list_all_cases.assert_not_called()
     mock_audit_repo.record_access.assert_not_awaited()
 
 
