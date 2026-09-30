@@ -273,9 +273,13 @@ SERVICE_SCOPED_ERROR_CODES = frozenset({QUOTA_EXHAUSTED, PROVIDER_AUTH_FAILED})
 class LLMErrorCategory(str, Enum):
     """The recovery-selecting fact about an LLM failure.
 
-    Deliberately about the FAILURE, not the remedy: the engine decides
-    FAIL / RETRY and the ``TOKEN_LIMIT`` degrade from this, and a different consumer may
-    decide differently, but neither has to read provider prose to do it.
+    Deliberately about the FAILURE, not the remedy. In the error handler's
+    FAIL / RETRY decision only the overflow branch reads it, and answers
+    ``CONTEXT_OVERFLOW`` with FAIL. That result carries the ``TOKEN_LIMIT``
+    error code, which routes the turn to the engine's minimal-prompt degrade.
+    Whether to RETRY is keyed on the declared ``retryable`` flag, not on the
+    category. A different consumer may decide differently, but none has to
+    read provider prose to do it.
     """
 
     #: The prompt did not fit the model's context window. Retrying the
@@ -290,8 +294,9 @@ class LLMErrorCategory(str, Enum):
     #: The request itself was refused as malformed/unsupported — a wrong
     #: parameter, an unsupported value, a schema the model will not compile.
     #: Permanent for THIS request shape and for it alone, so it must never be
-    #: read as an overflow (which would loop on futile compression) nor as a
-    #: transient (which would loop on an identical request).
+    #: read as an overflow (the minimal-prompt degrade regenerates with the
+    #: default cap and the same request shape, so it fails the same way) nor as
+    #: a transient (which would loop on an identical request).
     REQUEST_REJECTED = "request_rejected"
 
     #: The provider failed in a way that may not recur: 5xx, rate limiting,
@@ -384,8 +389,9 @@ _CONTEXT_OVERFLOW_WORDING: tuple = (
 # cannot help a rejected request.
 
 # A wrong/unsupported request parameter is a config error, NOT an overflow;
-# reading it as one masks the real cause and loops on futile compression
-# (e.g. OpenAI "Unsupported parameter: 'max_tokens' ... use
+# reading it as one masks the real cause and sends it to the minimal-prompt
+# degrade, which regenerates with the default cap and the same rejected
+# parameter (e.g. OpenAI "Unsupported parameter: 'max_tokens' ... use
 # 'max_completion_tokens'"). Checked FIRST so a message carrying both
 # vocabularies is read as the rejection it is.
 _REQUEST_REJECTED_WORDING: tuple = (
@@ -623,8 +629,12 @@ class LLMException(FaultMavenException):
         category: ``LLMErrorCategory`` — WHAT KIND of failure this is (#509).
             Derived from ``status_code`` + ``provider_error_code`` + the
             provider's wording unless the raiser passes one. Always set; never
-            ``None``. This is what the engine keys FAIL / TOKEN_LIMIT /
-            RETRY off, in place of the substring lists it used to carry.
+            ``None``. The error handler reads it only to recognise an
+            overflow, which it answers with FAIL. That result carries the
+            ``TOKEN_LIMIT`` error code, which routes the turn to the engine's
+            minimal-prompt degrade. Whether to RETRY is keyed on
+            ``retryable`` below, not on the category. Both replace the
+            substring lists the engine used to carry.
         retryable: Whether the error is worth retrying. Derived from
             status_code when provided, otherwise defaults to False (fail fast).
             - 429 → retryable (rate limited; transient, succeeds once the

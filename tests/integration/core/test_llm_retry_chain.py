@@ -196,7 +196,7 @@ async def test_billing_error_fails_fast_with_quota_code(fast_handler, router):
 
     assert result is None
     assert error is not None
-    assert error.action == ErrorAction.ESCALATE
+    assert error.action == ErrorAction.FAIL
     assert error.error_code == QUOTA_EXHAUSTED
     # Billing is non-retryable: exactly one provider call, not 1 + max_retries.
     assert attempts == 1
@@ -243,7 +243,7 @@ async def test_billing_open_breaker_preserves_quota_code(fast_handler):
     result, error = await fast_handler.with_retry(operation=llm_operation)
     assert result is None
     assert error is not None
-    assert error.action == ErrorAction.ESCALATE
+    assert error.action == ErrorAction.FAIL
     assert error.error_code == QUOTA_EXHAUSTED
 
 

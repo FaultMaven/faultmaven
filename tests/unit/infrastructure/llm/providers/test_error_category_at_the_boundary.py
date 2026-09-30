@@ -124,7 +124,8 @@ def test_a_machine_code_outranks_the_wording():
     A 400 whose MESSAGE reads like a context overflow but whose CODE says the
     request carried an unsupported parameter is a config error. Reading the
     sentence is what masked OpenAI's "Unsupported parameter: 'max_tokens'" as
-    "Context too large" and sent the engine into a futile compression loop.
+    "Context too large" and sent it to an overflow recovery that regenerates
+    with the same rejected parameter.
     """
     assert (
         classify_llm_error(

@@ -203,7 +203,7 @@ def test_the_same_sentence_without_a_declaration_is_not_truncation():
 
 
 @pytest.mark.asyncio
-async def test_an_overflow_wearing_truncation_wording_still_compresses():
+async def test_an_overflow_wearing_truncation_wording_still_fails_with_token_limit():
     """A gateway that says "input truncated: context length exceeded" is
     reporting that the PROMPT did not fit. Raising the generation cap cannot
     help, so it must not be diverted into the truncation ladder — it belongs on
@@ -419,7 +419,7 @@ async def test_the_degrade_is_metered_as_truncation_not_overflow():
 async def test_truncation_wording_is_not_re_read_by_the_string_classifiers():
     """``OutputTruncationError`` carries the provider's own text, which mentions
     the model and the token cap. Dispatching on type keeps the phrase-matching
-    classifiers below from re-reading it and escalating a recoverable cut as,
+    classifiers below from re-reading it and failing a recoverable cut as,
     say, a model-not-found configuration failure."""
     handler = LLMErrorHandler(
         RetryConfig(max_retries=3, base_delay_seconds=0.0, max_delay_seconds=0.0)

@@ -248,8 +248,8 @@ class LLMErrorHandler:
 
         if retry_count >= self.config.max_retries:
             return ErrorResult(
-                action=ErrorAction.USE_FALLBACK_PROMPT,
-                message="Request timed out. Using simplified prompt.",
+                action=ErrorAction.FAIL,
+                message="Request timed out after every retry.",
                 error_code="TIMEOUT_EXCEEDED"
             )
 
@@ -265,7 +265,7 @@ class LLMErrorHandler:
         logger.error(f"LLM provider billing/quota exhausted: {error}")
 
         return ErrorResult(
-            action=ErrorAction.ESCALATE,
+            action=ErrorAction.FAIL,
             message=(
                 "FaultMaven's AI provider is out of quota or credits. An "
                 "administrator needs to add credits or update the provider's "
@@ -280,13 +280,17 @@ class LLMErrorHandler:
         logger.error(f"LLM authentication error: {error}")
 
         return ErrorResult(
-            action=ErrorAction.ESCALATE,
+            action=ErrorAction.FAIL,
             message="System configuration error. Please contact support.",
             error_code="AUTH_FAILED"
         )
 
     def _handle_token_limit(self, error: TokenLimitError, case: Case) -> ErrorResult:
-        """Handle token limit exceeded."""
+        """Handle a context-window overflow.
+
+        FAIL. The result carries TOKEN_LIMIT, which routes the turn to the
+        engine's minimal-prompt degrade (§2.x). Nothing here shrinks the prompt.
+        """
 
         return ErrorResult(
             action=ErrorAction.FAIL,
@@ -296,10 +300,12 @@ class LLMErrorHandler:
 
 
 class ErrorAction(str, Enum):
-    """Actions to take after error handling."""
+    """Actions to take after error handling.
+
+    Only RETRY is branched on; every other outcome is FAIL, and what the
+    failure was travels on ErrorResult.error_code.
+    """
     RETRY = "retry"
-    USE_FALLBACK_PROMPT = "use_fallback_prompt"
-    ESCALATE = "escalate"
     FAIL = "fail"
 
 
@@ -903,7 +909,6 @@ class RecoveryManager:
         """
 
         strategies = [
-            ("memory_compression", self._try_memory_compression),
             ("simplify_hypotheses", self._try_simplify_hypotheses),
             ("fallback_prompt", self._try_fallback_prompt),
             ("milestone_reset", self._try_milestone_reset),
@@ -924,31 +929,6 @@ class RecoveryManager:
             case=case,
             message="All recovery strategies failed. Manual intervention required."
         )
-
-    async def _try_memory_compression(
-        self,
-        error: Exception,
-        case: Case,
-        context: Dict
-    ) -> RecoveryResult:
-        """Compress conversation history to reduce token usage."""
-
-        if "token" not in str(error).lower():
-            return RecoveryResult(success=False, case=case)
-
-        # Summarize older turns
-        if len(case.turn_history) > 10:
-            older_turns = case.turn_history[:-10]
-            summary = await self._summarize_turns(older_turns)
-            case.compressed_history_summary = summary
-
-            return RecoveryResult(
-                success=True,
-                case=case,
-                message="Compressed conversation history to reduce tokens"
-            )
-
-        return RecoveryResult(success=False, case=case)
 
     async def _try_simplify_hypotheses(
         self,
@@ -1182,7 +1162,7 @@ This error handling framework provides:
 
 6. **Progress monitoring** - Identify when investigation is stalled and surface pending-milestone guidance (includes repair patterns for anchoring, deadlock, action loops, fix-failure cycles, and exhaustion). See [Progress Transparency](./progress-transparency.md).
 
-7. **Recovery strategies** - Memory compression, hypothesis simplification, fallback prompts
+7. **Recovery strategies** - Hypothesis simplification, fallback prompts. A context overflow is not one of them: the handler returns FAIL with `TOKEN_LIMIT`, and the engine answers that code with its minimal-prompt degrade (§2.x)
 
 8. **Error context propagation** - Comprehensive error tracking for debugging
 

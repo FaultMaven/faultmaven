@@ -82,9 +82,10 @@ class OutputTruncationError(Exception):
     * ``False`` — the cap was raised, so an identical retry now has room to
       finish. RETRY.
     * ``True`` — the cap is already at its ceiling; raising it again is a
-      no-op. The only remaining lever is shrinking the INPUT, which is what the
-      minimal-prompt degrade does (#662), so this fails with the
-      ``TOKEN_LIMIT`` code the degrade keys on.
+      no-op, so an identical retry cannot finish. FAIL. The result carries the
+      ``TOKEN_LIMIT`` code, which routes the turn to the engine's
+      minimal-prompt degrade (#662): one regeneration with a minimal prompt, no
+      tools and the default generation cap.
       Without that hand-off the turn spends its remaining attempts on identical
       full-size calls and then fails, breaking the NO-COLLAPSE guarantee.
     """
@@ -263,10 +264,13 @@ def _transient_by_structure(error: BaseException) -> bool:
 
 
 class ErrorAction(str, Enum):
-    """Actions to take after error handling."""
+    """Actions to take after error handling.
+
+    Only ``RETRY`` is branched on (``with_retry``); every other outcome is
+    ``FAIL``. What the failure WAS travels on ``ErrorResult.error_code``.
+    """
 
     RETRY = "retry"
-    ESCALATE = "escalate"
     FAIL = "fail"
 
 
@@ -443,8 +447,10 @@ class LLMErrorHandler:
         'max_tokens' is not supported with this model" — is
         ``REQUEST_REJECTED``, and the provider publishes
         ``code: unsupported_parameter`` to say so; reading it as an overflow is
-        what masked the real cause as "Context too large" and sent the engine
-        into a futile compression loop. A cut ANSWER is ``OUTPUT_TRUNCATION``.
+        what masked the real cause as "Context too large". It would also route
+        the failure, as ``TOKEN_LIMIT``, to the engine's minimal-prompt degrade,
+        which regenerates with the default cap and the same rejected request
+        shape, so it cannot help. A cut ANSWER is ``OUTPUT_TRUNCATION``.
         Neither can reach this branch, and neither depends on a phrase list
         being kept in step with nine providers' prose.
         """
@@ -488,13 +494,14 @@ class LLMErrorHandler:
         # phrase-matching classifiers below get to read a message that belongs
         # to the provider or to the JSON decoder. (A provider's truncation text
         # names its model; letting `is_model_not_found_error` see it would
-        # escalate a recoverable cut as a configuration failure.)
+        # report a recoverable cut as a MODEL_NOT_FOUND configuration failure.)
         if isinstance(error, OutputTruncationError):
             if error.cap_reached:
-                # Nothing left to raise. Report the same TOKEN_LIMIT code an
-                # input overflow carries: shrinking the prompt is now the only
-                # way to make room for the answer, and the engine's degrade
-                # (#662) keys on that code.
+                # Nothing left to raise, so an identical retry cannot finish.
+                # FAIL, with the same TOKEN_LIMIT code an input overflow
+                # carries: that code routes the turn to the engine's
+                # minimal-prompt degrade (#662), which regenerates once with a
+                # minimal prompt, no tools and the default generation cap.
                 return ErrorResult(
                     action=ErrorAction.FAIL,
                     message=(
@@ -502,6 +509,7 @@ class LLMErrorHandler:
                         "with no room left to raise it."
                     ),
                     error_code=TOKEN_LIMIT,
+                    retry_count=retry_count,
                 )
             # The cap was raised; the identical call now has room to finish.
             # If the turn budget refuses that retry, report TOKEN_LIMIT rather
@@ -522,7 +530,7 @@ class LLMErrorHandler:
         if self.is_billing_error(error):
             logger.error(f"LLM provider billing/quota exhausted: {error}")
             return ErrorResult(
-                action=ErrorAction.ESCALATE,
+                action=ErrorAction.FAIL,
                 message=(
                     "FaultMaven's AI provider is out of quota or credits, so the "
                     "investigation can't continue right now. An administrator "
@@ -542,7 +550,7 @@ class LLMErrorHandler:
         #
         # Placed AFTER the billing check on purpose: the breaker latches the
         # error_code of the failure that opened it, and a quota-latched breaker
-        # must keep escalating as QUOTA_EXHAUSTED (the case_b639fac38fe0 chain).
+        # must keep failing as QUOTA_EXHAUSTED (the case_b639fac38fe0 chain).
         # A latched credential rejection is the same shape — permanent until an
         # operator rotates the key — so it is routed to the same terminal
         # AUTH_FAILED an unwrapped 401 gets, rather than to a transient code
@@ -577,7 +585,7 @@ class LLMErrorHandler:
                     f"LLM circuit breaker open on rejected credential: {error}"
                 )
                 return ErrorResult(
-                    action=ErrorAction.ESCALATE,
+                    action=ErrorAction.FAIL,
                     message="System configuration error. Please contact support.",
                     error_code="AUTH_FAILED",
                     retry_count=retry_count,
@@ -617,6 +625,7 @@ class LLMErrorHandler:
                 action=ErrorAction.FAIL,
                 message="Context too large for the model's window.",
                 error_code=TOKEN_LIMIT,
+                retry_count=retry_count,
             )
 
         # A DECLARED transient failure goes straight to the ladder, without
@@ -631,9 +640,9 @@ class LLMErrorHandler:
         # into the message, and that text carries ``host:port``. Measured
         # before this gate existed:
         #
-        #   "…Cannot connect to host localhost:4040…"  -> ESCALATE MODEL_NOT_FOUND
-        #   "…Cannot connect to host 10.0.0.5:8404…"   -> ESCALATE MODEL_NOT_FOUND
-        #   "…Cannot connect to host proxy:8401…"      -> ESCALATE AUTH_FAILED
+        #   "…Cannot connect to host localhost:4040…"  -> MODEL_NOT_FOUND, no retry
+        #   "…Cannot connect to host 10.0.0.5:8404…"   -> MODEL_NOT_FOUND, no retry
+        #   "…Cannot connect to host proxy:8401…"      -> AUTH_FAILED, no retry
         #
         # all with ``retryable=True`` declared and discarded. Any local model
         # server or proxy on a port containing 404/401/403 became permanently
@@ -662,7 +671,7 @@ class LLMErrorHandler:
         if self._first_error_code(error) == LLM_CONFIG_ERROR:
             logger.error(f"LLM configuration error: {error}")
             return ErrorResult(
-                action=ErrorAction.ESCALATE,
+                action=ErrorAction.FAIL,
                 message=f"FaultMaven's AI provider is not configured: {error}",
                 error_code=LLM_CONFIG_ERROR,
                 retry_count=retry_count,
@@ -672,7 +681,7 @@ class LLMErrorHandler:
         if self.is_auth_error(error):
             logger.error(f"Authentication error: {error}")
             return ErrorResult(
-                action=ErrorAction.ESCALATE,
+                action=ErrorAction.FAIL,
                 message="System configuration error. Please contact support.",
                 error_code="AUTH_FAILED",
             )
@@ -683,7 +692,7 @@ class LLMErrorHandler:
             # Extract more details from the error for better diagnostics
             error_details = str(error)[:300]  # First 300 chars for context
             return ErrorResult(
-                action=ErrorAction.ESCALATE,
+                action=ErrorAction.FAIL,
                 message=f"503 LLM service unavailable: Model not found or inaccessible. Please check LLM provider configuration. Details: {error_details}",
                 error_code="MODEL_NOT_FOUND",
             )

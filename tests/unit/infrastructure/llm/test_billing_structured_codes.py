@@ -372,8 +372,9 @@ _TRANSIENT = [
 def test_transient_failures_are_never_read_as_billing(label, status, code, message):
     """The arm the incident was about, in the direction that costs a turn.
 
-    Reading any of these as billing would ESCALATE a failure that clears by
-    itself, telling an operator to top up an account that is not empty.
+    Reading any of these as billing would FAIL, as QUOTA_EXHAUSTED, a failure
+    that clears by itself, telling an operator to top up an account that is
+    not empty.
     """
     error = LLMException(message, status_code=status, provider_error_code=code)
     assert error.error_code is None, label
@@ -402,7 +403,7 @@ def test_transient_failures_are_never_read_as_billing(label, status, code, messa
 )
 def test_ambiguous_codes_are_not_admitted_to_the_billing_set(code):
     """Admitting any of these would make the false direction permanent: a
-    transient rate limit escalated as exhausted credits, on every turn."""
+    transient rate limit reported as exhausted credits, on every turn."""
     assert (
         is_billing_quota_error("an opaque provider failure", 429, code) is False
     ), code

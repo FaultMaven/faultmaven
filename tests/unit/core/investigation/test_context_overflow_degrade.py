@@ -178,7 +178,8 @@ async def test_double_overflow_propagates_without_infinite_retry():
     case.case_id = "case_test"
 
     overflow = MilestoneEngineError(
-        "Structured output generation failed: Context too large.",
+        "Structured output generation failed: Context too large for the "
+        "model's window.",
         error_code=TOKEN_LIMIT,
     )
     inner = AsyncMock(side_effect=[overflow, overflow])
@@ -322,7 +323,8 @@ def test_propagated_token_limit_maps_to_retryable_503():
     from faultmaven.exceptions import ServiceException
 
     engine_err = MilestoneEngineError(
-        "Structured output generation failed: Context too large.",
+        "Structured output generation failed: Context too large for the "
+        "model's window.",
         error_code=TOKEN_LIMIT,
     )
     service_err = ServiceException(
@@ -400,7 +402,8 @@ async def test_output_truncation_also_takes_the_degrade_path():
     )
 
     truncated = MilestoneEngineError(
-        "Structured output generation failed: Context too large. "
+        "Structured output generation failed: Response truncated at the maximum "
+        "generation cap, with no room left to raise it. "
         "(Unterminated string starting at line 3)",
         error_code=TOKEN_LIMIT,
         category=LLMErrorCategory.OUTPUT_TRUNCATION,
@@ -493,8 +496,8 @@ async def test_degrade_emits_the_recovery_metric_with_its_reason():
     case = MagicMock()
     case.case_id = "case_test"
     overflow = MilestoneEngineError(
-        "Structured output generation failed: Context too large. "
-        "(prompt is too long: 250000 > 200000)",
+        "Structured output generation failed: Context too large for the "
+        "model's window. (prompt is too long: 250000 > 200000)",
         error_code=TOKEN_LIMIT,
         category=LLMErrorCategory.CONTEXT_OVERFLOW,
     )

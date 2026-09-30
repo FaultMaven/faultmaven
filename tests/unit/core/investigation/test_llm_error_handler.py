@@ -178,7 +178,7 @@ class TestErrorClassification:
         ],
     )
     def test_real_overflow_detected(self, handler, msg):
-        """Genuine context overflow still triggers compress.
+        """Genuine context overflow is still read as one.
 
         Constructed the way a provider constructs it — ``LLMException`` with
         the 400 the API answered — because that is what makes the category the
@@ -195,7 +195,7 @@ class TestErrorClassification:
         ],
     )
     def test_truncation_is_not_read_as_an_input_overflow(self, handler, msg):
-        """The prompt fit; the ANSWER did not. Compressing memory is not the
+        """The prompt fit; the ANSWER did not. Shrinking the prompt is not the
         first remedy for that — raising the generation cap is — so truncation
         must not enter the TOKEN_LIMIT branch."""
         assert handler.is_token_limit_error(LLMException(msg, status_code=400)) is False
@@ -247,7 +247,8 @@ class TestErrorClassification:
     )
     def test_config_and_param_errors_not_token_limit(self, handler, msg):
         """A request-shape / parameter error is NOT a token-limit overflow —
-        matching it would mask the real cause and loop on futile compression."""
+        matching it would mask the real cause and send it to the minimal-prompt
+        degrade, which regenerates with the same rejected parameter."""
         assert handler.is_token_limit_error(LLMException(msg, status_code=400)) is False
 
 
@@ -278,12 +279,12 @@ class TestErrorHandling:
     """Test error handling actions."""
 
     @pytest.mark.asyncio
-    async def test_auth_error_escalates(self, handler):
-        """Auth errors should escalate immediately."""
+    async def test_auth_error_fails_with_its_code(self, handler):
+        """Auth errors FAIL at once with AUTH_FAILED, without a retry."""
         error = Exception("API key invalid")
         result = await handler.handle_error(error)
 
-        assert result.action == ErrorAction.ESCALATE
+        assert result.action == ErrorAction.FAIL
         assert result.error_code == "AUTH_FAILED"
 
     @pytest.mark.asyncio
@@ -417,7 +418,7 @@ class TestErrorTracking:
 
 class TestBillingErrorHandling:
     """Billing/quota exhaustion is a permanent, operator-actionable failure.
-    It must escalate (not retry) with the QUOTA_EXHAUSTED code, so the API and
+    It must FAIL (not retry) with the QUOTA_EXHAUSTED code, so the API and
     UI can tell the user to add credits instead of looping on 'try again'.
     Regression for case_b639fac38fe0."""
 
@@ -445,7 +446,7 @@ class TestBillingErrorHandling:
         assert handler.is_billing_error(err) is False
 
     @pytest.mark.asyncio
-    async def test_handle_billing_escalates_with_quota_code(self, handler):
+    async def test_handle_billing_fails_with_quota_code(self, handler):
         from faultmaven.exceptions import QUOTA_EXHAUSTED, LLMException
 
         err = LLMException(
@@ -454,13 +455,13 @@ class TestBillingErrorHandling:
         )
         result = await handler.handle_error(err)
 
-        assert result.action == ErrorAction.ESCALATE
+        assert result.action == ErrorAction.FAIL
         assert result.error_code == QUOTA_EXHAUSTED
         # Message is operator-actionable (mentions credits/billing), not "try again".
         assert "credit" in result.message.lower() or "billing" in result.message.lower()
 
     @pytest.mark.asyncio
-    async def test_handle_open_breaker_billing_escalates(self, handler):
+    async def test_handle_open_breaker_billing_fails_with_quota_code(self, handler):
         """An open-breaker error carrying QUOTA_EXHAUSTED is classified as
         billing, not as an opaque unknown/retryable error."""
         from faultmaven.exceptions import QUOTA_EXHAUSTED
@@ -472,7 +473,7 @@ class TestBillingErrorHandling:
         )
         result = await handler.handle_error(err)
 
-        assert result.action == ErrorAction.ESCALATE
+        assert result.action == ErrorAction.FAIL
         assert result.error_code == QUOTA_EXHAUSTED
 
     @pytest.mark.asyncio
@@ -491,7 +492,7 @@ class TestBillingErrorHandling:
 
         assert result is None
         assert error is not None
-        assert error.action == ErrorAction.ESCALATE
+        assert error.action == ErrorAction.FAIL
         assert error.error_code == QUOTA_EXHAUSTED
         assert attempts == 1
 
@@ -718,9 +719,9 @@ class TestDeclarationOutranksProse:
     Measured before the gate existed, with ``retryable=True`` declared on every
     one of them::
 
-        Cannot connect to host localhost:4040  -> ESCALATE MODEL_NOT_FOUND
-        Cannot connect to host 10.0.0.5:8404   -> ESCALATE MODEL_NOT_FOUND
-        Cannot connect to host proxy:8401      -> ESCALATE AUTH_FAILED
+        Cannot connect to host localhost:4040  -> MODEL_NOT_FOUND, no retry
+        Cannot connect to host 10.0.0.5:8404   -> MODEL_NOT_FOUND, no retry
+        Cannot connect to host proxy:8401      -> AUTH_FAILED, no retry
 
     So the PR that removed the ladder's dependence on prose is also what routed
     attacker-of-opportunity text INTO prose one layer up. Any local model server
@@ -800,7 +801,7 @@ class TestDeclarationOutranksProse:
         assert result.error_code == "MODEL_NOT_FOUND"
 
     @pytest.mark.asyncio
-    async def test_overflow_wording_still_compresses_despite_a_declaration(
+    async def test_overflow_wording_still_fails_with_token_limit_despite_a_declaration(
         self, fast_handler
     ):
         """The gate must not divert a CONTEXT OVERFLOW onto the retry ladder.
@@ -852,7 +853,7 @@ class TestDeclarationOutranksProse:
     async def test_billing_still_outranks_the_declaration_gate(self, fast_handler):
         """Quota exhaustion is permanent whatever the transport declared, and
         its check sits ahead of the gate. A 429 body naming billing must still
-        ESCALATE rather than be retried into the ground."""
+        FAIL with QUOTA_EXHAUSTED rather than be retried into the ground."""
         from faultmaven.exceptions import QUOTA_EXHAUSTED, LLMException
 
         result = await fast_handler.handle_error(
@@ -863,7 +864,7 @@ class TestDeclarationOutranksProse:
             ),
             0,
         )
-        assert result.action == ErrorAction.ESCALATE
+        assert result.action == ErrorAction.FAIL
         assert result.error_code == QUOTA_EXHAUSTED
 
 
@@ -895,13 +896,13 @@ class TestRecoveryFollowsTheDeclaredCategory:
         assert result.error_code == TOKEN_LIMIT
 
     @pytest.mark.asyncio
-    async def test_a_rejected_parameter_does_not_compress(self, fast_handler):
+    async def test_a_rejected_parameter_is_not_token_limit(self, fast_handler):
         """The failure the issue was filed about.
 
         OpenAI's "Unsupported parameter: 'max_tokens' ... use
         'max_completion_tokens'" was read as a context overflow, reported to
-        the user as "Context too large", and answered with compression that
-        could never help. The provider publishes
+        the user as "Context too large", and routed to an overflow recovery
+        that could never help. The provider publishes
         ``code: unsupported_parameter`` and always did.
         """
         result = await fast_handler.handle_error(
@@ -934,13 +935,13 @@ class TestRecoveryFollowsTheDeclaredCategory:
         assert result.error_code != TOKEN_LIMIT
 
     @pytest.mark.asyncio
-    async def test_an_unclassified_exception_saying_the_words_does_not_compress(
+    async def test_an_unclassified_exception_saying_the_words_is_not_token_limit(
         self, fast_handler
     ):
         """POSITIVE CONTROL for the change itself.
 
         The same sentence, on an exception no provider classified, must no
-        longer reach the compression branch. This is the behaviour that let the
+        longer reach the TOKEN_LIMIT branch. This is the behaviour that let the
         engine's own composed messages and non-provider failures select an LLM
         recovery.
         """
@@ -963,7 +964,7 @@ class TestConfigErrorClassification:
     """
 
     @pytest.mark.asyncio
-    async def test_config_error_escalates_with_its_own_code(self, fast_handler):
+    async def test_config_error_fails_with_its_own_code(self, fast_handler):
         from faultmaven.exceptions import LLM_CONFIG_ERROR
         from faultmaven.models.exceptions import LLMProviderError
 
@@ -974,7 +975,7 @@ class TestConfigErrorClassification:
             ),
             0,
         )
-        assert result.action == ErrorAction.ESCALATE
+        assert result.action == ErrorAction.FAIL
         assert result.error_code == LLM_CONFIG_ERROR
         assert "not configured" in result.message
 
@@ -1023,7 +1024,7 @@ class TestCircuitBreakerClassification:
     @pytest.mark.asyncio
     async def test_open_breaker_keeps_a_latched_quota_code(self, fast_handler):
         """The billing check runs FIRST and must keep winning: a quota-latched
-        breaker still escalates as QUOTA_EXHAUSTED (the case_b639fac38fe0
+        breaker still fails as QUOTA_EXHAUSTED (the case_b639fac38fe0
         chain), not as a transient circuit-open."""
         from faultmaven.exceptions import QUOTA_EXHAUSTED
         from faultmaven.infrastructure.base_client import CircuitBreakerError
@@ -1035,7 +1036,7 @@ class TestCircuitBreakerClassification:
             ),
             retry_count=0,
         )
-        assert result.action == ErrorAction.ESCALATE
+        assert result.action == ErrorAction.FAIL
         assert result.error_code == QUOTA_EXHAUSTED
 
     @pytest.mark.asyncio
@@ -1054,7 +1055,7 @@ class TestCircuitBreakerClassification:
             ),
             retry_count=0,
         )
-        assert result.action == ErrorAction.ESCALATE
+        assert result.action == ErrorAction.FAIL
         assert result.error_code == "AUTH_FAILED"
 
     @pytest.mark.asyncio
@@ -1093,6 +1094,12 @@ class TestNoResultClaimsCompression:
 
     @pytest.mark.asyncio
     async def test_overflow_messages_do_not_claim_compression(self, fast_handler):
+        """Each overflow path's message, pinned in full.
+
+        A substring check cannot do this: the old cap-spent message ("Reducing
+        the prompt…") never said "compress", yet claimed work nobody does. Any
+        rewording of either message has to change this test too.
+        """
         from faultmaven.core.investigation.llm_error_handler import (
             OutputTruncationError,
         )
@@ -1103,7 +1110,38 @@ class TestNoResultClaimsCompression:
         spent = await fast_handler.handle_error(
             OutputTruncationError("cut", cap_reached=True), 0
         )
+        assert overflow.message == "Context too large for the model's window."
+        assert spent.message == (
+            "Response truncated at the maximum generation cap, "
+            "with no room left to raise it."
+        )
         for result in (overflow, spent):
             assert result.error_code == TOKEN_LIMIT
             assert result.action == ErrorAction.FAIL
-            assert "ompress" not in result.message
+
+    @pytest.mark.asyncio
+    async def test_a_cap_spent_truncation_after_a_bump_reports_its_retry_count(
+        self, fast_handler
+    ):
+        """Every FAIL result reports the attempts spent, and this one is reached
+        only after at least one RETRY raised the cap. Driven through
+        ``with_retry``, the path that carries the count from one attempt to the
+        next."""
+        from faultmaven.core.investigation.llm_error_handler import (
+            OutputTruncationError,
+        )
+
+        attempts = 0
+
+        async def op():
+            nonlocal attempts
+            attempts += 1
+            raise OutputTruncationError("cut", cap_reached=attempts > 1)
+
+        result, error = await fast_handler.with_retry(operation=op)
+
+        assert result is None
+        assert attempts == 2
+        assert error.action == ErrorAction.FAIL
+        assert error.error_code == TOKEN_LIMIT
+        assert error.retry_count == 1
