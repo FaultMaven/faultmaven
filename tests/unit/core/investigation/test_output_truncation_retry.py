@@ -207,7 +207,7 @@ async def test_an_overflow_wearing_truncation_wording_still_compresses():
     """A gateway that says "input truncated: context length exceeded" is
     reporting that the PROMPT did not fit. Raising the generation cap cannot
     help, so it must not be diverted into the truncation ladder — it belongs on
-    the COMPRESS_MEMORY path on the first attempt, not two wasted calls later.
+    the TOKEN_LIMIT path on the first attempt, not two wasted calls later.
     """
     both = LLMException(
         "Request rejected: input truncated, context length exceeded", retryable=True

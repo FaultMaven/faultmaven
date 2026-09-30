@@ -274,7 +274,7 @@ class LLMErrorCategory(str, Enum):
     """The recovery-selecting fact about an LLM failure.
 
     Deliberately about the FAILURE, not the remedy: the engine decides
-    COMPRESS_MEMORY / FAIL / RETRY from this, and a different consumer may
+    FAIL / RETRY and the ``TOKEN_LIMIT`` degrade from this, and a different consumer may
     decide differently, but neither has to read provider prose to do it.
     """
 
@@ -623,7 +623,7 @@ class LLMException(FaultMavenException):
         category: ``LLMErrorCategory`` — WHAT KIND of failure this is (#509).
             Derived from ``status_code`` + ``provider_error_code`` + the
             provider's wording unless the raiser passes one. Always set; never
-            ``None``. This is what the engine keys COMPRESS_MEMORY / FAIL /
+            ``None``. This is what the engine keys FAIL / TOKEN_LIMIT /
             RETRY off, in place of the substring lists it used to carry.
         retryable: Whether the error is worth retrying. Derived from
             status_code when provided, otherwise defaults to False (fail fast).

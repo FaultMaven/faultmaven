@@ -7,7 +7,7 @@ prompt and answer *degraded* — never fail the turn on a recoverable overflow.
 The failure mode this pins:
 
     provider raises "prompt is too long"                     (context overflow)
-      → LLMErrorHandler.handle_error → COMPRESS_MEMORY        (not RETRY)
+      → LLMErrorHandler.handle_error → FAIL + TOKEN_LIMIT     (not RETRY)
       → with_retry returns (None, ErrorResult TOKEN_LIMIT)
       → _generate_structured_output_inner raises
             MilestoneEngineError(error_code=TOKEN_LIMIT)
@@ -42,8 +42,8 @@ def test_recognizes_engine_token_limit_error_code():
     error_code == 'TOKEN_LIMIT' whose message no longer contains any provider
     overflow phrase. It must still classify as a context-length error."""
     exc = MilestoneEngineError(
-        "Structured output generation failed: Context too large. "
-        "Compressing conversation history...",
+        "Structured output generation failed: Context too large for the "
+        "model's window.",
         error_code=TOKEN_LIMIT,
     )
     assert _is_context_length_error(exc) is True
@@ -132,8 +132,8 @@ async def test_token_limit_triggers_minimal_prompt_retry_and_degrades():
     case.case_id = "case_test"
 
     overflow = MilestoneEngineError(
-        "Structured output generation failed: Context too large. "
-        "Compressing conversation history...",
+        "Structured output generation failed: Context too large for the "
+        "model's window.",
         error_code=TOKEN_LIMIT,
     )
 
@@ -290,8 +290,8 @@ async def test_inner_raise_does_not_chain_provider_exception():
         "prompt is too long: 250000 > 200000", status_code=400
     )
     err = ErrorResult(
-        action=ErrorAction.COMPRESS_MEMORY,
-        message="Context too large. Compressing conversation history...",
+        action=ErrorAction.FAIL,
+        message="Context too large for the model's window.",
         error_code=TOKEN_LIMIT,
         original_exception=provider_overflow,
     )

@@ -289,8 +289,8 @@ class LLMErrorHandler:
         """Handle token limit exceeded."""
 
         return ErrorResult(
-            action=ErrorAction.COMPRESS_MEMORY,
-            message="Context too large. Compressing conversation history...",
+            action=ErrorAction.FAIL,
+            message="Context too large for the model's window.",
             error_code="TOKEN_LIMIT"
         )
 
@@ -299,7 +299,6 @@ class ErrorAction(str, Enum):
     """Actions to take after error handling."""
     RETRY = "retry"
     USE_FALLBACK_PROMPT = "use_fallback_prompt"
-    COMPRESS_MEMORY = "compress_memory"
     ESCALATE = "escalate"
     FAIL = "fail"
 
@@ -321,8 +320,9 @@ degrade and answer, never fail the turn on a recoverable overflow (the
 NO-COLLAPSE guarantee). The recovery is two layers that compose:
 
 1. **Classification** — `LLMErrorHandler.handle_error` detects the overflow
-   (`is_token_limit_error`) and returns `ErrorAction.COMPRESS_MEMORY` with the
-   shared `TOKEN_LIMIT` error_code. `with_retry` does not itself shrink the prompt
+   (`is_token_limit_error`) and returns `ErrorAction.FAIL` with the
+   shared `TOKEN_LIMIT` error_code (the code, not the action, is what the engine
+   keys on). `with_retry` does not itself shrink the prompt
    (it only holds the operation closure), so it treats the action as non-retryable
    and returns the result; `_generate_structured_output_inner` then raises a
    `MilestoneEngineError(error_code=TOKEN_LIMIT)`, **folding the provider's wording

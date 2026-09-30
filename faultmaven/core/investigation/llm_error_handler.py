@@ -83,7 +83,8 @@ class OutputTruncationError(Exception):
       finish. RETRY.
     * ``True`` — the cap is already at its ceiling; raising it again is a
       no-op. The only remaining lever is shrinking the INPUT, which is what the
-      minimal-prompt degrade does (#662), so this routes to COMPRESS_MEMORY.
+      minimal-prompt degrade does (#662), so this fails with the
+      ``TOKEN_LIMIT`` code the degrade keys on.
       Without that hand-off the turn spends its remaining attempts on identical
       full-size calls and then fails, breaking the NO-COLLAPSE guarantee.
     """
@@ -265,7 +266,6 @@ class ErrorAction(str, Enum):
     """Actions to take after error handling."""
 
     RETRY = "retry"
-    COMPRESS_MEMORY = "compress_memory"
     ESCALATE = "escalate"
     FAIL = "fail"
 
@@ -432,9 +432,9 @@ class LLMErrorHandler:
 
         Reads the category the provider boundary declared (#509), never the
         message. Input overflow only: the prompt is too large for the context
-        window, so COMPRESS_MEMORY is the direct remedy. Output truncation is a
+        window, so shrinking the prompt is the direct remedy. Output truncation is a
         different failure with a different first remedy (raise the generation
-        cap) and reaches COMPRESS_MEMORY only after that ladder is spent — it
+        cap) and reaches ``TOKEN_LIMIT`` only after that ladder is spent — it
         travels as ``OutputTruncationError`` and is dispatched on type.
 
         The two failures this must never confuse it with are both settled by
@@ -491,14 +491,15 @@ class LLMErrorHandler:
         # escalate a recoverable cut as a configuration failure.)
         if isinstance(error, OutputTruncationError):
             if error.cap_reached:
-                # Nothing left to raise. Hand it to the same COMPRESS_MEMORY
-                # recovery an input overflow uses: shrinking the prompt is now
-                # the only way to make room for the answer (#662).
+                # Nothing left to raise. Report the same TOKEN_LIMIT code an
+                # input overflow carries: shrinking the prompt is now the only
+                # way to make room for the answer, and the engine's degrade
+                # (#662) keys on that code.
                 return ErrorResult(
-                    action=ErrorAction.COMPRESS_MEMORY,
+                    action=ErrorAction.FAIL,
                     message=(
-                        "Response truncated at the maximum generation cap. "
-                        "Reducing the prompt to make room for the answer..."
+                        "Response truncated at the maximum generation cap, "
+                        "with no room left to raise it."
                     ),
                     error_code=TOKEN_LIMIT,
                 )
@@ -595,7 +596,7 @@ class LLMErrorHandler:
 
         # Context-window overflow, ahead of the declaration gate below.
         #
-        # COMPRESS_MEMORY is not a permanence claim, it is a DIFFERENT RECOVERY:
+        # TOKEN_LIMIT is not a permanence claim, it is a DIFFERENT RECOVERY:
         # the prompt did not fit, so shrinking it is the only thing that helps,
         # and an identical retry cannot. That holds even when the raising code
         # declared the failure retryable — a gateway can answer 5xx with
@@ -613,8 +614,8 @@ class LLMErrorHandler:
         # they stay behind the gate; narrowing those is out of scope here.)
         if self.is_token_limit_error(error):
             return ErrorResult(
-                action=ErrorAction.COMPRESS_MEMORY,
-                message="Context too large. Compressing conversation history...",
+                action=ErrorAction.FAIL,
+                message="Context too large for the model's window.",
                 error_code=TOKEN_LIMIT,
             )
 

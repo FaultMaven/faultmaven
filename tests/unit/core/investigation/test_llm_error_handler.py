@@ -14,7 +14,7 @@ from faultmaven.core.investigation.llm_error_handler import (
     LLMErrorHandler,
     RetryConfig,
 )
-from faultmaven.exceptions import LLMErrorCategory, LLMException
+from faultmaven.exceptions import TOKEN_LIMIT, LLMErrorCategory, LLMException
 
 
 @pytest.fixture
@@ -197,7 +197,7 @@ class TestErrorClassification:
     def test_truncation_is_not_read_as_an_input_overflow(self, handler, msg):
         """The prompt fit; the ANSWER did not. Compressing memory is not the
         first remedy for that — raising the generation cap is — so truncation
-        must not enter the COMPRESS_MEMORY branch."""
+        must not enter the TOKEN_LIMIT branch."""
         assert handler.is_token_limit_error(LLMException(msg, status_code=400)) is False
 
     def test_truncation_retryability_comes_from_the_typed_signal(self, handler):
@@ -287,13 +287,13 @@ class TestErrorHandling:
         assert result.error_code == "AUTH_FAILED"
 
     @pytest.mark.asyncio
-    async def test_token_limit_triggers_compress(self, handler):
-        """Token limit errors should trigger memory compression."""
+    async def test_token_limit_fails_with_token_limit_code(self, handler):
+        """Token limit errors fail with the TOKEN_LIMIT code the engine degrades on."""
         error = LLMException("Context length exceeded", status_code=400)
         result = await handler.handle_error(error)
 
-        assert result.action == ErrorAction.COMPRESS_MEMORY
-        assert result.error_code == "TOKEN_LIMIT"
+        assert result.action == ErrorAction.FAIL
+        assert result.error_code == TOKEN_LIMIT
 
     @pytest.mark.asyncio
     async def test_retryable_error_retries(self, fast_handler):
@@ -774,7 +774,8 @@ class TestDeclarationOutranksProse:
         overflow = await fast_handler.handle_error(
             LLMException("prompt is too long: 250000 > 200000", status_code=400), 0
         )
-        assert overflow.action == ErrorAction.COMPRESS_MEMORY
+        assert overflow.action == ErrorAction.FAIL
+        assert overflow.error_code == TOKEN_LIMIT
 
     @pytest.mark.asyncio
     async def test_declared_permanent_still_falls_through_to_the_classifiers(
@@ -804,7 +805,7 @@ class TestDeclarationOutranksProse:
     ):
         """The gate must not divert a CONTEXT OVERFLOW onto the retry ladder.
 
-        COMPRESS_MEMORY is not a permanence claim, it is a different RECOVERY:
+        TOKEN_LIMIT is not a permanence claim, it is a different RECOVERY:
         the prompt did not fit, so shrinking it is the only thing that helps and
         an identical retry cannot. A gateway can answer 5xx with "context length
         exceeded" in the body, so ``retryable=True`` and overflow wording do
@@ -812,7 +813,7 @@ class TestDeclarationOutranksProse:
         the ladder, where it would re-send the same oversized prompt on every
         attempt. Caught by CI, not by the gate's own tests.
         """
-        from faultmaven.exceptions import TOKEN_LIMIT, LLMException
+        from faultmaven.exceptions import LLMException
 
         result = await fast_handler.handle_error(
             LLMException(
@@ -821,7 +822,7 @@ class TestDeclarationOutranksProse:
             ),
             0,
         )
-        assert result.action == ErrorAction.COMPRESS_MEMORY
+        assert result.action == ErrorAction.FAIL
         assert result.error_code == TOKEN_LIMIT
 
     @pytest.mark.asyncio
@@ -876,13 +877,10 @@ class TestRecoveryFollowsTheDeclaredCategory:
     """
 
     @pytest.mark.asyncio
-    async def test_a_declared_overflow_compresses_and_keeps_TOKEN_LIMIT(
-        self, fast_handler
-    ):
+    async def test_a_declared_overflow_keeps_TOKEN_LIMIT(self, fast_handler):
         """``error_code=TOKEN_LIMIT`` is the signal the #662 minimal-prompt
         degrade keys on. The typed category rides ALONGSIDE it, never instead
         of it — swapping the code would silently disable the degrade."""
-        from faultmaven.exceptions import TOKEN_LIMIT
 
         result = await fast_handler.handle_error(
             LLMException(
@@ -893,7 +891,7 @@ class TestRecoveryFollowsTheDeclaredCategory:
             ),
             0,
         )
-        assert result.action == ErrorAction.COMPRESS_MEMORY
+        assert result.action == ErrorAction.FAIL
         assert result.error_code == TOKEN_LIMIT
 
     @pytest.mark.asyncio
@@ -916,8 +914,7 @@ class TestRecoveryFollowsTheDeclaredCategory:
             ),
             0,
         )
-        assert result.action != ErrorAction.COMPRESS_MEMORY
-        assert result.error_code != "TOKEN_LIMIT"
+        assert result.error_code != TOKEN_LIMIT
 
     @pytest.mark.asyncio
     async def test_the_code_outranks_a_message_that_reads_the_other_way(
@@ -934,7 +931,7 @@ class TestRecoveryFollowsTheDeclaredCategory:
             ),
             0,
         )
-        assert result.action != ErrorAction.COMPRESS_MEMORY
+        assert result.error_code != TOKEN_LIMIT
 
     @pytest.mark.asyncio
     async def test_an_unclassified_exception_saying_the_words_does_not_compress(
@@ -950,7 +947,7 @@ class TestRecoveryFollowsTheDeclaredCategory:
         result = await fast_handler.handle_error(
             Exception("this model's maximum context length is 8192 tokens"), 0
         )
-        assert result.action != ErrorAction.COMPRESS_MEMORY
+        assert result.error_code != TOKEN_LIMIT
         assert result.error_code == "UNKNOWN_ERROR"
 
 
@@ -1089,3 +1086,24 @@ class TestCircuitBreakerClassification:
         )
         assert result.action == ErrorAction.FAIL
         assert result.error_code == "UNKNOWN_ERROR"
+
+
+class TestNoResultClaimsCompression:
+    """#824: no compressor exists, so no ErrorResult may say one is running."""
+
+    @pytest.mark.asyncio
+    async def test_overflow_messages_do_not_claim_compression(self, fast_handler):
+        from faultmaven.core.investigation.llm_error_handler import (
+            OutputTruncationError,
+        )
+
+        overflow = await fast_handler.handle_error(
+            LLMException("prompt is too long: 250000 > 200000", status_code=400), 0
+        )
+        spent = await fast_handler.handle_error(
+            OutputTruncationError("cut", cap_reached=True), 0
+        )
+        for result in (overflow, spent):
+            assert result.error_code == TOKEN_LIMIT
+            assert result.action == ErrorAction.FAIL
+            assert "ompress" not in result.message
