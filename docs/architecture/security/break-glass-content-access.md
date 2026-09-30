@@ -4,8 +4,9 @@ How a platform operator reaches a tenant's **case content** — title, descripti
 transcript — in the Cloud deployment, and why that path is shaped the way it is.
 
 This is the content row of ADR-012 D8/D9. The metadata row (the cross-tenant
-case *list*) is documented alongside `GET /api/v1/admin/cases`; the durable audit
-trail both paths write to is `operator_access_audit`.
+case *list*) is `GET /api/v1/admin/cases`; how it spans enterprises under
+multi-tenancy is [below](#the-cross-enterprise-list-bounded-by-its-result-type).
+The durable audit trail both paths write to is `operator_access_audit`.
 
 ## The boundary
 
@@ -186,15 +187,62 @@ a false one returns no rows — but under `single` nothing exercises the claim, 
 recording it would let the audited party choose which tenant their own immutable
 row names. Attribution comes from the request, never from the assertion.
 
-### What is still deferred
+## The cross-enterprise list: bounded by its result type
 
-The all-tenant metadata **list** still refuses (403) under `multi`. It cannot be
-solved by rebinding — it must span every enterprise at once, and there is no
-single enterprise to bind to. The settled answer is a `SECURITY DEFINER` function
-owned by the `faultmaven` role returning metadata columns only, so the bypass is
-bounded by a *return type that physically cannot carry a title or description*.
-That is not built yet, so under `multi` the list answers 403 rather than a
-result RLS has silently narrowed to the operator's own enterprise.
+The metadata **list** (`GET /api/v1/admin/cases`) is the one operator read that
+rebinding cannot serve under `multi`: it must span every enterprise at once, and
+there is no single enterprise to bind to. An ordinary case query from the web
+process would return the bound enterprise's cases only — a list that claims to
+cover every tenant and shows one.
+
+It reads through two `SECURITY DEFINER` functions instead, created by migration
+`003_admin_case_metadata`: `admin_case_metadata_page(state, source, limit,
+offset)` returns one page, newest update first, and
+`admin_case_metadata_count(state, source)` returns the number of matches in
+every enterprise. A migration creates them, so they are owned by the migrating
+role — the table owner. The baseline's policies are `ENABLE`d and never
+`FORCE`d, and PostgreSQL exempts a table's owner from a non-forced policy, so the
+functions span every enterprise while the session that calls them stays
+RLS-scoped for everything else it does. Like the baseline's definer functions
+they are `LANGUAGE sql`, `SECURITY DEFINER`, `SET search_path = pg_catalog,
+public`.
+
+**The bound is the result type.** The page function returns system ids,
+closed-vocabulary strings (`state`, `source`, `closure_reason`), timestamps,
+integers, booleans and arrays of those — nothing sourced from `title`,
+`description` or any other user text, and no JSON blob. There is no argument or
+caller that makes it return content, because it has no column to return it in.
+`tests/integration/security/test_admin_case_metadata_postgres.py` asserts the
+declared result columns against the catalog, so adding one fails until a person
+classifies it.
+
+**Two fields are derived, not stored.** The row's `stage` comes from four gate
+milestones inside the `progress` JSON, and its `investigation_turn` from the
+out-of-band entries of `metadata.turn_history`. The function returns only their
+primitive inputs — the four booleans, and every history entry's turn number
+with whether it was an aside, in stored order — and the application applies the
+same rules a loaded case applies (`CaseMetadata.from_stored`, over the module
+functions the `Case` properties delegate to), including the turn-sequence repair
+every case load performs. Neither rule exists in SQL. The single-tenant list and
+this one are two paths to the same `AdminCaseMetadata` row, kept in step by a
+parity test on PostgreSQL that serves one fixture set through both and compares
+every field.
+
+**`EXECUTE` keeps PostgreSQL's default grant to `PUBLIC`.** The deployment grants
+its application role table and sequence privileges only, so a revoke would need
+a matching grant per role; it would also add nothing, because what the functions
+can disclose is fixed by their result type, not by who calls them.
+
+**Failure direction.** The reader is composed only under `multi`. If it is
+missing, or the database has not been migrated to `003`, the route answers 503.
+It never falls back to the RLS-narrowed case query.
+
+The rejected alternatives are the ones rejected for content above — a
+`BYPASSRLS` engine in the web process, the maintenance role in a request path —
+plus rebinding once per enterprise, which would make a grant-authorised
+mechanism ambient.
+
+### What is still deferred
 
 Evidence **file** content is likewise not yet reachable through this path. The
 grant model covers it unchanged — same gate, same audit action — but the file
