@@ -197,25 +197,36 @@ class InvestigationProgress(BaseModel):
 
     1. ACTION-COMPLIANCE GATES (the STAGE-GATE MILESTONES banner:
        ``mitigation``, ``solution_accepted``, ``solution_verified``). Drive the
-       derived stage label and the resolution handshake. Materialized from the
-       LLM's compliance signals (Framework §4.1): the user's action is the
-       trigger; the LLM recognizes it. The mitigation gate is a single record,
-       not booleans.
+       derived stage label and the resolution handshake. ``mitigation`` and
+       ``solution_accepted`` are materialized from the LLM's compliance
+       signals (Framework §4.1): the user's action is the trigger; the LLM
+       recognizes it. The mitigation gate is a single record, not booleans.
+       ``solution_verified`` is set only on the user's explicit confirmation,
+       never by the LLM; that confirmed resolution also backfills
+       ``solution_accepted``.
     2. PROGRESS INDICATORS (``symptom_verified``, ``solution_proposed``).
        Provide LLM context and analytics. Non-driving. ``symptom_verified`` is
        set by the LLM in structured output; ``solution_proposed`` is
        engine-derived from the standing SOLUTION proposal.
-    3. ASSESSMENT VARIABLES (engine-derived: ``cause_state``,
-       ``verification_status``, ``cause_assurance`` and the rest of that
-       section). Truth signals the engine recomputes every turn. NEVER
-       path-stripped. Drive whether the diagnostic machinery runs.
+    3. ASSESSMENT VARIABLES. Truth signals the engine recomputes every
+       INVESTIGATING turn, NEVER path-stripped: ``cause_state``,
+       ``cause_identification_contested``, ``cause_assurance``,
+       ``cause_overclaim``, ``verification_status`` and ``solution_state``
+       (which mirrors ``solution_proposed``). ``cause_state`` drives whether
+       the diagnostic machinery runs. The section also holds state that is not
+       recomputed: the LLM-set ``solution_feasible``, the ``work_gate_crossed``
+       latch (set once, never reset), the
+       ``deferred_disposition_declined_signatures`` refusal log and the
+       ``last_anti_anchoring_turn`` cooldown stamp.
 
     Root-cause metadata and milestone completion timestamps follow them.
     """
 
     # ============================================================
     # STAGE-GATE MILESTONES (drive stage transitions)
-    # Set by the LLM in structured output (Framework §4.1).
+    # mitigation and solution_accepted: materialized from the LLM's compliance
+    # signals (Framework §4.1). solution_verified: set only on the user's
+    # explicit confirmation, never by the LLM.
     # ============================================================
     mitigation: Optional[MitigationRecord] = Field(
         default=None,
