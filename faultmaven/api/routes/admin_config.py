@@ -1353,24 +1353,17 @@ async def get_env_config_status(
 
         # Report actual runtime state, not raw setting defaults.
         # Bootstrap may create persistent stores even when settings say "inmemory".
+        from faultmaven.api.dependencies import (
+            database_backend_name,
+            session_storage_backend_name,
+        )
 
         # Database: the URL the engine is built from (``get_engine`` reads
         # ``settings.database.database_url``), classified by the engine's own
         # predicates. Not ``alembic.ini``: its ``sqlalchemy.url`` is a SQLite
         # placeholder that ``alembic/env.py`` replaces with ``DATABASE_URL``, so
         # reading it reported "sqlite" on every deployment that ships the file.
-        from faultmaven.infrastructure.persistence.database import (
-            is_postgresql,
-            is_sqlite,
-        )
-
-        database_url = str(settings.database.database_url or "")
-        if is_postgresql(database_url):
-            db_backend = "postgresql"
-        elif is_sqlite(database_url):
-            db_backend = "sqlite"
-        else:
-            db_backend = "unrecognized"
+        db_backend = database_backend_name(str(settings.database.database_url or ""))
 
         # Vector storage: check if ChromaDB PersistentClient is active
         vector_storage = settings.database.vector_storage_type
@@ -1406,15 +1399,7 @@ async def get_env_config_status(
         # Settings cannot answer this: a server named by
         # ``REDIS_HOST`` has no ``redis_url``, and standalone serves from the
         # in-process stand-in when its configured Redis is unusable.
-        from faultmaven.infrastructure.redis_client import is_fakeredis
-
-        redis_client = getattr(request.app.state, "redis_client", None)
-        if redis_client is None:
-            session_storage = "not initialized"
-        elif is_fakeredis(redis_client):
-            session_storage = "fakeredis (inmemory)"
-        else:
-            session_storage = "redis"
+        session_storage = session_storage_backend_name(request.app.state)
 
         return EnvConfigStatusResponse(
             auth_mode=settings.auth.auth_mode,

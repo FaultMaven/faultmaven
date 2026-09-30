@@ -20,12 +20,17 @@ phase 2 along with the standalone evidence path. Evidence is now created
 case-tied via the milestone engine; no separate evidence service needed.
 """
 
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.infrastructure.persistence.database import get_db_session
+from faultmaven.infrastructure.persistence.database import (
+    get_db_session,
+    is_postgresql,
+    is_sqlite,
+)
+from faultmaven.infrastructure.redis_client import is_fakeredis
 from faultmaven.modules.case.domain.services.api_case_service import APICaseService
 from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
@@ -52,7 +57,46 @@ __all__ = [
     "get_api_case_service",
     "get_investigation_session_service",
     "get_file_storage_service",
+    "database_backend_name",
+    "session_storage_backend_name",
 ]
+
+
+# ============================================================
+# Runtime Backend Names
+# ============================================================
+#
+# What ``GET /admin/config/status`` reports as the database and session
+# backends. Answered here because routes may not import the infrastructure
+# layer (``tests/unit/architecture/test_architecture_boundaries.py``), and each
+# answer must come from the predicate infrastructure itself decides by — a copy
+# in the route is a copy that can drift.
+
+
+def database_backend_name(database_url: str) -> str:
+    """``"postgresql"``, ``"sqlite"`` or ``"unrecognized"`` for a database URL.
+
+    Classified by the predicates ``get_engine`` branches on, so for the URL the
+    engine is built from this is the backend it serves.
+    """
+    if is_postgresql(database_url):
+        return "postgresql"
+    if is_sqlite(database_url):
+        return "sqlite"
+    return "unrecognized"
+
+
+def session_storage_backend_name(app_state: Any) -> str:
+    """Which Redis the session store runs on, read from the client itself.
+
+    ``app_state.redis_client`` is the container's client, the one the session
+    store is built with. ``"not initialized"`` before the composition root has
+    set it.
+    """
+    client = getattr(app_state, "redis_client", None)
+    if client is None:
+        return "not initialized"
+    return "fakeredis (inmemory)" if is_fakeredis(client) else "redis"
 
 
 # ============================================================
