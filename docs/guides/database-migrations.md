@@ -556,9 +556,9 @@ owner's rights:
   row-level security, and `off` turns a lost exemption into an error instead of
   a silently filtered read.
 
-`004_definer_trigger_hardening` brought the baseline's two trigger guards
+`004_definer_trigger_hardening` pins both on the baseline's two trigger guards
 (`organization_members_last_admin_guard`, `team_members_same_enterprise_guard`)
-in line with `ALTER FUNCTION … SET`, leaving their bodies untouched.
+with `ALTER FUNCTION … SET`, leaving their bodies untouched.
 `tests/integration/test_rls_tenant_isolation.py` asserts both settings of every
 definer function in the schema, so a new one is held to them without being
 listed.

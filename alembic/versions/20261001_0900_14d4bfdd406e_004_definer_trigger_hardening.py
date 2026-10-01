@@ -13,8 +13,9 @@ revision 003 gave its definer functions:
 * ``row_security = off`` — a body that relies on its owner being exempt from
   row-level security RAISES instead of reading a filtered set if that exemption
   is ever lost (a ``FORCE``d policy, a non-owner migrating role). Filtered, the
-  membership guard finds no team or user and admits the row, and the last-admin
-  guard counts the wrong admins; raised, the write fails and says why.
+  membership guard finds no team (``users`` carries no policy; ``teams`` does)
+  and admits the row, and the last-admin guard finds no organization and admits
+  the change; raised, the write fails and says why.
 
 The functions are altered in place rather than re-created: their bodies, owners,
 grants and triggers are untouched. The baseline is not amended, because a
