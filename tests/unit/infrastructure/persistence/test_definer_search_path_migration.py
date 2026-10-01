@@ -162,19 +162,28 @@ def test_the_signatures_are_003s():
 class _Op:
     """Records what a direction issues, as PostgreSQL or as SQLite."""
 
-    def __init__(self, dialect: str):
+    def __init__(self, dialect: str, public_may_create: bool = False):
         self.dialect = dialect
+        self.public_may_create = public_may_create
         self.issued: list[str] = []
 
     def get_context(self):
-        return SimpleNamespace(dialect=SimpleNamespace(name=self.dialect))
+        return SimpleNamespace(dialect=SimpleNamespace(name=self.dialect), as_sql=False)
+
+    def get_bind(self):
+        answer = self.public_may_create
+        return SimpleNamespace(
+            execute=lambda _sql: SimpleNamespace(scalar=lambda: answer)
+        )
 
     def execute(self, sql):
         self.issued.append(str(sql))
 
 
-def _run(module, direction: str, dialect: str) -> list[str]:
-    op = _Op(dialect)
+def _run(
+    module, direction: str, dialect: str, public_may_create: bool = False
+) -> list[str]:
+    op = _Op(dialect, public_may_create)
     original = module.op
     module.op = op
     try:
@@ -202,6 +211,22 @@ def test_upgrade_checks_replaces_re_grants_and_closes_public_in_that_order():
         signature = _REV_005._signature(name)
         assert f"to_regprocedure('{signature}') IS NULL" in _REV_005._REQUIRE_EXISTING
     assert _REV_005.REVOKE_PUBLIC_CREATE in _REV_005._REVOKE_OR_WARN
+
+
+@pytest.mark.parametrize("public_may_create", [True, False])
+def test_upgrade_says_what_to_run_where_public_still_may_create(
+    public_may_create, caplog
+):
+    """The block's WARNING reaches only the server log, so when ``PUBLIC`` still
+    holds ``CREATE`` afterwards the upgrade says it again through alembic's
+    logger — and says nothing when it does not."""
+    with caplog.at_level("WARNING", logger="alembic.runtime.migration"):
+        _run(_REV_005, "upgrade", "postgresql", public_may_create)
+    told = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert told == ([_REV_005.PUBLIC_CREATE_WARNING] if public_may_create else [])
+    assert "REVOKE CREATE ON SCHEMA public FROM PUBLIC;" in (
+        _REV_005.PUBLIC_CREATE_WARNING
+    )
 
 
 def test_downgrade_restores_the_settings_004_left_and_grants_nothing_back():

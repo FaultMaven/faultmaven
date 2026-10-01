@@ -86,6 +86,8 @@ _MIGRATION = (
     / "20261001_1500_1c5a2ad13a65_005_definer_search_path_without_public.py"
 )
 _PW = "fm_definer_probe_pw"
+#: The command the schema's owner is told to run.
+_REVOKE = "REVOKE CREATE ON SCHEMA public FROM PUBLIC;"
 
 #: Every definer function the chain creates, by name.
 _DEFINER_FUNCTIONS = (
@@ -608,6 +610,8 @@ async def test_revision_005_closes_public_to_public_when_the_migrator_owns_it():
             ):
                 result = alembic_on(owner_url, command)
                 assert result.returncode == 0, (step, result.stderr[-2000:])
+                # Closed, so nothing to tell anyone.
+                assert _REVOKE not in result.stdout + result.stderr, step
                 steps[step] = await _public_may_create(su_url)
                 if step == "to 005":
                     await _execute(
@@ -665,6 +669,8 @@ async def test_revision_005_warns_when_the_migrator_cannot_close_public():
     )
     assert result.returncode == 0, result.stderr[-2000:]
     assert may_create is True
+    # Where whoever ran ``alembic upgrade`` reads: its own output.
+    assert migration.PUBLIC_CREATE_WARNING in result.stderr, result.stderr[-2000:]
     warnings = [m for m in messages if m.severity == "WARNING"]
     assert len(warnings) == 1, [m.message for m in messages]
-    assert "REVOKE CREATE ON SCHEMA public FROM PUBLIC;" in warnings[0].message
+    assert _REVOKE in warnings[0].message

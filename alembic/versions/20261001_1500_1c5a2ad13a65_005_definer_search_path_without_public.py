@@ -66,8 +66,9 @@ comparing ``enterprise_id = $1`` would pick a planted ``=`` just the same. So
 where ``PUBLIC`` holds ``CREATE`` on ``public`` and the migrating role can
 revoke it without losing its own — it is a superuser, or holds the privileges
 of the schema's owner — the upgrade runs ``REVOKE CREATE ON SCHEMA public FROM
-PUBLIC``. Where it cannot, the upgrade succeeds and raises a ``WARNING`` naming
-that command for the schema's owner to run.
+PUBLIC``. Where it cannot, the upgrade succeeds and warns, naming that command
+for the schema's owner to run — in the server log, and in the ``alembic upgrade``
+output, which is where whoever runs the migration reads.
 
 ``downgrade()`` restores the path revision 004 left on all four functions,
 ``pg_catalog, public, pg_temp``; ``row_security = off`` is already what 004
@@ -87,7 +88,10 @@ Revises: 14d4bfdd406e
 Create Date: 2026-10-01 15:00:00
 """
 
+import logging
 from typing import Sequence, Union
+
+from sqlalchemy import text
 
 from alembic import op
 
@@ -481,6 +485,18 @@ _GRANT_TO_RUNTIME_ROLE = (
 #: The command the schema's owner runs where the migrating role cannot.
 REVOKE_PUBLIC_CREATE = "REVOKE CREATE ON SCHEMA public FROM PUBLIC"
 
+#: What the schema's owner is told when the migrating role cannot revoke it.
+PUBLIC_CREATE_WARNING = (
+    "PUBLIC holds CREATE on schema public, so every role can define functions "
+    "and operators there that privileged sessions resolve by argument type. As "
+    f"the owner of schema public or a superuser, run: {REVOKE_PUBLIC_CREATE};"
+)
+
+#: Whether ``PUBLIC`` (the role name ``public``) still holds it.
+_PUBLIC_MAY_CREATE = (
+    "SELECT pg_catalog.has_schema_privilege('public', 'public', 'CREATE')"
+)
+
 #: ``PUBLIC`` loses ``CREATE`` on ``public`` when it holds it and the migrating
 #: role keeps its own: ``pg_has_role(…, 'USAGE')`` is true for a superuser and
 #: for a role that holds the owner's privileges (a ``NOINHERIT`` member of the
@@ -501,10 +517,7 @@ BEGIN
     IF pg_catalog.pg_has_role(current_user, v_owner, 'USAGE') THEN
         {REVOKE_PUBLIC_CREATE};
     ELSE
-        RAISE WARNING 'PUBLIC holds CREATE on schema public, so every role can '
-            'define functions and operators there that privileged sessions '
-            'resolve by argument type. As the owner of schema public or a '
-            'superuser, run: {REVOKE_PUBLIC_CREATE};';
+        RAISE WARNING '{PUBLIC_CREATE_WARNING}';
     END IF;
 END
 $$"""
@@ -522,6 +535,12 @@ def upgrade() -> None:
         op.execute(f"REVOKE ALL ON FUNCTION {_signature(name)} FROM PUBLIC")
     op.execute(_GRANT_TO_RUNTIME_ROLE)
     op.execute(_REVOKE_OR_WARN)
+    # The block's WARNING reaches the server log only: the driver does not
+    # print it. Say it again where whoever runs the migration reads.
+    if not op.get_context().as_sql and (
+        op.get_bind().execute(text(_PUBLIC_MAY_CREATE)).scalar()
+    ):
+        logging.getLogger("alembic.runtime.migration").warning(PUBLIC_CREATE_WARNING)
 
 
 def downgrade() -> None:

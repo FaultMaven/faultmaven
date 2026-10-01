@@ -57,8 +57,9 @@ through `pg_upgrade` or a dump and restore onto a newer server.
 
 Revision `005_definer_search_path_without_public` revokes it when the migrating
 role can — a superuser, or a role that holds the privileges of the schema's
-owner. When it cannot, the migration still succeeds and the server logs a
-`WARNING`; the schema's owner or a superuser then runs:
+owner. When it cannot, the migration still succeeds and prints a `WARNING` in
+the `alembic upgrade` output (the server logs it too); the schema's owner or a
+superuser then runs:
 
 ```sql
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
