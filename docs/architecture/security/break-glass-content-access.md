@@ -4,8 +4,9 @@ How a platform operator reaches a tenant's **case content** — title, descripti
 transcript — in the Cloud deployment, and why that path is shaped the way it is.
 
 This is the content row of ADR-012 D8/D9. The metadata row (the cross-tenant
-case *list*) is documented alongside `GET /api/v1/admin/cases`; the durable audit
-trail both paths write to is `operator_access_audit`.
+case *list*) is `GET /api/v1/admin/cases`; how it spans enterprises under
+multi-tenancy is [below](#the-cross-enterprise-list-bounded-by-its-result-type-and-its-grant).
+The durable audit trail both paths write to is `operator_access_audit`.
 
 ## The boundary
 
@@ -186,15 +187,103 @@ a false one returns no rows — but under `single` nothing exercises the claim, 
 recording it would let the audited party choose which tenant their own immutable
 row names. Attribution comes from the request, never from the assertion.
 
-### What is still deferred
+## The cross-enterprise list: bounded by its result type and its grant
 
-The all-tenant metadata **list** still refuses (403) under `multi`. It cannot be
-solved by rebinding — it must span every enterprise at once, and there is no
-single enterprise to bind to. The settled answer is a `SECURITY DEFINER` function
-owned by the `faultmaven` role returning metadata columns only, so the bypass is
-bounded by a *return type that physically cannot carry a title or description*.
-That is not built yet, so under `multi` the list answers 403 rather than a
-result RLS has silently narrowed to the operator's own enterprise.
+The metadata **list** (`GET /api/v1/admin/cases`) is the one operator read that
+rebinding cannot serve under `multi`: it must span every enterprise at once, and
+there is no single enterprise to bind to. An ordinary case query from the web
+process would return the bound enterprise's cases only — a list that claims to
+cover every tenant and shows one.
+
+It reads through two `SECURITY DEFINER` functions instead, created by migration
+`003_admin_case_metadata`: `admin_case_metadata_page(state, source, limit,
+offset)` returns one page, newest update first, and
+`admin_case_metadata_count(state, source)` returns the number of matches in
+every enterprise. A migration creates them, so they are owned by the migrating
+role — the table owner. The baseline's policies are `ENABLE`d and never
+`FORCE`d, and PostgreSQL exempts a table's owner from a non-forced policy, so the
+functions span every enterprise while the session that calls them stays
+RLS-scoped for everything else it does. They are `LANGUAGE sql`, `SECURITY
+DEFINER`, `SET search_path = pg_catalog, public, pg_temp` — `pg_temp` listed, and
+last, because a definer function that leaves it out searches the caller's
+temporary schema *first* for relations, and a caller's temporary `cases` would
+shadow the real table. They also pin `row_security = off`: the functions span
+every enterprise only while their owner is exempt from the policies, and if that
+ever stops being true (`FORCE ROW LEVEL SECURITY` on `cases` or
+`resource_shares`, or a migrating role that does not own them) a read the
+policies would filter raises instead of quietly returning the caller's own
+enterprise as though it were all of them.
+
+A page is chosen on narrow columns (`case_id`, `updated_at` and the filter
+columns), newest update first with `case_id` breaking ties — the same order the
+single-tenant repository lists in, so a page boundary between cases a single
+statement updated falls in the same place on both paths — and only the page's
+rows are joined back for their JSON. `limit` and `offset` are `bigint`, because
+the API bounds neither to 32 bits.
+
+Two things bound the bypass, and it needs both.
+
+**The result type.** The page function returns system ids, timestamps,
+integers, booleans, arrays of those, and three short strings — nothing sourced
+from `title`, `description` or any other user text, and no JSON blob. There is no
+argument or caller that makes it return content, because it has no column to
+return it in. Of the three strings, `state` is a closed vocabulary the database
+enforces (`cases_state_check`). `source` and `closure_reason` are closed
+vocabularies too, but the application's writers enforce them — the `Case` model's
+`Literal` for `source` and its closure-reason validator — not the column type,
+which carries no CHECK. `tests/integration/security/test_admin_case_metadata_postgres.py`
+asserts the declared result columns against the catalog, so adding one fails
+until a person classifies it.
+
+**An explicit grant.** A new PostgreSQL function is executable by `PUBLIC`, and
+every login role holds `CONNECT` on the database through `PUBLIC`, so left at the
+default any role able to connect to the cluster could read every enterprise's
+case metadata. Revision `003` revokes `EXECUTE` from `PUBLIC` on both functions
+and grants it to the runtime role `faultmaven_app` — only if that role exists
+when the migration runs, so a database without it still migrates. A deployment
+whose runtime role has a different name, or that creates the role after this
+revision ran, must grant `EXECUTE` on both functions to it itself; until it does,
+the list answers 503 and says which grant is missing.
+
+**Two fields are derived, not stored.** The row's `stage` comes from four gate
+milestones inside the `progress` JSON, and its `investigation_turn` from the
+out-of-band entries of `metadata.turn_history`. The function returns only their
+primitive inputs — the four booleans, and every history entry's turn number
+with whether it was an aside, in stored order — and the application applies the
+same rules a loaded case applies (`CaseMetadata.from_stored`, over the module
+functions the `Case` properties delegate to), including the turn-sequence repair
+every case load performs. Neither rule exists in SQL. The single-tenant list and
+this one are two paths to the same `AdminCaseMetadata` row, kept in step by a
+parity test on PostgreSQL that serves one fixture set through both and compares
+every field.
+
+**A malformed case is listed, not fatal and not dropped.** Every cast out of the
+JSON is guarded. A key that is *missing* reads as the model's default (a gate the
+blob does not record is `false`), while a value of the *wrong type* — a gate
+that is not a boolean, a turn entry that is not an object or has no integral
+`turn_number` — reads as `NULL`, and the case is served with its columns and
+with the derived fields it cannot compute left null, plus a warning naming the
+case and its enterprise. The operator list is how a broken case gets found, so
+one such row never fails the page. This is the one place the two paths differ:
+the single-tenant list cannot load such a case at all. (A case whose owner
+account was deleted is still left out on both paths, as before.)
+
+**Failure direction.** The reader is composed only under `multi`. If it is
+missing, if the database has not been migrated to `003`, if the runtime role
+lacks `EXECUTE` on the functions, or if the database refuses the read for any
+other reason, the route answers 503 — each with its own log event and detail. A
+refusal (SQLSTATE `42501`) is not read as "EXECUTE is missing" on its own: a
+read row-level security would filter raises the same code under
+`row_security = off`, so the reader asks the database
+(`has_function_privilege`) which of the two it was. It never falls back to the
+RLS-narrowed case query.
+
+The rejected alternatives are the ones rejected for content above — a
+`BYPASSRLS` engine in the web process, the maintenance role in a request path —
+plus rebinding once per enterprise, which would make a grant-authorised
+mechanism ambient.
+
+### What is still deferred
 
 Evidence **file** content is likewise not yet reachable through this path. The
 grant model covers it unchanged — same gate, same audit action — but the file

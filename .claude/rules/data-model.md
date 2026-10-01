@@ -83,9 +83,11 @@ modules/case/infrastructure/
 ├── postgresql_hybrid_case_repository/    # PostgreSQL implementation: repository.py (class), rows.py, loading.py, saving.py
 ├── sessionless_case_repository.py        # Sessionless repository variant
 ├── case_scope.py                         # Read-scope SQL: the owned ∪ shared-to-my-teams visible-id allowlist
+├── case_metadata_reader.py               # PostgreSQL-only cross-enterprise operator list (multi): reads the SECURITY DEFINER metadata functions
 └── created_bounds.py                     # Creation-date window bounds, normalized to UTC, one place for every repository
 infrastructure/persistence/
 ├── models.py                             # SQLAlchemy ORM models — every table
+├── db_errors.py                          # SQLSTATE / driver error out of a SQLAlchemy DBAPIError, one place
 ├── investigation_session_repository.py   # Session management
 └── case_vector_store.py                  # Vector storage for cases
 ```

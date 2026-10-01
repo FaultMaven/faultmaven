@@ -1224,18 +1224,20 @@ class CaseService(ICaseService):
     async def list_all_cases(
         self, filters: Optional[CaseListFilter] = None
     ) -> Tuple[List[CaseSummary], int]:
-        """List cases across ALL users/orgs (platform-admin cross-tenant read).
+        """List cases across ALL users (platform-admin read, single-tenant).
 
         Backs the platform-admin case view (ADR-012 D9). Unlike
         ``list_user_cases`` this passes ``user_id=None`` so the repository
         drops its per-user WHERE clause and returns every user's cases for the
         requested page, plus the total match count for pagination.
-        Authorization, the metadata/content projection and the tenancy gate are
-        all enforced at the API layer; this method must only be reached for an
-        admin, and returns full summaries (titles included) in every deployment.
-        In cloud/Postgres, Row-Level Security still scopes the result to the
-        caller's org, which is why the API layer refuses this path under
-        ``TENANT_PROVIDER=multi`` rather than serving a partial list.
+        Authorization and the metadata/content projection are enforced at the
+        API layer; this method must only be reached for an admin, and returns
+        full summaries (titles included) in every deployment. On PostgreSQL,
+        row-level security still scopes the result to the bound ENTERPRISE,
+        which under ``TENANT_PROVIDER=single`` is every row there is. Under
+        ``multi`` it would be one enterprise's, so the API layer serves that
+        deployment from the cross-enterprise metadata read
+        (``ICaseMetadataReader``) and never from here.
 
         Repository errors propagate so the API surfaces a 5xx rather than
         masking a failure as an empty list (this is a diagnostic admin view).
@@ -1268,6 +1270,10 @@ class CaseService(ICaseService):
                 summaries.append(CaseSummary.from_case(case))
             except Exception as e:
                 logger.error(f"Failed to convert case {case.case_id} to summary: {e}")
+
+        # Enrich with team shares (ADR-013 §D4) in one batched query, as the
+        # per-user list does; empty where team sharing is unwired.
+        await self._enrich_summaries_with_team_shares(summaries)
 
         return summaries, total
 
@@ -1756,6 +1762,8 @@ class CaseService(ICaseService):
 
         Gated on ``team_service`` — team visibility is a Cloud feature, so this
         skips the query entirely in standalone and every case gets ``[]``.
+        Ascending, so a case reads back its teams in the same order every time
+        (the share lookup has no order of its own).
         """
         if not self.team_service or not self.share_repository or not case_ids:
             return {}
@@ -1763,7 +1771,7 @@ class CaseService(ICaseService):
             "case", case_ids
         )
         return {
-            cid: [s.scope_id for s in shares if s.scope_type == "team"]
+            cid: sorted(s.scope_id for s in shares if s.scope_type == "team")
             for cid, shares in shares_map.items()
         }
 

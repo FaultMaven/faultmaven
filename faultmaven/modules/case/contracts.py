@@ -523,6 +523,12 @@ from faultmaven.modules.case.domain.models.lifecycle import (
     CaseState,
     InvestigationStrategy,
 )
+from faultmaven.modules.case.domain.models.metadata import (
+    CaseMetadata,
+    CaseMetadataNotGrantedError,
+    CaseMetadataRefusedError,
+    CaseMetadataUnavailableError,
+)
 from faultmaven.modules.case.domain.models.problem import (
     InquiryData,
     InvestigationStage,
@@ -560,6 +566,44 @@ from faultmaven.modules.case.domain.models.turn import (
 )
 
 # ============================================================
+# Cross-enterprise metadata read (ADR-012 D9)
+# ============================================================
+
+
+class ICaseMetadataReader(Protocol):
+    """Every enterprise's cases as :class:`CaseMetadata` — never their content.
+
+    PostgreSQL only, and needed only under ``TENANT_PROVIDER=multi``: there the
+    web process's database role is scoped by row-level security to one
+    enterprise, so an ordinary case query cannot answer "all tenants". The
+    implementation reads through ``SECURITY DEFINER`` functions bounded twice:
+    by a result type with no column sourced from a title, a description or
+    other user text, and by ``EXECUTE`` granted to the runtime role only.
+    """
+
+    async def list_case_metadata(
+        self,
+        *,
+        state: Optional[CaseState],
+        source: Optional[str],
+        limit: int,
+        offset: int,
+    ) -> Tuple[List[CaseMetadata], int]:
+        """One page of cases across every enterprise, newest update first,
+        and the number of matches in all enterprises (not the page length).
+
+        Raises:
+            CaseMetadataNotGrantedError: the connected role lacks EXECUTE.
+            CaseMetadataRefusedError: the database refused the read for another
+                reason (row-level security would have filtered it, a schema
+                privilege is missing).
+            CaseMetadataUnavailableError: the database function is missing
+                (and the base class of the above).
+        """
+        ...
+
+
+# ============================================================
 # Module Exports
 # ============================================================
 
@@ -574,6 +618,10 @@ __all__ = [
     "is_server_written_user_row",
     # Repository and Service Contracts
     "ICaseRepository",
+    "ICaseMetadataReader",
+    "CaseMetadataUnavailableError",
+    "CaseMetadataNotGrantedError",
+    "CaseMetadataRefusedError",
     # DTOs
     "CaseStateDTO",
     "CaseDTO",
@@ -604,6 +652,7 @@ __all__ = [
     # Case domain models
     "Case",
     "CaseAction",
+    "CaseMetadata",
     "CaseSeverity",
     "CaseState",
     "CausalEdge",

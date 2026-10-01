@@ -20,6 +20,7 @@ from faultmaven.models.api_models import (
     AdminCaseMetadata,
     CaseSummary,
 )
+from faultmaven.modules.case.domain.models.metadata import CaseMetadata
 
 pytestmark = pytest.mark.unit
 
@@ -27,14 +28,10 @@ pytestmark = pytest.mark.unit
 # Fields of ``CaseSummary`` that are NOT content but are still left out of the
 # operator metadata row, each for a reason that is not "it leaks user text":
 #
-#   shared_team_ids  — ``list_all_cases`` does not run the team-share enrichment
-#       (only the per-user list does), so this would be an unconditionally empty
-#       list. Shipping a field that always reads "no teams" is worse than
-#       omitting it: an operator would read the absence as fact.
 #   valid_next_states — the transitions the *owner* may drive from the dashboard.
 #       An operator does not act on tenant cases from this list, so it is an
 #       affordance with no consumer here.
-DELIBERATELY_OMITTED_FIELDS = frozenset({"shared_team_ids", "valid_next_states"})
+DELIBERATELY_OMITTED_FIELDS = frozenset({"valid_next_states"})
 
 
 def test_every_case_summary_field_is_classified():
@@ -143,3 +140,41 @@ def test_content_fields_are_the_free_text_ones():
             f"CASE_SUMMARY_CONTENT_FIELDS names '{name}', which is no longer a "
             f"text field ({annotation}) — reclassify it."
         )
+
+
+def test_the_cross_enterprise_row_has_exactly_the_operator_fields():
+    """``CaseMetadata`` — what the multi-tenant list is built from — carries
+    every operator field and nothing else.
+
+    Both directions matter. A field ``AdminCaseMetadata`` gains that the
+    cross-enterprise read does not supply would be filled from nowhere on that
+    path; a field the read gains that the row does not declare is a column
+    someone added to the database function without classifying it here.
+    """
+    assert set(CaseMetadata.model_fields) == set(AdminCaseMetadata.model_fields)
+
+
+def test_the_cross_enterprise_row_carries_no_content_field():
+    leaked = set(CaseMetadata.model_fields) & set(CASE_SUMMARY_CONTENT_FIELDS)
+    assert not leaked, f"CaseMetadata declares content field(s): {sorted(leaked)}"
+
+
+def test_both_projections_populate_every_field():
+    """``from_summary`` and ``from_case_metadata`` name every field.
+
+    A field left to its default on one path would read as "no teams" or
+    "unknown turn" there while the other path reports the value — the
+    disagreement the PostgreSQL parity test exists to catch, caught here
+    without a database.
+    """
+    import inspect
+
+    for projection in (
+        AdminCaseMetadata.from_summary,
+        AdminCaseMetadata.from_case_metadata,
+    ):
+        source = inspect.getsource(projection)
+        missing = [
+            name for name in AdminCaseMetadata.model_fields if f"{name}=" not in source
+        ]
+        assert not missing, f"{projection.__name__} leaves {missing} to defaults"

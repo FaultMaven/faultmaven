@@ -983,6 +983,49 @@ class TestListAllCases:
         with pytest.raises(RuntimeError):
             await service.list_all_cases(CaseListFilter())
 
+    @pytest.mark.asyncio
+    async def test_enriches_each_case_with_its_teams(self, mock_repo):
+        """The operator list says which teams a case is shared to, as the
+        per-user list does — ascending, and team scopes only (ADR-013 §D4)."""
+        from faultmaven.models.interfaces_sharing import ResourceShare
+
+        shared, private = _make_case(user_id="a"), _make_case(user_id="b")
+        mock_repo.list = AsyncMock(return_value=([shared, private], 2))
+
+        def _share(scope_type, scope_id):
+            return ResourceShare(
+                share_id=str(uuid.uuid4()),
+                resource_type="case",
+                resource_id=shared.case_id,
+                scope_type=scope_type,
+                scope_id=scope_id,
+                enterprise_id=STANDALONE_ENTERPRISE_ID,
+            )
+
+        share_repo = AsyncMock()
+        share_repo.list_scopes_for_resources = AsyncMock(
+            return_value={
+                shared.case_id: [
+                    _share("team", "team_b"),
+                    _share("organization", "org_1"),
+                    _share("team", "team_a"),
+                ]
+            }
+        )
+        service = CaseService(
+            case_repository=mock_repo,
+            team_service=AsyncMock(),
+            share_repository=share_repo,
+        )
+
+        summaries, _ = await service.list_all_cases(CaseListFilter())
+
+        assert {s.case_id: s.shared_team_ids for s in summaries} == {
+            shared.case_id: ["team_a", "team_b"],
+            private.case_id: [],
+        }
+        share_repo.list_scopes_for_resources.assert_awaited_once()
+
 
 # ============================================================
 # Case read allowlist — owned ∪ shared-to-my-teams (ADR-013 §D4 / U9)

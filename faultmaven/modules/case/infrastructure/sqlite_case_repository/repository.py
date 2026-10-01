@@ -379,11 +379,13 @@ class SQLiteCaseRepository(CaseRepository):
             # Page query — fetch full case rows (we need every column for
             # _row_to_case; a later optimization could project only the
             # fields the caller declares it needs).
+            # case_id breaks updated_at ties, so a page boundary between rows
+            # updated at the same instant falls in the same place on every read.
             list_query = text(f"""
                 SELECT *
                 FROM cases
                 {where_sql}
-                ORDER BY updated_at DESC
+                ORDER BY updated_at DESC, case_id
                 LIMIT :limit OFFSET :offset
             """)
             rows = (await self.db.execute(list_query, params)).fetchall()

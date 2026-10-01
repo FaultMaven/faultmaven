@@ -595,12 +595,16 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             count_result = await self.db.execute(count_query, params)
             total_count = count_result.scalar()
 
-            # List query (simplified - just get case IDs, then fetch full cases)
+            # List query (simplified - just get case IDs, then fetch full cases).
+            # case_id breaks updated_at ties (a bulk statement stamps one
+            # transaction time on many rows), so a page boundary falls in the
+            # same place on every read — and in the same place as the
+            # cross-enterprise operator list, which orders the same way.
             list_query = text(f"""
                 SELECT case_id
                 FROM cases
                 {where_sql}
-                ORDER BY updated_at DESC
+                ORDER BY updated_at DESC, case_id
                 LIMIT :limit OFFSET :offset
             """)
 

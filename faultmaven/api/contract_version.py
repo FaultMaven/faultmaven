@@ -1615,4 +1615,22 @@ asked to accept, and it belongs to a person.
 # proposal. Both are description changes, not structural ones; they are called
 # out here because a client that keeps reading the old meaning renders a
 # button that cannot do what it says.
-API_CONTRACT_VERSION = "9.0.0"
+
+# 9.1.0 — MINOR. `AdminCaseMetadata` — the operator case list's metadata row,
+# `GET /api/v1/admin/cases` with `view: "metadata"` — gains `shared_team_ids`,
+# the ids of the teams the case is shared to, ascending. Purely additive: an
+# optional list with an empty default, the same field and shape `CaseSummary`
+# already publishes, and a client that ignores it behaves exactly as before.
+#
+# It is metadata under the rule the model states — system-assigned ids, no text
+# a user typed — and the operator list was the one case read that never looked
+# it up. Where team sharing is wired (`TENANT_PROVIDER=multi`) it now carries
+# the case's teams; where it is not, it is empty, as on every other case read.
+#
+# The same release changes what the endpoint ANSWERS under
+# `TENANT_PROVIDER=multi` without changing its declared surface: it serves the
+# metadata view across every enterprise where it used to refuse with a 403. The
+# 403 was never declared in the published document, so the differ sees no
+# status-code change there; it is named here because a client that treated the
+# refusal as "unavailable in cloud" now receives rows.
+API_CONTRACT_VERSION = "9.1.0"

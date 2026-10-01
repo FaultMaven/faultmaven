@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 9.0.0
+**Version:** 9.1.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -98,9 +98,10 @@ in cloud would remove the governance record precisely where it matters most.
 
 **List All Cases**
 
-List cases across all users/orgs for a platform-admin (ADR-012 D9).
+List cases across all users and enterprises for a platform-admin (ADR-012 D9).
 
-Standalone serves full summaries; cloud serves metadata-only rows. See the
+Standalone serves full summaries; cloud serves metadata-only rows. Under
+multi-tenancy the rows come from the cross-enterprise metadata read. See the
 module docstring for why the split falls where it does.
 
 **Tags:** `Admin - Cases`
@@ -4913,6 +4914,7 @@ with "this case has no title".
 - `last_activity_at` (string, required)
 - `organization_id` (object, optional)
 - `resolved_at` (object, required)
+- `shared_team_ids` (array, optional)
 - `source` (string, optional)
 - `stage` (object, required)
 - `state` (object, required)

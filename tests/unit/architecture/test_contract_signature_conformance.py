@@ -493,8 +493,12 @@ def _build_registry() -> Dict[str, RegistryEntry]:
     from faultmaven.modules.auth.infrastructure.sso.workos_provider import (
         WorkOSIdentityProvider,
     )
-    from faultmaven.modules.case.contracts import ICaseRepository
+    from faultmaven.modules.case.contracts import ICaseMetadataReader, ICaseRepository
     from faultmaven.modules.case.domain.services.case_service import CaseService
+    from faultmaven.modules.case.infrastructure.case_metadata_reader import (
+        PostgreSQLCaseMetadataReader,
+        SessionlessCaseMetadataReader,
+    )
     from faultmaven.modules.case.infrastructure.case_repository import (
         InMemoryCaseRepository,
     )
@@ -557,6 +561,10 @@ def _build_registry() -> Dict[str, RegistryEntry]:
                 PostgreSQLHybridCaseRepository,
                 SessionlessCaseRepository,
             ),
+        ),
+        RegistryEntry(
+            interface=ICaseMetadataReader,
+            reals=(PostgreSQLCaseMetadataReader, SessionlessCaseMetadataReader),
         ),
         RegistryEntry(interface=IKnowledgeService, reals=(KnowledgeService,)),
         RegistryEntry(interface=IConversionService, reals=(ConversionService,)),

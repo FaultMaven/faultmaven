@@ -55,8 +55,42 @@ def limited_url(superuser_url: str, role: str, password: str) -> str:
     )
 
 
-async def create_limited_role(superuser_url: str, role: str, password: str) -> None:
-    """A role with the deployed ``faultmaven_app`` grants and no ownership."""
+#: The functions revision ``003_admin_case_metadata`` grants the runtime role
+#: ``EXECUTE`` on — explicitly, because they are not executable by ``PUBLIC``.
+CASE_METADATA_FUNCTIONS = (
+    "admin_case_metadata_page(text, text, bigint, bigint)",
+    "admin_case_metadata_count(text, text)",
+)
+
+
+def grant_case_metadata_sql(role: str) -> str:
+    """The ``EXECUTE`` grant revision 003 gives ``faultmaven_app``, for ``role``.
+
+    Guarded on the functions existing, as the migration's own grant is guarded
+    on the role existing, so a database at an earlier revision still works.
+    """
+    grants = "\n".join(
+        f"    IF to_regprocedure('{signature}') IS NOT NULL THEN\n"
+        f"        GRANT EXECUTE ON FUNCTION {signature} TO {role};\n"
+        "    END IF;"
+        for signature in CASE_METADATA_FUNCTIONS
+    )
+    return f"DO $$ BEGIN\n{grants}\nEND $$;"
+
+
+async def create_limited_role(
+    superuser_url: str,
+    role: str,
+    password: str,
+    *,
+    grant_case_metadata: bool = True,
+) -> None:
+    """A role with the deployed ``faultmaven_app`` grants and no ownership.
+
+    ``grant_case_metadata=False`` leaves out the one grant the deployment makes
+    by name — ``EXECUTE`` on the cross-enterprise case metadata functions — to
+    stand for a deployment whose runtime role was never granted it.
+    """
     engine = create_async_engine(superuser_url, future=True)
     try:
         async with engine.begin() as conn:
@@ -77,6 +111,8 @@ async def create_limited_role(superuser_url: str, role: str, password: str) -> N
             await conn.exec_driver_sql(
                 f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {role}"
             )
+            if grant_case_metadata:
+                await conn.exec_driver_sql(grant_case_metadata_sql(role))
     finally:
         await engine.dispose()
 
