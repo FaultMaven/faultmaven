@@ -180,6 +180,56 @@ def _like_substring(search: str) -> str:
     return f"%{escaped}%"
 
 
+def _unsearchable(search: Optional[str]) -> bool:
+    """True for a search no stored value can contain: NUL, which PostgreSQL
+    refuses to store and the driver refuses to bind. It matches nothing, and is
+    answered without a query."""
+    return search is not None and "\x00" in search
+
+
+def _account_filters(
+    *,
+    is_active: Optional[bool],
+    enterprise_id: Optional[str],
+    search: Optional[str],
+) -> list:
+    """The WHERE clauses of an account listing; ``None`` filters nothing.
+
+    ``search`` is a case-insensitive substring of the email or the display
+    name: both sides are lowered by the database, and the needle is literal, so
+    ``%`` and ``_`` in a search match themselves.
+    """
+    from sqlalchemy import func, literal, or_
+
+    from faultmaven.infrastructure.persistence.models import UserModel
+
+    filters = []
+    if is_active is not None:
+        filters.append(UserModel.is_active == is_active)
+    # One indexed comparison. ``None`` is the single-tenant "no restriction"; a
+    # real id that matches nothing is a tenant with no accounts, and correctly
+    # returns nothing.
+    if enterprise_id is not None:
+        filters.append(UserModel.enterprise_id == enterprise_id)
+    if search is not None:
+        pattern = func.lower(literal(_like_substring(search)))
+        filters.append(
+            or_(
+                func.lower(UserModel.email).like(pattern, escape=_LIKE_ESCAPE),
+                func.lower(UserModel.display_name).like(pattern, escape=_LIKE_ESCAPE),
+            )
+        )
+    return filters
+
+
+def _effective_roles(user: "User") -> List[str]:
+    """The roles an account is listed under: its own, or ``member`` when it
+    holds none."""
+    from faultmaven.models.rbac import Role
+
+    return user.roles if user.roles else [Role.MEMBER.value]
+
+
 def _account_metadata(source) -> "AccountMetadata":
     """``AccountMetadata`` from anything carrying its eleven attributes."""
     from faultmaven.modules.auth.contracts import AccountMetadata
@@ -234,8 +284,22 @@ class UserRepository(ABC):
         offset: int = 0,
         is_active: Optional[bool] = None,
         enterprise_id: Optional[str] = None,
+        role: Optional[str] = None,
+        search: Optional[str] = None,
     ) -> tuple[List[User], int]:
-        """List users with pagination, an optional active filter and a tenant.
+        """One page of accounts and the number of accounts matching the filters.
+
+        Every filter is applied to the whole store BEFORE the page is cut, and
+        ``total`` counts every match rather than the page, so paging through
+        the matches visits each exactly once whatever their number. ``None``
+        filters nothing.
+
+        ``role`` matches an account holding that role exactly, and an account
+        holding no role counts as ``member`` — the roles the account list
+        reports for it. ``search`` is a case-insensitive substring of the email
+        or the display name, with ``%`` and ``_`` taken literally. A search no
+        stored value can contain (NUL) and an offset past any row count answer
+        an empty page with the true total.
 
         ``enterprise_id`` is the tenant predicate the operator surface confines
         by (``api/operator_user_scope``, #1318). It is a query predicate rather
@@ -429,6 +493,20 @@ class InMemoryUserRepository(UserRepository):
         offset: int,
     ) -> tuple[List["AccountMetadata"], int]:
         """Every enterprise's accounts, as metadata (in-memory)."""
+        rows = self._matching(
+            is_active=is_active, enterprise_id=enterprise_id, search=search
+        )
+        return [_account_metadata(u) for u in rows[offset : offset + limit]], len(rows)
+
+    def _matching(
+        self,
+        *,
+        is_active: Optional[bool],
+        enterprise_id: Optional[str],
+        search: Optional[str],
+        role: Optional[str] = None,
+    ) -> List[User]:
+        """Every stored account matching the filters, in listing order."""
         rows = list(self._users.values())
         if enterprise_id is not None:
             rows = [u for u in rows if u.enterprise_id == enterprise_id]
@@ -441,9 +519,13 @@ class InMemoryUserRepository(UserRepository):
                 for u in rows
                 if needle in u.email.lower() or needle in u.display_name.lower()
             ]
+        if role is not None:
+            rows = [u for u in rows if role in _effective_roles(u)]
+        # Two stable sorts: user_id ascending, then created_at descending, so
+        # the newest account comes first and ties fall in user_id order.
         rows.sort(key=lambda u: u.user_id)
         rows.sort(key=lambda u: u.created_at, reverse=True)
-        return [_account_metadata(u) for u in rows[offset : offset + limit]], len(rows)
+        return rows
 
     async def get_many_in_enterprise(
         self, enterprise_id: str, user_ids: Sequence[str]
@@ -472,20 +554,14 @@ class InMemoryUserRepository(UserRepository):
         offset: int = 0,
         is_active: Optional[bool] = None,
         enterprise_id: Optional[str] = None,
+        role: Optional[str] = None,
+        search: Optional[str] = None,
     ) -> tuple[List[User], int]:
-        """List users with pagination, an optional active filter and a tenant."""
-        all_users = list(self._users.values())
-        if enterprise_id is not None:
-            all_users = [u for u in all_users if u.enterprise_id == enterprise_id]
-        if is_active is not None:
-            all_users = [u for u in all_users if u.is_active == is_active]
-        # Two stable sorts: user_id ascending, then created_at descending, so
-        # the newest account comes first and ties fall in user_id order.
-        all_users.sort(key=lambda u: u.user_id)
-        all_users.sort(key=lambda u: u.created_at, reverse=True)
-        total_count = len(all_users)
-        paginated = all_users[offset : offset + limit]
-        return paginated, total_count
+        """One page of the matching accounts, and how many match (in-memory)."""
+        rows = self._matching(
+            is_active=is_active, enterprise_id=enterprise_id, search=search, role=role
+        )
+        return rows[offset : offset + limit], len(rows)
 
     async def create(self, user: User) -> User:
         """Create a new user."""
@@ -758,40 +834,22 @@ class PostgreSQLUserRepository(UserRepository):
         offset: int = 0,
         is_active: Optional[bool] = None,
         enterprise_id: Optional[str] = None,
+        role: Optional[str] = None,
+        search: Optional[str] = None,
     ) -> tuple[List[User], int]:
-        """List users with pagination, an optional active filter and a tenant."""
-        from sqlalchemy import func, select
-
+        """One page of the matching accounts, and how many match — every filter
+        applied by the query, before LIMIT/OFFSET."""
         from faultmaven.infrastructure.persistence.models import UserModel
 
-        base_filter = []
-        if is_active is not None:
-            base_filter.append(UserModel.is_active == is_active)
-        # One indexed comparison, where this used to be an ``IN (...)`` over
-        # every account id of the enterprise — materialised by the caller, per
-        # page. ``None`` is the single-tenant "no restriction"; a real id that
-        # matches nothing is a tenant with no accounts, and correctly returns
-        # nothing.
-        if enterprise_id is not None:
-            base_filter.append(UserModel.enterprise_id == enterprise_id)
-
-        count_stmt = select(func.count()).select_from(UserModel).where(*base_filter)
-        count_result = await self.db.execute(count_stmt)
-        total_count = count_result.scalar()
-
-        stmt = (
-            select(UserModel)
-            .where(*base_filter)
-            # user_id breaks created_at ties, as list_account_metadata does, so
-            # a page boundary falls in one place on both paths.
-            .order_by(UserModel.created_at.desc(), UserModel.user_id)
-            .limit(limit)
-            .offset(offset)
+        if _unsearchable(search):
+            return [], 0
+        filters = _account_filters(
+            is_active=is_active, enterprise_id=enterprise_id, search=search
         )
-        result = await self.db.execute(stmt)
-        models = result.scalars().all()
-
-        return [self._model_to_domain(m) for m in models], total_count
+        if role is not None:
+            filters.append(self._holds_role(role))
+        rows, total = await self._page((UserModel,), filters, limit, offset)
+        return [self._model_to_domain(row[0]) for row in rows], total
 
     async def list_account_metadata(
         self,
@@ -802,38 +860,38 @@ class PostgreSQLUserRepository(UserRepository):
         limit: int,
         offset: int,
     ) -> tuple[List["AccountMetadata"], int]:
-        """Every enterprise's accounts, as metadata — the eleven columns only.
+        """Every enterprise's accounts, as metadata — the eleven columns only."""
+        from faultmaven.infrastructure.persistence.models import UserModel
+
+        if _unsearchable(search):
+            return [], 0
+        filters = _account_filters(
+            is_active=is_active, enterprise_id=enterprise_id, search=search
+        )
+        rows, total = await self._page(
+            tuple(getattr(UserModel, name) for name in ACCOUNT_METADATA_COLUMNS),
+            filters,
+            limit,
+            offset,
+        )
+        return [_account_metadata(row) for row in rows], total
+
+    async def _page(
+        self, selected: tuple, filters: list, limit: int, offset: int
+    ) -> tuple[list, int]:
+        """One page of ``selected`` over the accounts matching ``filters`` —
+        newest first, ``user_id`` breaking ties so a page boundary among
+        accounts created in one instant falls in one place — and the number of
+        matches.
 
         The page and its total come from ONE statement (``count(*) OVER ()``),
         so they describe the same snapshot; only an empty page — the offset is
-        past the last match — needs the separate count.
+        past the last match, or past any offset the database can bind — needs
+        the separate count.
         """
-        from sqlalchemy import func, literal, or_, select
+        from sqlalchemy import func, select
 
         from faultmaven.infrastructure.persistence.models import UserModel
-
-        if search is not None and "\x00" in search:
-            # No stored text can contain NUL (PostgreSQL refuses it), so nothing
-            # matches — answered here, where the driver would refuse to bind it.
-            return [], 0
-
-        filters = []
-        if is_active is not None:
-            filters.append(UserModel.is_active == is_active)
-        if enterprise_id is not None:
-            filters.append(UserModel.enterprise_id == enterprise_id)
-        if search is not None:
-            # Both sides lowered by the database; the needle is a literal
-            # substring, so '%' and '_' in a search match themselves.
-            pattern = func.lower(literal(_like_substring(search)))
-            filters.append(
-                or_(
-                    func.lower(UserModel.email).like(pattern, escape=_LIKE_ESCAPE),
-                    func.lower(UserModel.display_name).like(
-                        pattern, escape=_LIKE_ESCAPE
-                    ),
-                )
-            )
 
         async def count() -> int:
             stmt = select(func.count()).select_from(UserModel).where(*filters)
@@ -843,10 +901,7 @@ class PostgreSQLUserRepository(UserRepository):
             return [], await count()
 
         stmt = (
-            select(
-                *(getattr(UserModel, name) for name in ACCOUNT_METADATA_COLUMNS),
-                func.count().over().label("matching"),
-            )
+            select(*selected, func.count().over().label("matching"))
             .where(*filters)
             .order_by(UserModel.created_at.desc(), UserModel.user_id)
             .limit(limit)
@@ -855,7 +910,33 @@ class PostgreSQLUserRepository(UserRepository):
         rows = (await self.db.execute(stmt)).all()
         if not rows:
             return [], await count()
-        return [_account_metadata(row) for row in rows], int(rows[0].matching)
+        return rows, int(rows[0].matching)
+
+    def _holds_role(self, role: str):
+        """The account holds ``role``, an account holding none counting as
+        ``member`` — what ``_effective_roles`` says of a loaded account.
+
+        Roles are the ``dev_roles`` JSON array, NULL when the account holds
+        none (``_domain_to_dict`` is its one writer). An element is compared
+        whole and case-sensitively, by the dialect's JSON array reader.
+        """
+        from sqlalchemy import cast, func, or_, select
+
+        from faultmaven.infrastructure.persistence.models import UserModel
+        from faultmaven.models.rbac import Role
+
+        if self.db.get_bind().dialect.name == "postgresql":
+            from sqlalchemy.dialects.postgresql import JSONB
+
+            held = func.jsonb_array_elements_text(
+                cast(UserModel.dev_roles, JSONB)
+            ).table_valued("value")
+        else:
+            held = func.json_each(UserModel.dev_roles).table_valued("value")
+        holds = select(held.c.value).where(held.c.value == role).exists()
+        if role != Role.MEMBER.value:
+            return holds
+        return or_(holds, ~select(held.c.value).exists())
 
     async def get_many_in_enterprise(
         self, enterprise_id: str, user_ids: Sequence[str]
@@ -1036,6 +1117,8 @@ class SessionlessUserRepository(UserRepository):
         offset: int = 0,
         is_active: Optional[bool] = None,
         enterprise_id: Optional[str] = None,
+        role: Optional[str] = None,
+        search: Optional[str] = None,
     ) -> tuple[List[User], int]:
         from faultmaven.infrastructure.persistence.database import get_db_session
 
@@ -1045,6 +1128,8 @@ class SessionlessUserRepository(UserRepository):
                 offset=offset,
                 is_active=is_active,
                 enterprise_id=enterprise_id,
+                role=role,
+                search=search,
             )
 
     async def list_account_metadata(

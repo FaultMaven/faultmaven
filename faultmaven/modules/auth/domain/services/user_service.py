@@ -860,83 +860,37 @@ class UserService(BaseService):
         role: Optional[str] = None,
         search: Optional[str] = None,
     ) -> Tuple[List[RepositoryUser], int]:
-        """List users with pagination and optional filtering.
+        """One page of accounts, and the number of accounts matching the filters.
+
+        Every filter goes down to the repository as a QUERY predicate, applied
+        before the page is cut, so ``total`` counts every match and the pages
+        visit each match exactly once however many accounts there are. Filtering
+        a fetched window here instead loses every match beyond the window and
+        reports the window's count as the total.
 
         Args:
             enterprise_id: The tenant the listing is confined to, or ``None``
                 for no restriction — which is only ever the single-tenant
-                answer, because the deployment IS the tenant there. This is the
-                predicate the operator surface confines by
-                (``api/operator_user_scope``, #1318), and it goes down to the
-                repository as a QUERY predicate rather than being applied to the
-                page this method fetches: the 1000-row window below is
-                deployment-wide, so a tenant's users could fall outside it, and
-                loading every tenant's rows to project one out of them makes
-                ``total`` a deployment-wide count and couples this listing to
-                rows the caller may not see — one that fails hydration takes it
-                down for everyone.
-
-                It used to be a materialised set of account ids beside a
-                ``enterprise_id`` the repository ignored: the scope read every
-                member id of the enterprise to build an ``IN (...)``, per page.
-                One indexed comparison says the same thing.
+                answer, because the deployment IS the tenant there.
             limit: Maximum results
             offset: Pagination offset
             is_active: Filter by active status
-            role: Filter by role (admin, member, viewer) - TASK-019
-            search: Search by email or name (case-insensitive) - TASK-019
+            role: Filter by role (admin, member, viewer); an account holding
+                no role counts as ``member``
+            search: Case-insensitive substring of the email or the display
+                name, ``%`` and ``_`` taken literally
 
         Returns:
             Tuple of (users, total_count)
         """
-        # Get base users list from repository. The tenant predicate goes DOWN as
-        # a query predicate rather than being applied only here: the 1000-row
-        # window is deployment-wide, so post-filtering would leave `total`
-        # counting other tenants and would couple this listing to their rows —
-        # one row that fails hydration takes every operator's listing with it.
-        users, total = await self.user_repo.list_users(
-            limit=1000,  # Get all for filtering
-            offset=0,
+        return await self.user_repo.list_users(
+            limit=limit,
+            offset=offset,
             is_active=is_active,
             enterprise_id=enterprise_id,
+            role=role,
+            search=search,
         )
-
-        # Apply additional filters (TASK-019). The tenant predicate is NOT
-        # re-applied here: the repository answered it, and a second copy of the
-        # rule would be one that could drift from the query without any test
-        # able to tell them apart (see `enterprise_id` above for why the query
-        # is where it has to live).
-        filtered_users = []
-        for user in users:
-            # Ensure is_active filtering even if repository doesn't apply it
-            if is_active is not None and user.is_active != is_active:
-                continue
-
-            # Filter by role
-            if role is not None:
-                user_roles = user.roles if user.roles else ["member"]
-                if role not in user_roles:
-                    continue
-
-            # Filter by search (case-insensitive partial match)
-            if search is not None:
-                search_lower = search.lower()
-                email_match = search_lower in user.email.lower()
-                name_match = (
-                    user.display_name and search_lower in user.display_name.lower()
-                )
-                if not (email_match or name_match):
-                    continue
-
-            filtered_users.append(user)
-
-        # Calculate total after filtering
-        total = len(filtered_users)
-
-        # Apply pagination
-        paginated_users = filtered_users[offset : offset + limit]
-
-        return paginated_users, total
 
     # ============================================================
     # Role Management (TASK-019)
