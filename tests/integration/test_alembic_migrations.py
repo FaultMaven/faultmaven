@@ -36,11 +36,13 @@ TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 # the 001-053 chain) plus additive revisions on top of it, so the seed
 # assertions below reverse the whole schema with "downgrade base" and each
 # additive revision is stepped over on its own.
-HEAD_REVISION = "baa28e79ebab"  # 003_admin_case_metadata
+HEAD_REVISION = "14d4bfdd406e"  # 004_definer_trigger_hardening
 #: The baseline, which every additive revision parents onto.
 BASELINE_REVISION = "a1e0c17bd001"  # 001_enterprise_baseline
 #: The first additive revision.
 LLM_USAGE_REVISION = "65913afe773c"  # 002_llm_usage_ledger
+#: The cross-enterprise operator case metadata functions.
+ADMIN_CASE_METADATA_REVISION = "baa28e79ebab"  # 003_admin_case_metadata
 #: The tables 002_llm_usage_ledger adds (#640).
 LLM_USAGE_TABLES = ["llm_turn_spend", "llm_usage_daily"]
 
@@ -344,9 +346,35 @@ class TestAdminCaseMetadataRevision:
         assert run_alembic("upgrade head", database_url).returncode == 0
         before = get_tables(TEST_DB)
 
-        result = run_alembic("downgrade -1", database_url)
+        # To 003's parent, stepping over whatever was added after it.
+        result = run_alembic(f"downgrade {LLM_USAGE_REVISION}", database_url)
         assert result.returncode == 0, result.stderr
         assert get_current_revision(database_url) == LLM_USAGE_REVISION
+        assert get_tables(TEST_DB) == before
+
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stderr
+        assert get_current_revision(database_url) == HEAD_REVISION
+        assert get_tables(TEST_DB) == before
+
+
+class TestDefinerTriggerHardeningRevision:
+    """004_definer_trigger_hardening re-settles two PostgreSQL functions.
+
+    SQLite has no definer functions, so there the revision is a no-op in both
+    directions. Its PostgreSQL half is proven in
+    ``tests/integration/test_rls_tenant_isolation.py``.
+    """
+
+    def test_steps_down_and_up_without_touching_a_table(
+        self, clean_database, database_url
+    ):
+        assert run_alembic("upgrade head", database_url).returncode == 0
+        before = get_tables(TEST_DB)
+
+        result = run_alembic(f"downgrade {ADMIN_CASE_METADATA_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        assert get_current_revision(database_url) == ADMIN_CASE_METADATA_REVISION
         assert get_tables(TEST_DB) == before
 
         result = run_alembic("upgrade head", database_url)

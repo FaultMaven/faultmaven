@@ -982,3 +982,106 @@ async def test_a_member_of_the_teams_own_enterprise_is_still_admitted(
                 text("DELETE FROM users WHERE user_id = :u"), {"u": colleague}
             )
             await session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.security
+async def test_every_definer_function_pins_pg_temp_last_and_row_security_off(
+    superuser_engine,
+):
+    """A ``SECURITY DEFINER`` function runs with its owner's rights, so two
+    settings decide what its body can be made to read:
+
+    * ``search_path`` must end in ``pg_temp``. Unlisted, the temporary schema is
+      searched FIRST for relations, and a caller's temporary table would stand
+      in for a real one the body names unqualified.
+    * ``row_security`` must be ``off``. The bodies rely on the owner's exemption
+      from row-level security; ``off`` makes losing it an error instead of a
+      silently filtered read.
+
+    Asserted of every definer function in the schema rather than of a list, so
+    the next one added is held to it without anyone remembering to add it here.
+    """
+    async with superuser_engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                text(
+                    "SELECT p.proname, coalesce(p.proconfig, '{}') "
+                    "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+                    "WHERE p.prosecdef AND n.nspname = 'public' ORDER BY 1"
+                )
+            )
+        ).all()
+
+    names = {name for name, _ in rows}
+    # The baseline's two trigger guards and revision 003's two operator reads at
+    # least — an empty result would make every assertion below vacuous.
+    assert {
+        "organization_members_last_admin_guard",
+        "team_members_same_enterprise_guard",
+        "admin_case_metadata_page",
+        "admin_case_metadata_count",
+    } <= names
+    for name, config in rows:
+        settings = dict(entry.split("=", 1) for entry in config)
+        path = [part.strip() for part in settings.get("search_path", "").split(",")]
+        assert path[0] == "pg_catalog", (name, settings)
+        assert path[-1] == "pg_temp", (name, settings)
+        assert settings.get("row_security") == "off", (name, settings)
+
+
+@pytest.mark.asyncio
+@pytest.mark.security
+async def test_a_temporary_table_cannot_answer_the_membership_guard(
+    limited_engine, superuser_engine, two_enterprises
+):
+    """The membership guard reads ``users`` to learn the member's enterprise.
+
+    A session may create temporary tables, and with ``pg_temp`` unlisted in the
+    guard's ``search_path`` a temporary ``users`` was read in place of the real
+    one — so a session could tell the guard that a stranger from enterprise B
+    belongs to A, and seat them on A's team.
+    """
+    from sqlalchemy.exc import DBAPIError
+
+    from tests.utils import seed_users
+
+    ent_a, ent_b, team_a, _team_b = two_enterprises
+    stranger = f"user_b_{uuid4().hex[:8]}"
+    su_maker = async_sessionmaker(superuser_engine, expire_on_commit=False)
+    async with su_maker() as session:
+        await seed_users(session, [stranger], enterprise_id=ent_b)
+        await session.commit()
+
+    try:
+        maker = async_sessionmaker(limited_engine, expire_on_commit=False)
+        async with maker() as session:
+            await _bind(session, ent_a)
+            await session.execute(
+                text(
+                    "CREATE TEMPORARY TABLE users "
+                    "(user_id text PRIMARY KEY, enterprise_id text NOT NULL)"
+                )
+            )
+            await session.execute(
+                text("INSERT INTO pg_temp.users VALUES (:u, :e)"),
+                {"u": stranger, "e": ent_a},
+            )
+            with pytest.raises(DBAPIError, match="same enterprise"):
+                await session.execute(
+                    text(
+                        "INSERT INTO public.team_members (user_id, team_id, team_role) "
+                        "VALUES (:u, :t, 'member')"
+                    ),
+                    {"u": stranger, "t": team_a},
+                )
+                await session.commit()
+    finally:
+        async with su_maker() as session:
+            await session.execute(
+                text("DELETE FROM team_members WHERE user_id = :u"), {"u": stranger}
+            )
+            await session.execute(
+                text("DELETE FROM users WHERE user_id = :u"), {"u": stranger}
+            )
+            await session.commit()
