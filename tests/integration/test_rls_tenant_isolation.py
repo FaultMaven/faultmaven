@@ -986,15 +986,20 @@ async def test_a_member_of_the_teams_own_enterprise_is_still_admitted(
 
 @pytest.mark.asyncio
 @pytest.mark.security
-async def test_every_definer_function_pins_pg_temp_last_and_row_security_off(
+async def test_every_definer_function_searches_only_pg_catalog_and_pg_temp(
     superuser_engine,
 ):
     """A ``SECURITY DEFINER`` function runs with its owner's rights, so two
-    settings decide what its body can be made to read:
+    settings decide what its body can be made to run and to read:
 
-    * ``search_path`` must end in ``pg_temp``. Unlisted, the temporary schema is
-      searched FIRST for relations, and a caller's temporary table would stand
-      in for a real one the body names unqualified.
+    * ``search_path`` must be exactly ``pg_catalog, pg_temp``. No other schema:
+      PostgreSQL resolves a function or operator by argument types before path
+      position, so any schema a caller can create in — ``public`` included —
+      could supply an exact-match operator the body runs with the owner's rights
+      (``tests/integration/security/test_definer_functions_postgres.py`` plants
+      one). ``pg_temp`` listed, last: unlisted, it is searched FIRST for
+      relations, and a caller's temporary table would stand in for a real one.
+      The bodies therefore schema-qualify every relation.
     * ``row_security`` must be ``off``. The bodies rely on the owner's exemption
       from row-level security; ``off`` makes losing it an error instead of a
       silently filtered read.
@@ -1025,8 +1030,7 @@ async def test_every_definer_function_pins_pg_temp_last_and_row_security_off(
     for name, config in rows:
         settings = dict(entry.split("=", 1) for entry in config)
         path = [part.strip() for part in settings.get("search_path", "").split(",")]
-        assert path[0] == "pg_catalog", (name, settings)
-        assert path[-1] == "pg_temp", (name, settings)
+        assert path == ["pg_catalog", "pg_temp"], (name, settings)
         assert settings.get("row_security") == "off", (name, settings)
 
 
@@ -1037,10 +1041,12 @@ async def test_a_temporary_table_cannot_answer_the_membership_guard(
 ):
     """The membership guard reads ``users`` to learn the member's enterprise.
 
-    A session may create temporary tables, and with ``pg_temp`` unlisted in the
-    guard's ``search_path`` a temporary ``users`` was read in place of the real
-    one — so a session could tell the guard that a stranger from enterprise B
-    belongs to A, and seat them on A's team.
+    A session may create temporary tables. A guard that searched the temporary
+    schema first, or named ``users`` unqualified with ``public`` off its path,
+    would read a temporary ``users`` in place of the real one — so a session
+    could tell the guard that a stranger from enterprise B belongs to A, and
+    seat them on A's team. The guard reads ``public.users``, with ``pg_temp``
+    last on its path.
     """
     from sqlalchemy.exc import DBAPIError
 

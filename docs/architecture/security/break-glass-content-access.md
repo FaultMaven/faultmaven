@@ -204,10 +204,17 @@ role — the table owner. The baseline's policies are `ENABLE`d and never
 `FORCE`d, and PostgreSQL exempts a table's owner from a non-forced policy, so the
 functions span every enterprise while the session that calls them stays
 RLS-scoped for everything else it does. They are `LANGUAGE sql`, `SECURITY
-DEFINER`, `SET search_path = pg_catalog, public, pg_temp` — `pg_temp` listed, and
-last, because a definer function that leaves it out searches the caller's
-temporary schema *first* for relations, and a caller's temporary `cases` would
-shadow the real table. They also pin `row_security = off`: the functions span
+DEFINER`, `SET search_path = pg_catalog, pg_temp` (revision
+`005_definer_search_path_without_public` gives them that path), and name every
+table schema-qualified (`public.cases`, `public.resource_shares`). No schema a
+caller can create in is on the path: PostgreSQL resolves an operator by argument
+types before path position, and `k.state = p_state` compares a `character
+varying` column with `text`, which no `pg_catalog` operator matches exactly — so
+with `public` on the path, a role allowed to create in `public` could define that
+`=` there and have it run with the owner's rights. `pg_temp` is listed, and last,
+because a definer function that leaves it out searches the caller's temporary
+schema *first* for relations, and a caller's temporary `cases` would shadow the
+real table. They also pin `row_security = off`: the functions span
 every enterprise only while their owner is exempt from the policies, and if that
 ever stops being true (`FORCE ROW LEVEL SECURITY` on `cases` or
 `resource_shares`, or a migrating role that does not own them) a read the

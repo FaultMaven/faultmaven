@@ -545,23 +545,38 @@ role `faultmaven_app` when that role exists, and is a no-op on SQLite
 A deployment whose runtime role has another name grants `EXECUTE` on both
 functions itself.
 
-Every `SECURITY DEFINER` function sets two things, because it runs with its
-owner's rights:
+A `SECURITY DEFINER` function runs with its owner's rights, so every one is
+written the same way:
 
-- `search_path = pg_catalog, public, pg_temp` — `pg_temp` **last**. When it is
-  not listed, PostgreSQL searches the session's temporary schema first for
-  relations, so a caller's temporary table would stand in for a table the body
-  names unqualified.
-- `row_security = off` — the bodies rely on the owner's exemption from
+- `SET search_path = pg_catalog, pg_temp` — no other schema, `public`
+  included. PostgreSQL resolves a function or operator name by argument types
+  before search-path position: an exact match in any schema on the path wins
+  over a `pg_catalog` candidate that needs an implicit cast, wherever
+  `pg_catalog` sits. A body that compares a `character varying` column with
+  `text`, or with another `character varying`, matches no `pg_catalog`
+  operator exactly, so with `public` on the path a role that may create in
+  `public` could define that `=` there and have the body run it with the
+  owner's rights. PostgreSQL 15 and later grant no one `CREATE` on `public` by
+  default; 14 and earlier grant it to every role. `pg_temp` is listed **last**
+  because, when it is not listed, PostgreSQL searches it **first** for
+  relation and type names — a caller's temporary table would stand in for one
+  the body names. It is never searched for functions or operators.
+- Every relation schema-qualified (`public.cases`, `public.users`, …). With
+  `public` off the path an unqualified name does not resolve, or resolves to a
+  caller's temporary table.
+- `SET row_security = off` — the bodies rely on the owner's exemption from
   row-level security, and `off` turns a lost exemption into an error instead of
   a silently filtered read.
 
-`004_definer_trigger_hardening` pins both on the baseline's two trigger guards
+`005_definer_search_path_without_public` re-creates the chain's four definer
+functions — the baseline's trigger guards
 (`organization_members_last_admin_guard`, `team_members_same_enterprise_guard`)
-with `ALTER FUNCTION … SET`, leaving their bodies untouched.
+and 003's operator reads — this way, with `CREATE OR REPLACE`, which keeps each
+function's owner, grants, comment and triggers.
 `tests/integration/test_rls_tenant_isolation.py` asserts both settings of every
 definer function in the schema, so a new one is held to them without being
-listed.
+listed; `tests/integration/security/test_definer_functions_postgres.py` plants
+operators in `public` and shows that no definer body runs them.
 
 Run `alembic heads` for the current head. Do not copy a revision id from prose:
 a lane that parents a new migration onto a revision read from a document
