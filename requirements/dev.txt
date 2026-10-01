@@ -391,6 +391,7 @@ packaging==26.1
     #   onnxruntime
     #   pytest
     #   transformers
+    #   virtualenv
 pandas==3.0.2
     # via faultmaven (pyproject.toml)
 pandas-stubs==3.0.0.260204
@@ -404,7 +405,6 @@ pillow==12.3.0
 platformdirs==4.9.6
     # via
     #   black
-    #   python-discovery
     #   virtualenv
 pluggy==1.6.0
     # via
@@ -506,7 +506,7 @@ python-dateutil==2.9.0.post0
     #   kubernetes
     #   matplotlib
     #   pandas
-python-discovery==1.2.2
+python-discovery==1.6.1
     # via virtualenv
 python-docx==1.2.0
     # via faultmaven (pyproject.toml)
@@ -591,7 +591,7 @@ scipy==1.17.1
     #   pyod
     #   scikit-learn
     #   sentence-transformers
-sentence-transformers==5.4.1
+sentence-transformers==6.1.0
     # via faultmaven (pyproject.toml)
 setuptools==84.0.0
     # via
@@ -648,6 +648,7 @@ tiktoken==0.12.0
 tokenizers==0.23.1
     # via
     #   chromadb
+    #   sentence-transformers
     #   transformers
 tomli==2.4.1
     # via coverage
@@ -712,8 +713,9 @@ typing-inspection==0.4.2
     #   pydantic-settings
 tzlocal==5.3.1
     # via apscheduler
-urllib3==2.7.0
+urllib3==2.8.0
     # via
+    #   faultmaven (pyproject.toml)
     #   geventhttpclient
     #   kubernetes
     #   requests
@@ -724,8 +726,10 @@ uvicorn==0.44.0
     #   chromadb
 uvloop==0.22.1
     # via uvicorn
-virtualenv==21.2.4
-    # via pre-commit
+virtualenv==21.14.1
+    # via
+    #   faultmaven (pyproject.toml)
+    #   pre-commit
 watchfiles==1.1.1
     # via uvicorn
 websocket-client==1.9.0

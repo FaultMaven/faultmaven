@@ -85,7 +85,7 @@ dependencies = [
 
     # Knowledge base and embeddings (ChromaDB + sentence transformers)
     "chromadb>=0.5.3",
-    "sentence-transformers>=3.0.1",
+    "sentence-transformers>=5.6.0",  # >=5.6.0: CVE-2026-68770 (arbitrary code execution via pickle)
     # Transitive via sentence-transformers, floored here for two GHSAs it
     # is the only lever on: torch <=2.12.1 is itself vulnerable
     # (GHSA-rrmf-rvhw-rf47), and torch 2.11's `setuptools<82` pin held the
@@ -122,6 +122,8 @@ dependencies = [
     # because nothing else in the graph moves it: >=83.0.0 patches
     # GHSA-h35f-9h28-mq5c. torch 2.11's `setuptools<82` used to cap it.
     "setuptools>=83.0.0",
+    # Transitive (requests / botocore / chromadb), floored to patch CVE-2026-97687/97688/97689
+    "urllib3>=2.8.0",
 
     # Web utilities
     "beautifulsoup4>=4.12.3",
@@ -238,6 +240,8 @@ dev = [
 
     # Pre-commit hooks
     "pre-commit>=3.6.0",
+    # Transitive via pre-commit; floored to patch PYSEC-2026-4011/4012/4013/4014
+    "virtualenv>=21.7.13",
 
     # Architecture enforcement
     "import-linter>=2.0.0",
