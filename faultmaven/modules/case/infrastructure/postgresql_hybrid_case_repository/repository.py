@@ -1530,13 +1530,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         """Add report to PostgreSQL reports table."""
         from datetime import timezone
 
-        from faultmaven.modules.case.domain.owned_models.report import (
-            CaseReport,
-            ReportType,
-            RunbookMetadata,
-        )
-        from faultmaven.utils.serialization import to_json_compatible
-
         # If this is marked as current, unmark other reports of the same type for this case
         if report.is_current:
             unmark_query = text("""
@@ -1639,14 +1632,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
     async def get_report(self, report_id: str) -> Optional["CaseReport"]:
         """Get report by ID from PostgreSQL."""
-        from faultmaven.modules.case.domain.owned_models.report import (
-            CaseReport,
-            ReportStatus,
-            ReportType,
-            RunbookMetadata,
-        )
-        from faultmaven.utils.serialization import to_json_compatible
-
         query = text("""
             SELECT 
                 report_id, case_id, report_type, version, is_current,
@@ -1673,14 +1658,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         only_current: bool = False,
     ) -> List["CaseReport"]:
         """Get reports for a case with optional filtering."""
-        from faultmaven.modules.case.domain.owned_models.report import (
-            CaseReport,
-            ReportStatus,
-            ReportType,
-            RunbookMetadata,
-        )
-        from faultmaven.utils.serialization import to_json_compatible
-
         conditions = ["case_id = :case_id"]
         params = {"case_id": case_id}
 
@@ -1728,13 +1705,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     async def update_report(self, report: "CaseReport") -> "CaseReport":
         """Update report in PostgreSQL."""
         from datetime import timezone
-
-        from faultmaven.modules.case.domain.owned_models.report import (
-            CaseReport,
-            ReportType,
-            RunbookMetadata,
-        )
-        from faultmaven.utils.serialization import to_json_compatible
 
         # If this is marked as current, unmark other reports of the same type for this case
         if report.is_current:

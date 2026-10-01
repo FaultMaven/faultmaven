@@ -268,8 +268,6 @@ iniconfig==2.3.0
     # via pytest
 isodate==0.7.2
     # via azure-storage-blob
-isort==5.13.2
-    # via faultmaven (pyproject.toml)
 itsdangerous==2.2.0
     # via flask
 jinja2==3.1.6

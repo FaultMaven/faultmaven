@@ -64,15 +64,17 @@ def delenv_every_spelling(monkeypatch, *names: str) -> None:
 
     pydantic-settings binds a variable case-insensitively, so an ambient
     ``database_url`` — or the xdist worker's ``DATABASE_URL`` — still steers a
-    test that cleared only the exact name. The rule is
-    :func:`faultmaven.config.settings.set_env_var`'s: every key whose
-    ``.upper()`` matches. Through ``monkeypatch``, so each removal is undone.
+    test that cleared only the exact name. The keys removed are
+    :func:`faultmaven.config.settings.env_var_spellings`, the rule
+    ``set_env_var`` uses. Through ``monkeypatch``, so each removal is undone.
     """
     import os
 
-    wanted = {name.upper() for name in names}
-    for key in [key for key in os.environ if key.upper() in wanted]:
-        monkeypatch.delenv(key)
+    from faultmaven.config.settings import env_var_spellings
+
+    for name in names:
+        for key in env_var_spellings(os.environ, name):
+            monkeypatch.delenv(key)
 
 
 # Fields carrying the single-source JWT token expiry (#888). Field names, not env

@@ -30,9 +30,10 @@ Called from these entrypoints, before any of them writes anything:
   settings: it reads the URL through
   :func:`~faultmaven.config.settings.configured_database_url` (the
   ``DatabaseSettings`` reader) and, in online mode, refuses through the same
-  exit helper as the operator commands, which raises
-  :func:`require_persistent_database_url` (#1704). Offline (``--sql``) opens
-  no database and is not refused.
+  exit helper as the operator commands, which calls
+  :func:`require_persistent_database_url` and turns its error into exit 1
+  with the message on stderr (#1704). Offline (``--sql``) opens no database
+  and is not refused.
 
 Cloud never reaches the refusal in practice: deployment coherence already
 requires PostgreSQL there. It is not special-cased, because the rule does not

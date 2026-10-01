@@ -203,7 +203,6 @@ class MilestoneEngine:
         repository: Any,  # Case repository abstraction (duck typing)
         investigation_tools: Any,
         knowledge_service: IKnowledgeService | None = None,
-        trace_enabled: bool = True,
         checkpoint_service: Any | None = None,
         da_provider: Any | None = None,
         da_model: str | None = None,
@@ -224,7 +223,6 @@ class MilestoneEngine:
                 (search_file, deep_analysis, etc.). Required — DA turns use
                 these for evidence searching during generation.
             knowledge_service: Optional knowledge service for KB searches
-            trace_enabled: Enable observability tracing
             checkpoint_service: Optional CheckpointService for state snapshots
             da_provider: Dedicated provider for DA (directed analysis) turns
                 (configured via DA_PROVIDER in .env).
@@ -262,7 +260,6 @@ class MilestoneEngine:
             llm_provider=llm_provider,
             repository=repository,
             knowledge_service=knowledge_service,
-            trace_enabled=trace_enabled,
             checkpoint_service=checkpoint_service,
             investigation_tools=investigation_tools,
             da_provider=da_provider,

@@ -41,6 +41,8 @@ import sys
 
 import pytest
 
+from faultmaven.config.settings import set_env_var
+
 pytestmark = [pytest.mark.integration]
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -119,7 +121,7 @@ def test_the_engine_fixtures_leave_the_process_as_they_found_it(tmp_path, subjec
     probe.write_text(PROBE.format(subject=SUBJECTS[subject]), encoding="utf-8")
 
     env = dict(os.environ)
-    env["DATABASE_URL"] = SENTINEL_URL
+    set_env_var(env, "DATABASE_URL", SENTINEL_URL)
     env["SKIP_SERVICE_CHECKS"] = "true"
 
     result = subprocess.run(

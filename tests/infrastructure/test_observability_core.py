@@ -175,10 +175,10 @@ class TestObservabilityIntegration:
         # InvestigationService has @trace decorators on key methods.
         # close_case moved: the dead InvestigationService.close_case was
         # deleted (#845) and the live user-initiated close is
-        # CaseService.close_case (#915).
+        # CaseService.close_case (#915). The progress getter was deleted as
+        # dead code with no caller and no route (#1815).
         traced_methods = [
             ("process_turn", InvestigationService.process_turn),
-            ("get_progress", InvestigationService.get_progress),
             ("close_case", CaseService.close_case),
         ]
 

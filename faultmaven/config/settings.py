@@ -21,6 +21,7 @@ from typing import (
     Dict,
     List,
     Literal,
+    Mapping,
     MutableMapping,
     Optional,
     Set,
@@ -1002,6 +1003,18 @@ def configured_database_url() -> Optional[str]:
     return EnvSettingsSource(DatabaseSettings)().get("database_url")
 
 
+def env_var_spellings(env: Mapping[str, str], name: str) -> list[str]:
+    """Every key in ``env`` that is ``name`` in some letter case, in ``env``'s order.
+
+    pydantic-settings binds a variable case-insensitively, so each of these keys
+    is the same variable to it: a key is one of ``name``'s spellings when its
+    ``.upper()`` equals ``name.upper()``. This is the one statement of that rule
+    — :func:`set_env_var` removes exactly these keys, and the test helpers that
+    clear a variable use it too.
+    """
+    return [key for key in env if key.upper() == name.upper()]
+
+
 def set_env_var(env: MutableMapping[str, str], name: str, value: str) -> None:
     """Set ``name`` in ``env`` as its ONLY spelling, in any letter case.
 
@@ -1009,11 +1022,11 @@ def set_env_var(env: MutableMapping[str, str], name: str, value: str) -> None:
     spellings are present the last one in the environment wins. Setting only
     the exact name leaves an older ``database_url`` or ``jwt_secret_key`` in
     place to override it in the next reader — a child process, or a settings
-    object built later. So every key whose ``.upper()`` matches is removed
+    object built later. So every one of :func:`env_var_spellings` is removed
     first. Used for the startup migration's ``DATABASE_URL`` and the exported
     local ``JWT_SECRET_KEY``.
     """
-    for key in [key for key in env if key.upper() == name.upper()]:
+    for key in env_var_spellings(env, name):
         del env[key]
     env[name] = value
 

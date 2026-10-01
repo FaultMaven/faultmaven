@@ -954,7 +954,6 @@ except Exception:
     LLMRouter = Mock
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.models import DataType, SessionContext
-from faultmaven.models.common import AgentStateEnum as AgentState
 
 
 def _default_to_the_worker_database() -> None:
@@ -983,21 +982,6 @@ _default_to_the_worker_database()
 
 # SessionManager has been replaced by SessionService
 # from faultmaven.session_management import SessionManager
-
-
-def create_agent_state_dict(status=None, case_context=None, current_phase="initial"):
-    """Helper to create agent state dictionary from enum status"""
-    return {
-        "status": status or AgentState.IDLE,
-        "case_context": case_context or {},
-        "current_phase": current_phase,
-        "findings": [],
-        "recommendations": [],
-        "confidence_score": 0.0,
-        "tools_used": [],
-        "awaiting_user_input": False,
-        "user_feedback": "",
-    }
 
 
 @pytest.fixture(scope="function")
@@ -1055,10 +1039,6 @@ def sample_session_context():
         user_id="user-456",
         created_at=datetime.now(),
         last_activity=datetime.now(),
-        agent_state=create_agent_state_dict(),
-        conversation_history=[],
-        uploaded_data=[],
-        insights={},
     )
 
 

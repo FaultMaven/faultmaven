@@ -223,19 +223,41 @@ def investigation_stage(
 
 class InvestigationProgress(BaseModel):
     """
-    Evidence-driven progress tracking with two distinct milestone types:
+    Evidence-driven progress tracking with three kinds of state, each under
+    its own banner below (investigation-data-models.md §1.2):
 
-    1. STAGE-GATE MILESTONES (4): Drive stage transitions.
-       Set by the LLM in structured output when it detects user compliance
-       with a ProposedAction (Framework §4.1). The LLM is the compliance
-       detector — the user's action is the trigger; the LLM recognizes it.
-    2. PROGRESS INDICATORS (6): Provide LLM context and analytics.
-       Set by LLM in structured output. Do NOT drive stage transitions.
+    1. ACTION-COMPLIANCE GATES (the STAGE-GATE MILESTONES banner:
+       ``mitigation``, ``solution_accepted``, ``solution_verified``). Drive the
+       derived stage label and the resolution handshake. ``mitigation`` and
+       ``solution_accepted`` are materialized from the LLM's compliance
+       signals (Framework §4.1): the user's action is the trigger; the LLM
+       recognizes it. The mitigation gate is a single record, not booleans.
+       ``solution_verified`` is set only on the user's explicit confirmation,
+       never by the LLM; that confirmed resolution also backfills
+       ``solution_accepted``.
+    2. PROGRESS INDICATORS (``symptom_verified``, ``solution_proposed``).
+       Provide LLM context and analytics. Non-driving. ``symptom_verified`` is
+       set by the LLM in structured output; ``solution_proposed`` is
+       engine-derived from the standing SOLUTION proposal.
+    3. ASSESSMENT VARIABLES. Truth signals the engine recomputes every
+       INVESTIGATING turn, NEVER path-stripped: ``cause_state``,
+       ``cause_identification_contested``, ``cause_assurance``,
+       ``cause_overclaim``, ``verification_status`` and ``solution_state``
+       (which mirrors ``solution_proposed``). ``cause_state`` drives whether
+       the diagnostic machinery runs. The section also holds state that is not
+       recomputed: the LLM-set ``solution_feasible``, the ``work_gate_crossed``
+       latch (set once, never reset), the
+       ``deferred_disposition_declined_signatures`` refusal log and the
+       ``last_anti_anchoring_turn`` cooldown stamp.
+
+    Root-cause metadata and milestone completion timestamps follow them.
     """
 
     # ============================================================
     # STAGE-GATE MILESTONES (drive stage transitions)
-    # Set by the LLM in structured output (Framework §4.1).
+    # mitigation and solution_accepted: materialized from the LLM's compliance
+    # signals (Framework §4.1). solution_verified: set only on the user's
+    # explicit confirmation, never by the LLM.
     # ============================================================
     mitigation: Optional[MitigationRecord] = Field(
         default=None,
@@ -266,7 +288,8 @@ class InvestigationProgress(BaseModel):
 
     # ============================================================
     # PROGRESS INDICATORS (LLM context, non-stage-driving)
-    # Set by LLM in structured output. Advisory, not controlling.
+    # Advisory, not controlling. symptom_verified is set by the LLM in
+    # structured output; solution_proposed is engine-derived (see its field).
     # ============================================================
     symptom_verified: bool = Field(
         default=False,

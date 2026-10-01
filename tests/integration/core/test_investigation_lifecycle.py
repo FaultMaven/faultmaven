@@ -390,7 +390,6 @@ def engine(mock_llm, case_repo, checkpoint_service) -> MilestoneEngine:
         repository=case_repo,
         investigation_tools=MagicMock(),
         knowledge_service=None,
-        trace_enabled=False,
         checkpoint_service=checkpoint_service,
     )
 

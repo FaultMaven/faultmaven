@@ -316,7 +316,6 @@ async def test_semantic_search_says_unavailable_not_zero_results():
     service._vector_store = store
     service._sanitizer = MagicMock()
     service._sanitizer.asanitize = AsyncMock(side_effect=lambda text: text)
-    service._resolve_shared_kb_ids = AsyncMock(return_value=[])
     service._share_repo = None
 
     user = MagicMock()

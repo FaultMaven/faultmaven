@@ -28,6 +28,8 @@ from pathlib import Path
 
 import pytest
 
+from faultmaven.config.settings import set_env_var
+
 pytestmark = pytest.mark.integration
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -39,7 +41,7 @@ def _alembic(command: str, database_url: str) -> None:
     ``PYTHONPATH`` prepended so ``env.py`` binds to THIS checkout rather than to
     an editable install pointing somewhere else."""
     env = os.environ.copy()
-    env["DATABASE_URL"] = database_url
+    set_env_var(env, "DATABASE_URL", database_url)
     existing = env.get("PYTHONPATH")
     env["PYTHONPATH"] = (
         f"{PROJECT_ROOT}{os.pathsep}{existing}" if existing else str(PROJECT_ROOT)

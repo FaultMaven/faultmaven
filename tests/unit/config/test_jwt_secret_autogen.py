@@ -362,7 +362,7 @@ def test_a_later_empty_lowercase_secret_leaves_one_non_empty_exported_secret(
     settings = through_get_settings()
 
     assert _secret(settings)
-    spellings = [key for key in os.environ if key.upper() == "JWT_SECRET_KEY"]
+    spellings = S.env_var_spellings(os.environ, "JWT_SECRET_KEY")
     assert spellings == ["JWT_SECRET_KEY"], spellings
     # What a child process, or a settings object built later, reads.
     assert S.SecuritySettings().jwt_secret_key.get_secret_value() == _secret(settings)
