@@ -80,6 +80,7 @@ _ROLE = f"fm_casemeta_probe_{uuid.uuid4().hex[:8]}"
 _PW = "fm_casemeta_probe_pw"
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _BASELINE_REVISION = "a1e0c17bd001"
+_LEDGER_REVISION = "65913afe773c"  # 002_llm_usage_ledger, 003's parent
 #: The deployment's runtime role, which revision 003 grants EXECUTE by name.
 _RUNTIME_ROLE = "faultmaven_app"
 
@@ -1396,7 +1397,8 @@ async def test_revision_003_steps_down_and_up(limited_role_env):
         assert await functions_and_ledger() == (both, 1)
         assert await runtime_role_may_execute() == [True, True]
 
-        result = _alembic(url, "downgrade -1")
+        # To 003's parent, stepping over whatever was added after it.
+        result = _alembic(url, f"downgrade {_LEDGER_REVISION}")
         assert result.returncode == 0, result.stderr[-2000:]
         # Only what 003 added went; 002's ledger is still there.
         assert await functions_and_ledger() == (set(), 1)

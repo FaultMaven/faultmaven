@@ -545,6 +545,24 @@ role `faultmaven_app` when that role exists, and is a no-op on SQLite
 A deployment whose runtime role has another name grants `EXECUTE` on both
 functions itself.
 
+Every `SECURITY DEFINER` function sets two things, because it runs with its
+owner's rights:
+
+- `search_path = pg_catalog, public, pg_temp` — `pg_temp` **last**. When it is
+  not listed, PostgreSQL searches the session's temporary schema first for
+  relations, so a caller's temporary table would stand in for a table the body
+  names unqualified.
+- `row_security = off` — the bodies rely on the owner's exemption from
+  row-level security, and `off` turns a lost exemption into an error instead of
+  a silently filtered read.
+
+`004_definer_trigger_hardening` brought the baseline's two trigger guards
+(`organization_members_last_admin_guard`, `team_members_same_enterprise_guard`)
+in line with `ALTER FUNCTION … SET`, leaving their bodies untouched.
+`tests/integration/test_rls_tenant_isolation.py` asserts both settings of every
+definer function in the schema, so a new one is held to them without being
+listed.
+
 Run `alembic heads` for the current head. Do not copy a revision id from prose:
 a lane that parents a new migration onto a revision read from a document
 parents onto one that may no longer be the head (#1246).
