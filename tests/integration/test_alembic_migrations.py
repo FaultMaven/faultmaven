@@ -37,13 +37,17 @@ TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 # the 001-053 chain) plus additive revisions on top of it, so the seed
 # assertions below reverse the whole schema with "downgrade base" and each
 # additive revision is stepped over on its own.
-HEAD_REVISION = "14d4bfdd406e"  # 004_definer_trigger_hardening
+HEAD_REVISION = "1c5a2ad13a65"  # 005_definer_search_path_without_public
 #: The baseline, which every additive revision parents onto.
 BASELINE_REVISION = "a1e0c17bd001"  # 001_enterprise_baseline
 #: The first additive revision.
 LLM_USAGE_REVISION = "65913afe773c"  # 002_llm_usage_ledger
 #: The cross-enterprise operator case metadata functions.
 ADMIN_CASE_METADATA_REVISION = "baa28e79ebab"  # 003_admin_case_metadata
+#: The baseline's definer trigger guards re-settled.
+DEFINER_TRIGGER_HARDENING_REVISION = "14d4bfdd406e"  # 004_definer_trigger_hardening
+#: The definer functions re-created with no schema a caller can create in.
+DEFINER_SEARCH_PATH_REVISION = "1c5a2ad13a65"  # 005_definer_search_path_without_public
 #: The tables 002_llm_usage_ledger adds (#640).
 LLM_USAGE_TABLES = ["llm_turn_spend", "llm_usage_daily"]
 
@@ -332,55 +336,53 @@ class TestAlembicMigrationInfrastructure:
         ), f"The enterprise baseline should be in history. Output: {output}"
 
 
-class TestAdminCaseMetadataRevision:
-    """003_admin_case_metadata creates two PostgreSQL functions (ADR-012 D9).
+class TestFunctionOnlyRevisions:
+    """Revisions 003, 004 and 005 change PostgreSQL functions and nothing else.
 
-    SQLite is single-tenant and has no row-level security to bypass, so on
-    SQLite the revision is a no-op in both directions: it must step down and up
-    without touching a single table. Its PostgreSQL half is proven in
-    ``tests/integration/security/test_admin_case_metadata_postgres.py``.
+    SQLite has no row-level security to bypass and no definer functions, so on
+    SQLite each is a no-op in both directions: stepped down to its parent and
+    back up, it must not touch a single table. Their PostgreSQL halves:
+    ``tests/integration/security/test_admin_case_metadata_postgres.py`` (003);
+    ``tests/integration/security/test_definer_functions_postgres.py``, whose
+    step test starts from what 004 leaves and asserts it, and steps 005 down to
+    004 and back.
     """
 
-    def test_steps_down_and_up_without_touching_a_table(
-        self, clean_database, database_url
+    @pytest.mark.parametrize(
+        "revision, parent",
+        [
+            pytest.param(
+                ADMIN_CASE_METADATA_REVISION,
+                LLM_USAGE_REVISION,
+                id="003_admin_case_metadata",
+            ),
+            pytest.param(
+                DEFINER_TRIGGER_HARDENING_REVISION,
+                ADMIN_CASE_METADATA_REVISION,
+                id="004_definer_trigger_hardening",
+            ),
+            pytest.param(
+                DEFINER_SEARCH_PATH_REVISION,
+                DEFINER_TRIGGER_HARDENING_REVISION,
+                id="005_definer_search_path_without_public",
+            ),
+        ],
+    )
+    def test_steps_down_to_its_parent_and_up_without_touching_a_table(
+        self, clean_database, database_url, revision, parent
     ):
-        assert run_alembic("upgrade head", database_url).returncode == 0
+        result = run_alembic(f"upgrade {revision}", database_url)
+        assert result.returncode == 0, result.stderr
         before = get_tables(TEST_DB)
 
-        # To 003's parent, stepping over whatever was added after it.
-        result = run_alembic(f"downgrade {LLM_USAGE_REVISION}", database_url)
+        result = run_alembic(f"downgrade {parent}", database_url)
         assert result.returncode == 0, result.stderr
-        assert get_current_revision(database_url) == LLM_USAGE_REVISION
+        assert get_current_revision(database_url) == parent
         assert get_tables(TEST_DB) == before
 
-        result = run_alembic("upgrade head", database_url)
+        result = run_alembic(f"upgrade {revision}", database_url)
         assert result.returncode == 0, result.stderr
-        assert get_current_revision(database_url) == HEAD_REVISION
-        assert get_tables(TEST_DB) == before
-
-
-class TestDefinerTriggerHardeningRevision:
-    """004_definer_trigger_hardening re-settles two PostgreSQL functions.
-
-    SQLite has no definer functions, so there the revision is a no-op in both
-    directions. Its PostgreSQL half is proven in
-    ``tests/integration/test_rls_tenant_isolation.py``.
-    """
-
-    def test_steps_down_and_up_without_touching_a_table(
-        self, clean_database, database_url
-    ):
-        assert run_alembic("upgrade head", database_url).returncode == 0
-        before = get_tables(TEST_DB)
-
-        result = run_alembic(f"downgrade {ADMIN_CASE_METADATA_REVISION}", database_url)
-        assert result.returncode == 0, result.stderr
-        assert get_current_revision(database_url) == ADMIN_CASE_METADATA_REVISION
-        assert get_tables(TEST_DB) == before
-
-        result = run_alembic("upgrade head", database_url)
-        assert result.returncode == 0, result.stderr
-        assert get_current_revision(database_url) == HEAD_REVISION
+        assert get_current_revision(database_url) == revision
         assert get_tables(TEST_DB) == before
 
 

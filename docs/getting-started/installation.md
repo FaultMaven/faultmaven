@@ -150,7 +150,7 @@ Standalone runs on **fixed simple defaults** (SQLite, in-process FakeRedis, embe
 Cloud is cloud-native: the same core engine plus the composed proprietary modules (billing, usage metering, hosted IAM/admin), configured through **Kubernetes ConfigMaps and Secrets** (not a `.env` file) and operated either as FaultMaven-hosted SaaS or self-hosted as a private cloud. The data-tier wiring (PostgreSQL, Redis, S3/Azure Blob), observability (Opik, Prometheus), and PII redaction (Presidio) live in the cloud config surface.
 
 - **Managed SaaS:** [app.faultmaven.ai](https://app.faultmaven.ai/) — no installation required. Cloud beta is open: sign up with your email, free while it is in beta.
-- **Self-hosted Cloud (private cloud):** see the Kubernetes manifests and Helm charts in the **faultmaven-enterprise-infra** repository.
+- **Self-hosted Cloud (private cloud):** see the Kubernetes manifests and Helm charts in the **faultmaven-enterprise-infra** repository. Its PostgreSQL must not let `PUBLIC` create in schema `public` — the default on a cluster initialised by PostgreSQL 14 or earlier; [Database Migrations](../guides/database-migrations.md#postgresql-no-one-but-the-schemas-owner-creates-in-public) says how to check and the one command that fixes it.
 
 The settings that back this infrastructure still exist in the codebase (see [Configuration](#configuration)); they are simply **not part of the Standalone `.env` surface** and are supplied by the cloud config contract.
 

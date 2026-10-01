@@ -12,6 +12,10 @@ That setup was written out twice, byte for byte. It lives here now because the
 copies are the kind that drift silently: a grant added to one and not the other
 changes what the *other* module proves without failing anything.
 
+The modules that migrate a database of their own — to step a revision down
+and up, or to plant objects no other test may meet — share ``alembic_on`` and
+``database_of_its_own`` for the same reason.
+
 What is deliberately NOT shared: each module keeps its own module-scoped
 environment fixture. The role name has to be unique per module (both create and
 drop roles, and the ``-m postgres`` lane runs them in one session), and the
@@ -21,8 +25,25 @@ leaking into the next module's idea of what it is measuring.
 
 from __future__ import annotations
 
+import os
+import shlex
+import subprocess
+import sys
+import uuid
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
+
+from faultmaven.config.settings import set_env_var
+
+#: The checkout under test, which ``alembic`` runs from.
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+#: The deployment's runtime role, which revision 003 grants ``EXECUTE`` by name.
+RUNTIME_ROLE = "faultmaven_app"
 
 #: The default enterprise migration 006 seeds. Used as the FK target so probes
 #: create organizations without inventing a tier.
@@ -124,3 +145,73 @@ async def drop_limited_role(superuser_url: str, role: str) -> None:
             await conn.exec_driver_sql(drop_role_sql(role))
     finally:
         await engine.dispose()
+
+
+def alembic_on(url: str, command: str) -> subprocess.CompletedProcess:
+    """Run ``alembic <command>`` against ``url`` — that database and no other.
+
+    ``DATABASE_URL`` is set as its only spelling: pydantic-settings binds it in
+    any letter case, so an exported ``database_url`` left beside it could win
+    and point the run at the lane's shared database. ``PYTHONPATH`` leads with
+    the checkout, so ``alembic/env.py`` imports the tree under test.
+    """
+    env = os.environ.copy()
+    set_env_var(env, "DATABASE_URL", url)
+    env["PYTHONPATH"] = os.pathsep.join(
+        part for part in (str(PROJECT_ROOT), env.get("PYTHONPATH")) if part
+    )
+    return subprocess.run(
+        [sys.executable, "-m", "alembic", *shlex.split(command)],
+        cwd=PROJECT_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+@asynccontextmanager
+async def database_of_its_own(
+    superuser_url: str,
+    prefix: str,
+    *,
+    owner: str | None = None,
+    runtime_role: bool = False,
+):
+    """A fresh database on the lane's cluster, dropped however the test ends.
+
+    Yields ``superuser_url`` re-pointed at it. ``owner`` makes another role the
+    database's owner. ``runtime_role`` makes sure ``faultmaven_app`` exists
+    while the database does, so a migration's grant to it runs; roles are
+    cluster-wide, so it is created only if absent and dropped only if created
+    here. Use one for anything that downgrades the schema or plants objects in
+    it: the lane's shared database is every other module's too.
+    """
+    name = f"{prefix}_{uuid.uuid4().hex[:8]}"
+    admin = create_async_engine(superuser_url, isolation_level="AUTOCOMMIT")
+    created_runtime_role = False
+    try:
+        async with admin.connect() as conn:
+            if runtime_role:
+                created_runtime_role = not (
+                    await conn.execute(
+                        text(
+                            "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :r)"
+                        ),
+                        {"r": RUNTIME_ROLE},
+                    )
+                ).scalar()
+                if created_runtime_role:
+                    await conn.execute(text(f"CREATE ROLE {RUNTIME_ROLE} NOLOGIN"))
+            owned_by = f' OWNER "{owner}"' if owner else ""
+            await conn.execute(text(f'CREATE DATABASE "{name}"{owned_by}'))
+        yield (
+            make_url(superuser_url)
+            .set(database=name)
+            .render_as_string(hide_password=False)
+        )
+    finally:
+        async with admin.connect() as conn:
+            await conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+            if created_runtime_role:
+                await conn.execute(text(f"DROP ROLE IF EXISTS {RUNTIME_ROLE}"))
+        await admin.dispose()

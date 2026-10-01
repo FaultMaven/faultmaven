@@ -986,29 +986,46 @@ async def test_a_member_of_the_teams_own_enterprise_is_still_admitted(
 
 @pytest.mark.asyncio
 @pytest.mark.security
-async def test_every_definer_function_pins_pg_temp_last_and_row_security_off(
+async def test_every_definer_function_searches_only_pg_catalog_and_pg_temp(
     superuser_engine,
 ):
     """A ``SECURITY DEFINER`` function runs with its owner's rights, so two
-    settings decide what its body can be made to read:
+    settings decide what its body can be made to run and to read:
 
-    * ``search_path`` must end in ``pg_temp``. Unlisted, the temporary schema is
-      searched FIRST for relations, and a caller's temporary table would stand
-      in for a real one the body names unqualified.
+    * ``search_path`` must be exactly ``pg_catalog, pg_temp``. No other schema:
+      PostgreSQL resolves a function or operator by argument types before path
+      position, so any schema a caller can create in — ``public`` included —
+      could supply an exact match the body runs with the owner's rights
+      (``tests/integration/security/test_definer_functions_postgres.py`` plants
+      them). ``pg_temp`` listed, last: unlisted, it is searched FIRST for
+      relation and type names, and a caller's temporary table or type would
+      stand in for a real one. The bodies therefore schema-qualify every
+      relation, and leave type names to ``pg_catalog``.
     * ``row_security`` must be ``off``. The bodies rely on the owner's exemption
       from row-level security; ``off`` makes losing it an error instead of a
       silently filtered read.
 
-    Asserted of every definer function in the schema rather than of a list, so
-    the next one added is held to it without anyone remembering to add it here.
+    Asserted of every definer function in every schema the database holds —
+    not of a list, and not of ``public`` alone — so the next one is held to it
+    wherever it is created, without anyone remembering to add it here. The
+    system schemas are PostgreSQL's own; an extension's functions are its
+    author's; a ``pg_temp_N`` schema belongs to one session.
     """
     async with superuser_engine.connect() as conn:
         rows = (
             await conn.execute(
                 text(
-                    "SELECT p.proname, coalesce(p.proconfig, '{}') "
+                    "SELECT n.nspname || '.' || p.proname, "
+                    "coalesce(p.proconfig, '{}') "
                     "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
-                    "WHERE p.prosecdef AND n.nspname = 'public' ORDER BY 1"
+                    "WHERE p.prosecdef "
+                    "AND n.nspname NOT IN ('pg_catalog', 'information_schema') "
+                    "AND n.nspname NOT LIKE 'pg\\_toast%' "
+                    "AND n.nspname NOT LIKE 'pg\\_temp\\_%' "
+                    "AND NOT EXISTS (SELECT 1 FROM pg_depend d "
+                    "WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid "
+                    "AND d.deptype = 'e') "
+                    "ORDER BY 1"
                 )
             )
         ).all()
@@ -1017,16 +1034,15 @@ async def test_every_definer_function_pins_pg_temp_last_and_row_security_off(
     # The baseline's two trigger guards and revision 003's two operator reads at
     # least — an empty result would make every assertion below vacuous.
     assert {
-        "organization_members_last_admin_guard",
-        "team_members_same_enterprise_guard",
-        "admin_case_metadata_page",
-        "admin_case_metadata_count",
+        "public.organization_members_last_admin_guard",
+        "public.team_members_same_enterprise_guard",
+        "public.admin_case_metadata_page",
+        "public.admin_case_metadata_count",
     } <= names
     for name, config in rows:
         settings = dict(entry.split("=", 1) for entry in config)
         path = [part.strip() for part in settings.get("search_path", "").split(",")]
-        assert path[0] == "pg_catalog", (name, settings)
-        assert path[-1] == "pg_temp", (name, settings)
+        assert path == ["pg_catalog", "pg_temp"], (name, settings)
         assert settings.get("row_security") == "off", (name, settings)
 
 
@@ -1037,10 +1053,12 @@ async def test_a_temporary_table_cannot_answer_the_membership_guard(
 ):
     """The membership guard reads ``users`` to learn the member's enterprise.
 
-    A session may create temporary tables, and with ``pg_temp`` unlisted in the
-    guard's ``search_path`` a temporary ``users`` was read in place of the real
-    one — so a session could tell the guard that a stranger from enterprise B
-    belongs to A, and seat them on A's team.
+    A session may create temporary tables. A guard that searched the temporary
+    schema first, or named ``users`` unqualified with ``public`` off its path,
+    would read a temporary ``users`` in place of the real one — so a session
+    could tell the guard that a stranger from enterprise B belongs to A, and
+    seat them on A's team. The guard reads ``public.users``, with ``pg_temp``
+    last on its path.
     """
     from sqlalchemy.exc import DBAPIError
 
