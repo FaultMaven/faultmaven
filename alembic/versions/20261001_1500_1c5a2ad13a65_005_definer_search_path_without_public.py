@@ -16,9 +16,11 @@ sits. The bodies compare ``character varying`` columns with ``text``
 (``k.state = p_state``, ``organization_id = v_org_id``) and with each other
 (``team_id = NEW.team_id``), and ``pg_catalog`` has no ``=`` for either pair of
 types. With ``public`` on the path, a role that may create in ``public`` could
-define one there and have the body run it with the owner's rights. PostgreSQL
-15 and later grant no one ``CREATE`` on ``public`` by default; 14 and earlier
-grant it to every role. ``pg_temp`` is listed so that it is searched LAST for
+define one there and have the body run it with the owner's rights. A cluster
+initialised by PostgreSQL 15 or later grants no one but the database owner
+``CREATE`` on ``public``; one initialised by 14 or earlier grants it to every
+role, and keeps that grant through ``pg_upgrade`` or a dump and restore onto a
+newer server. ``pg_temp`` is listed so that it is searched LAST for
 relations — left out, it is searched FIRST, and a caller's temporary table
 would stand in for one the body names. It is never searched for functions or
 operators.
@@ -41,6 +43,9 @@ asserts exactly that. ``CREATE OR REPLACE`` keeps each function's OID, so its
 owner, its grants (003's ``EXECUTE`` for ``faultmaven_app`` and none for
 ``PUBLIC``), its comment and the triggers that call it carry over; the
 signatures and result types are unchanged, which ``CREATE OR REPLACE`` requires.
+Unlike revision 004's ``ALTER FUNCTION … SET``, ``CREATE OR REPLACE`` also needs
+``CREATE`` on schema ``public`` — which the migrating role holds wherever it
+created the tables there, as every later revision that adds a table requires.
 
 ``downgrade()`` restores the path revision 004 left on all four functions,
 ``pg_catalog, public, pg_temp``; ``row_security = off`` is already what 004

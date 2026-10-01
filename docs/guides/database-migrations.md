@@ -556,8 +556,10 @@ written the same way:
   `text`, or with another `character varying`, matches no `pg_catalog`
   operator exactly, so with `public` on the path a role that may create in
   `public` could define that `=` there and have the body run it with the
-  owner's rights. PostgreSQL 15 and later grant no one `CREATE` on `public` by
-  default; 14 and earlier grant it to every role. `pg_temp` is listed **last**
+  owner's rights. A cluster initialised by PostgreSQL 15 or later grants no one
+  but the database owner `CREATE` on `public`; one initialised by 14 or earlier
+  grants it to every role, and keeps that grant through `pg_upgrade` or a dump
+  and restore onto a newer server. `pg_temp` is listed **last**
   because, when it is not listed, PostgreSQL searches it **first** for
   relation and type names — a caller's temporary table would stand in for one
   the body names. It is never searched for functions or operators.
