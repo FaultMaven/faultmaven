@@ -22,10 +22,11 @@ registration endpoint, no admin endpoint, and no script that does it:
   `"supports_registration": false`.
 - **`POST /admin/users` does not exist.** The admin API can list, activate,
   deactivate and assign roles on accounts that already exist — it cannot mint
-  one. It is also **confined to the operator's own organization** (#1318): under
-  `TENANT_PROVIDER=multi` a platform admin bound to one tenant administers that
-  tenant's users only, and another tenant's account answers exactly what an
-  absent id answers.
+  one. Administration is **confined to the operator's own enterprise** (#1318):
+  under `TENANT_PROVIDER=multi` a platform admin bound to one enterprise
+  administers that enterprise's accounts only, and another enterprise's account
+  answers exactly what an absent id answers. The account *list* spans every
+  enterprise as metadata, each row marked `manageable` or not.
 - `scripts/auth/create_user.py` and `./faultmaven.sh create-user` are
   local/self-hosted development conveniences. They are not in the wheel, not in
   the container image, and not a deployment procedure.
@@ -234,9 +235,11 @@ is a hard conflict, not a link target.
      python -c "import urllib.request,json; print(json.load(urllib.request.urlopen('http://localhost:8000/api/v1/auth/config')))"
    ```
 
-   …and, as a platform admin, `GET /api/v1/admin/users` — which lists the users
-   of **your own** enterprise, so run it as an operator bound to the tenant you
-   just provisioned into.
+   …and, as a platform admin, `GET /api/v1/admin/users?enterprise_id=<enterprise>`
+   — under `TENANT_PROVIDER=multi` the list spans every enterprise, so the
+   filter finds the account wherever it landed. Its `manageable` field says
+   whether you can administer it: only accounts in the enterprise your own
+   request is bound to are.
 
 ### Step 7 — grant elevated roles (only if needed)
 

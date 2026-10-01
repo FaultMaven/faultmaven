@@ -10,9 +10,12 @@ Adapters:
 
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Collection, Dict, List, Optional
+from typing import TYPE_CHECKING, Collection, Dict, List, Optional, Sequence
 
 from pydantic import BaseModel, EmailStr, Field
+
+if TYPE_CHECKING:
+    from faultmaven.modules.auth.contracts import AccountMetadata
 
 
 class User(BaseModel):
@@ -136,6 +139,57 @@ class User(BaseModel):
 
 
 # ============================================================
+# The operator account list's columns
+# ============================================================
+
+#: Exactly the fields of ``AccountMetadata`` — the only columns the
+#: cross-enterprise account read selects. Never ``hashed_password``,
+#: ``sso_provider``/``sso_provider_id``, ``dev_roles``, ``avatar_url``,
+#: ``timezone``, ``locale`` or ``deleted_at``.
+ACCOUNT_METADATA_COLUMNS = (
+    "user_id",
+    "enterprise_id",
+    "email",
+    "display_name",
+    "account_kind",
+    "service_channel",
+    "is_active",
+    "is_email_verified",
+    "last_login_at",
+    "created_at",
+    "updated_at",
+)
+
+#: The largest OFFSET a PostgreSQL ``bigint`` holds. The API bounds the offset
+#: below by 0 and not at all above, so a larger one is answered here — an empty
+#: page — rather than sent to the database as a value it cannot bind.
+_MAX_SQL_OFFSET = 2**63 - 1
+
+#: The LIKE escape character for a literal substring search.
+_LIKE_ESCAPE = "/"
+
+
+def _like_substring(search: str) -> str:
+    """``search`` as a LIKE pattern matching it as a literal substring: ``%``,
+    ``_`` and the escape character itself lose their meaning."""
+    escaped = (
+        search.replace(_LIKE_ESCAPE, _LIKE_ESCAPE * 2)
+        .replace("%", _LIKE_ESCAPE + "%")
+        .replace("_", _LIKE_ESCAPE + "_")
+    )
+    return f"%{escaped}%"
+
+
+def _account_metadata(source) -> "AccountMetadata":
+    """``AccountMetadata`` from anything carrying its eleven attributes."""
+    from faultmaven.modules.auth.contracts import AccountMetadata
+
+    return AccountMetadata(
+        **{name: getattr(source, name) for name in ACCOUNT_METADATA_COLUMNS}
+    )
+
+
+# ============================================================
 # Repository Interface
 # ============================================================
 
@@ -203,7 +257,48 @@ class UserRepository(ABC):
         resolves an enterprise, so "no restriction" and "an enterprise with no
         accounts" cannot be confused: the latter is a real id that matches
         nothing.
+
+        Newest account first, ``user_id`` breaking ties, so a page boundary
+        among accounts created in one statement falls in one place — the order
+        :meth:`list_account_metadata` uses too.
         """
+        pass
+
+    @abstractmethod
+    async def list_account_metadata(
+        self,
+        *,
+        is_active: Optional[bool],
+        search: Optional[str],
+        enterprise_id: Optional[str],
+        limit: int,
+        offset: int,
+    ) -> tuple[List["AccountMetadata"], int]:
+        """The operator's account list across EVERY enterprise.
+
+        Selects exactly the eleven columns of :class:`AccountMetadata` — never
+        the password hash, the SSO provider or subject, the role list or a
+        preference. ``users`` is outside row-level security, so this spans every
+        enterprise as an ordinary query; that is why it has exactly one caller,
+        ``GET /admin/users`` under ``TENANT_PROVIDER=multi``, behind the
+        operator role and after the access is recorded.
+
+        ``search`` is a case-insensitive substring of the email or the display
+        name with ``%`` and ``_`` taken literally. Newest account first,
+        ``user_id`` breaking ties. ``total`` counts every match and is read
+        with the page; a search no stored value can contain (NUL) and an offset
+        past any row count answer an empty page with the true total.
+        """
+        pass
+
+    @abstractmethod
+    async def get_many_in_enterprise(
+        self, enterprise_id: str, user_ids: Sequence[str]
+    ) -> List[User]:
+        """The accounts among ``user_ids`` anchored to ``enterprise_id``, in one
+        read. An id anchored elsewhere, or naming nobody, is absent from the
+        result. The operator's account list reads its manageable rows' roles
+        through this, confined to the operator's own enterprise."""
         pass
 
     @abstractmethod
@@ -324,6 +419,43 @@ class InMemoryUserRepository(UserRepository):
         paginated = all_users[offset : offset + limit]
         return paginated, total_count
 
+    async def list_account_metadata(
+        self,
+        *,
+        is_active: Optional[bool],
+        search: Optional[str],
+        enterprise_id: Optional[str],
+        limit: int,
+        offset: int,
+    ) -> tuple[List["AccountMetadata"], int]:
+        """Every enterprise's accounts, as metadata (in-memory)."""
+        rows = list(self._users.values())
+        if enterprise_id is not None:
+            rows = [u for u in rows if u.enterprise_id == enterprise_id]
+        if is_active is not None:
+            rows = [u for u in rows if u.is_active == is_active]
+        if search is not None:
+            needle = search.lower()
+            rows = [
+                u
+                for u in rows
+                if needle in u.email.lower() or needle in u.display_name.lower()
+            ]
+        rows.sort(key=lambda u: u.user_id)
+        rows.sort(key=lambda u: u.created_at, reverse=True)
+        return [_account_metadata(u) for u in rows[offset : offset + limit]], len(rows)
+
+    async def get_many_in_enterprise(
+        self, enterprise_id: str, user_ids: Sequence[str]
+    ) -> List[User]:
+        """The accounts among ``user_ids`` anchored to ``enterprise_id``."""
+        wanted = set(user_ids)
+        return [
+            user
+            for user in self._users.values()
+            if user.enterprise_id == enterprise_id and user.user_id in wanted
+        ]
+
     async def list_enterprise_member_ids(self, enterprise_id: str) -> frozenset:
         """Every account id anchored to ``enterprise_id`` (in-memory)."""
         if not enterprise_id:
@@ -347,6 +479,9 @@ class InMemoryUserRepository(UserRepository):
             all_users = [u for u in all_users if u.enterprise_id == enterprise_id]
         if is_active is not None:
             all_users = [u for u in all_users if u.is_active == is_active]
+        # Two stable sorts: user_id ascending, then created_at descending, so
+        # the newest account comes first and ties fall in user_id order.
+        all_users.sort(key=lambda u: u.user_id)
         all_users.sort(key=lambda u: u.created_at, reverse=True)
         total_count = len(all_users)
         paginated = all_users[offset : offset + limit]
@@ -647,7 +782,9 @@ class PostgreSQLUserRepository(UserRepository):
         stmt = (
             select(UserModel)
             .where(*base_filter)
-            .order_by(UserModel.created_at.desc())
+            # user_id breaks created_at ties, as list_account_metadata does, so
+            # a page boundary falls in one place on both paths.
+            .order_by(UserModel.created_at.desc(), UserModel.user_id)
             .limit(limit)
             .offset(offset)
         )
@@ -655,6 +792,88 @@ class PostgreSQLUserRepository(UserRepository):
         models = result.scalars().all()
 
         return [self._model_to_domain(m) for m in models], total_count
+
+    async def list_account_metadata(
+        self,
+        *,
+        is_active: Optional[bool],
+        search: Optional[str],
+        enterprise_id: Optional[str],
+        limit: int,
+        offset: int,
+    ) -> tuple[List["AccountMetadata"], int]:
+        """Every enterprise's accounts, as metadata — the eleven columns only.
+
+        The page and its total come from ONE statement (``count(*) OVER ()``),
+        so they describe the same snapshot; only an empty page — the offset is
+        past the last match — needs the separate count.
+        """
+        from sqlalchemy import func, literal, or_, select
+
+        from faultmaven.infrastructure.persistence.models import UserModel
+
+        if search is not None and "\x00" in search:
+            # No stored text can contain NUL (PostgreSQL refuses it), so nothing
+            # matches — answered here, where the driver would refuse to bind it.
+            return [], 0
+
+        filters = []
+        if is_active is not None:
+            filters.append(UserModel.is_active == is_active)
+        if enterprise_id is not None:
+            filters.append(UserModel.enterprise_id == enterprise_id)
+        if search is not None:
+            # Both sides lowered by the database; the needle is a literal
+            # substring, so '%' and '_' in a search match themselves.
+            pattern = func.lower(literal(_like_substring(search)))
+            filters.append(
+                or_(
+                    func.lower(UserModel.email).like(pattern, escape=_LIKE_ESCAPE),
+                    func.lower(UserModel.display_name).like(
+                        pattern, escape=_LIKE_ESCAPE
+                    ),
+                )
+            )
+
+        async def count() -> int:
+            stmt = select(func.count()).select_from(UserModel).where(*filters)
+            return int((await self.db.execute(stmt)).scalar_one())
+
+        if offset > _MAX_SQL_OFFSET:
+            return [], await count()
+
+        stmt = (
+            select(
+                *(getattr(UserModel, name) for name in ACCOUNT_METADATA_COLUMNS),
+                func.count().over().label("matching"),
+            )
+            .where(*filters)
+            .order_by(UserModel.created_at.desc(), UserModel.user_id)
+            .limit(limit)
+            .offset(offset)
+        )
+        rows = (await self.db.execute(stmt)).all()
+        if not rows:
+            return [], await count()
+        return [_account_metadata(row) for row in rows], int(rows[0].matching)
+
+    async def get_many_in_enterprise(
+        self, enterprise_id: str, user_ids: Sequence[str]
+    ) -> List[User]:
+        """The accounts among ``user_ids`` anchored to ``enterprise_id``, in one
+        read."""
+        from sqlalchemy import select
+
+        from faultmaven.infrastructure.persistence.models import UserModel
+
+        if not user_ids:
+            return []
+        stmt = select(UserModel).where(
+            UserModel.enterprise_id == enterprise_id,
+            UserModel.user_id.in_(list(user_ids)),
+        )
+        models = (await self.db.execute(stmt)).scalars().all()
+        return [self._model_to_domain(m) for m in models]
 
     async def list_enterprise_member_ids(self, enterprise_id: str) -> frozenset:
         """Every account id anchored to ``enterprise_id``."""
@@ -826,6 +1045,36 @@ class SessionlessUserRepository(UserRepository):
                 offset=offset,
                 is_active=is_active,
                 enterprise_id=enterprise_id,
+            )
+
+    async def list_account_metadata(
+        self,
+        *,
+        is_active: Optional[bool],
+        search: Optional[str],
+        enterprise_id: Optional[str],
+        limit: int,
+        offset: int,
+    ) -> tuple[List["AccountMetadata"], int]:
+        from faultmaven.infrastructure.persistence.database import get_db_session
+
+        async with get_db_session() as session:
+            return await PostgreSQLUserRepository(session).list_account_metadata(
+                is_active=is_active,
+                search=search,
+                enterprise_id=enterprise_id,
+                limit=limit,
+                offset=offset,
+            )
+
+    async def get_many_in_enterprise(
+        self, enterprise_id: str, user_ids: Sequence[str]
+    ) -> List[User]:
+        from faultmaven.infrastructure.persistence.database import get_db_session
+
+        async with get_db_session() as session:
+            return await PostgreSQLUserRepository(session).get_many_in_enterprise(
+                enterprise_id, user_ids
             )
 
     async def list_enterprise_member_ids(self, enterprise_id: str) -> frozenset:

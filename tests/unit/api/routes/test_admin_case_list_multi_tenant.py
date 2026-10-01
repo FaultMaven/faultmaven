@@ -217,6 +217,8 @@ class TestAuditComesFirst:
         kwargs = audit_repo.record_access.await_args.kwargs
         assert kwargs["action"] is OperatorAction.LIST
         assert kwargs["details"]["view"] == "metadata"
+        # Tells it from the account list, which records the same action.
+        assert kwargs["details"]["surface"] == "cases"
         assert kwargs["target_enterprise_id"] is None
 
     def test_a_failed_record_refuses_the_request_before_reading(

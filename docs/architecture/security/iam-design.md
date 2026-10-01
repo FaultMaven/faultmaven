@@ -691,7 +691,7 @@ ADMIN_ENDPOINTS = [
     "/api/v1/auth/users/{username}",             # DELETE: remove user
     "/api/v1/auth/users/{user_id}/revoke-tokens", # POST: revoke all tokens for user
     # Platform admin (admin module)
-    "/api/v1/admin/users",                       # GET: user details
+    "/api/v1/admin/users",                       # GET: account list
     "/api/v1/admin/users/{user_id}/roles",       # POST: assign role
     "/api/v1/admin/llm/config",                  # GET: LLM provider status
     "/api/v1/admin/llm/config/test",             # POST: test provider connection

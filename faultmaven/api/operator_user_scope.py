@@ -2,9 +2,13 @@
 
 The predicate the operator user-administration routes resolve their target
 through: a ``platform_admin`` whose request is bound to enterprise A administers
-A's accounts and no others. It lives outside any one route module for the reason
-``operator_grants`` and ``operator_audit`` do — ``/api/v1/admin/users*`` and the
-two ``/api/v1/auth/users*`` operator routes must resolve identically, and a route
+A's accounts and no others. (``GET /admin/users`` LISTS every enterprise's
+accounts under multi; it resolves this scope to learn which rows the operator
+administers — ``manageable`` — and reports roles for those alone.)
+
+It lives outside any one route module for the reason ``operator_grants`` and
+``operator_audit`` do — ``/api/v1/admin/users*`` and the two
+``/api/v1/auth/users*`` operator routes must resolve identically, and a route
 added later has to inherit the decision rather than re-derive it.
 
 **The enterprise, not the organization** (ADR-017 D1/D2). The organization is a
@@ -46,14 +50,19 @@ confinement. It must not be relaxed on the belief that a policy is underneath it
 404, not 403
 ------------
 Out-of-tenant and absent share one status and one body on every id-addressed
-route, so no caller can tell them apart — the rule
-``docs/architecture/security/rbac.md`` states under "Tenant-Scoped Resolution",
-and the reason :func:`user_not_found` exists rather than a per-route message. A
-403 reserved for "you may not see this" would confirm that the id names a real
-account in another tenant, which is the existence oracle the 404 avoids. The one
-403 is :func:`OperatorUserScope.tenant`'s, raised by
-``require_actor_enterprise`` when the *caller* carries no usable enterprise:
-that refusal does not depend on the requested id, so it is not an oracle.
+route — the rule ``docs/architecture/security/rbac.md`` states under
+"Tenant-Scoped Resolution", and the reason :func:`user_not_found` exists rather
+than a per-route message. What the uniform answer does is keep every route's
+behaviour identical for the two cases: nothing is read past the predicate and
+nothing is written, whichever it was.
+
+It no longer conceals that an account EXISTS from a platform operator: under
+multi the operator's account list shows every enterprise's accounts, ids
+included. The account list is the operator's metadata view; these routes are
+administration, and administration stays confined. The one 403 is
+:func:`OperatorUserScope.tenant`'s, raised by ``require_actor_enterprise`` when
+the *caller* carries no usable enterprise — a refusal that does not depend on
+the requested id.
 """
 
 import logging
@@ -163,6 +172,9 @@ class OperatorUserScope:
 
     def listing_enterprise(self, operator) -> Optional[str]:
         """The enterprise a listing by this operator is confined to, or ``None``.
+
+        ``GET /auth/users`` is confined to it. ``GET /admin/users`` under multi
+        spans every enterprise and uses it as the one whose rows are manageable.
 
         ``None`` is the single-tenant answer — the deployment IS the tenant —
         and is what the listing routes pass through as "do not filter". It is

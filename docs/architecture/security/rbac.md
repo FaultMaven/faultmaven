@@ -213,6 +213,11 @@ The three parts each close a different way of losing the predicate:
   load (`get_document_visible`, `get_suggestion_visible`) that every route uses.
   The scoped form takes a required `enterprise_id` and returns nothing for an
   absent id and for an out-of-tenant id alike, so no caller can tell them apart.
+  For user ACCOUNTS the uniform 404 no longer hides existence from a platform
+  operator — the operator's account list shows every enterprise's accounts
+  ([User Administration](#user-administration)) — but it still gives an absent
+  and an out-of-tenant id one answer, with nothing read or written past the
+  predicate for either.
 - **By similarity.** A vector query names no id, so the metadata predicate is
   the only isolation there is. `RunbookKnowledgeBase.search_runbooks` requires
   the searching principal's KB scope filter (`build_kb_scope_filter`: global ∪
@@ -386,56 +391,106 @@ despite their identical messages. Per-target `errors` carry no exception text.
 
 ### User Administration
 
-Operator routes over user accounts. Every one requires `platform_admin` **and**
-resolves its target inside the organization the operator's request is bound to
-(`faultmaven/api/operator_user_scope.py`, #1318), per
-[Tenant-Scoped Resolution](#tenant-scoped-resolution): an id belonging to
-another tenant answers 404 — the same answer, with the same body, that an id
-naming nobody gets — and nothing is written. The two listings range over the
-caller's organization, `total` included: a deployment-wide population count is
-itself a disclosure about tenants the caller cannot see.
-
-The role and the predicate are separate questions. `platform_admin` is
+Operator routes over user accounts. Every one requires `platform_admin`. The
+role and the tenant are separate questions: `platform_admin` is
 deployment-scoped and says what an operator may *do*; it never says *whose*
-accounts. An organization admin reaches none of these routes at all.
+accounts they may administer. An organization admin reaches none of these
+routes at all.
+
+**Administration is confined to the operator's enterprise.** Every route that
+reads one account or changes one resolves its target inside the enterprise the
+operator's request is bound to (`faultmaven/api/operator_user_scope.py`,
+#1318), per [Tenant-Scoped Resolution](#tenant-scoped-resolution): an id
+belonging to another enterprise answers 404 — the same answer, with the same
+body, that an id naming nobody gets — and nothing is written.
+
+**The operator's account list spans every enterprise.** Under
+`TENANT_PROVIDER=multi`, `GET /api/v1/admin/users` lists the accounts of every
+enterprise, with `total` counting every match. The rows include user free-text
+— each account's email address and display name — and that is deliberate.
+Account records — who holds an account, in which enterprise, of which kind,
+when it last signed in, whether it is active — are the service's own
+operational data about its users. Case content is different in kind: it is
+data the service holds on a customer's behalf, and it stays behind break-glass.
+
+What bounds it:
+
+- **Account records only.** `users` is outside row-level security (the login
+  path reads it before any tenant is bound), so the rows come from an ordinary
+  read of the account store (`IAccountDirectory.list_account_metadata`, on the
+  user repository) that selects exactly `user_id`, `enterprise_id`, `email`,
+  `display_name`, `account_kind`, `service_channel`, `is_active`,
+  `is_email_verified` and three timestamps — never the password hash, the SSO
+  subject, a token, a preference or the role list. That read has one caller:
+  this route, under `multi`, behind `platform_admin`, after the access is
+  recorded. The page and its `total` come from one statement.
+- **Recorded first.** Each read writes an `operator_access_audit` row
+  (`action: list`, `details.surface: "accounts"`; `target_enterprise_id` is the
+  `enterprise_id` filter, or NULL when the read spans every enterprise) before
+  anything is served, and a read that cannot be recorded is refused with 503.
+  The search text is not recorded, only whether there was one
+  (`search_present`): it is often an email address, and the trail is
+  append-only.
+- **Administration is not widened.** Each row carries `manageable`: `true` only
+  for an account in the operator's own enterprise — every account under
+  `single`. Roles are the organization's management vocabulary, so `roles` is
+  reported only on a manageable row, read in one query confined to the
+  operator's enterprise; on every other row it is `[]`, meaning *not
+  reported*, not *holds no role*. The `role` filter is therefore refused (422)
+  on the cross-enterprise list.
+- **What fails how.** Before anything is read: a `role` filter or an
+  `enterprise_id` no enterprise could carry is a 422, and an account store that
+  is not composed, an audit trail that is not composed or a record that cannot
+  be written is a 503. After the access is recorded, any failure is a 500,
+  logged once as `admin_user_list_read_failed`, with fixed text in the
+  response. An empty `search` is no search; a search no stored value can
+  contain (a NUL character) and an offset past every row answer an empty page
+  with the true total.
+
+`GET /api/v1/auth/users` is an older listing of the same accounts and stays
+confined to the operator's enterprise.
 
 | Method | Endpoint | Description | Required Role |
 |--------|----------|-------------|---------------|
-| GET | `/api/v1/admin/users` | List the operator's org's users | `platform_admin`, own org only |
-| GET | `/api/v1/admin/users/{id}` | User detail | `platform_admin`; 404 if out of tenant |
-| POST | `/api/v1/admin/users/{id}/deactivate` | Deactivate an account | `platform_admin`; 404 if out of tenant |
-| POST | `/api/v1/admin/users/{id}/activate` | Reactivate an account | `platform_admin`; 404 if out of tenant |
-| POST | `/api/v1/admin/users/{id}/roles` | Assign an org-scoped role | `platform_admin`; 404 if out of tenant |
-| DELETE | `/api/v1/admin/users/{id}/roles/{role}` | Remove an org-scoped role | `platform_admin`; 404 if out of tenant |
-| GET | `/api/v1/auth/users` | List the operator's org's users | `platform_admin`, own org only |
-| POST | `/api/v1/auth/users/{id}/revoke-tokens` | Revoke every token for a user | `platform_admin`; 404 if out of tenant |
-| DELETE | `/api/v1/auth/users/{username}` | Delete an account | `platform_admin`; 404 if out of tenant |
+| GET | `/api/v1/admin/users` | List accounts; every enterprise under `multi`, as metadata | `platform_admin`; only own-enterprise rows are `manageable` |
+| GET | `/api/v1/admin/users/{id}` | User detail | `platform_admin`; 404 if out of enterprise |
+| POST | `/api/v1/admin/users/{id}/deactivate` | Deactivate an account | `platform_admin`; 404 if out of enterprise |
+| POST | `/api/v1/admin/users/{id}/activate` | Reactivate an account | `platform_admin`; 404 if out of enterprise |
+| POST | `/api/v1/admin/users/{id}/roles` | Assign an org-scoped role | `platform_admin`; 404 if out of enterprise |
+| DELETE | `/api/v1/admin/users/{id}/roles/{role}` | Remove an org-scoped role | `platform_admin`; 404 if out of enterprise |
+| GET | `/api/v1/auth/users` | List the operator's enterprise's accounts | `platform_admin`, own enterprise only |
+| POST | `/api/v1/auth/users/{id}/revoke-tokens` | Revoke every token for a user | `platform_admin`; 404 if out of enterprise |
+| DELETE | `/api/v1/auth/users/{username}` | Delete an account | `platform_admin`; 404 if out of enterprise |
 
-**Where the predicate reads from.** Under `TENANT_PROVIDER=multi` the target
-must hold an `organization_members` row in the operator's organization — a
-table that is itself RLS-tenanted (migration 018), so the lookup is guarded
-twice. Under `single` the deployment *is* the organization and
-`organization_members` is not populated at all, so nothing is consulted; that is
-the same split `SingleTenantPermissionResolver` makes, and reading the table
-there would deny the only accounts a standalone install has.
+**Where the predicate reads from.** The request's own enterprise is the
+predicate, not a membership row: under `TENANT_PROVIDER=multi` the target's
+`users.enterprise_id` must equal the enterprise the operator's request is bound
+to, and a listing passes that enterprise to the query. The organization is a
+billing target and grants nothing about data, so it confines nothing here.
+`users` is outside row-level security — the login path reads it before any
+tenant is bound — so this application predicate is the whole of the
+confinement; there is no policy underneath it. Under `single` the deployment
+*is* one enterprise, the predicate holds by construction, and nothing is
+consulted.
 
-**There is no cross-tenant path.** Unlike case content, an operator cannot reach
-another tenant's user through a break-glass grant: the grant is case-scoped by
-construction (`operator_access_grants.target_case_id` is `NOT NULL`;
-`find_live_grant` keys on it; `bind_grant_org_scope` rebinds RLS to the
-organization the grant names), so using one here would mean recording a
-justification that names an unrelated case. Cross-tenant user administration is
-refused rather than granted, and therefore writes no `operator_access_audit`
-row — there is no access to record. The audited break-glass model for this
-surface (ADR-012 D9's fuller posture) is a later change, tracked on #1318.
+**There is no cross-tenant administration path.** Unlike case content, an
+operator cannot reach another enterprise's account through a break-glass
+grant: the grant is case-scoped by construction
+(`operator_access_grants.target_case_id` is `NOT NULL`; `find_live_grant` keys
+on it; `bind_grant_enterprise_scope` rebinds RLS to the enterprise the grant
+names), so using one here would mean recording a justification that names an
+unrelated case. Cross-enterprise administration is refused rather than granted,
+and a refusal writes no `operator_access_audit` row — there is no access to
+record. An audited grant for cross-enterprise mutations needs its own target
+type and is a later change, tracked on #1318.
 
 **One consequence, stated rather than buried.** `POST /auth/users/{id}/revoke-tokens`
 deliberately revokes *before* confirming the user exists, so an auth-database
 outage cannot stop an admin containing a compromised account (#703/#1043). Under
 `multi` the tenant predicate necessarily runs first — writing a revocation
-watermark for another tenant's user *is* the cross-tenant mutation — so there a
-membership store that cannot answer refuses the revocation instead of performing
-it. Under `single` the ordering is unchanged.
+watermark for another enterprise's user *is* the cross-tenant mutation — so
+there an account store that cannot answer refuses the revocation instead of
+performing it. Under `single` the ordering is unchanged.
 
 ### Suggestion Review
 

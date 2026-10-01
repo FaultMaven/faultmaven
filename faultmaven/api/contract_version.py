@@ -1633,4 +1633,39 @@ asked to accept, and it belongs to a person.
 # 403 was never declared in the published document, so the differ sees no
 # status-code change there; it is named here because a client that treated the
 # refusal as "unavailable in cloud" now receives rows.
-API_CONTRACT_VERSION = "9.1.0"
+
+# 10.0.0 — MAJOR. `GET /api/v1/admin/users` under `TENANT_PROVIDER=multi`
+# lists the accounts of every enterprise, where it listed the operator's own,
+# and `AdminUserListItem` gains `account_kind` ('individual' | 'service'),
+# `service_channel` (which integration a service account serves, null for a
+# person) and `manageable` (whether the operator can administer the account).
+# The endpoint gains an optional `enterprise_id` filter, and `total` counts
+# every enterprise.
+#
+# MAJOR is not a judgement call here, for two reasons this file names outright.
+# A status code changed: `?role=` answered 200 under multi and now answers 422,
+# because the cross-enterprise read carries no roles and the filter could only
+# be applied to the operator's own enterprise under a list that claims all of
+# them (single-tenant deployments keep the filter). And a field's meaning
+# changed: `roles` stays a required list — never null, because a deployed core
+# reaches the running dashboard whatever contract it pins, and that build maps
+# `roles` — but on a row outside the operator's enterprise it is `[]`, meaning
+# NOT REPORTED rather than "holds no role". Those rows carry `manageable:
+# false`, and the administration routes still answer 404 for them.
+#
+# The measured impact on the clients: faultmaven-dashboard is the one consumer.
+# It never sends `role` (it pages with `limit`/`offset` and an optional
+# `search`), so the 422 reaches no shipped code path; faultmaven-copilot and
+# faultmaven-slack-agent do not call the endpoint. The current dashboard build
+# renders a `roles: []` row without error — `[].includes('admin')` is false,
+# so it shows the account as a plain user — but it does not yet read
+# `manageable`, so on a row outside the operator's enterprise it still offers
+# the role and deactivate controls, and those calls answer 404 until the
+# dashboard adopts this version and hides them. Under `single` nothing changes
+# but the new fields, every row `manageable: true`.
+#
+# Order of rollout: a deployed server reaches whichever client build is running,
+# whatever contract that build pins. Clients should adopt this version before a
+# server carrying it rolls out under `TENANT_PROVIDER=multi`, because from that
+# moment rows outside the operator's enterprise reach the running client.
+API_CONTRACT_VERSION = "10.0.0"

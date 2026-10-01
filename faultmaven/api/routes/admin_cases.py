@@ -176,6 +176,9 @@ async def list_all_cases(
         action=OperatorAction.LIST,
         deployment_mode=resolved_deployment_mode(),
         details={
+            # Which list: the operator account list records the same action
+            # with ``surface: "accounts"``.
+            "surface": "cases",
             "state_filter": state.value if state else None,
             "source_filter": source,
             "limit": limit,

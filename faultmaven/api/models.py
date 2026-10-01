@@ -11,7 +11,7 @@ Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 """
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -272,24 +272,69 @@ class ValidationErrorResponse(BaseModel):
 
 
 class AdminUserListItem(BaseModel):
-    """User list item for admin endpoints (with full info)."""
+    """One account in the operator's account list.
+
+    Under ``TENANT_PROVIDER=multi`` the list spans every enterprise; the
+    operator administers only the accounts of their own enterprise, which
+    ``manageable`` marks.
+    """
 
     user_id: str
-    enterprise_id: str
+    enterprise_id: str = Field(
+        ..., description="The enterprise the account is anchored to."
+    )
     email: str
     full_name: str
-    roles: List[str]
+    roles: List[str] = Field(
+        ...,
+        description=(
+            "The account's organization-scoped roles. Reported only for an "
+            "account the operator can manage (`manageable`); on a row outside "
+            "the operator's enterprise the list is empty, which means 'not "
+            "reported', not 'holds no role'."
+        ),
+    )
+    account_kind: Literal["individual", "service"] = Field(
+        ...,
+        description=(
+            "'individual' for a person, 'service' for an integration's service "
+            "account."
+        ),
+    )
+    service_channel: Optional[str] = Field(
+        None,
+        description=(
+            "Which integration a service account serves (for example "
+            "'slack'); null for a person."
+        ),
+    )
     is_active: bool
     is_verified: bool
     last_login_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
+    manageable: bool = Field(
+        ...,
+        description=(
+            "Whether the operator can administer this account (deactivate, "
+            "activate, change its roles). True for every account in the "
+            "operator's own enterprise — every account under single-tenancy. "
+            "False for an account in another enterprise, which the "
+            "administration routes answer with 404. Per-target refusals still "
+            "apply on a manageable row: an operator cannot deactivate or "
+            "re-role their own account."
+        ),
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
 
 class AdminUserListResponse(BaseModel):
-    """Admin user list response with pagination."""
+    """Admin user list response with pagination.
+
+    ``total`` counts every account matching the filters that the list ranges
+    over — every enterprise under ``TENANT_PROVIDER=multi``.
+    """
 
     users: List[AdminUserListItem]
     total: int

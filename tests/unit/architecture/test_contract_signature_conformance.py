@@ -463,6 +463,7 @@ def _build_registry() -> Dict[str, RegistryEntry]:
     )
     from faultmaven.models.interfaces_case import ICaseService
     from faultmaven.modules.auth.contracts import (
+        IAccountDirectory,
         IAuthService,
         IOAuthCodeRepository,
         IOAuthService,
@@ -565,6 +566,14 @@ def _build_registry() -> Dict[str, RegistryEntry]:
         RegistryEntry(
             interface=ICaseMetadataReader,
             reals=(PostgreSQLCaseMetadataReader, SessionlessCaseMetadataReader),
+        ),
+        RegistryEntry(
+            interface=IAccountDirectory,
+            reals=(
+                InMemoryUserRepository,
+                PostgreSQLUserRepository,
+                SessionlessUserRepository,
+            ),
         ),
         RegistryEntry(interface=IKnowledgeService, reals=(KnowledgeService,)),
         RegistryEntry(interface=IConversionService, reals=(ConversionService,)),
