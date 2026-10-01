@@ -1,8 +1,8 @@
 """Tests for storage backends.
 
 Verifies:
-1. Filesystem backend: returns deterministic local URLs
-2. S3 backend: returns presigned URL shape (mock boto client)
+1. Filesystem backend: server-side store, retrieve, delete, list and info
+2. S3 backend: the same operations against a mocked boto client
 3. Integration smoke test: evidence upload flow uses backend interface only
 4. Factory correctly selects backend based on STORAGE_BACKEND
 """
@@ -10,7 +10,6 @@ Verifies:
 import importlib.util
 import os
 import tempfile
-from datetime import timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
@@ -48,12 +47,6 @@ _REQUIRES_BOTO3 = pytest.mark.skipif(
     not _BOTO3_AVAILABLE, reason="boto3 is a cloud-only dependency"
 )
 
-# What the mocked client hands back for a presigned request. A module constant
-# so the tests can assert the backend returns it VERBATIM: asserting a substring
-# of the mock's own return value ("X-Amz" is in it) tests the fixture, not the
-# backend, and cannot fail however the backend mangles the URL.
-PRESIGNED_URL = "https://bucket.s3.amazonaws.com/key?X-Amz-Signature=abc123"
-
 # =============================================================================
 # Fixtures
 # =============================================================================
@@ -89,7 +82,6 @@ def filesystem_backend(temp_storage_dir):
 
     return FilesystemStorageBackend(
         storage_root=temp_storage_dir,
-        base_url="http://localhost:8090",
     )
 
 
@@ -99,11 +91,9 @@ def mock_boto3_client():
 
     ``create_autospec`` rather than a bare ``MagicMock``: a bare mock answers
     to any attribute with any arguments, so a backend that called a method S3
-    does not have — or passed ``generate_presigned_url`` a keyword it does not
-    take — would still sail through every assertion below. botocore generates
-    its API methods as ``(*args, **kwargs)``, so the spec buys method-name
-    enforcement there rather than signature enforcement; ``generate_presigned_url``
-    is a hand-written method and *is* signature-checked.
+    does not have would still sail through every assertion below. botocore
+    generates its API methods as ``(*args, **kwargs)``, so the spec buys
+    method-name enforcement there rather than signature enforcement.
 
     Requires boto3. Every consumer carries ``_REQUIRES_BOTO3``; the check
     below is what makes that a mechanism rather than a convention kept in a
@@ -134,9 +124,6 @@ def mock_boto3_client():
     )
     mock_client = create_autospec(real_client, instance=True)
 
-    # Mock presigned URL generation
-    mock_client.generate_presigned_url.return_value = PRESIGNED_URL
-
     # Mock head_object (file exists check)
     mock_client.head_object.return_value = {
         "ContentLength": 1024,
@@ -160,43 +147,6 @@ def mock_boto3_client():
 
 class TestFilesystemStorageBackend:
     """Tests for filesystem storage backend."""
-
-    @pytest.mark.asyncio
-    async def test_generate_upload_url_format(self, filesystem_backend):
-        """Test upload URL has correct format for filesystem backend."""
-        url = await filesystem_backend.generate_upload_url(
-            key="ent123/case456/error.log",
-            content_type="text/plain",
-        )
-
-        assert url.url.startswith("http://localhost:8090/api/v1/storage/upload/")
-        assert url.method == "POST"
-        assert "Content-Type" in url.headers
-        assert url.headers["Content-Type"] == "text/plain"
-
-    @pytest.mark.asyncio
-    async def test_generate_download_url_format(
-        self, filesystem_backend, temp_storage_dir
-    ):
-        """Test download URL has correct format for filesystem backend."""
-        # First store a file
-        key = "ent123/case456/error.log"
-        await filesystem_backend.store_file(key, b"test content")
-
-        url = await filesystem_backend.generate_download_url(
-            key=key,
-            filename="error.log",
-        )
-
-        assert url.url.startswith("http://localhost:8090/api/v1/storage/download/")
-        assert url.method == "GET"
-        assert "filename=error.log" in url.url
-
-    @pytest.mark.asyncio
-    async def test_generate_download_url_file_not_found(self, filesystem_backend):
-        """Test download URL raises FileNotFoundError for missing files."""
-        with pytest.raises(FileNotFoundError):
-            await filesystem_backend.generate_download_url(key="nonexistent/file.log")
 
     @pytest.mark.asyncio
     async def test_store_and_retrieve_file(self, filesystem_backend):
@@ -228,31 +178,20 @@ class TestFilesystemStorageBackend:
         await filesystem_backend.store_file(key, b"delete me")
 
         # Verify exists
-        assert await filesystem_backend.file_exists(key)
+        assert await filesystem_backend.get_file_info(key) is not None
 
         # Delete file
         deleted = await filesystem_backend.delete_file(key)
         assert deleted is True
 
         # Verify gone
-        assert not await filesystem_backend.file_exists(key)
+        assert await filesystem_backend.get_file_info(key) is None
 
     @pytest.mark.asyncio
     async def test_delete_nonexistent_file(self, filesystem_backend):
         """Test deleting a nonexistent file returns False."""
         deleted = await filesystem_backend.delete_file("nonexistent/file.txt")
         assert deleted is False
-
-    @pytest.mark.asyncio
-    async def test_file_exists(self, filesystem_backend):
-        """Test file existence check."""
-        key = "test/exists.txt"
-
-        assert not await filesystem_backend.file_exists(key)
-
-        await filesystem_backend.store_file(key, b"I exist!")
-
-        assert await filesystem_backend.file_exists(key)
 
     @pytest.mark.asyncio
     async def test_get_file_info(self, filesystem_backend):
@@ -333,7 +272,6 @@ class TestFilesystemPathContainment:
 
         return FilesystemStorageBackend(
             storage_root=str(storage_root),
-            base_url="http://localhost:8090",
         )
 
     # -- The decisive case: a key the old denylist admitted ------------------
@@ -475,7 +413,7 @@ class TestFilesystemPathContainment:
 
         assert stored.key == key
         assert await backend.retrieve_file(key) == b"log line"
-        assert await backend.file_exists(key)
+        assert await backend.get_file_info(key) is not None
         assert key in await backend.list_keys()
         assert (Path(temp_storage_dir) / key).is_file()
         assert await backend.delete_file(key)
@@ -612,18 +550,9 @@ class TestFilesystemPathContainment:
         backend = self._backend(temp_storage_dir)
 
         assert await backend.retrieve_file("a.log") == b"payload"
-        assert await backend.file_exists("a.log")
+        assert await backend.get_file_info("a.log") is not None
 
     # -- Every entry point that touches the filesystem ------------------------
-
-    @pytest.mark.asyncio
-    async def test_file_exists_is_guarded(self, temp_storage_dir, outside_dir):
-        (outside_dir / "secret.txt").write_text("private")
-        (Path(temp_storage_dir) / "peek.txt").symlink_to(outside_dir / "secret.txt")
-        backend = self._backend(temp_storage_dir)
-
-        with pytest.raises(ValueError, match="Invalid storage key"):
-            await backend.file_exists("peek.txt")
 
     @pytest.mark.asyncio
     async def test_get_file_info_is_guarded(self, temp_storage_dir, outside_dir):
@@ -633,17 +562,6 @@ class TestFilesystemPathContainment:
 
         with pytest.raises(ValueError, match="Invalid storage key"):
             await backend.get_file_info("peek.txt")
-
-    @pytest.mark.asyncio
-    async def test_generate_download_url_is_guarded(
-        self, temp_storage_dir, outside_dir
-    ):
-        (outside_dir / "secret.txt").write_text("private")
-        (Path(temp_storage_dir) / "peek.txt").symlink_to(outside_dir / "secret.txt")
-        backend = self._backend(temp_storage_dir)
-
-        with pytest.raises(ValueError, match="Invalid storage key"):
-            await backend.generate_download_url("peek.txt")
 
 
 # =============================================================================
@@ -678,77 +596,6 @@ class TestS3StorageBackend:
         with patch.object(s3, "BOTO3_AVAILABLE", False):
             with pytest.raises(ImportError, match="boto3 is required"):
                 s3.S3StorageBackend(bucket_name="test-bucket", region="us-east-1")
-
-    @_REQUIRES_BOTO3
-    @pytest.mark.asyncio
-    async def test_generate_upload_url_shape(self, mock_boto3_client):
-        """An upload URL is a presigned PUT over the prefixed key."""
-        from faultmaven.infrastructure.storage.s3 import S3StorageBackend
-
-        with patch("boto3.client", return_value=mock_boto3_client):
-            backend = S3StorageBackend(
-                bucket_name="test-bucket",
-                region="us-east-1",
-                prefix="evidence",
-            )
-
-            url = await backend.generate_upload_url(
-                key="case456/file.log",
-                content_type="text/plain",
-                expires_in=timedelta(minutes=15),
-            )
-
-        # The signed URL reaches the caller unaltered.
-        assert url.url == PRESIGNED_URL
-        assert url.method == "PUT"
-        assert url.headers.get("Content-Type") == "text/plain"
-
-        mock_boto3_client.generate_presigned_url.assert_called_once()
-        kwargs = mock_boto3_client.generate_presigned_url.call_args.kwargs
-        assert kwargs["ClientMethod"] == "put_object"
-        # The timedelta is converted to whole seconds for S3.
-        assert kwargs["ExpiresIn"] == 900
-        # The configured prefix is applied to the caller's key, once.
-        assert kwargs["Params"] == {
-            "Bucket": "test-bucket",
-            "Key": "evidence/case456/file.log",
-            "ContentType": "text/plain",
-        }
-
-    @_REQUIRES_BOTO3
-    @pytest.mark.asyncio
-    async def test_generate_download_url_shape(self, mock_boto3_client):
-        """A download URL is a presigned GET, minted only for a key that exists."""
-        from faultmaven.infrastructure.storage.s3 import S3StorageBackend
-
-        with patch("boto3.client", return_value=mock_boto3_client):
-            backend = S3StorageBackend(
-                bucket_name="test-bucket",
-                region="us-east-1",
-                prefix="evidence",
-            )
-
-            url = await backend.generate_download_url(
-                key="case456/file.log",
-                filename="file.log",
-            )
-
-        assert url.url == PRESIGNED_URL
-        assert url.method == "GET"
-
-        # Existence is checked before a URL is handed out, on the prefixed key.
-        mock_boto3_client.head_object.assert_called_once_with(
-            Bucket="test-bucket", Key="evidence/case456/file.log"
-        )
-
-        kwargs = mock_boto3_client.generate_presigned_url.call_args.kwargs
-        assert kwargs["ClientMethod"] == "get_object"
-        assert kwargs["Params"] == {
-            "Bucket": "test-bucket",
-            "Key": "evidence/case456/file.log",
-            # The download name the user sees comes from `filename`, not the key.
-            "ResponseContentDisposition": 'attachment; filename="file.log"',
-        }
 
     @_REQUIRES_BOTO3
     @pytest.mark.asyncio
@@ -1020,15 +867,7 @@ class TestStorageIntegration:
         content = b"Error log content here"
         content_type = "text/plain"
 
-        # Step 1: Generate upload URL (client would use this)
-        upload_url = await filesystem_backend.generate_upload_url(
-            key=key,
-            content_type=content_type,
-        )
-        assert upload_url.url is not None
-        assert not upload_url.is_expired
-
-        # Step 2: Store file (server-side or via presigned URL)
+        # Step 1: Store file
         stored = await filesystem_backend.store_file(
             key=key,
             data=content,
@@ -1036,48 +875,17 @@ class TestStorageIntegration:
         )
         assert stored.size_bytes == len(content)
 
-        # Step 3: Generate download URL
-        download_url = await filesystem_backend.generate_download_url(
-            key=key,
-            filename="error.log",
-        )
-        assert download_url.url is not None
-
-        # Step 4: Verify file info
+        # Step 2: Verify file info
         info = await filesystem_backend.get_file_info(key)
         assert info is not None
         # Note: Filesystem backend doesn't persist content_type metadata,
         # returns default application/octet-stream
         assert info.content_type == "application/octet-stream"
 
-        # Step 5: Retrieve content
+        # Step 3: Retrieve content
         retrieved = await filesystem_backend.retrieve_file(key)
         assert retrieved == content
 
-        # Step 6: Cleanup
+        # Step 4: Cleanup
         deleted = await filesystem_backend.delete_file(key)
         assert deleted is True
-
-    @pytest.mark.asyncio
-    async def test_url_expiration(self, filesystem_backend):
-        """Test presigned URL expiration tracking."""
-        key = "test/expiry.txt"
-        await filesystem_backend.store_file(key, b"test")
-
-        # Short expiry
-        url = await filesystem_backend.generate_download_url(
-            key=key,
-            expires_in=timedelta(seconds=10),
-        )
-
-        assert not url.is_expired
-        assert url.seconds_until_expiry > 0
-        assert url.seconds_until_expiry <= 10
-
-        # Long expiry
-        url_long = await filesystem_backend.generate_download_url(
-            key=key,
-            expires_in=timedelta(hours=24),
-        )
-
-        assert url_long.seconds_until_expiry > 3600  # More than 1 hour
