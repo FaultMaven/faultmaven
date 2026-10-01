@@ -1391,8 +1391,13 @@ def in_memory_database_url(monkeypatch):
 # ``pytest tests/integration/...`` does not — so a fixture that is not re-exported
 # here is missing in exactly the invocation a developer reaches for.
 # ``tests/unit/architecture/test_app_boot_is_shared.py`` fails when a directory
-# carrying its own ``pytest.ini`` stops re-exporting the shared app boot.
+# carrying its own ``pytest.ini`` stops re-exporting the shared app boot, or
+# ``_app_boot_guard`` and ``_app_boot_session``, the autouse fixtures through
+# which the runtime check on a second lifespan learns which test is running
+# (fm#1628).
 from tests.conftest import (  # noqa: E402,F401
+    _app_boot_guard,
+    _app_boot_session,
     _real_app_boot,
     booted_app_client,
     restore_tenant_context,

@@ -669,8 +669,13 @@ def clean_test_environment():
 # to its own event loop, and its shutdown disposes the database engine the
 # first client is still serving from.
 #
-# ``tests/unit/architecture/test_app_boot_is_shared.py`` holds the census and
-# fails on a site that does neither.
+# Both are enforced at runtime, by object identity, by the ``TestClient`` guard
+# below (fm#1628). It counts the lifespans live on ``faultmaven.main.app`` and
+# fails a second one at the moment it is entered, and it fails an undeclared
+# entry in a borrowing module whether or not the shared boot happens to be live
+# at that moment. ``tests/unit/architecture/test_app_boot_is_shared.py`` holds
+# the census, which is the boot BUDGET: it fails on an unlisted site, but it
+# does not decide whether a site is safe.
 
 
 def _import_real_app():
@@ -700,7 +705,16 @@ class _RealAppBoot:
 
             app = self._app_factory()
             client = TestClient(app)
-            client.__enter__()
+            # The one entry on the real app allowed from a fixture wider than
+            # one test, and in a borrowing module without ``unshared_app_boot``.
+            # The guard below exempts it from those two rules by this flag,
+            # raised for this one call and never left on the client, and it
+            # still counts this lifespan: a second one live fails it too.
+            _APP_BOOT_CONTEXT.broker_entering = True
+            try:
+                client.__enter__()
+            finally:
+                _APP_BOOT_CONTEXT.broker_entering = False
             self._app = app
             self._client = client
             # Starlette's ``State`` is a dict behind an attribute facade; a
@@ -766,6 +780,304 @@ def unshared_app_boot(_real_app_boot):
         yield
     finally:
         _real_app_boot.release()
+
+
+# ---------------------------------------------------------------------------
+# The lifespans on the real app, checked where they are entered (fm#1628)
+# ---------------------------------------------------------------------------
+#
+# Two lifespans live on ``faultmaven.main.app`` at once is the failure the
+# shared boot is built to prevent. The census used to look for it by matching
+# each ``TestClient(...)`` argument's TEXT against the module's aliases for the
+# app. Text is not scope: ``real = app`` read as a scratch app and hid a real
+# boot, and a local ``app = FastAPI()`` read as the real one.
+#
+# So the property itself is checked. ``TestClient.__enter__`` and ``__exit__``
+# are wrapped once per process. An entry whose application resolves to the one
+# object ``faultmaven.main.app`` names, itself or through the ``.app`` of the
+# middleware wrapped around it, meets three rules, in this order:
+#   (a) scope: none is opened outside a test's function scope. The running test
+#       is recorded by a function-scoped fixture, so a fixture scoped wider than
+#       one test is set up before it and reads no test. Its lifespan would
+#       outlive the test that set it up (a session-scoped one outlives its
+#       module), and it cannot take the function-scoped ``unshared_app_boot``.
+#   (b) declaration: in a module that borrows the shared boot, only a test that
+#       takes ``unshared_app_boot`` opens one. "Borrows" is read off the
+#       session's collected items, so the verdict does not depend on whether a
+#       shared boot happens to be live when the test runs: test order and xdist
+#       distribution cannot change it.
+#   (c) live count: none is opened while another is live. That is the overlap
+#       itself, so it catches what (a) and (b) let through: a fixture entering
+#       before ``unshared_app_boot`` has stood the shared boot down, a re-entry
+#       of a lent client, two nested entries in a declared test, a lifespan
+#       left open, and a borrow made by ``request.getfixturevalue``.
+# (a) and (b) are checked first so that a failure names the rule that applies.
+# With (c) first, an undeclared entry beside a live shared boot would be
+# reported as an overlap rather than as the missing declaration.
+#
+# The shared broker is exempt from (a) and (b), never from (c), by a flag it
+# raises on the guard's context for the one entry it makes. No name is
+# resolved, so an alias, a rebinding, a keyword argument, a manual
+# ``__enter__()`` and an ``ExitStack`` all reach the same comparison, and an
+# application built in the test never does. ``fastapi.testclient.TestClient``
+# is starlette's class, so one wrapper covers both import paths.
+#
+# Two more rules are checked around each test. At setup, a test takes
+# ``booted_app_client`` or ``unshared_app_boot``, never both: one borrows the
+# shared boot and the other stands it down, so whether their lifespans overlap
+# would depend on fixture order. At teardown, a test fails if a lifespan it
+# opened is still live. That puts a leak on the test that made it rather than
+# on the next one to enter, and it closes the one route around (a): a fixture
+# scoped wider than one test, pulled in by ``request.getfixturevalue``, is set
+# up inside the test's scope but outlives it.
+#
+# The running test is recorded per pytest session. ``_app_boot_session`` clears
+# the record when a session starts and restores it when the session ends, so a
+# session run in-process inside a test (``pytester.runpytest_inprocess``)
+# starts with no test recorded, and its module-scoped fixtures meet (a) like
+# any other.
+
+import functools  # noqa: E402 - kept beside the guard that uses it
+import textwrap  # noqa: E402
+
+#: What to do about a boot of ``faultmaven.main.app``. The guard below fails
+#: with it, and the census appends it to every message that pins a number, so
+#: the two cannot drift apart.
+APP_BOOT_GUIDANCE = textwrap.dedent("""
+    What to do:
+      * a test that needs *a* started application takes the
+        `booted_app_client` fixture (tests/conftest.py) and opens no
+        TestClient context of its own, not even on the client it is lent;
+      * a test whose SUBJECT is the lifespan (a boot under a patched
+        environment, or one asserted to refuse) keeps its own TestClient
+        context AND takes the `unshared_app_boot` fixture, which stands the
+        module's shared boot down first, and does not also take
+        `booted_app_client`. It opens one lifespan at a time and exits each
+        one it opens;
+      * a boot of faultmaven.main.app happens inside a test or a
+        function-scoped fixture. Only the shared boot is opened from a
+        fixture scoped wider than one test;
+      * every TestClient context is listed in EXPECTED in
+        tests/unit/architecture/test_app_boot_is_shared.py, the boot budget:
+        "real" with the reason if it boots faultmaven.main.app, "scratch" if
+        it drives an application the test built. That census tells the two
+        apart by NAME, so a rebinding (`real = app`) reads "scratch" and a
+        local `app = FastAPI()` in a file that imports the real app reads
+        "real". List the site as the census reads it and say so in its
+        comment: a misread costs a mis-counted budget line, never an overlap,
+        because the overlap is checked by identity when the lifespan is
+        entered.
+    Two lifespans on one app object is the failure this prevents (fm#1569):
+    the second re-composes app.state onto its own event loop, and its
+    shutdown disposes the database engine the first client is still serving
+    from.
+    """)
+
+#: How many ``.app`` hops the guard follows from a client's application to the
+#: real app inside the middleware wrapped around it. Bounded, so an object
+#: whose ``.app`` never ends (a ``Mock``) cannot loop.
+_APP_WRAPPER_DEPTH = 8
+
+
+def _resolves_to(app, target) -> bool:
+    """Whether ``app`` is ``target``, or wraps it through ``.app`` attributes."""
+    for _hop in range(_APP_WRAPPER_DEPTH + 1):
+        if app is target:
+            return True
+        try:
+            app = getattr(app, "app", None)
+        except Exception:
+            # An ``.app`` that raises (a property needing a context the test
+            # never built) is no route to the real app, and it must not crash
+            # the entry of a scratch app that happens to carry it.
+            return False
+        if app is None:
+            return False
+    return False
+
+
+def _install_app_boot_guard() -> SimpleNamespace:
+    """Wrap ``TestClient.__enter__`` and ``__exit__`` once; return their context.
+
+    Idempotent across copies of this file. It can be imported under more than
+    one module name in one process (see ``WORKER_DATABASE_URL_ENV``), and a
+    second copy adopts the installed guard's context rather than wrapping twice
+    or writing to a context no wrapper reads. That is also why the broker's
+    exemption is a field of this shared context and not a global of one copy.
+    """
+    from starlette.testclient import TestClient
+
+    installed = getattr(TestClient.__enter__, "_fm_app_boot_context", None)
+    if installed is not None:
+        return installed
+
+    context = SimpleNamespace(
+        # The running test, recorded by ``_app_boot_guard``.
+        test=None,
+        borrows=False,
+        declares_unshared=False,
+        # Raised by ``_RealAppBoot.client`` around its own entry, and consumed
+        # by that entry, so it exempts exactly one.
+        broker_entering=False,
+        # ``(client, opened_by, owner)`` for each lifespan on the real app now
+        # live. ``owner`` is the test that opened it, or None for the shared
+        # boot, which outlives its borrowers by design.
+        live=[],
+    )
+    enter = TestClient.__enter__
+    exit_ = TestClient.__exit__
+
+    def refuse(message: str) -> None:
+        pytest.fail(message + "\n" + APP_BOOT_GUIDANCE, pytrace=False)
+
+    @functools.wraps(enter)
+    def guarded_enter(self):
+        broker, context.broker_entering = context.broker_entering, False
+        main = sys.modules.get("faultmaven.main")
+        real = getattr(main, "app", None) if main is not None else None
+        if real is None or not _resolves_to(self.app, real):
+            return enter(self)
+
+        test = context.test
+        if not broker:
+            # (a) scope
+            if test is None:
+                during = os.environ.get("PYTEST_CURRENT_TEST")
+                refuse(
+                    "the lifespan of faultmaven.main.app is entered outside any "
+                    "test's function scope"
+                    + (f" (during {during})" if during else "")
+                    + ": by a fixture scoped wider than one test, or at import. "
+                    "Only the shared boot is opened from there; a wider-scoped "
+                    "fixture cannot take `unshared_app_boot`, and its lifespan "
+                    "would outlive the test that set it up."
+                )
+            # (b) declaration
+            if context.borrows and not context.declares_unshared:
+                refuse(
+                    f"{test} enters the lifespan of faultmaven.main.app in a "
+                    "module that borrows the shared boot (`booted_app_client`), "
+                    "without taking `unshared_app_boot`."
+                )
+        # (c) live count, the broker included
+        if broker:
+            entrant = "the shared boot" + (f" for {test}" if test else "")
+        else:
+            entrant = test
+        if context.live:
+            refuse(
+                f"{entrant} enters the lifespan of faultmaven.main.app while "
+                "another lifespan on it is live, opened by "
+                + "; ".join(opened_by for _client, opened_by, _owner in context.live)
+                + ". Exit one lifespan before the next is entered."
+            )
+        result = enter(self)
+        context.live.append((self, entrant, None if broker else test))
+        return result
+
+    @functools.wraps(exit_)
+    def guarded_exit(self, *exc_info):
+        try:
+            return exit_(self, *exc_info)
+        finally:
+            # Identity, not equality, and whether or not the shutdown raised:
+            # the lifespan is over either way.
+            for index in range(len(context.live) - 1, -1, -1):
+                if context.live[index][0] is self:
+                    del context.live[index]
+                    break
+
+    guarded_enter._fm_app_boot_context = context
+    TestClient.__enter__ = guarded_enter
+    TestClient.__exit__ = guarded_exit
+    return context
+
+
+_APP_BOOT_CONTEXT = _install_app_boot_guard()
+
+_BORROWING_MODULES = pytest.StashKey[frozenset]()
+
+
+def _borrowing_modules(session) -> frozenset:
+    """Modules with a collected test that takes ``booted_app_client``.
+
+    Computed once per session. ``fixturenames`` is a test's whole fixture
+    closure, so a borrow through another fixture counts as well. A borrow by
+    ``request.getfixturevalue`` does not, and is left to the live count.
+    """
+    borrowing = session.stash.get(_BORROWING_MODULES, None)
+    if borrowing is None:
+        borrowing = frozenset(
+            item.module.__name__
+            for item in session.items
+            if "booted_app_client" in getattr(item, "fixturenames", ())
+        )
+        session.stash[_BORROWING_MODULES] = borrowing
+    return borrowing
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _app_boot_session():
+    """Start each pytest session with no test recorded, and end it as it found it.
+
+    A session run in-process inside a test (``pytester.runpytest_inprocess``)
+    would otherwise begin with the outer test recorded, and its module-scoped
+    fixtures would pass the scope rule as if they ran inside that test. When it
+    ends, the outer test is recorded again.
+    """
+    context = _APP_BOOT_CONTEXT
+    saved = (context.test, context.borrows, context.declares_unshared)
+    try:
+        context.test, context.borrows, context.declares_unshared = None, False, False
+        yield
+    finally:
+        context.test, context.borrows, context.declares_unshared = saved
+
+
+@pytest.fixture(autouse=True)
+def _app_boot_guard(request):
+    """Tell the ``TestClient`` guard which test is running.
+
+    A fixture rather than a collection hook, so that a directory carrying its
+    own ``pytest.ini`` gets the guard by the same re-export that gives it the
+    shared boot (``tests/integration/conftest.py``).
+
+    It saves the context it replaces and restores it afterwards.
+
+    Also refuses, at setup, a test that requests both ``booted_app_client``
+    and ``unshared_app_boot``. It is autouse, so it is set up before either.
+    At teardown, after the test's own function-scoped fixtures, it fails the
+    test if a lifespan the test opened is still live.
+    """
+    if {"booted_app_client", "unshared_app_boot"} <= set(request.fixturenames):
+        pytest.fail(
+            f"{request.node.nodeid} requests both `booted_app_client` and "
+            "`unshared_app_boot`. One borrows the shared boot and the other "
+            "stands it down, so whether their lifespans overlap would depend "
+            "on fixture order.\n" + APP_BOOT_GUIDANCE,
+            pytrace=False,
+        )
+    module = getattr(request.node, "module", None)
+    context = _APP_BOOT_CONTEXT
+    saved = (context.test, context.borrows, context.declares_unshared)
+    try:
+        context.test = request.node.nodeid
+        context.borrows = module is not None and (
+            module.__name__ in _borrowing_modules(request.session)
+        )
+        context.declares_unshared = "unshared_app_boot" in request.fixturenames
+        yield
+        if any(owner == request.node.nodeid for _c, _by, owner in context.live):
+            pytest.fail(
+                f"{request.node.nodeid} leaves a lifespan on faultmaven.main.app "
+                "open when it ends: a TestClient it entered and never exited, or "
+                "a fixture scoped wider than one test, pulled in by "
+                "`request.getfixturevalue`, whose lifespan outlives the test.\n"
+                + APP_BOOT_GUIDANCE,
+                pytrace=False,
+            )
+    finally:
+        context.test, context.borrows, context.declares_unshared = saved
 
 
 # Mock _ctypes module for Python 3.11 compatibility when libffi is not available
