@@ -70,6 +70,17 @@ def is_postgresql(database_url: str) -> bool:
     return database_url.startswith("postgresql")
 
 
+def active_database_backend() -> Optional[str]:
+    """The dialect of the engine this process built (``"postgresql"``,
+    ``"sqlite"``), or ``None`` before :func:`get_engine` has built one.
+
+    Read from the engine, not from a URL: the engine is a first-caller-wins
+    singleton that accepts an override, so the configured URL is only a claim
+    about which database serves queries.
+    """
+    return _engine.dialect.name if _engine is not None else None
+
+
 # ============================================================
 # Engine Configuration
 # ============================================================
@@ -388,12 +399,13 @@ async def check_database_health(database_url: Optional[str] = None) -> dict:
             # SQLAlchemy 2.0 async API requires text() wrapper for raw SQL.
             result = await session.execute(text("SELECT 1"))
             result.fetchone()
+            # The dialect of the connection that just answered — not the
+            # configured URL, which the ``database_url`` override bypasses.
+            database_type = session.get_bind().dialect.name
 
         return {
             "status": "healthy",
-            "database_type": (
-                "sqlite" if is_sqlite(get_database_url()) else "postgresql"
-            ),
+            "database_type": database_type,
         }
     except Exception as e:
         return {

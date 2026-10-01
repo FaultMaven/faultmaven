@@ -1351,63 +1351,41 @@ async def get_env_config_status(
             tenant_daily_turn_cap=settings.agent.tenant_daily_turn_cap,
         )
 
-        # Report actual runtime state, not raw setting defaults.
-        # Bootstrap may create persistent stores even when settings say "inmemory".
-        from pathlib import Path
-
-        # Database: check alembic.ini for actual DB URL (bootstrap always uses this)
-        db_backend = settings.database.case_storage_type
-        alembic_url = ""
-        alembic_config = getattr(settings.database, "alembic_config", None)
-        ini_candidates = [Path("alembic.ini")]
-        if alembic_config:
-            ini_candidates.append(Path(alembic_config))
-        for ini_path in ini_candidates:
-            if ini_path.exists():
-                for line in ini_path.read_text().splitlines():
-                    if line.strip().startswith("sqlalchemy.url"):
-                        alembic_url = line.split("=", 1)[1].strip()
-                        break
-                break
-        if "sqlite" in alembic_url:
-            db_backend = "sqlite"
-        elif "postgresql" in alembic_url:
-            db_backend = "postgresql"
-
-        # Vector storage: check if ChromaDB PersistentClient is active
-        vector_storage = settings.database.vector_storage_type
-        # Through the shared resolvers, like the bootstrap, fm-reset-kb and
-        # fm-wipe-deployment: one spelling of "where is the local store". A
-        # bare getattr read the raw string, so this existence probe ran against
-        # a path relative to the API process's cwd while the operator surfaces
-        # reported another — the fm#936 shape, on a status endpoint. An
-        # unusable knob answers "not active", which is exactly what it is.
-        from faultmaven.bootstrap.data_init import (
-            UnusableDataDirError,
-            resolve_evidence_chroma_dir,
-            resolve_kb_chroma_dir,
+        # Storage backends: each read from the live object this process serves
+        # with, never from settings — a setting is only a claim about what was
+        # built, and every one of these has a path where the two differ.
+        from faultmaven.api.dependencies import (
+            database_backend_name,
+            session_storage_backend_name,
+            vector_storage_backend_name,
         )
 
-        def _store_active(resolve) -> bool:
-            try:
-                return (resolve(settings) / "chroma.sqlite3").exists()
-            except UnusableDataDirError:
-                return False
+        # Database: the dialect of the engine ``get_engine`` built. Not
+        # ``alembic.ini``: its ``sqlalchemy.url`` is a SQLite placeholder that
+        # ``alembic/env.py`` replaces with ``DATABASE_URL``, so reading it
+        # reported "sqlite" on every deployment that ships the file.
+        db_backend = database_backend_name()
 
-        kb_active = _store_active(resolve_kb_chroma_dir)
-        evidence_active = _store_active(resolve_evidence_chroma_dir)
-        if kb_active and evidence_active:
-            vector_storage = "chromadb (persistent, split: kb + evidence)"
-        elif kb_active:
-            vector_storage = "chromadb (persistent, kb only)"
+        # Vector storage: whether the KB and evidence clients the container built
+        # (published on ``app.state`` by the composition root) talk to a ChromaDB
+        # server or a local tree. Not ``VECTOR_STORAGE_TYPE`` plus a
+        # ``chroma.sqlite3`` probe: a configured server can fall back to a local
+        # client on standalone, and a stale local file says nothing about a
+        # process talking HTTP.
+        vector_storage = vector_storage_backend_name(
+            getattr(request.app.state, "kb_chromadb_client", None),
+            getattr(request.app.state, "evidence_chromadb_client", None),
+        )
 
-        # Session storage: FakeRedis = inmemory, real Redis = redis
-        session_storage = settings.database.session_storage_type
-        redis_url = getattr(settings.database, "redis_url", None)
-        if redis_url and "redis://" in str(redis_url):
-            session_storage = "redis"
-        else:
-            session_storage = "fakeredis (inmemory)"
+        # Session storage: the container's Redis client — the one the session
+        # store is built with, set on ``app.state`` by the composition root. It
+        # answers for sessions only: the rate limiter and config propagation can
+        # hold clients of their own. Settings cannot answer this: a server named
+        # by ``REDIS_HOST`` has no ``redis_url``, and standalone serves from the
+        # in-process stand-in when its configured Redis is unusable.
+        session_storage = session_storage_backend_name(
+            getattr(request.app.state, "redis_client", None)
+        )
 
         return EnvConfigStatusResponse(
             auth_mode=settings.auth.auth_mode,

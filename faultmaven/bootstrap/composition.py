@@ -371,6 +371,14 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
     # client (never None), so this is always populated.
     app.state.redis_client = container.get_redis_client()
 
+    # The ChromaDB clients the container built (``None`` when skipped), so
+    # GET /admin/config/status can report what they talk to without a route
+    # reaching into the container.
+    app.state.kb_chromadb_client = getattr(container, "kb_chromadb_client", None)
+    app.state.evidence_chromadb_client = getattr(
+        container, "evidence_chromadb_client", None
+    )
+
     # Refuse to serve if another process in this deployment redacts under a
     # different key. Resolution alone cannot establish that — whether a
     # generated key is shared is a property of the topology, which the app
