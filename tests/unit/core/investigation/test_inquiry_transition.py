@@ -19,13 +19,18 @@ Test Coverage:
 
 import json
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import faultmaven.core.investigation.milestone_engine.response_application as response_application
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.response_application import (
     ResponseApplier,
+)
+from faultmaven.core.investigation.milestone_engine.transition_consent import (
+    TYPED_CONFIRMATION_LINE,
+    gate1_offer_key,
 )
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
@@ -507,7 +512,7 @@ class TestInquiryTransitionLogic:
         assert updated_case.inquiry.problem_statement_confirmed is False
 
     @pytest.mark.asyncio
-    async def test_user_confirmation_triggers_transition(
+    async def test_user_confirmation_triggers_transition_only_on_a_bare_token(
         self, mock_llm, mock_repo, inquiry_case
     ):
         """Post-redesign INV-19: INQUIRY → INVESTIGATING requires Gate 1
@@ -515,7 +520,12 @@ class TestInquiryTransitionLogic:
         ``symptom_verified``.
 
         Turn 1: Agent presents problem statement (stays INQUIRY, Gate 1 open)
-        Turn 2: User confirms problem → Gate 1 closes → transition to
+        Turn 2: User confirms in a sentence ("Yes, that's correct. Please
+                investigate.") and the LLM reads it honestly as a
+                confirmation, but the typed text is not one bare consent
+                token, so Gate 1 does not commit (#1794, ruling (a)): the
+                case stays in INQUIRY and the refusal is counted.
+        Turn 3: User types a bare "yes" → Gate 1 closes → transition to
                 INVESTIGATING. path_selection is None at this point;
                 Gate 2 will fire after symptom_verified in subsequent
                 turns.
@@ -571,17 +581,31 @@ class TestInquiryTransitionLogic:
         )
         mock_llm.generate.return_value = mock_response_turn2
 
-        result2 = await engine.process_turn(
-            case_after_turn1,
-            "Yes, that's correct. Please investigate.",
-        )
+        with patch.object(
+            response_application, "inquiry_handshake_deferred_total"
+        ) as deferred:
+            result2 = await engine.process_turn(
+                case_after_turn1,
+                "Yes, that's correct. Please investigate.",
+            )
 
-        # Turn 2: Gate 1 closed → transition to INVESTIGATING.
-        # Post-redesign there is no path fork to commit.
+        # Turn 2: the flag is set, the text is not bare — nothing commits.
         case_after_turn2 = result2["case_updated"]
-        assert case_after_turn2.state == CaseState.INVESTIGATING
-        assert case_after_turn2.inquiry.problem_statement_confirmed is True
-        assert result2["metadata"]["status_transitioned"] is True
+        assert case_after_turn2.state == CaseState.INQUIRY
+        assert case_after_turn2.inquiry.problem_statement_confirmed is False
+        deferred.labels.assert_called_once_with(reason="not_bare")
+        # Gate 1 stays pending, so the engine re-presents it with its card.
+        assert "Yes, let's investigate" in [
+            f["label"] for f in result2["suggested_follow_ups"]
+        ]
+
+        # Turn 3: a bare "yes" → Gate 1 closed → transition to INVESTIGATING.
+        # Post-redesign there is no path fork to commit.
+        result3 = await engine.process_turn(case_after_turn2, "yes")
+        case_after_turn3 = result3["case_updated"]
+        assert case_after_turn3.state == CaseState.INVESTIGATING
+        assert case_after_turn3.inquiry.problem_statement_confirmed is True
+        assert result3["metadata"]["status_transitioned"] is True
 
     @pytest.mark.asyncio
     async def test_user_declines_investigation_stays_inquiry(
@@ -975,6 +999,9 @@ class TestGate1PresentsItsStatement:
         block = _gate1_statement_presentation(case)
 
         assert "awaiting your confirmation" in block.lower()
+        # #1814, ruling (b): the frame says what a typed confirmation must look
+        # like, unconditionally, as its own last paragraph.
+        assert block.endswith(f"\n\n{TYPED_CONFIRMATION_LINE}")
         # The statement under test contains no "?", so any "?" here is the
         # frame asking one.
         assert "?" not in block, (
@@ -1012,7 +1039,8 @@ class TestGate1PresentsItsStatement:
             inquiry_case,
             "Yes, that's correct. Let's investigate.",
             intent_type="confirmation",
-            intent_data={"value": True},
+            # The card names the offer it presents: the statement shown (#1812).
+            intent_data={"value": True, "proposal_id": gate1_offer_key(seen)},
         )
         updated = result["case_updated"]
 
@@ -1050,12 +1078,58 @@ class TestGate1PresentsItsStatement:
             }
         )
 
-        result = await engine.process_turn(inquiry_case, "yes, that's right")
+        # A bare consent token: the only typed text the flag commits on (#1794).
+        result = await engine.process_turn(inquiry_case, "that's right")
         updated = result["case_updated"]
 
         assert updated.inquiry.problem_statement_confirmed is True
         assert updated.inquiry.proposed_problem_statement == seen
         assert updated.description == seen
+
+    @pytest.mark.asyncio
+    async def test_a_non_bare_consent_keeps_the_revision_and_commits_nothing(
+        self, mock_llm, mock_repo, inquiry_case
+    ):
+        """#1794, ruling (a) item 3: the write guard keys on the SCREENED consent.
+
+        "yes but it's the primary too" is a confirmation the LLM reads honestly
+        and a correction at once. It is not one bare consent token, so it
+        commits nothing — and because the guard keys on the screened consent,
+        computed before the write, the correction it carries is applied rather
+        than dropped as a same-turn reword. Keyed on the raw flag, the turn
+        would lose the correction and commit nothing.
+        """
+        seen = "Replica db-2 lags the primary by >30s since 09:00 UTC"
+        revised = "Primary db-1 and replica db-2 both lag since 09:00 UTC"
+        inquiry_case.inquiry.proposed_problem_statement = seen
+        inquiry_case.inquiry.problem_statement_confirmed = False
+        inquiry_case.current_turn = 2
+
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        mock_llm.generate.return_value = json.dumps(
+            {
+                "agent_response": "Noted — the primary is affected too.",
+                "state_updates": {
+                    "proposed_problem_statement": revised,
+                    "user_confirmed_investigation": True,
+                },
+            }
+        )
+
+        with patch.object(
+            response_application, "inquiry_handshake_deferred_total"
+        ) as deferred:
+            result = await engine.process_turn(
+                inquiry_case, "yes but it's the primary too"
+            )
+        updated = result["case_updated"]
+
+        assert updated.state == CaseState.INQUIRY
+        assert updated.inquiry.problem_statement_confirmed is False
+        assert updated.inquiry.proposed_problem_statement == revised
+        deferred.labels.assert_called_once_with(reason="not_bare")
+        # The revised statement is what Gate 1 now presents.
+        assert revised in result["agent_response"]
 
     @pytest.mark.asyncio
     async def test_first_write_with_consent_keeps_the_statement_and_refuses(
@@ -1442,12 +1516,12 @@ class TestGate1ConsentPredicate:
             InvestigationService,
         )
 
-        def calls_predicate(func) -> bool:
+        def calls_predicate(func, name="gate1_statement_is_confirmable") -> bool:
             tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
             return any(
                 isinstance(n, ast.Call)
                 and isinstance(n.func, ast.Name)
-                and n.func.id == "gate1_statement_is_confirmable"
+                and n.func.id == name
                 for n in ast.walk(tree)
             )
 
@@ -1460,3 +1534,45 @@ class TestGate1ConsentPredicate:
         assert calls_predicate(
             _minted_intent_swallows_gate_consent
         ), "the resolver-minted path no longer routes through it"
+
+        # #1794, ruling (a): the bare screen at the same three sites. The LLM's
+        # flag, a minted confirmation reaching 0c, and the adoption guard each
+        # count only when the turn's typed text is one bare consent token.
+        for site, what in (
+            (ResponseApplier._apply_inquiry_updates, "the LLM flag"),
+            (MilestoneEngine._process_turn_impl, "a minted confirmation at 0c"),
+            (_minted_intent_swallows_gate_consent, "the adoption guard"),
+        ):
+            assert calls_predicate(
+                site, "gate1_bare_consent"
+            ), f"{what} no longer screens Gate 1 consent with gate1_bare_consent"
+
+    @pytest.mark.parametrize(
+        "message, bare",
+        [
+            ("yes", True),
+            ("Yes!", True),
+            ("ok", True),
+            ("lgtm \U0001f44d", True),
+            ("correct", True),
+            ("that's right", True),
+            ("go ahead", True),
+            ("close it", False),
+            ("resolve it", False),
+            ("mark as resolved", False),
+            ("yes please", False),
+            ("\U0001f44d", False),
+            ("yes?", False),
+            ("yes but it's the primary too", False),
+            ("Yes, that's correct. Let's investigate.", False),
+            ("ok, don't start yet", False),
+        ],
+    )
+    def test_the_bare_screen(self, message, bare):
+        """#1794's probe table: a target-scoped token is not Gate 1 consent,
+        and the Gate-1 card's own payload, typed, is not bare."""
+        from faultmaven.core.investigation.milestone_engine.transition_consent import (
+            gate1_bare_consent,
+        )
+
+        assert gate1_bare_consent(message) is bare

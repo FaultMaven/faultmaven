@@ -164,7 +164,6 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
             "case and does not need the incident held open. Shall I mark this "
             "case resolved?"
         )
-        suggestions = _resolution_confirmation_suggestions()
     else:
         to_state = "closed"
         gate_message = (
@@ -173,7 +172,6 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
             "(a change request, maintenance window, or another team). Shall I close "
             "this case with the solution documented for your team to apply?"
         )
-        suggestions = _close_confirmation_suggestions()
 
     propose_transition(case=case, to_state=to_state, summary=gate_message)
     # Provenance AND payload in one key: this proposer is the only writer of
@@ -186,7 +184,13 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     # _check_automatic_transitions from confirming this disposition with the
     # very message that produced it (#722 same-turn-confirmation guard).
     metadata["transition_proposed_this_turn"] = True
-    metadata["override_suggestions"] = suggestions
+    # Built only now: each card names the offer ``propose_transition`` just
+    # stamped (#1812), and none stood above it.
+    metadata["override_suggestions"] = (
+        _resolution_confirmation_suggestions(case)
+        if to_state == "resolved"
+        else _close_confirmation_suggestions(case)
+    )
     # Rendered by the response composer, the same way the rca_infeasible
     # sibling's message is. Before this the key was written and read NOWHERE,
     # so the engine proposed a disposition the user saw only as a bare
@@ -337,7 +341,7 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
     # (read off the response object) is what separates an engine offer from a
     # model one.
     metadata["transition_proposed_this_turn"] = True
-    metadata["override_suggestions"] = _resolution_confirmation_suggestions()
+    metadata["override_suggestions"] = _resolution_confirmation_suggestions(case)
     # Rendered by the response composer below the model's reply. An
     # engine-proposed disposition has to say why it is on the table — the
     # deferred sibling shipped a bare confirm/decline pair for exactly as long

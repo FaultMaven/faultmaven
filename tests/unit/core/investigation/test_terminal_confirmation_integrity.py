@@ -251,7 +251,18 @@ class TestMintedIntentGateOneConsentGuard:
         case = self._inquiry_awaiting_gate_one()
         minted = QueryIntent(type=IntentType.CONFIRMATION, confirmation_value=True)
         assert self.GUARD(case, minted, "yes") is False
-        assert self.GUARD(case, minted, "affirmative") is False
+        assert self.GUARD(case, minted, "that's right") is False
+
+    @pytest.mark.parametrize(
+        "message", ["affirmative", "yes please", "ok, don't start yet"]
+    )
+    def test_a_mint_on_text_that_is_not_bare_is_refused(self, message):
+        """#1794, ruling (a): Gate 1 counts a minted confirmation only when the
+        turn's typed text is one bare consent token, whether or not the text
+        is substantive. "affirmative" was adopted before the ruling."""
+        case = self._inquiry_awaiting_gate_one()
+        minted = QueryIntent(type=IntentType.CONFIRMATION, confirmation_value=True)
+        assert self.GUARD(case, minted, message) is True
 
     @pytest.mark.parametrize(
         "message",

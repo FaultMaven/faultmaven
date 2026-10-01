@@ -191,7 +191,10 @@ Single token: `1`, `2`, ..., `N`, or `none`.
 
 A resolver match is an **inference** from typed text, not a deterministic click — but the engine treats adopted intents as click-equivalent consent and consults them *before* its INV-26 bare-token guards. Unguarded, the classifier could match `"yes but what about the replication lag?"` to "Yes, mark as resolved" and irreversibly resolve the case — consuming substantive input as consent, exactly what INV-26 forbids.
 
-So the adoption site (`intent_gates._minted_intent_swallows_gate_consent`) rejects a minted intent when it **would commit a gate** and the message is **substantive** per `terminal_transitions.is_substantive_reply` — the same predicate `confirmation_token_class` uses (>100 chars, contains `?`, or a contrastive `" but "`), so the confirm lanes cannot drift.
+So the adoption site (`intent_gates._minted_intent_swallows_gate_consent`) rejects a minted intent when it **would commit a gate** and the message is not consent to it. Each gate has its own screen:
+
+- **the pending terminal transition:** the message is **substantive** per `terminal_transitions.is_substantive_reply`, the same predicate `confirmation_token_class` uses (>100 chars, contains `?`, or a contrastive `" but "`), so the confirm lanes cannot drift. A shorter mint that is adopted still executes only when its text is a bare consent token, because the engine's pending gate reads the text (#1783);
+- **Gate 1:** the message is not one **bare** consent token, per `transition_consent.gate1_bare_consent` (#1794, ruling (a)). Gate 1 has no text reader downstream, so the guard applies the bare test itself: a mint on "yes please" or "ok, don't start yet" is dropped, and the LLM's flag on the same text meets the same test. The engine's section 0c applies it again to any minted confirmation that reaches it.
 
 There are two gates, and #721 guarded only the first:
 
@@ -211,7 +214,7 @@ There are two gates, and #721 guarded only the first:
 
 The engine-side rule (a branch keyed on `intent_type == "confirmation"` reads `intent_data["value"]`) holds across all three branches in `_process_turn_impl` and is scanned by `tests/unit/core/investigation/test_gate_one_decline_1464.py`.
 
-The rejected message falls back to conversation: where a pending transition exists it flows through the pending-gate escape lane (the proposal is withdrawn, the message is processed as a normal turn, and the engine can re-propose from fresher state); at Gate 1 the LLM simply reads the text. **Declines** — over a pending transition or at Gate 1 — and contradicting status transitions adopt as before: none of them commits anything, they only cancel a standing proposal, and the message is processed as a normal turn either way. DECIDE clicks are untouched: a click is deterministic consent.
+The rejected message falls back to conversation: where a pending transition exists it flows through the pending-gate escape lane (the proposal is withdrawn, the message is processed as a normal turn, and the engine can re-propose from fresher state); at Gate 1 the LLM simply reads the text. **Declines** — over a pending transition or at Gate 1 — and contradicting status transitions adopt as before: none of them commits anything, they only cancel a standing proposal, and the message is processed as a normal turn either way. DECIDE clicks are untouched: a click is deterministic consent, to the offer it names and only while that offer stands (#1812, INV-26 (c)). A mint carries whichever card the resolver matched, key included, and the key is never read: the text decides.
 
 ---
 

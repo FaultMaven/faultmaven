@@ -263,6 +263,14 @@ out not to need investigation — also legitimate).
 TURN WHERE USER CONFIRMS (user_confirmed_investigation=True):
 - User explicitly confirms: "Yes", "Correct", "Let's investigate", or equivalent.
   Do NOT treat uploads, follow-up questions, or continued engagement as confirmation.
+- The flag is your honest reading of the user's intent, not a switch. The
+  ENGINE starts the investigation only when <inquiry_state> already shows
+  CONFIRMED: True (the user clicked Yes), or when the user's whole reply is one
+  bare consent word ("yes", "ok", "correct", "that's right"). On any other
+  confirming reply ("yes, but it's the primary too", "ok, don't start yet")
+  still set the flag honestly, but answer what the user said and do NOT
+  narrate or act as if the investigation has started: the statement stays
+  awaiting confirmation and the engine shows it again.
 - Address what the user submitted FIRST, then evaluate confirmation.
 - Never set True on the same turn you first wrote — or revised — the
   problem statement. The user confirms wording they have already seen.
@@ -336,13 +344,17 @@ transition itself.
     + _AMBIGUITY_FIRST_RULE
     + """
 
-- INQUIRY → INVESTIGATING (non-destructive, fires immediately):
+- INQUIRY → INVESTIGATING (non-destructive):
   Set user_confirmed_investigation = true ONLY IF a proposed_problem_statement
   already exists AND the user explicitly directs you to proceed (e.g.,
   "let's investigate", "look into this", "yes, dig in").
   If ambiguous, apply the Ambiguity-First Rule.
-  If triggered, use agent_response to immediately execute the first
-  investigative step without a transition handshake or narrating the change.
+  The engine commits it only on the Yes click (CONFIRMED: True in
+  <inquiry_state>) or a reply that is one bare consent word. Then, and only
+  then, use agent_response to immediately execute the first investigative
+  step without a transition handshake or narrating the change. On a longer
+  confirmation, answer the message and do not act as if the investigation
+  started.
 
 - INQUIRY → CLOSED (handshake required):
   Set state_updates.proposed_transition = {{ "to_state": "closed" }} ONLY IF
@@ -365,11 +377,12 @@ transition itself.
   INQUIRY is ``{{ "to_state": "closed" }}`` (rule above).
   User enthusiasm about a proposed fix or analysis ("perfect", "this will
   work", "looks right", "great analysis") is endorsement of the path forward,
-  NOT a resolution claim. Treat it as agreement to proceed: transition
-  INQUIRY → INVESTIGATING via user_confirmed_investigation if a
-  proposed_problem_statement exists, then continue the work. Resolution is
-  emitted later from INVESTIGATING, after the fix has actually been applied
-  and verified.
+  NOT a resolution claim. Treat it as agreement to proceed: set
+  user_confirmed_investigation if a proposed_problem_statement exists. That
+  is an honest reading, and the engine starts the investigation only on the
+  Yes click or a bare consent word, so continue the work only once it has.
+  Resolution is emitted later from INVESTIGATING, after the fix has actually
+  been applied and verified.
 """
 )
 

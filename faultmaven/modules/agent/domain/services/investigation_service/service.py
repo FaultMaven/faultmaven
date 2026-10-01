@@ -862,6 +862,7 @@ class InvestigationService:
                     case=case,
                     user_message=query or "",
                     confirmation_value=(intent.confirmation_value if intent else None),
+                    proposal_id=(intent.proposal_id if intent else None),
                     user_id=user_id,
                     attachments=attachment_metadata or None,
                     typed=intent_minted,
@@ -1092,6 +1093,7 @@ class InvestigationService:
         case: "Case",
         user_message: str,
         confirmation_value: Optional[bool],
+        proposal_id: Optional[str] = None,
         user_id: Optional[str] = None,
         attachments: Optional[List[Dict[str, Any]]] = None,
         typed: bool = False,
@@ -1102,6 +1104,10 @@ class InvestigationService:
             case: Case entity
             user_message: User's confirmation message
             confirmation_value: True for yes, False for no
+            proposal_id: The offer the card named (``QueryIntent.proposal_id``).
+                The engine executes a click only when it names the offer
+                standing when it arrives (#1812); a minted intent keeps its
+                card's key, but the text decides it and the key is not read.
             user_id: Authenticated principal for the turn (keys the agent's
                 KB read allowlist)
             attachments: The turn's engine attachment metadata (see
@@ -1121,7 +1127,7 @@ class InvestigationService:
             user_message=user_message,
             attachments=attachments,
             intent_type="confirmation",
-            intent_data={"value": confirmation_value},
+            intent_data={"value": confirmation_value, "proposal_id": proposal_id},
             user_id=user_id,
             typed=typed,
         )

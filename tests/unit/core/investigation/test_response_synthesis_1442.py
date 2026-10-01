@@ -590,7 +590,7 @@ GATE_SITES = [
 def _force_branch(site, case, md, engine):
     """Stand in for what ``_process_response_structured`` records on a turn
     that selects *site*. Returns a replacement case where the branch needs one."""
-    suggestions = _close_confirmation_suggestions()
+    suggestions = _close_confirmation_suggestions(case)
     if site == "resolution_ready_for_confirmation":
         md[site] = True
     elif site == "resolution_suggest_close":

@@ -3,6 +3,9 @@
 from faultmaven.core.investigation.milestone_engine.affordances import (
     gate1_statement_is_confirmable,
 )
+from faultmaven.core.investigation.milestone_engine.transition_consent import (
+    gate1_bare_consent,
+)
 from faultmaven.models.api_models import (
     IntentType,
     QueryIntent,
@@ -18,8 +21,10 @@ def _minted_intent_swallows_gate_consent(
 ) -> bool:
     """INV-26 guard for resolver-minted intents (#721, widened by fm#918).
 
-    True when adopting ``minted`` would let a SUBSTANTIVE typed message
-    COMMIT A GATE. The IntentResolver's classifier tier semantically
+    True when adopting ``minted`` would let typed text that is not consent
+    COMMIT A GATE: a SUBSTANTIVE message for the pending terminal transition,
+    and, for Gate 1, any message that is not one bare consent token
+    (``gate1_bare_consent``, #1794 ruling (a)). The IntentResolver's classifier tier semantically
     matches typed text against the previous turn's DECIDE suggestions and
     can mint ``confirmation``/``status_transition`` intents — but the
     engine treats those intents as deterministic consent (the DECIDE-click
@@ -135,5 +140,14 @@ def _minted_intent_swallows_gate_consent(
         and gate1_statement_is_confirmable(_standing_statement)
     )
 
-    commits_gate = confirms_pending_transition or commits_gate_one
-    return commits_gate and is_substantive_reply(user_message)
+    # Each gate by its own screen. The terminal arm keeps the substance test:
+    # the engine's pending gate already executes a typed consent only when it
+    # is bare, and re-asks anything else it adopts. The Gate-1 arm applies the
+    # bare test here (#1794, ruling (a)), and section 0c is its second reader:
+    # it screens any minted Gate-1 confirmation that reaches it the same way.
+    # So a mint on "ok, don't start yet" or "yes please" is dropped here, and
+    # the text is processed as a normal turn, where the LLM's flag meets the
+    # same test.
+    return (confirms_pending_transition and is_substantive_reply(user_message)) or (
+        commits_gate_one and not gate1_bare_consent(user_message)
+    )

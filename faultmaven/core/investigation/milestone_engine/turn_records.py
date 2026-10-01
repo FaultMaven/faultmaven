@@ -189,7 +189,7 @@ def _finish_deterministic_turn(
 
     Nothing releases a pending gate on ``turns_without_progress``, so
     resetting it cannot change how long one stands: a pending terminal
-    proposal stands until the user answers it (a click, a bare consent token
+    proposal stands until the user answers it (its own click, a bare consent token
     or a decline), or sends a turn the gate never consumes — one carrying an
     upload, or a non-answer over 40 characters or containing "?" — which the
     gate's own escape lane withdraws it for. Everything else the gate answers

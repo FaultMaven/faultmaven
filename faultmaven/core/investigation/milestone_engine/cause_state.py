@@ -28,6 +28,8 @@ from faultmaven.core.investigation.cause_assurance import (
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.lifecycle_metrics import (
     cause_identification_held_mece_total,
+    engine_owned_affordance_served_total,
+    gate1_statement_composed_total,
     work_gate_crossed_total,
 )
 from faultmaven.core.investigation.verification_status import (
@@ -43,6 +45,11 @@ from faultmaven.modules.case.contracts import Case, CauseState
 from .stage_gates import (
     _refresh_working_conclusion,
     _withdraw_unlicensed_solution_offers,
+)
+from .transition_consent import (
+    TYPED_CONFIRMATION_LINE,
+    gate1_offer_key,
+    offer_intent_fields,
 )
 
 logger = logging.getLogger(__name__)
@@ -126,34 +133,71 @@ def _gate1_statement_presentation(case: "Case") -> str:
     # "Not quite, let me clarify", so a question here is one the user may have
     # answered a message earlier. "Awaiting your confirmation" stays true on
     # the first presentation, after a decline, and on every repeat.
+    #
+    # The last line says what a typed confirmation must look like (#1814,
+    # ruling (b)): Gate 1 commits only on its click or a bare consent token
+    # (#1794). True on every pending turn, so it needs no turn-scoped flag.
     return (
         "Here is the problem statement awaiting your confirmation:\n\n"
         f"{quoted}\n\n"
         "Confirm it to start the focused investigation, or tell me what to "
-        "change."
+        f"change.\n\n{TYPED_CONFIRMATION_LINE}"
     )
 
 
-def _investigation_confirmation_suggestions() -> list:
+def _count_gate1_turn(case: "Case", presentation: str, reply: str) -> None:
+    """INV-01's pair of counters for a turn that served Gate 1's card.
+
+    ``engine_owned_affordance_served_total{gate="gate1"}`` counts the card
+    served; ``gate1_statement_composed_total`` counts it only when
+    ``presentation``, the block ``_gate1_statement_presentation`` rendered, is
+    in the reply actually returned. Checked against the rendered block, not
+    the raw statement: a multi-line statement is block-quoted line by line, so
+    the raw text never appears verbatim and would miscount as missing. Every
+    Gate-1 turn counts through here, so the two track one for one; a gap is a
+    turn that shipped the buttons without their statement, and also logs
+    ``gate1_statement_missing_from_reply`` at ERROR.
+    """
+    engine_owned_affordance_served_total.labels(gate="gate1").inc()
+    if presentation and presentation in reply:
+        gate1_statement_composed_total.inc()
+    else:
+        logger.error(
+            "gate1_statement_missing_from_reply",
+            extra={"case_id": case.case_id, "turn": case.current_turn},
+        )
+
+
+def _investigation_confirmation_suggestions(case) -> list:
     """Generate DECIDE follow-up suggestions for investigation confirmation.
 
     Used when the dropdown triggers INQUIRY → INVESTIGATING and a problem
     statement already exists. One positive (confirm) and one mild negative (refine).
+
+    Both intents name the offer by the key of the statement shown,
+    ``case.inquiry.proposed_problem_statement`` (#1812): the offer IS that
+    wording, so a card from before a revision is refused rather than
+    committing the revised text.
     """
+    inquiry = getattr(case, "inquiry", None)
+    statement = (getattr(inquiry, "proposed_problem_statement", None) or "").strip()
+    offer = offer_intent_fields(
+        gate1_offer_key(statement) if statement else None, case=case, gate="gate1"
+    )
     return [
         {
             "label": "Yes, let's investigate",
             "action_type": "DECIDE",
             "payload": "Yes, that's correct. Let's investigate.",
             "body": "Confirm the problem statement and start the investigation.",
-            "intent": {"type": "confirmation", "confirmation_value": True},
+            "intent": {"type": "confirmation", "confirmation_value": True, **offer},
         },
         {
             "label": "Not quite, let me clarify",
             "action_type": "DECIDE",
             "payload": "Not quite — let me clarify the problem before we investigate.",
             "body": "Refine the problem statement before starting the investigation.",
-            "intent": {"type": "confirmation", "confirmation_value": False},
+            "intent": {"type": "confirmation", "confirmation_value": False, **offer},
         },
     ]
 

@@ -16,6 +16,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.transition_consent import (
+    terminal_offer_key,
+)
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
@@ -107,19 +110,24 @@ def _fill_for_resolution_ready(case):
     return case
 
 
-def _assert_canonical_confirm_pair(suggestions, expected_label_substring):
+def _assert_canonical_confirm_pair(suggestions, expected_label_substring, case):
     """Every alignment site must emit exactly two DECIDE suggestions
-    carrying confirmation intent metadata."""
+    carrying confirmation intent metadata, both naming the offer standing on
+    ``case`` (#1812): a click executes only when it names that offer."""
+    key = terminal_offer_key(case.pending_transition)
+    assert key, "premise: an offer stands on the case these cards present"
     assert len(suggestions) == 2
     assert all(s["action_type"] == "DECIDE" for s in suggestions)
     assert all("intent" in s for s in suggestions)
     assert suggestions[0]["intent"] == {
         "type": "confirmation",
         "confirmation_value": True,
+        "proposal_id": key,
     }
     assert suggestions[1]["intent"] == {
         "type": "confirmation",
         "confirmation_value": False,
+        "proposal_id": key,
     }
     # Confirm at least one suggestion's payload references the action
     # (catches accidental swap of helper call-site with the wrong target).
@@ -150,7 +158,9 @@ async def test_ui_dropdown_inquiry_to_closed_emits_canonical_close_pair():
         },
     )
     assert result["case_updated"].pending_transition["to_state"] == "closed"
-    _assert_canonical_confirm_pair(result["suggested_follow_ups"], "close")
+    _assert_canonical_confirm_pair(
+        result["suggested_follow_ups"], "close", result["case_updated"]
+    )
 
 
 @pytest.mark.asyncio
@@ -173,7 +183,9 @@ async def test_ui_dropdown_investigating_to_closed_emits_canonical_close_pair():
         },
     )
     assert result["case_updated"].pending_transition["to_state"] == "closed"
-    _assert_canonical_confirm_pair(result["suggested_follow_ups"], "close")
+    _assert_canonical_confirm_pair(
+        result["suggested_follow_ups"], "close", result["case_updated"]
+    )
 
 
 @pytest.mark.asyncio
@@ -259,7 +271,9 @@ async def test_ui_dropdown_close_pivots_to_resolve_when_resolution_grade():
     )
     # closure_reason is None for RESOLVED (resolution itself is the categorization)
     assert pending.get("closure_reason") is None
-    _assert_canonical_confirm_pair(result["suggested_follow_ups"], "resolved")
+    _assert_canonical_confirm_pair(
+        result["suggested_follow_ups"], "resolved", result["case_updated"]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +317,7 @@ async def test_check_automatic_transitions_sets_override_for_resolved():
     assert case.pending_transition is not None
     assert case.pending_transition["to_state"] == "resolved"
     assert metadata.get("transition_proposed_this_turn") is True
-    _assert_canonical_confirm_pair(metadata["override_suggestions"], "resolved")
+    _assert_canonical_confirm_pair(metadata["override_suggestions"], "resolved", case)
 
 
 @pytest.mark.asyncio
@@ -334,7 +348,7 @@ async def test_check_automatic_transitions_sets_override_for_closed():
     assert (
         case.pending_transition.get("closure_reason") == "closed_insufficient_evidence"
     )
-    _assert_canonical_confirm_pair(metadata["override_suggestions"], "close")
+    _assert_canonical_confirm_pair(metadata["override_suggestions"], "close", case)
 
 
 @pytest.mark.asyncio
@@ -436,7 +450,7 @@ async def test_llm_emit_resolved_pivots_to_close_when_thin():
     # NEEDS_INFO first-pass flag must NOT be set on a SUGGEST_CLOSE pivot —
     # the response builder distinguishes the two paths.
     assert not metadata.get("resolution_needs_info_first_pass")
-    _assert_canonical_confirm_pair(metadata["override_suggestions"], "close")
+    _assert_canonical_confirm_pair(metadata["override_suggestions"], "close", case)
 
 
 @pytest.mark.asyncio
@@ -475,7 +489,7 @@ async def test_llm_emit_closed_pivots_to_resolved_when_resolution_grade():
     )
     # closure_reason is None for RESOLVED
     assert case.pending_transition.get("closure_reason") is None
-    _assert_canonical_confirm_pair(metadata["override_suggestions"], "resolved")
+    _assert_canonical_confirm_pair(metadata["override_suggestions"], "resolved", case)
 
 
 @pytest.mark.asyncio
@@ -530,7 +544,7 @@ async def test_llm_emit_resolved_needs_info_keeps_resolve_with_flag():
     assert case.pending_transition.get("needs_info") is True
     assert metadata.get("resolution_needs_info_first_pass") is True
     assert metadata.get("resolution_needs_info_message")
-    _assert_canonical_confirm_pair(metadata["override_suggestions"], "resolved")
+    _assert_canonical_confirm_pair(metadata["override_suggestions"], "resolved", case)
 
 
 @pytest.mark.asyncio
@@ -562,7 +576,7 @@ async def test_llm_emit_resolved_ready_keeps_resolve_pair():
     assert case.pending_transition["to_state"] == "resolved"
     assert not case.pending_transition.get("needs_info")
     assert not metadata.get("resolution_needs_info_first_pass")
-    _assert_canonical_confirm_pair(metadata["override_suggestions"], "resolved")
+    _assert_canonical_confirm_pair(metadata["override_suggestions"], "resolved", case)
 
 
 @pytest.mark.asyncio

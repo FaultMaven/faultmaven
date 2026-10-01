@@ -207,8 +207,26 @@ class TransitionManager:
                 metadata["resolution_readiness_missing"] = readiness.missing
 
                 if readiness.verdict == readiness.READY:
-                    # Requirements met — clear needs_info, show confirmation
-                    case.pending_transition["needs_info"] = False
+                    # Requirements met — the READY offer is a new offer, so it
+                    # is re-proposed rather than flipped in place (#1812). A
+                    # card shipped while the offer was unconfirmable names the
+                    # needs_info offer's key; flipping ``needs_info`` kept that
+                    # key and made the old card live consent to the ready
+                    # offer. ``propose_transition`` builds a fresh dict, so the
+                    # engine proposer's provenance and the cited evidence are
+                    # carried across, as the INV-37 pivot carries the former.
+                    prior = case.pending_transition
+                    propose_transition(
+                        case=case,
+                        to_state="resolved",
+                        summary=_build_resolution_confirmation(case),
+                        evidence_ids=prior.get("evidence_ids"),
+                    )
+                    if "justifying_signature" in prior:
+                        case.pending_transition["justifying_signature"] = prior[
+                            "justifying_signature"
+                        ]
+                    metadata["transition_proposed_this_turn"] = True
                     metadata["resolution_ready_for_confirmation"] = True
                     logger.info(
                         f"Case {case.case_id}: needs_info resolved, "
@@ -307,7 +325,7 @@ class TransitionManager:
                         # closing. The pending_transition now targets "resolved".
                         metadata["close_pivoted_to_resolve"] = True
                         metadata["override_suggestions"] = (
-                            _resolution_confirmation_suggestions()
+                            _resolution_confirmation_suggestions(case)
                         )
                         metadata["closure_readiness_verdict"] = (
                             ClosureReadiness.SUGGEST_RESOLVE
@@ -521,10 +539,12 @@ class TransitionManager:
                 # at the final assembly point.
                 if effective_to_status == "resolved":
                     metadata["override_suggestions"] = (
-                        _resolution_confirmation_suggestions()
+                        _resolution_confirmation_suggestions(case)
                     )
                 else:  # closed
-                    metadata["override_suggestions"] = _close_confirmation_suggestions()
+                    metadata["override_suggestions"] = _close_confirmation_suggestions(
+                        case
+                    )
                 logger.info(
                     f"Agent proposed transition → {effective_to_status} "
                     f"(pending user confirmation)"

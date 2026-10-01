@@ -28,6 +28,9 @@ from faultmaven.core.investigation.milestone_engine.hypothesis_updates import (
     _apply_hypothesis_evidence_links,
     _apply_hypothesis_updates,
 )
+from faultmaven.core.investigation.milestone_engine.transition_consent import (
+    gate1_bare_consent,
+)
 from faultmaven.core.investigation.milestone_engine.turn_records import (
     _determine_turn_outcome,
     _report_turn_uploads,
@@ -294,10 +297,15 @@ class ResponseApplier:
         # for the user to have seen, so there is no reword to protect, and the
         # statement must persist for the next turn to present it. The consent
         # itself is refused below, by ``gate1_statement_is_confirmable``.
-        _consent_on_this_turn = (
-            bool(getattr(updates, "user_confirmed_investigation", False))
-            or case.inquiry.problem_statement_confirmed
-        )
+        #
+        # The LLM's flag is consent only when the turn's typed text is one bare
+        # consent token (#1794, ruling (a)): ``screened``. The write guard keys
+        # on the SCREENED consent, computed before the write, so a refused turn
+        # keeps the user's correction: "yes but it's the primary too" commits
+        # nothing, and must not lose the revision it carries either.
+        _llm_flag = bool(getattr(updates, "user_confirmed_investigation", False))
+        screened = _llm_flag and gate1_bare_consent(user_message)
+        _consent_on_this_turn = screened or case.inquiry.problem_statement_confirmed
         _statement_stood = bool((_statement_at_turn_start or "").strip())
         if updates.proposed_problem_statement and not (
             _consent_on_this_turn and _statement_stood
@@ -373,9 +381,11 @@ class ResponseApplier:
         # which collapses the User-Agent Handshake. Binding consent to the
         # wording the user SAW is handled on the write side above. See
         # ``gate1_statement_is_confirmable`` and the captured
-        # _statement_at_turn_start at the top of this method.
+        # _statement_at_turn_start at the top of this method. The flag commits
+        # only when ``screened`` (#1794): a click commits at section 0c, before
+        # this runs, and so arrives here already confirmed.
         if (
-            getattr(updates, "user_confirmed_investigation", False)
+            screened
             and case.inquiry.proposed_problem_statement
             and case.inquiry.proposed_problem_statement.strip()
             and not case.inquiry.problem_statement_confirmed
@@ -388,7 +398,29 @@ class ResponseApplier:
                 f"statement='{case.inquiry.proposed_problem_statement[:80]}...'"
             )
         elif (
-            getattr(updates, "user_confirmed_investigation", False)
+            _llm_flag
+            and case.inquiry.proposed_problem_statement
+            and case.inquiry.proposed_problem_statement.strip()
+            and not case.inquiry.problem_statement_confirmed
+            and gate1_statement_is_confirmable(_statement_at_turn_start)
+        ):
+            # The flag on a confirmable statement, but the typed text is not
+            # one bare consent token (#1794): "yes but it's the primary too",
+            # "ok, don't start yet", the card's own payload typed out. The flag
+            # stays an honest reading; the engine commits nothing, Gate 1 stays
+            # pending and composes its card. Gated on ``not
+            # problem_statement_confirmed`` above, exactly: a click-committed
+            # Gate 1 hands the LLM the card's payload text, which is not bare,
+            # and that turn refused nothing.
+            inquiry_handshake_deferred_total.labels(reason="not_bare").inc()
+            logger.info(
+                f"Gate 1 not committed for case {case.case_id}: the LLM read a "
+                f"confirmation, but the typed text is not one bare consent token "
+                f"(#1794)",
+                extra={"case_id": case.case_id, "turn": case.current_turn},
+            )
+        elif (
+            _llm_flag
             and case.inquiry.proposed_problem_statement
             and case.inquiry.proposed_problem_statement.strip()
             and not case.inquiry.problem_statement_confirmed
@@ -406,7 +438,7 @@ class ResponseApplier:
             # presentation was the LLM's job and it had to be told. Presentation
             # is now the engine's, and it happens on EVERY Gate-1-pending turn,
             # so the recovery the flag arranged is the ordinary path (#1607).
-            inquiry_handshake_deferred_total.inc()
+            inquiry_handshake_deferred_total.labels(reason="same_turn").inc()
             logger.warning(
                 f"Same-turn-confirmation guard rejected INQUIRY→INVESTIGATING "
                 f"for case {case.case_id}: LLM emitted "

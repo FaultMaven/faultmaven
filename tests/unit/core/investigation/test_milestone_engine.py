@@ -708,12 +708,24 @@ class TestMilestoneEngine:
         )
         mock_llm.generate.return_value = mock_response_content_confirm
 
-        # User confirms by clicking the DECIDE pair the engine just emitted.
+        # User confirms by clicking the DECIDE pair the engine just emitted,
+        # whose Yes card names the offer it presents (#1812).
+        yes_card = next(
+            f
+            for f in result_turn_n["suggested_follow_ups"]
+            if (f.get("intent") or {}).get("confirmation_value") is True
+        )
+        assert yes_card["intent"]["proposal_id"] == (
+            updated_case.pending_transition["proposed_at"]
+        )
         result_turn_n1 = await engine.process_turn(
             updated_case,
             "yes, go ahead",
             intent_type="confirmation",
-            intent_data={"value": True},
+            intent_data={
+                "value": True,
+                "proposal_id": yes_card["intent"]["proposal_id"],
+            },
         )
 
         final_case = result_turn_n1["case_updated"]
@@ -814,12 +826,16 @@ class TestMilestoneEngine:
         #    deterministic DECIDE confirmation suggestions).
         suggestions = result["suggested_follow_ups"]
         assert len(suggestions) == 2
+        # Both name the close offer just proposed (#1812).
+        key = updated_case.pending_transition["proposed_at"]
         assert suggestions[0]["intent"] == {
             "type": "confirmation",
             "confirmation_value": True,
+            "proposal_id": key,
         }
         assert suggestions[1]["intent"] == {
             "type": "confirmation",
+            "proposal_id": key,
             "confirmation_value": False,
         }
         assert all(s["action_type"] == "DECIDE" for s in suggestions)
@@ -873,12 +889,16 @@ class TestMilestoneEngine:
         # 5. Canonical CLOSE confirm/decline pair emitted (alignment).
         suggestions = result["suggested_follow_ups"]
         assert len(suggestions) == 2
+        # Both name the close offer just proposed (#1812).
+        key = updated_case.pending_transition["proposed_at"]
         assert suggestions[0]["intent"] == {
             "type": "confirmation",
             "confirmation_value": True,
+            "proposal_id": key,
         }
         assert suggestions[1]["intent"] == {
             "type": "confirmation",
+            "proposal_id": key,
             "confirmation_value": False,
         }
         assert all(s["action_type"] == "DECIDE" for s in suggestions)
@@ -1184,7 +1204,9 @@ class TestInquiryConfirmation:
         )
         mock_llm.generate.return_value = mock_response_content
 
-        result = await engine.process_turn(case, "yes, proceed")
+        # Bare: the LLM's flag commits Gate 1 only on a bare consent token
+        # (#1794); "yes, proceed" is read the same way and commits nothing.
+        result = await engine.process_turn(case, "yes")
 
         updated_case = result["case_updated"]
         # Gate 1 closed via the LLM path (problem_statement_confirmed=True)
@@ -2394,9 +2416,11 @@ class TestNeedsInfoFollowupProposesClose:
 
     @pytest.mark.asyncio
     async def test_ready_branch_unchanged(self):
-        """Control: if re-eval is READY, the path clears needs_info and
-        keeps the pending RESOLVED — must not have been broken by the
-        SUGGEST_CLOSE/NEEDS_INFO branch changes."""
+        """Control: if re-eval is READY, the pending stays RESOLVED and no
+        longer needs info — must not have been broken by the
+        SUGGEST_CLOSE/NEEDS_INFO branch changes. The ready offer is a NEW
+        offer (#1812 review finding 1): re-proposed with a fresh key, so a
+        card shipped while it needed information cannot confirm it."""
         engine = self._make_engine()
         case = self._make_case_with_pending_resolve_needs_info()
         _make_resolution_ready(case)  # adds root_cause + Solution row
@@ -2420,15 +2444,18 @@ class TestNeedsInfoFollowupProposesClose:
                 collected_at=datetime.now(UTC),
             )
         )
+        needs_info_key = case.pending_transition["proposed_at"]
         metadata = {}
         await engine.transitions.check_automatic_transitions(
             case, metadata, user_message="ok"
         )
 
-        # Pending transition stays as RESOLVED, needs_info cleared
+        # Pending transition stays as RESOLVED, and no longer needs info
         assert case.pending_transition is not None
         assert case.pending_transition["to_state"] == "resolved"
-        assert case.pending_transition.get("needs_info") is False
+        assert not case.pending_transition.get("needs_info")
+        assert case.pending_transition["proposed_at"] != needs_info_key
+        assert metadata.get("transition_proposed_this_turn") is True
         assert metadata.get("resolution_ready_for_confirmation") is True
         # The propose-close path did NOT fire
         assert metadata.get("resolution_suggest_close") is not True

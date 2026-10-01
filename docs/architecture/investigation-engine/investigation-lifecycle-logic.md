@@ -151,15 +151,17 @@ async def handle_inquiry_turn(case: Case, user_message: str) -> str:
             user_corrections=extract_corrections(user_message)
         )
 
-    # Confirmation is two-tier (§1.5.3, INV-01) — there is NO mechanical
-    # text matcher for free-typed "yes" (the historical user_confirms()
-    # regex fallback was removed in commit 06cfa834):
+    # Confirmation is two-tier (§1.5.3, INV-01). Gate 1 commits only on its
+    # current click, or on a turn whose typed text is bare consent (#1794):
     #   1. Click path: a DECIDE confirmation-suggestion click arrives as
-    #      intent_type="confirmation" + confirmation_value=True, routed
-    #      deterministically through IntentResolver.
+    #      intent_type="confirmation" + confirmation_value=True, and commits
+    #      only when its proposal_id names the statement shown
+    #      (gate1_offer_key; #1812). Any other click is refused.
     #   2. LLM path: the LLM sets user_confirmed_investigation=True in
     #      state_updates; accepted ONLY when proposed_problem_statement
-    #      existed on a PRIOR turn (same-turn-confirmation guard, 13ff2eae).
+    #      existed on a PRIOR turn (same-turn-confirmation guard, 13ff2eae)
+    #      AND the typed text is one bare consent token (gate1_bare_consent).
+    #      A resolver-minted confirmation is screened the same way.
     if confirmation_click_intent(intent) or llm_confirmation_accepted(updates, case):
         case.inquiry.problem_statement_confirmed = True
         case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
@@ -188,23 +190,33 @@ def _apply_inquiry_updates(case: Case, updates: Any, metadata: Dict[str, Any],
     Confirmation routing (two-tier):
       1. Click path — DECIDE confirmation suggestions carry
          intent metadata. A click sends intent_type="confirmation"
-         + confirmation_value=True, which the engine routes
-         deterministically through IntentResolver (see §1.5.3).
+         + confirmation_value=True + the card's proposal_id, and section
+         0c commits Gate 1 only when that key names the statement shown
+         (`gate1_offer_key`; #1812, see §1.5.3). A click is never screened
+         by its payload text.
       2. LLM path — the LLM sets `user_confirmed_investigation=True`
          in `state_updates`. The engine accepts it ONLY when a
          `proposed_problem_statement` existed on a PRIOR turn (the
          same-turn-confirmation guard added in commit 13ff2eae, after
          the LLM was observed collapsing the two-step handshake on
-         first-turn "please investigate" inputs).
+         first-turn "please investigate" inputs), AND the turn's typed
+         text is, as a whole, one bare consent token (`gate1_bare_consent`:
+         `confirmation_token_class(text, to_state=None)`; #1794).
 
-    Free-typed paraphrases ("yes", "proceed") do NOT route through this
-    function. The historical word-boundary regex matcher
-    (`user_confirms()`) was removed in commit 06cfa834 (2026-03-17)
-    when intent-routing for explicit clicks became the canonical
-    confirmation path. A typed confirmation fires only on a pending
-    TERMINAL transition, and only when the whole reply is a bare consent
-    token (`confirmation_token_class`, read through `pending_gate_verdict`;
-    #1783) — disposition paths only.
+    There is no regex matcher here for free-typed text: the historical
+    `user_confirms()` was removed in commit 06cfa834 (2026-03-17). The LLM
+    reads typed text, and its flag is the honest reading; the bare screen
+    decides whether it commits. On a flag that is not bare ("yes but it's
+    the primary too", "ok, don't start yet") nothing commits, Gate 1 stays
+    pending, the statement revision the turn carries is kept (the write
+    guard keys on the screened consent), and the refusal is counted as
+    `inquiry_handshake_deferred_total{reason="not_bare"}`. A mint the
+    IntentResolver makes from typed text is screened the same way, at the
+    adoption guard and at 0c. The remaining asymmetry: a bare "yes" commits
+    through the flag or a mint agreeing with the screen, not through a
+    deterministic engine read, so a miss costs one re-ask, the safe
+    direction. The terminal gate reads a bare token itself
+    (`pending_gate_verdict`; #1783).
     """
 
     # Capture pre-turn state for the same-turn-confirmation guard
@@ -466,7 +478,14 @@ together, first match wins:
 
 - **A click** (the Yes card's `confirmation` intent, or the pending target's own
   status pick, sent by the client rather than minted) → execute the transition; the
-  Not-yet card → decline, as below
+  Not-yet card → decline, as below. A card's intent names the offer it presents
+  (`proposal_id`, the pending proposal's `proposed_at`), and a confirmation click
+  executes or declines only when that is the offer standing when it arrives (#1812).
+  Checked before any verdict is read: a click naming another offer, or none,
+  **executes nothing, withdraws nothing and records nothing**, and is answered with
+  "That button was for an earlier offer that's no longer open." and the standing
+  offer's card again (`_refuse_offer_click`). The status pick names its target
+  state, not an offer, and is unchanged
 - **Bare yes** → execute transition. The WHOLE reply must be one consent token
   valid for the proposal's target. Exactly, a bare reply is the token's words,
   with any whitespace, any listed positive decoration (emoji, Slack shortcode or
@@ -484,13 +503,22 @@ together, first match wins:
   "yes please close it", "ok 👎", "close it" on a pending RESOLVE), any reply
   whose text and minted intent disagree, and a minted confirmation on text that
   is not a bare token ("that works") → **re-ask**: re-present the confirmation
-  with DECIDE suggestions (clickable Yes/No with intent metadata)
-- **Bare no** (word-boundary token match or intent metadata, below the substantive
-  bound, no upload) → cancel transition, acknowledge deterministically
-  ("note…"/"stopped…" do not read as "no"/"stop")
-- **Decline carrying substance or an upload** (decline token followed by data, a
-  question, a redirection, or sent with a file) → cancel transition, then process
-  the message as a normal turn so its content is not lost
+  with DECIDE suggestions (clickable Yes/No with intent metadata), and the line
+  "To confirm, click **Yes** or reply with the single word yes." (#1814)
+- **Bare no** — the WHOLE reply is one decline token (`no`, `nope`, `not yet`,
+  `wait`, `cancel`, `don't`, `not ready`, `hold on`, `stop`) with the same
+  decorations and trailing punctuation as a bare yes (#1813); or the Not-yet click;
+  or a minted decline on question-free text — below the substantive bound, no
+  upload → cancel transition, acknowledge deterministically. "no problem, go
+  ahead", "no worries" and "no, not yet" are not declines (they are re-asked, or
+  take the escape lane when substantive), and "note…"/"stopped…" do not read as
+  "no"/"stop"
+- **Decline carrying substance or an upload** (a Not-yet click, whose payload is
+  over the bound; a minted decline on long question-free text; or a decline sent
+  with a file) → cancel transition, then process the message as a normal turn so
+  its content is not lost. A typed reply that opens with a decline token and says
+  more is not a decline but a non-answer, below; so is a minted decline on text
+  containing `?`, so a question is never recorded as a refusal
 - **Short (≤40 characters) question-free non-answer** ("hmm maybe") and **blank
   input** (whitespace-only slips past the route's empty-payload guard) → re-ask,
   as above
@@ -498,8 +526,12 @@ together, first match wins:
   question** → the message is *not an answer to the gate*: the proposal is
   **withdrawn** (`cancel_pending_transition`) and the message processed as a
   normal investigation turn. It is recorded as a refusal only when the text is
-  such a non-answer without a `?` (an upload alone records nothing). The engine
-  can always re-propose later from fresher state.
+  such a non-answer without a `?` that does not open with a consent token
+  (`_consent_prefix`, after the bare test's decoration treatment; #1808):
+  "Yes, go ahead and close it. We verified …" is consent in a sentence, not a
+  deflection, so the offer may come back, and so may "ok but we need to wait for
+  the weekend soak first" (the cost the ruling accepts). An upload alone records
+  nothing. The engine can always re-propose later from fresher state.
 
 So the gate's consumption rule is exact: without an LLM turn it answers only the
 re-asks above (and a bare decline), and it **never** consumes a turn carrying an
@@ -522,7 +554,9 @@ the original motivation of the deterministic path — not sending a bare "hmm" t
 the LLM tool loop. The IntentResolver's LLM classifier tier can map typed text to the
 Yes suggestion: the adoption guard (#721) drops such a mint from substantive text, and
 a mint that survives it executes only when its text is itself a bare consent token
-(#1783), so the text, not the classifier, carries the guarantee.
+(#1783), so the text, not the classifier, carries the guarantee. At Gate 1 the guard
+drops a mint on any text that is not bare (#1794). A mint is not a click, so the
+offer key it carries from the matched card is never read.
 
 **Repeated status_transition intent:** If a user clicks the same dropdown option again
 after the agent already proposed the transition, this is treated as an implicit
@@ -1103,13 +1137,21 @@ Let me start by verifying the scope and impact. What services are affected?"
     "label": "Yes, mark as resolved",
     "action_type": "DECIDE",
     "payload": "Yes, the issue is resolved. Please mark this case as resolved.",
-    "intent": {"type": "confirmation", "confirmation_value": True},
+    "intent": {
+        "type": "confirmation",
+        "confirmation_value": True,
+        # The offer this card presents: the pending proposal's proposed_at
+        # (a Gate-1 card carries gate1_offer_key(statement)).
+        "proposal_id": "2026-09-30T11:57:20.123456+00:00",
+    },
 }
 ```
 
-**Click flow**: Frontend sends `payload` as query text AND `intent` as `QueryIntent` metadata.
-This routes through `IntentType.CONFIRMATION` → deterministic `pending_transition` handling,
-bypassing the tool loop and pattern matching entirely.
+**Click flow**: Frontend sends `payload` as query text AND `intent` as `QueryIntent` metadata,
+forwarded verbatim. This routes through `IntentType.CONFIRMATION` → deterministic
+`pending_transition` handling, bypassing the tool loop and pattern matching entirely. The engine
+executes the click only when its `proposal_id` names the offer standing when it arrives; any
+other click is answered with that offer again and executes nothing (#1812).
 
 **Typed responses** (user types instead of clicking) fall back to `confirmation_token_class()` (consent is "not `None`"),
 read through `pending_gate_verdict()`: only a reply that is, as a whole, one bare consent token

@@ -686,7 +686,7 @@ def _apply_stage_gate_side_effects(
             # guard) — the mitigation-verified message that triggered this
             # proposal often pattern-matches as a bare "yes".
             metadata["transition_proposed_this_turn"] = True
-            metadata["override_suggestions"] = _close_confirmation_suggestions()
+            metadata["override_suggestions"] = _close_confirmation_suggestions(case)
             metadata["rca_infeasible_closure_message"] = closure_message
             # Read the reason propose_transition just STORED rather than
             # re-deriving it here. Mirroring the derivation meant reproducing 2
@@ -881,7 +881,7 @@ def _apply_stage_gate_signals(
         )
 
 
-def _close_confirmation_suggestions() -> list:
+def _close_confirmation_suggestions(case) -> list:
     """Generate DECIDE follow-up suggestions for close (abandon) confirmation.
 
     Mirrors the INQUIRY and RESOLVED confirmation patterns: one positive
@@ -892,20 +892,31 @@ def _close_confirmation_suggestions() -> list:
     here would either promise unconditionally (sometimes false, when the
     substance gate skips) or muddy the decision the user is being asked to
     make. The body text deliberately stays silent about the report.
+
+    Both intents name the standing offer, ``case.pending_transition``, by its
+    key (#1812), so this is called with the CLOSED proposal already standing.
     """
+    # Local: ``transition_consent`` imports this module.
+    from .transition_consent import offer_intent_fields, terminal_offer_key
+
+    offer = offer_intent_fields(
+        terminal_offer_key(getattr(case, "pending_transition", None)),
+        case=case,
+        gate="terminal",
+    )
     return [
         {
             "label": "Yes, close this case",
             "action_type": "DECIDE",
             "payload": "Yes, close this case without resolution.",
             "body": "Confirm closing the case. Closing is irreversible — the case becomes read-only.",
-            "intent": {"type": "confirmation", "confirmation_value": True},
+            "intent": {"type": "confirmation", "confirmation_value": True, **offer},
         },
         {
             "label": "Not yet, continue investigating",
             "action_type": "DECIDE",
             "payload": "Not yet — I'd like to continue investigating.",
             "body": "Keep the investigation open and continue working toward a solution.",
-            "intent": {"type": "confirmation", "confirmation_value": False},
+            "intent": {"type": "confirmation", "confirmation_value": False, **offer},
         },
     ]

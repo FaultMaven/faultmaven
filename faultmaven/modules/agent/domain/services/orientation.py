@@ -351,7 +351,7 @@ def build_orientation(case: Any, kind: OrientationKind) -> dict[str, Any]:
         body = _gate1_statement_presentation(case)
         return {
             "agent_response": "\n\n".join(p for p in (opener, body) if p),
-            "suggested_follow_ups": _investigation_confirmation_suggestions(),
+            "suggested_follow_ups": _investigation_confirmation_suggestions(case),
         }
 
     # ── Fresh inquiry ─────────────────────────────────────────────────
