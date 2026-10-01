@@ -19,6 +19,8 @@ door because ``contracts.py`` re-exports the operator constants from here, and
 because the operator/org split is the thing this module exists to state.
 """
 
+from typing import List, Sequence
+
 from faultmaven.models.rbac import (
     ROLE_PERMISSIONS,
     Permission,
@@ -83,6 +85,20 @@ PLATFORM_ADMIN_ROLE_SET = [BASE_USER_ROLE, ORG_ADMIN_ROLE, PLATFORM_ADMIN_ROLE]
 # not an account with an empty role list.
 OPERATOR_GRANTED_ROLES = [r for r in PLATFORM_ADMIN_ROLE_SET if r != BASE_USER_ROLE]
 
+#: The role an account holding none is reported and filtered under.
+ROLELESS_ACCOUNT_ROLE = Role.MEMBER.value
+
+
+def effective_roles(roles: Sequence[str]) -> List[str]:
+    """The roles an account is reported and filtered under: its own, or
+    ``[ROLELESS_ACCOUNT_ROLE]`` when it holds none.
+
+    The one statement of that rule. The account list's role filter states it
+    in SQL too (``user_repository``), naming the same constant.
+    """
+    return list(roles) if roles else [ROLELESS_ACCOUNT_ROLE]
+
+
 __all__ = [
     "ROLE_PERMISSIONS",
     "BASE_USER_ROLE",
@@ -90,10 +106,12 @@ __all__ = [
     "ORG_ADMIN_ROLE",
     "PLATFORM_ADMIN_ROLE",
     "PLATFORM_ADMIN_ROLE_SET",
+    "ROLELESS_ACCOUNT_ROLE",
     "Permission",
     "Role",
     "get_permissions_for_role",
     "get_permissions_for_roles",
+    "effective_roles",
     "has_all_permissions",
     "has_any_permission",
     "has_permission",

@@ -1,7 +1,7 @@
 """Unit tests for UserService Admin Methods (TASK-019)
 
 Tests user management business logic:
-1. list_users() - Pagination, filtering, search
+1. list_users() - Every filter handed to the repository
 2. get_user_with_metadata() - User details with permissions
 3. activate_user() - User activation
 4. deactivate_user() - User deactivation with token revocation
@@ -197,270 +197,55 @@ def inactive_user(sample_users):
 
 
 class TestListUsers:
-    """Tests for list_users() method."""
+    """``list_users`` hands every filter to the repository and serves its answer.
+
+    Filtering, paging and counting are the repository's query, ahead of
+    LIMIT/OFFSET — exercised against the real stores, with more accounts than
+    fit any window, in
+    ``tests/unit/infrastructure/persistence/test_user_list_filters_before_paging.py``.
+    """
 
     @pytest.mark.asyncio
-    async def test_returns_all_users_in_organization(
+    async def test_every_filter_reaches_the_repository(
         self, user_service, mock_user_repo, sample_users
     ):
-        """Returns all users in organization."""
-        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
+        mock_user_repo.list_users.return_value = (sample_users[:2], 1234)
 
-        users, total = await user_service.list_users(
-            enterprise_id="ent-123",
-        )
-
-        assert len(users) == 4
-        assert total == 4
-        mock_user_repo.list_users.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_pagination_works(self, user_service, mock_user_repo, sample_users):
-        """Pagination works (limit, offset)."""
-        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
-
-        users, total = await user_service.list_users(
+        result = await user_service.list_users(
             enterprise_id="ent-123",
             limit=2,
+            offset=1500,
+            is_active=True,
+            role="member",
+            search="Mem",
+        )
+
+        mock_user_repo.list_users.assert_awaited_once_with(
+            limit=2,
+            offset=1500,
+            is_active=True,
+            enterprise_id="ent-123",
+            role="member",
+            search="Mem",
+        )
+        # Served as answered — the page holds an admin the role filter would
+        # drop and the total is not the page length: nothing re-filters it.
+        assert result == (sample_users[:2], 1234)
+
+    @pytest.mark.asyncio
+    async def test_unset_filters_filter_nothing(self, user_service, mock_user_repo):
+        mock_user_repo.list_users.return_value = ([], 0)
+
+        assert await user_service.list_users() == ([], 0)
+
+        mock_user_repo.list_users.assert_awaited_once_with(
+            limit=50,
             offset=0,
+            is_active=None,
+            enterprise_id=None,
+            role=None,
+            search=None,
         )
-
-        assert len(users) == 2
-        assert total == 4  # Total before pagination
-
-    @pytest.mark.asyncio
-    async def test_pagination_offset(self, user_service, mock_user_repo, sample_users):
-        """Pagination offset works correctly."""
-        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
-
-        users, total = await user_service.list_users(
-            enterprise_id="ent-123",
-            limit=2,
-            offset=2,
-        )
-
-        assert len(users) == 2
-        assert total == 4
-
-    @pytest.mark.asyncio
-    async def test_filter_by_is_active_true(
-        self, user_service, mock_user_repo, sample_users
-    ):
-        """Filter by is_active=True returns only active users."""
-        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
-
-        users, total = await user_service.list_users(
-            enterprise_id="ent-123",
-            is_active=True,
-        )
-
-        assert len(users) == 3  # 3 active users
-        assert total == 3
-        assert all(u.is_active for u in users)
-
-    @pytest.mark.asyncio
-    async def test_filter_by_is_active_false(
-        self, user_service, mock_user_repo, sample_users
-    ):
-        """Filter by is_active=False returns only inactive users."""
-        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
-
-        users, total = await user_service.list_users(
-            enterprise_id="ent-123",
-            is_active=False,
-        )
-
-        assert len(users) == 1  # 1 inactive user
-        assert total == 1
-        assert all(not u.is_active for u in users)
-
-    @pytest.mark.asyncio
-    async def test_filter_by_role_admin(
-        self, user_service, mock_user_repo, sample_users
-    ):
-        """Filter by role 'admin' returns only admins."""
-        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
-
-        users, total = await user_service.list_users(
-            enterprise_id="ent-123",
-            role="admin",
-        )
-
-        assert len(users) == 1
-        assert total == 1
-        assert users[0].roles == ["admin"]
-
-    @pytest.mark.asyncio
-    async def test_filter_by_role_member(
-        self, user_service, mock_user_repo, sample_users
-    ):
-        """Filter by role 'member' returns only members."""
-        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
-
-        users, total = await user_service.list_users(
-            enterprise_id="ent-123",
-            role="member",
-        )
-
-        assert len(users) == 2  # 1 active + 1 inactive member
-        assert total == 2
-        assert all("member" in u.roles for u in users)
-
-    @pytest.mark.asyncio
-    async def test_filter_by_role_viewer(
-        self, user_service, mock_user_repo, sample_users
-    ):
-        """Filter by role 'viewer' returns only viewers."""
-        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
-
-        users, total = await user_service.list_users(
-            enterprise_id="ent-123",
-            role="viewer",
-        )
-
-        assert len(users) == 1
-        assert total == 1
-        assert users[0].roles == ["viewer"]
-
-    @pytest.mark.asyncio
-    async def test_search_by_email_case_insensitive(
-        self, user_service, mock_user_repo, sample_users
-    ):
-        """Search by email (case-insensitive, partial match)."""
-        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
-
-        users, total = await user_service.list_users(
-            enterprise_id="ent-123",
-            search="ADMIN",  # Case-insensitive
-        )
-
-        assert len(users) == 1
-        assert users[0].email == "admin@example.com"
-
-    @pytest.mark.asyncio
-    async def test_search_by_full_name_case_insensitive(
-        self, user_service, mock_user_repo, sample_users
-    ):
-        """Search by full_name (case-insensitive, partial match)."""
-        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
-
-        users, total = await user_service.list_users(
-            enterprise_id="ent-123",
-            search="MEMBER",  # Case-insensitive
-        )
-
-        assert len(users) == 1
-        assert users[0].display_name == "Member User"
-
-    @pytest.mark.asyncio
-    async def test_search_partial_match(
-        self, user_service, mock_user_repo, sample_users
-    ):
-        """Search with partial match works."""
-        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
-
-        users, total = await user_service.list_users(
-            enterprise_id="ent-123",
-            search="@example",  # Partial match in email
-        )
-
-        assert len(users) == 4  # All users have @example.com
-
-    @pytest.mark.asyncio
-    async def test_combined_filters(self, user_service, mock_user_repo, sample_users):
-        """Combined filters (active + role + search) work."""
-        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
-
-        users, total = await user_service.list_users(
-            enterprise_id="ent-123",
-            is_active=True,
-            role="member",
-            search="member",
-        )
-
-        assert len(users) == 1
-        assert users[0].email == "member@example.com"
-        assert users[0].is_active is True
-        assert users[0].roles == ["member"]
-
-    @pytest.mark.asyncio
-    async def test_results_sorted_by_created_at_desc(
-        self, user_service, mock_user_repo
-    ):
-        """Results sorted by created_at DESC (newest first)."""
-        now = datetime.now(timezone.utc)
-        old_user = DevUser(
-            user_id="old",
-            username="old",
-            email="old@example.com",
-            display_name="Old",
-            created_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
-            is_active=True,
-            roles=["member"],
-        )
-        new_user = DevUser(
-            user_id="new",
-            username="new",
-            email="new@example.com",
-            display_name="New",
-            created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
-            is_active=True,
-            roles=["member"],
-        )
-        # Service doesn't sort by created_at - it preserves repository order
-        # If we want sorted results, we need to sort in the repository mock
-        sorted_users = sorted(
-            [old_user, new_user], key=lambda u: u.created_at, reverse=True
-        )
-        mock_user_repo.list_users.return_value = (sorted_users, 2)
-
-        users, total = await user_service.list_users(enterprise_id="ent-123")
-
-        assert users[0].user_id == "new"  # Newest first
-        assert users[1].user_id == "old"
-        assert total == 2
-
-    @pytest.mark.asyncio
-    async def test_returns_tuple(self, user_service, mock_user_repo, sample_users):
-        """Returns (users, total_count) tuple."""
-        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
-
-        result = await user_service.list_users(enterprise_id="ent-123")
-
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-        assert isinstance(result[0], list)
-        assert isinstance(result[1], int)
-
-    @pytest.mark.asyncio
-    async def test_empty_list_when_no_matches(
-        self, user_service, mock_user_repo, sample_users
-    ):
-        """Empty list when no matches."""
-        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
-
-        users, total = await user_service.list_users(
-            enterprise_id="ent-123",
-            search="nonexistent",
-        )
-
-        assert len(users) == 0
-        assert total == 0
-
-    @pytest.mark.asyncio
-    async def test_limit_capped_at_100(
-        self, user_service, mock_user_repo, sample_users
-    ):
-        """Limit is capped at 100."""
-        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
-
-        users, total = await user_service.list_users(
-            enterprise_id="ent-123",
-            limit=1000,  # Should be capped at 100
-        )
-
-        # Since we only have 4 users, all should be returned
-        assert len(users) == 4
 
 
 # ============================================================
@@ -1078,78 +863,6 @@ class TestRemoveRole:
             )
 
         assert "Invalid role" in str(exc_info.value)
-
-
-# ============================================================
-# list_organization_users() Tests
-# ============================================================
-
-
-class TestListOrganizationUsers:
-    """Tests for list_organization_users() method."""
-
-    @pytest.mark.asyncio
-    async def test_returns_only_active_users(
-        self, user_service, mock_user_repo, sample_users
-    ):
-        """Returns only active users (is_active=True)."""
-        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
-
-        users, total = await user_service.list_users(
-            enterprise_id="ent-123",
-            is_active=True,
-        )
-
-        assert len(users) == 3  # Only 3 active users
-        assert all(u.is_active for u in users)
-
-    @pytest.mark.asyncio
-    async def test_pagination_works(self, user_service, mock_user_repo, sample_users):
-        """Pagination works."""
-        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
-
-        users, total = await user_service.list_users(
-            enterprise_id="ent-123",
-            limit=2,
-            offset=0,
-        )
-
-        assert len(users) == 2
-        assert total == 4  # Total users (not filtered by is_active in this test)
-
-
-# ============================================================
-# Edge Cases Tests
-# ============================================================
-
-
-class TestEdgeCases:
-    """Tests for edge cases."""
-
-    @pytest.mark.asyncio
-    async def test_user_with_none_roles(self, user_service, mock_user_repo):
-        """Handles user with empty roles list (defaults to ['member'] in service)."""
-        now = datetime.now(timezone.utc)
-        # RepositoryUser requires roles to be a list (not None). Empty list [] is falsy, so service defaults to ['member'] when filtering
-        # But RepositoryUser might reject empty list, so use ['member'] directly
-        user_with_member_role = DevUser(
-            user_id="user-none",
-            username="none@example.com",
-            email="none@example.com",
-            display_name="None Roles User",
-            created_at=now,
-            is_active=True,
-            roles=["member"],  # Use member role - service filters work with this
-        )
-        mock_user_repo.list_users.return_value = ([user_with_member_role], 1)
-
-        users, total = await user_service.list_users(
-            enterprise_id="ent-123",
-            role="member",  # Should match since service defaults empty roles to ['member']
-        )
-
-        assert len(users) == 1
-        assert total == 1
 
 
 class TestRoleChangeAuditTrail:

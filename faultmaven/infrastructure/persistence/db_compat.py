@@ -16,11 +16,52 @@ across SQLite (local) and PostgreSQL (production). Both dialects expose the same
 ``on_conflict_do_update(index_elements=..., set_=...)`` and
 ``on_conflict_do_nothing(index_elements=...)`` signatures, so callers build the
 ``ON CONFLICT`` clause identically regardless of backend.
+
+It also gives every SQLite connection the functions the repositories' SQL
+names that SQLite does not provide (:data:`SQLITE_CASEFOLD`).
 """
 
 from __future__ import annotations
 
-from typing import Any
+import sqlite3
+from typing import Any, Optional
+
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
+
+#: The case-folding function the account search applies on SQLite, where the
+#: built-in ``lower()`` folds ASCII letters only: Python's ``str.lower``, so a
+#: search matches on SQLite as it does in memory ("élodie" finds "Élodie").
+#: Separately named rather than replacing ``lower()``, which the username and
+#: email lookups and their uniqueness checks rely on as it is.
+SQLITE_CASEFOLD = "fm_casefold"
+
+
+def _casefold(value: Optional[str]) -> Optional[str]:
+    return value.lower() if isinstance(value, str) else value
+
+
+def _is_sqlite(dbapi_connection: Any) -> bool:
+    if isinstance(dbapi_connection, sqlite3.Connection):
+        return True
+    from sqlalchemy.dialects.sqlite.aiosqlite import AsyncAdapt_aiosqlite_connection
+
+    return isinstance(dbapi_connection, AsyncAdapt_aiosqlite_connection)
+
+
+def _register_sqlite_functions(dbapi_connection: Any, _connection_record: Any) -> None:
+    """Every new SQLite connection of every engine in the process — the
+    application's, a CLI's, a test's — gets :data:`SQLITE_CASEFOLD`."""
+    if _is_sqlite(dbapi_connection):
+        dbapi_connection.create_function(
+            SQLITE_CASEFOLD, 1, _casefold, deterministic=True
+        )
+
+
+# On the Engine CLASS, so it covers every connection opened after this import,
+# whichever engine opens it. Importing this module is what arms it; the user
+# repository imports it at module level for that reason.
+event.listen(Engine, "connect", _register_sqlite_functions)
 
 
 def dialect_insert(session: Any, model: Any) -> Any:
