@@ -49,8 +49,9 @@ runtime, by object identity, in ``tests/conftest.py`` (fm#1628). The wrapped
 whatever name, alias or entry form reached it. They refuse an entry from a
 fixture scoped wider than one test, an undeclared entry in a borrowing module,
 and any entry while another lifespan on the app is live, the shared boot's
-included. The rule used to be checked here, by the resolver below, and it is
-not any more.
+included; and a test that leaves a lifespan it opened still live fails at its
+own teardown. The rule used to be checked here, by the resolver below, and it
+is not any more.
 
 The budget still tells real from scratch that way, by matching the argument's
 TEXT against the module's aliases for the app, and text is not scope. Its known
@@ -87,11 +88,11 @@ CENSUS_COMMAND = 'grep -rn "with TestClient(" tests/ --include=*.py'
 #: ``client_cm = TestClient(...)`` then ``with client_cm``; that one is now
 #: written as ``with TestClient(...)``, so the grep counts it. fm#1647 added two
 #: (one real, one in a child-process string literal), both boot-refusal tests.
-#: fm#1628 added twelve, the controls of the runtime guard in
-#: ``tests/conftest.py``: eleven in code and one in a child-process string
+#: fm#1628 added thirteen, the controls of the runtime guard in
+#: ``tests/conftest.py``: twelve in code and one in a child-process string
 #: literal.
 #: #1812 added one scratch site (the turns route mounted for its K13).
-EXPECTED_TOTAL_SITES = 55
+EXPECTED_TOTAL_SITES = 56
 
 #: The functions the resolver reads as entering the real application's
 #: lifespan: the EXPECTED entries marked ``"real"``, not the ``with`` statements
@@ -188,6 +189,12 @@ EXPECTED: dict[str, dict[str, tuple[str, int]]] = {
         # the guard lets through, but the module imports the real ``app``
         # elsewhere, so this census reads it as "real".
         "test_a_local_app_named_like_the_real_one_is_not_caught": ("real", 1),
+        # A scratch app whose ``.app`` raises: the guard's resolver treats the
+        # hop as no route to the real app, and lets it through.
+        "test_a_scratch_app_whose_app_attribute_raises_is_not_caught": (
+            "scratch",
+            1,
+        ),
         # Undeclared, with the shared boot stood down: the declaration rule
         # refuses it before the lifespan starts, so no boot is paid.
         "test_an_undeclared_boot_is_caught_while_no_shared_boot_is_live": (
@@ -337,10 +344,11 @@ EXPECTED_SITES_IN_STRING_LITERALS = {
     # in-memory DATABASE_URL before anything is written, plus its positive
     # control on a file URL.
     "tests/integration/test_boot_refuses_nonpersistent_database.py": 1,
-    # fm#1628's child-suite source for the runtime guard's setup-time refusals:
-    # a module-scoped fixture entering the real app, run under pytester in a
-    # child process and refused before the lifespan starts. Shared by two
-    # controls, so it is written once.
+    # fm#1628's child-suite source for the runtime guard's controls: a
+    # module-scoped fixture entering the real app, run under pytester in a
+    # child session. Requested by a test, it is refused before the lifespan
+    # starts; pulled in by ``getfixturevalue``, it boots and fails its test at
+    # teardown. Shared by four controls, so it is written once.
     "tests/unit/test_app_boot_runtime_guard_setup_errors.py": 1,
 }
 
@@ -922,8 +930,16 @@ def test_only_the_shared_broker_enters_a_lifespan_by_hand():
 #: are simply absent there. ``_app_boot_guard`` is autouse, so a directory that
 #: drops it records no running test, and the runtime check then refuses every
 #: real-app entry there as made outside a test's scope (fm#1628).
+#: ``_app_boot_session`` is autouse too, and starts each session with no test
+#: recorded.
 SHARED_BOOT_FIXTURES = frozenset(
-    {"_app_boot_guard", "_real_app_boot", "booted_app_client", "unshared_app_boot"}
+    {
+        "_app_boot_guard",
+        "_app_boot_session",
+        "_real_app_boot",
+        "booted_app_client",
+        "unshared_app_boot",
+    }
 )
 
 #: Anything pytest will adopt as a rootdir, which is what cuts conftest lookup.

@@ -79,6 +79,26 @@ def test_a_local_app_named_like_the_real_one_is_not_caught():
         assert client.app is app
 
 
+class _RaisingApp:
+    """A scratch ASGI app whose ``.app`` raises, as one needing a context can."""
+
+    def __init__(self):
+        self._inner = FastAPI()
+
+    @property
+    def app(self):
+        raise RuntimeError("no application context")
+
+    async def __call__(self, scope, receive, send):
+        await self._inner(scope, receive, send)
+
+
+def test_a_scratch_app_whose_app_attribute_raises_is_not_caught():
+    """A hop that raises is no route to the real app, and must not crash."""
+    with TestClient(_RaisingApp()) as client:
+        assert isinstance(client.app, _RaisingApp)
+
+
 # -- (b) the declaration ----------------------------------------------------
 
 
