@@ -11,8 +11,9 @@ past ``bigint`` — must not reach it.
 
 The population (``tests/account_list_population.py``) is more accounts than the
 old 1,000-row window in one enterprise, under ids and a search needle unique to
-this run, so the shared database's other rows never match. It is read through
-the sessionless repository production composes.
+this run, so the shared database's other rows never match; beside it, accounts
+whose ``dev_roles`` the writer never produces. It is read through the
+sessionless repository production composes.
 
 Run locally::
 
@@ -63,9 +64,19 @@ async def _as_owner(sql: str, **params) -> None:
         await engine.dispose()
 
 
-async def _write(world) -> None:
+_TOKEN = uuid.uuid4().hex[:8]
+#: Names the population (and the cases) at collection; ``world`` builds it.
+_SHAPE = population.shape(
+    token=_TOKEN, enterprise_a=f"ulp_a_{_TOKEN}", enterprise_b=f"ulp_b_{_TOKEN}"
+)
+_M = f"ulp_m_{_TOKEN}"
+# Outside the population's id prefix, so its cross-enterprise searches miss them.
+_M_PREFIX = f"ulpm{_TOKEN}_"
+
+
+async def _write(users, raw_accounts) -> None:
     """The enterprises, then every account in one bulk INSERT, each row as the
-    production writer serialises it."""
+    production writer serialises it, then the raw ``dev_roles`` texts."""
     from faultmaven.infrastructure.persistence.models import UserModel
     from faultmaven.infrastructure.persistence.user_repository import (
         PostgreSQLUserRepository,
@@ -74,7 +85,7 @@ async def _write(world) -> None:
     engine = create_async_engine(os.environ["DATABASE_URL"], future=True)
     try:
         async with AsyncSession(bind=engine) as session:
-            for enterprise in (world.enterprise_a, world.enterprise_b):
+            for enterprise in (_SHAPE.enterprise_a, _SHAPE.enterprise_b, _M):
                 await session.execute(
                     text(
                         "INSERT INTO enterprises (enterprise_id, name, slug) "
@@ -84,8 +95,14 @@ async def _write(world) -> None:
                 )
             writer = PostgreSQLUserRepository(session)
             await session.execute(
-                insert(UserModel), [writer._domain_to_dict(u) for u in world.users]
+                insert(UserModel),
+                [writer._domain_to_dict(u) for u in users + raw_accounts],
             )
+            for suffix, raw in population.RAW_ROLES.items():
+                await session.execute(
+                    text("UPDATE users SET dev_roles = :raw WHERE user_id = :u"),
+                    {"raw": raw, "u": f"{_M_PREFIX}{suffix}"},
+                )
             await session.commit()
     finally:
         await engine.dispose()
@@ -93,19 +110,18 @@ async def _write(world) -> None:
 
 @pytest.fixture(scope="module")
 def world():
-    token = uuid.uuid4().hex[:8]
-    built = population.build(
-        token=token,
-        enterprise_a=f"ulp_a_{token}",
-        enterprise_b=f"ulp_b_{token}",
-        created_from=_CREATED_FROM,
-    )
+    users = population.build(_SHAPE, created_from=_CREATED_FROM)
+    raw_accounts = population.raw_roles_accounts(_M_PREFIX, _M, _CREATED_FROM)
     try:
-        asyncio.run(_write(built))
-        yield built
+        asyncio.run(_write(users, raw_accounts))
+        yield SimpleNamespace(
+            users=users,
+            enterprise_a=_SHAPE.enterprise_a,
+            needle=_SHAPE.needle,
+        )
     finally:
         # The accounts go with their enterprises (ON DELETE CASCADE).
-        for enterprise in (built.enterprise_a, built.enterprise_b):
+        for enterprise in (_SHAPE.enterprise_a, _SHAPE.enterprise_b, _M):
             asyncio.run(
                 _as_owner(
                     "DELETE FROM enterprises WHERE enterprise_id = :e", e=enterprise
@@ -137,22 +153,11 @@ def service():
     return UserService(user_repo=SessionlessUserRepository(), auth_service=AsyncMock())
 
 
-#: The cases name this run's token, which exists only once ``world`` is built,
-#: so they are parametrized by position, with ids from a token-free stand-in.
-_CASE_IDS = [
-    population.case_id(filters)
-    for filters in population.cases(
-        SimpleNamespace(enterprise_a="A", prefix="ulp_", needle="needle")
-    )
-]
-
-
-@pytest.mark.parametrize("case", range(len(_CASE_IDS)), ids=_CASE_IDS)
-async def test_each_page_and_the_total_are_the_filtered_lists(world, service, case):
+@pytest.mark.parametrize("filters", population.cases(_SHAPE), ids=population.case_id)
+async def test_each_page_and_the_total_are_the_filtered_lists(world, service, filters):
     """The first page, the one at the old window's edge, the last and the one
     past the end are each that slice of the whole filtered list, and every one
     reports how many accounts match."""
-    filters = population.cases(world)[case]
     expected = population.expected_ids(world.users, **filters)
     # Precondition: some match lies beyond the window the service used to read.
     assert population.beyond_old_window(world.users, filters)
@@ -217,13 +222,6 @@ async def test_the_route_serves_the_last_page_and_the_true_total(world, service)
     assert body["total"] == len(expected)
 
 
-async def test_a_nul_search_is_an_empty_page_not_a_driver_error(world, service):
-    """PostgreSQL stores no NUL and its driver refuses to bind one."""
-    assert await service.list_users(
-        enterprise_id=world.enterprise_a, search=f"{world.needle}\x00"
-    ) == ([], 0)
-
-
 @pytest.mark.parametrize("offset", [2**63 - 1, 2**63, 10**30])
 async def test_an_offset_past_bigint_is_an_empty_page_with_the_true_total(
     world, service, offset
@@ -231,3 +229,55 @@ async def test_an_offset_past_bigint_is_an_empty_page_with_the_true_total(
     filters = {"enterprise_id": world.enterprise_a, "role": "member"}
     expected = population.expected_ids(world.users, **filters)
     assert await service.list_users(offset=offset, **filters) == ([], len(expected))
+
+
+@pytest.mark.parametrize(
+    "role, expected",
+    list(population.RAW_ROLES_LISTED.items()),
+    ids=["member", "admin", "emoji"],
+)
+async def test_a_value_that_is_not_an_array_of_strings_holds_no_roles(
+    world, service, role, expected
+):
+    """Read as no roles — so as a member — and never handed to ``jsonb``, so no
+    row can make the filter raise."""
+    users, total = await service.list_users(enterprise_id=_M, role=role, limit=50)
+    assert [u.user_id for u in users] == [f"{_M_PREFIX}{s}" for s in expected]
+    assert total == len(expected)
+
+
+async def test_every_such_account_is_listed_with_the_roles_the_filter_read(
+    world, service
+):
+    users, total = await service.list_users(enterprise_id=_M, limit=50)
+    roles = {u.user_id[len(_M_PREFIX) :]: u.roles for u in users}
+    assert total == len(population.RAW_ROLES)
+    assert roles.pop("admin") == ["admin"]
+    assert roles.pop("pair") == ["\U0001f600", "admin"]
+    assert roles == {s: [] for s in population.RAW_ROLES_LISTED["member"]}
+
+
+@pytest.mark.parametrize(
+    "filters",
+    [
+        {"role": "mem\x00ber"},
+        {"enterprise_id": f"{_M}\x00"},
+        {"search": "a\x00"},
+        {"search": "%" * 60_000},
+    ],
+    ids=["nul-role", "nul-enterprise", "nul-search", "huge-search"],
+)
+async def test_an_input_the_database_cannot_take_is_an_empty_page(
+    world, service, filters
+):
+    assert await service.list_users(**filters) == ([], 0)
+
+
+async def test_counting_accounts(world):
+    from faultmaven.infrastructure.persistence.user_repository import (
+        SessionlessUserRepository,
+    )
+
+    repository = SessionlessUserRepository()
+    assert await repository.count_users(_SHAPE.enterprise_a) == 2100
+    assert await repository.count_users(_M) == len(population.RAW_ROLES)

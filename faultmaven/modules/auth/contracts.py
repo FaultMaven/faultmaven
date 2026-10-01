@@ -34,6 +34,8 @@ from faultmaven.modules.auth.domain.models.rbac import (
     ORG_ADMIN_ROLE,
     PLATFORM_ADMIN_ROLE,
     PLATFORM_ADMIN_ROLE_SET,
+    ROLELESS_ACCOUNT_ROLE,
+    effective_roles,
 )
 
 if TYPE_CHECKING:
@@ -982,9 +984,10 @@ class IAccountDirectory(Protocol):
 
         ``search`` is a case-insensitive substring of the email or the display
         name, ``%`` and ``_`` taken literally; ``enterprise_id`` narrows the read
-        to one enterprise. ``None`` filters nothing. A search no stored value can
-        contain (a NUL character) and an offset past any row count answer an
-        empty page with the true total, never a database error.
+        to one enterprise. ``None`` filters nothing. A filter no stored value can
+        satisfy (a NUL character, a search longer than any searchable value)
+        answers an empty page with a total of 0, and an offset past any row
+        count an empty page with the true total — never a database error.
         """
         ...
 
@@ -1044,6 +1047,8 @@ __all__ = [
     "OPERATOR_GRANTED_ROLES",
     "ORG_ADMIN_ROLE",
     "BASE_USER_ROLE",
+    "ROLELESS_ACCOUNT_ROLE",
+    "effective_roles",
     # DTOs
     "UserDTO",
     "SessionDTO",

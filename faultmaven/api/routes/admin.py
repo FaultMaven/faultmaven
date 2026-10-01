@@ -39,7 +39,7 @@ Design Reference: TASK-019 Admin User Management Endpoints
 
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 from starlette.requests import Request
@@ -72,7 +72,11 @@ from faultmaven.exceptions import (
 )
 from faultmaven.models.api_models import MAX_IDENTIFIER_LENGTH
 from faultmaven.models.interfaces_operator_audit import OperatorAction
-from faultmaven.modules.auth.contracts import AccountMetadata, IAccountDirectory
+from faultmaven.modules.auth.contracts import (
+    AccountMetadata,
+    IAccountDirectory,
+    effective_roles,
+)
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.utils.serialization import to_json_compatible
 
@@ -250,6 +254,10 @@ def _refuse_unusable_enterprise_filter(enterprise_id: str) -> None:
             f"({MAX_IDENTIFIER_LENGTH} characters)"
         )
     elif "\x00" in enterprise_id:
+        # The account store answers a NUL in any string filter as "matches
+        # nothing" (``PostgreSQLUserRepository._account_filters``). This one
+        # is refused instead: under multi it is written to the access record
+        # before the read, and a NUL makes that write fail.
         detail = "enterprise_id must not contain a NUL character"
     else:
         return
@@ -373,11 +381,6 @@ async def _list_across_enterprises(
     return AdminUserListResponse(users=rows, total=total, limit=limit, offset=offset)
 
 
-def _roles(user) -> List[str]:
-    """An account's organization-scoped roles as the list reports them."""
-    return user.roles if user.roles else ["member"]
-
-
 def _manageable_item(user, *, enterprise_id: str) -> AdminUserListItem:
     """An account the operator administers, from the confined account read."""
     return AdminUserListItem(
@@ -385,7 +388,7 @@ def _manageable_item(user, *, enterprise_id: str) -> AdminUserListItem:
         enterprise_id=enterprise_id,
         email=user.email,
         full_name=user.display_name,
-        roles=_roles(user),
+        roles=effective_roles(user.roles),
         account_kind=user.account_kind,
         service_channel=user.service_channel,
         is_active=user.is_active,
@@ -418,7 +421,7 @@ def _cross_enterprise_item(account: AccountMetadata, user) -> AdminUserListItem:
         enterprise_id=account.enterprise_id,
         email=account.email,
         full_name=account.display_name,
-        roles=_roles(user) if user is not None else [],
+        roles=effective_roles(user.roles) if user is not None else [],
         account_kind=account.account_kind,
         service_channel=account.service_channel,
         is_active=account.is_active,

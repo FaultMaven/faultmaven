@@ -441,13 +441,7 @@ class DatabaseUserStore:
             the direction that cannot disclose another tenant's size.
         """
         try:
-            if enterprise_id is not None:
-                _, total = await self.user_repository.list_users(
-                    limit=1, offset=0, enterprise_id=enterprise_id
-                )
-                return total
-            _, total = await self.user_repository.list(limit=1, offset=0)
-            return total
+            return await self.user_repository.count_users(enterprise_id)
         except Exception as e:
             logger.error(f"Failed to count users: {e}")
             return 0

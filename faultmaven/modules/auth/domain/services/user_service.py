@@ -51,6 +51,7 @@ from faultmaven.infrastructure.persistence.user_repository import (
 )
 from faultmaven.infrastructure.persistence.user_repository import User as RepositoryUser
 from faultmaven.models.rbac import Role, get_permissions_for_roles
+from faultmaven.modules.auth.domain.models.rbac import effective_roles
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     PASSWORD_RESET_TOKEN_EXPIRY_HOURS,
     PasswordResetMint,
@@ -926,7 +927,7 @@ class UserService(BaseService):
             return None
 
         # Derive permissions from roles
-        user_roles = user.roles if user.roles else ["member"]
+        user_roles = effective_roles(user.roles)
         permissions = [p.value for p in get_permissions_for_roles(user_roles)]
 
         return {

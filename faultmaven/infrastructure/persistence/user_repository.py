@@ -8,11 +8,18 @@ Adapters:
 - PostgreSQLUserRepository: Production (SQLAlchemy ORM)
 """
 
+import json
+import re
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Collection, Dict, List, Optional, Sequence
 
 from pydantic import BaseModel, EmailStr, Field
+
+# At module level, not inside a method like this file's other imports:
+# importing it registers SQLITE_CASEFOLD on every SQLite connection, and the
+# account search names that function.
+from faultmaven.infrastructure.persistence.db_compat import SQLITE_CASEFOLD
 
 if TYPE_CHECKING:
     from faultmaven.modules.auth.contracts import AccountMetadata
@@ -180,54 +187,65 @@ def _like_substring(search: str) -> str:
     return f"%{escaped}%"
 
 
-def _unsearchable(search: Optional[str]) -> bool:
-    """True for a search no stored value can contain: NUL, which PostgreSQL
-    refuses to store and the driver refuses to bind. It matches nothing, and is
-    answered without a query."""
-    return search is not None and "\x00" in search
+#: A ``dev_roles`` value that holds roles: a JSON array of JSON strings, the
+#: shape ``_domain_to_dict`` writes, in the form PostgreSQL's ``jsonb`` input
+#: accepts — so a value that matches can always be cast, and one that does not
+#: is never handed to a JSON parser in SQL. Anything else (NULL, empty,
+#: malformed, a scalar, an object, an array holding a non-string) holds no
+#: roles. Read the same way by ``_stored_roles`` and by the role filter, on
+#: both dialects (PostgreSQL ``~``, SQLite ``REGEXP``), so the three cannot
+#: disagree about a row. Also valid Python ``re`` syntax.
+_JSON_WS = "[ \t\n\r]*"
+_JSON_STRING = (
+    '"(?:'
+    # Any character but the quote, the backslash and a control character...
+    r'[^"\\'
+    + "\x01-\x1f]"
+    # ...or an escape: a simple one,
+    + r'|\\(?:["\\/bfnrt]'
+    # a \u escape other than \u0000 or a lone surrogate (jsonb refuses both),
+    + r"|u(?!0000)(?![Dd][89A-Fa-f])[0-9A-Fa-f]{4}"
+    # or a surrogate pair.
+    + r"|u[Dd][89ABab][0-9A-Fa-f]{2}\\u[Dd][C-Fc-f][0-9A-Fa-f]{2})"
+    + ')*"'
+)
+_ROLES_ARRAY = (
+    rf"^{_JSON_WS}\[{_JSON_WS}"
+    rf"(?:{_JSON_STRING}{_JSON_WS}(?:,{_JSON_WS}{_JSON_STRING}{_JSON_WS})*)?"
+    rf"\]{_JSON_WS}$"
+)
+_ROLES_ARRAY_RE = re.compile(_ROLES_ARRAY)
 
 
-def _account_filters(
-    *,
-    is_active: Optional[bool],
-    enterprise_id: Optional[str],
-    search: Optional[str],
-) -> list:
-    """The WHERE clauses of an account listing; ``None`` filters nothing.
+def _stored_roles(raw: Optional[str]) -> List[str]:
+    """The roles a ``dev_roles`` value holds; see :data:`_ROLES_ARRAY`."""
+    if not raw or not _ROLES_ARRAY_RE.search(raw):
+        return []
+    return json.loads(raw)
 
-    ``search`` is a case-insensitive substring of the email or the display
-    name: both sides are lowered by the database, and the needle is literal, so
-    ``%`` and ``_`` in a search match themselves.
+
+def _cannot_match(**text_filters: Optional[str]) -> bool:
+    """A string filter no stored value can satisfy, which the listings answer
+    with an empty page and no query:
+
+    * a NUL in any of them: no column stores one, and PostgreSQL's driver
+      refuses to bind one;
+    * a search longer than twice the widest searchable column. Lowering can
+      lengthen a value ("İ" lowers to two characters) but never by more than
+      that, so a longer search contains more than any lowered value holds —
+      and SQLite refuses a LIKE pattern past its length limit.
     """
-    from sqlalchemy import func, literal, or_
-
     from faultmaven.infrastructure.persistence.models import UserModel
 
-    filters = []
-    if is_active is not None:
-        filters.append(UserModel.is_active == is_active)
-    # One indexed comparison. ``None`` is the single-tenant "no restriction"; a
-    # real id that matches nothing is a tenant with no accounts, and correctly
-    # returns nothing.
-    if enterprise_id is not None:
-        filters.append(UserModel.enterprise_id == enterprise_id)
-    if search is not None:
-        pattern = func.lower(literal(_like_substring(search)))
-        filters.append(
-            or_(
-                func.lower(UserModel.email).like(pattern, escape=_LIKE_ESCAPE),
-                func.lower(UserModel.display_name).like(pattern, escape=_LIKE_ESCAPE),
-            )
-        )
-    return filters
-
-
-def _effective_roles(user: "User") -> List[str]:
-    """The roles an account is listed under: its own, or ``member`` when it
-    holds none."""
-    from faultmaven.models.rbac import Role
-
-    return user.roles if user.roles else [Role.MEMBER.value]
+    present = [value for value in text_filters.values() if value is not None]
+    if any("\x00" in value for value in present):
+        return True
+    search = text_filters.get("search")
+    widest = max(
+        UserModel.__table__.c.email.type.length,
+        UserModel.__table__.c.display_name.type.length,
+    )
+    return search is not None and len(search) > 2 * widest
 
 
 def _account_metadata(source) -> "AccountMetadata":
@@ -294,12 +312,13 @@ class UserRepository(ABC):
         the matches visits each exactly once whatever their number. ``None``
         filters nothing.
 
-        ``role`` matches an account holding that role exactly, and an account
-        holding no role counts as ``member`` — the roles the account list
+        ``role`` matches one of the account's ``effective_roles`` exactly: those
+        it holds, or ``member`` when it holds none — the roles the account list
         reports for it. ``search`` is a case-insensitive substring of the email
-        or the display name, with ``%`` and ``_`` taken literally. A search no
-        stored value can contain (NUL) and an offset past any row count answer
-        an empty page with the true total.
+        or the display name, with ``%`` and ``_`` taken literally. A string
+        filter no stored value can satisfy (a NUL in any, a search longer than
+        any searchable value) answers an empty page with a total of 0, and an
+        offset past any row count an empty page with the true total.
 
         ``enterprise_id`` is the tenant predicate the operator surface confines
         by (``api/operator_user_scope``, #1318). It is a query predicate rather
@@ -329,6 +348,12 @@ class UserRepository(ABC):
         pass
 
     @abstractmethod
+    async def count_users(self, enterprise_id: Optional[str] = None) -> int:
+        """How many accounts are anchored to ``enterprise_id`` — or exist at
+        all, for ``None``. A count and nothing else: no page is read."""
+        pass
+
+    @abstractmethod
     async def list_account_metadata(
         self,
         *,
@@ -350,8 +375,9 @@ class UserRepository(ABC):
         ``search`` is a case-insensitive substring of the email or the display
         name with ``%`` and ``_`` taken literally. Newest account first,
         ``user_id`` breaking ties. ``total`` counts every match and is read
-        with the page; a search no stored value can contain (NUL) and an offset
-        past any row count answer an empty page with the true total.
+        with the page; a search no stored value can contain (a NUL, or longer
+        than any searchable value) answers an empty page with a total of 0, and
+        an offset past any row count an empty page with the true total.
         """
         pass
 
@@ -520,7 +546,9 @@ class InMemoryUserRepository(UserRepository):
                 if needle in u.email.lower() or needle in u.display_name.lower()
             ]
         if role is not None:
-            rows = [u for u in rows if role in _effective_roles(u)]
+            from faultmaven.modules.auth.contracts import effective_roles
+
+            rows = [u for u in rows if role in effective_roles(u.roles)]
         # Two stable sorts: user_id ascending, then created_at descending, so
         # the newest account comes first and ties fall in user_id order.
         rows.sort(key=lambda u: u.user_id)
@@ -562,6 +590,14 @@ class InMemoryUserRepository(UserRepository):
             is_active=is_active, enterprise_id=enterprise_id, search=search, role=role
         )
         return rows[offset : offset + limit], len(rows)
+
+    async def count_users(self, enterprise_id: Optional[str] = None) -> int:
+        """How many accounts there are — in ``enterprise_id``, or in all."""
+        return sum(
+            1
+            for user in self._users.values()
+            if enterprise_id is None or user.enterprise_id == enterprise_id
+        )
 
     async def create(self, user: User) -> User:
         """Create a new user."""
@@ -645,14 +681,11 @@ class PostgreSQLUserRepository(UserRepository):
         `organization_members` rather than minted here — so this field stays the
         source of the `roles` claim without becoming the org authorization
         source.
-        """
-        import json
 
-        raw = getattr(model, "dev_roles", None)
-        try:
-            roles = json.loads(raw) if raw else []
-        except (json.JSONDecodeError, TypeError):
-            roles = []
+        A ``dev_roles`` value that is not a JSON array of strings reads as no
+        roles (:data:`_ROLES_ARRAY`), as the role filter reads it.
+        """
+        roles = _stored_roles(getattr(model, "dev_roles", None))
 
         return User(
             user_id=model.user_id,
@@ -730,7 +763,7 @@ class PostgreSQLUserRepository(UserRepository):
             # from organization_members → roles is left unwired rather than
             # half-wired: a partial derivation is what makes role
             # administration silently stop taking effect.
-            "dev_roles": __import__("json").dumps(user.roles) if user.roles else None,
+            "dev_roles": json.dumps(user.roles) if user.roles else None,
         }
 
     async def save(self, user: User) -> User:
@@ -841,14 +874,15 @@ class PostgreSQLUserRepository(UserRepository):
         applied by the query, before LIMIT/OFFSET."""
         from faultmaven.infrastructure.persistence.models import UserModel
 
-        if _unsearchable(search):
-            return [], 0
-        filters = _account_filters(
-            is_active=is_active, enterprise_id=enterprise_id, search=search
+        rows, total = await self._read(
+            (UserModel,),
+            is_active=is_active,
+            enterprise_id=enterprise_id,
+            role=role,
+            search=search,
+            limit=limit,
+            offset=offset,
         )
-        if role is not None:
-            filters.append(self._holds_role(role))
-        rows, total = await self._page((UserModel,), filters, limit, offset)
         return [self._model_to_domain(row[0]) for row in rows], total
 
     async def list_account_metadata(
@@ -863,80 +897,165 @@ class PostgreSQLUserRepository(UserRepository):
         """Every enterprise's accounts, as metadata — the eleven columns only."""
         from faultmaven.infrastructure.persistence.models import UserModel
 
-        if _unsearchable(search):
-            return [], 0
-        filters = _account_filters(
-            is_active=is_active, enterprise_id=enterprise_id, search=search
-        )
-        rows, total = await self._page(
+        rows, total = await self._read(
             tuple(getattr(UserModel, name) for name in ACCOUNT_METADATA_COLUMNS),
-            filters,
-            limit,
-            offset,
+            is_active=is_active,
+            enterprise_id=enterprise_id,
+            role=None,
+            search=search,
+            limit=limit,
+            offset=offset,
         )
         return [_account_metadata(row) for row in rows], total
 
-    async def _page(
-        self, selected: tuple, filters: list, limit: int, offset: int
-    ) -> tuple[list, int]:
-        """One page of ``selected`` over the accounts matching ``filters`` —
-        newest first, ``user_id`` breaking ties so a page boundary among
-        accounts created in one instant falls in one place — and the number of
-        matches.
+    async def count_users(self, enterprise_id: Optional[str] = None) -> int:
+        """How many accounts there are — in ``enterprise_id``, or in all."""
+        filters = self._account_filters(
+            is_active=None, enterprise_id=enterprise_id, role=None, search=None
+        )
+        return 0 if filters is None else await self._count(filters)
 
-        The page and its total come from ONE statement (``count(*) OVER ()``),
-        so they describe the same snapshot; only an empty page — the offset is
-        past the last match, or past any offset the database can bind — needs
-        the separate count.
+    async def _count(self, filters: list) -> int:
+        from sqlalchemy import func, select
+
+        from faultmaven.infrastructure.persistence.models import UserModel
+
+        stmt = select(func.count()).select_from(UserModel).where(*filters)
+        return int((await self.db.execute(stmt)).scalar_one())
+
+    async def _read(
+        self,
+        selected: tuple,
+        *,
+        is_active: Optional[bool],
+        enterprise_id: Optional[str],
+        role: Optional[str],
+        search: Optional[str],
+        limit: int,
+        offset: int,
+    ) -> tuple[list, int]:
+        """One page of ``selected`` over the matching accounts — newest first,
+        ``user_id`` breaking ties so a page boundary among accounts created in
+        one instant falls in one place — and the number of matches. Every input
+        the database cannot be handed is answered here, for both listings.
+
+        The page and its total come from ONE statement, so they describe the
+        same snapshot. ``count(*) OVER ()`` runs over a narrow subquery of ids
+        and sort keys, and only the page's rows are read in full, so the
+        database sorts the matches' ids rather than every matching row at full
+        width. Only an empty page — the offset is past the last match, or past
+        any offset the database can bind — needs the separate count.
         """
         from sqlalchemy import func, select
 
         from faultmaven.infrastructure.persistence.models import UserModel
 
-        async def count() -> int:
-            stmt = select(func.count()).select_from(UserModel).where(*filters)
-            return int((await self.db.execute(stmt)).scalar_one())
-
+        filters = self._account_filters(
+            is_active=is_active, enterprise_id=enterprise_id, role=role, search=search
+        )
+        if filters is None:
+            return [], 0
         if offset > _MAX_SQL_OFFSET:
-            return [], await count()
+            return [], await self._count(filters)
 
-        stmt = (
-            select(*selected, func.count().over().label("matching"))
+        order = (UserModel.created_at.desc(), UserModel.user_id)
+        page = (
+            select(UserModel.user_id, func.count().over().label("matching"))
             .where(*filters)
-            .order_by(UserModel.created_at.desc(), UserModel.user_id)
+            .order_by(*order)
             .limit(limit)
             .offset(offset)
+            .subquery()
+        )
+        stmt = (
+            select(*selected, page.c.matching)
+            .select_from(UserModel)
+            .join(page, UserModel.user_id == page.c.user_id)
+            .order_by(*order)
         )
         rows = (await self.db.execute(stmt)).all()
         if not rows:
-            return [], await count()
+            return [], await self._count(filters)
         return rows, int(rows[0].matching)
 
-    def _holds_role(self, role: str):
-        """The account holds ``role``, an account holding none counting as
-        ``member`` — what ``_effective_roles`` says of a loaded account.
+    def _account_filters(
+        self,
+        *,
+        is_active: Optional[bool],
+        enterprise_id: Optional[str],
+        role: Optional[str],
+        search: Optional[str],
+    ) -> Optional[list]:
+        """The WHERE clauses of an account listing, or ``None`` when no account
+        can match (:func:`_cannot_match`); a ``None`` filter filters nothing.
 
-        Roles are the ``dev_roles`` JSON array, NULL when the account holds
-        none (``_domain_to_dict`` is its one writer). An element is compared
-        whole and case-sensitively, by the dialect's JSON array reader.
+        ``search`` is a case-insensitive substring of the email or the display
+        name, both sides folded by the database — on SQLite by
+        :data:`SQLITE_CASEFOLD`, whose built-in ``lower()`` folds ASCII only —
+        and the needle literal, so ``%`` and ``_`` match themselves.
         """
-        from sqlalchemy import cast, func, or_, select
+        from sqlalchemy import func, literal, or_
 
         from faultmaven.infrastructure.persistence.models import UserModel
-        from faultmaven.models.rbac import Role
 
-        if self.db.get_bind().dialect.name == "postgresql":
+        if _cannot_match(enterprise_id=enterprise_id, role=role, search=search):
+            return None
+        filters = []
+        if is_active is not None:
+            filters.append(UserModel.is_active == is_active)
+        # One indexed comparison. ``None`` is the single-tenant "no restriction";
+        # a real id that matches nothing is a tenant with no accounts, and
+        # correctly returns nothing.
+        if enterprise_id is not None:
+            filters.append(UserModel.enterprise_id == enterprise_id)
+        if search is not None:
+            fold = getattr(func, SQLITE_CASEFOLD if self._on_sqlite() else "lower")
+            pattern = fold(literal(_like_substring(search)))
+            filters.append(
+                or_(
+                    fold(UserModel.email).like(pattern, escape=_LIKE_ESCAPE),
+                    fold(UserModel.display_name).like(pattern, escape=_LIKE_ESCAPE),
+                )
+            )
+        if role is not None:
+            filters.append(self._holds_role(role))
+        return filters
+
+    def _on_sqlite(self) -> bool:
+        return self.db.get_bind().dialect.name == "sqlite"
+
+    def _holds_role(self, role: str):
+        """``role`` is among the account's ``effective_roles``: those its
+        ``dev_roles`` holds, or ``ROLELESS_ACCOUNT_ROLE`` when it holds none.
+
+        Only a value :data:`_ROLES_ARRAY` admits reaches the JSON reader, and
+        anything else holds no roles — as ``_stored_roles`` reads it — so no row
+        can make the filter raise, on either dialect. The array is read once:
+        an admitted array holds an element exactly when its text holds a quote,
+        so "holds none" needs no parse. An element is compared whole and
+        case-sensitively.
+        """
+        from sqlalchemy import case, cast, false, func, literal, or_, select, true
+
+        from faultmaven.infrastructure.persistence.models import UserModel
+        from faultmaven.modules.auth.contracts import ROLELESS_ACCOUNT_ROLE
+
+        dev_roles = UserModel.dev_roles
+        if self._on_sqlite():
+            held = func.json_each(dev_roles).table_valued("value")
+            holds = select(held.c.value).where(held.c.value == role).exists()
+            holds_none = func.instr(dev_roles, literal('"')) == 0
+        else:
             from sqlalchemy.dialects.postgresql import JSONB
 
-            held = func.jsonb_array_elements_text(
-                cast(UserModel.dev_roles, JSONB)
-            ).table_valued("value")
-        else:
-            held = func.json_each(UserModel.dev_roles).table_valued("value")
-        holds = select(held.c.value).where(held.c.value == role).exists()
-        if role != Role.MEMBER.value:
-            return holds
-        return or_(holds, ~select(held.c.value).exists())
+            holds = cast(dev_roles, JSONB).has_key(role)
+            holds_none = func.strpos(dev_roles, literal('"')) == 0
+        if role == ROLELESS_ACCOUNT_ROLE:
+            return case(
+                (dev_roles.regexp_match(_ROLES_ARRAY), or_(holds_none, holds)),
+                else_=true(),
+            )
+        return case((dev_roles.regexp_match(_ROLES_ARRAY), holds), else_=false())
 
     async def get_many_in_enterprise(
         self, enterprise_id: str, user_ids: Sequence[str]
@@ -1131,6 +1250,12 @@ class SessionlessUserRepository(UserRepository):
                 role=role,
                 search=search,
             )
+
+    async def count_users(self, enterprise_id: Optional[str] = None) -> int:
+        from faultmaven.infrastructure.persistence.database import get_db_session
+
+        async with get_db_session() as session:
+            return await PostgreSQLUserRepository(session).count_users(enterprise_id)
 
     async def list_account_metadata(
         self,
