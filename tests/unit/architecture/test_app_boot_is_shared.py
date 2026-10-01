@@ -19,35 +19,46 @@ regression worth catching.
 function and its class:
 
 ``"real"``
-    The site boots ``faultmaven.main.app``. Only legitimate where the LIFESPAN
-    is the subject — a boot under a patched environment, or one asserted to
-    refuse. Anything that merely needs *a* started application takes the
+    The census reads the site as entering ``faultmaven.main.app``: the
+    ``TestClient`` argument is a name the module binds to the real app. Only
+    legitimate where the LIFESPAN is the subject — a boot under a patched
+    environment, or one asserted to refuse — or in a control of the runtime
+    guard. Anything that merely needs *a* started application takes the
     ``booted_app_client`` fixture instead, which boots once per module.
 ``"scratch"``
-    The site drives an application the test built itself. Free; listed so that
-    a later edit pointing it at the real app is visible here.
+    The census reads the site as driving an application the test built
+    itself. Free; listed so that a later edit pointing it at the real app is
+    visible here.
+
+**What the numbers count.** ``"real"`` and ``"scratch"`` are this census's
+reading of a site's text, and ``EXPECTED_REAL_APP_SITES`` counts the functions
+read ``"real"``, the runtime guard's controls included. Neither counts the
+lifespans a run pays: a guard control read ``"real"`` may be refused before its
+lifespan starts, one function may hold two sites, and a site the census reads
+``"scratch"`` may enter the real app (the misreads below).
 
 **This census is the budget, not the safety check.** A test that boots the
 real app inside a module that also uses ``booted_app_client`` must take the
 ``unshared_app_boot`` fixture, which stands the shared boot down for the
 duration. Two lifespans live on one app object otherwise: the second
 re-composes ``app.state`` onto its own event loop, and its shutdown disposes the
-database engine the first client is still serving from. That rule is enforced
-at runtime, by object identity, in ``tests/conftest.py``: the wrapped
-``TestClient.__enter__`` compares the client's application with
-``faultmaven.main.app`` itself, whatever name, alias or entry form reached it
-(fm#1628). The same guard refuses a real-app lifespan opened from a fixture
-scoped wider than one test (only the shared boot is), and a test that takes
-both ``booted_app_client`` and ``unshared_app_boot``. The rule used to be
-checked here, by the resolver below, and it is not any more.
+database engine the first client is still serving from. That is enforced at
+runtime, by object identity, in ``tests/conftest.py`` (fm#1628). The wrapped
+``TestClient.__enter__`` and ``__exit__`` resolve the client's application to
+``faultmaven.main.app`` itself, through any middleware wrapped around it,
+whatever name, alias or entry form reached it. They refuse an entry from a
+fixture scoped wider than one test, an undeclared entry in a borrowing module,
+and any entry while another lifespan on the app is live, the shared boot's
+included. The rule used to be checked here, by the resolver below, and it is
+not any more.
 
 The budget still tells real from scratch that way, by matching the argument's
-TEXT against the module's aliases for the app, and text is not scope. Its two
-known misreads are listed rather than fixed: a rebinding (``real = app``) reads
-``"scratch"``, and a local ``app = FastAPI()`` in a file that imports the real
-``app`` reads ``"real"``. Each costs a mis-counted budget line, never an
-overlap. ``tests/unit/test_app_boot_runtime_guard.py`` holds one of each, listed
-as the census reads them.
+TEXT against the module's aliases for the app, and text is not scope. Its known
+misreads are listed rather than fixed: a rebinding (``real = app``) and the real
+app wrapped in middleware read ``"scratch"``, and a local ``app = FastAPI()`` in
+a file that imports the real ``app`` reads ``"real"``. Each costs a mis-counted
+budget line, never an overlap. ``tests/unit/test_app_boot_runtime_guard.py``
+holds one of each, listed as the census reads them.
 """
 
 from __future__ import annotations
@@ -76,15 +87,18 @@ CENSUS_COMMAND = 'grep -rn "with TestClient(" tests/ --include=*.py'
 #: ``client_cm = TestClient(...)`` then ``with client_cm``; that one is now
 #: written as ``with TestClient(...)``, so the grep counts it. fm#1647 added two
 #: (one real, one in a child-process string literal), both boot-refusal tests.
-#: fm#1628 added seven, the controls of the runtime guard in ``tests/conftest.py``:
-#: six in code and one in a child-process string literal.
-EXPECTED_TOTAL_SITES = 49
+#: fm#1628 added twelve, the controls of the runtime guard in
+#: ``tests/conftest.py``: eleven in code and one in a child-process string
+#: literal.
+EXPECTED_TOTAL_SITES = 54
 
-#: Of those, the ones the resolver reads as entering the real application's
-#: lifespan. Was 25. fm#1628's controls added six; three of them are boots the
-#: suite pays, and three are not (two are caught before the lifespan starts, and
-#: one is the scratch app the resolver misreads as real, the known residual).
-EXPECTED_REAL_APP_SITES = 15
+#: The functions the resolver reads as entering the real application's
+#: lifespan: the EXPECTED entries marked ``"real"``, not the ``with`` statements
+#: and not the lifespans paid. Was 25. fm#1628's controls added nine. Four pay
+#: a lifespan, one of them also holding a nested second site that is refused;
+#: four are refused before theirs starts; and one is the scratch app the
+#: resolver misreads as real, the known residual.
+EXPECTED_REAL_APP_SITES = 18
 
 #: Sites that call ``TestClient.__enter__`` by hand rather than through a
 #: ``with``, which a scan for ``with`` statements cannot see, so
@@ -95,10 +109,11 @@ MANUAL_LIFESPAN_ENTRY = {
     # The single sanctioned shared boot: ``_RealAppBoot.client`` starts a client
     # that outlives the function that started it.
     "tests/conftest.py": 1,
-    # The runtime guard's control for this very spelling (fm#1628). It is made
-    # in a module that borrows the shared boot, and the guard fails it before
-    # the lifespan starts.
-    "tests/unit/test_app_boot_runtime_guard.py": 1,
+    # The runtime guard's controls (fm#1628): one for this very spelling, which
+    # the guard refuses before the lifespan starts, and one that leaves a
+    # lifespan open on purpose, so that the next shared boot meets it. Each
+    # exits what it entered.
+    "tests/unit/test_app_boot_runtime_guard.py": 2,
 }
 
 #: Every site, keyed by file and by the function (or method) that holds it.
@@ -153,34 +168,54 @@ EXPECTED: dict[str, dict[str, tuple[str, int]]] = {
         "test_health_reports_no_component_figure_it_did_not_measure": ("real", 1),
     },
     # -- the runtime guard's controls (fm#1628) -------------------------------
-    # Each drives the ``TestClient.__enter__`` guard in tests/conftest.py
-    # through the real shared boot. The module borrows it, so every entry of
-    # faultmaven.main.app here falls under the rule.
+    # Each drives the ``TestClient`` guard in tests/conftest.py through the
+    # real shared boot. The module borrows it, so every entry of
+    # faultmaven.main.app here falls under the declaration rule.
     "tests/unit/test_app_boot_runtime_guard.py": {
-        # Undeclared, and placed before the module's first borrower: the guard
-        # fails it before the lifespan starts, so no boot is paid.
-        "test_an_undeclared_boot_placed_before_any_borrower_is_caught": ("real", 1),
-        # The known residual: ``real = app`` is the real app, which the guard
+        # Known residual: ``real = app`` is the real app, which the guard
         # catches by identity, but this census resolves names by text and reads
-        # it as "scratch".
+        # it as "scratch". Refused before the lifespan starts.
         "test_a_rebinding_is_caught": ("scratch", 1),
-        # Entered through ``ExitStack.enter_context``; caught before the
+        # Entered through ``ExitStack.enter_context``; refused before the
         # lifespan starts, so no boot is paid.
         "test_an_exit_stack_entry_is_caught": ("real", 1),
-        # The other known residual: a local ``app = FastAPI()`` is a scratch
-        # app, which the guard lets through, but the module imports the real
-        # ``app`` elsewhere, so this census reads it as "real".
+        # Known residual: the real app inside middleware, which the guard
+        # resolves through ``.app``, but this census reads the argument, a
+        # call, as "scratch". Refused before the lifespan starts.
+        "test_the_real_app_inside_middleware_is_caught": ("scratch", 1),
+        # Known residual: a local ``app = FastAPI()`` is a scratch app, which
+        # the guard lets through, but the module imports the real ``app``
+        # elsewhere, so this census reads it as "real".
         "test_a_local_app_named_like_the_real_one_is_not_caught": ("real", 1),
+        # Undeclared, with the shared boot stood down: the declaration rule
+        # refuses it before the lifespan starts, so no boot is paid.
+        "test_an_undeclared_boot_is_caught_while_no_shared_boot_is_live": (
+            "real",
+            1,
+        ),
+        # A fixture entering beside the live shared boot, before
+        # ``unshared_app_boot`` stands it down: the live count refuses it
+        # before the lifespan starts.
+        "entered_before_the_stand_down": ("real", 1),
         # A real boot declared with ``unshared_app_boot``: allowed, and paid.
         "test_a_declared_unshared_boot_is_allowed": ("real", 1),
+        # Two: the outer is a declared boot, allowed and paid; the nested
+        # second is refused by the live count before its lifespan starts.
+        "test_a_second_lifespan_inside_a_declared_one_is_caught": ("real", 2),
     },
     "tests/unit/test_app_boot_runtime_guard_no_borrower.py": {
-        # A real boot in a module that never borrows the shared boot: it needs
-        # no declaration, so the guard lets it through, and it is paid.
+        # A real boot in a module that names no borrow: it needs no
+        # declaration, so the guard lets it through, and it is paid.
         "test_a_module_that_never_borrows_may_boot_the_real_app": ("real", 1),
         # The same from a function-scoped fixture, which is set up inside the
         # test's scope: let through, and paid.
         "function_scoped_real_boot": ("real", 1),
+        # Beside a shared boot borrowed by ``getfixturevalue``: the live count
+        # refuses it before the lifespan starts.
+        "test_a_borrow_by_getfixturevalue_is_guarded_by_the_live_count": (
+            "real",
+            1,
+        ),
     },
     # -- drives an app the test built itself --------------------------------
     "tests/integration/api/test_no_unauthenticated_operations.py": {
@@ -604,14 +639,11 @@ def text_census() -> dict[str, int]:
 # The guard
 # ---------------------------------------------------------------------------
 
-#: What a failing assertion tells its reader to do. Every count-bearing message
-#: carries it, because a message that only says "the number moved" invites
-#: bumping the number without asking whether the new boot should have been a
-#: borrow. It is the same text the runtime guard in ``tests/conftest.py`` fails
-#: with, defined there once, so the two cannot drift apart: the guard is what
-#: stops two lifespans overlapping on one app object, and this census is the
-#: budget of boots.
-_WHAT_TO_DO = APP_BOOT_GUIDANCE
+# Every count-bearing message below carries ``APP_BOOT_GUIDANCE``, because a
+# message that only says "the number moved" invites bumping the number without
+# asking whether the new boot should have been a borrow. It is the text the
+# runtime guard in ``tests/conftest.py`` fails with, defined there once, so the
+# two cannot drift apart.
 
 
 def test_every_test_client_context_is_accounted_for():
@@ -635,7 +667,7 @@ def test_every_test_client_context_is_accounted_for():
 
     assert not unlisted and not gone, (
         "The TestClient census moved.\n"
-        + _WHAT_TO_DO
+        + APP_BOOT_GUIDANCE
         + "\nAppeared or changed:\n"
         + ("\n".join(unlisted) or "  (none)")
         + "\n\nListed but not found (rename or removal — update EXPECTED):\n"
@@ -644,39 +676,59 @@ def test_every_test_client_context_is_accounted_for():
 
 
 def test_the_two_censuses_agree_on_the_total():
-    """The AST scan and the grep the issue ran must reconcile exactly.
+    """The AST scan and the grep the issue ran must reconcile exactly, per file.
 
     Without this, a site the resolver silently fails to parse — a new file
     shape, a walrus, a factory call — would be invisible to the guard above
-    while still being there.
+    while still being there. It is checked file by file rather than as a sum,
+    so a miss in one file cannot be cancelled by a declared exception or a
+    surplus in another.
     """
-    from_text = sum(text_census().values())
-    from_ast = sum(count for f in census().values() for _kind, count in f.values())
-    in_strings = sum(EXPECTED_SITES_IN_STRING_LITERALS.values())
-    unseen_by_grep = sum(EXPECTED_SITES_THE_GREP_CANNOT_SEE.values())
-
-    assert from_text == EXPECTED_TOTAL_SITES, (
-        f"{CENSUS_COMMAND} now finds {from_text} sites, not "
-        f"{EXPECTED_TOTAL_SITES}.\n" + _WHAT_TO_DO
+    from_text = text_census()
+    from_ast = {
+        path: sum(count for _kind, count in entries.values())
+        for path, entries in census().items()
+    }
+    assert sum(from_text.values()) == EXPECTED_TOTAL_SITES, (
+        f"{CENSUS_COMMAND} now finds {sum(from_text.values())} sites, not "
+        f"{EXPECTED_TOTAL_SITES}.\n" + APP_BOOT_GUIDANCE
     )
-    assert from_ast + in_strings == from_text + unseen_by_grep, (
-        f"the AST scan sees {from_ast} sites, {in_strings} are declared to live "
-        f"inside string literals and {unseen_by_grep} are declared invisible to "
-        f"the grep, which does not reconcile with the {from_text} the text census "
-        "finds. Either a site is being parsed as something else, or a TestClient "
+
+    unreconciled = []
+    for path in sorted(
+        set(from_text)
+        | set(from_ast)
+        | set(EXPECTED_SITES_IN_STRING_LITERALS)
+        | set(EXPECTED_SITES_THE_GREP_CANNOT_SEE)
+    ):
+        grep_f = from_text.get(path, 0)
+        ast_f = from_ast.get(path, 0)
+        in_strings_f = EXPECTED_SITES_IN_STRING_LITERALS.get(path, 0)
+        unseen_f = EXPECTED_SITES_THE_GREP_CANNOT_SEE.get(path, 0)
+        if grep_f - ast_f != in_strings_f - unseen_f:
+            unreconciled.append(
+                f"  {path}: grep {grep_f}, AST {ast_f}, declared in string "
+                f"literals {in_strings_f}, declared invisible to the grep {unseen_f}"
+            )
+
+    assert not unreconciled, (
+        "the AST scan and the text census do not reconcile in these files "
+        "(grep - AST must equal in-strings - invisible-to-grep):\n"
+        + "\n".join(unreconciled)
+        + "\nEither a site is being parsed as something else, or a TestClient "
         "context is entered in a form the grep cannot see (an aliased class, "
         "`with client:` after `client = TestClient(...)`, "
         "`enter_context(TestClient(...))`). Write it as `with TestClient(...)`.\n"
-        + _WHAT_TO_DO
+        + APP_BOOT_GUIDANCE
     )
 
 
 def test_only_the_declared_sites_are_invisible_to_the_grep():
     """``EXPECTED_SITES_THE_GREP_CANNOT_SEE`` is exactly the live sites of its shape.
 
-    The reconciliation above is a sum, so an exception declared for one file
-    could otherwise stay in the set after its site moved or went, and absorb a
-    new ``enter_context(TestClient(...))`` somewhere else.
+    The reconciliation above balances counts per file, so within one file an
+    exception declared for this shape could otherwise absorb a different
+    mismatch, and it would not say which spelling it was declared for.
     """
     live: dict[str, int] = {}
     for path in _test_files():
@@ -704,6 +756,8 @@ def test_the_real_app_is_booted_by_only_a_handful_of_sites():
     """The number fm#1569 is about, pinned.
 
     It was 25 in-process sites (of 56 total) before the shared fixture landed.
+    It counts the functions the resolver reads as ``"real"``, the runtime
+    guard's controls included, not the lifespans a run pays.
     """
     real = [
         f"{path}::{qualname}"
@@ -715,7 +769,7 @@ def test_the_real_app_is_booted_by_only_a_handful_of_sites():
         "the number of sites entering faultmaven.main.app's lifespan changed:\n  "
         + "\n  ".join(sorted(real))
         + "\n"
-        + _WHAT_TO_DO
+        + APP_BOOT_GUIDANCE
     )
 
 
@@ -832,9 +886,9 @@ def test_only_the_shared_broker_enters_a_lifespan_by_hand():
     statement scan can see it, so every site that starts a client outside a
     ``with`` is named here. Exactly one boot is sanctioned: the module-scoped
     broker in ``tests/conftest.py``, whose whole point is that the started
-    client outlives the call that started it. The other listed site is the
-    runtime guard's control for this spelling, which never gets as far as the
-    lifespan.
+    client outlives the call that started it. The other listed sites are the
+    runtime guard's controls: the one for this spelling, which never gets as
+    far as the lifespan, and the one that leaves a lifespan open on purpose.
     """
     found: dict[str, int] = {}
     for path in _test_files():
@@ -860,8 +914,8 @@ def test_only_the_shared_broker_enters_a_lifespan_by_hand():
 
 #: The fixtures a directory with its own pytest.ini has to re-export, or they
 #: are simply absent there. ``_app_boot_guard`` is autouse, so a directory that
-#: drops it loses the runtime check on an undeclared second lifespan with no
-#: error at all (fm#1628).
+#: drops it records no running test, and the runtime check then refuses every
+#: real-app entry there as made outside a test's scope (fm#1628).
 SHARED_BOOT_FIXTURES = frozenset(
     {"_app_boot_guard", "_real_app_boot", "booted_app_client", "unshared_app_boot"}
 )
