@@ -54,7 +54,7 @@ ChromaDB Instance
 | Property | Value |
 |----------|-------|
 | Model | BGE-M3 |
-| Library | sentence-transformers 3.0.1+ |
+| Library | sentence-transformers (version floor: `pyproject.toml`) |
 | Dimensions | 1024 |
 | Language support | Multilingual |
 | Similarity metric | Cosine — computed from an `l2` HNSW index (see below) |

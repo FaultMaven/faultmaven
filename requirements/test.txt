@@ -559,7 +559,7 @@ scipy==1.17.1
     #   pyod
     #   scikit-learn
     #   sentence-transformers
-sentence-transformers==5.4.1
+sentence-transformers==6.1.0
     # via faultmaven (pyproject.toml)
 setuptools==84.0.0
     # via
@@ -616,6 +616,7 @@ tiktoken==0.12.0
 tokenizers==0.23.1
     # via
     #   chromadb
+    #   sentence-transformers
     #   transformers
 tomli==2.4.1
     # via coverage
@@ -677,8 +678,9 @@ typing-inspection==0.4.2
     #   pydantic-settings
 tzlocal==5.3.1
     # via apscheduler
-urllib3==2.7.0
+urllib3==2.8.0
     # via
+    #   faultmaven (pyproject.toml)
     #   geventhttpclient
     #   kubernetes
     #   requests

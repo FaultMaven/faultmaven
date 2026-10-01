@@ -145,8 +145,8 @@ def read_base_spec(ref: str) -> Dict[str, Any]:
 
     Raises:
         RuntimeError: the ref or the file is not readable — in CI that means
-            the base branch was not fetched, which must fail loudly rather
-            than let the check pass having compared nothing.
+            the checkout does not reach the base commit, which must fail
+            loudly rather than let the check pass having compared nothing.
     """
     try:
         blob = subprocess.run(
@@ -157,9 +157,12 @@ def read_base_spec(ref: str) -> Dict[str, Any]:
             check=True,
         ).stdout
     except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        detail = (getattr(exc, "stderr", None) or str(exc)).strip()
         raise RuntimeError(
-            f"could not read {SPEC_RELPATH} at '{ref}'. In CI, fetch the base "
-            f"branch first (git fetch --depth=1 origin main)."
+            f"could not read {SPEC_RELPATH} at '{ref}' ({detail}). The ref must "
+            "be in this clone: a shallow clone holds no parents, so HEAD~1 "
+            "needs a checkout with fetch-depth of at least 2, and a branch "
+            "must be fetched before it is named."
         ) from exc
 
     try:
