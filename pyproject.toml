@@ -85,7 +85,14 @@ dependencies = [
 
     # Knowledge base and embeddings (ChromaDB + sentence transformers)
     "chromadb>=0.5.3",
-    "sentence-transformers>=5.6.0",  # >=5.6.0: CVE-2026-68770 (arbitrary code execution via pickle)
+    # Floored at the release the lockfiles pin and the image is built with.
+    # The security floor is 5.6.0: below it, loading a model from a path that
+    # exists on local disk runs that directory's Python even with
+    # trust_remote_code=False (CVE-2026-68770 / GHSA-jhr6-gm9c-rqjv). 6.x is a
+    # major release (transformers>=5, huggingface-hub>=1.3); `model_cache`
+    # uses only the constructor and `encode`, and BGE-M3 vectors are
+    # byte-identical on 5.4.1 and 6.1.0.
+    "sentence-transformers>=6.1.0",
     # Transitive via sentence-transformers, floored here for two GHSAs it
     # is the only lever on: torch <=2.12.1 is itself vulnerable
     # (GHSA-rrmf-rvhw-rf47), and torch 2.11's `setuptools<82` pin held the
@@ -122,7 +129,12 @@ dependencies = [
     # because nothing else in the graph moves it: >=83.0.0 patches
     # GHSA-h35f-9h28-mq5c. torch 2.11's `setuptools<82` used to cap it.
     "setuptools>=83.0.0",
-    # Transitive (requests / botocore / chromadb), floored to patch CVE-2026-97687/97688/97689
+    # Transitive (requests and kubernetes; botocore and sentry-sdk in the
+    # cloud lockfile), floored here because none of them requires the
+    # patched release: >=2.8.0 fixes target-server TLS settings applied to an
+    # HTTPS proxy connection (CVE-2026-97687), an infinite loop on chunked
+    # Deflate responses (CVE-2026-97688) and an unbounded chunk-size line
+    # buffered into memory (CVE-2026-97689).
     "urllib3>=2.8.0",
 
     # Web utilities
@@ -240,7 +252,11 @@ dev = [
 
     # Pre-commit hooks
     "pre-commit>=3.6.0",
-    # Transitive via pre-commit; floored to patch PYSEC-2026-4011/4012/4013/4014
+    # Transitive via pre-commit, floored here because pre-commit does not
+    # require the patched release: >=21.7.13 fixes unverified seed-wheel
+    # downloads (PYSEC-2026-4011), pyvenv.cfg injection through the prompt
+    # (PYSEC-2026-4012), and shell commands run by activation scripts from a
+    # crafted path or prompt (PYSEC-2026-4013, PYSEC-2026-4014).
     "virtualenv>=21.7.13",
 
     # Architecture enforcement

@@ -757,14 +757,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     name: API Contract Drift Check
+    env:
+      # The commit the contract is compared against; the two contract steps
+      # below explain why it is HEAD's parent for every event.
+      CONTRACT_BASE: HEAD~1
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6
         with:
-          # Full history: the comparison needs the base ref or parent commit,
-          # which a shallow clone does not contain in merge_group or push.
-          fetch-depth: 0
+          # HEAD and its parents, fetched together with HEAD: CONTRACT_BASE
+          # is HEAD~1, and a shallow clone holds no parent. Nothing may fetch
+          # it later — see the contract step.
+          fetch-depth: 2
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -790,31 +795,31 @@ jobs:
       # anyone decided to amend the contract. This one refuses a structural
       # change whose info.version did not move.
       #
-      # The base differs by event, and both matter: a pull request is compared
-      # against the branch it targets, while a push (main is not protected, so
-      # direct ones happen) is compared against its own parent. Comparing a
-      # push against origin/main would compare the commit with itself — a check
-      # that cannot fail. A merge-queue group takes the push arm too, since
-      # `base_ref` is set only for pull requests. With the queue's squash
-      # merge method each queued pull request is one commit on top of the
-      # state just ahead of it (main, or the pull request queued before it),
-      # so its parent is the right base, and two queued pull requests that
-      # both bump the version to the same number fail here. A merge method
-      # that keeps a pull request's own commits would break that, so change
-      # this step with the method. With fetch-depth: 0 the full history is
-      # available; the script exits 2 rather than passing blind if it still
-      # cannot read the base contract.
+      # Every event compares HEAD with its first parent, the state the change
+      # was applied to. A pull request runs on GitHub's merge commit, whose
+      # first parent is the base it was merged onto. A freshly fetched
+      # origin/<base> is not: main can move between the merge and this step,
+      # and the pull request would be charged with main's contract changes. A
+      # push (main is not protected, so direct ones happen) is compared against
+      # its own parent; comparing it against origin/main would compare the
+      # commit with itself, a check that cannot fail. With the merge queue's
+      # squash merge method each queued pull request is one commit on top of
+      # the state just ahead of it (main, or the pull request queued before
+      # it), so its parent is the right base, and two queued pull requests that
+      # both bump the version to the same number fail here. A merge method that
+      # keeps a pull request's own commits would break that, so change this
+      # step with the method.
+      #
+      # The parent comes from the checkout, never from a fetch here. The queue
+      # deletes a group's branch as soon as the group is dropped or rebuilt
+      # (another job failing is enough), and a fetch after that cannot reach
+      # the group's commit: that is how `git fetch --deepen=1` failed this
+      # step in the queue. The script exits 2 rather than passing blind if it
+      # still cannot read the base contract.
       - name: Contract changes are published deliberately
         run: |
-          if [ -n "${{ github.base_ref }}" ]; then
-            git fetch --depth=1 origin "${{ github.base_ref }}"
-            BASE="origin/${{ github.base_ref }}"
-          else
-            BASE="HEAD~1"
-          fi
-          echo "Comparing the contract against ${BASE}"
-          echo "CONTRACT_BASE=${BASE}" >> "$GITHUB_ENV"
-          python scripts/check_contract_version.py --base "${BASE}"
+          echo "Comparing the contract against ${CONTRACT_BASE}"
+          python scripts/check_contract_version.py --base "${CONTRACT_BASE}"
 
       # ADVISORY. The check above requires a version bump for any structural
       # change but deliberately does not judge MINOR versus MAJOR — that is the
@@ -840,8 +845,8 @@ jobs:
       # most wanted: a surface change whose version stood still is the moment
       # the author is deciding MINOR versus MAJOR. Skipping it there would have
       # withheld the evidence on precisely the pull requests it was built for.
-      # The base ref comes through $GITHUB_ENV rather than a file written by
-      # that step, for the same reason — a failing step writes nothing.
+      # The base is the job's CONTRACT_BASE rather than anything that step
+      # writes, for the same reason — a failing step writes nothing.
       - name: Breaking-change report (advisory)
         if: always()
         continue-on-error: true
@@ -849,13 +854,8 @@ jobs:
           # sha256 of oasdiff_1.29.1_linux_amd64.tar.gz as published.
           OASDIFF_SHA256: "541f7c66c933495fceef24eaf5c48aa66c19069f366f7bd0a60a6a4820c5e533"  # pragma: allowlist secret
         run: |
-          BASE="${CONTRACT_BASE:-}"
-          if [ -z "${BASE}" ]; then
-            echo "No base ref resolved; skipping."
-            exit 0
-          fi
-          if ! git show "${BASE}:docs/reference/api/openapi.json" > /tmp/base-openapi.json 2>/dev/null; then
-            echo "No contract at ${BASE} to compare against; skipping."
+          if ! git show "${CONTRACT_BASE}:docs/reference/api/openapi.json" > /tmp/base-openapi.json 2>/dev/null; then
+            echo "No contract at ${CONTRACT_BASE} to compare against; skipping."
             exit 0
           fi
           curl -fsSL -o /tmp/oasdiff.tar.gz \

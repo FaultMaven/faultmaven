@@ -326,7 +326,7 @@ class TestAgainstTheRealRepository:
         """The live invariant, over the real files — what CI runs.
 
         Skipped rather than failed when the base branch is absent locally: the
-        authoritative run is the CI step, which fetches it first.
+        authoritative run is the CI step, whose checkout includes its base.
         """
         try:
             mod.read_base_spec("origin/main")
