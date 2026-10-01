@@ -214,6 +214,20 @@ def _inquiry_response_user_confirms() -> InquiryResponse:
     )
 
 
+def _click_the_yes_card(proposing_turn: dict) -> dict:
+    """``intent_data`` for a click on the Yes card the proposing turn served.
+
+    Forwarded from the card, as clients do: it names the offer it presents
+    (#1812), and the engine executes a click only when that offer stands.
+    """
+    yes = next(
+        f
+        for f in proposing_turn["suggested_follow_ups"]
+        if (f.get("intent") or {}).get("confirmation_value") is True
+    )
+    return {"value": True, "proposal_id": yes["intent"]["proposal_id"]}
+
+
 def _inquiry_response_high_urgency_with_confirmation() -> InquiryResponse:
     """Combined Gate 1 + urgency-signal turn: LLM confirms the user's
     intent AND emits the urgency signals. Used by tests where the
@@ -467,9 +481,10 @@ class TestInvestigationLifecycle:
             "generate_structured_output",
             return_value=_inquiry_response_high_urgency_with_confirmation(),
         ):
+            # A bare consent token: the flag commits Gate 1 only on one (#1794).
             result = await engine.process_turn(
                 case,
-                "Let's investigate this",
+                "yes",
             )
 
         after_gate1 = result["case_updated"]
@@ -576,9 +591,10 @@ class TestInvestigationLifecycle:
             "generate_structured_output",
             return_value=_inquiry_response_high_urgency_with_confirmation(),
         ):
+            # A bare consent token: the flag commits Gate 1 only on one (#1794).
             result = await engine.process_turn(
                 case,
-                "Let's investigate",
+                "yes",
             )
         case = result["case_updated"]
         assert case.state == CaseState.INVESTIGATING
@@ -615,7 +631,7 @@ class TestInvestigationLifecycle:
             case,
             "yes",
             intent_type="confirmation",
-            intent_data={"value": True},
+            intent_data=_click_the_yes_card(result),
         )
         case = result["case_updated"]
         assert case.state == CaseState.RESOLVED
@@ -655,9 +671,8 @@ class TestInvestigationLifecycle:
             "generate_structured_output",
             return_value=_inquiry_response_user_confirms(),
         ):
-            result2 = await engine.process_turn(
-                updated1, "Yes, that's correct. Please investigate."
-            )
+            # A bare consent token: the flag commits Gate 1 only on one (#1794).
+            result2 = await engine.process_turn(updated1, "that's correct")
 
         updated2 = result2["case_updated"]
         assert updated2.state == CaseState.INVESTIGATING
@@ -744,9 +759,10 @@ class TestCheckpointing:
             "generate_structured_output",
             return_value=_inquiry_response_high_urgency_with_confirmation(),
         ):
+            # A bare consent token: the flag commits Gate 1 only on one (#1794).
             result = await engine.process_turn(
                 case,
-                "Investigate this",
+                "go ahead",
             )
 
         assert result["case_updated"].state == CaseState.INVESTIGATING
@@ -815,7 +831,7 @@ class TestCheckpointing:
             case,
             "yes",
             intent_type="confirmation",
-            intent_data={"value": True},
+            intent_data=_click_the_yes_card(result),
         )
 
         assert result["case_updated"].state == CaseState.RESOLVED

@@ -659,7 +659,7 @@ def engine_owned_affordances(
         return ("disposition", md["override_suggestions"])
 
     if _gate1_is_pending(case):
-        return ("gate1", _investigation_confirmation_suggestions())
+        return ("gate1", _investigation_confirmation_suggestions(case))
 
     # The four mid-investigation readings below all ask the SAME join, and each
     # used to recompute it — across the two ``engine_owned_affordances`` call

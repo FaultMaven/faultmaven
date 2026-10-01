@@ -619,9 +619,27 @@ class EnvConfigStatusResponse(BaseModel):
     deployment: str = Field(
         description="'standalone' or 'cloud' — from DEPLOYMENT_MODE (ADR-004)"
     )
-    db_backend: str = Field(description="'sqlite' or 'postgresql'")
-    session_storage: str = Field(description="'inmemory' or 'redis'")
-    vector_storage: str = Field(description="'inmemory' or 'chromadb'")
+    db_backend: str = Field(
+        description=(
+            "'sqlite' or 'postgresql' — the dialect of the database engine the "
+            "running process built; 'not initialized' before it has built one"
+        )
+    )
+    session_storage: str = Field(
+        description=(
+            "'redis' or 'fakeredis (inmemory)' — the Redis client the session "
+            "store actually uses, not the configured one; 'not initialized' "
+            "before the composition root has set it"
+        )
+    )
+    vector_storage: str = Field(
+        description=(
+            "What the running process's KB and evidence ChromaDB clients talk to: "
+            "'chromadb (server)', 'chromadb (persistent, split: kb + evidence)', "
+            "'disabled' when neither was built, or a per-client breakdown when "
+            "they differ"
+        )
+    )
     llm_provider: str = Field(description="Primary LLM provider name")
     pii_redaction_enabled: bool
     rate_limit_enabled: bool = Field(

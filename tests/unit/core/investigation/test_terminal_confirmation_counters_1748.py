@@ -26,6 +26,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import get_args
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -108,10 +109,18 @@ LABEL_TABLE = {
 #: re-asked, so nothing can produce them.
 REMOVED_LABELS = ("explicit_prefixed", "weak_prefixed", "typed_other")
 
+#: A RESOLVED offer standing somewhere else. A card names the offer it presents
+#: (#1812), so a CLICK in these tests is built from the case it is sent to
+#: (``_click_confirm``). These two are for the cards' text, and for MINTS, whose
+#: intent carries this other offer's key: a mint is not a click, and its text
+#: decides whatever key it carries.
+_ELSEWHERE = SimpleNamespace(
+    case_id="case_elsewhere", pending_transition={"proposed_at": "elsewhere"}
+)
 #: What "Yes, mark as resolved" sends when clicked.
-CONFIRM_CARD = _resolution_confirmation_suggestions()[0]
+CONFIRM_CARD = _resolution_confirmation_suggestions(_ELSEWHERE)[0]
 #: What "Not yet, continue investigating" sends when clicked.
-DECLINE_CARD = _resolution_confirmation_suggestions()[1]
+DECLINE_CARD = _resolution_confirmation_suggestions(_ELSEWHERE)[1]
 
 #: The target each target-scoped token consents to, pinned literally. Every
 #: other token consents to either target.
@@ -293,17 +302,33 @@ GATE_TABLE = [
     ("ok, don't close it yet", False, True, "reask", None),
     ("no", None, True, "decline", None),
     ("no", True, True, "reask", None),
+    # #1813: a typed decline is BARE. This one opens with "no" and says more,
+    # so it answers neither way; carrying "?", it takes the escape lane.
     (
         "no, we did not do anything yet \u2014 did you see anything wrong?",
         None,
         True,
-        "decline",
+        "not_an_answer",
         None,
     ),
+    ("no problem, go ahead", None, True, "not_an_answer", None),
     ("hmm", None, True, "not_an_answer", None),
     ("the pod restarted", None, True, "not_an_answer", None),
     ("that works", True, True, "reask", None),
+    # A MINTED decline on question-free text still declines (#1813, item 3)...
     ("not now thanks", False, True, "decline", None),
+    # ...and the same words typed, with no mint, are re-asked (item 1).
+    ("not now thanks", None, True, "not_an_answer", None),
+    # A minted decline on a question is not a refusal (#1813, item 2), whether
+    # or not the text is a decline token.
+    ("no?", False, True, "not_an_answer", None),
+    (
+        "can we hold off until friday's change window?",
+        False,
+        True,
+        "not_an_answer",
+        None,
+    ),
     (
         "yes, go ahead and close it, verified the fix in staging and prod",
         None,
@@ -654,8 +679,10 @@ async def _turn(svc: InvestigationService, query: str, intent: QueryIntent = Non
     )
 
 
-def _click_confirm() -> QueryIntent:
-    return QueryIntent(**CONFIRM_CARD["intent"])
+def _click_confirm(case: Case) -> QueryIntent:
+    """The Yes card's intent as the engine offers it on ``case``, forwarded
+    verbatim as clients do: it names ``case``'s standing offer (#1812)."""
+    return QueryIntent(**_resolution_confirmation_suggestions(case)[0]["intent"])
 
 
 @pytest.fixture
@@ -672,7 +699,7 @@ def _offer_the_resolution_cards(store: _Store) -> None:
     row = store.row()
     row.last_suggestions = [
         {**card, "offered_turn": row.current_turn}
-        for card in _resolution_confirmation_suggestions()
+        for card in _resolution_confirmation_suggestions(row)
     ]
 
 
@@ -843,7 +870,7 @@ class TestTheConfirmationCounter:
         svc = _service(store)
         engine = _spy_on_the_engine(svc)
 
-        await _turn(svc, CONFIRM_CARD["payload"], intent=_click_confirm())
+        await _turn(svc, CONFIRM_CARD["payload"], intent=_click_confirm(store.row()))
 
         assert engine.await_args.kwargs["typed"] is False
         assert "typed" not in engine.await_args.kwargs["intent_data"]
@@ -908,7 +935,7 @@ def _assert_re_asked(store: _Store, response) -> None:
     assert row.pending_transition["to_state"] == "resolved"
     assert "Please select one of the options above" in response.agent_response
     assert [action.label for action in response.suggested_actions] == [
-        card["label"] for card in _resolution_confirmation_suggestions()
+        card["label"] for card in _resolution_confirmation_suggestions(row)
     ]
     assert row.progress.deferred_disposition_declined_signatures == []
     assert row.turn_history[-1].terminal_confirmed_via is None
@@ -1096,8 +1123,10 @@ class TestTheFollowUpCounter:
             }
         )
 
+        # The Yes card that stood before the typed "ok" resolved the case.
+        stale_click = _click_confirm(_investigating_case())
         with patch.object(TerminalTurnHandler, "_process_terminal_qa", new=answered):
-            await _turn(svc, CONFIRM_CARD["payload"], intent=_click_confirm())
+            await _turn(svc, CONFIRM_CARD["payload"], intent=stale_click)
 
         answered.assert_awaited_once()  # the click reached the terminal case
         followup.labels.assert_not_called()

@@ -64,3 +64,39 @@ class TestExistingIntentValidators:
     def test_evidence_need_still_requires_evidence_need_id(self):
         with pytest.raises(ValidationError):
             QueryIntent(type=IntentType.EVIDENCE_NEED)
+
+
+class TestConfirmationNamesItsOffer:
+    """K14 (#1812): a confirmation card names the offer it presents, and a
+    client forwards the card's intent verbatim, so ``QueryIntent`` must keep the
+    key. A field the model does not declare is dropped silently (it has no
+    ``extra`` config), which is why the key needs one."""
+
+    def test_proposal_id_round_trips(self):
+        intent = QueryIntent(
+            type=IntentType.CONFIRMATION,
+            confirmation_value=True,
+            proposal_id="2026-09-30T11:57:20.123456+00:00",
+        )
+        again = QueryIntent.model_validate_json(intent.model_dump_json())
+        assert again.proposal_id == "2026-09-30T11:57:20.123456+00:00"
+
+    def test_a_card_intent_forwarded_as_slack_does_keeps_the_key(self):
+        """Slack sends ``{**intent, "user_confirmed": True}``; the route pops
+        ``type`` and builds the model from the rest."""
+        card = {
+            "type": "confirmation",
+            "confirmation_value": False,
+            "proposal_id": "gate1:0123456789abcdef",
+            "user_confirmed": True,
+        }
+        data = {k: v for k, v in card.items() if k != "type"}
+        intent = QueryIntent(type=IntentType.CONFIRMATION, **data)
+        assert intent.proposal_id == "gate1:0123456789abcdef"
+        assert intent.confirmation_value is False
+
+    def test_the_key_is_optional(self):
+        """A card rendered before the keys shipped still validates; the engine
+        refuses its click as untargeted rather than the route refusing it."""
+        intent = QueryIntent(type=IntentType.CONFIRMATION, confirmation_value=True)
+        assert intent.proposal_id is None

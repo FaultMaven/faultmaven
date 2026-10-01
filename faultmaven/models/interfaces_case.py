@@ -457,13 +457,16 @@ class ICaseService(ABC):
     async def list_all_cases(
         self, filters: Optional[CaseListFilter] = None
     ) -> Tuple[List[CaseSummary], int]:
-        """List cases across ALL users/orgs (platform-admin cross-tenant read).
+        """List cases across ALL users (platform-admin read, single-tenant).
 
         Unlike ``list_user_cases``, this is NOT scoped by ``user_id``. It backs
-        the platform-admin case view (ADR-012 D9). Authorization
-        (``require_platform_admin``), the D9 metadata/content projection and the
-        tenancy gate are enforced at the API layer — this method must only be
-        reached for a platform admin, and always returns full summaries.
+        the platform-admin case view (ADR-012 D9) under
+        ``TENANT_PROVIDER=single``; under ``multi`` the API layer reads the
+        cross-enterprise metadata instead, because row-level security would
+        narrow this read to one enterprise. Authorization
+        (``require_platform_admin``) and the D9 metadata/content projection are
+        enforced at the API layer — this method must only be reached for a
+        platform admin, and always returns full summaries.
 
         Args:
             filters: Optional filter criteria (state, limit, offset, include_empty)

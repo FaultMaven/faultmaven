@@ -42,6 +42,9 @@ from faultmaven.core.investigation.milestone_engine.progress import (
     check_if_progress_made,
     score_progress,
 )
+from faultmaven.core.investigation.milestone_engine.transition_consent import (
+    terminal_offer_key,
+)
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
     StructuredOutputMode,
@@ -119,6 +122,8 @@ _TURN1 = json.dumps(
     }
 )
 
+#: Turn 2 of the handshake types a BARE "yes": the LLM's flag commits Gate 1
+#: only on a bare consent token (#1794), so a longer reply would not transition.
 _TURN2_CONFIRM = json.dumps(
     {
         "agent_response": "Confirmed. Starting the investigation.",
@@ -133,7 +138,7 @@ async def _two_turn_transition(engine, llm):
     first = await engine.process_turn(_inquiry_case(), "Our checkout API is 503ing")
     assert first["case_updated"].state == CaseState.INQUIRY
     llm.payload = _TURN2_CONFIRM
-    second = await engine.process_turn(first["case_updated"], "yes, that is it")
+    second = await engine.process_turn(first["case_updated"], "yes")
     assert second["case_updated"].state == CaseState.INVESTIGATING, (
         "positive control: the turn under test must actually transition, or "
         "this file asserts nothing"
@@ -292,7 +297,7 @@ async def test_a_transition_turn_carrying_an_upload_is_not_a_late_write(
     decisions.clear()
     second = await engine.process_turn(
         first["case_updated"],
-        "yes, that is it",
+        "yes",
         attachments=[
             {
                 "file_id": "file_aaaaaaaaaaaa",
@@ -371,11 +376,12 @@ async def test_the_guard_survives_a_short_circuited_decision():
         # — the terminal-confirm path this test drives. Same spy on both.
         mp.setattr(turn_application_module, "score_progress", recording_score)
         mp.setattr(turn_records, "score_progress", recording_score)
+        case = _case_awaiting_confirmation("resolved")
         result = await engine.process_turn(
-            case=_case_awaiting_confirmation("resolved"),
+            case=case,
             user_message="yes, resolved",
             intent_type="confirmation",
-            intent_data={"value": True},
+            intent_data=_yes_click(case),
         )
 
     assert result["case_updated"].state == CaseState.RESOLVED
@@ -431,6 +437,12 @@ def _terminal_confirm_engine():
         side_effect=AssertionError("reached the LLM; not the deterministic branch")
     )
     return engine
+
+
+def _yes_click(case) -> dict:
+    """The Yes card's click on ``case``'s standing offer, which it names
+    (#1812)."""
+    return {"value": True, "proposal_id": terminal_offer_key(case.pending_transition)}
 
 
 def _case_awaiting_confirmation(to_state: str):
@@ -505,11 +517,12 @@ async def test_the_confirm_branch_reports_the_state_change_once():
     that the surviving branch reports the change it made.
     """
     engine = _terminal_confirm_engine()
+    case = _case_awaiting_confirmation("resolved")
     result = await engine.process_turn(
-        case=_case_awaiting_confirmation("resolved"),
+        case=case,
         user_message="yes, resolved",
         intent_type="confirmation",
-        intent_data={"value": True},
+        intent_data=_yes_click(case),
     )
 
     assert result["case_updated"].state == CaseState.RESOLVED
@@ -637,7 +650,7 @@ async def test_housekeeping_reads_the_final_progress_verdict_of_its_turn(
     first = await engine.process_turn(_inquiry_case(), "Our checkout API is 503ing")
     stall_before_turn_2 = first["case_updated"].turns_without_progress
     llm.payload = _TURN2_CONFIRM
-    second = await engine.process_turn(first["case_updated"], "yes, that is it")
+    second = await engine.process_turn(first["case_updated"], "yes")
     assert second["case_updated"].state == CaseState.INVESTIGATING
 
     assert seen, "housekeeping never ran on the turn path"

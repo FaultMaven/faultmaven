@@ -16,10 +16,11 @@ Contract pinned here (the escape lane):
   every time it is sent, and records no refusal: every pending proposal is
   terminal, and a re-ask must never become a decline (#1783, ruling (a)). The
   one-re-present cap #656 added is gone.
-- A bare decline still gets the cheap canned acknowledgment; a decline
-  carrying substance ("No. we did not do anything yet. …did you see
-  anything wrong?") is processed normally after the cancel so its content
-  is not lost.
+- A bare decline still gets the cheap canned acknowledgment. A typed decline
+  is BARE (#1813): a reply that opens with "no" and says more ("No. we did
+  not do anything yet. …did you see anything wrong?") is not a decline, and
+  takes the escape lane like any other substantive non-answer, so its
+  content is processed and, carrying "?", nothing is recorded.
 
 The LLM seam is patched to raise a sentinel: reaching it proves the gate
 fell through instead of bricking; not reaching it proves the deterministic
@@ -442,6 +443,9 @@ class TestAnUploadTurnIsNeverConsumed:
                 "we will apply it in friday's maintenance window as planned",
                 [_SIGNATURE],
             ),
+            # #1808: a non-answer that opens with consent is not a deflection,
+            # with or without an upload.
+            ("ok but we need to wait for the weekend soak first", []),
         ],
     )
     async def test_an_upload_turn_withdraws_and_reaches_the_llm(
@@ -508,19 +512,60 @@ class TestGateAnswerMatchers:
         ):
             assert confirmation_token_class(msg, "closed") is None, msg
 
-    def test_decline_matcher_accepts_bare_declines(self):
-        engine = _engine()
-        for msg in ("no", "no.", "no way", "not yet", "nope!", "don\u2019t close it"):
-            assert _user_declines_transition(msg), msg
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            "no",
+            "No.",
+            "no.",
+            "nope!",
+            "not yet",
+            "Not yet.",
+            "wait",
+            "hold on",
+            "stop",
+            "cancel",
+            "don't",
+            "don\u2019t",
+            "not ready",
+            "no \U0001f44d",
+            "no :)",
+            "  no  ",
+            "no!!",
+        ],
+    )
+    def test_decline_matcher_accepts_bare_declines(self, msg):
+        """#1813, ruling (a): the whole reply is one decline token, with the
+        same decorations and trailing punctuation as a bare consent."""
+        assert _user_declines_transition(msg), msg
 
-    def test_decline_matcher_rejects_prefix_sharing_words(self):
-        engine = _engine()
-        for msg in (
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            # A decline token opening a reply that says more is not a decline.
+            "no problem, go ahead",
+            "no worries",
+            "no, that's fine, close it",
+            "no, not yet",
+            "not now thanks",
+            "no way",
+            "don\u2019t close it",
+            "nope \U0001f44e",
+            "no?",
+            "not yet, can we wait until Friday?",
+            # Nor, as before, a word that shares a token's prefix.
             "note db latency spiked to 5s",
+            "note db latency spiked",
             "nothing in the logs",
             "stopped the pod",
-        ):
-            assert not _user_declines_transition(msg), msg
+            "waiting on logs",
+            "cancelled the job already",
+        ],
+    )
+    def test_decline_matcher_rejects_everything_but_a_bare_decline(self, msg):
+        """The old prefix rule called 21 of the plan's 27 probe rows declines,
+        every "no problem…" shape included."""
+        assert not _user_declines_transition(msg), msg
 
 
 @pytest.mark.asyncio
@@ -553,14 +598,21 @@ async def test_bare_decline_keeps_cheap_canned_acknowledgment():
 
 
 @pytest.mark.asyncio
-async def test_decline_with_substance_is_processed_normally():
+async def test_a_no_that_says_more_is_processed_and_records_nothing():
     """The #656 turn-11-shaped message: starts with a decline token but
-    carries the actual question — the content must reach the LLM."""
+    carries the actual question — the content must reach the LLM.
+
+    #1813, ruling (a): a typed decline is bare, so this is not a decline at
+    all. It is a substantive non-answer carrying "?", which the escape lane
+    withdraws and processes without recording a refusal. Signed, so "nothing
+    recorded" is not vacuous (``test_a_bare_no_without_an_upload_is_declined_-
+    without_an_llm_call`` records on the same fixture)."""
     engine = _engine()
-    case = _investigating_case_with_pending_close()
+    case = _signed_pending_close()
     await _run_expecting_fall_through(
         engine,
         case,
         "No. we did not do anything yet. I showed the configmap without "
         "modification. did you see anything wrong?",
     )
+    assert case.progress.deferred_disposition_declined_signatures == []

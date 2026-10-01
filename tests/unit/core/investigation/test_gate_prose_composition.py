@@ -113,7 +113,7 @@ class TestOverrideBranchesUseComposer:
         """
         src = self._impl_source()
         assert 'follow_ups = metadata["override_suggestions"]' in src
-        assert "follow_ups = _close_confirmation_suggestions()" in src
-        assert "follow_ups = _resolution_confirmation_suggestions()" in src
+        assert "follow_ups = _close_confirmation_suggestions(case_updated)" in src
+        assert "follow_ups = _resolution_confirmation_suggestions(case_updated)" in src
         # An "augment" regression would extend rather than assign.
         assert "follow_ups.extend" not in src

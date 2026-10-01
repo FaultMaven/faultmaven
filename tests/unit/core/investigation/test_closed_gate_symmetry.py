@@ -240,7 +240,9 @@ async def test_check_automatic_transitions_surfaces_resolve_confirmation_on_pivo
     assert updated.pending_transition["to_state"] == "resolved"
     assert metadata.get("status_transitioned") is not True
     assert metadata.get("close_pivoted_to_resolve") is True
-    assert metadata["override_suggestions"] == _resolution_confirmation_suggestions()
+    assert metadata["override_suggestions"] == _resolution_confirmation_suggestions(
+        updated
+    )
     assert metadata["closure_readiness_verdict"] == ClosureReadiness.SUGGEST_RESOLVE
 
 

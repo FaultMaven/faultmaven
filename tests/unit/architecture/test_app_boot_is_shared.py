@@ -90,7 +90,8 @@ CENSUS_COMMAND = 'grep -rn "with TestClient(" tests/ --include=*.py'
 #: fm#1628 added twelve, the controls of the runtime guard in
 #: ``tests/conftest.py``: eleven in code and one in a child-process string
 #: literal.
-EXPECTED_TOTAL_SITES = 54
+#: #1812 added one scratch site (the turns route mounted for its K13).
+EXPECTED_TOTAL_SITES = 55
 
 #: The functions the resolver reads as entering the real application's
 #: lifespan: the EXPECTED entries marked ``"real"``, not the ``with`` statements
@@ -218,6 +219,11 @@ EXPECTED: dict[str, dict[str, tuple[str, int]]] = {
         ),
     },
     # -- drives an app the test built itself --------------------------------
+    "tests/integration/api/test_turns_route_carries_the_offer_key_1812.py": {
+        # #1812's K13: the case router mounted on a FastAPI() built in the
+        # fixture, with the real investigation service behind it.
+        "mounted": ("scratch", 1),
+    },
     "tests/integration/api/test_no_unauthenticated_operations.py": {
         "test_a_gate_declared_after_a_service_parameter_is_not_a_gate": ("scratch", 1),
         # NOT faultmaven.main.app: a fresh application rebuilt by

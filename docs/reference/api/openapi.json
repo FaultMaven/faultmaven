@@ -194,6 +194,13 @@
             ],
             "title": "Resolved At"
           },
+          "shared_team_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Shared Team Ids",
+            "type": "array"
+          },
           "source": {
             "default": "copilot",
             "title": "Source",
@@ -2624,7 +2631,7 @@
             "type": "string"
           },
           "db_backend": {
-            "description": "'sqlite' or 'postgresql'",
+            "description": "'sqlite' or 'postgresql' \u2014 the dialect of the database engine the running process built; 'not initialized' before it has built one",
             "title": "Db Backend",
             "type": "string"
           },
@@ -2660,7 +2667,7 @@
             "type": "boolean"
           },
           "session_storage": {
-            "description": "'inmemory' or 'redis'",
+            "description": "'redis' or 'fakeredis (inmemory)' \u2014 the Redis client the session store actually uses, not the configured one; 'not initialized' before the composition root has set it",
             "title": "Session Storage",
             "type": "string"
           },
@@ -2670,7 +2677,7 @@
             "type": "string"
           },
           "vector_storage": {
-            "description": "'inmemory' or 'chromadb'",
+            "description": "What the running process's KB and evidence ChromaDB clients talk to: 'chromadb (server)', 'chromadb (persistent, split: kb + evidence)', 'disabled' when neither was built, or a per-client breakdown when they differ",
             "title": "Vector Storage",
             "type": "string"
           }
@@ -6822,7 +6829,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "9.0.0"
+    "version": "9.1.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -7023,7 +7030,7 @@
     },
     "/api/v1/admin/cases": {
       "get": {
-        "description": "List cases across all users/orgs for a platform-admin (ADR-012 D9).\n\nStandalone serves full summaries; cloud serves metadata-only rows. See the\nmodule docstring for why the split falls where it does.",
+        "description": "List cases across all users and enterprises for a platform-admin (ADR-012 D9).\n\nStandalone serves full summaries; cloud serves metadata-only rows. Under\nmulti-tenancy the rows come from the cross-enterprise metadata read. See the\nmodule docstring for why the split falls where it does.",
         "operationId": "list_all_cases_api_v1_admin_cases_get",
         "parameters": [
           {

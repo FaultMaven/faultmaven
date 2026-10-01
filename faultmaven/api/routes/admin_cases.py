@@ -14,14 +14,16 @@ logging in as each user. It is gated by:
         Titles and transcripts are content, reachable only through the audited
         break-glass grant (#815).
 
-  - tenancy, which decides whether a cross-tenant answer is *truthful*. The web
-    process connects as the RLS-enforcing ``faultmaven_app`` role, so under
-    ``TENANT_PROVIDER=multi`` this query is silently scoped to the operator's
-    own organization — a list that claims to span every tenant but does not.
-    That is refused (403) rather than served: an operator triaging "which tenant
-    is stuck" would be misled by a partial answer in exactly the case where the
-    endpoint exists. Under ``single`` (what cloud runs today) every row carries
-    the Standalone org, so the RLS-scoped result IS the complete list.
+  - tenancy, which decides which read can answer truthfully. The web process
+    connects as the RLS-enforcing ``faultmaven_app`` role, so under
+    ``TENANT_PROVIDER=multi`` an ordinary case query is scoped to the one
+    enterprise the request is bound to — a list that would claim to span every
+    tenant and show one. That deployment is served instead from the
+    cross-enterprise metadata read (``ICaseMetadataReader``): ``SECURITY
+    DEFINER`` functions whose result has no column sourced from a title, a
+    description or any other user text, executable by the runtime role only.
+    Under ``single`` every row carries the Standalone enterprise, so the
+    RLS-scoped case query IS the complete list.
 
 Every access is recorded in the durable, append-only ``operator_access_audit``
 table before any case data is returned; see ``api/operator_audit.py`` for that
@@ -30,7 +32,7 @@ served, so the trail distinguishes a metadata read from a full one.
 """
 
 import logging
-from typing import Literal, Optional, Union
+from typing import List, Literal, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from starlette.requests import Request
@@ -70,6 +72,13 @@ from faultmaven.models.interfaces_operator_audit import (
 )
 from faultmaven.models.interfaces_operator_grant import IOperatorGrantRepository
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
+from faultmaven.modules.case.contracts import (
+    CaseMetadata,
+    CaseMetadataNotGrantedError,
+    CaseMetadataRefusedError,
+    CaseMetadataUnavailableError,
+    ICaseMetadataReader,
+)
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.providers.tenancy.factory import (
     BUILTIN_MULTI,
@@ -90,9 +99,30 @@ async def get_case_service(request: Request) -> ICaseService:
     return case_service
 
 
+async def get_case_metadata_reader(request: Request) -> Optional[ICaseMetadataReader]:
+    """The cross-enterprise metadata read, or ``None`` where none is composed.
+
+    Composed only under ``TENANT_PROVIDER=multi`` — the one deployment where an
+    ordinary case query cannot list every tenant. Its absence there is refused
+    by the route, never answered from the RLS-scoped list.
+    """
+    return getattr(request.app.state, "case_metadata_reader", None)
+
+
 router = APIRouter(
     prefix="/api/v1/admin",
     tags=["Admin - Cases"],
+)
+
+#: Fixed text, never the database error: the operator needs to know which fix
+#: applies, not the driver's message.
+_NOT_GRANTED_DETAIL = (
+    "Cross-enterprise case listing is not available: the application's database "
+    "role lacks EXECUTE on the case metadata functions"
+)
+_REFUSED_DETAIL = (
+    "Cross-enterprise case listing is not available: the database refused the "
+    "read for a reason other than the EXECUTE grant"
 )
 
 
@@ -100,6 +130,7 @@ router = APIRouter(
 async def list_all_cases(
     current_user: AuthenticatedUser = Depends(require_platform_admin),
     case_service: ICaseService = Depends(get_case_service),
+    metadata_reader: Optional[ICaseMetadataReader] = Depends(get_case_metadata_reader),
     audit_repo: IOperatorAuditRepository = Depends(get_operator_audit_repository),
     state: Optional[CaseState] = Query(None, description="Filter by state"),
     source: Optional[Literal["copilot", "slack", "api"]] = Query(
@@ -108,42 +139,31 @@ async def list_all_cases(
     limit: int = Query(50, ge=1, le=200, description="Items per page"),
     offset: int = Query(0, ge=0, description="Number of items to skip"),
 ) -> Union[AdminCaseListResponse, AdminCaseMetadataListResponse]:
-    """List cases across all users/orgs for a platform-admin (ADR-012 D9).
+    """List cases across all users and enterprises for a platform-admin (ADR-012 D9).
 
-    Standalone serves full summaries; cloud serves metadata-only rows. See the
+    Standalone serves full summaries; cloud serves metadata-only rows. Under
+    multi-tenancy the rows come from the cross-enterprise metadata read. See the
     module docstring for why the split falls where it does.
     """
     settings = get_settings()
-    metadata_only = settings.is_cloud
+    # Keyed on tenancy alone, not on `is_cloud`: `multi` cannot boot outside
+    # cloud today (``create_tenant_provider`` refuses), so the two are the same
+    # condition — and if that ever changed, the metadata-only read is the
+    # direction to be wrong in.
+    cross_enterprise = requested_tenant_provider() == BUILTIN_MULTI
+    metadata_only = cross_enterprise or settings.is_cloud
 
-    if requested_tenant_provider() == BUILTIN_MULTI:
-        # RLS scopes this query to the operator's own organization, so the
-        # "all tenants" list would silently be one tenant's. Refuse rather than
-        # mislead; the cross-tenant read under multi-tenancy needs a bounded
-        # bypass, which is designed with the break-glass path (#815).
-        #
-        # Keyed on tenancy alone, not on `is_cloud`: `multi` cannot boot outside
-        # cloud today (``create_tenant_provider`` refuses), so the two are the
-        # same condition — and if that ever changed, refusing is the direction
-        # to be wrong in.
-        #
-        # It is keyed on CONFIG rather than on the served rows' orgs, which
-        # leaves a residual gap: rows carrying a non-Standalone org under
-        # `single` (an out-of-band write, a rolled-back flip) would be dropped by
-        # RLS and this gate would stay quiet. Inspecting the result does not
-        # close it — the rows that came back are RLS-filtered, so every one of
-        # them carries the bound org by construction and the missing ones are
-        # precisely what the session cannot see. Detecting that needs a count
-        # from outside the policy, which is the bounded-bypass work deferred to
-        # #815; a check over the visible rows would only look like a defense.
+    if cross_enterprise and metadata_reader is None:
+        # Fail closed. The RLS-scoped case query is right there, and it would
+        # answer — with one enterprise's cases, under a list that claims to span
+        # them all. Refused before recording: nothing was read.
+        logger.error(
+            "admin_case_list_unwired: no cross-enterprise case metadata reader "
+            "is composed, although TENANT_PROVIDER=multi"
+        )
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "Cross-tenant case listing is not available under multi-tenant "
-                "cloud: row-level security would scope the result to a single "
-                "organization, so the list would be silently partial "
-                "(ADR-012 D9)."
-            ),
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Cross-enterprise case listing is not available",
         )
 
     # Record the privileged access BEFORE serving it (ADR-012 D8/D9). Ordered
@@ -167,29 +187,35 @@ async def list_all_cases(
         },
     )
 
+    if cross_enterprise:
+        return await _list_across_enterprises(
+            metadata_reader,
+            operator=current_user,
+            state=state,
+            source=source,
+            limit=limit,
+            offset=offset,
+        )
+
+    # RLS-scoped to the bound enterprise, which under `single` every row
+    # carries. A row stamped with another enterprise (an out-of-band write, a
+    # rolled-back flip to `multi`) would be dropped silently, and no check over
+    # the served rows can notice: RLS has already removed the evidence.
+    # Detecting it would need a count from outside the policy — which the
+    # metadata count function could give — and is not attempted here.
     filters = CaseListFilter(state=state, source=source, limit=limit, offset=offset)
     summaries, total = await case_service.list_all_cases(filters)
-
-    # Operational visibility only — the audit row above is the system of record.
-    # Carries just the result sizes, which are known only after the query.
-    logger.info(
-        "admin_case_list_access",
-        extra={
-            "admin_user_id": current_user.user_id,
-            "result_count": len(summaries),
-            "total_count": total,
-        },
-    )
+    _log_list_access(current_user, len(summaries), total)
 
     # Robust to best-effort conversion drops: base "more pages?" on the
     # requested window vs. the repository's true total, not the rendered count.
     has_more = (offset + limit) < total
 
     if metadata_only:
-        # One query, one service call, projected at the boundary. A separate
-        # metadata-only read path would be a second thing to keep in step with
-        # the case model for no gain — the rows never leave this function
-        # un-projected.
+        # Projected at the boundary: the rows never leave this function
+        # un-projected. This single-tenant read and the cross-enterprise one are
+        # two paths to the same row, kept in step by a parity test on
+        # PostgreSQL that serves one fixture set through both.
         return AdminCaseMetadataListResponse(
             cases=[AdminCaseMetadata.from_summary(s) for s in summaries],
             total_count=total,
@@ -205,6 +231,105 @@ async def list_all_cases(
         offset=offset,
         has_more=has_more,
     )
+
+
+async def _list_across_enterprises(
+    metadata_reader: ICaseMetadataReader,
+    *,
+    operator: AuthenticatedUser,
+    state: Optional[CaseState],
+    source: Optional[str],
+    limit: int,
+    offset: int,
+) -> AdminCaseMetadataListResponse:
+    """The ``TENANT_PROVIDER=multi`` arm, after the access is recorded.
+
+    Every failure of the read is a 503 that says which fix applies; none of them
+    falls back to the RLS-scoped case query.
+    """
+    try:
+        metadata, total = await metadata_reader.list_case_metadata(
+            state=state, source=source, limit=limit, offset=offset
+        )
+    except CaseMetadataNotGrantedError:
+        # The functions exist but this role may not execute them: EXECUTE is
+        # granted to the runtime role explicitly, never to PUBLIC.
+        logger.error(
+            "admin_case_list_unavailable: the database role lacks EXECUTE on "
+            "the cross-enterprise case metadata functions"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_NOT_GRANTED_DETAIL,
+        )
+    except CaseMetadataRefusedError:
+        # EXECUTE is granted, yet the database refused — e.g. the functions'
+        # owner is no longer exempt from row-level security, which they answer
+        # with an error rather than a partial list. The reader logged the
+        # database's own message.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_REFUSED_DETAIL,
+        )
+    except CaseMetadataUnavailableError:
+        # The database has not been migrated to the read.
+        logger.error(
+            "admin_case_list_unavailable: the cross-enterprise case metadata "
+            "functions are missing from the database"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Cross-enterprise case listing is not available",
+        )
+    rows = _project_case_metadata(metadata)
+    _log_list_access(operator, len(rows), total)
+    return AdminCaseMetadataListResponse(
+        cases=rows,
+        total_count=total,
+        limit=limit,
+        offset=offset,
+        # From the true total, so a dropped row cannot end pagination early.
+        has_more=(offset + limit) < total,
+    )
+
+
+def _log_list_access(
+    operator: AuthenticatedUser, result_count: int, total: int
+) -> None:
+    """Operational visibility only — the audit row is the system of record.
+    Carries just the result sizes, which are known only after the query."""
+    logger.info(
+        "admin_case_list_access",
+        extra={
+            "admin_user_id": operator.user_id,
+            "result_count": result_count,
+            "total_count": total,
+        },
+    )
+
+
+def _project_case_metadata(metadata: List[CaseMetadata]) -> List[AdminCaseMetadata]:
+    """Project the cross-enterprise rows, best-effort per case.
+
+    The same per-case policy as ``CaseService.list_all_cases``, which drops a
+    case whose summary does not validate: today that is a case whose owner
+    account was deleted (``user_id`` is ``NULL``). Mirrored rather than
+    improved on so the two paths serve the same rows; ``has_more`` is computed
+    from the true total, so a dropped row cannot end pagination early. (A case
+    with malformed stored JSON is NOT dropped: ``CaseMetadata`` already carries
+    it with the fields it could not derive left null.)
+    """
+    rows: List[AdminCaseMetadata] = []
+    for case in metadata:
+        try:
+            rows.append(AdminCaseMetadata.from_case_metadata(case))
+        except ValueError as exc:
+            logger.error(
+                "Failed to project case %s to operator metadata: %s",
+                case.case_id,
+                exc,
+            )
+    return rows
 
 
 @router.get("/cases/{case_id}", response_model=AdminCaseContentResponse)

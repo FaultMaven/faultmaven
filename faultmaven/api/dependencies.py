@@ -20,12 +20,17 @@ phase 2 along with the standalone evidence path. Evidence is now created
 case-tied via the milestone engine; no separate evidence service needed.
 """
 
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator, Optional
 
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.infrastructure.persistence.database import get_db_session
+from faultmaven.infrastructure.chroma_client import is_server_backed
+from faultmaven.infrastructure.persistence.database import (
+    active_database_backend,
+    get_db_session,
+)
+from faultmaven.infrastructure.redis_client import is_fakeredis
 from faultmaven.modules.case.domain.services.api_case_service import APICaseService
 from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
@@ -52,7 +57,65 @@ __all__ = [
     "get_api_case_service",
     "get_investigation_session_service",
     "get_file_storage_service",
+    "database_backend_name",
+    "session_storage_backend_name",
+    "vector_storage_backend_name",
 ]
+
+
+# ============================================================
+# Runtime Backends
+# ============================================================
+#
+# What ``GET /admin/config/status`` reports as the database, session and vector
+# backends. Each is read from the live object the process serves with and
+# decided by the infrastructure predicate that owns the question; this module
+# only names the answers, because routes may not import the infrastructure layer
+# (``tests/unit/architecture/test_architecture_boundaries.py``) and this is the
+# route-facing seam that may.
+
+NOT_INITIALIZED = "not initialized"
+
+
+def database_backend_name() -> str:
+    """The dialect of the engine this process built, e.g. ``"postgresql"`` or
+    ``"sqlite"``; ``"not initialized"`` before one exists."""
+    return active_database_backend() or NOT_INITIALIZED
+
+
+def session_storage_backend_name(redis_client: Any) -> str:
+    """``"redis"`` or ``"fakeredis (inmemory)"`` for the container's Redis client
+    — the one the session store is built with; ``"not initialized"`` for
+    ``None``."""
+    if redis_client is None:
+        return NOT_INITIALIZED
+    return "fakeredis (inmemory)" if is_fakeredis(redis_client) else "redis"
+
+
+def vector_storage_backend_name(kb_client: Any, evidence_client: Any) -> str:
+    """What the KB and evidence ChromaDB clients the container built talk to.
+
+    ``"chromadb (server)"`` when both address a ChromaDB server,
+    ``"chromadb (persistent, split: kb + evidence)"`` when both are local trees,
+    ``"disabled"`` when neither was built (``SKIP_SERVICE_CHECKS`` on
+    standalone), and a per-client breakdown when they differ — which the
+    standalone fallback can produce if the server drops between the two
+    constructions.
+    """
+
+    def kind(client: Any) -> Optional[str]:
+        if client is None:
+            return None
+        return "server" if is_server_backed(client) else "persistent"
+
+    kb, evidence = kind(kb_client), kind(evidence_client)
+    if kb is None and evidence is None:
+        return "disabled"
+    if kb == evidence == "server":
+        return "chromadb (server)"
+    if kb == evidence == "persistent":
+        return "chromadb (persistent, split: kb + evidence)"
+    return f"chromadb (kb: {kb or 'disabled'}, evidence: {evidence or 'disabled'})"
 
 
 # ============================================================

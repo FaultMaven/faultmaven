@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from faultmaven.models.api import CaseMessagesResponse, Source
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.metadata import CaseMetadata
 from faultmaven.modules.case.domain.models.problem import InvestigationStage
 from faultmaven.modules.case.domain.services.case_action_manager import (
     CaseActionManager,
@@ -610,6 +611,11 @@ class AdminCaseMetadata(BaseModel):
     # Computed fields
     is_terminal: bool
 
+    #: Team sharing (ADR-013 §D4): the ids of the teams this case is shared to,
+    #: ascending. System-assigned ids, so metadata under the rule above — the
+    #: team is where a case is visible, which is part of triaging it.
+    shared_team_ids: List[str] = Field(default_factory=list)
+
     @classmethod
     def from_summary(cls, summary: CaseSummary) -> "AdminCaseMetadata":
         """Project a full summary down to its metadata.
@@ -636,6 +642,38 @@ class AdminCaseMetadata(BaseModel):
             stage=summary.stage,
             turns_without_progress=summary.turns_without_progress,
             is_terminal=summary.is_terminal,
+            shared_team_ids=summary.shared_team_ids,
+        )
+
+    @classmethod
+    def from_case_metadata(cls, metadata: CaseMetadata) -> "AdminCaseMetadata":
+        """The same row, from the cross-enterprise metadata read.
+
+        Under ``TENANT_PROVIDER=multi`` the list is served from
+        :class:`CaseMetadata` rather than from summaries. The two paths are
+        kept in step by a parity test on PostgreSQL that serves one fixture set
+        through both and compares every field of this model; the derived
+        fields come from the same domain rules on both sides.
+        """
+        return cls(
+            case_id=metadata.case_id,
+            state=metadata.state,
+            created_at=metadata.created_at,
+            updated_at=metadata.updated_at,
+            last_activity_at=metadata.last_activity_at,
+            resolved_at=metadata.resolved_at,
+            closed_at=metadata.closed_at,
+            user_id=metadata.user_id,
+            enterprise_id=metadata.enterprise_id,
+            organization_id=metadata.organization_id,
+            source=metadata.source,
+            closure_reason=metadata.closure_reason,
+            current_turn=metadata.current_turn,
+            investigation_turn=metadata.investigation_turn,
+            stage=metadata.stage,
+            turns_without_progress=metadata.turns_without_progress,
+            is_terminal=metadata.is_terminal,
+            shared_team_ids=metadata.shared_team_ids,
         )
 
 
@@ -966,6 +1004,14 @@ class QueryIntent(BaseModel):
     )
     confirmation_value: Optional[bool] = Field(
         default=None, description="For confirmation: yes/no value"
+    )
+    proposal_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "For confirmation: the offer this answer is for, as the card that "
+            "carried it names it. A confirmation click is executed only when it "
+            "names the offer standing when it arrives."
+        ),
     )
     file_id: Optional[str] = Field(
         default=None,

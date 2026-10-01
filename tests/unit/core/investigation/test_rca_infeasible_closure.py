@@ -105,7 +105,7 @@ def test_rca_infeasible_creates_pending_closure():
     )
 
     assert metadata["transition_proposed_this_turn"] is True
-    assert metadata["override_suggestions"] == _close_confirmation_suggestions()
+    assert metadata["override_suggestions"] == _close_confirmation_suggestions(case)
     assert (
         metadata["rca_infeasible_closure_message"] == case.pending_transition["summary"]
     )

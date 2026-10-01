@@ -1,7 +1,7 @@
 import logging
 from bisect import bisect_right
 from datetime import UTC, datetime, timedelta, timezone
-from typing import Any, Dict, List, Literal, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -28,6 +28,84 @@ logger = logging.getLogger(__name__)
 # Cap synthetic SKIPPED inserts per turn_history gap; a larger gap signals
 # corruption, not a normal one-turn interruption, so we renumber instead.
 _MAX_TURN_BACKFILL = 100
+
+
+# ============================================================
+# Derivation rules, stated once
+# ============================================================
+#
+# Pure functions over primitives. The ``Case`` properties below delegate to
+# them, and so does the cross-enterprise operator list (``CaseMetadata``), which
+# reads a case's primitive inputs from the database without loading the case.
+# Keeping one copy of each rule is what lets that list and a loaded case agree
+# on every derived field.
+
+
+def stage_while_investigating(
+    state: CaseState, stage: InvestigationStage
+) -> Optional[InvestigationStage]:
+    """The stage a case in ``state`` displays: ``stage`` while INVESTIGATING,
+    ``None`` in every other state."""
+    return stage if state == CaseState.INVESTIGATING else None
+
+
+def distinct_turns(turn_numbers: Iterable[int]) -> List[int]:
+    """``turn_numbers`` de-duplicated and ascending — the shape
+    :func:`investigation_turn_at` bisects (see :attr:`Case.out_of_band_turns`
+    for why both halves matter)."""
+    return sorted(set(turn_numbers))
+
+
+def investigation_turn_at(
+    turn_number: int, *, current_turn: int, asides: Sequence[int]
+) -> int:
+    """The investigation ordinal of message turn ``turn_number`` (#1387).
+
+    The message clock at that row, bounded by ``current_turn``, minus the
+    asides (sorted, distinct out-of-band turn numbers) at or before it. See
+    :meth:`Case.investigation_turn_at` for why the clock bounds it.
+    """
+    effective = min(turn_number, current_turn)
+    return max(0, effective - bisect_right(asides, effective))
+
+
+def reconcile_turn_numbers(
+    turn_numbers: Sequence[int], current_turn: int
+) -> Tuple[List[Tuple[Optional[int], int]], int]:
+    """The repair :meth:`Case.reconcile_turn_sequence` applies, on numbers alone.
+
+    ``turn_numbers`` is a history's turn numbers in stored order. Returns
+    ``(slots, current_turn)``: ``slots`` is the repaired history as
+    ``(source, turn_number)`` pairs, where ``source`` is the index into
+    ``turn_numbers`` of the entry that fills the slot, or ``None`` for a
+    backfilled ``SKIPPED`` placeholder; ``current_turn`` is the clock after the
+    repair. A healthy (consecutive) history comes back slot for slot, with the
+    clock only ever raised to its last number.
+    """
+    if not turn_numbers:
+        return [], current_turn
+
+    slots: List[Tuple[Optional[int], int]] = [(0, turn_numbers[0])]
+    for source in range(1, len(turn_numbers)):
+        number = turn_numbers[source]
+        prev = slots[-1][1]
+        gap = number - prev - 1
+        if number <= prev or gap > _MAX_TURN_BACKFILL:
+            # duplicate / out-of-order, or a gap too large to be a normal
+            # one-turn interruption → renumber.
+            slots.append((source, prev + 1))
+            continue
+        slots.extend((None, missing) for missing in range(prev + 1, number))
+        slots.append((source, number))
+
+    last = slots[-1][1]
+    # Keep the monotonic guarantee: never lower an in-flight current_turn.
+    # The one exception is a cap-renumber that TRUNCATED the trailing number
+    # downward (corruption recovery) — there the lowered last is authoritative
+    # so the next turn doesn't re-open the huge gap.
+    if last < turn_numbers[-1] or current_turn < last:
+        current_turn = last
+    return slots, current_turn
 
 
 # ============================================================
@@ -457,9 +535,7 @@ class Case(BaseModel):
         Computed investigation stage (only when INVESTIGATING).
         Returns: DIAGNOSIS | MITIGATION | TREATMENT | None
         """
-        if self.state != CaseState.INVESTIGATING:
-            return None
-        return self.progress.current_stage
+        return stage_while_investigating(self.state, self.progress.current_stage)
 
     @property
     def current_momentum(self) -> Optional[InvestigationMomentum]:
@@ -479,7 +555,7 @@ class Case(BaseModel):
         Check if case is in terminal state.
         Terminal states: RESOLVED, CLOSED (no further transitions).
         """
-        return self.state in [CaseState.RESOLVED, CaseState.CLOSED]
+        return self.state.is_terminal
 
     @property
     def time_to_resolution(self) -> Optional[timedelta]:
@@ -639,7 +715,9 @@ class Case(BaseModel):
         record, so counting it twice subtracts a turn the clock never counted
         and shifts every later row's ordinal down by one.
         """
-        return sorted({t.turn_number for t in self.turn_history if t.is_out_of_band})
+        return distinct_turns(
+            t.turn_number for t in self.turn_history if t.is_out_of_band
+        )
 
     def investigation_turn_at(
         self, turn_number: int, *, asides: Optional[Sequence[int]] = None
@@ -663,12 +741,14 @@ class Case(BaseModel):
 
         ``asides`` lets a caller labelling MANY rows pass
         :attr:`out_of_band_turns` once instead of rebuilding it per row; the
-        formula stays here so there is only one of it.
+        formula is the module-level :func:`investigation_turn_at`, so there is
+        only one of it.
         """
         if asides is None:
             asides = self.out_of_band_turns
-        effective = min(turn_number, self.current_turn)
-        return max(0, effective - bisect_right(asides, effective))
+        return investigation_turn_at(
+            turn_number, current_turn=self.current_turn, asides=asides
+        )
 
     @property
     def investigation_turn_count(self) -> int:
@@ -754,6 +834,9 @@ class Case(BaseModel):
         A no-op on healthy cases. Called on load and before save so a transient
         anomaly self-heals into a visible, contained ``SKIPPED`` turn instead of
         permanently wedging the case.
+
+        Which slot each entry lands in, and the clock afterwards, is decided by
+        :func:`reconcile_turn_numbers`; this method only builds the entries.
         """
         history = self.turn_history
         if not history:
@@ -770,29 +853,17 @@ class Case(BaseModel):
                 self.current_turn = last
             return 0
 
+        slots, current_turn = reconcile_turn_numbers(
+            [entry.turn_number for entry in history], self.current_turn
+        )
+
         repairs = 0
-        rebuilt: List[TurnProgress] = [history[0]]
-        for entry in history[1:]:
-            prev = rebuilt[-1].turn_number
-            gap = entry.turn_number - prev - 1
-            if entry.turn_number <= prev or gap > _MAX_TURN_BACKFILL:
-                # duplicate / out-of-order, or a gap too large to be a normal
-                # one-turn interruption → renumber (TurnProgress is frozen).
-                if gap > _MAX_TURN_BACKFILL:
-                    logger.error(
-                        "Turn-sequence gap of %d on case %s exceeds cap (%d); "
-                        "renumbering instead of backfilling.",
-                        gap,
-                        getattr(self, "case_id", "?"),
-                        _MAX_TURN_BACKFILL,
-                    )
-                rebuilt.append(entry.model_copy(update={"turn_number": prev + 1}))
-                repairs += 1
-                continue
-            for missing in range(prev + 1, entry.turn_number):
+        rebuilt: List[TurnProgress] = []
+        for source, number in slots:
+            if source is None:
                 rebuilt.append(
                     TurnProgress(
-                        turn_number=missing,
+                        turn_number=number,
                         timestamp=rebuilt[-1].timestamp,
                         outcome=TurnOutcome.SKIPPED,
                         progress_made=False,
@@ -804,16 +875,28 @@ class Case(BaseModel):
                     )
                 )
                 repairs += 1
+                continue
+            entry = history[source]
+            if entry.turn_number != number:
+                # A renumber only ever LOWERS a number when the gap exceeded the
+                # backfill cap (a duplicate / out-of-order entry is raised).
+                if number < entry.turn_number:
+                    logger.error(
+                        "Turn-sequence gap of %d on case %s exceeds cap (%d); "
+                        "renumbering instead of backfilling.",
+                        entry.turn_number - number,
+                        getattr(self, "case_id", "?"),
+                        _MAX_TURN_BACKFILL,
+                    )
+                # TurnProgress is frozen.
+                entry = entry.model_copy(update={"turn_number": number})
+                repairs += 1
             rebuilt.append(entry)
 
+        # A history that is not consecutive always needs at least one repair.
         self.turn_history = rebuilt
-        last = rebuilt[-1].turn_number
-        # Keep the monotonic guarantee: never lower an in-flight current_turn.
-        # The one exception is a cap-renumber that TRUNCATED the trailing number
-        # downward (corruption recovery) — there the lowered last is authoritative
-        # so the next turn doesn't re-open the huge gap.
-        if last < history[-1].turn_number or self.current_turn < last:
-            self.current_turn = last
+        if current_turn != self.current_turn:
+            self.current_turn = current_turn
         logger.warning(
             "Reconciled turn_history for case %s: %d repair(s), %d turns.",
             getattr(self, "case_id", "?"),

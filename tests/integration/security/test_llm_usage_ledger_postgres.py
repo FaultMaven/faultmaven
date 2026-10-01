@@ -59,6 +59,8 @@ pytestmark = [
 _ROLE = f"fm_usage_probe_{uuid.uuid4().hex[:8]}"
 _PW = "fm_usage_probe_pw"
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
+#: The ledger's parent revision (001_enterprise_baseline).
+_BASELINE_REVISION = "a1e0c17bd001"
 TODAY = date(2026, 9, 29)
 
 
@@ -367,7 +369,8 @@ async def test_revision_002_steps_down_and_up(limited_role_env):
         assert result.returncode == 0, result.stderr[-2000:]
         assert await tables_and_policies() == (up, policies)
 
-        result = _alembic(url, "downgrade -1")
+        # To the ledger's parent, stepping over whatever was added after it.
+        result = _alembic(url, f"downgrade {_BASELINE_REVISION}")
         assert result.returncode == 0, result.stderr[-2000:]
         assert await tables_and_policies() == (set(), set())
 

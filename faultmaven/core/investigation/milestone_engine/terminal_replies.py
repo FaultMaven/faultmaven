@@ -5,6 +5,7 @@ from .cause_state import (
     _get_root_cause_summary,
     _get_solution_summary,
 )
+from .transition_consent import offer_intent_fields, terminal_offer_key
 
 
 def _build_resolution_confirmation(case) -> str:
@@ -60,7 +61,7 @@ def _build_resolution_confirmation(case) -> str:
     return "\n".join(parts)
 
 
-def _resolution_confirmation_suggestions() -> list:
+def _resolution_confirmation_suggestions(case) -> list:
     """Generate DECIDE follow-up suggestions for resolution confirmation.
 
     Mirrors the INQUIRY confirmation pattern: one positive (confirm resolution)
@@ -70,21 +71,31 @@ def _resolution_confirmation_suggestions() -> list:
     click as IntentType.CONFIRMATION instead of plain text. This routes
     through the deterministic _handle_confirmation() path, bypassing the
     tool loop and pattern matching entirely.
+
+    Both intents name the standing offer, ``case.pending_transition``, by its
+    key (#1812): the engine executes a click only when it names the offer
+    standing when it arrives. So this is called with the RESOLVED proposal
+    already standing.
     """
+    offer = offer_intent_fields(
+        terminal_offer_key(getattr(case, "pending_transition", None)),
+        case=case,
+        gate="terminal",
+    )
     return [
         {
             "label": "Yes, mark as resolved",
             "action_type": "DECIDE",
             "payload": "Yes, the issue is resolved. Please mark this case as resolved.",
             "body": "Confirm resolution and close the investigation.",
-            "intent": {"type": "confirmation", "confirmation_value": True},
+            "intent": {"type": "confirmation", "confirmation_value": True, **offer},
         },
         {
             "label": "Not yet, continue investigating",
             "action_type": "DECIDE",
             "payload": "Not yet — I'd like to continue investigating before resolving.",
             "body": "Decline resolution and continue refining the root cause or exploring alternative solutions.",
-            "intent": {"type": "confirmation", "confirmation_value": False},
+            "intent": {"type": "confirmation", "confirmation_value": False, **offer},
         },
     ]
 

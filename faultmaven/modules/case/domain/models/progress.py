@@ -190,6 +190,37 @@ class MitigationRecord(BaseModel):
         return self
 
 
+def investigation_stage(
+    *,
+    mitigation_accepted: bool,
+    mitigation_verified: bool,
+    solution_accepted: bool,
+    solution_verified: bool,
+) -> InvestigationStage:
+    """The stage label the four gate milestones derive (redesign R4).
+
+    The one copy of the rule. :attr:`InvestigationProgress.current_stage` reads
+    the gates off a loaded progress blob and asks this; the cross-enterprise
+    operator list, which never loads a case, reads the same four booleans out of
+    the stored blob and asks this too — so the label cannot mean one thing on a
+    case page and another in the operator's list.
+
+    A mitigation that was never recorded is neither accepted nor verified, which
+    is how a caller with no ``MitigationRecord`` states it.
+    """
+    # MITIGATION: mitigation accepted but not yet verified.
+    if mitigation_accepted and not mitigation_verified:
+        return InvestigationStage.MITIGATION
+
+    # TREATMENT: solution_accepted but not yet verified
+    if solution_accepted and not solution_verified:
+        return InvestigationStage.TREATMENT
+
+    # Default: DIAGNOSIS. Distinguish sub-phase via symptom_verified /
+    # cause_state if needed.
+    return InvestigationStage.DIAGNOSIS
+
+
 class InvestigationProgress(BaseModel):
     """
     Evidence-driven progress tracking with two distinct milestone types:
@@ -441,22 +472,16 @@ class InvestigationProgress(BaseModel):
         DIAGNOSIS is one stage with two phases distinguished by
         ``symptom_verified`` / ``cause_state``, not by the stage enum.
         Callers needing the phase distinction must consult those signals.
+
+        The rule itself is :func:`investigation_stage`.
         """
-        # MITIGATION: mitigation accepted but not yet verified.
-        if (
-            self.mitigation is not None
-            and self.mitigation.accepted
-            and not self.mitigation.verified
-        ):
-            return InvestigationStage.MITIGATION
-
-        # TREATMENT: solution_accepted but not yet verified
-        if self.solution_accepted and not self.solution_verified:
-            return InvestigationStage.TREATMENT
-
-        # Default: DIAGNOSIS. Distinguish sub-phase via symptom_verified /
-        # cause_state if needed.
-        return InvestigationStage.DIAGNOSIS
+        mitigation = self.mitigation
+        return investigation_stage(
+            mitigation_accepted=mitigation is not None and mitigation.accepted,
+            mitigation_verified=mitigation is not None and mitigation.verified,
+            solution_accepted=self.solution_accepted,
+            solution_verified=self.solution_verified,
+        )
 
     @property
     def verification_complete(self) -> bool:

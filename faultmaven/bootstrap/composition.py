@@ -351,6 +351,21 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
 
     app.state.operator_grant_repository = SessionlessOperatorGrantRepository()
 
+    # The cross-enterprise operator case list (ADR-012 D9). Only multi-tenancy
+    # needs it: there row-level security scopes an ordinary case query to one
+    # enterprise, so the list reads every enterprise's metadata through a
+    # SECURITY DEFINER function instead. Left unset elsewhere, so no other
+    # deployment can reach the bypass; under multi the route fails closed
+    # without it.
+    if requested_tenant_provider() == BUILTIN_MULTI:
+        from faultmaven.modules.case.infrastructure.case_metadata_reader import (
+            SessionlessCaseMetadataReader,
+        )
+
+        app.state.case_metadata_reader = SessionlessCaseMetadataReader()
+    else:
+        app.state.case_metadata_reader = None
+
     # The LLM usage ledger (#640): where every billed call's spend is
     # persisted, per tenant. Installed rather than attached to app.state
     # because its writer is the synchronous metering chokepoint, which no
@@ -370,6 +385,14 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
     # after this composition root has run. The container guarantees a working
     # client (never None), so this is always populated.
     app.state.redis_client = container.get_redis_client()
+
+    # The ChromaDB clients the container built (``None`` when skipped), so
+    # GET /admin/config/status can report what they talk to without a route
+    # reaching into the container.
+    app.state.kb_chromadb_client = getattr(container, "kb_chromadb_client", None)
+    app.state.evidence_chromadb_client = getattr(
+        container, "evidence_chromadb_client", None
+    )
 
     # Refuse to serve if another process in this deployment redacts under a
     # different key. Resolution alone cannot establish that — whether a

@@ -9,10 +9,10 @@ from datetime import datetime, timezone
 from typing import List, Optional, Union
 
 from sqlalchemy import delete, func, select, update
-from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.infrastructure.persistence.db_compat import dialect_insert
+from faultmaven.infrastructure.persistence.db_errors import driver_error, sqlstate
 from faultmaven.infrastructure.persistence.models import (
     OrganizationMemberModel,
     OrganizationModel,
@@ -54,19 +54,14 @@ def is_last_admin_violation(exc: BaseException) -> bool:
     Identified by the structured fields PostgreSQL sends rather than by message
     text: matching the message would break the day someone rewords it, and
     matching only the error class would swallow every other constraint on the
-    table. ``exc.orig`` is SQLAlchemy's DBAPI wrapper; the driver exception
-    carrying the fields is its ``__cause__``.
+    table (``db_errors`` reads the fields).
 
     Returns ``False`` for anything else, including on SQLite, where the trigger
     does not exist — Standalone is single-tenant and has no organizations to
     orphan.
     """
-    if not isinstance(exc, DBAPIError):
-        return False
-    cause = getattr(exc.orig, "__cause__", None)
-    return (
-        getattr(cause, "sqlstate", None) == _CHECK_VIOLATION
-        and getattr(cause, "constraint_name", None) == LAST_ADMIN_CONSTRAINT
+    return sqlstate(exc) == _CHECK_VIOLATION and (
+        getattr(driver_error(exc), "constraint_name", None) == LAST_ADMIN_CONSTRAINT
     )
 
 
