@@ -5,14 +5,16 @@ the cloud list-metadata split (#814) and the break-glass content path (#815)
 record through the same helper, and the fail-closed decision below must hold
 identically for all of them rather than being re-derived per handler.
 
-Scope note: this records operator access to tenant **case** data — the
-metadata/content boundary D8/D9 governs. Other operator-gated endpoints (user
-administration, LLM configuration, Global KB authoring) are not tenant-content
-reads and do not write here. Cross-tenant user administration is not audited
-because it no longer happens: since #1318 those routes carry a tenant predicate
-and refuse outside the operator's own enterprise (``api/operator_user_scope``).
-Audited break-glass for that surface — ADR-012 D9's option A, which would write
-here — is a later change, deliberately not half-built.
+Scope note: this records operator access across tenants — case data on the
+metadata/content boundary D8/D9 governs, and the cross-enterprise account list
+(``GET /admin/users`` under multi, ``details.surface: "accounts"``; the case
+list records ``"cases"``). Other operator-gated endpoints (administering one
+account, LLM configuration, Global KB authoring) are not cross-tenant reads and
+do not write here. Cross-tenant user administration is not audited because it
+does not happen: since #1318 those routes carry a tenant predicate and refuse
+outside the operator's own enterprise (``api/operator_user_scope``). Audited
+break-glass for that surface — ADR-012 D9's option A, which would write here —
+is a later change, deliberately not half-built.
 """
 
 import logging

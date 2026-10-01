@@ -120,9 +120,11 @@ class FakeAccounts:
     confining an operator by it would confine them by who pays.
     """
 
-    def __init__(self, membership: dict[str, list[str]]):
+    def __init__(self, membership: dict[str, list[str]], users=None):
         self._membership = membership
+        self._users = users or {}
         self.calls: list[str] = []
+        self.roles_reads: list[tuple[str, list[str]]] = []
 
     async def get(self, user_id: str):
         for enterprise_id, members in self._membership.items():
@@ -133,6 +135,26 @@ class FakeAccounts:
     async def list_enterprise_member_ids(self, enterprise_id: str) -> frozenset:
         self.calls.append(enterprise_id)
         return frozenset(self._membership.get(enterprise_id, []))
+
+    async def list_account_metadata(
+        self, *, is_active, search, enterprise_id, limit, offset
+    ):
+        """The cross-enterprise account list: every account, as metadata."""
+        rows = [
+            _account_metadata(user)
+            for user in self._users.values()
+            if enterprise_id is None or user.enterprise_id == enterprise_id
+        ]
+        return rows[offset : offset + limit], len(rows)
+
+    async def get_many_in_enterprise(self, enterprise_id, user_ids):
+        """Honours the enterprise predicate for real, and records the ask."""
+        self.roles_reads.append((enterprise_id, list(user_ids)))
+        return [
+            user
+            for user in self._users.values()
+            if user.enterprise_id == enterprise_id and user.user_id in user_ids
+        ]
 
 
 class _UserStore:
@@ -257,10 +279,19 @@ def world():
         MEMBER_B: _repository_user(MEMBER_B, ENTERPRISE_B),
     }
 
+    async def list_users(enterprise_id=None, **_):
+        """Honours the tenant predicate for real: a Mock would answer the same
+        rows however it was asked, so a route that dropped the predicate would
+        still look confined here."""
+        rows = [
+            user
+            for user in users.values()
+            if enterprise_id is None or user.enterprise_id == enterprise_id
+        ]
+        return rows, len(rows)
+
     user_service = AsyncMock()
-    user_service.list_users = AsyncMock(
-        return_value=([users[MEMBER_A], users[MEMBER_B]], 2)
-    )
+    user_service.list_users = AsyncMock(side_effect=list_users)
     user_service.get_user_with_metadata = AsyncMock(
         return_value={
             "user_id": MEMBER_B,
@@ -292,7 +323,7 @@ def world():
     auth_service = AsyncMock()
     auth_service.revoke_user_tokens = AsyncMock(return_value=datetime.now(timezone.utc))
 
-    accounts = FakeAccounts(MEMBERSHIP)
+    accounts = FakeAccounts(MEMBERSHIP, users)
     # The scope resolves the account store through ``user_store``, which is
     # where the composition root puts it — asking the app for it in the same
     # shape the route does, rather than injecting the predicate directly.
@@ -307,8 +338,27 @@ def world():
     app.state.user_service = user_service
     app.state.user_store = user_store
     app.state.auth_service = auth_service
+    app.state.operator_audit_repository = AsyncMock()
 
     return _World(TestClient(app), user_service, user_store, auth_service, accounts)
+
+
+def _account_metadata(user):
+    from faultmaven.modules.auth.contracts import AccountMetadata
+
+    return AccountMetadata(
+        user_id=user.user_id,
+        enterprise_id=user.enterprise_id,
+        email=user.email,
+        display_name=user.display_name,
+        account_kind=user.account_kind,
+        service_channel=user.service_channel,
+        is_active=user.is_active,
+        is_email_verified=user.is_email_verified,
+        last_login_at=user.last_login_at,
+        created_at=user.created_at,
+        updated_at=user.updated_at,
+    )
 
 
 # =============================================================================
@@ -356,12 +406,13 @@ ID_ADDRESSED_OPERATIONS = (
     ("delete", "DELETE", "/api/v1/auth/users/{username}", None, None),
 )
 
-#: The two listings. Confined by an allowlist rather than by a per-id refusal,
-#: so they are swept separately — but they belong to the same surface.
-LISTING_OPERATIONS = (
-    ("GET", "/api/v1/admin/users"),
-    ("GET", "/api/v1/auth/users"),
-)
+#: The confined listing. Confined by a predicate rather than by a per-id
+#: refusal, so it is swept separately — but it belongs to the same surface.
+#: ``GET /api/v1/admin/users`` is NOT here: under multi it spans every
+#: enterprise as operator metadata, its rows marked ``manageable`` only inside
+#: the operator's own (asserted below, and recorded as a decision in
+#: ``tests/integration/api/test_operator_user_routes_are_confined.py``).
+LISTING_OPERATIONS = (("GET", "/api/v1/auth/users"),)
 
 #: Every operation of the operator user-administration surface, as the live
 #: OpenAPI document spells it. ``tests/integration/api/
@@ -484,20 +535,46 @@ def test_the_auth_listing_neither_names_nor_counts_another_tenant(world):
 
 @pytest.mark.unit
 @pytest.mark.security
-def test_the_admin_listing_passes_the_predicate_to_the_service(world):
-    """``GET /admin/users`` hands the allowlist down rather than post-filtering.
+def test_the_admin_listing_spans_enterprises_but_reports_roles_only_for_its_own(
+    world,
+):
+    """``GET /admin/users`` under multi: every enterprise's accounts, as metadata.
 
-    The route's half of the confinement. The service's half — that the allowlist
-    is applied BEFORE pagination, so ``total`` counts the tenant — is asserted
-    against the real service below; splitting them is what keeps either from
-    being satisfied by the other's double.
+    The operator's own accounts are ``manageable`` and carry their roles, read
+    in one query confined to the operator's enterprise and asked about the
+    page's own ids only. Another enterprise's account is listed, NOT manageable,
+    and its roles are not reported (``[]``): roles are the organization's
+    management vocabulary, and the administration routes answer 404 for it.
     """
     with _MULTI():
         listing = world.client.get("/api/v1/admin/users")
 
     assert listing.status_code == 200, listing.text[:300]
-    kwargs = world.user_service.list_users.await_args.kwargs
-    assert kwargs["enterprise_id"] == ENTERPRISE_A
+    body = listing.json()
+    rows = {row["user_id"]: row for row in body["users"]}
+    assert set(rows) == {OPERATOR_A, MEMBER_A, MEMBER_B}
+    assert body["total"] == 3
+
+    assert rows[MEMBER_B]["enterprise_id"] == ENTERPRISE_B
+    assert rows[MEMBER_B]["manageable"] is False
+    assert rows[MEMBER_B]["roles"] == []
+    for own in (OPERATOR_A, MEMBER_A):
+        assert rows[own]["enterprise_id"] == ENTERPRISE_A
+        assert rows[own]["manageable"] is True
+        assert rows[own]["roles"] == ["user"]
+
+    # Roles came from ONE read, confined to the operator's enterprise and asked
+    # about the page's own ids only.
+    ((enterprise, ids),) = world.accounts.roles_reads
+    assert enterprise == ENTERPRISE_A
+    assert set(ids) == {OPERATOR_A, MEMBER_A}
+    world.user_service.list_users.assert_not_awaited()
+
+    # A listed account is not an administrable one: the mutations stay confined.
+    with _MULTI():
+        refused = world.client.post(f"/api/v1/admin/users/{MEMBER_B}/deactivate")
+    assert refused.status_code == 404
+    world.user_service.deactivate_user_admin.assert_not_awaited()
 
 
 @pytest.mark.unit
@@ -660,13 +737,10 @@ def test_a_missing_account_store_refuses_rather_than_serving_unconfined(world):
 
     assert response.status_code == 503, response.text[:300]
 
-    # The LISTING is a different case, and it stopped needing the store: the
-    # confinement is now the enterprise off the request handed down as a query
-    # predicate, so nothing about it depends on being able to read a roster.
-    # It is still confined — that is what the sibling cases above assert — so
-    # refusing it here would be refusing a request the predicate fully covers.
-    assert listing.status_code == 200, listing.text[:300]
-    assert (
-        world.user_service.list_users.await_args.kwargs["enterprise_id"] == ENTERPRISE_A
-    )
+    # The LISTING reads the same store under multi — both the cross-enterprise
+    # page and its own rows' roles — so without it the list is refused too,
+    # before the access is recorded and without falling back to the service.
+    assert listing.status_code == 503, listing.text[:300]
+    world.client.app.state.operator_audit_repository.record_access.assert_not_awaited()
+    world.user_service.list_users.assert_not_awaited()
     world.user_service.get_user_with_metadata.assert_not_awaited()

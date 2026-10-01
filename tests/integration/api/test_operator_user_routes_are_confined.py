@@ -52,9 +52,18 @@ OPERATOR_ROLE_DEPENDENCIES = frozenset(
 )
 
 #: Operations under those prefixes that are deliberately NOT confined, each with
-#: the reason. Empty today — and it must stay a decision rather than an
-#: oversight, which is why an exemption has to be written here to pass.
-UNCONFINED_EXEMPTIONS: dict[tuple[str, str], str] = {}
+#: the reason. It must stay a decision rather than an oversight, which is why an
+#: exemption has to be written here to pass.
+UNCONFINED_EXEMPTIONS: dict[tuple[str, str], str] = {
+    ("GET", "/api/v1/admin/users"): (
+        "the operator's account list spans every enterprise under multi: "
+        "account records are the service's own operational data, read with "
+        "eleven columns and no credential, SSO subject or role, and recorded "
+        "in the operator trail before serving. It still resolves the scope, "
+        "which decides the rows it marks manageable and the only ones whose "
+        "roles it reports; every administration route stays confined."
+    ),
+}
 
 
 @pytest.fixture(scope="module")
@@ -135,7 +144,9 @@ def test_the_surface_under_test_is_not_empty(app):
     that mounts neither router passes trivially — silently.
     """
     discovered = _operator_user_operations(app)
-    assert len(discovered) >= len(CONFINED_OPERATIONS), sorted(discovered)
+    assert len(discovered) >= len(
+        CONFINED_OPERATIONS | set(UNCONFINED_EXEMPTIONS)
+    ), sorted(discovered)
 
 
 @pytest.mark.integration
@@ -163,7 +174,7 @@ def test_the_sweep_does_not_name_operations_the_app_never_exposes(app):
     surface that no longer exists.
     """
     discovered = set(_operator_user_operations(app))
-    stale = CONFINED_OPERATIONS - discovered
+    stale = (CONFINED_OPERATIONS | set(UNCONFINED_EXEMPTIONS)) - discovered
 
     assert not stale, (
         f"the confinement sweep names operations the app does not expose: "
@@ -218,3 +229,15 @@ def test_every_operator_user_operation_still_requires_the_operator_role(app):
         f"operator user operations reachable without the platform-admin role: "
         f"{sorted(unguarded)}"
     )
+
+
+@pytest.mark.integration
+@pytest.mark.security
+def test_the_spanning_listing_still_resolves_the_scope(app):
+    """The exempted listing is not unscoped: the scope is what decides which of
+    its rows are manageable and carry roles, so it must still declare it."""
+    discovered = _operator_user_operations(app)
+    for operation in UNCONFINED_EXEMPTIONS:
+        assert SCOPE_DEPENDENCY in _dependency_names(
+            discovered[operation].dependant
+        ), operation

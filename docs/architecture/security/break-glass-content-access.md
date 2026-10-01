@@ -283,6 +283,33 @@ The rejected alternatives are the ones rejected for content above — a
 plus rebinding once per enterprise, which would make a grant-authorised
 mechanism ambient.
 
+### The account list needs none of this
+
+The operator's account list (`GET /api/v1/admin/users`) also spans every
+enterprise under `multi`, and it carries user free-text — each account's email
+address and display name. Account records — who holds an account, in which
+enterprise, of which kind, whether it is active — are the service's own
+operational data about its users; case content is held on a customer's behalf,
+which is why it stays behind the grant this document describes.
+
+It needs no definer function. `users` is outside row-level security — the login
+path reads it before any tenant is bound — so an ordinary query from the
+runtime role already spans every enterprise. What bounds the read is what it
+selects (eleven columns: `user_id`, `enterprise_id`, `email`, `display_name`,
+`account_kind`, `service_channel`, `is_active`, `is_email_verified` and three
+timestamps — never the password hash, the SSO subject, a token, a preference or
+the role list) and where it is called from (that route alone, under `multi`,
+behind `platform_admin`). Each read is recorded before anything is served
+(`action: list`, `details.surface: "accounts"`, `target_enterprise_id` set to
+the `enterprise_id` filter, NULL when the read spans every enterprise; the case
+list records `surface: "cases"`), and a read that cannot be recorded is
+refused. The search text is not recorded — only `search_present` — because it
+is often an email address and the trail is append-only: nothing written there
+can be erased. Roles are reported only for accounts in the operator's own
+enterprise, and those are the only rows marked `manageable`; administering an
+account stays confined (below). `docs/architecture/security/rbac.md` → "User
+Administration" has the rest.
+
 ### What is still deferred
 
 Evidence **file** content is likewise not yet reachable through this path. The
@@ -291,8 +318,10 @@ download surface carries its own storage and redaction concerns and is tracked
 separately.
 
 **User administration is deliberately outside this model, not pending inside
-it.** The operator user routes (`/api/v1/admin/users*` and the two
-`/api/v1/auth/users*`) are confined to the operator's own tenant by a
+it.** Listing accounts is metadata and spans enterprises (above); administering
+one is not. The routes that read one account or change one
+(`/api/v1/admin/users/{id}*` and the `/api/v1/auth/users*` operator routes,
+including that older listing) are confined to the operator's own enterprise by a
 tenant predicate and have no cross-tenant path at all (#1318,
 `docs/architecture/security/rbac.md` → "User Administration"). A grant cannot
 serve them as it stands: `target_case_id` is `NOT NULL`, the lookup keys on it,

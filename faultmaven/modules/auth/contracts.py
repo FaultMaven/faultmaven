@@ -12,7 +12,16 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, List, Optional, Protocol, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    List,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+    runtime_checkable,
+)
 
 from faultmaven.modules.auth.domain.models.auth import (
     AuthenticatedUser,
@@ -913,6 +922,81 @@ class ISSOPersonalEnterpriseRepository(ABC):
 
 
 # ============================================================
+# Operator account directory (the account list's two reads)
+# ============================================================
+
+
+@dataclass(frozen=True)
+class AccountMetadata:
+    """One user account as the operator's account list shows it: who holds an
+    account, in which enterprise, of which kind, and whether it is active.
+
+    Exactly these eleven fields, and the read that builds it selects exactly
+    these eleven columns — never the password hash, the SSO provider or
+    subject, a token, a preference or the role list. Roles are deliberately
+    absent: they are the organization's management vocabulary, reported only
+    for the accounts the operator can administer, by a separate read confined
+    to the operator's enterprise.
+    """
+
+    user_id: str
+    enterprise_id: str
+    email: str
+    display_name: str
+    #: ADR-017 D6: ``'individual'`` (a human) or ``'service'`` (an integration's
+    #: agent). Closed by the ``users_account_kind_check`` constraint.
+    account_kind: str
+    #: Which integration a service account serves (``'slack'``); ``None`` for a
+    #: human.
+    service_channel: Optional[str]
+    is_active: bool
+    is_email_verified: bool
+    last_login_at: Optional[datetime]
+    created_at: datetime
+    updated_at: datetime
+
+
+class IAccountDirectory(Protocol):
+    """The two reads behind the operator's account list (``GET /admin/users``).
+
+    Implemented by the user repository: ``users`` is outside row-level
+    security (the login path reads it before any tenant is bound), so an
+    ordinary query already spans every enterprise. What bounds the
+    cross-enterprise read is the column list it selects and the one place that
+    calls it — the list's ``TENANT_PROVIDER=multi`` arm, behind the operator
+    role, after the access is recorded.
+    """
+
+    async def list_account_metadata(
+        self,
+        *,
+        is_active: Optional[bool],
+        search: Optional[str],
+        enterprise_id: Optional[str],
+        limit: int,
+        offset: int,
+    ) -> Tuple[List[AccountMetadata], int]:
+        """One page of accounts across every enterprise, newest first with
+        ``user_id`` breaking ties, and the number of matches in all enterprises
+        (not the page length), counted with the page.
+
+        ``search`` is a case-insensitive substring of the email or the display
+        name, ``%`` and ``_`` taken literally; ``enterprise_id`` narrows the read
+        to one enterprise. ``None`` filters nothing. A search no stored value can
+        contain (a NUL character) and an offset past any row count answer an
+        empty page with the true total, never a database error.
+        """
+        ...
+
+    async def get_many_in_enterprise(
+        self, enterprise_id: str, user_ids: Sequence[str]
+    ) -> List[Any]:
+        """The accounts among ``user_ids`` anchored to ``enterprise_id``, in one
+        read. An id anchored elsewhere, or naming nobody, is simply absent."""
+        ...
+
+
+# ============================================================
 # Team Membership Policy
 # ============================================================
 
@@ -970,6 +1054,7 @@ __all__ = [
     "SSOIdentity",
     "PersonalEnterpriseRecord",
     "RetiredIdPOrganization",
+    "AccountMetadata",
     # Personal-tenant retirement vocabulary
     "RETIREMENT_POLICY_REFUSE",
     "RETIREMENT_POLICY_FRESH_TENANT",
@@ -977,6 +1062,7 @@ __all__ = [
     "IUserRepository",
     "IUserQuery",
     "IOAuthCodeRepository",
+    "IAccountDirectory",
     # Policy helpers
     "is_team_member",
     # Service Protocols

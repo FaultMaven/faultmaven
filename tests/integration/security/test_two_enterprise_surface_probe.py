@@ -3996,44 +3996,105 @@ async def test_the_operator_still_administers_their_own_enterprises_users(wall_w
     assert is_active is False, "control: the 200 did not deactivate the account"
 
 
-async def test_neither_user_listing_names_or_counts_the_other_enterprise(wall_world):
-    """The two listings, including the ``total`` — itself a disclosure.
+async def test_the_auth_user_listing_neither_names_nor_counts_the_other_enterprise(
+    wall_world,
+):
+    """``GET /auth/users`` stays confined, ``total`` included — itself a
+    disclosure.
 
-    #1318 measured ``GET /auth/users`` answering a deployment-wide population
-    count while ``/admin/users`` served another tenant's rows stamped with the
-    CALLER's id. Under ADR-017 the confinement predicate is the enterprise, and
-    membership in it is ``users.enterprise_id`` rather than a roster table.
+    #1318 measured it answering a deployment-wide population count. Under
+    ADR-017 the confinement predicate is the enterprise, and membership in it is
+    ``users.enterprise_id`` rather than a roster table. (``GET /admin/users``,
+    the operator's account list, spans enterprises as metadata instead — the
+    test below.)
     """
     world = wall_world
-    admin_list = await _call(
-        world, world.token_operator_a, "GET", "/api/v1/admin/users"
-    )
-    auth_list = await _call(world, world.token_operator_a, "GET", "/api/v1/auth/users")
+    response = await _call(world, world.token_operator_a, "GET", "/api/v1/auth/users")
 
     own_members = set(world.a.enterprise_members)
-    for name, response in (("admin", admin_list), ("auth", auth_list)):
-        assert response.status_code == 200, f"{name}: {response.text[:300]}"
-        assert (
-            world.b.user_id not in response.text
-        ), f"{name} listing names a user of the other enterprise"
-        # The control. An empty listing satisfies "does not name B" trivially,
-        # and this deployment carries rows written by every other module in the
-        # run — so what matters is that A's OWN user is still here.
-        assert world.a.user_id in response.text, (
-            f"control: the {name} listing does not name the operator's own "
-            f"enterprise's user, so 'B is absent' proves nothing: "
-            f"{response.text[:300]}"
-        )
-        assert response.json()["total"] <= len(own_members), (
-            f"{name} listing reports a total larger than its own enterprise: "
-            f"{response.text[:300]}"
-        )
+    assert response.status_code == 200, response.text[:300]
+    assert (
+        world.b.user_id not in response.text
+    ), "the auth listing names a user of the other enterprise"
+    # The control. An empty listing satisfies "does not name B" trivially, and
+    # this deployment carries rows written by every other module in the run —
+    # so what matters is that A's OWN user is still here.
+    assert world.a.user_id in response.text, (
+        "control: the auth listing does not name the operator's own "
+        f"enterprise's user, so 'B is absent' proves nothing: {response.text[:300]}"
+    )
+    assert response.json()["total"] <= len(own_members), (
+        "the auth listing reports a total larger than its own enterprise: "
+        f"{response.text[:300]}"
+    )
 
-    # Every row the admin listing stamps with the caller's enterprise really is
-    # in it.
-    for row in admin_list.json()["users"]:
+
+async def test_the_admin_user_listing_spans_enterprises_but_administers_its_own(
+    wall_world,
+):
+    """``GET /admin/users`` lists B's account to A's operator — as metadata,
+    marked not manageable, with no roles — and A's own accounts as manageable.
+
+    Both directions matter. A list narrowed to the operator's enterprise would
+    claim to span every tenant while showing one, so B's account MUST be there;
+    and the read that gets it there reaches past the operator's enterprise, so
+    it must carry no role of B's and none of B's content markers. The access is
+    in the operator trail, naming the enterprise the filter targeted.
+
+    Filtered per enterprise: the deployment carries accounts written by every
+    other module in the run, and a page of the unfiltered list need not reach
+    these two.
+    """
+    world = wall_world
+    foreign = await _call(
+        world,
+        world.token_operator_a,
+        "GET",
+        f"/api/v1/admin/users?enterprise_id={world.b.enterprise_id}",
+    )
+    own = await _call(
+        world,
+        world.token_operator_a,
+        "GET",
+        f"/api/v1/admin/users?enterprise_id={world.a.enterprise_id}",
+    )
+
+    assert foreign.status_code == 200, foreign.text[:400]
+    assert own.status_code == 200, own.text[:400]
+    assert_no_b_content(foreign, "GET /api/v1/admin/users (enterprise B)")
+
+    foreign_rows = {row["user_id"]: row for row in foreign.json()["users"]}
+    assert world.b.user_id in foreign_rows, (
+        "the operator list did not reach the other enterprise — a list narrowed "
+        f"to the operator's own under a cross-enterprise name: {foreign.text[:400]}"
+    )
+    assert foreign.json()["total"] == len(world.b.enterprise_members)
+    for row in foreign_rows.values():
+        assert row["enterprise_id"] == world.b.enterprise_id
+        assert row["manageable"] is False, row
+        assert row["roles"] == [], f"roles reported outside the enterprise: {row}"
+
+    own_rows = {row["user_id"]: row for row in own.json()["users"]}
+    assert set(own_rows) == set(world.a.enterprise_members), own.text[:400]
+    for row in own_rows.values():
         assert row["enterprise_id"] == world.a.enterprise_id
-        assert row["user_id"] in own_members
+        assert row["manageable"] is True, row
+        assert row["roles"], f"an own-enterprise row carries no roles: {row}"
+
+    # Recorded before it was served, with the enterprise it targeted.
+    trail = await _call(
+        world,
+        world.token_operator_a,
+        "GET",
+        "/api/v1/admin/audit/operator-access"
+        f"?target_enterprise_id={world.b.enterprise_id}&action=list",
+    )
+    assert trail.status_code == 200, trail.text[:400]
+    assert any(
+        (entry.get("details") or {}).get("surface") == "accounts"
+        and entry["operator_user_id"] in world.a.enterprise_members
+        for entry in trail.json()["entries"]
+    ), f"the cross-enterprise account read is not in the trail: {trail.text[:400]}"
 
 
 async def test_the_grant_listing_filter_cannot_name_another_enterprise(wall_world):
@@ -5011,6 +5072,12 @@ SURFACE_INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
         "a grant row is operator-scoped, not tenant-scoped, and revoking one "
         "only REMOVES access — there is no cross-enterprise read to attack. The "
         "organization-admin arm is covered by the all-admin-routes battery.",
+    ),
+    ("GET", "/api/v1/admin/users"): (
+        _PROBED,
+        "the operator account list spans enterprises as metadata; its "
+        "caller-supplied enterprise filter is probed with B's id — B's accounts "
+        "listed not manageable and without roles, no B content",
     ),
     ("GET", "/api/v1/admin/users/{user_id}"): (
         _PROBED,

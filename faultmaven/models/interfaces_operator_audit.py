@@ -21,10 +21,24 @@ from typing import Any, Dict, List, Optional
 class OperatorAction(str, Enum):
     """What an operator did that this table has to remember.
 
-    Two are the metadata/content boundary D8/D9 governs. ``LIST`` is ambient
-    metadata (ids, org, state, timestamps, counts — never titles).
-    ``CONTENT_OPEN`` is tenant content: title, transcript, evidence. Title
-    counts as content because it is user free-text and leaks.
+    Two are the metadata/content boundary D8/D9 governs. ``CONTENT_OPEN`` is
+    tenant content: title, transcript, evidence — data the service holds on a
+    customer's behalf, reachable only behind break-glass. Title counts as
+    content because it is user free-text and leaks.
+
+    ``LIST`` is a cross-tenant list of operator metadata, and covers two
+    surfaces, told apart by ``details.surface``:
+
+    * ``"cases"`` — the case list: ids, enterprise, state, timestamps, counts,
+      never a title or any other text a user typed into a case.
+    * ``"accounts"`` — the account list. It does carry user free-text: each
+      account's email address and display name. That is deliberate. Account
+      records — who holds an account, in which enterprise, of which kind,
+      whether it is active — are the service's own operational data about its
+      users, not data it holds on a customer's behalf, which is what case
+      content is and why it stays behind break-glass. The operator needs them
+      to run the service, and the list carries nothing else: no credential,
+      SSO subject, token, preference or role.
 
     ``ROLE_GRANTED`` / ``ROLE_REVOKED`` are not data access — they record
     changes to *who is an operator*. They live here because ``platform_admin``
