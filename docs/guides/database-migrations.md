@@ -44,6 +44,30 @@ past that it logs `Alembic migration timed out after 60 seconds` and raises
 `RuntimeError`, and the app does not start. A failed migration stops the boot the
 same way.
 
+### PostgreSQL: no one but the schema's owner creates in `public`
+
+On PostgreSQL, `PUBLIC` must not hold `CREATE` on schema `public`. A role that
+may create there can define a function or operator that another session —
+one running with the owner's or a maintenance role's rights, with `public` on
+its `search_path` — resolves in preference to PostgreSQL's own (see
+[Migration History](#migration-history) for why). A database created by
+PostgreSQL 15 or later starts that way; one whose cluster was initialised by 14
+or earlier grants `CREATE` on `public` to every role, and keeps that grant
+through `pg_upgrade` or a dump and restore onto a newer server.
+
+Revision `005_definer_search_path_without_public` revokes it when the migrating
+role can — a superuser, or a role that holds the privileges of the schema's
+owner. When it cannot, the migration still succeeds and the server logs a
+`WARNING`; the schema's owner or a superuser then runs:
+
+```sql
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+```
+
+To check a database: `SELECT has_schema_privilege('public', 'public', 'CREATE');`
+returns `false` once it holds. The migrating role keeps its own `CREATE` on
+`public` through ownership; the runtime role never needs it.
+
 ## Quick Start
 
 Run Alembic from the repository root, where `alembic.ini` lives.
@@ -556,13 +580,20 @@ written the same way:
   `text`, or with another `character varying`, matches no `pg_catalog`
   operator exactly, so with `public` on the path a role that may create in
   `public` could define that `=` there and have the body run it with the
-  owner's rights. A cluster initialised by PostgreSQL 15 or later grants no one
-  but the database owner `CREATE` on `public`; one initialised by 14 or earlier
-  grants it to every role, and keeps that grant through `pg_upgrade` or a dump
-  and restore onto a newer server. `pg_temp` is listed **last**
-  because, when it is not listed, PostgreSQL searches it **first** for
-  relation and type names — a caller's temporary table would stand in for one
-  the body names. It is never searched for functions or operators.
+  owner's rights. The same holds for an aggregate: `pg_catalog` has only a
+  polymorphic `array_agg`, so `public.array_agg(text)` would win. A cluster
+  initialised by PostgreSQL 15 or later grants no one but the database owner
+  `CREATE` on `public`; one initialised by 14 or earlier grants it to every
+  role, and keeps that grant through `pg_upgrade` or a dump and restore onto a
+  newer server ([who may create in `public`](#postgresql-no-one-but-the-schemas-owner-creates-in-public)).
+- `pg_temp` listed, **last**. PostgreSQL searches the temporary schema for
+  relation **and type** names, and when it is not listed it searches it
+  **first** — before `pg_catalog`. With the relations qualified, it is the type
+  names it still guards: `::text`, `'{}'::integer[]` and a plpgsql
+  `DECLARE … text` are unqualified, and with `pg_temp` unlisted a caller's
+  `CREATE DOMAIN pg_temp.text AS integer` would stand in for `text` inside the
+  body. Listed last, it is searched after `pg_catalog`. It is never searched
+  for functions or operators. It is not redundant: do not drop it.
 - Every relation schema-qualified (`public.cases`, `public.users`, …). With
   `public` off the path an unqualified name does not resolve, or resolves to a
   caller's temporary table.
@@ -574,11 +605,15 @@ written the same way:
 functions — the baseline's trigger guards
 (`organization_members_last_admin_guard`, `team_members_same_enterprise_guard`)
 and 003's operator reads — this way, with `CREATE OR REPLACE`, which keeps each
-function's owner, grants, comment and triggers.
+function's owner, grants, comment and triggers. It refuses to run unless all
+four exist in `public` (on a missing one `CREATE OR REPLACE` would create it,
+executable by `PUBLIC`), re-states 003's grants, and takes `CREATE` on `public`
+away from `PUBLIC` where it can.
 `tests/integration/test_rls_tenant_isolation.py` asserts both settings of every
-definer function in the schema, so a new one is held to them without being
-listed; `tests/integration/security/test_definer_functions_postgres.py` plants
-operators in `public` and shows that no definer body runs them.
+definer function in the database, in any schema, so a new one is held to them
+without being listed; `tests/integration/security/test_definer_functions_postgres.py`
+plants operators and aggregates in `public` and shows that no definer body runs
+them.
 
 Run `alembic heads` for the current head. Do not copy a revision id from prose:
 a lane that parents a new migration onto a revision read from a document

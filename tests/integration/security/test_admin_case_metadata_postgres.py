@@ -43,16 +43,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import subprocess
-import sys
 import uuid
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
@@ -60,7 +56,10 @@ from faultmaven.config.tenant_context import set_current_enterprise_id
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from tests.integration.security.conftest import (
     CASE_METADATA_FUNCTIONS,
+    RUNTIME_ROLE,
+    alembic_on,
     create_limited_role,
+    database_of_its_own,
     drop_limited_role,
     drop_role_sql,
     limited_url,
@@ -78,11 +77,8 @@ pytestmark = [
 
 _ROLE = f"fm_casemeta_probe_{uuid.uuid4().hex[:8]}"
 _PW = "fm_casemeta_probe_pw"
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _BASELINE_REVISION = "a1e0c17bd001"
 _LEDGER_REVISION = "65913afe773c"  # 002_llm_usage_ledger, 003's parent
-#: The deployment's runtime role, which revision 003 grants EXECUTE by name.
-_RUNTIME_ROLE = "faultmaven_app"
 
 #: Every fixture case is updated "in 2099", so the fixtures lead the
 #: newest-first order ahead of any row another module left in the shared
@@ -1302,46 +1298,16 @@ async def test_a_role_without_the_grant_gets_a_503_not_a_partial_list(
         await drop_limited_role(limited_role_env, role)
 
 
-def _alembic(url: str, command: str) -> subprocess.CompletedProcess:
-    env = dict(os.environ, DATABASE_URL=url)
-    env["PYTHONPATH"] = f"{_PROJECT_ROOT}{os.pathsep}{env.get('PYTHONPATH', '')}"
-    return subprocess.run(
-        [sys.executable, "-m", "alembic", *command.split()],
-        cwd=_PROJECT_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-
-
 async def test_revision_003_steps_down_and_up(limited_role_env):
     """In a database of its own: downgrading the shared one would pull the
     functions out from under every other test in the lane.
 
     With the runtime role present, so the migration's grant branch runs — the
     shared database was migrated before any such role existed, which exercises
-    the other one. The role is cluster-wide: it is created only if absent, and
-    dropped only if this test created it."""
-    name = f"fm_casemeta_updown_{uuid.uuid4().hex[:8]}"
-    admin = create_async_engine(
-        limited_role_env, future=True, isolation_level="AUTOCOMMIT"
-    )
-    url = (
-        make_url(limited_role_env)
-        .set(database=name)
-        .render_as_string(hide_password=False)
-    )
-    async with admin.connect() as conn:
-        created_runtime_role = not (
-            await conn.execute(
-                text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :r)"),
-                {"r": _RUNTIME_ROLE},
-            )
-        ).scalar()
-        if created_runtime_role:
-            await conn.execute(text(f"CREATE ROLE {_RUNTIME_ROLE} NOLOGIN"))
-        await conn.execute(text(f'CREATE DATABASE "{name}"'))
-    try:
+    the other one."""
+    async with database_of_its_own(
+        limited_role_env, "fm_casemeta_updown", runtime_role=True
+    ) as url:
 
         async def runtime_role_may_execute():
             engine = create_async_engine(url, future=True)
@@ -1354,7 +1320,7 @@ async def test_revision_003_steps_down_and_up(limited_role_env):
                                     "SELECT has_function_privilege(:r, "
                                     "CAST(:f AS regprocedure), 'EXECUTE')"
                                 ),
-                                {"r": _RUNTIME_ROLE, "f": signature},
+                                {"r": RUNTIME_ROLE, "f": signature},
                             )
                         ).scalar()
                         for signature in CASE_METADATA_FUNCTIONS
@@ -1392,27 +1358,21 @@ async def test_revision_003_steps_down_and_up(limited_role_env):
 
         both = {"admin_case_metadata_page", "admin_case_metadata_count"}
 
-        result = _alembic(url, "upgrade head")
+        result = alembic_on(url, "upgrade head")
         assert result.returncode == 0, result.stderr[-2000:]
         assert await functions_and_ledger() == (both, 1)
         assert await runtime_role_may_execute() == [True, True]
 
         # To 003's parent, stepping over whatever was added after it.
-        result = _alembic(url, f"downgrade {_LEDGER_REVISION}")
+        result = alembic_on(url, f"downgrade {_LEDGER_REVISION}")
         assert result.returncode == 0, result.stderr[-2000:]
         # Only what 003 added went; 002's ledger is still there.
         assert await functions_and_ledger() == (set(), 1)
 
-        result = _alembic(url, "upgrade head")
+        result = alembic_on(url, "upgrade head")
         assert result.returncode == 0, result.stderr[-2000:]
         assert await functions_and_ledger() == (both, 1)
 
-        result = _alembic(url, f"downgrade {_BASELINE_REVISION}")
+        result = alembic_on(url, f"downgrade {_BASELINE_REVISION}")
         assert result.returncode == 0, result.stderr[-2000:]
         assert await functions_and_ledger() == (set(), 0)
-    finally:
-        async with admin.connect() as conn:
-            await conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
-            if created_runtime_role:
-                await conn.execute(text(f"DROP ROLE IF EXISTS {_RUNTIME_ROLE}"))
-        await admin.dispose()

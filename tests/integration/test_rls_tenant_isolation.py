@@ -995,25 +995,37 @@ async def test_every_definer_function_searches_only_pg_catalog_and_pg_temp(
     * ``search_path`` must be exactly ``pg_catalog, pg_temp``. No other schema:
       PostgreSQL resolves a function or operator by argument types before path
       position, so any schema a caller can create in — ``public`` included —
-      could supply an exact-match operator the body runs with the owner's rights
+      could supply an exact match the body runs with the owner's rights
       (``tests/integration/security/test_definer_functions_postgres.py`` plants
-      one). ``pg_temp`` listed, last: unlisted, it is searched FIRST for
-      relations, and a caller's temporary table would stand in for a real one.
-      The bodies therefore schema-qualify every relation.
+      them). ``pg_temp`` listed, last: unlisted, it is searched FIRST for
+      relation and type names, and a caller's temporary table or type would
+      stand in for a real one. The bodies therefore schema-qualify every
+      relation, and leave type names to ``pg_catalog``.
     * ``row_security`` must be ``off``. The bodies rely on the owner's exemption
       from row-level security; ``off`` makes losing it an error instead of a
       silently filtered read.
 
-    Asserted of every definer function in the schema rather than of a list, so
-    the next one added is held to it without anyone remembering to add it here.
+    Asserted of every definer function in every schema the database holds —
+    not of a list, and not of ``public`` alone — so the next one is held to it
+    wherever it is created, without anyone remembering to add it here. The
+    system schemas are PostgreSQL's own; an extension's functions are its
+    author's; a ``pg_temp_N`` schema belongs to one session.
     """
     async with superuser_engine.connect() as conn:
         rows = (
             await conn.execute(
                 text(
-                    "SELECT p.proname, coalesce(p.proconfig, '{}') "
+                    "SELECT n.nspname || '.' || p.proname, "
+                    "coalesce(p.proconfig, '{}') "
                     "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
-                    "WHERE p.prosecdef AND n.nspname = 'public' ORDER BY 1"
+                    "WHERE p.prosecdef "
+                    "AND n.nspname NOT IN ('pg_catalog', 'information_schema') "
+                    "AND n.nspname NOT LIKE 'pg\\_toast%' "
+                    "AND n.nspname NOT LIKE 'pg\\_temp\\_%' "
+                    "AND NOT EXISTS (SELECT 1 FROM pg_depend d "
+                    "WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid "
+                    "AND d.deptype = 'e') "
+                    "ORDER BY 1"
                 )
             )
         ).all()
@@ -1022,10 +1034,10 @@ async def test_every_definer_function_searches_only_pg_catalog_and_pg_temp(
     # The baseline's two trigger guards and revision 003's two operator reads at
     # least — an empty result would make every assertion below vacuous.
     assert {
-        "organization_members_last_admin_guard",
-        "team_members_same_enterprise_guard",
-        "admin_case_metadata_page",
-        "admin_case_metadata_count",
+        "public.organization_members_last_admin_guard",
+        "public.team_members_same_enterprise_guard",
+        "public.admin_case_metadata_page",
+        "public.admin_case_metadata_count",
     } <= names
     for name, config in rows:
         settings = dict(entry.split("=", 1) for entry in config)

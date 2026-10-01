@@ -14,16 +14,22 @@ search-path position: an exact match in ANY schema on the path wins over a
 ``pg_catalog`` candidate that needs an implicit cast, wherever ``pg_catalog``
 sits. The bodies compare ``character varying`` columns with ``text``
 (``k.state = p_state``, ``organization_id = v_org_id``) and with each other
-(``team_id = NEW.team_id``), and ``pg_catalog`` has no ``=`` for either pair of
-types. With ``public`` on the path, a role that may create in ``public`` could
-define one there and have the body run it with the owner's rights. A cluster
+(``team_id = NEW.team_id``), and aggregate with ``array_agg``; ``pg_catalog``
+has no ``=`` for either pair of types and only a polymorphic ``array_agg``. With
+``public`` on the path, a role that may create in ``public`` could define an
+exact match there and have the body run it with the owner's rights. A cluster
 initialised by PostgreSQL 15 or later grants no one but the database owner
 ``CREATE`` on ``public``; one initialised by 14 or earlier grants it to every
 role, and keeps that grant through ``pg_upgrade`` or a dump and restore onto a
-newer server. ``pg_temp`` is listed so that it is searched LAST for
-relations — left out, it is searched FIRST, and a caller's temporary table
-would stand in for one the body names. It is never searched for functions or
-operators.
+newer server.
+
+``pg_temp`` is listed, LAST, because it is searched for relation AND type
+names, and when it is not listed it is searched for them FIRST — even before
+``pg_catalog``. The relations are qualified, but the type names are not
+(``::text``, ``'{}'::integer[]``, the plpgsql ``DECLARE … text``): with
+``pg_temp`` unlisted, a caller's ``CREATE DOMAIN pg_temp.text AS integer``
+would stand in for ``text`` inside the body. Listed last, it is searched after
+``pg_catalog``. It is never searched for functions or operators.
 
 Relations schema-qualified (``public.cases``, ``public.resource_shares``,
 ``public.teams``, ``public.users``, ``public.organizations``,
@@ -39,13 +45,29 @@ The bodies are frozen copies of 001's and 003's, written out here rather than
 imported, because migrations are history. They differ from those only in the
 ``public.`` qualifiers and in line breaks;
 ``tests/unit/infrastructure/persistence/test_definer_search_path_migration.py``
-asserts exactly that. ``CREATE OR REPLACE`` keeps each function's OID, so its
-owner, its grants (003's ``EXECUTE`` for ``faultmaven_app`` and none for
-``PUBLIC``), its comment and the triggers that call it carry over; the
-signatures and result types are unchanged, which ``CREATE OR REPLACE`` requires.
-Unlike revision 004's ``ALTER FUNCTION … SET``, ``CREATE OR REPLACE`` also needs
-``CREATE`` on schema ``public`` — which the migrating role holds wherever it
-created the tables there, as every later revision that adds a table requires.
+asserts exactly that, and that every relation is qualified and nothing else is.
+
+``CREATE OR REPLACE`` keeps each function's OID, so its owner, its grants, its
+comment and the triggers that call it carry over; the signatures and result
+types are unchanged, which ``CREATE OR REPLACE`` requires. On a function that
+does not exist it would instead CREATE one — executable by ``PUBLIC``, with no
+comment — so the upgrade first refuses unless all four exist in ``public``, and
+afterwards re-states 003's grants on its two reads (``EXECUTE`` revoked from
+``PUBLIC``, granted to ``faultmaven_app`` when that role exists), which is a
+no-op wherever they already hold. Unlike revision 004's ``ALTER FUNCTION … SET``,
+``CREATE OR REPLACE`` also needs ``CREATE`` on schema ``public`` — which the
+migrating role holds wherever it created the tables there, as every later
+revision that adds a table requires.
+
+``PUBLIC`` loses ``CREATE`` on schema ``public``. The definer functions are not
+the only sessions that run with the owner's or another privileged role's
+rights and ``public`` on their path: a maintenance or migration session
+comparing ``enterprise_id = $1`` would pick a planted ``=`` just the same. So
+where ``PUBLIC`` holds ``CREATE`` on ``public`` and the migrating role can
+revoke it without losing its own — it is a superuser, or holds the privileges
+of the schema's owner — the upgrade runs ``REVOKE CREATE ON SCHEMA public FROM
+PUBLIC``. Where it cannot, the upgrade succeeds and raises a ``WARNING`` naming
+that command for the schema's owner to run.
 
 ``downgrade()`` restores the path revision 004 left on all four functions,
 ``pg_catalog, public, pg_temp``; ``row_security = off`` is already what 004
@@ -53,9 +75,12 @@ left. It keeps the qualified bodies. Under 004's path, which lists ``public``
 before ``pg_temp``, ``public.cases`` and ``cases`` name the same table in every
 session, so the functions behave exactly as 004's did; restoring the
 unqualified text would change nothing but add a second copy of every body here.
+It never grants ``CREATE`` on ``public`` back to ``PUBLIC``: whether ``PUBLIC``
+held it before is not recorded, and granting it would reopen what the upgrade
+closed.
 
-SQLite has no definer functions (its triggers are plain DDL), so the revision is
-a no-op there in both directions.
+SQLite has no definer functions (its triggers are plain DDL) and no schema
+privileges, so the revision is a no-op there in both directions.
 
 Revision ID: 1c5a2ad13a65
 Revises: 14d4bfdd406e
@@ -73,17 +98,20 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 #: The path every definer function runs under. Asserted of every definer
-#: function in the schema by ``tests/integration/test_rls_tenant_isolation.py``.
+#: function in the database by ``tests/integration/test_rls_tenant_isolation.py``.
 SEARCH_PATH = "pg_catalog, pg_temp"
 
-_CREATE_LAST_ADMIN_GUARD = """
-CREATE OR REPLACE FUNCTION public.organization_members_last_admin_guard()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog, pg_temp
-SET row_security = off
-AS $$
+#: The path revision 004 left on all four, restored on downgrade.
+_PRE_005_SEARCH_PATH = "pg_catalog, public, pg_temp"
+
+#: The runtime role revision 003 grants ``EXECUTE`` on its two reads.
+RUNTIME_ROLE = "faultmaven_app"
+
+# The bodies, frozen: 001's two trigger guards and 003's two reads, with every
+# relation qualified. Everything around them — signature, settings — is built
+# by ``_create`` from ``_FUNCTIONS`` below.
+
+_LAST_ADMIN_GUARD_BODY = """
 DECLARE
     v_org_id      text;
     v_org_rows    integer;
@@ -144,17 +172,9 @@ BEGIN
 
     RETURN NULL;
 END;
-$$;
 """
 
-_CREATE_TEAM_MEMBER_GUARD = """
-CREATE OR REPLACE FUNCTION public.team_members_same_enterprise_guard()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog, pg_temp
-SET row_security = off
-AS $$
+_TEAM_MEMBER_GUARD_BODY = """
 DECLARE
     v_team_enterprise text;
     v_user_enterprise text;
@@ -181,17 +201,11 @@ BEGIN
 
     RETURN NEW;
 END;
-$$;
 """
 
-_CREATE_PAGE_FUNCTION = """
-CREATE OR REPLACE FUNCTION public.admin_case_metadata_page(
-    p_state text,
-    p_source text,
-    p_limit bigint,
-    p_offset bigint
-)
-RETURNS TABLE (
+#: The page's declared result: system ids, closed-vocabulary strings,
+#: timestamps, integers, booleans and arrays of those — 003's, unchanged.
+_PAGE_RESULT = """TABLE (
     case_id text,
     enterprise_id text,
     organization_id text,
@@ -213,13 +227,9 @@ RETURNS TABLE (
     turn_numbers integer[],
     turn_is_out_of_band boolean[],
     shared_team_ids text[]
-)
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-SET search_path = pg_catalog, pg_temp
-SET row_security = off
-AS $$
+)"""
+
+_PAGE_BODY = """
     WITH page AS (
         -- The page on narrow columns: the sort carries no JSON, and only the
         -- page's rows are joined back below. case_id breaks updated_at ties.
@@ -357,61 +367,170 @@ AS $$
            AND s.enterprise_id = c.enterprise_id
     ) AS teams ON true
      ORDER BY p.updated_at DESC, p.case_id
-$$
 """
 
-_CREATE_COUNT_FUNCTION = """
-CREATE OR REPLACE FUNCTION public.admin_case_metadata_count(
-    p_state text,
-    p_source text
-)
-RETURNS bigint
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-SET search_path = pg_catalog, pg_temp
-SET row_security = off
-AS $$
+_COUNT_BODY = """
     SELECT count(*)
       FROM public.cases AS k
      WHERE (p_state IS NULL OR k.state = p_state)
        AND (p_source IS NULL OR k.source = p_source)
-$$
 """
 
-#: In the order they are re-created: each one whole, settings included.
-_CREATE_FUNCTIONS = (
-    _CREATE_LAST_ADMIN_GUARD,
-    _CREATE_TEAM_MEMBER_GUARD,
-    _CREATE_PAGE_FUNCTION,
-    _CREATE_COUNT_FUNCTION,
+
+#: Every definer function, by name: its arguments as declared, what it returns,
+#: its language and volatility, and its body. The one place each is stated —
+#: the DDL, the signatures and the existence check are all built from it.
+_FUNCTIONS = {
+    "organization_members_last_admin_guard": (
+        (),
+        "TRIGGER",
+        "plpgsql",
+        "VOLATILE",
+        _LAST_ADMIN_GUARD_BODY,
+    ),
+    "team_members_same_enterprise_guard": (
+        (),
+        "TRIGGER",
+        "plpgsql",
+        "VOLATILE",
+        _TEAM_MEMBER_GUARD_BODY,
+    ),
+    "admin_case_metadata_page": (
+        (
+            ("p_state", "text"),
+            ("p_source", "text"),
+            ("p_limit", "bigint"),
+            ("p_offset", "bigint"),
+        ),
+        _PAGE_RESULT,
+        "sql",
+        "STABLE",
+        _PAGE_BODY,
+    ),
+    "admin_case_metadata_count": (
+        (("p_state", "text"), ("p_source", "text")),
+        "bigint",
+        "sql",
+        "STABLE",
+        _COUNT_BODY,
+    ),
+}
+
+#: Revision 003's reads, whose grants the upgrade re-states.
+_READS = ("admin_case_metadata_page", "admin_case_metadata_count")
+
+
+def _signature(name: str) -> str:
+    """``public.name(types)``, as GRANT, ALTER FUNCTION and to_regprocedure
+    name a function."""
+    arguments = _FUNCTIONS[name][0]
+    return f"public.{name}({', '.join(kind for _, kind in arguments)})"
+
+
+def _create(name: str) -> str:
+    """The ``CREATE OR REPLACE`` that gives ``name`` its body and settings."""
+    arguments, returns, language, volatility, body = _FUNCTIONS[name]
+    declared = ", ".join(f"{argument} {kind}" for argument, kind in arguments)
+    return (
+        f"CREATE OR REPLACE FUNCTION public.{name}({declared})\n"
+        f"RETURNS {returns}\n"
+        f"LANGUAGE {language}\n"
+        f"{volatility}\n"
+        "SECURITY DEFINER\n"
+        f"SET search_path = {SEARCH_PATH}\n"
+        "SET row_security = off\n"
+        f"AS $${body}$$"
+    )
+
+
+#: Refuses the upgrade unless every function exists where 001 and 003 created
+#: it: ``CREATE OR REPLACE`` on a missing one would create it executable by
+#: PUBLIC. Function calls are ``pg_catalog``-qualified: this runs in the
+#: migrating session, whose path includes ``public``.
+_REQUIRE_EXISTING = (
+    "DO $$\nDECLARE\n    v_missing text;\nBEGIN\n"
+    + "".join(
+        f"    IF pg_catalog.to_regprocedure('{_signature(name)}') IS NULL THEN\n"
+        f"        v_missing := pg_catalog.concat_ws("
+        f"', ', v_missing, '{_signature(name)}');\n"
+        "    END IF;\n"
+        for name in _FUNCTIONS
+    )
+    + "    IF v_missing IS NOT NULL THEN\n"
+    "        RAISE EXCEPTION 'revision 005 re-creates functions that do not "
+    "exist: %', v_missing\n"
+    "            USING HINT = 'CREATE OR REPLACE would create them executable by "
+    "PUBLIC. Migrate this database from revision 001 so that they exist in "
+    "schema public.';\n"
+    "    END IF;\nEND\n$$"
 )
 
-#: Every function this revision re-creates, by signature.
-_SIGNATURES = (
-    "public.organization_members_last_admin_guard()",
-    "public.team_members_same_enterprise_guard()",
-    "public.admin_case_metadata_page(text, text, bigint, bigint)",
-    "public.admin_case_metadata_count(text, text)",
+#: Revision 003's grant to the runtime role, re-stated: guarded on the role
+#: existing, as 003's is.
+_GRANT_TO_RUNTIME_ROLE = (
+    "DO $$\nBEGIN\n"
+    f"    IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = "
+    f"'{RUNTIME_ROLE}') THEN\n"
+    + "".join(
+        f"        GRANT EXECUTE ON FUNCTION {_signature(name)} TO {RUNTIME_ROLE};\n"
+        for name in _READS
+    )
+    + "    END IF;\nEND\n$$"
 )
 
-#: The path revision 004 left on all four, restored on downgrade.
-_PRE_005_SEARCH_PATH = "pg_catalog, public, pg_temp"
+#: The command the schema's owner runs where the migrating role cannot.
+REVOKE_PUBLIC_CREATE = "REVOKE CREATE ON SCHEMA public FROM PUBLIC"
+
+#: ``PUBLIC`` loses ``CREATE`` on ``public`` when it holds it and the migrating
+#: role keeps its own: ``pg_has_role(…, 'USAGE')`` is true for a superuser and
+#: for a role that holds the owner's privileges (a ``NOINHERIT`` member of the
+#: owning role does not — it would be left creating through ``PUBLIC`` alone).
+#: Otherwise a WARNING names the command. The role name ``public`` in
+#: ``has_schema_privilege`` is the ``PUBLIC`` pseudo-role.
+_REVOKE_OR_WARN = f"""DO $$
+DECLARE
+    v_owner oid;
+BEGIN
+    SELECT n.nspowner INTO v_owner
+      FROM pg_catalog.pg_namespace AS n
+     WHERE n.nspname = 'public';
+    IF v_owner IS NULL
+       OR NOT pg_catalog.has_schema_privilege('public', 'public', 'CREATE') THEN
+        RETURN;
+    END IF;
+    IF pg_catalog.pg_has_role(current_user, v_owner, 'USAGE') THEN
+        {REVOKE_PUBLIC_CREATE};
+    ELSE
+        RAISE WARNING 'PUBLIC holds CREATE on schema public, so every role can '
+            'define functions and operators there that privileged sessions '
+            'resolve by argument type. As the owner of schema public or a '
+            'superuser, run: {REVOKE_PUBLIC_CREATE};';
+    END IF;
+END
+$$"""
 
 
 def upgrade() -> None:
-    """Re-create all four definer functions; SQLite has none."""
+    """Re-create all four definer functions and close ``public`` to ``PUBLIC``;
+    SQLite has neither."""
     if op.get_context().dialect.name != "postgresql":
         return
-    for ddl in _CREATE_FUNCTIONS:
-        op.execute(ddl)
+    op.execute(_REQUIRE_EXISTING)
+    for name in _FUNCTIONS:
+        op.execute(_create(name))
+    for name in _READS:
+        op.execute(f"REVOKE ALL ON FUNCTION {_signature(name)} FROM PUBLIC")
+    op.execute(_GRANT_TO_RUNTIME_ROLE)
+    op.execute(_REVOKE_OR_WARN)
 
 
 def downgrade() -> None:
-    """Restore 004's path; ``row_security = off`` and the bodies stay."""
+    """Restore 004's path. ``row_security = off``, the bodies, the grants and
+    the closed ``public`` all stay."""
     if op.get_context().dialect.name != "postgresql":
         return
-    for signature in _SIGNATURES:
+    for name in _FUNCTIONS:
         op.execute(
-            f"ALTER FUNCTION {signature} SET search_path = {_PRE_005_SEARCH_PATH}"
+            f"ALTER FUNCTION {_signature(name)} "
+            f"SET search_path = {_PRE_005_SEARCH_PATH}"
         )
