@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ast
 import re
+import textwrap
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -450,7 +451,7 @@ def _flow_step(node: ast.AST) -> tuple[ast.AST, str | None] | None:
         and not parent.keywords
     ):
         return parent, None
-    if isinstance(parent, ast.FormattedValue) and not parent.format_spec:
+    if isinstance(parent, ast.FormattedValue) and parent.format_spec is None:
         joined = getattr(parent, "_fm_parent", None)
         if isinstance(joined, ast.JoinedStr) and len(joined.values) == 1:
             return joined, None  # ``f"{x}"`` is ``str(x)``
@@ -492,6 +493,29 @@ def _flow_top(node: ast.AST) -> tuple[ast.AST, list[str]]:
     return node, names
 
 
+def _escaping(func: ast.AST | None) -> frozenset[str]:
+    """Names *func* declares ``global`` or ``nonlocal`` anywhere in it. A
+    binding of one is no local: the value leaves the function."""
+    if func is None:
+        return frozenset()
+    return frozenset(
+        name
+        for node in ast.walk(func)
+        if isinstance(node, (ast.Global, ast.Nonlocal))
+        for name in node.names
+    )
+
+
+def _enclosing_def(node: ast.AST) -> ast.AST | None:
+    """The innermost ``def`` or ``lambda`` holding *node*."""
+    parent = getattr(node, "_fm_parent", None)
+    while parent is not None and not isinstance(
+        parent, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+    ):
+        parent = getattr(parent, "_fm_parent", None)
+    return parent
+
+
 def _uses(site: _Site) -> list[ast.AST]:
     """The read, plus every load of a local name bound to its VALUE in the
     same function (one hop).
@@ -502,8 +526,10 @@ def _uses(site: _Site) -> list[ast.AST]:
     ``a, b = v, y`` (equal lengths). A name bound to a CALL's result holds
     something else — ``data_type = unified_data_type_of(x)`` holds the
     boundary's output, and comparing that against ``UnifiedDataType.LOGS`` is
-    the boundary's normal use, not a parse of the column. Any other target
-    (an attribute, a subscript, ``+=``, a ``for``, a starred or mismatched
+    the boundary's normal use, not a parse of the column. A name the function
+    declares ``global`` or ``nonlocal`` is not followed: it is no local, and
+    binding it is a ``store`` (``_use_shape``). Any other target (an
+    attribute, a subscript, ``+=``, a ``for``, a starred or mismatched
     unpacking) is a use of its own, and fails as unlisted.
     """
     reached: list[ast.AST] = [site.node]
@@ -529,10 +555,11 @@ def _uses(site: _Site) -> list[ast.AST]:
             mine = target.elts[[e is top for e in parent.elts].index(True)]
             if isinstance(mine, ast.Name):
                 names.append(mine.id)
+    local = set(names) - _escaping(site.func)
     reached += [
         n
         for n in ast.walk(site.func)
-        if isinstance(n, ast.Name) and n.id in names and isinstance(n.ctx, ast.Load)
+        if isinstance(n, ast.Name) and n.id in local and isinstance(n.ctx, ast.Load)
     ]
     return reached
 
@@ -542,23 +569,36 @@ def _callee_name(call: ast.AST) -> str | None:
     return getattr(fn, "id", None) or getattr(fn, "attr", None)
 
 
-def _use_shape(use: ast.AST) -> str:
-    """What *use* hands the value to, once it stops flowing, as one word
-    ``_ALLOWED_USES`` can name.
+def _use_shape(use: ast.AST, func: ast.AST | None) -> str:
+    """What *use* — a use of a read's value in *func*, the read's function —
+    hands the value to once it stops flowing, as one word ``_ALLOWED_USES``
+    can name.
 
-    ``bind`` (a plain-name target ``_uses`` follows), ``fstring``, ``return``,
-    ``truthiness`` (the test of an ``if`` / ``while`` / ``assert`` /
-    ``a if c else b``, or ``not``), ``presence`` (``is`` / ``is not`` /
-    ``==`` / ``!=`` against ``None`` or ``""`` only), ``kw:<callee>``,
-    ``spread:<callee>`` and ``call:<callee>``; and, never allowed,
-    ``compare`` (any other comparison), ``store`` (a target ``_uses`` does
-    not follow), ``dict-key`` and ``callee``. Anything else is the parent's
-    node type — a method call is ``Attribute``, a subscript or slice
-    ``Subscript``, ``+=`` ``AugAssign``, a ``for`` ``For``, a comprehension's
-    iterable ``comprehension`` — and no node type is listed.
+    ``bind`` (a plain local name ``_uses`` follows), ``fstring`` (rendered
+    without a format spec), ``return`` (from *func* itself), ``truthiness``
+    (the test of an ``if`` / ``while`` / ``assert`` / ``a if c else b``, or
+    ``not``), ``presence`` (``is`` / ``is not`` / ``==`` / ``!=`` against
+    ``None`` or ``""`` only), ``kw:<callee>.<keyword>``, ``spread:<callee>``
+    and ``call:<callee>``; and, never allowed:
+
+    - ``fstring-spec`` — a format spec transforms the text (``:.4`` slices
+      it), so it neither flows nor counts as a label;
+    - ``return-nested`` — a ``return`` from a ``def`` nested in *func* hands
+      the value back to *func* itself;
+    - ``store`` — a target ``_uses`` does not follow, including a name *func*
+      declares ``global`` or ``nonlocal``;
+    - ``compare`` (any other comparison), ``dict-key`` and ``callee``.
+
+    Anything else is the parent's node type — a method call is
+    ``Attribute``, a subscript or slice ``Subscript``, ``+=`` ``AugAssign``, a
+    ``for`` ``For``, a comprehension's iterable ``comprehension`` — and no
+    node type is listed.
     """
-    top, _ = _flow_top(use)
+    top, walrus_names = _flow_top(use)
     parent = getattr(top, "_fm_parent", None)
+    escaping = _escaping(func)
+    if escaping.intersection(walrus_names):
+        return "store"
     if isinstance(parent, (ast.IfExp, ast.If, ast.While, ast.Assert)) and (
         parent.test is top
     ):
@@ -567,13 +607,15 @@ def _use_shape(use: ast.AST) -> str:
         return "truthiness"
     if isinstance(parent, ast.keyword):
         call = getattr(parent, "_fm_parent", None)
-        return f"{'kw' if parent.arg else 'spread'}:{_callee_name(call)}"
+        if parent.arg is None:
+            return f"spread:{_callee_name(call)}"
+        return f"kw:{_callee_name(call)}.{parent.arg}"
     if isinstance(parent, ast.Call):
         if any(arg is top for arg in parent.args):
             return f"call:{_callee_name(parent)}"
         return "callee"
     if isinstance(parent, ast.FormattedValue):
-        return "fstring"
+        return "fstring" if parent.format_spec is None else "fstring-spec"
     if isinstance(parent, (ast.Dict, ast.DictComp)):
         return "dict-key"  # a value would have flowed on
     if isinstance(parent, (ast.List, ast.Tuple, ast.Set)):
@@ -583,17 +625,22 @@ def _use_shape(use: ast.AST) -> str:
             and len(stmt.targets) == 1
             and len(stmt.targets[0].elts) == len(parent.elts)
             and all(isinstance(t, ast.Name) for t in stmt.targets[0].elts)
+            and not escaping.intersection(t.id for t in stmt.targets[0].elts)
         ):
             return "bind"
         return "store"
     if isinstance(parent, ast.Return):
-        return "return"
+        return "return" if _enclosing_def(parent) is func else "return-nested"
     if isinstance(parent, ast.Assign) and parent.value is top:
-        if all(isinstance(t, ast.Name) for t in parent.targets):
+        if all(
+            isinstance(t, ast.Name) and t.id not in escaping for t in parent.targets
+        ):
             return "bind"
         return "store"
     if isinstance(parent, ast.AnnAssign) and parent.value is top:
-        return "bind" if isinstance(parent.target, ast.Name) else "store"
+        if isinstance(parent.target, ast.Name) and parent.target.id not in escaping:
+            return "bind"
+        return "store"
     if isinstance(parent, ast.Compare):
         others = [s for s in [parent.left, *parent.comparators] if s is not top]
         if all(
@@ -611,15 +658,17 @@ def _use_shape(use: ast.AST) -> str:
 #: are the uses the 17 functions with a non-SQL read of the column make, so a
 #: use nobody listed — a parse in any shape, or a non-parse nobody has looked
 #: at — fails closed. Callees are trusted by NAME (``call:info`` is any
-#: ``….info(x)``); adding one is a claim about what that callee does.
+#: ``….info(x)``); adding one is a claim about what that callee does. A
+#: keyword names its parameter too: ``store_in_vector_db_background`` also
+#: takes ``data_type=``, an enum it calls ``.value`` on, and handing it the
+#: raw column there is a parse.
 _ALLOWED_USES: dict[str, str] = {
     "bind": "a plain local name; its own loads are checked in turn (one hop)",
     "fstring": "rendered among other text (what reads that text: stated limit)",
     "return": "handed to the caller, which is another function (stated limit)",
     "truthiness": "tested for presence, never for which value",
     "presence": "compared with None or the empty string, never with a type",
-    "kw:UploadedFile": "the column rebuilt from its own row, verbatim",
-    "spread:UploadedFile": "the column rebuilt from its own row, verbatim",
+    "kw:UploadedFile.data_type": "the column rebuilt from its own row, verbatim",
     "call:unified_data_type_of": "the read boundary itself, which takes both",
     "call:_attr": "context_builder/evidence.py's prompt attribute, verbatim",
     "call:_not_indexed": (
@@ -633,8 +682,8 @@ _ALLOWED_USES: dict[str, str] = {
         "repositories' rows, list_evidence_by_time's result rows"
     ),
     "call:execute": "bound as a SQL parameter: the column written back verbatim",
-    "kw:ToolResult": "a tool result's data, rendered for the model verbatim",
-    "kw:store_in_vector_db_background": (
+    "kw:ToolResult.data": "a tool result's data, rendered for the model verbatim",
+    "kw:store_in_vector_db_background.metadata": (
         "vectorize_file's chunk metadata (``file_data_type``), stored verbatim"
     ),
 }
@@ -651,14 +700,14 @@ def _disallowed_uses(site: _Site) -> list[str]:
         {
             f"{shape} (line {use.lineno})"
             for use in _uses(site)
-            if (shape := _use_shape(use)) not in _ALLOWED_USES
+            if (shape := _use_shape(use, site.func)) not in _ALLOWED_USES
         }
     )
 
 
 def _reaches_boundary(site: _Site) -> bool:
     """Whether a use of the site's value is ``unified_data_type_of(…)``."""
-    return any(_use_shape(use) == f"call:{_BOUNDARY}" for use in _uses(site))
+    return any(_use_shape(use, site.func) == f"call:{_BOUNDARY}" for use in _uses(site))
 
 
 _SVC = "modules/agent/domain/services/investigation_service/service.py"
@@ -1022,14 +1071,19 @@ def test_every_reader_of_uploaded_file_data_type_is_classified():
       name's own element of ``a, b = v, y``. A name holding a CALL's result
       is not followed: ``data_type = unified_data_type_of(x)`` holds the
       boundary's output, and ``data_type == UnifiedDataType.LOGS`` is that
-      output's normal use;
+      output's normal use. Nor is a name the function declares ``global``
+      or ``nonlocal``: it is no local, and binding it is a ``store``;
     - **to its uses**, each of which must be one ``_ALLOWED_USES`` names
-      with its reason: a binding, an f-string, a ``return``, a truth test, a
-      comparison with ``None`` or ``""``, ``unified_data_type_of(x)``,
-      ``UploadedFile(data_type=x)`` / ``UploadedFile(**…)``, a log call, and
-      the verbatim sinks the classified functions use (a list ``append``, a
-      SQL parameter, a tool result, chunk metadata, two label helpers).
-      Anything else fails — a parse in any spelling, and equally a
+      with its reason: a binding, an f-string WITHOUT a format spec, a
+      ``return`` from the function itself (not from a ``def`` nested in
+      it), a truth test, a comparison with ``None`` or ``""``,
+      ``unified_data_type_of(x)``, ``UploadedFile(data_type=x)``, a log
+      call, and the verbatim sinks the classified functions use (a list
+      ``append``, a SQL parameter, a tool result's ``data=``, chunk
+      ``metadata=``, two label helpers). A keyword is named with its
+      callee: ``store_in_vector_db_background(metadata=…)`` is allowed and
+      ``store_in_vector_db_background(data_type=…)``, an enum parameter, is
+      not. Anything else fails — a parse in any spelling, and equally a
       non-parse nobody has looked at (``x == previous``, ``x.replace(…)``,
       ``len(x)``). The fix is to go through the boundary, or to name the use
       with the reason it is not a parse.
@@ -1061,9 +1115,18 @@ def test_every_reader_of_uploaded_file_data_type_is_classified():
     - allowed callees are trusted by NAME: ``call:append`` is any
       ``….append(x)``, ``call:info`` any ``….info(x)`` — so a list appended
       to and then parsed in the same function passes;
+    - a field of an object built from the value, read back:
+      ``res = ToolResult(data={"t": x})`` then
+      ``UnifiedDataType(res.data["t"])`` passes, since ``data=`` is allowed
+      and ``res`` holds a call's result. 0 today;
     - text built AROUND the value: ``fstring`` is allowed whatever consumes
-      the text, so ``UnifiedDataType(f"{x}_and_errors")`` passes. 0 today:
-      the only two are ``generate_implicit_query``'s returned prompt text;
+      the text, so ``UnifiedDataType(f"{x}_and_errors")`` passes, and so does
+      empty text (``f"{x}{''}"``). 0 today: the only two are
+      ``generate_implicit_query``'s returned prompt text;
+    - a ``match`` class pattern on the row: ``match uf: case
+      UploadedFile(data_type="logs")`` reads the column with no
+      ``data_type`` load, so ``_scan`` finds no read at all. 0 today: the
+      package has no ``match`` statement;
     - dataflow beyond the one hop above (``b = a`` after ``a = x.data_type``);
     - a one-vocabulary predicate in SQL text (``WHERE data_type IN ('logs',
       …)``). 0 today: the two SQL texts with ``data_type`` before ``=`` are
@@ -1140,9 +1203,10 @@ def test_every_reader_of_uploaded_file_data_type_is_classified():
 #:
 #: A row ``fails`` when a use of the value is one ``_ALLOWED_USES`` does not
 #: name: every parse (P: the first probe's positives; M: shapes a review found
-#: the first, deny-list rule missed; R: the review's added rows), and every
-#: non-parse nobody has listed (U), which fails closed rather than being
-#: guessed at.
+#: the first, deny-list rule missed; R: the review's added rows; D: what the
+#: defeat pass on the allow-list found), and every non-parse nobody has
+#: listed (U), which fails closed rather than being guessed at. A body may
+#: span lines (a nested ``def``).
 _PROBE_FAILS = {
     "P0-get": 'data_type_label = {"a": "b"}.get(uf.data_type) or "u"',
     "P1-get-str-lower": (
@@ -1298,15 +1362,55 @@ _PROBE_FAILS = {
     ),
     "U16-dict-keyword-label": "data_type_label = dict(label=uf.data_type)",
     "U17-logger-keyword": "data_type_label = log(extra=uf.data_type)",
+    "D1a-format-spec-then-parse": (
+        'data_type_label = UnifiedDataType(f"{uf.data_type:s}")'
+    ),
+    "D1b-empty-format-spec-then-parse": (
+        'data_type_label = UnifiedDataType(f"{uf.data_type:}")'
+    ),
+    "D1c-conversion-and-empty-spec-then-parse": (
+        'data_type_label = UnifiedDataType(f"{uf.data_type!s:}")'
+    ),
+    "D1d-format-spec-slice-eq": (
+        'data_type_label = "L" if f"{uf.data_type:.4}" == "logs" else "x"'
+    ),
+    "D1e-format-spec-bound-then-parse": (
+        'dt = f"{uf.data_type:s}"; data_type_label = UnifiedDataType(dt)'
+    ),
+    "D2a-store-enum-keyword": (
+        "data_type_label = store_in_vector_db_background(data_type=uf.data_type)"
+    ),
+    "D2b-uploaded-file-other-keyword": (
+        "data_type_label = UploadedFile(label=uf.data_type)"
+    ),
+    "D3-closure-return-then-parse": (
+        "dt = uf.data_type\n"
+        "def _stored():\n"
+        "    return dt\n"
+        "data_type_label = UnifiedDataType(_stored())"
+    ),
+    "D4a-global-store": (
+        "global _LAST_TYPE; _LAST_TYPE = uf.data_type; data_type_label = _LAST_TYPE"
+    ),
+    "D4b-nonlocal-store-from-closure": (
+        "dt = uf.data_type\n"
+        "out = None\n"
+        "def _keep():\n"
+        "    nonlocal out\n"
+        "    out = dt\n"
+        "_keep()\n"
+        "data_type_label = UnifiedDataType(out)"
+    ),
+    "D4c-global-walrus": (
+        'global _LAST_TYPE; data_type_label = (_LAST_TYPE := uf.data_type) or "u"'
+    ),
 }
 
 #: A row ``passes`` when every use of the value is one ``_ALLOWED_USES``
 #: names (A): the shapes the classified readers really use, so that removing
-#: any flow step, use shape or allowed entry fails a row here — all but
-#: ``spread:UploadedFile``, whose row would hold a second read (the
-#: ``construct_spread`` site itself). R1 is the boundary's OUTPUT bound to a
-#: name and compared with an enum member: that output's normal use, and no
-#: read of the column.
+#: any flow step, use shape or allowed entry fails a row here. R1 is the
+#: boundary's OUTPUT bound to a name and compared with an enum member: that
+#: output's normal use, and no read of the column.
 _PROBE_PASSES = {
     "A1-todays-label": 'data_type_label = uf.data_type or "unclassified data"',
     "A2-str-label": 'data_type_label = str(uf.data_type) or "u"',
@@ -1324,7 +1428,9 @@ _PROBE_PASSES = {
     "A10-bare-fstring": 'data_type_label = f"{uf.data_type}"',
     "A11-return": "return uf.data_type",
     "A12-if-test": 'if uf.data_type: data_type_label = "x"',
-    "A13-uploaded-file-keyword": "data_type_label = UploadedFile(label=uf.data_type)",
+    "A13-uploaded-file-keyword": (
+        "data_type_label = UploadedFile(data_type=uf.data_type)"
+    ),
     "A14-attr-label": 'data_type_label = _attr("type", uf.data_type)',
     "A15-not-indexed-label": (
         "data_type_label = self._not_indexed(outcome, evidence_id, uf.data_type)"
@@ -1372,14 +1478,21 @@ def test_the_per_site_rule_over_the_probe_table(body, verdict):
     entry removed from the rule fails its own rows here — and this runs where
     the census scan cannot (a shadowing install skips that one).
     """
-    source = f"def f(uf, previous, seen_types, prefix, flag, other):\n    {body}\n"
+    source = "def f(uf, previous, seen_types, prefix, flag, other):\n" + (
+        textwrap.indent(body, "    ") + "\n"
+    )
     sites, parsed = _scan((("probe.py", ast.parse(source)),))
 
     assert parsed == {"probe.py"}
     # Exactly one read, of the column: a row that held none would pass while
-    # checking nothing.
-    assert [site.key for site in sites] == [("probe.py", "f", "attr", "uf")]
-    unlisted = _disallowed_uses(sites[0])
+    # checking nothing. ``UploadedFile(data_type=uf.data_type)`` records the
+    # same node a second time, as a ``construct_kw`` site.
+    reads = [site for site in sites if site.key == ("probe.py", "f", "attr", "uf")]
+    assert len(reads) == 1, [site.key for site in sites]
+    assert all(site.node is reads[0].node for site in sites), [
+        site.key for site in sites
+    ]
+    unlisted = _disallowed_uses(reads[0])
     if verdict == "fails":
         assert unlisted, f"{body!r} has a use _ALLOWED_USES does not list"
     else:
