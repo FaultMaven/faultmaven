@@ -1,7 +1,10 @@
 """fm#522 — syslog fields and remote hostnames must not be counted as usernames.
 
 Every test here drives one of the two **real entry points** rather than the
-rule's internals:
+rule's internals, with two named exceptions, each of which says why in its own
+docstring: ``test_is_username_predicate`` (the public ``is_username``) and
+``test_one_line_is_one_mention_even_across_different_fields`` (a pre-assertion
+on the two patterns):
 
 * ``LogsAndErrorsExtractor().extract()`` — the always-on entity profile.
 * ``extract_entities_for_data_type(DataType.LOGS_AND_ERRORS, ...)`` — the
@@ -483,9 +486,10 @@ def test_both_paths_agree_on_a_mixed_auth_log() -> None:
     Until then they deliberately differed — the profile counted *matches* and
     the registry counted lines — and this case is where that showed.
 
-    The counts are pinned explicitly as well as compared between the paths.
-    A between-paths comparison alone passes when both drift the same way, and
-    a set comparison discards multiplicity entirely, which is how a doubling
+    Each path is pinned to the same explicit expectation, which is what makes
+    the two agree. A between-paths comparison would add nothing: it passes
+    when both drift the same way, which pinning each path catches. A set
+    comparison discards multiplicity entirely, which is how a doubling
     regression got through once already.
     """
     content = "\n".join(
@@ -514,7 +518,6 @@ def test_both_paths_agree_on_a_mixed_auth_log() -> None:
     expected = {"root": 1, "cyrus": 1, "test": 1}
     assert Counter(profile) == expected, profile
     assert Counter(registry) == expected, registry
-    assert Counter(profile) == Counter(registry)
 
 
 # ---------------------------------------------------------------------------
@@ -641,18 +644,6 @@ def test_registry_now_records_the_account_not_the_word_user(
             {"admin": 1},
             id="invalid-user-admin",
         ),
-        # The two branches reaching the same name through two GENUINELY
-        # different fields — a "for" clause and a "user=" field — not the
-        # "invalid user" overlap. Per-line semantics counts it once; see
-        # ``test_one_line_is_one_mention_even_across_different_fields``. On
-        # the searched path (``_UNREAD_PREFIX``): a line ``sshd_auth`` reads
-        # names only its user slot, and passed here by coincidence.
-        pytest.param(
-            _UNREAD_PREFIX + "Dec 10 09:33:00 LabSZ sshd[3]: Failed password for "
-            "alice from 1.2.3.4 port 2222 ssh2 user=alice",
-            {"alice": 1},
-            id="same-user-in-two-different-fields",
-        ),
         # De-duplication must be by VALUE, not a blanket one-per-line: two
         # different accounts named on one line are two mentions. sshd never
         # writes ``user=`` after ``ssh2``, so the rule is pinned on the
@@ -739,6 +730,11 @@ def test_one_line_is_one_mention_even_across_different_fields() -> None:
     What this does NOT do: collapse two different accounts on one line, or
     collapse the same account across lines. Both are pinned as parameters of
     ``test_mention_counts_are_per_line_on_both_paths``.
+
+    Unlike its neighbours this test asserts on ``USER_FIELD_RE`` and
+    ``USER_FOR_RE`` directly: the pre-assertions prove that both branches
+    really match the line, so the test cannot pass merely because the
+    patterns matched once.
     """
     # On the searched path (``_UNREAD_PREFIX``): a line ``sshd_auth`` reads
     # names only its user slot, and passed here by coincidence (fm#1668).
@@ -747,9 +743,7 @@ def test_one_line_is_one_mention_even_across_different_fields() -> None:
         "from 1.2.3.4 port 2222 ssh2 user=alice\n"
     )
 
-    # Both branches do reach the name — the de-duplication is what makes it
-    # one, not a gap in the patterns. Without this the test would pass on a
-    # line that simply never matched twice.
+    # Both branches do reach the name; the de-duplication is what makes it one.
     assert USER_FIELD_RE.findall(line) == ["alice"]
     assert USER_FOR_RE.findall(line) == ["alice"]
 

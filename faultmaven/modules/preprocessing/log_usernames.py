@@ -113,6 +113,14 @@ from faultmaven.modules.preprocessing.extractors.sshd_auth import (
 # mail.example.com`` yields ``rhost``. Syslog key/value is ``=``-delimited,
 # so no producer measured here emits that shape; the lookbehind covers the
 # value-position half of it.
+# Overlap (fm#1574, fm#1588): this pattern and ``USER_FOR_RE`` both match
+# ``... for invalid user test ...`` -- ``user test`` here, ``for invalid user
+# test`` there -- two spans for one account. ``extract_usernames`` is the
+# per-line de-duplication point, and every current consumer wants a set of
+# names, so it is correct for them. A consumer that wants offsets
+# (``finditer``, for masking, highlighting or citation) would see two spans
+# for one account, one starting mid-phrase, and must de-duplicate by span
+# itself.
 USER_FIELD_RE = re.compile(
     r"(?<![\w=])user[= ]+([a-zA-Z_][a-zA-Z0-9._\-]{0,31})\b(?![\w.\-]*=)",
     re.IGNORECASE,
