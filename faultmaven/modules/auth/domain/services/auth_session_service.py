@@ -25,12 +25,21 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
+from pydantic import ValidationError
+
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models import SessionContext
 from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
+
+#: The only ``SessionContext`` fields a client may set through
+#: ``update_session`` (#1834). An allow-list, because the deny-list it replaced
+#: left ``session_id`` writable, and ``save()`` keys its write on that field: a
+#: caller could overwrite another session's record. ``expires_at`` changes only
+#: through ``extend_session``; ``client_id`` belongs to the resumption index.
+CLIENT_UPDATABLE_SESSION_FIELDS = frozenset({"metadata"})
 
 
 class AuthSessionService:
@@ -231,13 +240,14 @@ class AuthSessionService:
 
         Args:
             session_id: Session identifier
-            updates: Updates to apply (metadata only - no case data allowed)
+            updates: Fields to set; only those in CLIENT_UPDATABLE_SESSION_FIELDS
 
         Returns:
             True if update successful
 
         Raises:
-            ValidationException: If updates contain forbidden fields
+            ValidationException: If updates name any other field, or a value
+                fails SessionContext validation. Nothing is applied either way.
         """
         if not session_id or not session_id.strip():
             raise ValidationException("session_id cannot be empty")
@@ -245,33 +255,37 @@ class AuthSessionService:
         if not updates:
             raise ValidationException("updates cannot be empty")
 
-        # Validate no case data in updates (spec compliance)
-        forbidden_fields = {
-            "case_history",
-            "current_case_id",
-            "data_uploads",
-            "agent_state",
-        }
-        if any(field in updates for field in forbidden_fields):
+        # An allow-list, checked before anything is read or applied: a body
+        # with one permitted key and one refused key changes nothing.
+        refused = sorted(set(updates) - CLIENT_UPDATABLE_SESSION_FIELDS)
+        if refused:
+            allowed = ", ".join(
+                repr(field) for field in sorted(CLIENT_UPDATABLE_SESSION_FIELDS)
+            )
             raise ValidationException(
-                f"Cannot update session with case data. Forbidden fields: {forbidden_fields}. "
-                "Sessions are for authentication only per spec lines 102-107."
+                f"Session fields cannot be updated: {refused}. "
+                f"Only {allowed} may be updated."
             )
 
         session = await self.get_session(session_id)
         if not session:
             return False
 
-        # Apply updates
-        for key, value in updates.items():
-            if hasattr(session, key):
-                setattr(session, key, value)
+        # Re-validate the whole record so a wrong-typed value is refused, not
+        # stored. model_validate, never model_copy(update=...): a copy skips
+        # validation of the values it is handed. The message is fixed: neither
+        # pydantic's error text nor the submitted value reaches the caller.
+        # It names metadata because metadata is the only value that can fail
+        # here; widening the allow-list means revisiting it.
+        try:
+            updated = SessionContext.model_validate({**session.model_dump(), **updates})
+        except ValidationError:
+            raise ValidationException("metadata must be a JSON object") from None
 
-        session.updated_at = datetime.now(timezone.utc)
+        updated.updated_at = datetime.now(timezone.utc)
 
-        # Persist
         if self.session_store:
-            await self.session_store.save(session)
+            await self.session_store.save(updated)
 
         return True
 
