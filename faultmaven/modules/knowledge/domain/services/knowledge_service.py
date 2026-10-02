@@ -2003,10 +2003,12 @@ class KnowledgeService:
                 )
 
             # DTO build + tag filter over the RBAC-isolated set. Response shape
-            # is kept identical to the legacy conversion_drafts path so the
-            # dashboard needs no contract change; conversion-pipeline metadata
-            # (domain/service/severity/quality_score) is null for built-ins,
-            # which never went through that pipeline.
+            # is the legacy conversion_drafts path's plus the two trust fields
+            # (verification_level / verification_status, #878) — an additive
+            # change, so the dashboard needs no contract change;
+            # conversion-pipeline metadata (domain/service/severity/
+            # quality_score) is null for built-ins, which never went through
+            # that pipeline.
             all_documents: List[Dict[str, Any]] = []
             for item in items:
                 tag_list = list(item.tags) if item.tags else []
@@ -2037,7 +2039,7 @@ class KnowledgeService:
                             "severity": meta.get("severity"),
                             "quality_score": meta.get("quality_score"),
                         },
-                        **self._verification_fields(item),
+                        **KnowledgeService._verification_fields(item),
                     }
                 )
 
