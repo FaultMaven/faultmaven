@@ -15,9 +15,10 @@ The rows are the mechanism probe #1634's plan ran before the change was built
 copied as literal source, P for must-flag and N for must-not-flag. The D and
 NN rows are the shapes #1634's review re-introduced to defeat the first
 version (https://github.com/FaultMaven/faultmaven/pull/1856#issuecomment-5944512232),
-probed the same way before they were built; the R5 and F1 rows, and the
-key, multi-line and renderer tests at the end, are its second round
-(https://github.com/FaultMaven/faultmaven/pull/1856#issuecomment-5944976538).
+probed the same way before they were built; the R5a/R5b and F1 rows, and
+the key, multi-line and renderer tests at the end, are its second round
+(https://github.com/FaultMaven/faultmaven/pull/1856#issuecomment-5944976538),
+and R5c-R5j its third.
 The invariant they pin, on the response-producing surface:
 
 * an exception's text reaching an ``HTTPException``'s ``detail`` or
@@ -487,6 +488,51 @@ _MUST_FLAG = [
         # The call binds through `**`, which can set the status to anything.
         id="R5b",
     ),
+    # --- #1634's third review: a status the body can rebind is unknown, whatever
+    # the call bound and however the body rebinds it ---
+    pytest.param(
+        _planted(
+            "def _err(msg, status_code, internal=False):\n    if internal:\n        status_code = 500\n    return HTTPException(status_code=status_code, detail=msg)\ndef r():\n    try: x()\n    except KeyError as e:\n        raise _err(str(e), 404, internal=True)\n",
+            header=_DEFEAT_HEADER,
+        ),
+        # The call binds 404, and the body replaces it with 500 when `internal`:
+        # a rebound status is unknown whatever the call bound.
+        id="R5c",
+    ),
+    pytest.param(
+        _planted(
+            "def _err(msg, status_code=400):\n    with classify(msg) as status_code:\n        pass\n    return HTTPException(status_code=status_code, detail=msg)\ndef r():\n    try: x()\n    except KeyError as e:\n        raise _err(str(e))\n",
+            header=_DEFEAT_HEADER,
+        ),
+        # The default is replaced by a `with ... as` target.
+        id="R5d-with",
+    ),
+    pytest.param(
+        _planted(
+            "def _err(msg, status_code=400):\n    try:\n        classify(msg)\n    except StatusOverride as status_code:\n        return HTTPException(status_code=status_code, detail=msg)\n    return HTTPException(status_code=status_code, detail=msg)\ndef r():\n    try: x()\n    except KeyError as e:\n        raise _err(str(e))\n",
+            header=_DEFEAT_HEADER,
+        ),
+        # The default is replaced by an `except ... as` name.
+        id="R5e-except",
+    ),
+    pytest.param(
+        _planted(
+            "def _err(msg, status_code=400):\n    global status_code\n    return HTTPException(status_code=status_code, detail=msg)\ndef r():\n    try: x()\n    except KeyError as e:\n        raise _err(str(e))\n",
+            header=_DEFEAT_HEADER,
+        ),
+        # The `global` arm of the binding enumeration. AST-only: a parameter
+        # cannot be declared global, so `compile()` rejects this, but the
+        # parser accepts it and nothing else reaches that arm.
+        id="R5f-global",
+    ),
+    pytest.param(
+        _planted(
+            'def _err(msg, status_code=400):\n    match classify(msg):\n        case {"status": status_code}:\n            pass\n    return HTTPException(status_code=status_code, detail=msg)\ndef r():\n    try: x()\n    except KeyError as e:\n        raise _err(str(e))\n',
+            header=_DEFEAT_HEADER,
+        ),
+        # The default is replaced by a `match` capture.
+        id="R5g-match",
+    ),
 ]
 
 _MUST_NOT_FLAG = [
@@ -668,6 +714,32 @@ _MUST_NOT_FLAG = [
         # an attribute reads as a method call and is not resolved, under the
         # same limit as a factory in another module.
         id="F1-attribute-limit",
+    ),
+    pytest.param(
+        _planted(
+            "def _err(msg, status_code=400):\n    return HTTPException(status_code=status_code, detail=msg)\ndef r():\n    try: x()\n    except KeyError as e:\n        raise _err(str(e))\n",
+            header=_DEFEAT_HEADER,
+        ),
+        # Controls for Revision 3: nothing rebinds the status, so the default
+        # 400 is trusted under a typed handler.
+        id="R5h-default-400",
+    ),
+    pytest.param(
+        _planted(
+            "def _err(msg, status_code):\n    return HTTPException(status_code=status_code, detail=msg)\ndef r():\n    try: x()\n    except KeyError as e:\n        raise _err(str(e), 400)\n",
+            header=_DEFEAT_HEADER,
+        ),
+        # Nothing rebinds it, so the call's 400 is trusted.
+        id="R5i-bound-400",
+    ),
+    pytest.param(
+        _planted(
+            "def _err(msg, status_code=400):\n    codes = [status_code for status_code in known_codes(msg)]\n    log(codes)\n    return HTTPException(status_code=status_code, detail=msg)\ndef r():\n    try: x()\n    except KeyError as e:\n        raise _err(str(e))\n",
+            header=_DEFEAT_HEADER,
+        ),
+        # A comprehension target binds in its own scope: the parameter keeps
+        # its default, so this is not a rebind.
+        id="R5j-comprehension",
     ),
 ]
 

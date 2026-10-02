@@ -663,8 +663,8 @@ class _Factory(NamedTuple):
     that reach any of their ``detail`` or ``headers``. ``is_method`` says the
     function is defined directly in a class body, which decides the calls
     that can reach it (``_http_exception_view``). ``rebound`` is every name
-    the function's own body assigns to: a default that the body may overwrite
-    is not the status the factory builds with.
+    the function's own body can rebind (``_rebound_names``): a status the body
+    may overwrite is neither its default nor the argument a call bound.
     """
 
     positional: list[str]
@@ -691,33 +691,60 @@ def _param_defaults(args: ast.arguments) -> dict[str, ast.AST]:
 
 
 def _rebound_names(fn: ast.AST) -> frozenset[str]:
-    """Every name ``fn``'s own body assigns to, nested functions excluded.
+    """Every name ``fn``'s own body can rebind, nested functions excluded.
 
-    ``x = ...``, ``x: T = ...``, ``x += ...``, ``(x := ...)`` and a ``for``
-    target, through any tuple or starred unpacking. A status parameter in this
-    set is not reliably its default::
+    A status parameter in this set is not reliably what it was on entry —
+    neither its default nor the value a call bound to it::
 
-        def _err(msg, status_code=400):
-            if "timeout" in msg:
-                status_code = 504
+        def _err(msg, status_code, internal=False):
+            if internal:
+                status_code = 500
             return HTTPException(status_code=status_code, detail=msg)
 
-    reads as a 400 by its default and builds a 504. #1634's review measured
-    the first reading of defaults exempting exactly that under a typed
-    handler, where the earlier, fail-closed reading had caught it.
+    ``_err(str(e), 404, internal=True)`` reads as a 404 by its argument and
+    builds a 500. #1634's review measured both readings — trusting the
+    default, and trusting the call's argument — exempting such a factory
+    under a typed handler.
+
+    Every statement that binds a name counts, because any of them replaces
+    the parameter: ``x = ...``, ``x: T = ...``, ``x += ...``, ``(x := ...)``,
+    a ``for`` target, a ``with ... as`` target, an ``except ... as`` name, an
+    ``import`` (its ``as`` name, or its first component), ``global`` and
+    ``nonlocal``, a ``match`` capture (``case {"status": x}``, ``case [*x]``,
+    ``case {**x}``), and ``del``. Through any tuple or starred unpacking. A
+    comprehension target is NOT one: it binds in the comprehension's own
+    scope, so ``[status_code for status_code in codes]`` leaves the parameter
+    as it was.
     """
     names: set[str] = set()
+
+    def add(target: ast.AST | None) -> None:
+        if target is not None:
+            names.update(n.id for n in ast.walk(target) if isinstance(n, ast.Name))
+
     for node in _own_nodes(fn):
-        if isinstance(node, ast.Assign):
-            targets = node.targets
+        if isinstance(node, (ast.Assign, ast.Delete)):
+            for target in node.targets:
+                add(target)
         elif isinstance(
             node, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr, ast.For, ast.AsyncFor)
         ):
-            targets = [node.target]
-        else:
-            continue
-        for target in targets:
-            names.update(n.id for n in ast.walk(target) if isinstance(n, ast.Name))
+            add(node.target)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                add(item.optional_vars)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            names.add(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            names.update(
+                (alias.asname or alias.name).split(".")[0] for alias in node.names
+            )
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            names.update(node.names)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            names.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            names.add(node.rest)
     return frozenset(names)
 
 
@@ -823,11 +850,13 @@ def _http_exception_view(
       tuple of them), and ``statuses`` is each of the factory's statuses — the
       argument bound to its status parameter, else the factory's own
       expression when it is not a parameter (``_f(msg)`` building a literal
-      500). A status parameter the call leaves unbound takes its default only
-      when the factory's body never rebinds it and the call spreads nothing
-      (``*args``, ``**kwargs``); otherwise, or with no default, it is ``None``,
-      unknown, and ``_status_is_5xx`` fails closed on it. Several same-named
-      factories contribute all of their statuses and arguments.
+      500). A status parameter the factory's body can rebind
+      (``_rebound_names``) is ``None``, unknown, whatever the call bound to
+      it. One the call leaves unbound takes its default only when the call
+      spreads nothing (``*args``, ``**kwargs``); otherwise, or with no
+      default, it is unknown too, and ``_status_is_5xx`` fails closed on it.
+      Several same-named factories contribute all of their statuses and
+      arguments.
 
     A bare-name call (``_fail(...)``) resolves only to a module-level or nested
     function, and an attribute call (``self._err(...)``, ``A()._err(...)``)
@@ -881,11 +910,15 @@ def _http_exception_view(
         carried.extend(bound[p] for p in factory.carried_params if p in bound)
         for status in factory.statuses:
             if isinstance(status, ast.Name) and status.id in factory.params:
-                # Bound by the call; else the default, when nothing can have
-                # replaced it; else unknown, which fails closed as a 5xx.
-                if status.id in bound:
+                # A parameter the body can rebind is unknown whatever the
+                # call bound to it. Otherwise: the call's argument; else
+                # unknown when the call spreads `*`/`**`; else the default.
+                # Unknown fails closed as a 5xx.
+                if status.id in factory.rebound:
+                    status = None
+                elif status.id in bound:
                     status = bound[status.id]
-                elif spread or status.id in factory.rebound:
+                elif spread:
                     status = None
                 else:
                     status = factory.defaults.get(status.id)
