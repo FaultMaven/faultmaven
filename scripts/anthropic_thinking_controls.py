@@ -15,6 +15,8 @@ Without ``--send`` the script prints the plan and sends nothing. With ``--send``
 it reads ``--out`` first and skips every (model, variant) pair that already has
 a row there, success or failure, because a transport failure may still have
 been billed. Every other call is sent once, in plan order, and never retried.
+Each attempt is recorded in ``--out`` before its call, so an interrupted run
+never re-sends it.
 
 Before anything is sent, the script exits 2 on any of these:
 * a ``--request`` for a model outside the plan, or a model given twice;
@@ -289,6 +291,9 @@ def main(argv: list[str] | None = None) -> int:
             skipped = {"model": model, "variant": variant, "skipped": str(args.out)}
             print(json.dumps(skipped), flush=True)
             continue
+        # Recorded before the call: an interrupt (a BaseException) during it
+        # leaves this row, so the next run skips the pair it may have billed.
+        _append(args.out, {"model": model, "variant": variant, "state": "sending"}, key)
         try:
             status, payload, elapsed = _send(body, key, args.timeout)
         except Exception as exc:  # a transport failure is a result, not a retry

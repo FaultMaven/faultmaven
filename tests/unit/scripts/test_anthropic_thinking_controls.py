@@ -339,12 +339,16 @@ class TestSendLoop:
         assert all(key == FAKE_KEY for _, key in sent)
 
         rows = _rows(out)
-        assert [(r["model"], r["variant"]) for r in rows] == list(atc.APPROVED_PLAN)
-        timeout_row = rows[TIMEOUT_CALL - 1]
+        attempts, results = rows[0::2], rows[1::2]  # each attempt just before its call
+        assert attempts == [
+            {"model": m, "variant": v, "state": "sending"} for m, v in atc.APPROVED_PLAN
+        ]
+        assert [(r["model"], r["variant"]) for r in results] == list(atc.APPROVED_PLAN)
+        timeout_row = results[TIMEOUT_CALL - 1]
         assert timeout_row["http"] is None
         assert timeout_row["error"].startswith("ReadTimeout: ")
         assert atc.REDACTED in timeout_row["error"]
-        summary_row = rows[UNPARSEABLE_CALL - 1]
+        summary_row = results[UNPARSEABLE_CALL - 1]
         assert summary_row["http"] == 200
         assert summary_row["summary_error"].startswith("TypeError: ")
 
@@ -384,3 +388,30 @@ class TestSendLoop:
         rc = atc.main(_write(tmp_path) + ["--out", str(out), "--send"])
         assert rc == 0
         assert [body for body, _ in sent] == _plan_bodies()[3:]
+
+    def test_interrupted_run_never_resends(self, monkeypatch, tmp_path):
+        """An interrupt mid-call leaves no result row; the attempt row stands in."""
+        calls, total = [], []
+
+        def fake(body, key, timeout):
+            calls.append(body)
+            total.append(body)
+            if len(total) == 3:  # once, on the first run's third call
+                raise KeyboardInterrupt
+            return 200, {"usage": {}}, 1.0
+
+        monkeypatch.setattr(atc, "_send", fake)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", FAKE_KEY)
+        args = _write(tmp_path) + ["--out", str(tmp_path / "o.jsonl"), "--send"]
+
+        with pytest.raises(KeyboardInterrupt):
+            atc.main(args)
+        assert calls == _plan_bodies()[:3]
+
+        calls.clear()
+        assert atc.main(args) == 0
+        assert calls == _plan_bodies()[3:]
+
+        calls.clear()
+        assert atc.main(args) == 0
+        assert calls == []
