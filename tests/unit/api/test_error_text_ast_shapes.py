@@ -15,8 +15,10 @@ The rows are the mechanism probe #1634's plan ran before the change was built
 copied as literal source, P for must-flag and N for must-not-flag. The D and
 NN rows are the shapes #1634's review re-introduced to defeat the first
 version (https://github.com/FaultMaven/faultmaven/pull/1856#issuecomment-5944512232),
-probed the same way before they were built. The invariant they pin, on the
-response-producing surface:
+probed the same way before they were built; the R5 and F1 rows, and the
+key, multi-line and renderer tests at the end, are its second round
+(https://github.com/FaultMaven/faultmaven/pull/1856#issuecomment-5944976538).
+The invariant they pin, on the response-producing surface:
 
 * an exception's text reaching an ``HTTPException``'s ``detail`` or
   ``headers`` is reported whenever the exception came from a broad source,
@@ -37,7 +39,7 @@ from collections.abc import Callable
 import pytest
 
 import faultmaven
-from tests.error_text_ast import http_exception_leak_sites
+from tests.error_text_ast import http_exception_leak_sites, returned_body_leak_sites
 from tests.unit.api import test_api_surface_error_text_not_echoed as surface_guard
 
 #: Every planted module starts with these: ``_llm_http`` (the
@@ -466,6 +468,25 @@ _MUST_FLAG = [
         _real_helper_mutant(_ARM5, _D3B_ARM + _ARM5, "SERVICE_ERROR:{exc}"),
         id="D3b",  # the real helper: str(exc) into _llm_http's error_code -> header
     ),
+    # --- #1634's second review: a default status is trusted only when nothing
+    # can have replaced it ---
+    pytest.param(
+        _planted(
+            'def _err(msg, status_code=400):\n    if "timeout" in msg:\n        status_code = 504\n    return HTTPException(status_code=status_code, detail=msg)\ndef r():\n    try: x()\n    except KeyError as e:\n        raise _err(str(e))\n',
+            header=_DEFEAT_HEADER,
+        ),
+        # The body rebinds the defaulted status, so the 400 default is not
+        # what it builds: unknown, fails closed, under a typed handler.
+        id="R5a",
+    ),
+    pytest.param(
+        _planted(
+            'def _err(msg, status_code=400):\n    return HTTPException(status_code=status_code, detail=msg)\ndef r():\n    try: x()\n    except KeyError as e:\n        opts = {"status_code": 500}\n        raise _err(str(e), **opts)\n',
+            header=_DEFEAT_HEADER,
+        ),
+        # The call binds through `**`, which can set the status to anything.
+        id="R5b",
+    ),
 ]
 
 _MUST_NOT_FLAG = [
@@ -626,6 +647,28 @@ _MUST_NOT_FLAG = [
         ),
         id="NN8",  # Any-annotated non-exception name
     ),
+    # --- #1634's second review ---
+    pytest.param(
+        _planted(
+            "async def get_session(session_id: str):\n    s = await session_service.get_session(session_id)\n    if s is None:\n        raise HTTPException(404, detail=f'Session {session_id} not found')\n    return s\nasync def heartbeat(sid: str):\n    try:\n        await ping(sid)\n    except Exception as e:\n        logger.warning('ping failed: %s', e)\n        await session_service.get_session(getattr(e, 'session_id', sid))\n    return {'ok': True}\n",
+            header=_DEFEAT_HEADER,
+        ),
+        # A route handler whose own 404 names a path parameter is a factory,
+        # and keyed by name alone `session_service.get_session(...)` under a
+        # broad handler read as a call to it. An attribute call reaches only
+        # a method.
+        id="F1-collision",
+    ),
+    pytest.param(
+        _planted(
+            "def _fail(msg):\n    raise HTTPException(500, detail=msg)\ndef r():\n    try: x()\n    except Exception as e:\n        this_module._fail(str(e))\n",
+            header=_DEFEAT_HEADER,
+        ),
+        # A STATED LIMIT, not a pass: a same-module function reached through
+        # an attribute reads as a method call and is not resolved, under the
+        # same limit as a factory in another module.
+        id="F1-attribute-limit",
+    ),
 ]
 
 
@@ -694,20 +737,36 @@ def test_p1_reaches_the_surface_guard_as_a_finding_in_the_helper(tmp_path, monke
             "HTTPException(400, detail=str(e))",
             id="D12a",  # built and assigned, raised a line later: an `Assign`
         ),
+        pytest.param(
+            "async def r(request, handler):\n    try: x()\n    except Exception as e:\n        await handler(\n            request, HTTPException(500, detail=str(e))\n        )\n",
+            4,
+            "await handler(request, HTTPException(500, detail=str(e)))",
+            # The call is on the statement's SECOND line: keyed on the
+            # statement that contains it, not dropped for not starting there.
+            id="multi-line-Expr",
+        ),
+        pytest.param(
+            "def r(wrap):\n    try: x()\n    except Exception as e:\n        raise wrap(\n            HTTPException(500, detail=str(e))\n        )\n",
+            4,
+            "wrap(HTTPException(500, detail=str(e)))",
+            id="multi-line-raise",
+        ),
     ],
 )
 def test_a_sink_that_is_not_a_raise_or_return_reaches_the_surface_guard(
     tmp_path, monkeypatch, body, body_line, statement
 ):
-    """The two sinks #1634's review added that are neither ``raise`` nor
-    ``return``, through the surface guard.
+    """Sinks that are not a ``raise``/``return`` starting on the reported
+    line, through the surface guard.
 
     The analysis reports the line of the CALL. ``_offender_keys`` used to
     build a key only for a ``Return``/``Raise`` starting on a reported line,
     so a raising helper called as a statement, or an ``HTTPException`` built
     into a local, was reported by the analysis and then dropped without a
-    word — the guard passed with the finding in hand. Each must come out of
-    the guard naming the statement that holds the call.
+    word — the guard passed with the finding in hand. The multi-line rows put
+    the call on a statement's second line, so they fail if the mapping falls
+    back to matching a statement's first line. Each must come out of the
+    guard naming the statement that holds the call, at that statement's line.
     """
     path = tmp_path / "faultmaven" / "api" / "planted.py"
     path.parent.mkdir(parents=True)
@@ -720,3 +779,96 @@ def test_a_sink_that_is_not_a_raise_or_return_reaches_the_surface_guard(
         surface_guard.test_no_api_surface_site_puts_the_caught_exception_on_the_wire()
 
     assert f"faultmaven/api/planted.py:{line} in r(): {statement}" in str(failure.value)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "body, key_expression",
+    [
+        pytest.param(
+            "def _fail(msg):\n    raise HTTPException(500, detail=msg)\ndef r():\n    try: x()\n    except Exception as e:\n        if _fail(str(e)):\n            pass\n",
+            "_fail(str(e))",
+            id="if",
+        ),
+        pytest.param(
+            "def _fail(msg):\n    raise HTTPException(500, detail=msg)\ndef r(a):\n    try: x()\n    except Exception as e:\n        if a:\n            pass\n        elif not _fail(str(e)):\n            pass\n",
+            "_fail(str(e))",
+            id="elif",
+        ),
+        pytest.param(
+            "def _fail(msg):\n    raise HTTPException(500, detail=msg)\ndef r():\n    try: x()\n    except Exception as e:\n        while _fail(str(e)):\n            pass\n",
+            "_fail(str(e))",
+            id="while",
+        ),
+        pytest.param(
+            "def _mk(msg):\n    return HTTPException(500, detail=msg)\ndef r():\n    try: x()\n    except Exception as e:\n        with suppress(_mk(str(e))):\n            pass\n",
+            "suppress(_mk(str(e)))",
+            id="with",
+        ),
+        pytest.param(
+            "def _fail(msg):\n    raise HTTPException(500, detail=msg)\ndef r():\n    try: x()\n    except Exception as e:\n        for _ in [_fail(str(e))]:\n            pass\n",
+            "_fail(str(e))",
+            id="for-iter",
+        ),
+        pytest.param(
+            "def r():\n    try: x()\n    except Exception as e:\n        assert ok, HTTPException(500, detail=str(e))\n",
+            "HTTPException(500, detail=str(e))",
+            id="assert",
+        ),
+        pytest.param(
+            "def _fail(msg):\n    raise HTTPException(500, detail=msg)\ndef r():\n    try: x()\n    except Exception as e:\n        if not _fail(str(e)): return\n",
+            "_fail(str(e))",
+            id="if-return-one-line",
+        ),
+    ],
+)
+def test_every_reported_line_yields_a_key(tmp_path, monkeypatch, body, key_expression):
+    """A sink in a compound statement's header is keyed, never dropped.
+
+    ``_offender_keys`` keys a reported line on the simple statement holding
+    it, and an ``if``/``elif``/``while`` test, a ``for`` iterable, a ``with``
+    item, an ``assert`` and a one-line ``if ...: return`` (whose bare
+    ``return`` has nothing to key on) are none of those. #1634's review
+    measured each of them reported by the analysis and then producing no key,
+    so the surface guard passed. Every reported line must now come back as a
+    key, on the outermost call that starts on it.
+
+    The analysis reporting the row at all is asserted first: without it the
+    key check would pass by having nothing to check.
+    """
+    path = tmp_path / "faultmaven" / "api" / "planted.py"
+    path.parent.mkdir(parents=True)
+    path.write_text(_DEFEAT_HEADER + body, encoding="utf-8")
+    monkeypatch.setattr(surface_guard, "_REPO", tmp_path)
+    reported = {
+        int(site.rsplit(":", 1)[1])
+        for site in (
+            *http_exception_leak_sites(path),
+            *returned_body_leak_sites(path),
+        )
+    }
+    assert reported, "the analysis does not report this sink, so the row checks nothing"
+
+    keys = surface_guard._offender_keys(path)
+
+    assert reported <= {line for *_, line in keys}, (reported, keys)
+    assert [(fn, expr) for _, fn, expr, _ in keys] == [("r", key_expression)]
+
+
+@pytest.mark.unit
+def test_a_bound_handler_returning_the_rendered_stack_is_a_returned_body_leak(
+    tmp_path,
+):
+    """The returned-body renderer walk covers a handler that binds a name.
+
+    It used to walk only handlers that bind nothing, on the reasoning that a
+    bound handler is the name-following pass's job — but that pass follows
+    ``e``, and ``traceback.format_exc()`` never names it. Logging ``e`` and
+    returning the formatted stack passed.
+    """
+    path, leak_line = _planted(
+        "def r():\n    try: x()\n    except Exception as e:\n        log(e)\n        return {'trace': traceback.format_exc()}\n",
+        header=_DEFEAT_HEADER,
+    )(tmp_path)
+
+    assert returned_body_leak_sites(path) == [f"{path.name}:{leak_line}"]

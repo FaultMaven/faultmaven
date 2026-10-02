@@ -57,10 +57,13 @@ boundary in both directions, and the analysis reported its file clean:
   BaseException)`` receives the exception as a parameter, so there is no
   ``except ... as`` binding for the taint to start from. An exception-typed
   parameter is a taint source too. The finding is the helper's own
-  construction — that is where the text is put on the wire — and, because such
-  a helper is also a factory, every same-module caller that hands it an
-  exception is reported as well. Fixing the helper clears all of them. See
-  ``_exception_parameter_leak_sites``.
+  construction — that is where the text is put on the wire. When the helper
+  spells ``HTTPException(...)`` itself it is also a factory, so every
+  same-module caller that hands it an exception is reported as well, and
+  fixing the helper clears all of them. A helper that builds through another
+  factory, as ``llm_service_error_http_exception`` builds through
+  ``_llm_http``, is not itself one (the view is one level deep) and is
+  reported alone. See ``_exception_parameter_leak_sites``.
 
 Every call the factory view recognises is a sink, wherever it stands: raised,
 returned, assigned and raised later, awaited, or called for its side effect.
@@ -74,8 +77,10 @@ the response-producing surface:
 * a factory that builds its ``HTTPException`` by calling another factory — the
   factory view is one level deep. Iterating it to a fixed point added zero
   findings;
-* a factory defined in a different module from the call. Treating every
-  factory in the package as visible from every file added zero findings;
+* a factory defined in a different module from the call, and a same-module
+  function reached through an attribute (``this_module._fail(...)``), which
+  reads as a method call. Treating every factory in the package as visible
+  from every file added zero findings;
 * a helper that *returns* a ``JSONResponse`` (or any body other than an
   ``HTTPException``) carrying an exception parameter —
   ``returned_body_leak_sites`` starts from ``except`` bindings only. No helper
@@ -94,13 +99,21 @@ pass that would subsume them:
 * a two-hop stash after the handler — ``err = str(e)`` in the handler, then
   ``message = f"...{err}"`` and the raise after it. The raise-after pass
   follows one alias out of the handler, not a chain;
-* a nested closure raising with the enclosing handler's exception, and a
-  ``lambda`` factory (``mk = lambda m: HTTPException(500, m)``). Each scope is
-  analysed on its own, and a factory is a ``def``;
+* a closure defined OUTSIDE the handler that raises with the handler's
+  exception, and a ``lambda`` factory (``mk = lambda m: HTTPException(500,
+  m)``). A closure defined inside the handler is walked with it and is caught;
+  one defined before the ``try`` is its own scope. A factory is a ``def``;
 * an unannotated exception parameter named outside
   ``_UNANNOTATED_EXCEPTION_PARAMS``;
 * a local stashed by a *typed* handler and raised inside a sibling *broad*
   handler of the same ``try``.
+
+#1858 also records the zero-live shapes #1634's second defeat pass found: a
+rendering stashed in a local before it is used; a ``detail`` or header written
+onto the exception after it is built; ``*args``/``**kwargs`` factories and
+factory aliases; a conditional status not spelled as ``x if c else y``;
+annotation forms the reader cannot parse; a cause chain walked under a typed
+handler; and ``match``.
 
 And one is pending a ruling: "broad" is decided by class NAME, so a generic
 wrapper — ``ServiceException``, ``RuntimeError`` — keeps the typed 4xx
@@ -647,7 +660,11 @@ class _Factory(NamedTuple):
     parameter's default expression. ``statuses`` holds the ``status_code``
     expression of EVERY ``HTTPException(...)`` the factory builds from a
     parameter, in the factory's terms; ``carried_params`` are the parameters
-    that reach any of their ``detail`` or ``headers``.
+    that reach any of their ``detail`` or ``headers``. ``is_method`` says the
+    function is defined directly in a class body, which decides the calls
+    that can reach it (``_http_exception_view``). ``rebound`` is every name
+    the function's own body assigns to: a default that the body may overwrite
+    is not the status the factory builds with.
     """
 
     positional: list[str]
@@ -655,6 +672,8 @@ class _Factory(NamedTuple):
     defaults: dict[str, ast.AST]
     statuses: tuple[ast.AST | None, ...]
     carried_params: frozenset[str]
+    is_method: bool
+    rebound: frozenset[str]
 
 
 def _param_defaults(args: ast.arguments) -> dict[str, ast.AST]:
@@ -669,6 +688,37 @@ def _param_defaults(args: ast.arguments) -> dict[str, ast.AST]:
         if default is not None:
             defaults[param.arg] = default
     return defaults
+
+
+def _rebound_names(fn: ast.AST) -> frozenset[str]:
+    """Every name ``fn``'s own body assigns to, nested functions excluded.
+
+    ``x = ...``, ``x: T = ...``, ``x += ...``, ``(x := ...)`` and a ``for``
+    target, through any tuple or starred unpacking. A status parameter in this
+    set is not reliably its default::
+
+        def _err(msg, status_code=400):
+            if "timeout" in msg:
+                status_code = 504
+            return HTTPException(status_code=status_code, detail=msg)
+
+    reads as a 400 by its default and builds a 504. #1634's review measured
+    the first reading of defaults exempting exactly that under a typed
+    handler, where the earlier, fail-closed reading had caught it.
+    """
+    names: set[str] = set()
+    for node in _own_nodes(fn):
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(
+            node, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr, ast.For, ast.AsyncFor)
+        ):
+            targets = [node.target]
+        else:
+            continue
+        for target in targets:
+            names.update(n.id for n in ast.walk(target) if isinstance(n, ast.Name))
+    return frozenset(names)
 
 
 def _http_exception_factories(tree: ast.AST) -> dict[str, list[_Factory]]:
@@ -695,7 +745,8 @@ def _http_exception_factories(tree: ast.AST) -> dict[str, list[_Factory]]:
     by name (``f(...)``) or by terminal attribute (``self.f(...)``), and
     same-named functions — two classes' ``_err`` methods — keep one record
     each, all applied at a call: the analysis cannot tell which one a call
-    reaches.
+    reaches. Each record says whether it is a method, so that a bare-name call
+    and an attribute call reach only the kind they can (``_http_exception_view``).
 
     Same module only, and one level: a factory whose ``HTTPException`` comes
     from calling another factory is not one here — both are stated limits in
@@ -703,15 +754,22 @@ def _http_exception_factories(tree: ast.AST) -> dict[str, list[_Factory]]:
     surface held two returning factories: ``exception_handlers.py::_llm_http``
     and ``operator_user_scope.py::user_not_found``. Counting every
     construction, 35 functions there qualify: most are route handlers whose
-    own 404 names a path parameter, which FastAPI calls and the module never
-    does, so they are never read as a call. Widening the definition added zero
-    findings.
+    own 404 names a path parameter. FastAPI calls those, and the module calls
+    them by bare name nowhere; a same-named ``service.update_report(...)`` is
+    an attribute call and does not reach a module-level function.
 
     A function's assignment map is built only once it is known to construct
     an ``HTTPException``. Most functions never do, and the map walks the
     whole function.
     """
     factories: dict[str, list[_Factory]] = {}
+    methods = {
+        id(item)
+        for cls in ast.walk(tree)
+        if isinstance(cls, ast.ClassDef)
+        for item in cls.body
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -741,6 +799,8 @@ def _http_exception_factories(tree: ast.AST) -> dict[str, list[_Factory]]:
                     _param_defaults(args),
                     tuple(statuses),
                     frozenset(carried_params),
+                    id(fn) in methods,
+                    _rebound_names(fn),
                 )
             )
     return factories
@@ -761,22 +821,46 @@ def _http_exception_view(
     * A call to a factory answers the CALLER's arguments: ``carried`` is the
       arguments bound to the parameters the factory carries onto the wire (a
       tuple of them), and ``statuses`` is each of the factory's statuses — the
-      argument bound to its status parameter, else that parameter's default,
-      else the factory's own expression when it is not a parameter (``_f(msg)``
-      building a literal 500). A status parameter left unbound with no default
-      is ``None``, unknown, and ``_status_is_5xx`` fails closed on it. Several
-      same-named factories contribute all of their statuses and arguments.
+      argument bound to its status parameter, else the factory's own
+      expression when it is not a parameter (``_f(msg)`` building a literal
+      500). A status parameter the call leaves unbound takes its default only
+      when the factory's body never rebinds it and the call spreads nothing
+      (``*args``, ``**kwargs``); otherwise, or with no default, it is ``None``,
+      unknown, and ``_status_is_5xx`` fails closed on it. Several same-named
+      factories contribute all of their statuses and arguments.
 
-    A method factory reached through ``self.``/``cls.`` binds its receiver
-    implicitly, so positional binding starts after it.
+    A bare-name call (``_fail(...)``) resolves only to a module-level or nested
+    function, and an attribute call (``self._err(...)``, ``A()._err(...)``)
+    only to a method defined in a class body. Matching on the name alone made
+    every route handler whose own 404 names a path parameter a factory for any
+    same-named service or repository call — #1634's review counted 28–50 such
+    call sites on the surface. A same-module FUNCTION reached through an
+    attribute (``this_module._fail(...)``) is therefore not seen, under the
+    same stated limit as a factory in another module. A method reached
+    through ``self.``/``cls.`` binds its receiver implicitly, so positional
+    binding starts after it.
     """
     if not isinstance(call, ast.Call):
         return None
     if _is_http_exception(call):
         return (_status_expr(call),), _carried_expr(call)
-    records = factories.get(_terminal_name(call.func))
+    # A bare name reaches a function and an attribute reaches a method. Keyed
+    # by name alone, `case_repository.update_report(failed)` read as a call to
+    # the module's route handler `update_report`, whose own 404 names a path
+    # parameter.
+    by_attribute = isinstance(call.func, ast.Attribute)
+    records = [
+        record
+        for record in factories.get(_terminal_name(call.func), ())
+        if record.is_method == by_attribute
+    ]
     if not records:
         return None
+    # An argument spread with `*` or `**` can bind any parameter, the status
+    # included, so no default is trusted for this call.
+    spread = any(isinstance(arg, ast.Starred) for arg in call.args) or any(
+        kw.arg is None for kw in call.keywords
+    )
     statuses: list[ast.AST | None] = []
     carried: list[ast.AST] = []
     for factory in records:
@@ -797,8 +881,14 @@ def _http_exception_view(
         carried.extend(bound[p] for p in factory.carried_params if p in bound)
         for status in factory.statuses:
             if isinstance(status, ast.Name) and status.id in factory.params:
-                # Bound by the call, else the default; neither -> unknown -> 5xx.
-                status = bound.get(status.id, factory.defaults.get(status.id))
+                # Bound by the call; else the default, when nothing can have
+                # replaced it; else unknown, which fails closed as a 5xx.
+                if status.id in bound:
+                    status = bound[status.id]
+                elif spread or status.id in factory.rebound:
+                    status = None
+                else:
+                    status = factory.defaults.get(status.id)
             statuses.append(status)
     return tuple(statuses), (
         ast.Tuple(elts=carried, ctx=ast.Load()) if carried else None
@@ -1024,11 +1114,15 @@ def _exception_parameter_leak_sites(
     reported clean while ``/turns`` echoed internal text.
 
     Reported at the helper's own construction, which is where the text is put
-    on the wire. That is not the only finding one such helper produces: a
-    helper whose ``HTTPException`` carries its exception parameter is, by the
-    same token, a factory, so every same-module caller that hands it an
-    exception is reported by the handler passes as well. Fixing the helper
-    clears all of them at once.
+    on the wire. When the helper spells ``HTTPException(...)`` itself, that is
+    not the only finding: a helper whose ``HTTPException`` carries its
+    exception parameter is, by the same token, a factory, so every same-module
+    caller that hands it an exception (by bare name, or through ``self.`` for
+    a method) is reported by the handler passes as well, and fixing the helper
+    clears all of them. A helper that builds through ANOTHER factory —
+    ``llm_service_error_http_exception`` returns ``_llm_http(...)`` — is not a
+    factory itself, because the view is one level deep, so it is reported
+    alone and its callers are not.
 
     Which parameters count, and which are broad, is ``_exception_params``, over
     the package's exception classes and this module's own. The status gate is

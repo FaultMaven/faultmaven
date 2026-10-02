@@ -288,6 +288,16 @@ def _offender_keys(path: pathlib.Path) -> list[tuple[str, str, str, int]]:
     HTTPException(...))`` broken across lines. The key's line is the
     statement's first line, and its expression is the statement's ``value``
     (or a ``raise``'s ``exc``).
+
+    A reported line that none of those statements covers is still keyed,
+    never dropped. A sink can sit in a compound statement's header — an
+    ``if``/``elif``/``while`` test, a ``for`` iterable, a ``with`` item, an
+    ``assert``, or ``if ...: return`` on one line, whose bare ``return`` has
+    no expression to key on — and #1634's review measured each of those
+    reported by the analysis and then passed by this guard. Such a line is
+    keyed on the outermost call that starts on it, which is the sink the
+    analysis reported; failing that, on the innermost call that covers it;
+    failing both, on ``<unmapped>``, so the finding still fails the guard.
     """
     lines = {
         int(site.rsplit(":", 1)[1])
@@ -306,6 +316,7 @@ def _offender_keys(path: pathlib.Path) -> list[tuple[str, str, str, int]]:
                 enclosing[getattr(node, "lineno", -1)] = fn.name
 
     keys: list[tuple[str, str, str, int]] = []
+    covered: set[int] = set()
     for node in ast.walk(tree):
         if not isinstance(node, _REPORTED_STATEMENTS):
             continue
@@ -321,6 +332,33 @@ def _offender_keys(path: pathlib.Path) -> list[tuple[str, str, str, int]]:
                 ast.unparse(expr),
                 node.lineno,
             )
+        )
+        covered.update(line for line in lines if node.lineno <= line <= node.end_lineno)
+
+    for line in sorted(lines - covered):
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and node.lineno <= line <= node.end_lineno
+        ]
+        starting = [node for node in calls if node.lineno == line]
+        if starting:
+            call = min(starting, key=lambda node: node.col_offset)
+        elif calls:
+            call = min(
+                calls,
+                key=lambda node: (
+                    node.end_lineno - node.lineno,
+                    node.end_col_offset - node.col_offset,
+                ),
+            )
+        else:  # pragma: no cover - the analysis reports a call or a statement
+            keys.append(
+                (_rel(path), enclosing.get(line, "<module>"), "<unmapped>", line)
+            )
+            continue
+        keys.append(
+            (_rel(path), enclosing.get(line, "<module>"), ast.unparse(call), line)
         )
     return keys
 
