@@ -141,7 +141,6 @@ def _make_conversion_response(
             filename="nginx-troubleshooting.txt",
             size_bytes=2048,
             content_type="text/plain",
-            retained_path="/tmp/test/sources/conv_abc123/nginx-troubleshooting.txt",
         ),
         analysis=_make_analysis(),
         drafts=drafts if drafts is not None else [_make_draft()],

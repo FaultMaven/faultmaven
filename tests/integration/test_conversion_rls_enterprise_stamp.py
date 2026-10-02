@@ -234,7 +234,6 @@ async def _persist(service, conversion_id: str, enterprise_id, tmp_path) -> None
             filename="Case case_1765256eccdd",
             size_bytes=3289,
             content_type="application/x-faultmaven-case",
-            retained_path=None,
         ),
         analysis=AnalysisResult(
             is_actionable=True,

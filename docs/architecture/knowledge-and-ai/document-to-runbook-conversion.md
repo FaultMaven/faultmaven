@@ -814,8 +814,7 @@ Max file size: Governed by existing `MAX_UPLOAD_SIZE_MB` setting (default 10 MB)
   "source_file": {
     "filename": "postgres-troubleshooting.pdf",
     "size_bytes": 45230,
-    "content_type": "application/pdf",
-    "retained_path": "data/knowledge/sources/conv_a1b2c3d4/postgres-troubleshooting.pdf"
+    "content_type": "application/pdf"
   },
   "analysis": {
     "failure_modes_detected": 3,
@@ -846,7 +845,6 @@ Max file size: Governed by existing `MAX_UPLOAD_SIZE_MB` setting (default 10 MB)
         "actionability": 65.0,
         "comprehensiveness": 68.0
       },
-      "file_path": "data/knowledge/global/pg-connection-pool-exhaustion.md",
       "content_preview": "---\nid: pg-connection-pool-exhaustion\ntitle: ..."
     }
   ],
@@ -1036,10 +1034,11 @@ class QualityScore(BaseModel):
 
 
 class SourceFileInfo(BaseModel):
+    # Name, size and type only. Never a location: no backend holds a
+    # conversion source, and a server path is not the client's to see (#836).
     filename: str
     size_bytes: int
     content_type: str
-    retained_path: str
 
 
 class ConversionDraft(BaseModel):
@@ -1053,7 +1052,8 @@ class ConversionDraft(BaseModel):
                                                    # ?tab=runbook Dashboard link from a resolved case
     validation: ValidationResult
     quality_score: QualityScore
-    file_path: str
+    file_path: str = Field(exclude=True)  # conversion_drafts.file_path: read on
+                                          # the server, never serialised (#836)
     content_preview: str = Field(
         max_length=500,
         description="First 500 chars of generated markdown"

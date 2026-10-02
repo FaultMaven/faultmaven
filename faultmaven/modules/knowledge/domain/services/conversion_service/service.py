@@ -287,7 +287,6 @@ class ConversionService:
             filename=original_filename,
             size_bytes=file_path.stat().st_size,
             content_type=content_type,
-            retained_path=None,
         )
 
         # Step 3: Analyze for failure modes
@@ -573,7 +572,6 @@ class ConversionService:
             filename=source_filename,
             size_bytes=len(source_text.encode("utf-8")),
             content_type="application/x-faultmaven-case",
-            retained_path=None,
         )
 
         # Persist to database with source_type and case_id. The unique index on
@@ -907,7 +905,10 @@ class ConversionService:
                 self._db_session_factory, enterprise_id, runbook_id, str(draft_path)
             )
 
-            write_runbook_file(
+            # Off the event loop: ``mkdir`` and ``write_text`` are blocking
+            # disk I/O (#836).
+            await asyncio.to_thread(
+                write_runbook_file,
                 draft_path,
                 runbook_content,
                 source=f"converted draft (runbook_id={runbook_id})",
@@ -1090,21 +1091,20 @@ class ConversionService:
 
             # Source file metadata lives on ``uploaded_files``; traverse
             # via the ``source_file_id`` FK to read filename / size /
-            # content_type / storage_ref.
+            # content_type. Not ``storage_ref``: a conversion source's is NULL,
+            # and no location is the client's to see (#836).
             upload = await session.get(UploadedFileModel, job.source_file_id)
             source_file = (
                 SourceFileInfo(
                     filename=upload.filename,
                     size_bytes=upload.size_bytes,
                     content_type=upload.content_type,
-                    retained_path=upload.storage_ref or "",
                 )
                 if upload
                 else SourceFileInfo(
                     filename="<source upload missing>",
                     size_bytes=0,
                     content_type="",
-                    retained_path="",
                 )
             )
 
@@ -1235,7 +1235,6 @@ class ConversionService:
                     "title": dm.title,
                     "status": dm.status,
                     "scope": job.scope,
-                    "file_path": dm.file_path,
                     "knowledge_item_id": dm.knowledge_item_id,
                     "validation_passed": dm.validation_passed,
                     "created_at": (
@@ -1420,8 +1419,14 @@ class ConversionService:
         # PREVIOUS verdict — permanently, and a reviewer then reads a green
         # verdict about text the gate never saw. Gating first makes a
         # cancellation here change nothing at all, and puts the write back
-        # beside the commit with no await between them, which is the property
-        # main had.
+        # beside the commit with no OTHER await between them.
+        #
+        # The write is itself an ``await`` now, a hop off the event loop
+        # (#836), and that hop's await IS the write. A cancellation during it
+        # lands where one during the commit always could: the thread may
+        # already have rewritten the file, and the commit does not run. The hop
+        # widens that existing window by the write's own duration; it adds no
+        # await between the write and the commit.
         validation, quality = await avalidate_and_score(content)
 
         async with self._db_session_factory() as session:
@@ -1444,7 +1449,11 @@ class ConversionService:
                 return None
 
             try:
-                write_runbook_file(
+                # Off the event loop (#836). This hop's own ``await`` IS the
+                # write, and nothing else awaits between it and the commit —
+                # see the ordering note before the gate.
+                await asyncio.to_thread(
+                    write_runbook_file,
                     draft_file_path,
                     content,
                     source=f"conversion_drafts.file_path (draft_id={dm.id})",
@@ -1937,7 +1946,10 @@ status: draft
             self._db_session_factory, enterprise_id, runbook_id, str(draft_path)
         )
 
-        write_runbook_file(
+        # Off the event loop: ``mkdir`` and ``write_text`` are blocking disk
+        # I/O (#836).
+        await asyncio.to_thread(
+            write_runbook_file,
             draft_path,
             content,
             source=f"manually created runbook (runbook_id={runbook_id})",
@@ -1985,7 +1997,6 @@ status: draft
                 filename=title,
                 size_bytes=len(content.encode()),
                 content_type="text/markdown",
-                retained_path="",
             ),
             analysis=AnalysisResult(
                 is_actionable=True,

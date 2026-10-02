@@ -37,7 +37,7 @@ TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 # the 001-053 chain) plus additive revisions on top of it, so the seed
 # assertions below reverse the whole schema with "downgrade base" and each
 # additive revision is stepped over on its own.
-HEAD_REVISION = "1c5a2ad13a65"  # 005_definer_search_path_without_public
+HEAD_REVISION = "f37066de2792"  # 006_kb_conversion_source_storage_ref_null
 #: The baseline, which every additive revision parents onto.
 BASELINE_REVISION = "a1e0c17bd001"  # 001_enterprise_baseline
 #: The first additive revision.
@@ -48,6 +48,9 @@ ADMIN_CASE_METADATA_REVISION = "baa28e79ebab"  # 003_admin_case_metadata
 DEFINER_TRIGGER_HARDENING_REVISION = "14d4bfdd406e"  # 004_definer_trigger_hardening
 #: The definer functions re-created with no schema a caller can create in.
 DEFINER_SEARCH_PATH_REVISION = "1c5a2ad13a65"  # 005_definer_search_path_without_public
+#: ``006_kb_conversion_source_storage_ref_null``: KB conversion-source rows
+#: stop carrying a filesystem path in storage_ref.
+CONVERSION_SOURCE_REF_REVISION = "f37066de2792"
 #: The tables 002_llm_usage_ledger adds (#640).
 LLM_USAGE_TABLES = ["llm_turn_spend", "llm_usage_daily"]
 
@@ -492,6 +495,117 @@ class TestLlmUsageLedgerRevision:
             assert query_rows(TEST_DB, "SELECT * FROM llm_turn_spend") == []
         finally:
             conn.close()
+
+
+class TestConversionSourceStorageRefRevision:
+    """006 clears the filesystem paths two KB writers stored in
+    ``uploaded_files.storage_ref`` (#836), and nothing else.
+
+    Its PostgreSQL half, where the UPDATE runs under ``row_security = off``:
+    ``tests/integration/security/test_conversion_source_storage_ref_postgres.py``.
+    """
+
+    #: ``(file_id, case_id, storage_ref, upload_source)`` as seeded at the
+    #: parent revision, and what each ``storage_ref`` must be after the upgrade.
+    #: The last two rows each fail exactly one term of the predicate, so each
+    #: term is what keeps its row: the fourth carries a case, and the fifth is
+    #: caseless but not a conversion source.
+    SEED = [
+        (
+            "file_kb_path",
+            None,
+            "data/knowledge/global/pool-exhausted.md",
+            "conversion_source",
+        ),
+        ("file_evidence", "case_1", "evidence/case_1/abc123", "file_upload"),
+        ("file_kb_null", None, None, "conversion_source"),
+        ("file_cased_source", "case_1", "evidence/case_1/def456", "conversion_source"),
+        ("file_caseless_upload", None, "evidence/orphan/ghi789", "file_upload"),
+    ]
+    AFTER = {
+        "file_kb_path": None,
+        "file_evidence": "evidence/case_1/abc123",
+        "file_kb_null": None,
+        "file_cased_source": "evidence/case_1/def456",
+        "file_caseless_upload": "evidence/orphan/ghi789",
+    }
+
+    def _seed(self) -> None:
+        enterprise = TestStandaloneTenancySeed.STANDALONE_ENTERPRISE_ID
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute(
+                "INSERT INTO users (user_id, enterprise_id, username, email, "
+                "display_name, created_at, updated_at) VALUES ('u1', ?, 'u1', "
+                "'u1@example.com', 'U One', datetime('now'), datetime('now'))",
+                (enterprise,),
+            )
+            conn.execute(
+                "INSERT INTO cases (case_id, enterprise_id, user_id, title, "
+                "created_at, updated_at) VALUES ('case_1', ?, 'u1', 't', "
+                "datetime('now'), datetime('now'))",
+                (enterprise,),
+            )
+            for file_id, case_id, storage_ref, upload_source in self.SEED:
+                conn.execute(
+                    "INSERT INTO uploaded_files (file_id, enterprise_id, case_id, "
+                    "uploaded_by, filename, size_bytes, storage_ref, upload_source) "
+                    "VALUES (?, ?, ?, 'u1', 'f.md', 1, ?, ?)",
+                    (file_id, enterprise, case_id, storage_ref, upload_source),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _refs() -> dict:
+        return dict(
+            query_rows(TEST_DB, "SELECT file_id, storage_ref FROM uploaded_files")
+        )
+
+    def test_only_the_conversion_source_paths_are_cleared(
+        self, clean_database, database_url
+    ):
+        result = run_alembic(f"upgrade {DEFINER_SEARCH_PATH_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        self._seed()
+        seeded = {file_id: ref for file_id, _, ref, _ in self.SEED}
+        assert self._refs() == seeded
+
+        result = run_alembic(f"upgrade {CONVERSION_SOURCE_REF_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        assert self._refs() == self.AFTER
+        # The count is the paths removed: the row that was already NULL is not
+        # in it.
+        assert "cleared storage_ref on 1 KB conversion-source row(s)" in result.stderr
+
+        # Nothing to restore: the downgrade steps back and leaves every row.
+        result = run_alembic(f"downgrade {DEFINER_SEARCH_PATH_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        assert get_current_revision(database_url) == DEFINER_SEARCH_PATH_REVISION
+        assert self._refs() == self.AFTER
+
+    def test_the_postgresql_statements_turn_row_security_off_around_the_update(
+        self,
+    ):
+        """Offline (``--sql``) needs no server, so the PostgreSQL ordering is
+        checked here as well as in the PostgreSQL lane: off, the UPDATE, then
+        back to the value before for whatever runs later in the transaction."""
+        result = run_alembic(
+            f"upgrade {DEFINER_SEARCH_PATH_REVISION}:{CONVERSION_SOURCE_REF_REVISION} "
+            "--sql",
+            "postgresql://offline@localhost/offline",
+        )
+        assert result.returncode == 0, result.stderr
+        sql = result.stdout
+        off = sql.index("SET LOCAL row_security = off;")
+        update = sql.index(
+            "UPDATE uploaded_files SET storage_ref = NULL WHERE upload_source = "
+            "'conversion_source' AND case_id IS NULL AND storage_ref IS NOT NULL;"
+        )
+        restored = sql.index("SET LOCAL row_security TO DEFAULT;")
+        assert off < update < restored, sql
 
 
 class TestRbacSeed:

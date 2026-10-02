@@ -1576,8 +1576,11 @@ class UploadedFileModel(Base):
     size_bytes = Column(BigInteger, nullable=False)
     content_type = Column(String(100), nullable=True)  # MIME type
     content_hash = Column(String(64), nullable=True, index=True)
-    # Opaque key passed to the file-storage backend (local FS path, S3 key,
-    # Azure blob name, etc.). The backend interprets it; nothing else does.
+    # A file-storage backend key (a key under the local backend's root, an
+    # S3 key, an Azure blob name), or NULL — never anything else. The backend
+    # interprets it; nothing else does. KB conversion-source rows
+    # (``upload_source='conversion_source'``, no ``case_id``) are NULL: no
+    # backend holds their file, so there is no key to store (#836).
     storage_ref = Column(String(1000), nullable=True)
     # Provenance: how this file got into the system. Distinct from the
     # data-classification field on `evidence.source_type`. Values:

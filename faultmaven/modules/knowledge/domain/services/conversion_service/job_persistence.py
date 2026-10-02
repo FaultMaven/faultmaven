@@ -136,7 +136,10 @@ async def _persist_job_rows(
             filename=source_file.filename,
             size_bytes=source_file.size_bytes,
             content_type=source_file.content_type,
-            storage_ref=source_file.retained_path or None,
+            # ``storage_ref`` is a storage-backend key or NULL. No backend
+            # holds a conversion source, so it is NULL — never the path the
+            # file happens to sit at on this replica's disk (#836).
+            storage_ref=None,
             upload_source="conversion_source",
             uploaded_at_turn=0,
         )

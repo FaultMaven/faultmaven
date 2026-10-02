@@ -15,6 +15,10 @@ transitively through a synchronous helper (``_scan_and_record`` ->
 sees nothing. A guard that names sites would be wrong the same way. This one
 asks the question structurally, so a seventh site fails the build instead of
 shipping.
+
+The root set also holds ``write_runbook_file``, the one helper every runbook
+write goes through: its ``mkdir`` and ``write_text`` are blocking disk I/O, and
+each of its four callers wrote inline from a coroutine until #836.
 """
 
 from __future__ import annotations
@@ -35,6 +39,7 @@ _SYNC_GATE = {
     "enforce_runbook_quality",
     "validate_file",
     "score_file",
+    "write_runbook_file",
 }
 
 #: The one name collision the by-name scan cannot resolve. Pinned as an exact
@@ -544,11 +549,31 @@ def test_the_draft_edit_gate_runs_outside_its_transaction():
     # leaves the file rewritten and the row carrying the PREVIOUS verdict,
     # permanently: a reviewer reads a green verdict about text the gate never
     # saw. Gating first makes a cancellation change nothing.
-    writes = [
-        n.lineno
+    #
+    # The write is the hop ``asyncio.to_thread(write_runbook_file, ...)`` since
+    # #836, and that hop's own ``await`` IS the write: it is excluded from the
+    # stranded check below by identity, so any OTHER await between the write
+    # and the commit still fails. A direct ``write_runbook_file(...)`` call is
+    # recognised too, so reverting the hop leaves this test seeing the write
+    # (the off-loop guard above is what fails then).
+    def _is_write(call: ast.AST) -> bool:
+        if not isinstance(call, ast.Call):
+            return False
+        if getattr(call.func, "id", "") == "write_runbook_file":
+            return True
+        return (
+            getattr(call.func, "attr", "") == "to_thread"
+            and bool(call.args)
+            and getattr(call.args[0], "id", "") == "write_runbook_file"
+        )
+
+    write_calls = [n for n in ast.walk(target) if _is_write(n)]
+    writes = [n.lineno for n in write_calls]
+    write_awaits = {
+        id(n)
         for n in ast.walk(target)
-        if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "write_runbook_file"
-    ]
+        if isinstance(n, ast.Await) and any(n.value is c for c in write_calls)
+    }
     commits = [
         n.lineno
         for n in ast.walk(target)
@@ -565,7 +590,9 @@ def test_the_draft_edit_gate_runs_outside_its_transaction():
     stranded = [
         n.lineno
         for n in ast.walk(target)
-        if isinstance(n, ast.Await) and min(writes) < n.lineno < max(commits)
+        if isinstance(n, ast.Await)
+        and id(n) not in write_awaits
+        and min(writes) <= n.lineno < max(commits)
     ]
     assert not stranded, (
         f"await(s) at {stranded} sit between the write ({min(writes)}) and the "

@@ -437,9 +437,11 @@ class UploadedFile(BaseModel):
     storage_ref: Optional[str] = Field(
         default=None,
         description=(
-            "Opaque key passed to IFileStorageBackend.retrieve_file(). The "
-            "backend interprets it (local FS path, S3 key, Azure blob name, "
-            "etc.). May be None if processing pending."
+            "A key for IFileStorageBackend.retrieve_file(), or None — never "
+            "anything else. The backend interprets it (a key under the local "
+            "backend's root, an S3 key, an Azure blob name). None while "
+            "processing is pending, and always on a KB conversion-source "
+            "row, whose file no backend holds."
         ),
         max_length=5000,
     )

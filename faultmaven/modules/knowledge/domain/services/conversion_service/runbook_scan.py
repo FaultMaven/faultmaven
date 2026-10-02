@@ -415,7 +415,6 @@ async def _scan_for_runbooks_impl(
                     filename=md_file.name,
                     size_bytes=md_file.stat().st_size,
                     content_type="text/markdown",
-                    retained_path=str(md_file),
                 ),
                 analysis=AnalysisResult(
                     is_actionable=True,
@@ -468,7 +467,6 @@ async def _scan_for_runbooks_impl(
                 "scope": scope,
                 "validation_passed": validation.passed,
                 "quality_score": quality.overall,
-                "file_path": file_path_str,
             }
         )
 
