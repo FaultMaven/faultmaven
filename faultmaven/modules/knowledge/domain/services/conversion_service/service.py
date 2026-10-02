@@ -905,10 +905,7 @@ class ConversionService:
                 self._db_session_factory, enterprise_id, runbook_id, str(draft_path)
             )
 
-            # Off the event loop: ``mkdir`` and ``write_text`` are blocking
-            # disk I/O (#836).
-            await asyncio.to_thread(
-                write_runbook_file,
+            write_runbook_file(
                 draft_path,
                 runbook_content,
                 source=f"converted draft (runbook_id={runbook_id})",
@@ -966,10 +963,16 @@ class ConversionService:
                 failure_mode_id=failure_mode.id, error=str(exc), retryable=False
             )
         except Exception as e:
+            # The exception's CLASS, never its text (#836). Every hand-written
+            # failure in this method returns its ``ConversionError`` above, so
+            # what lands here is foreign: a provider error, or an ``OSError``
+            # from the write whose text names the server path. ``error`` is
+            # returned in ``/convert``'s warnings and persisted with the job,
+            # so the detail goes to the log line instead.
             logger.error(f"Conversion failed for {failure_mode.id}: {e}")
             return ConversionError(
                 failure_mode_id=failure_mode.id,
-                error=str(e),
+                error=f"Runbook generation failed ({type(e).__name__})",
                 retryable=getattr(e, "retryable", False),
             )
 
@@ -1419,14 +1422,8 @@ class ConversionService:
         # PREVIOUS verdict — permanently, and a reviewer then reads a green
         # verdict about text the gate never saw. Gating first makes a
         # cancellation here change nothing at all, and puts the write back
-        # beside the commit with no OTHER await between them.
-        #
-        # The write is itself an ``await`` now, a hop off the event loop
-        # (#836), and that hop's await IS the write. A cancellation during it
-        # lands where one during the commit always could: the thread may
-        # already have rewritten the file, and the commit does not run. The hop
-        # widens that existing window by the write's own duration; it adds no
-        # await between the write and the commit.
+        # beside the commit with no await between them, which is the property
+        # main had.
         validation, quality = await avalidate_and_score(content)
 
         async with self._db_session_factory() as session:
@@ -1449,11 +1446,7 @@ class ConversionService:
                 return None
 
             try:
-                # Off the event loop (#836). This hop's own ``await`` IS the
-                # write, and nothing else awaits between it and the commit —
-                # see the ordering note before the gate.
-                await asyncio.to_thread(
-                    write_runbook_file,
+                write_runbook_file(
                     draft_file_path,
                     content,
                     source=f"conversion_drafts.file_path (draft_id={dm.id})",
@@ -1577,13 +1570,18 @@ class ConversionService:
                     )
                     failed += 1
             except Exception as e:
+                # The exception's CLASS, never its text (#836). The typed arms
+                # above carry hand-written sentences; what lands here is
+                # foreign — a missing file's ``FileNotFoundError`` names its
+                # absolute path, and an ingestion failure carries the vector
+                # store's own message. The detail goes to the log line.
                 logger.error(f"Batch verify failed for {draft_id}: {e}")
                 results.append(
                     {
                         "conversion_id": conversion_id,
                         "draft_id": draft_id,
                         "status": "failed",
-                        "error": str(e),
+                        "error": f"Verification failed ({type(e).__name__})",
                         "knowledge_item_id": None,
                     }
                 )
@@ -1946,10 +1944,7 @@ status: draft
             self._db_session_factory, enterprise_id, runbook_id, str(draft_path)
         )
 
-        # Off the event loop: ``mkdir`` and ``write_text`` are blocking disk
-        # I/O (#836).
-        await asyncio.to_thread(
-            write_runbook_file,
+        write_runbook_file(
             draft_path,
             content,
             source=f"manually created runbook (runbook_id={runbook_id})",

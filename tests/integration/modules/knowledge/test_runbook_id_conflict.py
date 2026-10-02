@@ -29,7 +29,6 @@ Four claims:
 from __future__ import annotations
 
 import pathlib
-import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
@@ -363,14 +362,10 @@ class TestTheGuardCoversEveryNewDraftWritePath:
             elif current is not None:
                 methods[current].append(line)
 
-        # A word match, not ``"write_runbook_file("``: since #836 every write
-        # is the hop ``asyncio.to_thread(write_runbook_file, ...)``, where the
-        # name is an argument and never followed by ``(``. The import sits
-        # above the first method, so it is in no method's body.
         writers = {
             name: "\n".join(body)
             for name, body in methods.items()
-            if re.search(r"\bwrite_runbook_file\b", "\n".join(body))
+            if "write_runbook_file(" in "\n".join(body)
         }
         assert writers, "no runbook write site found — this test has gone blind"
 

@@ -1254,9 +1254,13 @@ level, and the tools needed.]
                     )
             except Exception as e:
                 self.logger.error(f"PII scan failed: {e}")
+                # The exception's CLASS, never its text (#836): the result is
+                # stored and returned by ``GET /knowledge/suggestions/{id}``,
+                # and a scanner's own message is not the caller's to read. The
+                # detail is in the log line above.
                 suggestion.mark_pii_scan_complete(
                     status=PIIScanStatus.SCAN_FAILED,
-                    result={"error": str(e)},
+                    result={"error": f"PII scan failed ({type(e).__name__})"},
                 )
         else:
             # No sanitizer available, mark as clean (development mode)

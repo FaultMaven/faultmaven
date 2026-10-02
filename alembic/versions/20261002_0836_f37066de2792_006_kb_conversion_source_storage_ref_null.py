@@ -41,6 +41,17 @@ neither ``env.py`` nor any revision sets ``row_security`` for the session.
 
 SQLite has no row-level security; the UPDATE runs as it is.
 
+What it cannot reach
+--------------------
+
+The UPDATE clears what exists when it runs, once. Code from before #836 still
+writes a path. That happens on the pods a rolling deploy has not yet replaced,
+and on every pod after a rollback to such an image. Those rows keep their path
+until something clears them: this revision has already run, and a later
+upgrade does not run it again. They are inert: nothing opens a file by a
+conversion source's ``storage_ref``, and the code at this revision never
+serialises it. #1862 records the residue.
+
 ``downgrade()`` changes nothing, because nothing at the parent revision needs
 the paths back. Its code only echoed the value, as ``retained_path``, and read
 NULL as an empty string. It already stored NULL for every other conversion

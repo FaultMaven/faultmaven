@@ -62,8 +62,9 @@ sequenceDiagram
         API->>FS: Write draft to data/knowledge/{scope}/{id}.md
         API->>DB: Create ConversionDraft record
     end
-    API->>FS: Retain source file at data/knowledge/sources/{conversion_id}/{filename}
-    API-->>U: ConversionResponse (drafts[], source_file_ref, warnings)
+    API->>DB: Record the source's name, size and type (uploaded_files, storage_ref NULL)
+    API->>FS: Delete the uploaded temp file (sources are not retained, §9.4)
+    API-->>U: ConversionResponse (drafts[], source_file, warnings)
 ```
 
 ### 1.2 Component Diagram
@@ -1252,9 +1253,6 @@ export async function deleteDraft(
 
 ```
 data/knowledge/
-    sources/                         # Source files (provenance)
-        conv_a1b2c3d4/
-            postgres-troubleshooting.pdf
     global/                          # Global KB runbooks
         pg-connection-pool-exhaustion.md    # status: draft (not in ChromaDB)
         pg-replication-lag.md               # status: draft (not in ChromaDB)
@@ -1276,10 +1274,7 @@ New table: `conversion_jobs`
 | `scope` | `VARCHAR(20)` | Target KB tier |
 | `team_id` | `VARCHAR(36)` | Team ID (if scope=team) |
 | `status` | `VARCHAR(20)` | processing, completed, partial, failed |
-| `source_filename` | `VARCHAR(255)` | Original filename |
-| `source_content_type` | `VARCHAR(100)` | MIME type |
-| `source_size_bytes` | `INTEGER` | File size |
-| `source_path` | `VARCHAR(500)` | Path to retained source file |
+| `source_file_id` | `VARCHAR(36)` FK | The source's `uploaded_files` row: name, size and content type. Its `storage_ref` is NULL, because no source is retained (§9.4) |
 | `failure_modes_detected` | `INTEGER` | Number of failure modes found |
 | `analysis_result` | `JSON` | Full analysis LLM response |
 | `created_at` | `DATETIME` | Job creation time |
@@ -1345,14 +1340,19 @@ Post-construction wiring in `main.py` gives `KnowledgeService` a reference to `C
 
 These already-published discards are tracked separately from the bulk-discard guard above, so clearing redundant phantom drafts is never mistaken for the "files missing from disk" storage-failure signal.
 
-### 9.4 Source File Retention
+### 9.4 Source Files Are Not Retained
 
-Source files are retained indefinitely in `data/knowledge/sources/{conversion_id}/`. This provides:
-- **Provenance**: Users can reference the original document that produced the runbook.
-- **Re-conversion**: If the template changes, source files can be re-processed.
-- **Audit trail**: For compliance requirements.
+`POST /knowledge/convert` writes the upload to a temporary file for the
+conversion and deletes it when the request ends, whatever the outcome. What is
+kept is the source's `uploaded_files` row: its name, size and content type,
+with `upload_source = 'conversion_source'` and no `case_id`. That row's
+`storage_ref` is NULL. The column holds a storage-backend key or nothing, and
+no backend holds a conversion source (#836).
 
-Source files are excluded from ChromaDB indexing.
+- **Provenance** is that row, and the job's `analysis_result`.
+- **Re-conversion** means uploading the document again.
+- **The response** names the source by `source_file.filename`, never by a
+  location.
 
 ---
 
@@ -1627,7 +1627,6 @@ The Alembic migration for `conversion_jobs` and `conversion_drafts` includes a `
 
 If the feature is disabled after use:
 - Draft files in `data/knowledge/{scope}/` with `status: draft` can be safely deleted.
-- Source files in `data/knowledge/sources/` can be archived or deleted.
 - Verified runbooks remain in the KB (they are now standard knowledge items).
 
 ---

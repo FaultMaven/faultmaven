@@ -18,10 +18,19 @@ it, against a real SQLite schema:
   load-bearing (``resolve_runbook_path``, deletion), so it stays on the row and
   on the model. It is only never serialised. After the round trip through the
   routes the row still names the file, and the edit landed in it.
+* **No client-facing string names a server path or carries raw exception
+  text.** Each leak review found, driven through its route on a real failure:
+  the duplicate-draft 409 and the same refusal in ``/convert``'s warnings, a
+  write failure in ``/convert``'s warnings, a missing file in
+  ``/drafts/verify-batch``, an unreadable file in ``/scan``, and a corrupt
+  ``.docx`` in ``/convert``'s 422. A foreign exception's CLASS is what the
+  caller gets; its text goes to the log.
 """
 
 from __future__ import annotations
 
+import json
+import tempfile
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
@@ -34,6 +43,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.infrastructure.llm.providers import LLMResponse, StopReason
 from faultmaven.infrastructure.persistence.models import (
     Base,
     ConversionDraftModel,
@@ -49,6 +59,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionResponse,
     ConversionStatus,
     DraftStatus,
+    PreprocessingResult,
     QualityScore,
     SourceAssessment,
     SourceFileInfo,
@@ -127,8 +138,9 @@ def kb_root(tmp_path, monkeypatch) -> Path:
 def conversion_service(session_factory, kb_root):
     settings = MagicMock()
     settings.llm.get_knowledge_model.return_value = "test-model"
+    settings.llm.explicit_role_provider.return_value = None
     service = ConversionService(
-        llm_router=MagicMock(),
+        llm_router=AsyncMock(),
         settings=settings,
         db_session_factory=session_factory,
     )
@@ -149,8 +161,12 @@ def _operator() -> DevUser:
     )
 
 
-def _client(service) -> AsyncClient:
-    """The real conversion router and exception handlers, in the test's loop."""
+def _client(service, *, raise_app_exceptions: bool = True) -> AsyncClient:
+    """The real conversion router and exception handlers, in the test's loop.
+
+    ``raise_app_exceptions=False`` answers an unhandled exception as the bare
+    500 the server would send, instead of raising it into the test.
+    """
     from faultmaven.api.exception_handlers import get_exception_handlers
 
     app = FastAPI()
@@ -160,7 +176,10 @@ def _client(service) -> AsyncClient:
     user = _operator()
     app.dependency_overrides[cr._require_auth] = lambda: user
     app.dependency_overrides[cr._get_conversion_service] = lambda: service
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    return AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=raise_app_exceptions),
+        base_url="http://test",
+    )
 
 
 async def _upload_rows(session_factory) -> list[UploadedFileModel]:
@@ -367,3 +386,229 @@ class TestNoConversionResponseCarriesAPath:
         drafts = await conversion_service.list_drafts_for_case("case_836")
         assert len(drafts) == 1, drafts
         assert _leaks(drafts, kb_root) == []
+
+
+# ---------------------------------------------------------------------------
+# No client-facing string names a server path or carries raw exception text
+# ---------------------------------------------------------------------------
+
+#: A ``/runbooks/create`` body. Its service and title mint the runbook id
+#: ``_FAILURE_MODE`` below mints too, so the two collide on purpose.
+_CREATE_BODY = {
+    "title": "Disk Full On The Ingest Nodes",
+    "domain": "infrastructure",
+    "service": "ingest",
+    "symptom_class": ["availability"],
+    "severity": "high",
+    "scope": "personal",
+    "symptom_recognition": "Writes fail with ENOSPC on every node.",
+    "applicability": "Any ingest node with a local spool disk.",
+    "diagnostic_steps": "### Step 1. Check free space with df -h",
+    "causes": "### Cause A: Spool growth\nStatement: the spool grew.",
+    "prevention": "Alert on disk usage above eighty percent.",
+}
+
+_FAILURE_MODE = {
+    "id": "fm-disk-full",
+    "title": "Disk Full On The Ingest Nodes",
+    "domain": "infrastructure",
+    "service": "ingest",
+    "symptom_class": ["availability"],
+    "severity": "high",
+    "symptoms_summary": "Writes fail with ENOSPC.",
+    "resolution_summary": "Free the spool.",
+}
+
+
+def _llm(content: str) -> LLMResponse:
+    """What the router returns. Scripted: no provider is reached."""
+    return LLMResponse(
+        content=content,
+        confidence=0.9,
+        provider="test",
+        model="test-model",
+        tokens_used=100,
+        response_time_ms=10,
+        stop_reason=StopReason.STOP,
+    )
+
+
+def _script_convert(service: ConversionService, *replies: str) -> None:
+    """``/convert`` up to the leak: a source that passes preprocessing, and the
+    router's replies in order (the analysis, then each runbook)."""
+    service._preprocessor.preprocess = AsyncMock(
+        return_value=PreprocessingResult(
+            extracted_text="Ingest nodes fill their spool disk. " * 20,
+            source_metadata={"original_filename": "ingest.md"},
+            token_count=120,
+        )
+    )
+    service._llm_router.route = AsyncMock(side_effect=[_llm(r) for r in replies])
+
+
+def _analysis() -> str:
+    return json.dumps(
+        {
+            "is_actionable": True,
+            "failure_modes": [_FAILURE_MODE],
+            "source_assessment": {
+                "content_type": "troubleshooting_guide",
+                "actionability_rating": "high",
+                "missing_information": [],
+            },
+        }
+    )
+
+
+async def _convert(client: AsyncClient):
+    return await client.post(
+        f"{API}/convert",
+        files={"file": ("ingest.md", BytesIO(b"# ingest notes"), "text/markdown")},
+        data={"scope": "personal"},
+    )
+
+
+class TestNoClientStringNamesAPathOrRawText:
+    async def test_the_duplicate_draft_409(self, conversion_service, kb_root):
+        """The slot is enterprise-wide, so the holder can be a colleague's
+        draft, and its file path names their directory."""
+        async with _client(conversion_service) as client:
+            first = await client.post(f"{API}/runbooks/create", json=_CREATE_BODY)
+            second = await client.post(f"{API}/runbooks/create", json=_CREATE_BODY)
+        assert first.status_code == 201, first.text
+        assert second.status_code == 409, second.text
+        body = second.json()
+        assert _leaks(body, kb_root) == []
+        # Still says which draft holds the id, and which id.
+        assert first.json()["draft"]["draft_id"] in body["detail"]
+        assert first.json()["draft"]["runbook_id"] in body["detail"]
+
+    async def test_the_same_refusal_in_convert_warnings(
+        self, conversion_service, kb_root
+    ):
+        """``/convert`` refuses a mode whose id a live draft holds, and says so
+        in ``warnings``, which are persisted with the job and served again."""
+        async with _client(conversion_service) as client:
+            held = await client.post(f"{API}/runbooks/create", json=_CREATE_BODY)
+            assert held.status_code == 201, held.text
+            _script_convert(conversion_service, _analysis())
+            converted = await _convert(client)
+            assert converted.status_code == 201, converted.text
+            body = converted.json()
+            again = await client.get(f"{API}/conversions/{body['conversion_id']}")
+        assert any(held.json()["draft"]["draft_id"] in w for w in body["warnings"])
+        assert _leaks(body, kb_root) == []
+        assert _leaks(again.json(), kb_root) == []
+
+    async def test_a_write_failure_in_convert_warnings(
+        self, conversion_service, kb_root
+    ):
+        """A real ``OSError`` from the runbook write: the personal scope
+        directory's name is taken by a file, so ``mkdir`` refuses, naming the
+        server path."""
+        (kb_root / "user_user-op").write_text("not a directory", encoding="utf-8")
+        _script_convert(
+            conversion_service,
+            _analysis(),
+            valid_runbook("Disk Full On The Ingest Nodes"),
+        )
+        async with _client(conversion_service) as client:
+            converted = await _convert(client)
+            assert converted.status_code == 201, converted.text
+            body = converted.json()
+            again = await client.get(f"{API}/conversions/{body['conversion_id']}")
+        assert body["status"] == "failed", body
+        assert body["warnings"] == [
+            "Failed to convert 'fm-disk-full': "
+            "Runbook generation failed (FileExistsError)"
+        ]
+        assert _leaks(body, kb_root) == []
+        assert _leaks(again.json(), kb_root) == []
+
+    async def test_a_missing_file_in_verify_batch(
+        self, conversion_service, session_factory, kb_root
+    ):
+        async with _client(conversion_service) as client:
+            scanned = (await client.post(f"{API}/scan")).json()
+            (draft,) = scanned["drafts"]
+            async with session_factory() as session:
+                await session.execute(
+                    update(ConversionDraftModel).values(validation_passed=True)
+                )
+                await session.commit()
+            (kb_root / "global" / "pool-exhausted.md").unlink()
+            verified = await client.post(
+                f"{API}/drafts/verify-batch",
+                json={
+                    "draft_ids": [
+                        {
+                            "conversion_id": draft["conversion_id"],
+                            "draft_id": draft["draft_id"],
+                        }
+                    ]
+                },
+            )
+        assert verified.status_code == 200, verified.text
+        body = verified.json()
+        (item,) = body["results"]
+        assert item["status"] == "failed"
+        assert item["error"] == "Verification failed (FileNotFoundError)"
+        assert _leaks(body, kb_root) == []
+
+    async def test_an_unreadable_file_in_scan(self, conversion_service, kb_root):
+        (kb_root / "global" / "odd.md").mkdir()
+        async with _client(conversion_service) as client:
+            scanned = await client.post(f"{API}/scan")
+        assert scanned.status_code == 200, scanned.text
+        body = scanned.json()
+        # The file's NAME, so the operator can find it, and the class.
+        assert body["errors"] == ["odd.md: cannot read (IsADirectoryError)"]
+        assert _leaks(body, kb_root) == []
+
+    async def test_a_corrupt_docx_in_convert(self, conversion_service, kb_root):
+        """The real preprocessor and parser. A ZIP signature passes the
+        integrity check, then python-docx refuses the package with a message
+        naming the upload's temp file by its full path."""
+        async with _client(conversion_service) as client:
+            converted = await client.post(
+                f"{API}/convert",
+                files={
+                    "file": (
+                        "runbook.docx",
+                        BytesIO(b"PK\x03\x04" + b"\x00" * 64),
+                        "application/vnd.openxmlformats-officedocument."
+                        "wordprocessingml.document",
+                    )
+                },
+                data={"scope": "personal"},
+            )
+        assert converted.status_code == 422, converted.text
+        body = converted.json()
+        assert body["error_code"] == "FILE_CORRUPT"
+        assert body["detail"].endswith("(PackageNotFoundError)"), body
+        assert _leaks(body, kb_root) == []
+        assert tempfile.gettempdir() not in converted.text
+
+    async def test_only_the_scans_own_refusal_is_a_409(self, kb_root):
+        """The route renders the scan's typed refusal and nothing else: a
+        library's ``RuntimeError`` is a bare 500, never its text."""
+        from faultmaven.modules.knowledge.domain.services.conversion_service.errors import (  # noqa: E501
+            ScanAbortedError,
+        )
+
+        refusing = MagicMock()
+        refusing.scan_for_runbooks = AsyncMock(
+            side_effect=ScanAbortedError("Scan aborted: would discard all 2 drafts")
+        )
+        foreign = MagicMock()
+        foreign.scan_for_runbooks = AsyncMock(
+            side_effect=RuntimeError(f"lock lost at {kb_root}/global")
+        )
+        async with _client(refusing) as client:
+            refused = await client.post(f"{API}/scan")
+        async with _client(foreign, raise_app_exceptions=False) as client:
+            failed = await client.post(f"{API}/scan")
+        assert refused.status_code == 409, refused.text
+        assert refused.json()["detail"] == "Scan aborted: would discard all 2 drafts"
+        assert failed.status_code == 500, failed.text
+        assert str(kb_root) not in failed.text
