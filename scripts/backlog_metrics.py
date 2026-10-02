@@ -875,14 +875,19 @@ _UNREADABLE_CLIP = 120
 #: reported) rather than cut at its colon and filed as a ruling.
 _CONDITION_LEAD = re.compile(r"^(?:pre)?condition\b", re.IGNORECASE)
 
+#: The "not a ruling" qualifier, one spelling for both places it may sit. The
+#: ``\b`` keeps "not a rulings" out of it.
+_NOT_A_RULING = r"not[ \t]+a[ \t]+ruling\b"
+
 #: What may sit between the word and the condition itself: the separator,
 #: and the "not a ruling" the first live statements carried, before the dash
 #: or, once more, after it ("condition — not a ruling — unobservable today:
-#: x", #1643). The second qualifier must be followed by a dash or colon, or
-#: end the string, so "not a ruling but a measurement" is left alone.
+#: x", #1643). The second qualifier must be followed by a dash, colon, comma,
+#: semicolon or full stop, or end the string, so "not a ruling but a
+#: measurement" is left alone.
 _CONDITION_SEPARATOR = re.compile(
-    r"^[\s,]*(?:not[ \t]+a[ \t]+ruling)?[\s,]*[—–:\-]*[\s]*"
-    r"(?:not[ \t]+a[ \t]+ruling\b[\s,]*(?:[—–:\-]+[\s]*|$))?",
+    r"^[\s,]*(?:" + _NOT_A_RULING + r")?[\s,]*[\u2014\u2013:\-]*[\s]*"
+    r"(?:" + _NOT_A_RULING + r"[ \t]*(?:[\u2014\u2013:\-,;.]+[\s]*|$))?",
     re.IGNORECASE,
 )
 
@@ -1106,9 +1111,21 @@ _QUESTION_LANGUAGE = re.compile(
 _QUESTION_PHRASES_SHOWN = 3
 
 #: "Ruled out" / "Ruling out" / "Ruled-out" is investigation prose (a cause
-#: eliminated), not an owner ruling (#1643). One exclusion, interpolated into
-#: both ruling patterns so there is a single rule and not two copies.
-_NOT_RULED_OUT = r"(?![ \t]+out\b|[ \t]*[-‐‑][ \t]*out\b)"
+#: eliminated), not an owner ruling (#1643): the word, then whitespace, a
+#: no-break space or a closing ``**``, then an optionally emphasised "out";
+#: or a hyphen-like compound with NO spaces. Two spellings stay rulings: "out
+#: of scope", which is a scope ruling, and a spaced hyphen ("## Ruling - out
+#: of scope"), which is a separator, not a compound. It applies to the bare
+#: ``Ruled``/``Ruling`` only: "Owner ruling" and "Decision record" are always
+#: a ruling. One exclusion, interpolated into both ruling patterns so there
+#: is a single rule and not two copies.
+_OUT = r"out(?![A-Za-z0-9])"
+_NOT_RULED_OUT = (
+    r"(?!(?:\*\*)?[ \t\u00a0]+[*_]?"
+    + _OUT
+    + r"(?![*_]?[ \t\u00a0]+of[ \t\u00a0]+scope\b)"
+    r"|[-\u2010\u2011\u2013\u2212]" + _OUT + r")"
+)
 
 #: A ruling recorded in a BODY line: ``**Ruled 2026-09-24.** …``, the line
 #: step 3 writes when it moves an item. ``Ruled`` only — a bold ``**Ruling
@@ -1133,9 +1150,10 @@ _RULING_LINE = re.compile(
 #: list — leak A again. Same rule as the bold line: the word followed by a
 #: request, or a heading that ends in a question mark, is a question.
 _RULING_HEADING = re.compile(
-    r"^[ \t]*#{1,6}[ \t]*(?:Ruling|Ruled|Owner[ \t]+rulings?|Decision[ \t]+record)\b"
+    r"^[ \t]*#{1,6}[ \t]*(?:(?:Ruling|Ruled)\b"
     + _NOT_RULED_OUT
-    + r"(?![ \t:—–-]*(?:needed|requested|required|pending|wanted|asked|sought"
+    + r"|Owner[ \t]+rulings?\b|Decision[ \t]+record\b)"
+    r"(?![ \t:—–-]*(?:needed|requested|required|pending|wanted|asked|sought"
     r"|to[ \t]+come)\b)"
     r"(?![^\n]*\?[ \t]*$)",
     re.IGNORECASE | re.MULTILINE,
