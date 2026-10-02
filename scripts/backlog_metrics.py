@@ -876,9 +876,14 @@ _UNREADABLE_CLIP = 120
 _CONDITION_LEAD = re.compile(r"^(?:pre)?condition\b", re.IGNORECASE)
 
 #: What may sit between the word and the condition itself: the separator,
-#: and the "not a ruling" the first live statements carried.
+#: and the "not a ruling" the first live statements carried, before the dash
+#: or, once more, after it ("condition — not a ruling — unobservable today:
+#: x", #1643). The second qualifier must be followed by a dash or colon, or
+#: end the string, so "not a ruling but a measurement" is left alone.
 _CONDITION_SEPARATOR = re.compile(
-    r"^[\s,]*(?:not[ \t]+a[ \t]+ruling)?[\s,]*[—–:\-]*[\s]*", re.IGNORECASE
+    r"^[\s,]*(?:not[ \t]+a[ \t]+ruling)?[\s,]*[—–:\-]*[\s]*"
+    r"(?:not[ \t]+a[ \t]+ruling\b[\s,]*(?:[—–:\-]+[\s]*|$))?",
+    re.IGNORECASE,
 )
 
 #: A condition stated as not observable today. The procedure asks for this
@@ -1100,12 +1105,17 @@ _QUESTION_LANGUAGE = re.compile(
 #: why it was listed, not a transcript.
 _QUESTION_PHRASES_SHOWN = 3
 
+#: "Ruled out" / "Ruling out" / "Ruled-out" is investigation prose (a cause
+#: eliminated), not an owner ruling (#1643). One exclusion, interpolated into
+#: both ruling patterns so there is a single rule and not two copies.
+_NOT_RULED_OUT = r"(?![ \t]+out\b|[ \t]*[-‐‑][ \t]*out\b)"
+
 #: A ruling recorded in a BODY line: ``**Ruled 2026-09-24.** …``, the line
 #: step 3 writes when it moves an item. ``Ruled`` only — a bold ``**Ruling
 #: needed**`` opener is a question, and reading it as an answer would take
 #: a live question off the list.
 _RULING_LINE = re.compile(
-    r"^[ \t]*(?:>[ \t]*)*\*\*Ruled\b", re.IGNORECASE | re.MULTILINE
+    r"^[ \t]*(?:>[ \t]*)*\*\*Ruled\b" + _NOT_RULED_OUT, re.IGNORECASE | re.MULTILINE
 )
 
 #: A ruling recorded as a HEADING, in a body or a comment. The spellings are
@@ -1124,7 +1134,8 @@ _RULING_LINE = re.compile(
 #: request, or a heading that ends in a question mark, is a question.
 _RULING_HEADING = re.compile(
     r"^[ \t]*#{1,6}[ \t]*(?:Ruling|Ruled|Owner[ \t]+rulings?|Decision[ \t]+record)\b"
-    r"(?![ \t:—–-]*(?:needed|requested|required|pending|wanted|asked|sought"
+    + _NOT_RULED_OUT
+    + r"(?![ \t:—–-]*(?:needed|requested|required|pending|wanted|asked|sought"
     r"|to[ \t]+come)\b)"
     r"(?![^\n]*\?[ \t]*$)",
     re.IGNORECASE | re.MULTILINE,

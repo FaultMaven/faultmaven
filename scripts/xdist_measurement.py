@@ -60,8 +60,10 @@ REPO = "FaultMaven/faultmaven"
 # `gh api .../actions/jobs/<id>/logs` prefixes every line with an ISO stamp;
 # `gh run view --log` additionally prefixes "<job>\t<step>\t". Both are
 # stripped, as is the BOM GitHub puts on the first line and any ANSI colour.
+# The job/step group is anchored to the stamp after it: a line whose TEXT holds
+# two tabs ("assert 'a\tb\tc'") is not a prefix (#1637).
 _PREFIX_RE = re.compile(
-    r"^(?:[^\t\n]*\t[^\t\n]*\t)?\ufeff?(?:\d{4}-\d\d-\d\dT[0-9:.]+Z ?)?"
+    r"^(?:[^\t\n]*\t[^\t\n]*\t(?=\ufeff?\d{4}-\d\d-\d\dT))?\ufeff?(?:\d{4}-\d\d-\d\dT[0-9:.]+Z ?)?"
 )
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
