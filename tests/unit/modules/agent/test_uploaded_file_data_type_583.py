@@ -303,8 +303,14 @@ def _is_data_type_key(node) -> bool:
     return isinstance(node, ast.Constant) and node.value == "data_type"
 
 
-def _scan() -> tuple[list[_Site], set[str]]:
-    """Every read SITE of ``data_type`` in the package, plus the files parsed.
+def _scan(
+    modules: tuple[tuple[str, ast.Module], ...] | None = None,
+) -> tuple[list[_Site], set[str]]:
+    """Every read SITE of ``data_type`` in *modules*, plus the files parsed.
+
+    *modules* is ``(path, parsed module)`` pairs and defaults to the
+    package's candidate files; the probe-table test hands in synthetic ones,
+    so they go through this same walker.
 
     A site is keyed on ``(module, scope, shape, receiver)`` — the receiver is
     the source text of the object read from (``res.uploaded_file``,
@@ -315,7 +321,8 @@ def _scan() -> tuple[list[_Site], set[str]]:
     added beside it; reverting this PR's own chip fix stayed green.
     """
     sites: list[_Site] = []
-    modules = _package_modules(_TOKENS)
+    if modules is None:
+        modules = _package_modules(_TOKENS)
     for rel, tree in modules:
         for parent in ast.walk(tree):
             for child in ast.iter_child_nodes(parent):
@@ -401,47 +408,41 @@ def _scan() -> tuple[list[_Site], set[str]]:
 
 def _uses(site: _Site) -> list[ast.AST]:
     """The expressions the read's VALUE reaches in its function: the read
-    itself, plus every later use of a local name it is assigned to (one hop,
-    ``name = <expr containing the read>``). Enough for the house idiom
-    (``data_type_str = … file_meta.data_type …`` then a parse of the name)."""
+    itself, plus every later use of a local name it is bound to (one hop).
+
+    A name is bound by ``name = <expr containing the read>``, ``name: T =
+    <expr>``, ``(name := <expr>)``, or one element of ``a, b = x, y``."""
     reached: list[ast.AST] = [site.node]
+    if site.func is None:
+        return reached
+    names: list[str] = []
     node = site.node
     while hasattr(node, "_fm_parent") and not isinstance(node, ast.stmt):
-        node = node._fm_parent
-    if (
-        isinstance(node, ast.Assign)
-        and len(node.targets) == 1
-        and isinstance(node.targets[0], ast.Name)
-        and site.func is not None
-    ):
-        name = node.targets[0].id
-        reached += [
-            n
-            for n in ast.walk(site.func)
-            if isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Load)
-        ]
+        parent = node._fm_parent
+        if isinstance(parent, ast.NamedExpr) and parent.value is node:
+            names.append(parent.target.id)
+        node = parent
+    if isinstance(node, ast.Assign) and len(node.targets) == 1:
+        target = node.targets[0]
+        if isinstance(target, ast.Name):
+            names.append(target.id)
+        elif (
+            isinstance(target, (ast.Tuple, ast.List))
+            and isinstance(node.value, (ast.Tuple, ast.List))
+            and len(target.elts) == len(node.value.elts)
+        ):
+            for t, v in zip(target.elts, node.value.elts):
+                if isinstance(t, ast.Name) and any(n is site.node for n in ast.walk(v)):
+                    names.append(t.id)
+    elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+        if node.value is not None:
+            names.append(node.target.id)
+    reached += [
+        n
+        for n in ast.walk(site.func)
+        if isinstance(n, ast.Name) and n.id in names and isinstance(n.ctx, ast.Load)
+    ]
     return reached
-
-
-def _consumer(expr: ast.AST) -> str | None:
-    """What *expr* is handed to, when that is a parse: the callee's name if
-    it is a direct argument of a call, ``"get"`` for a ``.get(expr)`` lookup,
-    ``"[]"`` for a ``MAP[expr]`` subscript. Walks through ``x or default``
-    and ``a if c else b`` so wrapping the read does not hide the parse."""
-    node = expr
-    parent = getattr(node, "_fm_parent", None)
-    while isinstance(parent, (ast.BoolOp, ast.IfExp)):
-        node, parent = parent, getattr(parent, "_fm_parent", None)
-    if isinstance(parent, ast.Call) and node in parent.args:
-        fn = parent.func
-        return getattr(fn, "id", None) or getattr(fn, "attr", None)
-    if isinstance(parent, ast.Subscript) and parent.slice is node:
-        return "[]"
-    if isinstance(parent, ast.Compare) and any(
-        _is_str_literal(side) for side in [parent.left, *parent.comparators]
-    ):
-        return "==literal"
-    return None
 
 
 def _is_str_literal(node) -> bool:
@@ -454,10 +455,126 @@ def _is_str_literal(node) -> bool:
     return False
 
 
+#: Methods that return the string transformed but still in its vocabulary, so
+#: a parse after one still reads the column as one vocabulary.
+_NORMALISERS = frozenset(
+    {"lower", "upper", "strip", "lstrip", "rstrip", "casefold", "title"}
+)
+
+
+def _is_enum_member(node) -> bool:
+    """``UnifiedDataType.LOGS``, ``EvidenceSourceType.LOGS.value``, or a
+    tuple/list/set made only of them: a comparison against ONE vocabulary."""
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return bool(node.elts) and all(_is_enum_member(e) for e in node.elts)
+    while isinstance(node, ast.Attribute):
+        node = node.value
+        if isinstance(node, ast.Name) and node.id in _ONE_VOCABULARY_PARSERS:
+            return True
+    return False
+
+
+def _is_named_constant(node) -> bool:
+    """``_LOG_TYPES`` / ``mod.LOG_TYPES``: a module constant, whose members
+    the comparison cannot see — read as a vocabulary by convention."""
+    name = getattr(node, "id", None) or getattr(node, "attr", None)
+    return bool(name) and name.lstrip("_").isupper()
+
+
+def _consumer(expr: ast.AST) -> str | None:
+    """What *expr* is handed to, when that is a parse.
+
+    Walks up through what keeps the value in its vocabulary — ``x or d``,
+    ``a if c else b``, ``(n := x)``, ``str(x)`` and a normalising method
+    (``x.lower()``, ``.strip()`` …) — then names the consumer: the callee of a
+    positional or keyword argument, ``"get"`` for ``.get(x)``, ``"[]"`` for
+    ``MAP[x]``, ``"==literal"`` / ``"==enum"`` / ``"in_named_set"`` for a
+    comparison against string literals, enum members or a module constant,
+    and ``"startswith"`` for ``x.startswith("…")`` / ``endswith``."""
+    node = expr
+    while True:
+        parent = getattr(node, "_fm_parent", None)
+        if isinstance(parent, (ast.BoolOp, ast.IfExp, ast.NamedExpr)):
+            node = parent
+        elif (
+            isinstance(parent, ast.Call)
+            and isinstance(parent.func, ast.Name)
+            and parent.func.id == "str"
+            and len(parent.args) == 1
+            and parent.args[0] is node
+        ):
+            node = parent
+        elif (
+            isinstance(parent, ast.Attribute)
+            and parent.value is node
+            and isinstance(getattr(parent, "_fm_parent", None), ast.Call)
+            and parent._fm_parent.func is parent
+        ):
+            call = parent._fm_parent
+            if parent.attr in _NORMALISERS:
+                node = call
+            elif parent.attr in ("startswith", "endswith") and any(
+                _is_str_literal(a) for a in call.args
+            ):
+                return "startswith"
+            else:
+                return None
+        else:
+            break
+    if isinstance(parent, ast.keyword):
+        # ``Parser(value=x)``: a keyword argument's parent is the ``keyword``
+        # node, not the call, so step through it to the call.
+        parent = getattr(parent, "_fm_parent", None)
+    if isinstance(parent, ast.Call) and (
+        node in parent.args or any(kw.value is node for kw in parent.keywords)
+    ):
+        fn = parent.func
+        return getattr(fn, "id", None) or getattr(fn, "attr", None)
+    if isinstance(parent, ast.Subscript) and parent.slice is node:
+        return "[]"
+    if isinstance(parent, ast.Compare):
+        others = [
+            side for side in [parent.left, *parent.comparators] if side is not node
+        ]
+        if any(_is_str_literal(side) for side in others):
+            return "==literal"
+        if any(_is_enum_member(side) for side in others):
+            return "==enum"
+        if any(isinstance(op, (ast.In, ast.NotIn)) for op in parent.ops) and any(
+            _is_named_constant(side) for side in parent.comparators
+        ):
+            return "in_named_set"
+    return None
+
+
 #: What a site handed to one of these has done: parsed the column as ONE
-#: vocabulary. ``get`` and ``[]`` are the lookup form ``deep_analysis_tool``
-#: used (``_TYPE_MAP.get(stored)``).
-_PARSES = _ONE_VOCABULARY_PARSERS | {"get", "[]", "==literal"}
+#: vocabulary. ``get`` and ``[]`` catch a lookup keyed on the value —
+#: ``MAP.get(x)``, ``MAP[x]``, ``UnifiedDataType[x]`` — and, because
+#: ``_consumer`` walks through ``str()`` and the normalising methods (#1646),
+#: the form ``deep_analysis_tool`` used before #583 as well:
+#: ``_TYPE_MAP.get(str(ft).lower(), UnifiedDataType.TEXT)``.
+_PARSES = _ONE_VOCABULARY_PARSERS | {
+    "get",
+    "[]",
+    "==literal",
+    "==enum",
+    "in_named_set",
+    "startswith",
+}
+
+
+def _consumers(site: _Site) -> set[str]:
+    """Everything the site's value is handed to: the ``_consumer`` of each of
+    its ``_uses``."""
+    return {_consumer(use) for use in _uses(site)} - {None}
+
+
+def _one_vocabulary_parses(site: _Site) -> set[str]:
+    """The per-site rule: which of the site's consumers read its value as ONE
+    vocabulary. Empty is what an ``opaque`` or ``passthrough`` site must be;
+    the census test and the probe-table test both call this."""
+    return _consumers(site) & _PARSES
+
 
 _SVC = "modules/agent/domain/services/investigation_service/service.py"
 _ATTACHMENTS = "modules/agent/domain/services/investigation_service/attachments.py"
@@ -800,15 +917,32 @@ def test_every_reader_of_uploaded_file_data_type_is_classified():
     - a non-docstring string literal naming ``data_type`` in SQL
       (``SELECT`` / ``INSERT`` / ``UPDATE`` / ``json_build_object``).
 
+    And a PARSE of a read's value — what reads it as ONE vocabulary (#1646):
+
+    - handing it to ``UnifiedDataType`` / ``EvidenceSourceType`` /
+      ``DataType`` / ``DetailedDataType``, as a positional or a keyword
+      argument (``UnifiedDataType(value=x)``);
+    - a lookup keyed on it: ``MAP.get(x)``, ``MAP[x]``
+      (``UnifiedDataType[x.upper()]`` included);
+    - a comparison, with the value on either side, against string literals
+      (``== "logs"``, ``in ("logs", …)``), against enum members or a
+      tuple/list/set of them (``== UnifiedDataType.LOGS``,
+      ``== EvidenceSourceType.LOGS.value``), or ``in`` / ``not in`` a module
+      constant (``_LOG_TYPES``, ``mod.LOG_TYPES``) whose members the
+      comparison cannot see;
+    - ``x.startswith("…")`` / ``x.endswith("…")`` with a literal argument.
+
     **Checked per SITE, not per function.** Each site's value is followed to
     what consumes it — the read itself, and every use of a local name it is
-    assigned to (one hop) — through ``x or default`` and ``a if c else b``:
+    bound to (one hop: ``name = …``, ``name: T = …``, ``(name := …)``, or its
+    own element of ``a, b = x, y``) — through what keeps the value in its
+    vocabulary: ``x or default``, ``a if c else b``, ``(n := x)``,
+    ``str(x)`` and the normalising methods (``lower``, ``upper``, ``strip``,
+    ``lstrip``, ``rstrip``, ``casefold``, ``title``). Any other method call
+    ends the walk, and is not a parse (``x.replace("_", " ")``):
 
     - ``boundary``: the value reaches ``unified_data_type_of``;
-    - ``opaque`` / ``passthrough``: it reaches none of ``UnifiedDataType``,
-      ``EvidenceSourceType``, ``DataType``, a ``.get(…)`` / ``MAP[…]`` lookup,
-      or a comparison against string literals — i.e. nothing that reads it as
-      one vocabulary;
+    - ``opaque`` / ``passthrough``: it reaches no PARSE above;
     - ``other``: unchecked by construction. That is why the object read from
       is in the key: a read of ``res.uploaded_file`` added beside an
       ``other`` read of ``intent`` is a new site, and fails the census.
@@ -819,8 +953,20 @@ def test_every_reader_of_uploaded_file_data_type_is_classified():
       names no ``"data_type"`` literal — it reads a suggestion entry, not the
       column, but a column read spelled through a constant would escape too;
     - a helper whose attribute name arrives in a variable or keyword;
-    - dataflow beyond one assignment hop, or through a function call (a
+    - dataflow beyond the one hop above, or through a function call (a
       parse inside a helper the value is passed to);
+    - a parse in a CALLER of a function that returns the value in a
+      container. 3 opaque sites do: ``suggestion_liveness.file_data_types``,
+      ``_format_unpromoted_files`` and ``_engine_attachment_metadata``;
+    - a one-vocabulary predicate in SQL text (``WHERE data_type IN ('logs',
+      …)``). 0 today: the two SQL texts with ``data_type`` before ``=`` are
+      the upserts' ``SET data_type = COALESCE(…)``;
+    - membership in a set held in a lowercase local name (``x in
+      seen_types``), which reads the same as a snapshot. 0 on a column read
+      today;
+    - a transforming method other than the normalisers (``x.replace(…)``,
+      ``x.split(…)``): the walk stops there. 0 on a column read today;
+    - ``match`` statements. The package has none today;
     - whole-row serialisation. It exists, and moves the value verbatim:
       ``Case.model_validate(case.model_dump())`` in the SQLite save,
       ``CheckpointService.create_checkpoint``'s ``case.model_dump()`` snapshot
@@ -866,15 +1012,144 @@ def test_every_reader_of_uploaded_file_data_type_is_classified():
         category, _ = _EXPECTED[site.key]
         if category == "other":
             continue
-        consumers = {_consumer(use) for use in _uses(site)} - {None}
         if category == "boundary":
+            consumers = _consumers(site)
             assert _BOUNDARY in consumers, (
                 f"{site.key} (line {site.node.lineno}) needs the 6-valued type "
                 f"but its value never reaches {_BOUNDARY}: {sorted(consumers)}"
             )
-        parses = consumers & _PARSES
+        parses = _one_vocabulary_parses(site)
         assert not parses, (
             f"{site.key} (line {site.node.lineno}) is filed as {category} but "
             f"its value is read as one vocabulary by {sorted(parses)} — "
             f"go through {_BOUNDARY}"
         )
+
+
+#: #1646's mechanism probe, as a table: the body of ``f`` below, whose one
+#: read of the column is ``uf.data_type``. Every positive reads the value as
+#: ONE vocabulary; every negative shares their tokens and does not. P10 and
+#: P12 are two statements. The same rows, planted in place of the opaque read
+#: in ``turn_pipeline.generate_implicit_query``, were run through the census
+#: test above.
+_PROBE_POSITIVES = {
+    "P0-get-control": 'data_type_label = {"a": "b"}.get(uf.data_type) or "u"',
+    "P1-get-str-lower": (
+        'data_type_label = {"a": "b"}.get(str(uf.data_type).lower()) or "u"'
+    ),
+    "P2-get-strip": 'data_type_label = {"a": "b"}.get(uf.data_type.strip())',
+    "P3-eq-enum-member": (
+        'data_type_label = "L" if uf.data_type == UnifiedDataType.LOGS else "x"'
+    ),
+    "P4-eq-enum-member-value": (
+        'data_type_label = "L" if uf.data_type == EvidenceSourceType.LOGS.value'
+        ' else "x"'
+    ),
+    "P5-in-enum-members": (
+        'data_type_label = "L" if uf.data_type in'
+        ' (UnifiedDataType.LOGS, UnifiedDataType.METRICS) else "x"'
+    ),
+    "P6-in-named-set": 'data_type_label = "L" if uf.data_type in _LOG_TYPES else "x"',
+    "P7-parser-keyword": "data_type_label = UnifiedDataType(value=uf.data_type)",
+    "P8-enum-subscript-upper": (
+        "data_type_label = UnifiedDataType[uf.data_type.upper()]"
+    ),
+    "P9-startswith-literal": (
+        'data_type_label = "L" if uf.data_type.startswith("log") else "x"'
+    ),
+    "P10-annotated-assignment-hop": (
+        'dt: str = uf.data_type; data_type_label = {"a": "b"}.get(dt)'
+    ),
+    "P11-walrus-hop": (
+        'data_type_label = {"a": "b"}.get(x) if (x := uf.data_type) else "u"'
+    ),
+    "P12-tuple-hop": (
+        'dt, other = uf.data_type, 1; data_type_label = {"a": "b"}.get(dt)'
+    ),
+    "P13-get-casefold": 'data_type_label = {"a": "b"}.get(uf.data_type.casefold())',
+    "P14-lower-eq-literal": (
+        'data_type_label = "L" if uf.data_type.lower() == "logs" else "x"'
+    ),
+    "P15-str-in-literal-set": (
+        'data_type_label = "L" if str(uf.data_type) in {"logs", "metrics"} else "x"'
+    ),
+    "P16-parser-str": "data_type_label = UnifiedDataType(str(uf.data_type))",
+    "P17-ne-enum-member": (
+        'data_type_label = "L" if uf.data_type != EvidenceSourceType.LOGS else "x"'
+    ),
+    "P18-walrus-eq-literal": (
+        'data_type_label = "L" if (x := uf.data_type) == "logs" else "x"'
+    ),
+    "P19-not-in-module-constant": (
+        'data_type_label = "L" if uf.data_type not in types_mod.LOG_TYPES else "x"'
+    ),
+    "P20-literal-eq-reversed": (
+        'data_type_label = "L" if "logs" == uf.data_type else "x"'
+    ),
+    "P21-enum-eq-reversed": (
+        'data_type_label = "L" if UnifiedDataType.LOGS == uf.data_type else "x"'
+    ),
+    "P22-get-strip-lower-chain": (
+        'data_type_label = {"a": "b"}.get(uf.data_type.strip().lower())'
+    ),
+    "P23-parser-positional-and-keyword": (
+        "data_type_label = DataType(uf.data_type, strict=True)"
+    ),
+}
+_PROBE_NEGATIVES = {
+    "N1-todays-label": 'data_type_label = uf.data_type or "unclassified data"',
+    "N2-str-label": 'data_type_label = str(uf.data_type) or "u"',
+    "N3-or-default-lower-label": (
+        'data_type_label = (uf.data_type or "unclassified data").lower()'
+    ),
+    "N4-str-strip-label": 'data_type_label = str(uf.data_type).strip() or "u"',
+    "N5-fstring": 'data_type_label = f"{uf.data_type}"',
+    "N6-eq-snapshot-name": (
+        'data_type_label = "same" if uf.data_type == previous else "x"'
+    ),
+    "N7-in-lowercase-local": (
+        'data_type_label = "same" if uf.data_type in seen_types else "x"'
+    ),
+    "N9-replace-label": 'data_type_label = uf.data_type.replace("_", " ") or "u"',
+    "N10-len": "data_type_label = len(uf.data_type)",
+    "N11-startswith-variable": (
+        'data_type_label = "L" if uf.data_type.startswith(prefix) else "x"'
+    ),
+    "N12-enum-near-not-compared": (
+        "data_type_label = UnifiedDataType.LOGS.value if flag else uf.data_type"
+    ),
+    "N13-in-list-display": 'data_type_label = sorted([uf.data_type, "x"])',
+    "N14-eq-other-attribute": (
+        'data_type_label = "same" if uf.data_type == other.data_kind else "x"'
+    ),
+    "N15-is-none": 'data_type_label = "u" if uf.data_type is None else "x"',
+    "N16-dict-keyword-label": "data_type_label = dict(label=uf.data_type)",
+    "N17-logger-keyword": "data_type_label = log(extra=uf.data_type)",
+}
+
+
+@pytest.mark.parametrize(
+    ("body", "is_parse"),
+    [pytest.param(b, True, id=i) for i, b in _PROBE_POSITIVES.items()]
+    + [pytest.param(b, False, id=i) for i, b in _PROBE_NEGATIVES.items()],
+)
+def test_the_per_site_rule_over_the_probe_table(body, is_parse):
+    """#1646: the per-site rule, over every shape the probe ran.
+
+    Each row is parsed as a module of its own and goes through the same
+    walker (``_scan``) and the same per-site rule (``_one_vocabulary_parses``)
+    as the census test, so a rule removed from either fails its own rows
+    here, with no reader on the real tree having to be re-planted.
+    """
+    source = f"def f(uf, previous, seen_types, prefix, flag, other):\n    {body}\n"
+    sites, parsed = _scan((("probe.py", ast.parse(source)),))
+
+    assert parsed == {"probe.py"}
+    # Exactly one read, of the column: a row that held none would pass as a
+    # negative while checking nothing.
+    assert [site.key for site in sites] == [("probe.py", "f", "attr", "uf")]
+    parses = _one_vocabulary_parses(sites[0])
+    if is_parse:
+        assert parses, f"{body!r} reads the value as one vocabulary; no parse seen"
+    else:
+        assert not parses, f"{body!r} is no parse, but was read as {sorted(parses)}"
