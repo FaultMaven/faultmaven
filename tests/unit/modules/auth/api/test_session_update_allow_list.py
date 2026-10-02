@@ -27,6 +27,7 @@ record, read back through ``get_session``, must be exactly what it was.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Dict
@@ -47,6 +48,8 @@ from faultmaven.api.v1.dependencies import get_session_service
 from faultmaven.modules.auth.api.session import router as session_router
 from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.domain.services.auth_session_service import (
+    _FIELD_MESSAGES,
+    CLIENT_UPDATABLE_SESSION_FIELDS,
     AuthSessionService,
 )
 from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
@@ -62,6 +65,7 @@ SEED_METADATA = {"seed": "kept", "n": 1}
 
 ONLY_METADATA = "Only 'metadata' may be updated."
 WRONG_TYPE_DETAIL = "metadata must be a JSON object"
+NOT_JSON_DETAIL = "metadata must hold only JSON values"
 
 pytestmark = [
     pytest.mark.unit,
@@ -71,7 +75,12 @@ pytestmark = [
 
 
 def _refused_detail(refused: list[str]) -> str:
-    return f"Session fields cannot be updated: {refused}. {ONLY_METADATA}"
+    """The refusal for up to five short keys: each named verbatim, then a count."""
+    named = ", ".join(repr(key) for key in refused)
+    return (
+        f"Session fields cannot be updated: {named} ({len(refused)} refused). "
+        f"{ONLY_METADATA}"
+    )
 
 
 def _build_app(service: AuthSessionService, current_user: DevUser) -> FastAPI:
@@ -111,7 +120,9 @@ async def world():
         created_at=datetime.now(timezone.utc),
     )
     app = _build_app(service, attacker)
-    transport = httpx.ASGITransport(app=app)
+    # An exception that escapes the app is answered 500, as a server would,
+    # rather than re-raised into the test: the status is what is asserted.
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield SimpleNamespace(
             client=client,
@@ -232,6 +243,46 @@ async def test_a_body_mixing_metadata_and_a_refused_key_applies_neither(world):
     assert await _keys(world) == keys_before
 
 
+@pytest.mark.parametrize(
+    "body, count, shown, hidden",
+    [
+        pytest.param(
+            {"k" * 5000: 1},
+            1,
+            # repr() clipped to 64 characters, the last of them the ellipsis.
+            "'" + "k" * 62 + "…",
+            "k" * 63,
+            id="one-5000-char-key",
+        ),
+        pytest.param(
+            {f"k{i}": 0 for i in range(10_000)},
+            10_000,
+            # The first five, sorted, then an ellipsis for the rest.
+            "'k0', 'k1', 'k10', 'k100', 'k1000', …",
+            "'k1001'",
+            id="10000-keys",
+        ),
+    ],
+)
+async def test_the_refusal_echoes_a_bounded_number_of_clipped_keys(
+    world, body, count, shown, hidden
+):
+    """The refused keys are caller input; the 400 does not grow with them."""
+    own_before = await _record(world, world.own_id)
+    keys_before = await _keys(world)
+
+    response = await _put(world, body)
+
+    assert response.status_code == 400, response.text[:200]
+    detail = response.json()["detail"]
+    assert len(detail) < 600, len(detail)
+    assert f"({count} refused)" in detail
+    assert shown in detail
+    assert hidden not in detail
+    assert await _record(world, world.own_id) == own_before
+    assert await _keys(world) == keys_before
+
+
 # ---------------------------------------------------------------------------
 # ``metadata`` is validated against its declared type
 # ---------------------------------------------------------------------------
@@ -260,6 +311,15 @@ async def test_a_metadata_that_is_not_an_object_is_a_400_that_changes_nothing(
     assert await _keys(world) == keys_before
 
 
+def test_every_allowed_field_has_a_fixed_wrong_type_message():
+    """The wrong-type 400 is looked up by the failing field's name.
+
+    An allowed field without an entry would fall back to a generic message
+    that says nothing about what was wrong.
+    """
+    assert CLIENT_UPDATABLE_SESSION_FIELDS <= _FIELD_MESSAGES.keys()
+
+
 async def test_an_empty_body_is_a_400_that_changes_nothing(world):
     own_before = await _record(world, world.own_id)
     keys_before = await _keys(world)
@@ -272,17 +332,53 @@ async def test_an_empty_body_is_a_400_that_changes_nothing(world):
 
 
 @pytest.mark.parametrize(
-    "raw",
+    "raw, status, detail",
     [
-        pytest.param("not json", id="invalid-json"),
-        pytest.param("[]", id="array"),
-        pytest.param('"x"', id="string"),
-        pytest.param("null", id="null"),
-        pytest.param("", id="empty"),
+        pytest.param("not json", 422, None, id="invalid-json"),
+        pytest.param("[]", 422, None, id="array"),
+        pytest.param('"x"', 422, None, id="string"),
+        pytest.param("null", 422, None, id="null"),
+        pytest.param("", 422, None, id="empty"),
+        # Python's JSON parser accepts these; no JSON response can carry them.
+        # Before the check they were saved, and that PUT and every later read
+        # of the session answered 500.
+        pytest.param('{"metadata": {"x": NaN}}', 400, NOT_JSON_DETAIL, id="nan"),
+        pytest.param(
+            '{"metadata": {"x": Infinity}}', 400, NOT_JSON_DETAIL, id="infinity"
+        ),
+        pytest.param(
+            '{"metadata": {"x": -Infinity}}', 400, NOT_JSON_DETAIL, id="-infinity"
+        ),
+        pytest.param(
+            '{"metadata": {"x": 1e400}}', 400, NOT_JSON_DETAIL, id="1e400-is-inf"
+        ),
+        pytest.param(
+            '{"metadata": {"x": "\\ud800"}}',
+            400,
+            NOT_JSON_DETAIL,
+            id="lone-surrogate-value",
+        ),
+        pytest.param(
+            '{"metadata": {"\\ud800": 1}}',
+            400,
+            NOT_JSON_DETAIL,
+            id="lone-surrogate-key",
+        ),
+        pytest.param(
+            '{"metadata": {"a": {"b": [1, NaN]}}}',
+            400,
+            NOT_JSON_DETAIL,
+            id="nested-nan",
+        ),
     ],
 )
-async def test_a_body_that_is_not_a_json_object_is_a_4xx_not_a_500(world, raw):
-    """The invariant's last clause: no body, valid JSON or not, answers 500."""
+async def test_a_body_that_is_not_a_json_object_is_a_4xx_not_a_500(
+    world, raw, status, detail
+):
+    """A body that is not a JSON object, or holds a non-JSON value, is a 4xx.
+
+    Sent as raw text: ``httpx``'s ``json=`` refuses NaN before it is sent.
+    """
     own_before = await _record(world, world.own_id)
     keys_before = await _keys(world)
 
@@ -292,8 +388,39 @@ async def test_a_body_that_is_not_a_json_object_is_a_4xx_not_a_500(world, raw):
         headers={"content-type": "application/json"},
     )
 
-    assert 400 <= response.status_code < 500, response.text
+    assert response.status_code == status, response.text
+    if detail is not None:
+        assert response.json()["detail"] == detail
     assert await _record(world, world.own_id) == own_before
+    assert await _keys(world) == keys_before
+
+
+async def test_a_stored_record_naming_another_session_is_not_written_through(
+    world,
+):
+    """``save()`` keys on the record's own ``session_id``, never the path's.
+
+    A stored record whose ``session_id`` names another session would redirect
+    the write onto that session: the #1834 mechanism from the stored side. The
+    record is planted directly, so the route's ownership check passes, and the
+    update must write nothing anywhere. A 5xx is the right answer: the stored
+    state is corrupt, which no request body caused.
+    """
+    key = f"{world.service.session_store.prefix}{world.own_id}"
+    planted = json.loads(await world.redis.get(key))
+    planted["session_id"] = world.victim_id
+    await world.redis.set(key, json.dumps(planted))
+    planted_raw = await world.redis.get(key)
+    victim_before = await _record(world, world.victim_id)
+    keys_before = await _keys(world)
+
+    response = await _put(world, {"metadata": {"a": 1}})
+
+    assert response.status_code == 500, response.text
+    assert await world.redis.get(key) == planted_raw
+    victim_after = await _record(world, world.victim_id)
+    assert victim_after["user_id"] == VICTIM
+    assert victim_after == victim_before
     assert await _keys(world) == keys_before
 
 
@@ -307,6 +434,8 @@ async def test_a_body_that_is_not_a_json_object_is_a_4xx_not_a_500(world, raw):
     [
         pytest.param({}, id="cleared"),
         pytest.param({"nested": {"x": [1, 2]}}, id="nested"),
+        # Non-ASCII is JSON: the representability check must not refuse it.
+        pytest.param({"emoji": "\N{GRINNING FACE}"}, id="emoji"),
     ],
 )
 async def test_metadata_round_trips(world, metadata):
@@ -320,6 +449,8 @@ async def test_metadata_round_trips(world, metadata):
     assert response.json()["metadata"] == metadata
     own_after = await _record(world, world.own_id)
     assert own_after["metadata"] == metadata
+    # An accepted update stamps the record.
+    assert own_after["updated_at"] > own_before["updated_at"]
     # Only metadata and the update stamp moved.
     for field in ("metadata", "updated_at"):
         own_before.pop(field)
