@@ -2037,6 +2037,7 @@ class KnowledgeService:
                             "severity": meta.get("severity"),
                             "quality_score": meta.get("quality_score"),
                         },
+                        **self._verification_fields(item),
                     }
                 )
 
@@ -2114,6 +2115,20 @@ class KnowledgeService:
                 "severity": meta.get("severity"),
                 "quality_score": meta.get("quality_score"),
             },
+            **KnowledgeService._verification_fields(item),
+        }
+
+    @staticmethod
+    def _verification_fields(item: Any) -> Dict[str, Any]:
+        """The trust fields every document read carries (#878).
+
+        One helper for ``list_documents`` and ``_document_dto`` so the two
+        shapes cannot drift; the status comes from the one rule,
+        ``KnowledgeItem.get_verification_status``.
+        """
+        return {
+            "verification_level": int(item.verification_level),
+            "verification_status": item.get_verification_status(),
         }
 
     async def get_document(self, document_id: str) -> Optional[Dict[str, Any]]:

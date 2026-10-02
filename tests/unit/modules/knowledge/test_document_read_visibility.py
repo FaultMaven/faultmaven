@@ -500,6 +500,8 @@ def _doc(*, scope="personal", owner_id="u1"):
         "created_at": "",
         "updated_at": "",
         "metadata": {},
+        "verification_level": 0,
+        "verification_status": "experimental",
     }
 
 

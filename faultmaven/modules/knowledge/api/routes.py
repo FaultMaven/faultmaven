@@ -726,12 +726,8 @@ async def get_document_snippet(
             snippet = "\n".join(lines[start_idx:end_idx])
 
         # Get verification status
-        verification_level = document.get("verification_level", 0)
-        verification_status = "experimental"
-        if verification_level >= 2:
-            verification_status = "verified"
-        elif verification_level >= 1:
-            verification_status = "community"
+        verification_level = document["verification_level"]
+        verification_status = document["verification_status"]
 
         return DocumentSnippetResponse(
             document_id=document_id,
