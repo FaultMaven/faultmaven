@@ -1900,3 +1900,141 @@ def test_precondition_is_the_same_word(metrics):
     line = "**Blocked on:** Precondition — the nightly run is green for a week"
 
     assert metrics.blocked_on_condition(line) == "the nightly run is green for a week"
+
+
+# --- #1643: "Ruled out" is investigation prose; "not a ruling" after the dash
+
+_RULING_TRUE = [
+    "**Ruled 2026-09-24.** x",
+    "**Ruled:** (a)",
+    "**Ruled** (b)",
+    "> **Ruled 2026-09-24.**",
+    "## Ruling",
+    "## Ruling recorded \u2014 (a), 2026-10-02",
+    "## Ruled",
+    "## Owner ruling, 2026-09-17",
+    "## Owner rulings",
+    "## Decision record",
+    "## Ruling on item 15",
+    "## Owner ruling: the badge is meant to convey trust",
+    "## Ruled outcome: (a)",
+    "## Ruling \u2014 outcome (a)",
+    "**Ruled 2026-10-02:** (b). out of band",
+    # "out of scope" is a scope ruling, not a cause ruled out.
+    "**Ruled out of scope 2026-10-02.** Close it.",
+    "**Ruled out of scope.**",
+    "## Ruled out of scope",
+    "## Ruled *out of scope*",
+    # "Owner ruling" and "Decision record" take no exclusion.
+    "## Owner ruling - out of scope",
+    "## Owner ruling out of scope",
+    "## Decision record - out of band",
+    "## Owner ruling out of band",
+    "## Decision record out of band",
+    "## Owner ruling out",
+    "## Decision record-out",
+    # A spaced hyphen or dash is a separator, not the compound "Ruled-out".
+    "## Ruling - out of scope",
+    "**Ruled - out of scope.**",
+    "## Ruling \u2014 out of scope",
+    "## Ruled - (b), 2026-09-30",
+    "## Ruled \u2013 (b)",
+    "## Ruled \u2011 out",
+    # "out" as the start of a longer word.
+    "## Ruled outward-facing",
+    "## Ruled outage policy",
+]
+_RULING_FALSE = [
+    "**Ruled out:** DNS",
+    "## Ruled out",
+    "### Ruling out the disk",
+    "**Ruled out**",
+    "## Ruled Out",
+    "## Ruled-out causes",
+    "## Ruling-out",
+    "**Ruled  out:** x",
+    "## Ruled\tout",
+    "## Ruling needed",
+    "## Ruling?",
+    "## Ruled *out*",
+    "## Ruled _out_",
+    "**Ruled** out: DNS",
+    "## Ruled\u2013out",
+    "## Ruled\u00a0out",
+    "## Ruled\u2212out",
+    "## Ruled out of the running",
+    "## Ruled out?",
+    "## Ruled out.",
+]
+
+
+@pytest.mark.parametrize("text", _RULING_TRUE)
+def test_a_ruling_spelling_is_still_recorded(metrics, text):
+    assert metrics._ruling_recorded(text) is True
+
+
+@pytest.mark.parametrize("text", _RULING_FALSE)
+def test_ruled_out_is_not_a_ruling(metrics, text):
+    assert metrics._ruling_recorded(text) is False
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (
+            "condition \u2014 not a ruling \u2014 unobservable today: x",
+            "unobservable today: x",
+        ),
+        (
+            "Condition \u2013 NOT A RULING \u2013 unobservable today: y",
+            "unobservable today: y",
+        ),
+        ("precondition \u2014 not a ruling \u2014 X", "X"),
+        ("condition \u2014 not a ruling: X", "X"),
+        ("condition \u2014 not a ruling", ""),
+        ("condition \u2014 not a ruling \u2014", ""),
+        ("condition, not a ruling \u2014 X", "X"),
+        ("condition \u2014 X", "X"),
+        ("condition: X", "X"),
+        ("condition not a ruling: X", "X"),
+        (
+            "condition \u2014 not a ruling but a measurement: X",
+            "not a ruling but a measurement: X",
+        ),
+        ("condition \u2014 notable latency on X", "notable latency on X"),
+        (
+            "condition \u2014 not a ruling, unobservable today: x",
+            "unobservable today: x",
+        ),
+        (
+            "condition \u2014 not a ruling; unobservable today: x",
+            "unobservable today: x",
+        ),
+        ("condition \u2014 not a ruling. X", "X"),
+        ("condition not a rulings \u2014 X", "not a rulings \u2014 X"),
+        ("condition \u2014 not a rulings \u2014 X", "not a rulings \u2014 X"),
+    ],
+)
+def test_condition_of_admits_the_qualifier_after_the_dash(metrics, payload, expected):
+    assert metrics._condition_of(payload) == expected
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "condition \u2014 not a ruling \u2014 unobservable today: x",
+        "condition \u2014 not a ruling, unobservable today: x",
+        "condition \u2014 not a ruling; unobservable today: x",
+    ],
+)
+def test_a_qualifier_after_the_dash_still_reaches_nothing_can_check(metrics, statement):
+    issues = metrics.load_issues(
+        [
+            _ready(1, 1),
+            _blocked(700, 2, "**Blocked on:** " + statement),
+        ]
+    )
+    tier = metrics.rule4_tier(issues, LATER, REPO)
+
+    assert tier["blocking"]["unobservable"] == [700]
+    assert "**Nothing can check** #700" in metrics._rule4_text(tier)

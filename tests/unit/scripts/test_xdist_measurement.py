@@ -450,3 +450,61 @@ def test_one_complete_run_beside_an_aborted_one_is_not_agreement(xm):
         aborted,
     ]
     assert "**NOT ESTABLISHED (1 complete run(s); need 2+)**" in xm.render(runs)
+
+
+# --- #1637: a failure whose text holds two tabs is not a job/step prefix
+
+_S = "2026-09-01T00:00:00.1234567Z "
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (
+            _S + "FAILED tests/a.py::t - assert 'a\tb\tc' == 1",
+            "FAILED tests/a.py::t - assert 'a\tb\tc' == 1",
+        ),
+        ("FAILED t - 'a\tb\tc'", "FAILED t - 'a\tb\tc'"),
+        ("job\tstep\t" + _S + "FAILED x", "FAILED x"),
+        ("job\tstep\t\ufeff" + _S + "x", "x"),
+        ("\ufeff" + _S + "x", "x"),
+        ("job\tstep\t" + _S + "FAILED x 'a\tb\tc'", "FAILED x 'a\tb\tc'"),
+        (
+            _S + "=== 1 failed, 2 passed in 3.0s ===",
+            "=== 1 failed, 2 passed in 3.0s ===",
+        ),
+        ("j\ts\tno stamp", "j\ts\tno stamp"),
+        # The line's own stamp first: a tabbed stamp in its TEXT is not a prefix.
+        (
+            _S + "FAILED tests/a.py::t - ValueError: row\tid\t2026-09-01T00:00:00Z bad",
+            "FAILED tests/a.py::t - ValueError: row\tid\t2026-09-01T00:00:00Z bad",
+        ),
+        (
+            "job\tstep\t2026-09-01T00:00:00+00:00 FAILED x",
+            "job\tstep\t2026-09-01T00:00:00+00:00 FAILED x",
+        ),
+        (
+            "\ufeff" + _S + "FAILED t - a\tb\t2026-09-01T00:00:00Z c",
+            "FAILED t - a\tb\t2026-09-01T00:00:00Z c",
+        ),
+    ],
+)
+def test_strip_line_only_strips_a_prefix_that_leads_to_the_stamp(xm, raw, expected):
+    assert xm.strip_line(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "failed",
+    [
+        "FAILED tests/a.py::t - assert 'a\tb\tc' == 1",
+        "FAILED tests/a.py::t - ValueError: row\tid\t2026-09-01T00:00:00Z bad",
+    ],
+)
+def test_a_failure_line_holding_two_tabs_is_parsed(xm, failed):
+    log = _gh_log(
+        "=========================== short test summary info ============================",
+        failed,
+        "=== 1 failed, 2 passed in 3.00s ===",
+    )
+    r = xm.parse_log(log)
+    assert r.failures == ["tests/a.py::t"]

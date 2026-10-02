@@ -60,8 +60,15 @@ REPO = "FaultMaven/faultmaven"
 # `gh api .../actions/jobs/<id>/logs` prefixes every line with an ISO stamp;
 # `gh run view --log` additionally prefixes "<job>\t<step>\t". Both are
 # stripped, as is the BOM GitHub puts on the first line and any ANSI colour.
+# The job/step group is taken only when a stamp follows it and the line does
+# not itself open with one: a line whose TEXT holds two tabs ("assert
+# 'a\tb\tc'", or "row\tid\t<stamp>" after the line's own stamp) is not a
+# prefix (#1637). Both lookaheads read `_STAMP`, the stamp the strip removes,
+# so a "+00:00" stamp the strip would keep does not open the group either.
+_STAMP = r"\ufeff?\d{4}-\d\d-\d\dT[0-9:.]+Z"
 _PREFIX_RE = re.compile(
-    r"^(?:[^\t\n]*\t[^\t\n]*\t)?\ufeff?(?:\d{4}-\d\d-\d\dT[0-9:.]+Z ?)?"
+    r"^(?:(?!" + _STAMP + r")[^\t\n]*\t[^\t\n]*\t(?=" + _STAMP + r"))?"
+    r"\ufeff?(?:\d{4}-\d\d-\d\dT[0-9:.]+Z ?)?"
 )
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
