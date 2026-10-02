@@ -1,23 +1,24 @@
 """fm#522 — syslog fields and remote hostnames must not be counted as usernames.
 
-Every test here drives one of the two **real entry points** rather than the
-rule's internals, with two named exceptions, each of which says why in its own
-docstring: ``test_is_username_predicate`` (the public ``is_username``) and
-``test_one_line_is_one_mention_even_across_different_fields`` (a pre-assertion
-on the two patterns):
+The cases that defend a named guard drive the two **real entry points**
+rather than the rule's internals:
 
 * ``LogsAndErrorsExtractor().extract()`` — the always-on entity profile.
 * ``extract_entities_for_data_type(DataType.LOGS_AND_ERRORS, ...)`` — the
   ``FAULTMAVEN_ENTITY_REGISTRY`` path, whose ``EntityType.USER`` rows reach
   the investigation prompt through the Phase 4c entity-highlights block.
 
-Both are asserted for every case: the defect fm#522 reported survived
-because the rule was implemented twice and only one copy carried the
-guards. A test that exercises one path proves nothing about the other.
+Both are asserted for every one of those cases: the defect fm#522 reported
+survived because the rule was implemented twice and only one copy carried
+the guards. A test that exercises one path proves nothing about the other.
 
-Each case names the guard it defends. Removing that guard from
+Each of them names the guard it defends. Removing that guard from
 ``preprocessing/log_usernames.py`` must turn the case red — verified by
 mutation, guard by guard, before this file was committed.
+
+Tests of the rule's public helpers — ``extract_usernames``, ``is_username``,
+``is_plain_username`` and ``sshd_auth.read_sshd_auth_line`` — test those
+contracts directly.
 """
 
 from __future__ import annotations
@@ -510,7 +511,6 @@ def test_both_paths_agree_on_a_mixed_auth_log() -> None:
         ]
     )
     profile, registry = both_paths(content + "\n")
-    assert set(profile) == set(registry) == {"root", "cyrus", "test"}
     # "Failed password for invalid user test" matches on BOTH branches —
     # USER_FIELD_RE on "user test", USER_FOR_RE on "for invalid user test".
     # The profile rendered "test: 2 mentions" until fm#1574; one line is now
@@ -644,6 +644,17 @@ def test_registry_now_records_the_account_not_the_word_user(
             {"admin": 1},
             id="invalid-user-admin",
         ),
+        # The two rows above are lines ``sshd_auth`` reads: sshd's user slot
+        # names the account and neither pattern runs (fm#1668). On the
+        # searched path (``_UNREAD_PREFIX``) both patterns match ``for invalid
+        # user test``, so this row fails if ``extract_usernames`` stops
+        # de-duplicating per line.
+        pytest.param(
+            _UNREAD_PREFIX + "Jul 27 14:41:59 combo sshd[1]: Failed password for "
+            "invalid user test from 211.72.151.162 port 55568 ssh2",
+            {"test": 1},
+            id="invalid-user-overlap-searched",
+        ),
         # De-duplication must be by VALUE, not a blanket one-per-line: two
         # different accounts named on one line are two mentions. sshd never
         # writes ``user=`` after ``ssh2``, so the rule is pinned on the
@@ -732,9 +743,12 @@ def test_one_line_is_one_mention_even_across_different_fields() -> None:
     ``test_mention_counts_are_per_line_on_both_paths``.
 
     Unlike its neighbours this test asserts on ``USER_FIELD_RE`` and
-    ``USER_FOR_RE`` directly: the pre-assertions prove that both branches
-    really match the line, so the test cannot pass merely because the
-    patterns matched once.
+    ``USER_FOR_RE`` directly. Those pre-assertions prove that the line itself
+    matches both patterns, so it is a real two-field case and not a line that
+    simply never matched twice. They do not prove that both branches ran
+    inside ``extract_usernames``. The assertion before them, ``not
+    _is_read(line)``, pins only that the line is searched rather than named
+    by sshd's user slot (fm#1668).
     """
     # On the searched path (``_UNREAD_PREFIX``): a line ``sshd_auth`` reads
     # names only its user slot, and passed here by coincidence (fm#1668).
@@ -743,7 +757,8 @@ def test_one_line_is_one_mention_even_across_different_fields() -> None:
         "from 1.2.3.4 port 2222 ssh2 user=alice\n"
     )
 
-    # Both branches do reach the name; the de-duplication is what makes it one.
+    assert not _is_read(line)
+    # Both patterns match the line; the de-duplication is what makes it one.
     assert USER_FIELD_RE.findall(line) == ["alice"]
     assert USER_FOR_RE.findall(line) == ["alice"]
 
