@@ -1569,12 +1569,31 @@ class ConversionService:
                         }
                     )
                     failed += 1
+            except (NotFoundError, ValidationException) as e:
+                # ``verify_draft``'s own refusals — "Draft not found", "Draft has
+                # validation errors that must be fixed before verification" — and
+                # the publication gate's ``RunbookQualityError``, which lists the
+                # validator's findings about the content. Hand-written and
+                # pathless, so the sentence is what the caller gets, as it was
+                # on main.
+                results.append(
+                    {
+                        "conversion_id": conversion_id,
+                        "draft_id": draft_id,
+                        "status": "failed",
+                        "error": str(e),
+                        "knowledge_item_id": None,
+                    }
+                )
+                failed += 1
             except Exception as e:
                 # The exception's CLASS, never its text (#836). The typed arms
-                # above carry hand-written sentences; what lands here is
-                # foreign — a missing file's ``FileNotFoundError`` names its
-                # absolute path, and an ingestion failure carries the vector
-                # store's own message. The detail goes to the log line.
+                # above — AuthorizationError, ConflictError, NotFoundError,
+                # ValidationException — carry this codebase's hand-written
+                # sentences and keep them. What lands here is anything else: a
+                # missing file's ``FileNotFoundError`` names its absolute path,
+                # and an ingestion failure carries the vector store's own
+                # message. The detail goes to the log line.
                 logger.error(f"Batch verify failed for {draft_id}: {e}")
                 results.append(
                     {

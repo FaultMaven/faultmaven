@@ -1329,7 +1329,7 @@ Post-construction wiring in `main.py` gives `KnowledgeService` a reference to `C
 
 ### 9.5 Scan Guard
 
-`ConversionService.scan_for_runbooks()` includes a bulk-discard guard: if the reconcile step would mark **every** active draft as discarded (because files are missing from disk), the session is rolled back and a `RuntimeError` is raised. The API surfaces this as `HTTP 409 Conflict` with the affected draft IDs and a recovery instruction. This prevents a storage-layer failure (wiped `data/knowledge/` directory) from silently destroying the entire KB draft state.
+`ConversionService.scan_for_runbooks()` includes a bulk-discard guard: if the reconcile step would mark **every** active draft as discarded (because files are missing from disk), the session is rolled back and a `ScanAbortedError` (a `RuntimeError` subclass) is raised. The API surfaces this refusal, and only this one, as `HTTP 409 Conflict`, with the affected draft IDs and a recovery instruction. Any other failure of the scan is a 500 with no exception text (#836). This prevents a storage-layer failure (wiped `data/knowledge/` directory) from silently destroying the entire KB draft state.
 
 **Verified-row policy (changed 2026-05-26):** The scan no longer reverts rows with `status=verified` but `knowledge_item_id=NULL` back to `draft`. The atomic `verify_draft` flow cannot produce that half-state anymore, and the previous "self-healing" behaviour turned out to be the destructive corruption path that downgraded user-verified runbooks every time the KB page was visited. Legacy rows are now surfaced via a WARN log so an operator can clean them up explicitly; the scan itself is read-only with respect to verified rows.
 

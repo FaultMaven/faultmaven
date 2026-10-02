@@ -612,3 +612,100 @@ class TestNoClientStringNamesAPathOrRawText:
         assert refused.json()["detail"] == "Scan aborted: would discard all 2 drafts"
         assert failed.status_code == 500, failed.text
         assert str(kb_root) not in failed.text
+
+    async def _verify_batch_one(self, client: AsyncClient, conversion_id, draft_id):
+        verified = await client.post(
+            f"{API}/drafts/verify-batch",
+            json={
+                "draft_ids": [{"conversion_id": conversion_id, "draft_id": draft_id}]
+            },
+        )
+        assert verified.status_code == 200, verified.text
+        return verified.json()
+
+    async def test_verify_batch_keeps_draft_not_found(
+        self, conversion_service, kb_root
+    ):
+        """``verify_draft``'s own refusals are hand-written and pathless, so
+        verify-batch passes them on as main did; only a foreign exception is
+        reduced to its class."""
+        async with _client(conversion_service) as client:
+            (draft,) = (await client.post(f"{API}/scan")).json()["drafts"]
+            body = await self._verify_batch_one(
+                client, draft["conversion_id"], "draft_does_not_exist"
+            )
+        (item,) = body["results"]
+        assert item["status"] == "failed"
+        assert item["error"] == "Draft not found"
+        assert _leaks(body, kb_root) == []
+
+    async def test_verify_batch_keeps_the_validation_refusal(
+        self, conversion_service, session_factory, kb_root
+    ):
+        async with _client(conversion_service) as client:
+            (draft,) = (await client.post(f"{API}/scan")).json()["drafts"]
+            async with session_factory() as session:
+                await session.execute(
+                    update(ConversionDraftModel).values(validation_passed=False)
+                )
+                await session.commit()
+            body = await self._verify_batch_one(
+                client, draft["conversion_id"], draft["draft_id"]
+            )
+        (item,) = body["results"]
+        assert item["status"] == "failed"
+        assert item["error"] == (
+            "Draft has validation errors that must be fixed before verification"
+        )
+        assert _leaks(body, kb_root) == []
+
+
+# ---------------------------------------------------------------------------
+# The KB upload's runbook write runs off the event loop
+# ---------------------------------------------------------------------------
+
+
+class TestTheUploadWriteLeavesTheEventLoop:
+    async def test_upload_documents_runbook_write_runs_on_another_thread(
+        self, session_factory, kb_root, monkeypatch
+    ):
+        """``upload_document`` hands ``write_runbook_file`` to a worker thread
+        (#836). Recorded where it runs rather than inferred from the source:
+        the test's coroutine runs on the event loop's thread, so the write must
+        record a different one."""
+        import threading
+
+        from faultmaven.utils import runbook_id
+
+        real_write = runbook_id.write_runbook_file
+        write_threads: list[int] = []
+
+        def recording_write(*args, **kwargs):
+            write_threads.append(threading.get_ident())
+            return real_write(*args, **kwargs)
+
+        # ``upload_document`` imports the helper at call time, so the patched
+        # module attribute is the one it calls.
+        monkeypatch.setattr(runbook_id, "write_runbook_file", recording_write)
+        service = KnowledgeService(
+            knowledge_ingester=MagicMock(),
+            sanitizer=MagicMock(),
+            tracer=MagicMock(),
+            vector_store=MagicMock(),
+            db_session_factory=session_factory,
+        )
+        service._index_document_in_vector_store = AsyncMock(return_value=3)
+
+        result = await service.upload_document(
+            content=valid_runbook("Redis Evictions Under Memory Pressure"),
+            title="Redis Evictions",
+            document_type="runbook",
+            scope="global",
+            owner_id="user-op",
+        )
+
+        assert result["status"] == "completed", result
+        assert len(write_threads) == 1, "the runbook write was not reached once"
+        assert (
+            write_threads[0] != threading.get_ident()
+        ), "the runbook write ran on the event loop's thread"

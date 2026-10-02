@@ -268,7 +268,10 @@ async def _scan_for_runbooks_impl(
         }
 
     for md_file in sorted(knowledge_dir.rglob("*.md")):
-        # Skip sources directory (retained original uploads)
+        # Skip a ``sources`` directory: what it would hold is source uploads,
+        # not runbooks. Nothing writes one (sources are not retained,
+        # document-to-runbook-conversion.md §9.4); the skip only keeps such a
+        # directory, if one is placed in the tree, out of the walk.
         if "sources" in md_file.parts:
             continue
 

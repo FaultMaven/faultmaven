@@ -748,3 +748,97 @@ class TestParseIntegration:
 
         with pytest.raises(ValueError, match="Failed to parse broken.md"):
             parser.parse(broken)
+
+
+# ---------------------------------------------------------------------------
+# How a parse failure is classified (#836)
+# ---------------------------------------------------------------------------
+
+
+def _pdf_with_filter(name: bytes) -> bytes:
+    """A minimal one-page PDF whose content stream claims the filter ``name``."""
+    stream = b"BT /F1 12 Tf 72 720 Td (hello) Tj ET"
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length %d /Filter /%s >>\nstream\n" % (len(stream), name)
+        + stream
+        + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    out = b"%PDF-1.4\n"
+    offsets = []
+    for number, body in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % number + body + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+    for offset in offsets:
+        out += b"%010d 00000 n \n" % offset
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(objects) + 1,
+        xref,
+    )
+    return out
+
+
+class TestParseFailureClassification:
+    """``DocumentPreprocessor`` classifies a parse failure by words in its
+    message ("encoding"/"decode", "unsupported"). Since #836 a parser library's
+    own exception contributes only its CLASS to that message, because its text
+    can name the file's server path. The parser's own refusals
+    (``DocumentRefusal``) keep their sentence. These pin what that does to the
+    classification, both ways."""
+
+    @pytest.mark.unit
+    async def test_a_foreign_extractor_error_is_file_corrupt(self, tmp_path):
+        """A real PDF with an unknown stream filter: pypdf raises
+        ``NotImplementedError("Unsupported filter /Foo")``. Its text used to
+        reach the classifier, and "Unsupported" made it UNSUPPORTED_FORMAT
+        (415, whose copy says to upload a PDF, which this is). Only the class
+        reaches it now, so it is FILE_CORRUPT (422)."""
+        from faultmaven.modules.knowledge.domain.services.document_preprocessor import (  # noqa: E501
+            DocumentPreprocessor,
+        )
+
+        pdf = tmp_path / "odd-filter.pdf"
+        pdf.write_bytes(_pdf_with_filter(b"Foo"))
+
+        result = await DocumentPreprocessor().preprocess(pdf, "application/pdf")
+
+        assert result.is_rejected
+        assert result.error_code == "FILE_CORRUPT"
+        assert result.rejection_reason.endswith("(NotImplementedError)")
+
+    @pytest.mark.unit
+    async def test_the_parsers_own_decode_refusal_is_still_an_encoding_error(
+        self, tmp_path, monkeypatch
+    ):
+        """``DocumentRefusal`` keeps its sentence, so "Cannot decode" still
+        reaches the classifier. Raised from the extractor directly: through real
+        input it is unreachable, because the Latin-1 fallback decodes any
+        bytes."""
+        from faultmaven.modules.knowledge.domain.services.document_parser import (
+            DocumentRefusal,
+        )
+        from faultmaven.modules.knowledge.domain.services.document_preprocessor import (  # noqa: E501
+            DocumentPreprocessor,
+        )
+
+        def refuse(self, file_path):
+            raise DocumentRefusal(
+                "Cannot decode file — it is not valid UTF-8 or Latin-1 text. "
+                "Please re-save the file as UTF-8 and try again."
+            )
+
+        monkeypatch.setattr(DocumentParser, "_extract_txt", refuse)
+        notes = tmp_path / "notes.txt"
+        notes.write_text("some text that will not be read", encoding="utf-8")
+
+        result = await DocumentPreprocessor().preprocess(notes, "text/plain")
+
+        assert result.is_rejected
+        assert result.error_code == "ENCODING_ERROR"
+        assert "Cannot decode file" in result.rejection_reason
