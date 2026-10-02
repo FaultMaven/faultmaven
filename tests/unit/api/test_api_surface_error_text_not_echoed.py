@@ -349,20 +349,24 @@ def test_the_surface_scan_is_not_vacuous():
 def test_no_api_surface_site_puts_the_caught_exception_on_the_wire():
     """The class guard, over the whole surface.
 
-    Covers every shape the shared analysis knows: a 5xx ``HTTPException``
-    whose ``detail`` carries the caught exception (directly, through a local
-    alias, or through a local the handler tainted and a later statement
-    raises), a ``return`` carrying it into a body — the shape a handler that
-    degrades to a 200 uses, which the ``HTTPException`` half structurally
-    cannot see — and either of those rendering the live exception with
+    Covers every shape the shared analysis knows: an ``HTTPException`` whose
+    ``detail`` carries an exception's text, at 5xx or — when the exception
+    came from a broad ``except`` or a parameter typed ``Exception`` or
+    ``BaseException`` — at any status (#1598); built directly or through a
+    same-module factory; with the exception caught here (directly, through a
+    local alias, or through a local the handler tainted and a later statement
+    raises) or received as a parameter, reported at the helper (#1634). Then a
+    ``return`` carrying it into a body — the shape a handler that degrades to
+    a 200 uses, which the ``HTTPException`` half structurally cannot see — and
+    either of those rendering the live exception with
     ``traceback.format_exc()`` under a handler that binds no name at all.
 
-    Two shapes are deliberately NOT covered and are recorded in #1598 rather
-    than left to be rediscovered: a 4xx raised from a *broad* ``except``
-    (#866/#966 scoped this rule to 5xx, and changing that is a policy call),
-    and a custom typed exception carrying the text into one of the four
-    domain handlers that render ``str(exc)``. Both were measured at zero live
-    sites that are actually leaks.
+    One shape is deliberately NOT covered: a custom typed exception carrying
+    the text into one of the four domain handlers that render ``str(exc)``
+    (#1598's shape O). The #1598 ruling closed it rather than guarding it: its
+    whole live population was five legitimate sites, so a guard over it would
+    be an allowlist and nothing else. The analysis's other stated limits are
+    in ``tests/error_text_ast``'s module docstring.
     """
     offenders: list[str] = []
     for path in _surface():

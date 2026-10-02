@@ -139,12 +139,14 @@ def _routes_source() -> list[pathlib.Path]:
 
 @pytest.mark.unit
 def test_no_500_site_interpolates_the_exception():
-    """Class guard: no 5xx in the router carries ``e`` into the response.
+    """Class guard: no 5xx, or any status from a broad ``except``, in the
+    router carries ``e`` into the response.
 
     Pins the whole class rather than the one endpoint above, so a new handler
-    copied from an old one cannot quietly reintroduce the leak. 4xx sites are
-    deliberately out of scope — ``detail=str(e)`` on a ``ValidationException``
-    arm is a domain message meant for the caller.
+    copied from an old one cannot quietly reintroduce the leak. A 4xx from a
+    *typed* ``except`` is deliberately out of scope — ``detail=str(e)`` on a
+    ``ValidationException`` arm is a domain message meant for the caller; a
+    4xx from a broad ``except`` is not exempt (#1598).
 
     The original version of this guard inspected the ``detail`` expression for
     the substrings ``str(e)``/``{e}``, and so reported this file clean while
@@ -163,9 +165,9 @@ def test_no_500_site_interpolates_the_exception():
     ]
 
     assert offenders == [], (
-        "5xx HTTPException sites carrying the caught exception into the "
-        "response (leaks internal text verbatim; use a static message and log "
-        f"server-side): {offenders}"
+        "HTTPException sites (5xx, or any status from a broad except) carrying "
+        "the caught exception into the response (leaks internal text verbatim; "
+        f"use a static message and log server-side): {offenders}"
     )
 
 

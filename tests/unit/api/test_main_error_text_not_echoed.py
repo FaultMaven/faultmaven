@@ -118,7 +118,8 @@ def test_main_raises_no_http_exception_so_only_the_returned_body_guard_applies()
 
     Asserting the count instead makes the vacuity explicit and gives it a job:
     the first ``raise HTTPException`` added to ``main.py`` trips this test, and
-    whoever adds it has to decide whether the 5xx guard now needs to run here.
+    whoever adds it has to decide whether the ``HTTPException`` guard (5xx, or
+    any status from a broad ``except``) now needs to run here.
     """
     source = _main_source().read_text(encoding="utf-8")
     raise_sites = [
@@ -131,8 +132,9 @@ def test_main_raises_no_http_exception_so_only_the_returned_body_guard_applies()
     ]
 
     assert raise_sites == [], (
-        "main.py now raises HTTPException at these lines; the 5xx leak guard "
-        f"(http_exception_leak_sites) should be enabled for this file: {raise_sites}"
+        "main.py now raises HTTPException at these lines; the HTTPException "
+        "leak guard (http_exception_leak_sites: 5xx, or any status from a broad "
+        f"except) should be enabled for this file: {raise_sites}"
     )
 
 

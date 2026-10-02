@@ -78,7 +78,8 @@ def _auth_api_sources() -> list[pathlib.Path]:
 
 @pytest.mark.unit
 def test_no_500_site_interpolates_the_exception():
-    """No 5xx under ``modules/auth/api/`` carries ``e`` into the response.
+    """No 5xx, or any status from a broad ``except``, under ``modules/auth/api/``
+    carries ``e`` into the response.
 
     Pins the whole class rather than the endpoints probed below, so a new
     handler copied from an old one cannot quietly reintroduce the leak. Both
@@ -89,18 +90,20 @@ def test_no_500_site_interpolates_the_exception():
     ``f"{e!s}"``, ``e.args[0]``, a positional ``detail`` and a payload built one
     statement earlier are all caught too.
 
-    4xx sites are deliberately out of scope: ``detail=str(e)`` on an
-    ``InvalidGrantError`` or ``ValidationException`` arm is a domain message
-    meant for the caller, not internal text escaping a broad except.
+    A 4xx from a *typed* ``except`` is deliberately out of scope:
+    ``detail=str(e)`` on an ``InvalidGrantError`` or ``ValidationException``
+    arm is a domain message meant for the caller. A 4xx from a broad
+    ``except`` is not exempt — nothing caught by ``except Exception`` was
+    written for the caller (#1598).
     """
     offenders = [
         site for path in _auth_api_sources() for site in http_exception_leak_sites(path)
     ]
 
     assert offenders == [], (
-        "5xx HTTPException sites carrying the caught exception into the "
-        "response (leaks internal text verbatim; use a static detail and log "
-        f"server-side): {offenders}"
+        "HTTPException sites (5xx, or any status from a broad except) carrying "
+        "the caught exception into the response (leaks internal text verbatim; "
+        f"use a static detail and log server-side): {offenders}"
     )
 
 
