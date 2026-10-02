@@ -258,12 +258,46 @@ def _rel(path: pathlib.Path) -> str:
     return path.relative_to(_REPO).as_posix()
 
 
+#: The statements a reported line can stand in, and the expression each one
+#: keys on. ``Return``/``Raise`` were the whole list while every sink was a
+#: ``raise`` or a ``return``. Since #1634 the analysis reports the line of any
+#: call that builds an ``HTTPException`` — a raising helper called for its
+#: side effect (``Expr``), one assigned and raised later (``Assign``) — and a
+#: line no key is built for is a finding reported and then silently dropped,
+#: which is a guard that passes.
+_REPORTED_STATEMENTS = (
+    ast.Return,
+    ast.Raise,
+    ast.Expr,
+    ast.Assign,
+    ast.AnnAssign,
+    ast.AugAssign,
+)
+
+
 def _offender_keys(path: pathlib.Path) -> list[tuple[str, str, str, int]]:
     """``(path, function, expression, line)`` for every site the analysis reports.
 
     The shared analysis returns ``file:line``. The expression is recovered here
     rather than there so that widening the key does not change the four guards
     that already depend on that return shape.
+
+    A reported line is mapped to the statement that CONTAINS it, not only to
+    one that starts on it: the call the analysis reports may sit on a later
+    line of a statement that spans several — ``await handler(request,
+    HTTPException(...))`` broken across lines. The key's line is the
+    statement's first line, and its expression is the statement's ``value``
+    (or a ``raise``'s ``exc``).
+
+    A reported line that none of those statements covers is still keyed,
+    never dropped. A sink can sit in a compound statement's header — an
+    ``if``/``elif``/``while`` test, a ``for`` iterable, a ``with`` item, an
+    ``assert``, or ``if ...: return`` on one line, whose bare ``return`` has
+    no expression to key on — and #1634's review measured each of those
+    reported by the analysis and then passed by this guard. Such a line is
+    keyed on the outermost call that starts on it, which is the sink the
+    analysis reported; failing that, on the innermost call that covers it;
+    failing both, on ``<unmapped>``, so the finding still fails the guard.
     """
     lines = {
         int(site.rsplit(":", 1)[1])
@@ -282,10 +316,13 @@ def _offender_keys(path: pathlib.Path) -> list[tuple[str, str, str, int]]:
                 enclosing[getattr(node, "lineno", -1)] = fn.name
 
     keys: list[tuple[str, str, str, int]] = []
+    covered: set[int] = set()
     for node in ast.walk(tree):
-        if not isinstance(node, (ast.Return, ast.Raise)) or node.lineno not in lines:
+        if not isinstance(node, _REPORTED_STATEMENTS):
             continue
-        expr = node.value if isinstance(node, ast.Return) else node.exc
+        if not any(node.lineno <= line <= node.end_lineno for line in lines):
+            continue
+        expr = node.exc if isinstance(node, ast.Raise) else node.value
         if expr is None:  # pragma: no cover - the analysis never reports these
             continue
         keys.append(
@@ -295,6 +332,33 @@ def _offender_keys(path: pathlib.Path) -> list[tuple[str, str, str, int]]:
                 ast.unparse(expr),
                 node.lineno,
             )
+        )
+        covered.update(line for line in lines if node.lineno <= line <= node.end_lineno)
+
+    for line in sorted(lines - covered):
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and node.lineno <= line <= node.end_lineno
+        ]
+        starting = [node for node in calls if node.lineno == line]
+        if starting:
+            call = min(starting, key=lambda node: node.col_offset)
+        elif calls:
+            call = min(
+                calls,
+                key=lambda node: (
+                    node.end_lineno - node.lineno,
+                    node.end_col_offset - node.col_offset,
+                ),
+            )
+        else:  # pragma: no cover - the analysis reports a call or a statement
+            keys.append(
+                (_rel(path), enclosing.get(line, "<module>"), "<unmapped>", line)
+            )
+            continue
+        keys.append(
+            (_rel(path), enclosing.get(line, "<module>"), ast.unparse(call), line)
         )
     return keys
 
@@ -349,20 +413,24 @@ def test_the_surface_scan_is_not_vacuous():
 def test_no_api_surface_site_puts_the_caught_exception_on_the_wire():
     """The class guard, over the whole surface.
 
-    Covers every shape the shared analysis knows: a 5xx ``HTTPException``
-    whose ``detail`` carries the caught exception (directly, through a local
-    alias, or through a local the handler tainted and a later statement
-    raises), a ``return`` carrying it into a body — the shape a handler that
-    degrades to a 200 uses, which the ``HTTPException`` half structurally
-    cannot see — and either of those rendering the live exception with
-    ``traceback.format_exc()`` under a handler that binds no name at all.
+    Covers every shape the shared analysis knows: an ``HTTPException`` whose
+    ``detail`` or ``headers`` carry an exception's text, at 5xx or — when the
+    exception came from a broad ``except`` or a parameter typed ``Exception``
+    or ``BaseException`` — at any status (#1598); built directly or through a
+    same-module factory or raising helper, wherever the call stands; with the
+    exception caught here (directly, through a local alias, or through a local
+    the handler tainted and a later statement raises) or received as a
+    parameter (#1634). Then a ``return`` carrying it into a body — the shape a
+    handler that degrades to a 200 uses, which the ``HTTPException`` half
+    structurally cannot see — and either of those rendering the live
+    exception with ``traceback.format_exc()``, under any handler.
 
-    Two shapes are deliberately NOT covered and are recorded in #1598 rather
-    than left to be rediscovered: a 4xx raised from a *broad* ``except``
-    (#866/#966 scoped this rule to 5xx, and changing that is a policy call),
-    and a custom typed exception carrying the text into one of the four
-    domain handlers that render ``str(exc)``. Both were measured at zero live
-    sites that are actually leaks.
+    One shape is deliberately NOT covered: a custom typed exception carrying
+    the text into one of the four domain handlers that render ``str(exc)``
+    (#1598's shape O). The #1598 ruling closed it rather than guarding it: its
+    whole live population was five legitimate sites, so a guard over it would
+    be an allowlist and nothing else. The analysis's other stated limits are
+    in ``tests/error_text_ast``'s module docstring.
     """
     offenders: list[str] = []
     for path in _surface():

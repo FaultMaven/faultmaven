@@ -60,6 +60,8 @@ import faultmaven.bootstrap.lifespan as lifespan_module
 import faultmaven.bootstrap.middleware as middleware_module
 import faultmaven.main as main_module
 from tests.error_text_ast import (
+    _http_exception_factories,
+    _http_exception_view,
     http_exception_leak_sites,
     returned_body_leak_sites,
 )
@@ -106,33 +108,41 @@ def _moved_sources() -> list[pathlib.Path]:
 
 
 @pytest.mark.unit
-def test_main_raises_no_http_exception_so_only_the_returned_body_guard_applies():
+def test_main_builds_no_http_exception_so_only_the_returned_body_guard_applies():
     """States the fact the guard below depends on, instead of implying it.
 
-    ``main.py`` contains **zero** ``raise HTTPException`` sites -- its health,
+    ``main.py`` builds **zero** ``HTTPException`` objects -- its health,
     readiness and metrics endpoints degrade by RETURNING a body rather than
     raising. So running ``http_exception_leak_sites`` over it passes
-    unconditionally, and an earlier version of this file did exactly that while
-    sharing a handler-count floor with the returned-body test, which made the
-    vacuous half look guarded.
+    unconditionally, and an earlier version of this file did exactly that
+    while sharing a handler-count floor with the returned-body test, which
+    made the vacuous half look guarded.
 
     Asserting the count instead makes the vacuity explicit and gives it a job:
-    the first ``raise HTTPException`` added to ``main.py`` trips this test, and
-    whoever adds it has to decide whether the 5xx guard now needs to run here.
-    """
-    source = _main_source().read_text(encoding="utf-8")
-    raise_sites = [
-        node.lineno
-        for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.Raise)
-        and isinstance(node.exc, ast.Call)
-        and (getattr(node.exc.func, "id", None) or getattr(node.exc.func, "attr", None))
-        == "HTTPException"
-    ]
+    the first ``HTTPException`` built in ``main.py`` trips this test, and
+    whoever adds it has to decide whether the ``HTTPException`` guard (5xx, or
+    any status from a broad ``except``) now needs to run here.
 
-    assert raise_sites == [], (
-        "main.py now raises HTTPException at these lines; the 5xx leak guard "
-        f"(http_exception_leak_sites) should be enabled for this file: {raise_sites}"
+    "Built" is whatever the analysis itself reads as a construction —
+    ``_http_exception_view`` over every node, the way every pass of it walks
+    a file. Counting only a literal ``raise HTTPException(...)`` left a
+    tripwire narrower than the guard it gates: an ``HTTPException`` returned,
+    assigned and raised later, or built by a same-module factory or raising
+    helper, went past it, and #1634's review found that gap.
+    """
+    tree = ast.parse(_main_source().read_text(encoding="utf-8"))
+    factories = _http_exception_factories(tree)
+    construction_sites = sorted(
+        node.lineno
+        for node in ast.walk(tree)
+        if _http_exception_view(node, factories) is not None
+    )
+
+    assert construction_sites == [], (
+        "main.py now builds an HTTPException (directly or through a same-module "
+        "factory) at these lines; the HTTPException leak guard "
+        "(http_exception_leak_sites: 5xx, or any status from a broad except) "
+        f"should be enabled for this file: {construction_sites}"
     )
 
 
