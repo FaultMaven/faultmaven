@@ -193,6 +193,30 @@ evidence_need_id_dropped_total = Counter(
 )
 
 
+# The card rule at the same flattening seam (#1839, ruling (a)). An LLM-written
+# DECIDE card whose payload the gate reads as a BARE reply (``Proceed``,
+# ``Yes``, ``Not yet``: ``is_bare_gate_reply``) would, clicked later, arrive as
+# that text alone and answer whatever offer stands then. So the card sends its
+# label instead, or is dropped when its label is bare too. Engine-authored cards
+# carry an intent naming their offer and never pass through here.
+#
+# Healthy-system expectation: near zero, and mostly ``label``. Not an error
+# counter: the rule is working when it fires. A sustained rate says the LLM
+# keeps writing payloads that are bare gate replies, which is a prompt-quality
+# question this counter exists to answer before any prompt changes.
+# Labels:
+#   - ``label`` — the payload was bare, and the card now sends its label.
+#   - ``dropped`` — the label was bare too, so the card was not shipped.
+llm_decide_card_bare_payload_total = Counter(
+    "faultmaven_llm_decide_card_bare_payload_total",
+    "LLM-written DECIDE cards whose payload is a bare gate reply, by action "
+    "(label|dropped): the card sends its label instead, or is dropped when the "
+    "label is bare too, so no card a client renders sends a text the consent "
+    "gate reads as a bare reply.",
+    ["action"],
+)
+
+
 # #1079: EVIDENCE suggestions that arrived with NO ``evidence_need_id`` and had
 # to be attached to a need by ``evidence_need_linking``. This is the counter the
 # defect went unseen for want of: ``evidence_need_id_dropped_total`` only fires

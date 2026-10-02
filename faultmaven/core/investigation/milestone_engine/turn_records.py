@@ -15,6 +15,7 @@ from faultmaven.core.investigation.causal_graph.support import (
 )
 from faultmaven.core.investigation.lifecycle_metrics import (
     evidence_need_id_dropped_total,
+    llm_decide_card_bare_payload_total,
 )
 from faultmaven.core.investigation.turn_uploads import report_turn_uploads
 from faultmaven.core.investigation.verification_status import is_stalled
@@ -35,6 +36,7 @@ from .progress import (
 from .stage_gates import (
     _normalise_id_ref,
 )
+from .transition_consent import is_bare_gate_reply
 
 logger = logging.getLogger(__name__)
 
@@ -191,8 +193,9 @@ def _finish_deterministic_turn(
     resetting it cannot change how long one stands: a pending terminal
     proposal stands until the user answers it (its own click, a bare consent token
     or a decline), or sends a turn the gate never consumes — one carrying an
-    upload, or a non-answer over 40 characters or containing "?" — which the
-    gate's own escape lane withdraws it for. Everything else the gate answers
+    upload, or a non-answer over 40 characters or carrying a question mark in
+    any script (``is_question``) — which the gate's own escape lane withdraws
+    it for. Everything else the gate answers
     with the proposal's buttons, every time and never recording a refusal: a
     consent-shaped reply that is not bare and that ``is_substantive_reply``
     does not call substantive, a reply whose text and minted intent disagree,
@@ -477,6 +480,18 @@ def _flatten_follow_ups(
     always carries a real ``eneed_xxxxxxxxxxxx`` ID. Unresolvable
     refs are dropped silently (graceful degradation — matches the
     apply-layer pattern for dangling motivator/evidence IDs).
+
+    The card rule (#1839, ruling (a)): every LLM follow-up passes through
+    here, on the normal and the terminal path, so this is where no DECIDE
+    card may ship a payload the consent gate reads as a bare reply
+    (``is_bare_gate_reply``). A click on such a card arrives as its text
+    alone, which the server cannot tell from typing, so an old card would
+    answer whatever offer stands when it is clicked. Such a card sends its
+    label instead; when its label is bare too, it is dropped. Counted on
+    ``llm_decide_card_bare_payload_total{action}`` and logged at INFO. Only
+    DECIDE: a RUN click copies its command and never submits, and FREE_SPEECH
+    and EVIDENCE carry no payload. Engine-authored cards carry an intent that
+    names their offer, and are not built here.
     """
     out: list[dict[str, Any]] = []
     for f in follow_ups:
@@ -484,8 +499,25 @@ def _flatten_follow_ups(
             "label": f.label,
             "action_type": f.action_type,
         }
-        if f.payload:
-            suggestion["payload"] = f.payload
+        send = f.payload
+        if f.action_type == "DECIDE" and send and is_bare_gate_reply(send):
+            dropped = is_bare_gate_reply(f.label)
+            action = "dropped" if dropped else "label"
+            outcome = "dropped: its label is bare too" if dropped else "sends its label"
+            logger.info(
+                f"LLM DECIDE card {f.label!r} carried the bare gate reply "
+                f"{send!r} as its payload (#1839), {outcome}",
+                extra={"card_label": f.label, "action": action},
+            )
+            try:
+                llm_decide_card_bare_payload_total.labels(action=action).inc()
+            except Exception:
+                pass
+            if dropped:
+                continue
+            send = f.label
+        if send:
+            suggestion["payload"] = send
         if f.body:
             suggestion["body"] = f.body
         if f.hints:

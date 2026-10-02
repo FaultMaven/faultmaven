@@ -298,8 +298,8 @@ Composition seams (cross-tier dependencies in the matrix) are the natural candid
 
 **Counters:**
 
-- `faultmaven_terminal_confirmation_total{via, to_state}` — one increment per terminal transition a user's confirmation executed at the engine's pending-transition gate (the path confirmations take). `to_state` is `resolved` or `closed`. `via` is how the user confirmed. Since #1783 (ruling (a)) a terminal proposal executes only on its click or on a **bare** typed consent (`transition_consent.confirmation_token_class`). Exactly, a bare reply is the words of one consent token valid for the proposal's target, with any whitespace, any listed positive emoji, Slack shortcode (`:+1:`, `:white_check_mark:`) or emoticon (`:)`, `=)`, `(y)`), and any emoji modifier (U+FE0F, the skin tones) before, between or after the token's words, and only `.` `!` `,` trailing. A decoration or modifier inside a word splits it (`o🏽k` is not `ok`). So there are three labels:
-  - `intent` — a click (the DECIDE confirmation card, or the dropdown pick repeated);
+- `faultmaven_terminal_confirmation_total{via, to_state}` — one increment per terminal transition a user's confirmation executed at the engine's pending-transition gate (the path confirmations take). `to_state` is `resolved` or `closed`. `via` is how the user confirmed. Since #1783 (ruling (a)) a terminal proposal executes only on its click or on a **bare** typed consent (`transition_consent.confirmation_token_class`). Exactly, a bare reply is the words of one consent token valid for the proposal's target, with any whitespace, any listed positive emoji, Slack shortcode (`:+1:`, `:white_check_mark:`) or emoticon (`:)`, `=)`, `(y)`), and any emoji modifier (the presentation selectors U+FE0E and U+FE0F, the skin tones) before, between or after the token's words, and only `.` `!` `,` trailing. A decoration or modifier inside a word splits it (`o🏽k` is not `ok`). A zero-width character or a wrapping mark (`**yes**`, `"yes"`) is not a decoration, so such a reply is re-asked and counts nothing (#1840). So there are three labels:
+  - `intent` — a click on the DECIDE confirmation card. A status-dropdown re-pick of the pending target is not one: it re-shows the card and counts nothing (#1838);
   - `explicit_token` — a bare explicit token (`yes`, `yes!`, `yes 👍`, `yes :+1:`, `go ahead`, `that's right`, `that’s right`);
   - `weak_token` — a bare weak token, #723's term (`ok`, `ok!`, `ok :)`, `ok 👍`, `ok :+1:`, `ok =)`, `lgtm`).
 
@@ -366,6 +366,30 @@ sum(increase(faultmaven_terminal_confirmation_total{via="intent"}[7d]))
 The Gate-1 key changes whenever the model re-emits the statement with any internal edit, so a card from before the edit is refused once; a sustained `gate1`/`stale` rate is that cost, measured.
 
 Matrix row: INV-26 in `investigation-invariants.md`.
+
+## LLM cards that would send a bare gate reply (#1839)
+
+**Question:** how often does the LLM write a DECIDE card whose click would send a text the consent gate reads as a bare reply?
+
+An LLM-written DECIDE card carries no intent, so its click arrives as its payload text alone, which the server cannot tell from typing. A card whose payload is `Proceed`, `Yes` or `Not yet` would therefore answer whatever offer stands when it is clicked, possibly turns later. So `_flatten_follow_ups` never ships one whose payload `is_bare_gate_reply` accepts (a bare consent to either terminal target, every bare Gate-1 consent with it, or a bare decline). The card sends its label instead, or is dropped when its label is bare too. Each rewrite and each drop is logged at INFO with the card's label.
+
+**Counter:**
+
+- `faultmaven_llm_decide_card_bare_payload_total{action}`: one increment per such card. `action` is `label` (the card now sends its label) or `dropped` (the label was bare too, and the card was not shipped).
+
+It is not an error counter: the rule is working when it fires. Engine-authored cards carry an intent naming their offer and never pass through this seam.
+
+**Query:**
+
+```promql
+# Cards the rule touched, by what it did. A sustained rate says the LLM keeps
+# writing bare-reply payloads; a high `dropped` share says it writes cards
+# that are nothing but a yes or a no. Either is a prompt question, measured
+# here before any prompt changes.
+sum by (action) (increase(faultmaven_llm_decide_card_bare_payload_total[7d]))
+```
+
+Matrix row: INV-26 (d) in `investigation-invariants.md`.
 
 ## Case duration and terminal-summary reliability (#791)
 

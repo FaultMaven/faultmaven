@@ -85,7 +85,8 @@ def _record_deferred_disposition_decline(
     those unrecorded lets the proposer re-fire from unchanged state (fm#1122).
 
     NOT called for a question. ``message_is_substantive`` is true for ANY
-    message containing "?" — "what happens to the runbook if I close this?"
+    message carrying a question mark, in any script (``is_question``, #1840)
+    — "what happens to the runbook if I close this?"
     is a user deciding, not declining, and recording it would make the
     affordance vanish, unexplained, until a premise moved. The same-turn
     re-take those messages would otherwise cause is handled by

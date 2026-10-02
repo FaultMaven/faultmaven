@@ -10,13 +10,31 @@ A click is consent only to the offer it names (#1812, ruling (a)): every
 confirmation card carries its offer's key (``terminal_offer_key``,
 ``gate1_offer_key``), and a click whose key is not the standing offer's
 executes nothing. A typed decline is as bare as a typed consent (#1813), and
-Gate 1 reads a typed consent through the same bare test (#1794).
+Gate 1 reads a typed consent through the same bare test (#1794), which the
+engine now reads itself while Gate 1 is pending (#1841).
+
+Nothing else stands in for consent (#1838, #1839): a status-dropdown re-pick
+of the pending target re-shows the offer's card, and no LLM-written card ships
+a text the gate reads as a bare reply (``is_bare_gate_reply``).
+
+The grammar has two strengths (#1840). The BARE readers
+(``confirmation_token_class``, ``gate1_bare_consent``,
+``_user_declines_transition``) stay strict, so a token carrying a zero-width
+character or wrapped in markup is not bare and is re-asked (#1783's corpus).
+The SHAPE reader (``_consent_prefix``) is lenient (``_shape_text``), so a
+reply that opens with consent under markup is never recorded as a refusal.
+Each fails toward a re-ask.
 """
 
 import hashlib
 import logging
+import re
 from typing import Any, Literal, Optional
 
+from faultmaven.core.investigation.terminal_transitions import (
+    is_question,
+    is_substantive_reply,
+)
 from faultmaven.modules.case.contracts import TerminalConfirmedVia
 
 from .stage_gates import _matches_gate_token
@@ -120,11 +138,33 @@ _POSITIVE_DECORATIONS: tuple[str, ...] = tuple(
     )
 )
 
-#: Code points that only modify the emoji before them: the emoji presentation
-#: selector and the five skin tones. Each is replaced by a space, like a
-#: decoration and never by nothing, so one inside a word splits it (``o🏽k`` is
-#: not ``ok``), while after an emoji (``✔️``, ``👍🏽``) the space is harmless.
-_EMOJI_MODIFIERS = frozenset({"\ufe0f", *(chr(c) for c in range(0x1F3FB, 0x1F400))})
+#: Code points that only modify the emoji before them: the two presentation
+#: selectors, text (U+FE0E, #1840) and emoji (U+FE0F), and the five skin tones.
+#: Each is replaced by a space, like a decoration and never by nothing, so one
+#: inside a word splits it (``o🏽k`` is not ``ok``), while after an emoji
+#: (``✔️``, ``✔︎``, ``👍🏽``) the space is harmless.
+_EMOJI_MODIFIERS = frozenset(
+    {"\ufe0e", "\ufe0f", *(chr(c) for c in range(0x1F3FB, 0x1F400))}
+)
+
+#: Invisible characters that iOS, Slack and copy-paste insert into a reply:
+#: the zero-width space, non-joiner and joiner, the word joiner and the
+#: byte-order mark (#1840). Only the SHAPE reader (``_shape_text``) makes them
+#: spaces. To a bare reader each is a character like any other, so ``yes``
+#: followed by U+200B is not bare and is re-asked (#1783's corpus pins
+#: ``ok\u200b`` as never executing).
+_ZERO_WIDTH = frozenset({"\u200b", "\u200c", "\u200d", "\u2060", "\ufeff"})
+
+#: A mark a reply may wrap a word in: markdown emphasis and code (``*``, ``_``,
+#: a backtick) and quotes in any script (#1840). A straight apostrophe counts
+#: only where it is not INSIDE a word, so ``that's right`` and ``don't`` keep
+#: theirs (``_normalize_reply`` has already made the curly ones straight).
+#: Strikethrough's ``~`` is deliberately absent, because ``~~ok, close it~~``
+#: negates. Only the SHAPE reader removes these marks; to a bare reader
+#: ``**yes**`` and ``"yes"`` are not bare (#1783).
+_MARKUP_RE = re.compile(
+    r"[*_`\"\u201c\u201d\u201e\u00ab\u00bb\u2039\u203a]|(?<!\w)'|'(?!\w)"
+)
 
 #: The typed decline tokens. A typed reply declines only when the WHOLE of it
 #: is one of them (#1813, the bare-decline mirror of ``confirmation_token_class``).
@@ -222,9 +262,11 @@ def _undecorated(user_message: str) -> str:
     positive decoration replaced by a space, and whitespace collapsed.
 
     A space, never nothing: one inside a word splits it and cannot reassemble a
-    token (``clo(y)se it``, ``o👍k``, ``o🏽k``). The one treatment every
-    grammar here reads: ``confirmation_token_class``, ``_consent_prefix`` and
-    ``_user_declines_transition``.
+    token (``clo(y)se it``, ``o👍k``, ``o🏽k``). The treatment every bare
+    reader here applies (``confirmation_token_class``, and through it
+    ``gate1_bare_consent``, and ``_user_declines_transition``), and the base
+    of the lenient shape reading (``_shape_text``) that ``_consent_prefix``
+    applies.
     """
     text = "".join(
         " " if c in _EMOJI_MODIFIERS else c for c in _normalize_reply(user_message)
@@ -254,8 +296,9 @@ def confirmation_token_class(
     the token's words, with:
 
     * any whitespace, any listed positive decoration
-      (``_POSITIVE_DECORATIONS``) and any emoji modifier
-      (``_EMOJI_MODIFIERS``) before, between or after them;
+      (``_POSITIVE_DECORATIONS``) and any emoji modifier (``_EMOJI_MODIFIERS``:
+      the text and emoji presentation selectors and the skin tones) before,
+      between or after them;
     * and only ``.``, ``!`` and ``,`` trailing, after the last word.
 
     So ``yes``, ``ok!``, ``lgtm 👍``, ``👍🏽 ok``, ``✔️ yes``, ``ok :+1:``,
@@ -269,14 +312,17 @@ def confirmation_token_class(
     (``clo(y)se it``, ``o👍k``, ``o🏽k``, ``clo️se it``). A target-scoped token
     (``_TARGET_SCOPED_TOKENS``) consents only to its own target.
 
+    This reader is strict, and stays so (#1840): a zero-width character and a
+    wrapping mark are not decorations, so a token carrying either (``"yes"``,
+    ``**yes**``, ``yes`` with a trailing U+200B) is not bare and is re-asked.
+    Only the shape reader (``_shape_text``) reads past them.
+
     The shared substance screen runs first: ``is_substantive_reply`` is the
     predicate the IntentResolver adoption guard applies to minted intents
-    (#721), so the two confirm lanes cannot drift apart (INV-26).
+    (#721), so the two confirm lanes cannot drift apart (INV-26). It reads a
+    question mark in any script (``is_question``), so ``ok？`` is not bare
+    either.
     """
-    from faultmaven.core.investigation.terminal_transitions import (
-        is_substantive_reply,
-    )
-
     if not user_message or is_substantive_reply(user_message):
         return None
     text = _undecorated(user_message).rstrip(".!, ")
@@ -300,27 +346,48 @@ def gate1_bare_consent(user_message: str) -> bool:
     ("close it", "mark as resolved") are not consent here. Gate 1 commits only
     on its click or on a turn whose typed text passes this: the LLM's
     ``user_confirmed_investigation`` and a resolver-minted confirmation count
-    only when it holds. ``Yes, that's correct. Let's investigate.`` (the
-    card's own payload) is not bare, and a click is never screened by its text.
+    only when it holds, and on a turn with no intent the engine reads it
+    itself while Gate 1 is pending (#1841). ``Yes, that's correct. Let's
+    investigate.`` (the card's own payload) is not bare, and a click is never
+    screened by its text.
     """
     return confirmation_token_class(user_message, None) is not None
 
 
+def _shape_text(user_message: str) -> str:
+    """``user_message`` read leniently, for a SHAPE test only (#1840).
+
+    Every zero-width character (``_ZERO_WIDTH``) becomes a space, then
+    ``_undecorated`` runs, then every wrapping mark (``_MARKUP_RE``) becomes a
+    space and whitespace is collapsed. So ``_Yes_, go ahead…``, ``"Yes" — …``,
+    ``«Yes» — …`` and ``yes`` behind a U+200B all read as opening with
+    ``yes``, while ``that's right`` keeps its apostrophe and ``~~ok~~`` keeps
+    its strikethrough.
+
+    Never read by a bare test, which stays strict (#1783's corpus): a reply
+    that is consent only under this reading is re-asked, never executed.
+    """
+    text = "".join(" " if c in _ZERO_WIDTH else c for c in user_message)
+    return " ".join(_MARKUP_RE.sub(" ", _undecorated(text)).split())
+
+
 def _consent_prefix(user_message: str) -> bool:
     """Whether ``user_message`` OPENS with a consent token on a word boundary,
-    after the same treatment ``confirmation_token_class`` gives it (#1808).
+    read leniently (``_shape_text``; #1808, #1840).
 
-    Modifiers and positive decorations become spaces first, so ``👍 go ahead
-    and close it…`` opens with ``go ahead``. Says nothing about length or what
-    follows: ``ok but we need to wait for the weekend soak first`` opens with
-    consent. One grammar, read by ``opens_with_consent_token`` and by the
+    Modifiers, positive decorations, zero-width characters and wrapping marks
+    become spaces first, so ``👍 go ahead and close it…`` opens with ``go
+    ahead`` and ``*Yes*, close it…`` with ``yes``. Says nothing about length or
+    what follows: ``ok but we need to wait for the weekend soak first`` opens
+    with consent. One grammar, read by ``opens_with_consent_token`` and by the
     engine's escape lane, which records no refusal for a reply that opens with
-    consent.
+    consent. Lenient because both readers fail toward a re-ask: a reply this
+    calls consent-shaped is re-asked or withdrawn, and never executed.
     """
     if not user_message:
         return False
     return _matches_gate_token(
-        _undecorated(user_message),
+        _shape_text(user_message),
         _EXPLICIT_CONFIRM_TOKENS + _WEAK_CONFIRM_TOKENS,
     )
 
@@ -335,10 +402,6 @@ def opens_with_consent_token(user_message: str) -> bool:
     than sending them down the escape lane, so the set of replies the gate
     consumes did not move when consent narrowed (#1783).
     """
-    from faultmaven.core.investigation.terminal_transitions import (
-        is_substantive_reply,
-    )
-
     if not user_message or is_substantive_reply(user_message):
         return False
     return _consent_prefix(user_message)
@@ -356,14 +419,34 @@ def _user_declines_transition(user_message: str) -> bool:
     that only shares a token's prefix (``note db latency spiked``, ``stopped
     the pod``). A multi-token refusal is re-asked each time it is sent (a
     re-ask has no cap); the Not-yet click declines in one step.
-    """
-    from faultmaven.core.investigation.terminal_transitions import (
-        is_substantive_reply,
-    )
 
+    Strict, like the bare consent: ``no`` carrying a zero-width character, or
+    ``*no*``, is not a bare decline (#1840).
+    """
     if not user_message or is_substantive_reply(user_message):
         return False
     return _undecorated(user_message).rstrip(".!, ") in _DECLINE_TOKENS
+
+
+def is_bare_gate_reply(text: str) -> bool:
+    """Whether ``text`` is a reply a gate reads deterministically (#1839).
+
+    True for a bare consent to either terminal target, the target-scoped
+    tokens included (``close it``, ``mark as resolved``), so for every bare
+    Gate 1 consent too (``gate1_bare_consent`` is the untargeted subset), and
+    for a bare decline. Computed from the bare readers themselves, never from
+    a copied token list, so it moves when they do.
+
+    A card whose click sends such a text cannot be told from the user typing
+    it, and would answer whatever offer stands when it is clicked. So
+    ``_flatten_follow_ups`` never ships an LLM-written DECIDE card whose
+    payload this is true for.
+    """
+    return (
+        confirmation_token_class(text, "closed") is not None
+        or confirmation_token_class(text, "resolved") is not None
+        or _user_declines_transition(text)
+    )
 
 
 def pending_gate_verdict(
@@ -376,10 +459,12 @@ def pending_gate_verdict(
     """The pending-transition gate's answer to one user turn (#1783, ruling (a)).
 
     ``intent_value`` is the answer an intent carries: True for a
-    ``confirmation`` with ``value=True`` or a ``status_transition`` to the
-    pending target, False for a ``confirmation`` with ``value=False``, None
+    ``confirmation`` with ``value=True`` or a MINTED ``status_transition`` to
+    the pending target, False for a ``confirmation`` with ``value=False``, None
     when the turn carries neither. ``typed`` is True when the service MINTED
-    that intent from typed text, so it is not a click.
+    that intent from typed text, so it is not a click. A status-dropdown
+    re-pick of the pending target is a click that names a state, not an offer,
+    so it is not consent: the engine re-asks it without calling this (#1838).
 
     Returns the verdict and, for ``confirm``, how the user confirmed:
 
@@ -392,9 +477,10 @@ def pending_gate_verdict(
       consent-shaped reply that is not bare, a reply whose text and minted
       intent disagree, or a minted confirmation on text that is not bare;
     * ``not_an_answer`` — the reply answers neither way, a minted decline on
-      text carrying ``?`` included (#1813): the escape lane's question rule
-      then withdraws the proposal and records nothing. The caller re-asks a
-      short one and sends a substantive one down the escape lane.
+      a question included (#1813; ``is_question``, a question mark in any
+      script, #1840): the escape lane's question rule then withdraws the
+      proposal and records nothing. The caller re-asks a short one and sends
+      a substantive one down the escape lane.
 
     First match wins, so a minted intent never overrides the typed text. A
     click's offer key is checked by the engine before this runs (#1812).
@@ -406,7 +492,7 @@ def pending_gate_verdict(
         return ("reask", None) if intent_value is False else ("confirm", bare)
     # A minted decline on a question is not a refusal (#1813): once, here,
     # ahead of both decline returns below, so "no?" (not bare) lands here too.
-    if typed and intent_value is False and "?" in (user_message or ""):
+    if typed and intent_value is False and is_question(user_message):
         return "not_an_answer", None
     if opens_with_consent_token(user_message):
         return "reask", None

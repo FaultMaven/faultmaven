@@ -72,6 +72,25 @@ CAUSE_IDENTIFIED_LIKELIHOOD = 0.6
 BARE_CONSENT_MAX_LENGTH = 100
 
 
+#: Every question mark a reply can carry: ASCII, fullwidth (U+FF1F), inverted
+#: (U+00BF), Arabic (U+061F), reversed (U+2E2E), the small and vertical forms
+#: (U+FE56, U+FE16) and the Greek question mark (U+037E) (#1840).
+QUESTION_MARKS = frozenset("?\uff1f\u00bf\u061f\u2e2e\ufe56\ufe16\u037e")
+
+
+def is_question(user_message: "str | None") -> bool:
+    """Whether ``user_message`` carries a question mark, in any script (#1840).
+
+    The one question rule of the consent gate. It used to be four separate
+    ``"?" in`` checks that read ASCII only, so ``can we close it on friday？``
+    and ``¿ok`` were recorded as refusals. Its readers: ``is_substantive_reply``
+    below; the engine's ``message_is_substantive`` and its escape-lane record
+    rule (a question withdraws an offer and is never recorded as a refusal);
+    and ``pending_gate_verdict``'s minted decline on a question (#1813).
+    """
+    return any(c in QUESTION_MARKS for c in (user_message or ""))
+
+
 def is_substantive_reply(user_message: "str | None") -> bool:
     """INV-26 substance test for a reply that would commit a gate.
 
@@ -88,7 +107,8 @@ def is_substantive_reply(user_message: "str | None") -> bool:
     handler computes its own ``message_is_substantive`` for a different
     question — *is this an answer to the gate at all, or should the proposal
     be withdrawn?* — at ``_PENDING_GATE_SUBSTANTIVE_LEN`` (40) with no
-    contrastive token, against this one's 100 plus ``?``/`` but ``. Measured,
+    contrastive token, against this one's 100 plus a question mark
+    (``is_question``) and `` but ``. Measured,
     the two disagree in a real band: "we will do it in friday's maintenance
     window instead of now" (59 chars) is substantive to 0b and bare consent
     here. Whether those two should be one predicate is an open question on
@@ -97,8 +117,9 @@ def is_substantive_reply(user_message: "str | None") -> bool:
 
     A message is substantive — and therefore can never be consumed as consent
     to an irreversible RESOLVED/CLOSED transition — when it is long (>
-    ``BARE_CONSENT_MAX_LENGTH`` chars), carries a question, or carries a
-    contrastive continuation ("yes but what about the replication lag?").
+    ``BARE_CONSENT_MAX_LENGTH`` chars), carries a question mark in any script
+    (``is_question``), or carries a contrastive continuation ("yes but what
+    about the replication lag?").
     Substantive input falls to the pending-gate escape lane and is processed
     as a normal turn; only a bare confirmation may execute a terminal
     transition.
@@ -114,7 +135,7 @@ def is_substantive_reply(user_message: "str | None") -> bool:
     msg = user_message.strip().lower()
     if len(msg) > BARE_CONSENT_MAX_LENGTH:
         return True
-    return "?" in msg or " but " in msg or msg.endswith(" but")
+    return is_question(msg) or " but " in msg or msg.endswith(" but")
 
 
 def cause_identification_leg(

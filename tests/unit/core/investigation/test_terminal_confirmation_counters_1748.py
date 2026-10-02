@@ -467,6 +467,25 @@ class TestTheClassifier:
         message, to_state = _with_target(entry)
         assert confirmation_token_class(message, to_state) is None
 
+    @pytest.mark.parametrize("entry", MUST_EXECUTE)
+    def test_every_bare_consent_executes_at_the_gate(self, entry):
+        """The corpus read through the gate's own verdict, not only the
+        classifier: #1840 made the shape reader lenient, and the gate must
+        still execute exactly the bare set."""
+        message, to_state = _with_target(entry)
+        verdict, _ = pending_gate_verdict(
+            message, to_state, intent_value=None, typed=True
+        )
+        assert verdict == "confirm"
+
+    @pytest.mark.parametrize("entry", MUST_NOT_EXECUTE)
+    def test_nothing_but_a_bare_consent_executes_at_the_gate(self, entry):
+        message, to_state = _with_target(entry)
+        verdict, _ = pending_gate_verdict(
+            message, to_state, intent_value=None, typed=True
+        )
+        assert verdict != "confirm"
+
     @pytest.mark.parametrize(
         "message, intent_value, typed, verdict, via",
         GATE_TABLE,

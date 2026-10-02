@@ -67,6 +67,7 @@ from faultmaven.core.investigation.milestone_engine.vectorization import (
 )
 from faultmaven.core.investigation.progress_monitor import ProgressMonitor
 from faultmaven.core.investigation.state_validator import StateValidator
+from faultmaven.core.investigation.terminal_transitions import is_question
 from faultmaven.infrastructure.llm.metering import (
     TurnTokenTracker,
     active_token_tracker,
@@ -120,13 +121,38 @@ from .response_synthesis import (
 # recording a refusal: a consent-shaped reply that is not bare and that
 # ``is_substantive_reply`` does not call substantive (the set the gate used to
 # execute on); a reply whose text and minted intent disagree; a minted
-# confirmation on text that is not bare; and a short (at most this many
-# characters) question-free non-answer ("hm"). It NEVER consumes a turn carrying
-# an upload, nor a non-answer longer than this or containing "?" — new
-# evidence, a question, an instruction to keep investigating: those withdraw
-# the proposal and are processed as a normal investigation turn, so the gate
-# can never swallow them.
+# confirmation on text that is not bare; a status-dropdown re-pick of the
+# pending target (#1838); and a short (at most this many characters)
+# question-free non-answer ("hm"). It NEVER consumes a turn carrying an upload,
+# nor a non-answer longer than this or carrying a question mark in any script
+# (``is_question``, #1840) — new evidence, a question, an instruction to keep
+# investigating: those withdraw the proposal and are processed as a normal
+# investigation turn, so the gate can never swallow them.
 _PENDING_GATE_SUBSTANTIVE_LEN = 40
+
+
+def _commit_gate1(case: Case, *, via: str) -> None:
+    """Commit Gate 1 (the problem-statement confirmation) on ``case``.
+
+    The one commit section 0c makes, whichever of its two readers decided it:
+    a confirmation intent (a click naming the statement shown, or a mint on a
+    bare token), or a bare typed consent while Gate 1 is pending, with no
+    intent at all (#1841, ruling (b)). One helper, so the two cannot drift.
+    ``via`` names the reader, for the log line only.
+
+    There is no path fork (redesign R5): the investigation proceeds
+    opportunistically once INVESTIGATING begins. Nothing transitions here:
+    ``_check_automatic_transitions`` fires INQUIRY -> INVESTIGATING on Gate 1
+    alone. Committed before the LLM call, so the write guard in
+    ``_apply_inquiry_updates`` drops a same-turn rewording of the statement.
+    """
+    case.inquiry.problem_statement_confirmed = True
+    case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
+    logger.info(
+        f"Case {case.case_id}: Gate 1 confirmed via {via} "
+        f"(transitioning to INVESTIGATING)"
+    )
+
 
 # KB pre-fetch (`_prefetch_kb_context`) fetch depth vs. prompt-surface cap.
 # Retrieval returns CHUNK-level results, so a single long runbook can occupy
@@ -569,6 +595,9 @@ class MilestoneEngine:
             #    intent_type="confirmation" + confirmation_value — deterministic,
             #    and the offer the card presents (``proposal_id``). A click
             #    naming any other offer is refused before the verdict (#1812).
+            #    A status-dropdown pick names a state, not an offer: a re-pick
+            #    of the pending target re-shows the card and executes nothing
+            #    (#1838).
             # 2. Pattern-based: fallback for users who type instead of clicking.
             #    Only a BARE consent token executes (#1783); a longer typed
             #    reply is re-asked.
@@ -596,7 +625,7 @@ class MilestoneEngine:
                 stripped_message = (user_message or "").strip()
                 message_is_substantive = bool(stripped_message) and (
                     len(stripped_message) > _PENDING_GATE_SUBSTANTIVE_LEN
-                    or "?" in stripped_message
+                    or is_question(stripped_message)
                 )
 
                 # Contradicting status_transition intent cancels the pending
@@ -631,15 +660,23 @@ class MilestoneEngine:
                         intent_type == "confirmation"
                         and (intent_data or {}).get("value") is True
                     )
-                    # A repeated status_transition intent matching the pending
-                    # transition's target is an implicit confirmation — the user
-                    # clicked the same dropdown/button again after the agent
-                    # proposed the transition.
+                    # A status_transition intent naming the pending target. A
+                    # MINTED one (``typed``) carries a confirmation whose text
+                    # decides, as any mint does. A CLICKED one is the status
+                    # dropdown picked again, and is NOT consent (#1838, ruling
+                    # (b)): the pick names a state, not an offer, and a double
+                    # submit, a client retry or a second tab sends it as surely
+                    # as a deliberate second pick. It is forced to a re-ask
+                    # below, never left to its text: the dropdown's text ("Close
+                    # this case as unresolved. Summarize what we found so
+                    # far.") is over the substantive bound, and as text it
+                    # would escape and be recorded as a refusal.
                     status_transition_confirms = (
                         intent_type == "status_transition"
                         and (intent_data or {}).get("to_state")
                         == case.pending_transition.get("to_state")
                     )
+                    status_repick_clicked = status_transition_confirms and not typed
                     intent_declines = (
                         intent_type == "confirmation"
                         and (intent_data or {}).get("value") is False
@@ -675,13 +712,19 @@ class MilestoneEngine:
                     # intent the service minted from typed text (``typed``)
                     # is not a click, and never overrides the text. The
                     # verdict also names how the user confirmed, for the
-                    # turn record (#1748).
-                    verdict, confirmed_via = pending_gate_verdict(
-                        user_message,
-                        case.pending_transition.get("to_state"),
-                        intent_value=intent_value,
-                        typed=typed,
-                    )
+                    # turn record (#1748). A clicked re-pick of the pending
+                    # target is a re-ask that records nothing (#1838): the
+                    # standing offer's card comes back, and only its click or
+                    # a bare typed consent executes it.
+                    if status_repick_clicked:
+                        verdict, confirmed_via = "reask", None
+                    else:
+                        verdict, confirmed_via = pending_gate_verdict(
+                            user_message,
+                            case.pending_transition.get("to_state"),
+                            intent_value=intent_value,
+                            typed=typed,
+                        )
                     # A turn carrying an upload is never consumed by the gate:
                     # the file is new data and must be analysed, whatever the
                     # caption says ("logs", "", "ok here are the logs"). Only
@@ -729,8 +772,9 @@ class MilestoneEngine:
                                 user_message=user_message,
                             )
                     else:
-                        # ``reask`` (consent-shaped but not bare, or text and
-                        # minted intent disagree), or ``not_an_answer``. A
+                        # ``reask`` (consent-shaped but not bare, text and
+                        # minted intent disagree, or a clicked re-pick of the
+                        # pending target, #1838), or ``not_an_answer``. A
                         # SUBSTANTIVE non-answer (long, or carrying a question)
                         # is not an answer to the gate at all, and neither is
                         # a turn carrying an upload: holding the gate against
@@ -753,9 +797,10 @@ class MilestoneEngine:
                             # The offer is withdrawn either way; whether that
                             # is a REFUSAL splits on the two halves of
                             # message_is_substantive, which the gate
-                            # deliberately conflates. A QUESTION is a user
-                            # deciding — "what happens to the runbook if I
-                            # close this?" — and recording it would make the
+                            # deliberately conflates. A QUESTION (a question
+                            # mark in any script, ``is_question``; #1840) is a
+                            # user deciding — "what happens to the runbook if
+                            # I close this?" — and recording it would make the
                             # affordance disappear, unexplained, until a
                             # premise moved: the same engine-acts-without-
                             # saying-why defect this PR family exists to kill.
@@ -770,10 +815,13 @@ class MilestoneEngine:
                             # A reply that OPENS with consent is not a
                             # deflection either (#1808): "Yes, go ahead and
                             # close it. We verified …" is withdrawn and
-                            # processed, and the offer may come back.
+                            # processed, and the offer may come back. Read
+                            # leniently (#1840), so "*Yes*, …", "_Yes_, …" and
+                            # a "Yes" behind a zero-width character open with
+                            # consent too.
                             if (
                                 text_escapes
-                                and "?" not in stripped_message
+                                and not is_question(stripped_message)
                                 and not _consent_prefix(stripped_message)
                             ):
                                 _record_deferred_disposition_decline(case)
@@ -985,19 +1033,26 @@ class MilestoneEngine:
                         f"committed, processing the message normally"
                     )
                 else:
-                    # Gate 1 commit (problem-statement confirmation). There is
-                    # no path fork (redesign R5) — the investigation proceeds
-                    # opportunistically once INVESTIGATING begins.
-                    case.inquiry.problem_statement_confirmed = True
-                    case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
+                    _commit_gate1(case, via="confirmation intent")
 
-                    logger.info(
-                        f"Case {case.case_id}: Gate 1 confirmed via confirmation intent "
-                        f"(transitioning to INVESTIGATING)"
-                    )
-
-                    # Do NOT transition here — _check_automatic_transitions
-                    # fires INQUIRY -> INVESTIGATING on Gate 1 alone.
+            # ============================================================
+            # GATE 1 - A bare typed consent, with no intent (#1841)
+            # ============================================================
+            # Gate 1's presentation says "reply with the single word yes"
+            # (#1814), so the engine reads that reply itself while Gate 1 is
+            # pending, as ``pending_gate_verdict`` reads the terminal gate
+            # (#1841, ruling (b)). Without this, a typed "yes" committed only
+            # through the LLM's flag or a resolver mint, and an aside that had
+            # cleared ``last_suggestions`` left the resolver nothing to match.
+            # The LLM's ``user_confirmed_investigation`` and the resolver mint
+            # stay screened as before (``gate1_bare_consent``, #1794). Same
+            # commit as the click branch above (``_commit_gate1``).
+            elif (
+                intent_type in (None, "conversation")
+                and _gate1_is_pending(case)
+                and gate1_bare_consent(user_message)
+            ):
+                _commit_gate1(case, via="a bare typed consent")
 
             # ============================================================
             # HYPOTHESIS ACTION - Explicit Intent (Frontend/IntentResolver)
