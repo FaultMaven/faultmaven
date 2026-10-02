@@ -403,8 +403,11 @@ replays a real INVESTIGATING request (case at turn 6, schema
 with six tools) built offline by the API for that model, with no network I/O.
 The provider's per-model `tool_choice` is unchanged (`any` on Opus 5; `auto`
 plus the forcing sentence on Opus 5.5 and Fable 5.1, which 400 on forced tool
-use). No model gets a `thinking` key today; only the control under test varies.
-Each call was sent once.
+use). No model gets a `thinking` key under the default
+`ANTHROPIC_THINKING_MODE=off`; only the control under test varies. Each call
+was sent once, in table order. Per model, `omitted` ran first and wrote the
+prompt cache, and later variants may have read it, so the elapsed differences
+are not attributable to the control alone.
 
 | model | control | content blocks | output tokens | of which thinking | visible | elapsed |
 |---|---|---|---|---|---|---|
@@ -419,11 +422,16 @@ Each call was sent once.
 - **Opus 5:** with forced `tool_choice: any` there is no thinking under any of
   the three controls, so omitting `thinking` already holds at this call.
   `{type: disabled}` is accepted (200). `effort: low` cut output by about 35%.
-- **Opus 5.5:** omitting `thinking` runs adaptive at the default effort
-  (`medium`): 1206 thinking tokens plus a progress-text block. `effort: low`
-  gives no thinking and about a third of the output.
+- **Opus 5.5:** omitting `thinking` runs adaptive; the model's documented
+  default effort is `medium` (not observed by this run). It gave 1206 thinking
+  tokens plus a `text` block. `effort: low` gives no thinking and about a third
+  of the output.
 - **Fable 5.1:** `effort: low` halves thinking (1720 to 893) but does not
-  remove it; no measured control turns thinking off.
+  remove it; no measured control turns thinking off. On this turn `max_tokens`
+  8000 held (5463 used with `thinking` omitted), but only one turn was
+  measured: a larger INVESTIGATING turn recorded on #1800 (2026-09-29, about
+  50k input tokens) hit `max_tokens` 8000 on Fable 5.1 with about 954 visible
+  tokens, so that headroom is not general.
 
 Today's `off` still omits the `thinking` key, so on Opus 5.5 and Fable 5.1 it
 does not turn thinking off. Changing that is pending an owner ruling (#1800).

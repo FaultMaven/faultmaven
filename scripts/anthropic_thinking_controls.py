@@ -8,15 +8,27 @@ from the API (no network) for that model, with one thinking control applied:
 * ``disabled``   the same body plus ``thinking: {"type": "disabled"}``.
 
 The live calls cost money, so the plan is fixed: ``APPROVED_PLAN`` is the set the
-owner approved on #1800 (2026-09-30), every call is sent at most once, nothing
-is retried, and any pair outside the plan is refused. ``--dry-run`` prints what
-would be sent and sends nothing.
+owner approved on #1800 (2026-09-30). That approval is SPENT: the seven calls
+were sent on 2026-10-02. A new run needs a new owner approval.
+
+Without ``--send`` the script prints the plan and sends nothing. With ``--send``
+it reads ``--out`` first and skips every (model, variant) pair that already has
+a row there, success or failure, because a transport failure may still have
+been billed. Every other call is sent once, in plan order, and never retried.
+
+Before anything is sent, the script exits 2 on any of these:
+* a ``--request`` for a model outside the plan, or a model given twice;
+* a planned body with ``max_tokens`` over 8000, a ``stream`` key, a server
+  tool (no ``input_schema``) or more than 250,000 characters;
+* an API key containing whitespace or a control character.
 
     python scripts/anthropic_thinking_controls.py \
         --request claude-opus-5=req-opus5.json --request claude-opus-5-5=req-opus55.json \
-        --request claude-fable-5-1=req-fable51.json --out results.jsonl [--dry-run]
+        --request claude-fable-5-1=req-fable51.json --out results.jsonl [--send]
 
-The API key is read from ``ANTHROPIC_API_KEY``; it is never printed.
+Each response's status and JSON is appended to ``<out>.raw.jsonl`` before it is
+summarised into ``--out``. The API key is read from ``ANTHROPIC_API_KEY``. It is
+never printed, and every record is redacted of it before it is printed or written.
 """
 
 from __future__ import annotations
@@ -27,6 +39,7 @@ import json
 import os
 import sys
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +58,12 @@ APPROVED_PLAN: tuple[tuple[str, str], ...] = (
 )
 
 VARIANTS = ("omitted", "effort_low", "disabled")
+
+#: Bounds of the approved requests. A planned body outside them is refused.
+MAX_TOKENS = 8000
+MAX_BODY_CHARS = 250_000
+
+REDACTED = "<redacted>"
 
 
 def build_variant(body: dict[str, Any], model: str, variant: str) -> dict[str, Any]:
@@ -116,6 +135,74 @@ def plan_requests(
     return [(m, v, build_variant(captured[m], m, v)) for m, v in APPROVED_PLAN]
 
 
+def bound_violations(calls: list[tuple[str, str, dict[str, Any]]]) -> list[str]:
+    """Every way a planned body leaves the approved bounds, naming its model and the bound."""
+    found = []
+    for model, variant, body in calls:
+        where = f"{model} {variant}"
+        max_tokens = body.get("max_tokens")
+        if not isinstance(max_tokens, int) or max_tokens > MAX_TOKENS:
+            found.append(
+                f"{where}: max_tokens {max_tokens!r} is not at most {MAX_TOKENS}"
+            )
+        if "stream" in body:
+            found.append(f"{where}: carries stream")
+        for tool in body.get("tools") or []:
+            if not isinstance(tool, dict) or "input_schema" not in tool:
+                name = tool.get("name") if isinstance(tool, dict) else tool
+                found.append(
+                    f"{where}: tool {name!r} has no input_schema (a server tool)"
+                )
+        chars = len(json.dumps(body))
+        if chars > MAX_BODY_CHARS:
+            found.append(f"{where}: {chars} characters, over {MAX_BODY_CHARS}")
+    return found
+
+
+def completed_pairs(out: Path) -> set[tuple[str, str]]:
+    """The (model, variant) pairs that already have a row in ``out``, success or failure.
+
+    A line that names no pair raises ``ValueError``: its call may have been sent.
+    """
+    if not out.exists():
+        return set()
+    done = set()
+    for n, line in enumerate(out.read_text().splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+            done.add((row["model"], row["variant"]))
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ValueError(
+                f"{out}:{n} is not a result row ({type(exc).__name__})"
+            ) from None
+    return done
+
+
+def _redact(value: Any, key: str) -> Any:
+    """``value`` with ``key`` replaced by ``<redacted>`` in every string it holds."""
+    if isinstance(value, str):
+        return value.replace(key, REDACTED)
+    if isinstance(value, dict):
+        return {k: _redact(v, key) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact(v, key) for v in value]
+    return value
+
+
+def _append(path: Path, record: dict[str, Any], key: str) -> str:
+    """Append ``record``, redacted of ``key``, to ``path`` as one JSON line; return the line.
+
+    Every result row and raw response passes through here, so error text is
+    never clipped before redaction (a clip could leave a prefix of the key).
+    """
+    line = json.dumps(_redact(record, key))
+    with path.open("a") as f:
+        f.write(line + "\n")
+    return line
+
+
 def _send(
     body: dict[str, Any], key: str, timeout: float
 ) -> tuple[int, dict[str, Any], float]:
@@ -144,17 +231,35 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--request", action="append", default=[], metavar="MODEL=PATH")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--timeout", type=float, default=300.0)
-    p.add_argument("--dry-run", action="store_true")
+    p.add_argument(
+        "--send",
+        action="store_true",
+        help="make the live calls; without it the plan is printed and nothing is sent",
+    )
     args = p.parse_args(argv)
 
+    planned_models = {m for m, _ in APPROVED_PLAN}
     captured: dict[str, dict[str, Any]] = {}
     for spec in args.request:
         model, _, path = spec.partition("=")
+        if model not in planned_models:
+            print(
+                f"refused: --request {model!r} is not in APPROVED_PLAN", file=sys.stderr
+            )
+            return 2
+        if model in captured:
+            print(f"refused: --request {model!r} is given twice", file=sys.stderr)
+            return 2
         doc = json.loads(Path(path).read_text())
         captured[model] = doc.get("body", doc)
     calls = plan_requests(captured)
+    violations = bound_violations(calls)
+    if violations:
+        for violation in violations:
+            print(f"refused: {violation}", file=sys.stderr)
+        return 2
 
-    if args.dry_run:
+    if not args.send:
         for model, variant, body in calls:
             print(
                 f"{model:18} {variant:10} tool_choice={body.get('tool_choice')} "
@@ -167,17 +272,40 @@ def main(argv: list[str] | None = None) -> int:
     if not key:
         print("ANTHROPIC_API_KEY is not set", file=sys.stderr)
         return 2
-    with args.out.open("a") as f:
-        for model, variant, body in calls:  # sequential, each once, no retry
+    if any(c.isspace() or unicodedata.category(c) == "Cc" for c in key):
+        print(
+            "refused: ANTHROPIC_API_KEY contains whitespace or a control character",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        done = completed_pairs(args.out)
+    except ValueError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 2
+    raw_out = args.out.with_name(args.out.name + ".raw.jsonl")
+    for model, variant, body in calls:  # sequential, each at most once, no retry
+        if (model, variant) in done:
+            skipped = {"model": model, "variant": variant, "skipped": str(args.out)}
+            print(json.dumps(skipped), flush=True)
+            continue
+        try:
+            status, payload, elapsed = _send(body, key, args.timeout)
+        except Exception as exc:  # a transport failure is a result, not a retry
+            row = {"http": None, "error": f"{type(exc).__name__}: {exc}"}
+        else:
+            raw = {"model": model, "variant": variant, "http": status}
+            _append(raw_out, {**raw, "response": payload}, key)
             try:
-                status, payload, elapsed = _send(body, key, args.timeout)
                 row = summarize_response(status, payload, elapsed)
-            except Exception as exc:  # a transport failure is a result, not a retry
-                row = {"http": None, "error": f"{type(exc).__name__}: {exc}"[:300]}
-            row = {"model": model, "variant": variant, **row}
-            f.write(json.dumps(row) + "\n")
-            f.flush()
-            print(json.dumps(row), flush=True)
+            except Exception as exc:  # the raw line above keeps the paid response
+                row = {
+                    "http": status,
+                    "elapsed_s": round(elapsed, 1),
+                    "summary_error": f"{type(exc).__name__}: {exc}",
+                }
+        line = _append(args.out, {"model": model, "variant": variant, **row}, key)
+        print(line, flush=True)
     return 0
 
 
