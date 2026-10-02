@@ -325,6 +325,34 @@ class TestAFailedScanRecovers:
         stored = await _stored(svc, suggestion.suggestion_id)
         assert stored.pii_scan_status is PIIScanStatus.SCAN_FAILED
 
+    async def test_a_failed_scan_records_the_class_not_the_text(self):
+        """``pii_scan_result`` is stored and returned by
+        ``GET /knowledge/suggestions/{id}`` (``to_api_response``), so a
+        scanner's own message must not land in it (#836): here it names a
+        model file's server path."""
+
+        class _PathNamingSanitizer(_FlakySanitizer):
+            async def asanitize(self, content: str) -> str:
+                raise OSError(
+                    "[Errno 2] No such file or directory: "
+                    "'/opt/models/en_core_web_lg/config.cfg'"
+                )
+
+        svc = SuggestionService(
+            case_repository=_cases(),
+            knowledge_service=_knowledge_double(),
+            sanitizer=_PathNamingSanitizer(failures=0),
+            suggestion_repository=InMemorySuggestionRepository(),
+        )
+
+        suggestion = await _extract(svc)
+
+        stored = await _stored(svc, suggestion.suggestion_id)
+        assert stored.pii_scan_status is PIIScanStatus.SCAN_FAILED
+        assert stored.pii_scan_result == {"error": "PII scan failed (OSError)"}
+        served = repr(svc.to_api_response(stored, include_content=True))
+        assert "/opt/models" not in served
+
     async def test_approval_rescans_and_proceeds_once_the_engine_recovers(self):
         sanitizer = _FlakySanitizer(failures=1)
         knowledge = _knowledge_double()

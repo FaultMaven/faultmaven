@@ -18,6 +18,15 @@ from faultmaven.utils.line_endings import normalize_line_endings
 logger = logging.getLogger(__name__)
 
 
+class DocumentRefusal(ValueError):
+    """A refusal this parser words itself: a hand-written sentence for the
+    caller (a missing parser library, an undecodable text file, an image-only
+    PDF). ``parse`` passes its text on; anything else an extractor raises is a
+    parser library's own exception, whose text can name the file's server path
+    (python-docx: ``Package not found at '/tmp/…'``), so only its class is
+    passed on (#836)."""
+
+
 class DocumentParser:
     """Extracts plain text from uploaded documents."""
 
@@ -70,8 +79,15 @@ class DocumentParser:
 
         try:
             text = extractor(file_path)
-        except Exception as e:
+        except DocumentRefusal as e:
             raise ValueError(f"Failed to parse {file_path.name}: {e}") from e
+        except Exception as e:
+            # The library's text goes to the log, never to the caller: the
+            # preprocessor turns this message into ``/convert``'s 422 detail.
+            logger.warning("document extraction failed for %s: %s", file_path, e)
+            raise ValueError(
+                f"Failed to parse {file_path.name} ({type(e).__name__})"
+            ) from e
 
         if not text or not text.strip():
             raise ValueError(
@@ -117,7 +133,7 @@ class DocumentParser:
         try:
             from pypdf import PdfReader
         except ImportError:
-            raise ValueError("pypdf is required for PDF parsing")
+            raise DocumentRefusal("pypdf is required for PDF parsing")
 
         reader = PdfReader(str(file_path))
         pages = []
@@ -127,7 +143,7 @@ class DocumentParser:
                 pages.append(text)
 
         if not pages:
-            raise ValueError(
+            raise DocumentRefusal(
                 "No extractable text in PDF. The file may be scanned/image-only."
             )
 
@@ -138,7 +154,7 @@ class DocumentParser:
         try:
             from docx import Document
         except ImportError:
-            raise ValueError("python-docx is required for DOCX parsing")
+            raise DocumentRefusal("python-docx is required for DOCX parsing")
 
         doc = Document(str(file_path))
         parts = []
@@ -192,7 +208,7 @@ class DocumentParser:
         try:
             return file_path.read_text(encoding="latin-1")
         except UnicodeDecodeError:
-            raise ValueError(
+            raise DocumentRefusal(
                 "Cannot decode file — it is not valid UTF-8 or Latin-1 text. "
                 "Please re-save the file as UTF-8 and try again."
             )
@@ -225,7 +241,7 @@ class DocumentParser:
         try:
             from bs4 import BeautifulSoup
         except ImportError:
-            raise ValueError("beautifulsoup4 is required for HTML parsing")
+            raise DocumentRefusal("beautifulsoup4 is required for HTML parsing")
 
         raw_html = self._read_text_with_fallback(file_path)
         soup = BeautifulSoup(raw_html, "html.parser")

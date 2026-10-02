@@ -287,7 +287,6 @@ class ConversionService:
             filename=original_filename,
             size_bytes=file_path.stat().st_size,
             content_type=content_type,
-            retained_path=None,
         )
 
         # Step 3: Analyze for failure modes
@@ -573,7 +572,6 @@ class ConversionService:
             filename=source_filename,
             size_bytes=len(source_text.encode("utf-8")),
             content_type="application/x-faultmaven-case",
-            retained_path=None,
         )
 
         # Persist to database with source_type and case_id. The unique index on
@@ -965,10 +963,16 @@ class ConversionService:
                 failure_mode_id=failure_mode.id, error=str(exc), retryable=False
             )
         except Exception as e:
+            # The exception's CLASS, never its text (#836). Every hand-written
+            # failure in this method returns its ``ConversionError`` above, so
+            # what lands here is foreign: a provider error, or an ``OSError``
+            # from the write whose text names the server path. ``error`` is
+            # returned in ``/convert``'s warnings and persisted with the job,
+            # so the detail goes to the log line instead.
             logger.error(f"Conversion failed for {failure_mode.id}: {e}")
             return ConversionError(
                 failure_mode_id=failure_mode.id,
-                error=str(e),
+                error=f"Runbook generation failed ({type(e).__name__})",
                 retryable=getattr(e, "retryable", False),
             )
 
@@ -1090,21 +1094,20 @@ class ConversionService:
 
             # Source file metadata lives on ``uploaded_files``; traverse
             # via the ``source_file_id`` FK to read filename / size /
-            # content_type / storage_ref.
+            # content_type. Not ``storage_ref``: a conversion source's is NULL,
+            # and no location is the client's to see (#836).
             upload = await session.get(UploadedFileModel, job.source_file_id)
             source_file = (
                 SourceFileInfo(
                     filename=upload.filename,
                     size_bytes=upload.size_bytes,
                     content_type=upload.content_type,
-                    retained_path=upload.storage_ref or "",
                 )
                 if upload
                 else SourceFileInfo(
                     filename="<source upload missing>",
                     size_bytes=0,
                     content_type="",
-                    retained_path="",
                 )
             )
 
@@ -1235,7 +1238,6 @@ class ConversionService:
                     "title": dm.title,
                     "status": dm.status,
                     "scope": job.scope,
-                    "file_path": dm.file_path,
                     "knowledge_item_id": dm.knowledge_item_id,
                     "validation_passed": dm.validation_passed,
                     "created_at": (
@@ -1567,14 +1569,38 @@ class ConversionService:
                         }
                     )
                     failed += 1
-            except Exception as e:
-                logger.error(f"Batch verify failed for {draft_id}: {e}")
+            except (NotFoundError, ValidationException) as e:
+                # ``verify_draft``'s own refusals — "Draft not found", "Draft has
+                # validation errors that must be fixed before verification" — and
+                # the publication gate's ``RunbookQualityError``, which lists the
+                # validator's findings about the content. Hand-written and
+                # pathless, so the sentence is what the caller gets, as it was
+                # on main.
                 results.append(
                     {
                         "conversion_id": conversion_id,
                         "draft_id": draft_id,
                         "status": "failed",
                         "error": str(e),
+                        "knowledge_item_id": None,
+                    }
+                )
+                failed += 1
+            except Exception as e:
+                # The exception's CLASS, never its text (#836). The typed arms
+                # above — AuthorizationError, ConflictError, NotFoundError,
+                # ValidationException — carry this codebase's hand-written
+                # sentences and keep them. What lands here is anything else: a
+                # missing file's ``FileNotFoundError`` names its absolute path,
+                # and an ingestion failure carries the vector store's own
+                # message. The detail goes to the log line.
+                logger.error(f"Batch verify failed for {draft_id}: {e}")
+                results.append(
+                    {
+                        "conversion_id": conversion_id,
+                        "draft_id": draft_id,
+                        "status": "failed",
+                        "error": f"Verification failed ({type(e).__name__})",
                         "knowledge_item_id": None,
                     }
                 )
@@ -1985,7 +2011,6 @@ status: draft
                 filename=title,
                 size_bytes=len(content.encode()),
                 content_type="text/markdown",
-                retained_path="",
             ),
             analysis=AnalysisResult(
                 is_actionable=True,

@@ -200,10 +200,14 @@ class QualityScore(BaseModel):
 
 
 class SourceFileInfo(BaseModel):
+    """What the client is told about a conversion's source: its name, size and
+    type. Never where it is: no backend holds a conversion source, so there is
+    no storage key to give, and a server filesystem path is not the client's
+    to see (#836)."""
+
     filename: str
     size_bytes: int
     content_type: str
-    retained_path: Optional[str] = None
 
 
 # =============================================================================
@@ -221,7 +225,11 @@ class ConversionDraft(BaseModel):
     case_id: Optional[str] = None
     validation: ValidationResult
     quality_score: QualityScore
-    file_path: str
+    #: The draft's file on the server, which ``conversion_drafts.file_path``
+    #: persists. Read on the server and never serialised: every dump and every
+    #: response leaves it out, because a server filesystem path is not the
+    #: client's to see (#836).
+    file_path: str = Field(exclude=True)
     content_preview: str = Field(
         max_length=500, description="First 500 chars of generated markdown"
     )

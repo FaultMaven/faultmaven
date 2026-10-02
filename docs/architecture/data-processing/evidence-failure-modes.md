@@ -511,7 +511,7 @@ The sidecar is written once at upload and never revisited, and it goes stale in 
 | `reason` | `status` | exit | Trigger |
 |----------|----------|------|---------|
 | `reference_authority_unavailable` | `failed` | 1 | No DI container, no case repository, or the query raised |
-| `reference_set_disjoint` | `failed` | 1 | The authority answered, but NOT ONE candidate is in its answer — so every candidate would be deleted. Three routes reach it and none is distinguishable here: an RLS-scoped session (`uploaded_files` is tenanted and fail-closed, migration 018), a keyspace that stopped corresponding (`storage_ref` holds filesystem paths for conversion-sourced rows, and a changed `STORAGE_BACKEND`/prefix does the same), or a deployment that genuinely references nothing. **Overridable per run** with `--allow-disjoint-reference-set`, and **never applied to a dry run** |
+| `reference_set_disjoint` | `failed` | 1 | The authority answered, but NOT ONE candidate is in its answer — so every candidate would be deleted. Three routes reach it and none is distinguishable here: an RLS-scoped session (`uploaded_files` is tenanted and fail-closed, migration 018), a keyspace that stopped corresponding (a changed `STORAGE_BACKEND` or key prefix), or a deployment that genuinely references nothing. **Overridable per run** with `--allow-disjoint-reference-set`, and **never applied to a dry run** |
 | `orphan_cleanup_disabled` | `skipped` | 0 | The pre-existing settings gate, unchanged |
 
 The exit codes are the substance, not bookkeeping. `faultmaven.jobs.run.main()`
@@ -534,8 +534,9 @@ async def cleanup_orphaned_files(
 
     # OVERLAP, not emptiness. A non-empty reference set that shares nothing
     # with the candidates scores every one of them "unreferenced" and deletes
-    # the lot — the same irreversible loss, and reachable (conversion-sourced
-    # rows hold filesystem paths, which can never equal a backend key).
+    # the lot — the same irreversible loss, and reachable (a changed
+    # STORAGE_BACKEND or key prefix leaves every row naming a key the backend
+    # does not hold).
     #
     # A dry run is exempt: it deletes nothing, and its counters are how an
     # operator diagnoses this. A live run refuses unless acknowledged.

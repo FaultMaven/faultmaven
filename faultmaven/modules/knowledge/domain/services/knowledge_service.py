@@ -1825,7 +1825,12 @@ class KnowledgeService:
             # Belt-and-braces: ``safe_path_component`` and ``runbook_filename``
             # already make an escape unconstructible. The guard keeps holding if
             # either rule is loosened, or if a new caller assembles its own path.
-            write_runbook_file(
+            #
+            # Off the event loop: ``mkdir`` and ``write_text`` are blocking disk
+            # I/O, and inline they stall every request the process is serving
+            # (#836).
+            await asyncio.to_thread(
+                write_runbook_file,
                 file_path,
                 content,
                 source=f"uploaded runbook (document_id={document_id})",
@@ -1844,7 +1849,11 @@ class KnowledgeService:
                     filename=filename,
                     size_bytes=len(content.encode()),
                     content_type="text/markdown",
-                    storage_ref=str(file_path),
+                    # A storage-backend key or NULL, never a path: the runbook
+                    # is on this replica's disk, not in a backend, so there is
+                    # no key to store (#836). ``conversion_drafts.file_path``
+                    # below is what locates the file.
+                    storage_ref=None,
                     upload_source="conversion_source",
                     uploaded_at_turn=0,
                 )

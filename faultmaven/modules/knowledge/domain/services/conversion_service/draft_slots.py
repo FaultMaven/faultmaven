@@ -86,11 +86,18 @@ async def _find_live_draft_owning(
 
 
 def _duplicate_draft_conflict(taken: Tuple[str, str, str]) -> ConflictError:
-    """The 409 for a slot already held. One wording, both call sites."""
-    runbook_id, file_path, draft_id = taken
+    """The 409 for a slot already held. One wording, both call sites.
+
+    Names the draft and the runbook id, never the draft's file (#836). The
+    slot is enterprise-wide, so the holder can be a colleague's draft, and its
+    ``conversion_drafts.file_path`` is a server path that names their
+    directory. The message also reaches ``/convert``'s persisted warnings, so a
+    path here would be stored and served again.
+    """
+    runbook_id, _file_path, draft_id = taken
     return ConflictError(
         f"A runbook draft with id '{runbook_id}' already exists in this "
-        f"enterprise (draft {draft_id}, {file_path}). Discard it before "
+        f"enterprise (draft {draft_id}). Discard it before "
         "creating another with the same service and title — verifying it "
         "does not release the id.",
         resource_type="conversion_draft",

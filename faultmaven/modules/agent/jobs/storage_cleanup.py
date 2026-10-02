@@ -76,12 +76,11 @@ each one rather than summarised separately, because a summary is what drifts:
    The test is the OVERLAP, not emptiness. Guarding on "the reference set is
    empty" leaves the worse half open: a *non-empty* set that shares nothing
    with the candidates passes such a guard and then deletes all of them. That
-   is reachable rather than theoretical — `knowledge_service` and
-   `conversion_service` write filesystem paths into `storage_ref`, and a path
-   can never equal a backend key, so a conversion-heavy deployment has exactly
-   that shape. A changed `STORAGE_BACKEND` or key prefix does too. RLS is the
-   third route: `uploaded_files` is tenanted and fail-closed (migration 018),
-   so a session with no org bound sees ZERO rows.
+   is reachable rather than theoretical: a changed `STORAGE_BACKEND` or key
+   prefix leaves every row naming a key the backend does not hold, which is
+   exactly that shape. RLS is the second route: `uploaded_files` is tenanted
+   and fail-closed (migration 018), so a session with no org bound sees ZERO
+   rows.
 3. The pre-existing `orphan_cleanup_enabled` gate (below).
    ``status="skipped"`` (exit 0), unchanged.
 
@@ -373,8 +372,8 @@ async def cleanup_orphaned_files(
     # OVERLAP is the test, not emptiness: a non-empty reference set that is
     # disjoint from the candidates scores every one of them "unreferenced" and
     # deletes the lot, which is the same irreversible loss. That shape is
-    # reachable — `knowledge_service` and `conversion_service` write filesystem
-    # paths into `storage_ref`, and a path can never equal a backend key. See
+    # reachable — a changed `STORAGE_BACKEND` or key prefix leaves every row
+    # naming a key the backend does not hold. See
     # faultmaven/jobs/reference_set.py for the full reasoning.
     verdict = assess_reference_set(
         candidates=candidates,

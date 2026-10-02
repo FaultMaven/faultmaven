@@ -48,10 +48,9 @@ deleted.
 
 The disjoint test is the **overlap**, not emptiness. A *non-empty* reference
 set that overlaps nothing passes an emptiness check and then deletes
-everything, and that shape is reachable: `knowledge_service` and
-`conversion_service` write filesystem paths into `storage_ref`, and a path can
-never equal a backend key. A changed `STORAGE_BACKEND` or key prefix does the
-same, and an RLS-scoped session produces the empty instance.
+everything, and that shape is reachable: a changed `STORAGE_BACKEND` or key
+prefix leaves every row naming a key the backend does not hold. An RLS-scoped
+session produces the empty instance.
 
 The authority-unreachable refusal covers dry runs too — a classification
 computed without the authority is a fiction someone might act on. The
@@ -1068,8 +1067,9 @@ not happening, so it needs fixing rather than silencing.
    answer. First check whether the reference set is *empty* or merely
    *non-overlapping*: the run summary's `referenced_refs_count` distinguishes
    them, and they have different causes. A non-zero count with zero overlap
-   points at a keyspace mismatch (conversion-sourced rows hold filesystem
-   paths; a changed `STORAGE_BACKEND`/prefix does it too). A zero count under
+   points at a keyspace mismatch: a changed `STORAGE_BACKEND` or key prefix.
+   (KB conversion-source rows hold no key at all, so they are not in the
+   count.) A zero count under
    `TENANT_PROVIDER=multi` overwhelmingly means the run is **not** on the
    maintenance DB role:
    `uploaded_files` is RLS-tenanted and fail-closed, so an app-role session

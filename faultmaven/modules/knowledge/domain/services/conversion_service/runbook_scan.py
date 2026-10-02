@@ -29,6 +29,9 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     generate_conversion_id,
     generate_draft_id,
 )
+from faultmaven.modules.knowledge.domain.services.conversion_service.errors import (
+    ScanAbortedError,
+)
 from faultmaven.modules.knowledge.domain.services.conversion_service.job_persistence import (
     _persist_job,
 )
@@ -222,12 +225,13 @@ async def _scan_for_runbooks_impl(
             ):
                 preview = pending_discard_ids[:20]
                 suffix = "..." if len(pending_discard_ids) > 20 else ""
-                raise RuntimeError(
+                raise ScanAbortedError(
                     f"Scan aborted: would discard all {non_discarded_count} active runbook "
                     f"draft(s). Runbook files appear to be missing from the knowledge "
                     f"data directory. DB state is unchanged. "
                     f"Affected draft IDs: {preview}{suffix}. "
-                    "Restore data/knowledge/ from backup, then retry the scan."
+                    "Restore the knowledge data directory from backup, then retry "
+                    "the scan."
                 )
 
             # Release the live-conversion claim of any case job whose last
@@ -264,7 +268,10 @@ async def _scan_for_runbooks_impl(
         }
 
     for md_file in sorted(knowledge_dir.rglob("*.md")):
-        # Skip sources directory (retained original uploads)
+        # Skip a ``sources`` directory: what it would hold is source uploads,
+        # not runbooks. Nothing writes one (sources are not retained,
+        # document-to-runbook-conversion.md §9.4); the skip only keeps such a
+        # directory, if one is placed in the tree, out of the walk.
         if "sources" in md_file.parts:
             continue
 
@@ -299,7 +306,11 @@ async def _scan_for_runbooks_impl(
         try:
             content = md_file.read_text(encoding="utf-8")
         except Exception as e:
-            errors.append(f"{md_file.name}: cannot read ({e})")
+            # The file's NAME and the exception's CLASS, never the exception's
+            # text (#836): an ``OSError`` names the file's server path, and
+            # ``errors`` is returned to the client. The detail goes to the log.
+            logger.warning("scan cannot read %s: %s", md_file, e)
+            errors.append(f"{md_file.name}: cannot read ({type(e).__name__})")
             continue
 
         if len(content.strip()) < 100:
@@ -415,7 +426,6 @@ async def _scan_for_runbooks_impl(
                     filename=md_file.name,
                     size_bytes=md_file.stat().st_size,
                     content_type="text/markdown",
-                    retained_path=str(md_file),
                 ),
                 analysis=AnalysisResult(
                     is_actionable=True,
@@ -468,7 +478,6 @@ async def _scan_for_runbooks_impl(
                 "scope": scope,
                 "validation_passed": validation.passed,
                 "quality_score": quality.overall,
-                "file_path": file_path_str,
             }
         )
 

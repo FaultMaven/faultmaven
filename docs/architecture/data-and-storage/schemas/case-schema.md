@@ -836,7 +836,7 @@ COMMENT ON TABLE solutions IS 'Proposed and verified solutions';
 
 ### 4.6 uploaded_files (High-Cardinality Table)
 
-Stores file metadata **and the file-level preprocessing artifacts** that describe its content. The actual bytes live in the file-storage backend (local FS, S3, Azure blob), reachable via `storage_ref`. `case_id` is nullable because KB conversion uploads (`POST /knowledge/convert`) do not carry a case.
+Stores file metadata **and the file-level preprocessing artifacts** that describe its content. The actual bytes live in the file-storage backend (local FS, S3, Azure blob), reachable via `storage_ref`. `storage_ref` holds a backend key or NULL, never anything else. `case_id` is nullable because KB conversion sources (`upload_source = 'conversion_source'`) carry no case. Every writer of one: document conversion (`POST /knowledge/convert`), `POST /knowledge/runbooks/create`, case-to-runbook conversion and the disk scan, all through `_persist_job`, and the KB document upload (`upload_document`). Their `storage_ref` is NULL: no backend holds a conversion source (#836, revision `006_kb_conversion_source_storage_ref_null`).
 
 ```sql
 CREATE TABLE uploaded_files (
@@ -851,8 +851,9 @@ CREATE TABLE uploaded_files (
     content_type VARCHAR(100),                       -- MIME type
     content_hash VARCHAR(64),                        -- file-level dedup key
 
-    -- Opaque key passed to the file-storage backend (local FS path, S3 key, Azure blob name).
-    -- The backend interprets this; nothing else does.
+    -- A file-storage backend key (a key under the local backend's root, an S3 key,
+    -- an Azure blob name), or NULL. The backend interprets this; nothing else does.
+    -- NULL on every KB conversion-source row: no backend holds its file (#836).
     storage_ref VARCHAR(1000),
 
     -- Provenance: how this file got into the system.

@@ -16,9 +16,7 @@ which raise:
 1. RLS scopes the session, so a tenanted table answers with a partial or empty
    view (``uploaded_files`` is fail-closed — no org bound means ZERO rows).
 2. The two stores stopped sharing a keyspace — ``STORAGE_BACKEND`` or a key
-   prefix changed, or rows hold values that were never backend keys at all
-   (``knowledge_service`` and ``conversion_service`` both write filesystem
-   paths into ``storage_ref``).
+   prefix changed, so the rows name keys the backend does not hold.
 3. The authority genuinely references nothing, because everything was deleted.
 
 **Overlap, not emptiness, is the discriminator.** Guarding on "the reference

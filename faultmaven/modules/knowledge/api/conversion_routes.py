@@ -43,6 +43,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.errors import (
     ConversionRejectedError,
+    ScanAbortedError,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
@@ -320,7 +321,9 @@ async def scan_for_runbooks(
             enterprise_id=getattr(current_user, "enterprise_id", None),
             is_platform_admin=current_user.is_platform_admin(),
         )
-    except RuntimeError as exc:
+    except ScanAbortedError as exc:
+        # The scan's own refusal, a hand-written sentence. Typed rather than a
+        # bare ``RuntimeError``, which would echo any library's text (#836).
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 

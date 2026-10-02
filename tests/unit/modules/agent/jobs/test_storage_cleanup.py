@@ -1099,11 +1099,9 @@ class TestDisjointReferenceSet:
     unreferenced, and the sweep deletes all of them — the same irreversible
     loss #1232 exists to prevent.
 
-    Not theoretical. `knowledge_service.py` and `conversion_service.py` both
-    write filesystem paths into `uploaded_files.storage_ref`, and a path can
-    never equal a backend key, so a conversion-heavy deployment has a
-    populated reference set that overlaps nothing. A changed STORAGE_BACKEND
-    or key prefix does the same. The test is the OVERLAP.
+    Not theoretical. A changed STORAGE_BACKEND or key prefix leaves a
+    populated reference set that overlaps nothing: every row names a key the
+    backend does not hold. The test is the OVERLAP.
     """
 
     @pytest.mark.asyncio
@@ -1127,8 +1125,8 @@ class TestDisjointReferenceSet:
             storage=storage_service,
             ttl_hours=24,
             dry_run=False,
-            # Shaped like real conversion-sourced rows: absolute filesystem
-            # paths, which can never match a backend key.
+            # Refs from a keyspace the backend does not hold, as a changed
+            # STORAGE_BACKEND or key prefix leaves them: none can match.
             referenced_refs={
                 "/var/data/knowledge/conversions/runbook-src.md",
                 "/srv/uploads/retained/import-2026.csv",
