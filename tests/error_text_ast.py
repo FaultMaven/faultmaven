@@ -22,6 +22,13 @@ Two things this deliberately does **not** do the obvious way:
   that only inspects ``detail`` reports the file clean while the exception is on
   the wire — which is precisely how one such site survived #966.
 
+**What is on the wire.** An ``HTTPException``'s ``detail`` **and its
+``headers``** — a response header reaches the caller exactly as a body does,
+and the returned-body half has treated ``response.headers[...] = str(e)`` as a
+leak since #1400. A factory parameter that becomes a header counts the same
+way: ``_llm_http(503, code_of(exc), ...)`` puts ``code_of(exc)`` into
+``x-error-code``.
+
 **Which statuses.** An ``HTTPException`` carrying the exception's text is
 reported at 5xx, and at **any** status when the exception came from a *broad*
 source: a bare ``except:``, ``except Exception`` or ``except BaseException``
@@ -40,21 +47,29 @@ boundary in both directions, and the analysis reported its file clean:
 
 * **Down, into a factory.** ``api/exception_handlers.py``'s ``_llm_http``
   builds the ``HTTPException`` from its ``detail`` parameter, so no caller ever
-  spells ``HTTPException`` at all. A same-module function whose own ``return
-  HTTPException(...)`` carries one of its parameters into ``detail`` is a
-  factory, and a call to it is read as the construction it performs — see
-  ``_http_exception_factories``.
+  spells ``HTTPException`` at all. A same-module function whose own
+  ``HTTPException(...)`` — returned, raised or assigned — carries one of its
+  parameters onto the wire is a factory, and a call to it is read as the
+  construction it performs — see ``_http_exception_factories``. That includes
+  a *raising* helper called as a statement (``_fail(str(e))``), the house
+  idiom for a 404 helper.
 * **Up, out of a helper.** ``llm_service_error_http_exception(exc:
   BaseException)`` receives the exception as a parameter, so there is no
   ``except ... as`` binding for the taint to start from. An exception-typed
-  parameter is a taint source too, and the finding is the helper's own
-  ``return``/``raise`` — that is where the text is put in the body — not its
-  callers. See ``_exception_parameter_leak_sites``.
+  parameter is a taint source too. The finding is the helper's own
+  construction — that is where the text is put on the wire — and, because such
+  a helper is also a factory, every same-module caller that hands it an
+  exception is reported as well. Fixing the helper clears all of them. See
+  ``_exception_parameter_leak_sites``.
 
-**Stated limits.** Four shapes are outside this analysis on purpose, written
+Every call the factory view recognises is a sink, wherever it stands: raised,
+returned, assigned and raised later, awaited, or called for its side effect.
+Each is reported at the line of the call.
+
+**Stated limits.** These shapes are outside this analysis on purpose, written
 down so the next widening starts from a measurement rather than re-deriving
-one. When they were recorded (#1634) none of them was a live leak on the
-response-producing surface:
+one. When they were recorded (#1634) none of the first four was a live leak on
+the response-producing surface:
 
 * a factory that builds its ``HTTPException`` by calling another factory — the
   factory view is one level deep. Iterating it to a fixed point added zero
@@ -72,19 +87,41 @@ response-producing surface:
   that render ``str(exc)`` (#1598's shape O). Closed, not guarded, by the #1598
   ruling: its entire live population was five legitimate sites, and a guard
   over it would be an allowlist and nothing else.
+
+Four more are tracked in #1858, the issue for a single function-scope taint
+pass that would subsume them:
+
+* a two-hop stash after the handler — ``err = str(e)`` in the handler, then
+  ``message = f"...{err}"`` and the raise after it. The raise-after pass
+  follows one alias out of the handler, not a chain;
+* a nested closure raising with the enclosing handler's exception, and a
+  ``lambda`` factory (``mk = lambda m: HTTPException(500, m)``). Each scope is
+  analysed on its own, and a factory is a ``def``;
+* an unannotated exception parameter named outside
+  ``_UNANNOTATED_EXCEPTION_PARAMS``;
+* a local stashed by a *typed* handler and raised inside a sibling *broad*
+  handler of the same ``try``.
+
+And one is pending a ruling: "broad" is decided by class NAME, so a generic
+wrapper — ``ServiceException``, ``RuntimeError`` — keeps the typed 4xx
+carve-out although it carries whatever it wrapped. Whether to widen "broad" is
+#1860; the two probable live sites are #1859.
 """
 
 from __future__ import annotations
 
 import ast
+import builtins
+import functools
 import pathlib
 import re
 from typing import NamedTuple
 
-# HTTPException(status_code, detail=None, headers=None) — `detail` is
-# positional index 1 when not passed by keyword.
-_DETAIL_POSITION = 1
+# HTTPException(status_code, detail=None, headers=None) — the positional
+# index of each argument when it is not passed by keyword.
 _STATUS_POSITION = 0
+_DETAIL_POSITION = 1
+_HEADERS_POSITION = 2
 
 _MAX_ALIAS_DEPTH = 5
 
@@ -98,14 +135,28 @@ _NON_5XX_STATUS_RE = re.compile(r"HTTP_[1234]\d\d|\b[1234]\d\d\b")
 #: status — see the module docstring and ``_is_broad_handler_type``.
 _BROAD_EXCEPTION_TYPES = frozenset({"Exception", "BaseException"})
 
-#: Parameter names that carry an exception when nothing annotates them. An
-#: unannotated parameter is never *broad* — nothing says it is not a domain
-#: exception, or not a message string at all — so it keeps the 5xx gate:
+#: Parameter names that carry an exception when nothing annotates them, or
+#: when the annotation says nothing (``_UNTYPED_ANNOTATIONS``). Such a
+#: parameter is never *broad* — nothing says it is not a domain exception, or
+#: not a message string at all — so it keeps the 5xx gate:
 #: ``def bad(error): raise HTTPException(400, detail=error)`` reads as a
 #: caller-facing message helper as plausibly as a leak, and the name alone
 #: cannot tell the two apart.
 _UNANNOTATED_EXCEPTION_PARAMS = frozenset(
     {"e", "ex", "exc", "err", "error", "exception"}
+)
+
+#: Annotations that admit anything, an exception included. ``exc: Any`` is as
+#: uninformative as no annotation, so the name decides, as it does there.
+_UNTYPED_ANNOTATIONS = frozenset({"Any", "object"})
+
+#: Every exception class the interpreter defines — the seed the package's own
+#: exception classes are derived from (``_package_exception_classes``).
+_BUILTIN_EXCEPTIONS = frozenset(
+    name
+    for name in dir(builtins)
+    if isinstance(getattr(builtins, name), type)
+    and issubclass(getattr(builtins, name), BaseException)
 )
 
 #: Rendering the live exception without binding it. A handler using these has
@@ -227,7 +278,11 @@ def _local_assignments(scope: ast.AST) -> dict[str, list[ast.AST]]:
 
     Covers ``x = ...``, ``x: T = ...``, ``x += ...`` and ``(x := ...)``. The
     last two bind just as effectively as the first, so leaving them out would
-    give the alias-following two silent blind spots.
+    give the alias-following two silent blind spots. So do a ``for`` (or
+    comprehension) target, bound to what it iterates, and a ``with ... as``
+    target, bound to the context expression: #1634's review measured ``for c in
+    walk_cause_chain(exc)`` breaking the taint in the very helper #1634 is
+    about.
 
     It also covers writes *through* a name -- ``d["k"] = ...``, ``d.attr = ...``
     -- keyed on the root name via ``_root_name``. Restricting this to
@@ -270,6 +325,19 @@ def _local_assignments(scope: ast.AST) -> dict[str, list[ast.AST]]:
             bind(node.target, node.value)
         elif isinstance(node, ast.NamedExpr):
             bind(node.target, node.value)
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            # A loop target is an alias of what it iterates. `for c in
+            # walk_cause_chain(exc)` is this codebase's own idiom for reading
+            # an exception's cause chain -- `api/exception_handlers.py` has
+            # two such `for` statements and four comprehensions -- and
+            # `str(c)` carries the text of a link of `exc` exactly as
+            # `str(exc)` carries its own.
+            bind(node.target, node.iter)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            # `with ctx(e) as msg:` binds `msg` from the context expression.
+            for item in node.items:
+                if item.optional_vars is not None:
+                    bind(item.optional_vars, item.context_expr)
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             # A container MUTATED by method call is bound just as effectively
             # as one assigned into: `out.append({"error": str(e)})` and
@@ -327,8 +395,10 @@ def _status_is_5xx(node: ast.AST | None) -> bool:
     Per *expression*, not per call, because a factory's status is whatever
     argument its caller bound to the factory's status parameter, and that
     argument is not the ``status_code`` of any ``HTTPException(...)`` in the
-    caller's source. ``None`` is a status nobody bound — a factory parameter
-    left at its default — and is *unknown*, which fails closed below.
+    caller's source. ``None`` is a status nobody can read — a factory status
+    parameter the call leaves unbound and that has no default — and is
+    *unknown*, which fails closed below. A conditional status (``400 if a else
+    503``) is a 5xx if either branch can be.
 
     A bare integer literal is checked by *range*, not by spelling. Matching only
     ``500``/``INTERNAL_SERVER_ERROR``/``HTTP_5`` let ``raise HTTPException(
@@ -358,11 +428,13 @@ def _status_is_5xx(node: ast.AST | None) -> bool:
     re-raise carrying the original status) does not carry the exception text.
 
     This gate is only half of the status rule: a site whose taint came from a
-    broad source is checked whatever this answers (#1598). Each pass applies
-    that as ``broad or _status_is_5xx(status)``.
+    broad source is checked whatever this answers (#1598). ``_gated`` is the
+    whole rule, and every pass asks it.
     """
     if node is None:
         return True
+    if isinstance(node, ast.IfExp):
+        return _status_is_5xx(node.body) or _status_is_5xx(node.orelse)
     if isinstance(node, ast.Constant) and isinstance(node.value, int):
         return 500 <= node.value <= 599
     text = ast.unparse(node)
@@ -379,6 +451,32 @@ def _detail_expr(call: ast.Call) -> ast.AST | None:
     if len(call.args) > _DETAIL_POSITION:
         return call.args[_DETAIL_POSITION]
     return None
+
+
+def _headers_expr(call: ast.Call) -> ast.AST | None:
+    """The ``headers`` argument, whether passed by keyword or positionally."""
+    for kw in call.keywords:
+        if kw.arg == "headers":
+            return kw.value
+    if len(call.args) > _HEADERS_POSITION:
+        return call.args[_HEADERS_POSITION]
+    return None
+
+
+def _carried_expr(call: ast.Call) -> ast.AST | None:
+    """Everything a direct ``HTTPException(...)`` puts on the wire.
+
+    ``detail`` **and** ``headers``. Reading ``detail`` alone was a blind spot
+    #1634's review measured against 57 live ``headers=`` constructions: the
+    ``x-error-code`` header ``_llm_http`` builds from its ``error_code``
+    parameter reaches the caller exactly as the body does. Two arguments come
+    back as one tuple, which every reader below walks like any other
+    expression.
+    """
+    parts = [e for e in (_detail_expr(call), _headers_expr(call)) if e is not None]
+    if not parts:
+        return None
+    return parts[0] if len(parts) == 1 else ast.Tuple(elts=parts, ctx=ast.Load())
 
 
 def _terminal_name(node: ast.AST) -> str | None:
@@ -436,129 +534,238 @@ def _annotation_classes(annotation: ast.AST | None) -> list[str]:
     return [name] if name else []
 
 
-def _exception_params(fn: ast.AST) -> list[tuple[str, bool]]:
+def _is_exception_class_name(name: str, known: frozenset[str] | set[str]) -> bool:
+    """Is ``name`` an exception class, by name or by the derived class set?"""
+    return (
+        name in _BROAD_EXCEPTION_TYPES
+        or name in known
+        or name.endswith(("Exception", "Error"))
+    )
+
+
+def _classes_deriving(trees: list[ast.AST], seed: frozenset[str]) -> frozenset[str]:
+    """``seed`` plus every class in ``trees`` that derives from an exception.
+
+    By name and transitively: a class whose base is in the set, or is named
+    like an exception (``*Exception``/``*Error``), joins it, and so do the
+    classes deriving from that one. Iterated to a fixed point, because a
+    subclass may be read before its base.
+    """
+    bases: dict[str, set[str]] = {}
+    for tree in trees:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                bases.setdefault(node.name, set()).update(
+                    _terminal_name(base) or "" for base in node.bases
+                )
+    known = set(seed)
+    changed = True
+    while changed:
+        changed = False
+        for name, parents in bases.items():
+            if name not in known and any(
+                _is_exception_class_name(parent, known) for parent in parents
+            ):
+                known.add(name)
+                changed = True
+    return frozenset(known)
+
+
+@functools.lru_cache(maxsize=1)
+def _package_exception_classes() -> frozenset[str]:
+    """Every exception class ``faultmaven`` defines, plus the builtin ones.
+
+    The suffix test alone missed 23 of the package's exception classes —
+    ``TeamOperationRefused``, ``TenantTurnCapExceeded``, ``PathEscape`` — so a
+    parameter typed as one was not a taint source at all. Derived from the
+    source rather than listed, so a new exception class is covered the day it
+    is written. Cached: the package cannot change inside one test session, and
+    this parses all of it.
+    """
+    import faultmaven
+
+    trees: list[ast.AST] = []
+    for path in pathlib.Path(faultmaven.__file__).parent.rglob("*.py"):
+        try:
+            trees.append(ast.parse(path.read_text(encoding="utf-8")))
+        except (SyntaxError, UnicodeDecodeError):  # pragma: no cover - defensive
+            continue
+    return _classes_deriving(trees, _BUILTIN_EXCEPTIONS)
+
+
+def _module_exception_classes(tree: ast.AST) -> frozenset[str]:
+    """The package's exception classes plus those ``tree`` defines itself."""
+    return _classes_deriving([tree], _package_exception_classes())
+
+
+def _exception_params(
+    fn: ast.AST, exception_classes: frozenset[str]
+) -> list[tuple[str, bool]]:
     """``(name, broad)`` for every parameter of ``fn`` that can carry an exception.
 
-    A parameter counts when its annotation admits a class named ``Exception``
-    or ``BaseException`` or ending in ``Exception`` or ``Error``. With no
-    annotation, the name decides: ``exc`` and its usual spellings
+    A parameter counts when its annotation admits an exception class:
+    ``Exception``, ``BaseException``, a name in ``exception_classes`` (the
+    package's exception classes and the module's own, derived by inheritance —
+    see ``_package_exception_classes``), or a name ending in ``Exception`` or
+    ``Error``. With no annotation, one that admits anything (``Any``,
+    ``object``), or one that names no class the analysis can read, the name
+    decides: ``exc`` and its usual spellings
     (``_UNANNOTATED_EXCEPTION_PARAMS``).
-
-    The suffix test is a name test, so a domain exception named otherwise —
-    ``TeamOperationRefused``, ``TenantTurnCapExceeded`` — is not recognised.
-    Such a parameter would be typed, so it could only matter at 5xx. When this
-    was written one surface parameter was typed that way, in
-    ``team_operation_refused_handler``, which returns a ``JSONResponse`` and
-    so builds no ``HTTPException`` for this pass to read.
 
     ``broad`` is True only for an annotation naming ``Exception`` or
     ``BaseException``. A parameter typed as a domain exception is the helper
     twin of a typed ``except`` arm, and keeps the 4xx carve-out the same way;
     an unannotated one keeps it too, because nothing says it is not one.
+    Whether a generic wrapper such as ``ServiceException`` should count as
+    broad is #1860.
     """
     found: list[tuple[str, bool]] = []
     args = fn.args
     for param in [*args.posonlyargs, *args.args, *args.kwonlyargs]:
         classes = _annotation_classes(param.annotation)
-        if classes:
-            exception_classes = [
-                c
-                for c in classes
-                if c in _BROAD_EXCEPTION_TYPES
-                or c.endswith("Exception")
-                or c.endswith("Error")
+        if classes and not set(classes) <= _UNTYPED_ANNOTATIONS:
+            exception_types = [
+                c for c in classes if _is_exception_class_name(c, exception_classes)
             ]
-            if exception_classes:
+            if exception_types:
                 found.append(
                     (
                         param.arg,
-                        any(c in _BROAD_EXCEPTION_TYPES for c in exception_classes),
+                        any(c in _BROAD_EXCEPTION_TYPES for c in exception_types),
                     )
                 )
-        elif param.annotation is None and param.arg in _UNANNOTATED_EXCEPTION_PARAMS:
+        elif param.arg in _UNANNOTATED_EXCEPTION_PARAMS:
             found.append((param.arg, False))
     return found
 
 
 class _Factory(NamedTuple):
-    """What a call to a same-module ``HTTPException`` factory builds.
+    """What a call to one same-module ``HTTPException`` factory builds.
 
     ``positional`` is the parameter order a positional argument binds by, and
-    ``params`` every name a keyword argument can bind. ``status`` is the
-    ``status_code`` expression of the factory's own ``HTTPException(...)``,
-    in the factory's terms; ``detail_params`` are the parameters that reach
-    its ``detail``.
+    ``params`` every name a keyword argument can bind. ``defaults`` is each
+    parameter's default expression. ``statuses`` holds the ``status_code``
+    expression of EVERY ``HTTPException(...)`` the factory builds from a
+    parameter, in the factory's terms; ``carried_params`` are the parameters
+    that reach any of their ``detail`` or ``headers``.
     """
 
     positional: list[str]
     params: list[str]
-    status: ast.AST | None
-    detail_params: frozenset[str]
+    defaults: dict[str, ast.AST]
+    statuses: tuple[ast.AST | None, ...]
+    carried_params: frozenset[str]
 
 
-def _http_exception_factories(tree: ast.AST) -> dict[str, _Factory]:
+def _param_defaults(args: ast.arguments) -> dict[str, ast.AST]:
+    """Each parameter's default expression, by name; no entry when there is none."""
+    positional = [*args.posonlyargs, *args.args]
+    defaults: dict[str, ast.AST] = {}
+    for param, default in zip(
+        positional[len(positional) - len(args.defaults) :], args.defaults
+    ):
+        defaults[param.arg] = default
+    for param, default in zip(args.kwonlyargs, args.kw_defaults):
+        if default is not None:
+            defaults[param.arg] = default
+    return defaults
+
+
+def _http_exception_factories(tree: ast.AST) -> dict[str, list[_Factory]]:
     """Every function in ``tree`` that builds an ``HTTPException`` from a parameter.
 
-    A factory is a function whose own ``return HTTPException(...)`` carries one
-    of its parameters into ``detail`` — directly or through a local alias,
-    by the same ``_carries_exception`` that follows a handler's ``as`` name.
-    ``api/exception_handlers.py``'s ``_llm_http(status_code, error_code,
+    A factory is a function whose own ``HTTPException(...)`` — returned,
+    raised or assigned, wherever in the function it is built — carries one of
+    its parameters into ``detail`` or ``headers``, directly or through a local
+    alias, by the same ``_carries_exception`` that follows a handler's ``as``
+    name. ``api/exception_handlers.py``'s ``_llm_http(status_code, error_code,
     detail, ...)`` is the shape: its callers never spell ``HTTPException``, so
     without this a ``raise _llm_http(500, ..., str(e), ...)`` was invisible to
     every pass. #1634's leak went through it.
 
-    Keyed by name, because a call names its target only by name (``f(...)``)
-    or by terminal attribute (``self.f(...)``). Same module only, and one
-    level: a factory whose ``HTTPException`` comes from calling another
-    factory is not one here — both are stated limits in the module docstring.
-    When this was written the response-producing surface held two:
-    ``exception_handlers.py::_llm_http`` and
-    ``operator_user_scope.py::user_not_found``.
+    So is a *raising* helper — ``def _fail(msg): raise HTTPException(404,
+    detail=msg)``, called as a statement. #1634's review counted six live on
+    the surface, and an analysis that looked only at a factory's ``return``
+    saw none of them.
+
+    All of a factory's constructions are merged: the union of the parameters
+    they carry, and every status. Reading one arbitrary ``return`` took the
+    status of whichever the walk met last, which made ``client=True ->
+    400 else 500`` a 400. Keyed by name, because a call names its target only
+    by name (``f(...)``) or by terminal attribute (``self.f(...)``), and
+    same-named functions — two classes' ``_err`` methods — keep one record
+    each, all applied at a call: the analysis cannot tell which one a call
+    reaches.
+
+    Same module only, and one level: a factory whose ``HTTPException`` comes
+    from calling another factory is not one here — both are stated limits in
+    the module docstring. When this was first written the response-producing
+    surface held two returning factories: ``exception_handlers.py::_llm_http``
+    and ``operator_user_scope.py::user_not_found``. Counting every
+    construction, 35 functions there qualify: most are route handlers whose
+    own 404 names a path parameter, which FastAPI calls and the module never
+    does, so they are never read as a call. Widening the definition added zero
+    findings.
+
+    A function's assignment map is built only once it is known to construct
+    an ``HTTPException``. Most functions never do, and the map walks the
+    whole function.
     """
-    factories: dict[str, _Factory] = {}
+    factories: dict[str, list[_Factory]] = {}
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         args = fn.args
         positional = [p.arg for p in [*args.posonlyargs, *args.args]]
         params = positional + [p.arg for p in args.kwonlyargs]
-        assigns = _local_assignments(fn)
+        assigns: dict[str, list[ast.AST]] | None = None
+        statuses: list[ast.AST | None] = []
+        carried_params: set[str] = set()
         for node in _own_nodes(fn):
-            if not isinstance(node, ast.Return) or not isinstance(node.value, ast.Call):
+            if not isinstance(node, ast.Call) or not _is_http_exception(node):
                 continue
-            call = node.value
-            if not _is_http_exception(call):
+            carried = _carried_expr(node)
+            if carried is None:
                 continue
-            detail = _detail_expr(call)
-            if detail is None:
-                continue
-            detail_params = frozenset(
-                p for p in params if _carries_exception(detail, p, assigns)
-            )
-            if detail_params:
-                factories[fn.name] = _Factory(
-                    positional, params, _status_expr(call), detail_params
+            if assigns is None:
+                assigns = _local_assignments(fn)
+            reached = {p for p in params if _carries_exception(carried, p, assigns)}
+            if reached:
+                carried_params |= reached
+                statuses.append(_status_expr(node))
+        if carried_params:
+            factories.setdefault(fn.name, []).append(
+                _Factory(
+                    positional,
+                    params,
+                    _param_defaults(args),
+                    tuple(statuses),
+                    frozenset(carried_params),
                 )
+            )
     return factories
 
 
 def _http_exception_view(
-    call: ast.AST | None, factories: dict[str, _Factory]
-) -> tuple[ast.AST | None, ast.AST | None] | None:
-    """``(status, detail)`` if ``call`` builds an ``HTTPException``, else ``None``.
+    call: ast.AST | None, factories: dict[str, list[_Factory]]
+) -> tuple[tuple[ast.AST | None, ...], ast.AST | None] | None:
+    """``(statuses, carried)`` if ``call`` builds an ``HTTPException``, else ``None``.
 
-    The one question every ``HTTPException`` pass asks, so that a factory call
-    is seen by all of them at once rather than by whichever pass remembered it.
+    The one question every ``HTTPException`` pass asks, of every node it
+    walks, so that a factory call is seen by all of them at once rather than
+    by whichever pass remembered it — and seen wherever it stands, not only
+    under a ``raise`` or ``return``.
 
-    * A direct ``HTTPException(...)`` answers its own ``status_code`` and
-      ``detail`` arguments.
-    * A call to a factory answers the CALLER's arguments: ``detail`` is the
-      arguments bound to the factory's detail parameters (a tuple of them, which
-      every reader below walks like any other expression), and ``status`` is the
-      argument bound to the factory's status parameter — or the factory's own
-      expression when that is not a parameter (``_f(msg)`` building a literal
-      500). A status parameter the call leaves at its default is ``None``,
-      unknown, and ``_status_is_5xx`` fails closed on it.
+    * A direct ``HTTPException(...)`` answers its own ``status_code``, and its
+      ``detail`` and ``headers`` (``_carried_expr``).
+    * A call to a factory answers the CALLER's arguments: ``carried`` is the
+      arguments bound to the parameters the factory carries onto the wire (a
+      tuple of them), and ``statuses`` is each of the factory's statuses — the
+      argument bound to its status parameter, else that parameter's default,
+      else the factory's own expression when it is not a parameter (``_f(msg)``
+      building a literal 500). A status parameter left unbound with no default
+      is ``None``, unknown, and ``_status_is_5xx`` fails closed on it. Several
+      same-named factories contribute all of their statuses and arguments.
 
     A method factory reached through ``self.``/``cls.`` binds its receiver
     implicitly, so positional binding starts after it.
@@ -566,30 +773,48 @@ def _http_exception_view(
     if not isinstance(call, ast.Call):
         return None
     if _is_http_exception(call):
-        return _status_expr(call), _detail_expr(call)
-    factory = factories.get(_terminal_name(call.func))
-    if factory is None:
+        return (_status_expr(call),), _carried_expr(call)
+    records = factories.get(_terminal_name(call.func))
+    if not records:
         return None
-    positional = factory.positional
-    if (
-        isinstance(call.func, ast.Attribute)
-        and positional
-        and positional[0] in {"self", "cls"}
-    ):
-        positional = positional[1:]
-    bound: dict[str, ast.AST] = {}
-    for index, arg in enumerate(call.args):
-        if index < len(positional):
-            bound[positional[index]] = arg
-    for kw in call.keywords:
-        if kw.arg in factory.params:
-            bound[kw.arg] = kw.value
-    detail_args = [bound[p] for p in factory.detail_params if p in bound]
-    detail = ast.Tuple(elts=detail_args, ctx=ast.Load()) if detail_args else None
-    status = factory.status
-    if isinstance(status, ast.Name) and status.id in factory.params:
-        status = bound.get(status.id)  # unbound -> None -> unknown -> 5xx
-    return status, detail
+    statuses: list[ast.AST | None] = []
+    carried: list[ast.AST] = []
+    for factory in records:
+        positional = factory.positional
+        if (
+            isinstance(call.func, ast.Attribute)
+            and positional
+            and positional[0] in {"self", "cls"}
+        ):
+            positional = positional[1:]
+        bound: dict[str, ast.AST] = {}
+        for index, arg in enumerate(call.args):
+            if index < len(positional):
+                bound[positional[index]] = arg
+        for kw in call.keywords:
+            if kw.arg in factory.params:
+                bound[kw.arg] = kw.value
+        carried.extend(bound[p] for p in factory.carried_params if p in bound)
+        for status in factory.statuses:
+            if isinstance(status, ast.Name) and status.id in factory.params:
+                # Bound by the call, else the default; neither -> unknown -> 5xx.
+                status = bound.get(status.id, factory.defaults.get(status.id))
+            statuses.append(status)
+    return tuple(statuses), (
+        ast.Tuple(elts=carried, ctx=ast.Load()) if carried else None
+    )
+
+
+def _gated(statuses: tuple[ast.AST | None, ...], broad: bool) -> bool:
+    """The status rule, in one place: does a site with these statuses count?
+
+    Any status, when the taint came from a broad source (#1598); otherwise any
+    reachable 5xx — a factory with a 400 arm and a 500 arm is a 500 for the
+    caller that reaches the second. Every pass asks this rather than spelling
+    the rule again; four copies of it were how one pass could drift from the
+    others.
+    """
+    return broad or any(_status_is_5xx(status) for status in statuses)
 
 
 def _parse(path: pathlib.Path) -> ast.AST:
@@ -620,7 +845,10 @@ def _renders_the_live_exception(expr: ast.AST) -> bool:
     ``as <name>`` — and the name-following analysis, which starts from that
     name, cannot see them at all. #1400 measured ``detail=traceback
     .format_exc()`` under a bare ``except Exception:`` as MISSED; it is the
-    single richest leak on the list, since it carries the whole stack.
+    single richest leak on the list, since it carries the whole stack. A
+    handler that DOES bind a name can call them just as well, so the
+    in-handler ``HTTPException`` pass and the returned-body renderer walk ask
+    this of bound handlers too.
 
     Matched on the attribute name rather than on the module, because
     ``from traceback import format_exc`` is the same call.
@@ -639,22 +867,27 @@ def http_exception_leak_sites(path: pathlib.Path) -> list[str]:
     Reported at 5xx, or at any status when the exception came from a broad
     source — see the module docstring for the rule and #1598 for the ruling.
     "``HTTPException``" includes a call to a same-module factory that builds
-    one (``_http_exception_view``), in every pass below.
+    one (``_http_exception_view``), and "carrying" covers its ``detail`` and
+    its ``headers``, in every pass below. Every such call is a sink wherever
+    it stands — raised, returned, assigned, awaited or called as a statement —
+    and is reported at the call's line; the surface guard's ``_offender_keys``
+    maps that line to the statement holding it.
 
     Four shapes, the first three measured against #1400's mutation matrix and
     the fourth against #1634's:
 
-    * the ``raise`` is inside a handler and its ``detail`` carries ``e``,
-      directly or through a local alias;
-    * the handler stashes the text in a local and the ``raise`` happens
+    * the construction is inside a handler and carries ``e``, directly or
+      through a local alias — or renders the live exception
+      (``traceback.format_exc()``), which a handler binding ``e`` can do as
+      easily as one binding nothing;
+    * the handler stashes the text in a local and the construction happens
       **after** it, back in the enclosing function — the exact twin of the
       shape ``returned_body_leak_sites`` has covered since #1394, and the
       reason this module's docstring stopped saying it was uncovered;
-    * the ``detail`` renders the live exception without binding it at all
-      (``traceback.format_exc()``), so there is no ``as <name>`` to follow;
-    * the exception arrives as a PARAMETER, and the function raises or
-      returns an ``HTTPException`` carrying it — the helper twin of the first
-      shape, reported at the helper's own line.
+    * the construction renders the live exception under a handler that binds
+      nothing, so there is no ``as <name>`` to follow;
+    * the exception arrives as a PARAMETER, and the function builds an
+      ``HTTPException`` carrying it — the helper twin of the first shape.
     """
     tree = _parse(path)
     factories = _http_exception_factories(tree)
@@ -668,15 +901,19 @@ def http_exception_leak_sites(path: pathlib.Path) -> list[str]:
         assigns = _local_assignments(handler)
         for node in ast.walk(handler):
             in_handler.add(id(node))
-            if not isinstance(node, ast.Raise):
-                continue
-            view = _http_exception_view(node.exc, factories)
+            view = _http_exception_view(node, factories)
             if view is None:
                 continue
-            status, detail = view
-            if detail is None or not (broad or _status_is_5xx(status)):
+            statuses, carried = view
+            if carried is None or not _gated(statuses, broad):
                 continue
-            if _carries_exception(detail, handler.name, assigns):
+            # `format_exc()` is checked here too, not only under a handler
+            # that binds nothing: binding `e` does not stop the stack being
+            # rendered, and #1634's review measured `log(e)` followed by
+            # `detail=traceback.format_exc()` passing.
+            if _carries_exception(
+                carried, handler.name, assigns
+            ) or _renders_the_live_exception(carried):
                 offenders.append(f"{path.name}:{node.lineno}")
 
     offenders.extend(
@@ -694,16 +931,17 @@ def _raise_after_handler_leak_sites(
     tree: ast.AST,
     filename: str,
     in_handler: set[int],
-    factories: dict[str, _Factory],
+    factories: dict[str, list[_Factory]],
 ) -> list[str]:
-    """``raise`` sites OUTSIDE a handler that carry a local it tainted.
+    """Constructions OUTSIDE a handler that carry a local it tainted.
 
         except Exception as e:
             message = f"...: {e}"
         raise HTTPException(status_code=500, detail=message)
 
     Gated like the in-handler pass: 5xx, or any status when a broad handler
-    tainted the local (``_tainted_names`` records which).
+    tainted the local (``_tainted_names`` records which). One alias out of the
+    handler, not a chain — a two-hop stash is a stated limit (#1858).
 
     ``returned_body_leak_sites`` has covered this for ``return`` since #1394,
     and its docstring recorded the ``raise`` twin as deliberately uncovered
@@ -726,33 +964,32 @@ def _raise_after_handler_leak_sites(
             continue
         tainted = _tainted_names(handlers)
         for node in own:
-            if id(node) in in_handler or not isinstance(node, ast.Raise):
+            if id(node) in in_handler:
                 continue
-            view = _http_exception_view(node.exc, factories)
+            view = _http_exception_view(node, factories)
             if view is None or view[1] is None:
                 continue
-            status, detail = view
-            is_5xx = _status_is_5xx(status)
+            statuses, carried = view
             if any(
                 name in tainted
                 and node.lineno > tainted[name].line
-                and (tainted[name].broad or is_5xx)
-                for name in _names_in(detail)
+                and _gated(statuses, tainted[name].broad)
+                for name in _names_in(carried)
             ):
                 offenders.append(f"{filename}:{node.lineno}")
     return offenders
 
 
 def _unbound_render_leak_sites(
-    tree: ast.AST, filename: str, factories: dict[str, _Factory]
+    tree: ast.AST, filename: str, factories: dict[str, list[_Factory]]
 ) -> list[str]:
-    """``detail`` sites rendering the live exception with no ``as <name>``.
+    """Constructions rendering the live exception under a handler with no
+    ``as <name>``.
 
-    Scoped to handlers that bind NOTHING, because that is the only case the
-    name-following passes cannot reach; a handler that binds ``e`` and also
-    calls ``traceback.format_exc()`` is already reported by the walk above if
-    it puts either on the wire, and reporting it twice would read as two
-    findings.
+    Scoped to handlers that bind NOTHING, because the in-handler pass walks
+    only the handlers that bind a name; it checks the renderer there too, so a
+    handler that binds ``e`` and puts ``traceback.format_exc()`` on the wire is
+    reported once, by that pass.
 
     Same status gate as the other passes: 5xx, or any status under a broad
     clause — and the clause this pass exists for, a bare ``except:`` or
@@ -765,24 +1002,19 @@ def _unbound_render_leak_sites(
             continue
         broad = _is_broad_handler_type(handler.type)
         for node in ast.walk(handler):
-            if not isinstance(node, ast.Raise):
-                continue
-            view = _http_exception_view(node.exc, factories)
+            view = _http_exception_view(node, factories)
             if view is None or view[1] is None:
                 continue
-            status, detail = view
-            if (broad or _status_is_5xx(status)) and _renders_the_live_exception(
-                detail
-            ):
+            statuses, carried = view
+            if _gated(statuses, broad) and _renders_the_live_exception(carried):
                 offenders.append(f"{filename}:{node.lineno}")
     return offenders
 
 
 def _exception_parameter_leak_sites(
-    tree: ast.AST, filename: str, factories: dict[str, _Factory]
+    tree: ast.AST, filename: str, factories: dict[str, list[_Factory]]
 ) -> list[str]:
-    """``raise``/``return`` sites whose ``HTTPException`` carries an exception
-    PARAMETER.
+    """Constructions whose ``HTTPException`` carries an exception PARAMETER.
 
     The other three passes start from an ``except ... as`` binding, so a
     helper that receives the exception — ``def h(exc: BaseException) ->
@@ -791,39 +1023,36 @@ def _exception_parameter_leak_sites(
     ``str(exc)[:200]`` into ``_llm_http``'s ``detail``, and the file was
     reported clean while ``/turns`` echoed internal text.
 
-    Reported at the helper's own ``return``/``raise`` line, not at its callers:
-    the helper is where the text is put in the body, a caller only passes an
-    exception along, and one finding per helper is the one a fix closes.
-    ``_offender_keys`` in the surface guard maps a ``Return`` exactly as it
-    maps a ``Raise``.
+    Reported at the helper's own construction, which is where the text is put
+    on the wire. That is not the only finding one such helper produces: a
+    helper whose ``HTTPException`` carries its exception parameter is, by the
+    same token, a factory, so every same-module caller that hands it an
+    exception is reported by the handler passes as well. Fixing the helper
+    clears all of them at once.
 
-    Which parameters count, and which are broad, is ``_exception_params``. The
-    status gate is the handler passes' gate with ``broad`` from the
-    annotation. The whole function is the alias scope (``text = str(exc)``
-    and then ``detail=text``), as the whole handler is for an ``as`` name.
+    Which parameters count, and which are broad, is ``_exception_params``, over
+    the package's exception classes and this module's own. The status gate is
+    ``_gated`` with ``broad`` from the annotation. The whole function is the
+    alias scope (``text = str(exc)`` and then ``detail=text``, or ``for c in
+    walk_cause_chain(exc)`` and then ``str(c)``), as the whole handler is for
+    an ``as`` name.
     """
     offenders: list[str] = []
+    exception_classes = _module_exception_classes(tree)
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        params = _exception_params(fn)
+        params = _exception_params(fn, exception_classes)
         if not params:
             continue
         assigns = _local_assignments(fn)
         for node in _own_nodes(fn):
-            if isinstance(node, ast.Raise):
-                built = node.exc
-            elif isinstance(node, ast.Return):
-                built = node.value
-            else:
-                continue
-            view = _http_exception_view(built, factories)
+            view = _http_exception_view(node, factories)
             if view is None or view[1] is None:
                 continue
-            status, detail = view
-            is_5xx = _status_is_5xx(status)
+            statuses, carried = view
             if any(
-                (broad or is_5xx) and _carries_exception(detail, name, assigns)
+                _gated(statuses, broad) and _carries_exception(carried, name, assigns)
                 for name, broad in params
             ):
                 offenders.append(f"{filename}:{node.lineno}")
@@ -917,10 +1146,12 @@ def returned_body_leak_sites(path: pathlib.Path) -> list[str]:
       ``main.py`` had six, all of which CodeQL's ``py/stack-trace-exposure``
       flagged while this analysis reported the file clean.
 
-    A third shape is covered here since #1400: a handler that binds NOTHING
-    and returns ``traceback.format_exc()``. There is no ``as <name>``, so
-    neither of the two shapes above can see it, and it carries the whole
-    stack rather than one message.
+    A third shape is covered here since #1400: a handler that returns
+    ``traceback.format_exc()``. It carries the whole stack rather than one
+    message, and the name-following of the two shapes above cannot see it.
+    Any handler, not only one that binds nothing: binding ``e`` and returning
+    the formatted stack leaks it all the same, and #1634's review measured the
+    narrower walk missing exactly that.
 
     (The ``raise``-outside-the-handler twin of the second shape used to be
     listed here as deliberately uncovered, on the grounds that no such site
@@ -964,11 +1195,11 @@ def returned_body_leak_sites(path: pathlib.Path) -> list[str]:
             if leaks:
                 offenders.append(f"{path.name}:{node.lineno}")
 
-    # Third shape: an UNBOUND handler returning the live exception's rendering.
-    # Its own walk, because the loop above starts from handlers that bind a
-    # name and this one is defined by binding none.
+    # Third shape: a handler -- bound or not -- returning the live exception's
+    # rendering. Its own walk, because the loop above starts from handlers
+    # that bind a name and follows that name, which `format_exc()` never uses.
     for handler in ast.walk(tree):
-        if not isinstance(handler, ast.ExceptHandler) or handler.name:
+        if not isinstance(handler, ast.ExceptHandler):
             continue
         for node in ast.walk(handler):
             if (

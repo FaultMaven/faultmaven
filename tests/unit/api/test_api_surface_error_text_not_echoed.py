@@ -258,12 +258,36 @@ def _rel(path: pathlib.Path) -> str:
     return path.relative_to(_REPO).as_posix()
 
 
+#: The statements a reported line can stand in, and the expression each one
+#: keys on. ``Return``/``Raise`` were the whole list while every sink was a
+#: ``raise`` or a ``return``. Since #1634 the analysis reports the line of any
+#: call that builds an ``HTTPException`` — a raising helper called for its
+#: side effect (``Expr``), one assigned and raised later (``Assign``) — and a
+#: line no key is built for is a finding reported and then silently dropped,
+#: which is a guard that passes.
+_REPORTED_STATEMENTS = (
+    ast.Return,
+    ast.Raise,
+    ast.Expr,
+    ast.Assign,
+    ast.AnnAssign,
+    ast.AugAssign,
+)
+
+
 def _offender_keys(path: pathlib.Path) -> list[tuple[str, str, str, int]]:
     """``(path, function, expression, line)`` for every site the analysis reports.
 
     The shared analysis returns ``file:line``. The expression is recovered here
     rather than there so that widening the key does not change the four guards
     that already depend on that return shape.
+
+    A reported line is mapped to the statement that CONTAINS it, not only to
+    one that starts on it: the call the analysis reports may sit on a later
+    line of a statement that spans several — ``await handler(request,
+    HTTPException(...))`` broken across lines. The key's line is the
+    statement's first line, and its expression is the statement's ``value``
+    (or a ``raise``'s ``exc``).
     """
     lines = {
         int(site.rsplit(":", 1)[1])
@@ -283,9 +307,11 @@ def _offender_keys(path: pathlib.Path) -> list[tuple[str, str, str, int]]:
 
     keys: list[tuple[str, str, str, int]] = []
     for node in ast.walk(tree):
-        if not isinstance(node, (ast.Return, ast.Raise)) or node.lineno not in lines:
+        if not isinstance(node, _REPORTED_STATEMENTS):
             continue
-        expr = node.value if isinstance(node, ast.Return) else node.exc
+        if not any(node.lineno <= line <= node.end_lineno for line in lines):
+            continue
+        expr = node.exc if isinstance(node, ast.Raise) else node.value
         if expr is None:  # pragma: no cover - the analysis never reports these
             continue
         keys.append(
@@ -350,16 +376,16 @@ def test_no_api_surface_site_puts_the_caught_exception_on_the_wire():
     """The class guard, over the whole surface.
 
     Covers every shape the shared analysis knows: an ``HTTPException`` whose
-    ``detail`` carries an exception's text, at 5xx or — when the exception
-    came from a broad ``except`` or a parameter typed ``Exception`` or
-    ``BaseException`` — at any status (#1598); built directly or through a
-    same-module factory; with the exception caught here (directly, through a
-    local alias, or through a local the handler tainted and a later statement
-    raises) or received as a parameter, reported at the helper (#1634). Then a
-    ``return`` carrying it into a body — the shape a handler that degrades to
-    a 200 uses, which the ``HTTPException`` half structurally cannot see — and
-    either of those rendering the live exception with
-    ``traceback.format_exc()`` under a handler that binds no name at all.
+    ``detail`` or ``headers`` carry an exception's text, at 5xx or — when the
+    exception came from a broad ``except`` or a parameter typed ``Exception``
+    or ``BaseException`` — at any status (#1598); built directly or through a
+    same-module factory or raising helper, wherever the call stands; with the
+    exception caught here (directly, through a local alias, or through a local
+    the handler tainted and a later statement raises) or received as a
+    parameter (#1634). Then a ``return`` carrying it into a body — the shape a
+    handler that degrades to a 200 uses, which the ``HTTPException`` half
+    structurally cannot see — and either of those rendering the live
+    exception with ``traceback.format_exc()``, under any handler.
 
     One shape is deliberately NOT covered: a custom typed exception carrying
     the text into one of the four domain handlers that render ``str(exc)``
