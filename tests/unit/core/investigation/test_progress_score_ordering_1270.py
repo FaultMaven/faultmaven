@@ -550,11 +550,13 @@ async def test_a_confirmed_close_does_not_claim_a_resolution_milestone():
     claim. So the arms are derived from where the transition LANDED.
     """
     engine = _terminal_confirm_engine()
+    case = _case_awaiting_confirmation("closed")
+    # The close card's click: a dropdown re-pick no longer confirms (#1838).
     result = await engine.process_turn(
-        case=_case_awaiting_confirmation("closed"),
-        user_message="yes, close it",
-        intent_type="status_transition",
-        intent_data={"to_state": "closed"},
+        case=case,
+        user_message="Yes, close this case without resolution.",
+        intent_type="confirmation",
+        intent_data=_yes_click(case),
     )
 
     case = result["case_updated"]

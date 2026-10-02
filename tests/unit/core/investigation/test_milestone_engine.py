@@ -2033,8 +2033,13 @@ class TestContradictingIntentCancelsPendingTransition:
         assert updated_case.state == CaseState.INVESTIGATING
 
     @pytest.mark.asyncio
-    async def test_same_intent_still_confirms(self, mock_llm, mock_repo):
-        """User has pending CLOSE, then clicks 'Close' again → treated as confirmation."""
+    async def test_same_intent_reshows_the_card(self, mock_llm, mock_repo):
+        """User has pending CLOSE, then picks 'Close' again: the card comes back.
+
+        A dropdown re-pick of the pending target is not consent (#1838, ruling
+        (b)). It names a state, not the offer, so it re-shows the offer's card
+        and records nothing; only the card's click or a bare typed consent
+        executes. This test pinned the old answer (a re-pick closed the case)."""
         engine = MilestoneEngine(
             mock_llm,
             mock_repo,
@@ -2070,7 +2075,9 @@ class TestContradictingIntentCancelsPendingTransition:
             "closure_reason": "closed_insufficient_evidence",
         }
 
-        # User submits SAME status_transition intent → confirmation
+        before = dict(case.pending_transition)
+
+        # User submits the SAME status_transition intent: a re-ask
         result = await engine.process_turn(
             case,
             "Close this case",
@@ -2080,9 +2087,14 @@ class TestContradictingIntentCancelsPendingTransition:
 
         updated_case = result["case_updated"]
 
-        # Case should have transitioned to CLOSED (same intent = confirmation)
-        assert updated_case.state == CaseState.CLOSED
-        assert updated_case.pending_transition is None
+        assert updated_case.state == CaseState.INVESTIGATING
+        assert updated_case.pending_transition == before
+        assert updated_case.progress.deferred_disposition_declined_signatures == []
+        assert "Please select one of the options above" in result["agent_response"]
+        assert [
+            (f.get("intent") or {}).get("proposal_id")
+            for f in result["suggested_follow_ups"]
+        ] == [before["proposed_at"]] * 2
 
 
 class TestRootCauseConclusionPersistence:

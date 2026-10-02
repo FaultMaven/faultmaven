@@ -494,6 +494,96 @@ class TestControls:
         )
         assert saved.messages[-2]["metadata"].get("out_of_band") is None
 
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "yes",
+            # Decorated, these pass ``TRIAGE_MIN_WORDS``, so only the guard's
+            # explicit exemption keeps them off the classifier (#1840 review).
+            "looks good :ok_hand:",
+            "yes :+1: :skin-tone-2:",
+            "sounds good :slightly_smiling_face:",
+        ],
+    )
+    async def test_a_bare_consent_at_a_pending_gate1_commits_untriaged(
+        self, recording_case_repository, case, query
+    ):
+        """#1841: the engine commits a pending Gate 1 on a bare typed consent,
+        so the service must hand it every bare consent, even when nothing is
+        left to mint an intent from. The guard exempts that one reply from the
+        out-of-band classifier: a decorated consent is not kept off it by the
+        continuation gates, because its shortcodes count as words.
+
+        Driven through the REAL engine, with only the LLM seams doubled, so the
+        commit is observed, not inferred. Verdict "2" (aside) is load-bearing,
+        as in the control above: were the classifier consulted, the turn would
+        skip the engine and Gate 1 would stay pending."""
+        from faultmaven.core.investigation.schemas import InquiryResponse
+
+        router = _router("2")
+        real_engine = MilestoneEngine(
+            router, recording_case_repository, investigation_tools=MagicMock()
+        )
+        real_engine.generator.generate_structured_output = AsyncMock(
+            return_value=InquiryResponse(
+                agent_response="Starting the investigation.",
+                state_updates={"user_confirmed_investigation": False},
+            )
+        )
+        service = InvestigationService(
+            milestone_engine=real_engine,
+            case_repository=recording_case_repository,
+            turn_cap=_cap(InMemoryTurnLedger()),
+        )
+        case.state = CaseState.INQUIRY
+        case.pending_transition = None
+        case.inquiry.problem_statement_confirmed = False
+        case.inquiry.problem_statement_confirmed_at = None
+        # An aside or an orientation turn stored no intent-bearing card.
+        case.last_suggestions = None
+        assert needs_llm_triage(classify_query(query))
+        assert (
+            case.investigation_turn_count > 0
+        ), "premise: the in-band turn that proposed the statement"
+
+        resp, _, saved = await _turn(
+            service, recording_case_repository, case, query=query
+        )
+
+        caps = [c.kwargs.get("max_tokens") for c in router.route.call_args_list]
+        assert TRIAGE_MAX_TOKENS not in caps, "the triage classifier was consulted"
+        real_engine.generator.generate_structured_output.assert_awaited()
+        assert saved.inquiry.problem_statement_confirmed is True
+        assert saved.state == CaseState.INVESTIGATING
+        assert saved.messages[-2]["metadata"].get("out_of_band") is None
+
+    async def test_a_decorated_consent_after_gate1_is_still_triaged(
+        self, engine, recording_case_repository, case
+    ):
+        """The guard's other conjunct (#1841): the exemption is for a bare
+        consent while Gate 1 is PENDING. With Gate 1 confirmed, the same reply
+        is ordinary chat to the aside lane, so it is triaged as before, and
+        verdict "2" (aside) answers it out of band."""
+        from faultmaven.core.investigation.milestone_engine.transition_consent import (
+            gate1_bare_consent,
+        )
+
+        service = _service(engine, recording_case_repository, InMemoryTurnLedger(), "2")
+        query = "looks good :ok_hand:"
+        assert case.state == CaseState.INVESTIGATING
+        assert case.inquiry.problem_statement_confirmed
+        assert gate1_bare_consent(query), "premise: the reply the exemption names"
+
+        _, _, saved = await _turn(service, recording_case_repository, case, query=query)
+
+        caps = [
+            c.kwargs.get("max_tokens")
+            for c in engine.deps.llm_provider.route.call_args_list
+        ]
+        assert TRIAGE_MAX_TOKENS in caps, "the triage was not consulted"
+        engine.process_turn.assert_not_called()
+        assert saved.messages[-2]["metadata"]["out_of_band"] == "off_topic"
+
     async def test_a_typed_answer_to_an_offered_choice_is_incident_work(
         self, engine, recording_case_repository, case
     ):

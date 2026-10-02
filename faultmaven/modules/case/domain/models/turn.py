@@ -128,9 +128,10 @@ class InvestigationMomentum(str, Enum):
 NON_INVESTIGATIVE_OUTCOMES = frozenset({"conversation", "other", "out_of_band"})
 
 #: How a user confirmed the terminal transition a turn executed (#1748): a
-#: clicked intent (a DECIDE card, or the dropdown pick repeated), a typed bare
-#: explicit token ("yes", "go ahead!"), or a typed bare weak token ("ok",
-#: "lgtm 👍"). Nothing else executes a terminal transition (#1783, ruling (a)):
+#: clicked intent (the DECIDE confirmation card; a dropdown re-pick of the
+#: pending target re-shows the card instead, #1838), a typed bare explicit
+#: token ("yes", "go ahead!"), or a typed bare weak token ("ok", "lgtm 👍").
+#: Nothing else executes a terminal transition (#1783, ruling (a)):
 #: a typed reply that says more than one token is re-asked, so the former
 #: ``explicit_prefixed``, ``weak_prefixed`` and ``typed_other`` labels are gone,
 #: and a stored one loads as None. The ONE copy of the label set:
