@@ -72,23 +72,36 @@ CAUSE_IDENTIFIED_LIKELIHOOD = 0.6
 BARE_CONSENT_MAX_LENGTH = 100
 
 
-#: Every question mark a reply can carry: ASCII, fullwidth (U+FF1F), inverted
-#: (U+00BF), Arabic (U+061F), reversed (U+2E2E), the small and vertical forms
-#: (U+FE56, U+FE16) and the Greek question mark (U+037E) (#1840).
-QUESTION_MARKS = frozenset("?\uff1f\u00bf\u061f\u2e2e\ufe56\ufe16\u037e")
+#: Every question mark a reply can carry (#1840): ASCII, fullwidth (U+FF1F),
+#: inverted (U+00BF), Arabic (U+061F), reversed (U+2E2E), the small and
+#: vertical forms (U+FE56, U+FE16) and the Greek question mark (U+037E); the
+#: question emoji, red and white (U+2753, U+2754); and the interrobang and the
+#: double marks (U+203D, U+2049, U+2048, U+2047).
+QUESTION_MARKS = frozenset(
+    "?\uff1f\u00bf\u061f\u2e2e\ufe56\ufe16\u037e\u2753\u2754\u203d\u2049\u2048\u2047"
+)
+
+#: Slack's wire shortcodes for the question emoji (#1840): Slack sends
+#: ``:question:`` where the user picked ❓, so a reply carrying one is a
+#: question as surely as one carrying the emoji. Read case-insensitively.
+QUESTION_SHORTCODES = (":question:", ":grey_question:", ":interrobang:")
 
 
 def is_question(user_message: "str | None") -> bool:
-    """Whether ``user_message`` carries a question mark, in any script (#1840).
+    """Whether ``user_message`` carries a question mark, in any script, as an
+    emoji, or as Slack's shortcode for one (#1840).
 
     The one question rule of the consent gate. It used to be four separate
-    ``"?" in`` checks that read ASCII only, so ``can we close it on friday？``
-    and ``¿ok`` were recorded as refusals. Its readers: ``is_substantive_reply``
+    ``"?" in`` checks that read ASCII only, so ``can we close it on friday？``,
+    ``¿ok`` and ``friday :question:`` were recorded as refusals. Its readers: ``is_substantive_reply``
     below; the engine's ``message_is_substantive`` and its escape-lane record
     rule (a question withdraws an offer and is never recorded as a refusal);
     and ``pending_gate_verdict``'s minted decline on a question (#1813).
     """
-    return any(c in QUESTION_MARKS for c in (user_message or ""))
+    text = user_message or ""
+    return any(c in QUESTION_MARKS for c in text) or any(
+        code in text.lower() for code in QUESTION_SHORTCODES
+    )
 
 
 def is_substantive_reply(user_message: "str | None") -> bool:

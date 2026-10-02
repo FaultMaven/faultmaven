@@ -34,10 +34,10 @@ from faultmaven.core.investigation.milestone_engine.terminal_turns import (
     TerminalTurnHandler,
 )
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
-    _consent_prefix,
     gate1_bare_consent,
     gate1_offer_key,
     offer_click_refusal,
+    opens_with_consent_loosely,
     pending_gate_verdict,
     terminal_offer_key,
 )
@@ -816,13 +816,16 @@ class MilestoneEngine:
                             # deflection either (#1808): "Yes, go ahead and
                             # close it. We verified …" is withdrawn and
                             # processed, and the offer may come back. Read
-                            # leniently (#1840), so "*Yes*, …", "_Yes_, …" and
-                            # a "Yes" behind a zero-width character open with
-                            # consent too.
+                            # LOOSELY here, and only here (#1840): "*Yes*, …",
+                            # "_Yes_, …" and a "Yes" behind an invisible
+                            # character open with consent too. The gate did
+                            # not take this turn (its readers stay strict), so
+                            # the LLM sees it either way; reading loosely
+                            # costs at most a refusal left unrecorded.
                             if (
                                 text_escapes
                                 and not is_question(stripped_message)
-                                and not _consent_prefix(stripped_message)
+                                and not opens_with_consent_loosely(stripped_message)
                             ):
                                 _record_deferred_disposition_decline(case)
                             _note_engine_disposition_withdrawn(case, metadata)

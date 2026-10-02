@@ -196,9 +196,12 @@ evidence_need_id_dropped_total = Counter(
 # The card rule at the same flattening seam (#1839, ruling (a)). An LLM-written
 # DECIDE card whose payload the gate reads as a BARE reply (``Proceed``,
 # ``Yes``, ``Not yet``: ``is_bare_gate_reply``) would, clicked later, arrive as
-# that text alone and answer whatever offer stands then. So the card sends its
-# label instead, or is dropped when its label is bare too. Engine-authored cards
-# carry an intent naming their offer and never pass through here.
+# that text alone and answer whatever offer stands then. "Bare" is read as
+# written and as a client sends it (``card_reads_as_bare_reply``). So the card
+# sends its label instead, or is dropped when its label is bare too, or when the
+# label would not pass the payload's safety nets (a command, a false results
+# handoff). Engine-authored cards carry an intent naming their offer and never
+# pass through here.
 #
 # Healthy-system expectation: near zero, and mostly ``label``. Not an error
 # counter: the rule is working when it fires. A sustained rate says the LLM
@@ -206,13 +209,14 @@ evidence_need_id_dropped_total = Counter(
 # question this counter exists to answer before any prompt changes.
 # Labels:
 #   - ``label`` — the payload was bare, and the card now sends its label.
-#   - ``dropped`` — the label was bare too, so the card was not shipped.
+#   - ``dropped`` — the label was bare too, or would not stay a DECIDE payload,
+#     so the card was not shipped.
 llm_decide_card_bare_payload_total = Counter(
     "faultmaven_llm_decide_card_bare_payload_total",
     "LLM-written DECIDE cards whose payload is a bare gate reply, by action "
     "(label|dropped): the card sends its label instead, or is dropped when the "
-    "label is bare too, so no card a client renders sends a text the consent "
-    "gate reads as a bare reply.",
+    "label is bare too or would not stay a DECIDE payload, so no card a client "
+    "renders sends a text the consent gate reads as a bare reply.",
     ["action"],
 )
 

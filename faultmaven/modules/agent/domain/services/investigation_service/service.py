@@ -21,7 +21,11 @@ from faultmaven.core.investigation.case_telemetry import (
     emit_case_turn,
 )
 from faultmaven.core.investigation.intent_resolver import IntentResolver
+from faultmaven.core.investigation.milestone_engine.affordances import _gate1_is_pending
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.transition_consent import (
+    gate1_bare_consent,
+)
 from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.core.investigation.suggestion_liveness import (
     live_suggestions,
@@ -774,6 +778,15 @@ class InvestigationService:
         # it would mean keying on ``_gate1_is_pending`` instead — which
         # suppresses the aside lane for a whole phase and is #1329's
         # design call, not this guard's.
+        #
+        # One reply IS exempt while Gate 1 is pending: a bare consent
+        # (``gate1_bare_consent``), which the engine commits itself (#1841).
+        # The continuation gates do not keep it off the classifier on their
+        # own: a decorated one ("looks good :ok_hand:", "yes :+1:
+        # :skin-tone-2:") passes ``TRIAGE_MIN_WORDS``, and an aside verdict
+        # would skip the engine and leave Gate 1 pending. The exemption is
+        # that one reply, not the phase: every other message at a pending
+        # Gate 1 is triaged as before.
         oob_kind: Optional[OutOfBandKind] = None
         if (
             intent_type == IntentType.CONVERSATION
@@ -783,6 +796,9 @@ class InvestigationService:
             and not case.is_terminal
             and not getattr(case, "pending_transition", None)
             and not gate_reply_refused
+            # A bare consent at a pending Gate 1 is the engine's to read
+            # (#1841), never the classifier's: see above.
+            and not (_gate1_is_pending(case) and gate1_bare_consent(query))
         ):
             oob_kind = await self.out_of_band_triage.triage(case, query, classification)
             if oob_kind is not None:

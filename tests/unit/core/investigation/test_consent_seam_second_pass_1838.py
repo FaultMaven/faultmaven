@@ -7,7 +7,8 @@ The invariant these pin, from the plan:
   of the pending target re-shows the card (#1838), and no LLM-written DECIDE
   card sends a text the gate reads as a bare reply (#1839).
 * A reply that opens with consent, or that carries a question in any script,
-  is never recorded as a refusal (#1840).
+  is never recorded as a refusal (#1840). The gate itself reads strictly, so a
+  reply it does not recognise as typed reaches the LLM (#1840 review).
 * A bare typed consent commits a pending Gate 1 without the LLM (#1841).
 * #1783's must-execute and must-not-execute corpora are unchanged
   (``test_terminal_confirmation_counters_1748.py``).
@@ -33,9 +34,12 @@ from faultmaven.core.investigation.milestone_engine.transition_consent import (
     _EXPLICIT_CONFIRM_TOKENS,
     _WEAK_CONFIRM_TOKENS,
     _consent_prefix,
+    card_reads_as_bare_reply,
+    confirmation_token_class,
     gate1_bare_consent,
     gate1_offer_key,
     is_bare_gate_reply,
+    opens_with_consent_loosely,
     pending_gate_verdict,
     terminal_offer_key,
 )
@@ -49,6 +53,7 @@ from faultmaven.core.investigation.schemas import (
 )
 from faultmaven.core.investigation.terminal_transitions import (
     QUESTION_MARKS,
+    QUESTION_SHORTCODES,
     is_question,
     is_substantive_reply,
     propose_transition,
@@ -165,63 +170,111 @@ def _assert_card_reshown(result, case, before: dict) -> None:
 # #1840: one grammar, two strengths
 # =============================================================================
 
+LRM = "\N{LEFT-TO-RIGHT MARK}"
+SHY = "\N{SOFT HYPHEN}"
+RLI = "\N{RIGHT-TO-LEFT ISOLATE}"
+EMOJI_SELECTOR = "\N{VARIATION SELECTOR-16}"
+SKIN = "\N{EMOJI MODIFIER FITZPATRICK TYPE-4}"
+THUMBS = "\N{THUMBS UP SIGN}"
+
+#: Over 100 characters, so substantive even to ``is_substantive_reply``.
+PROCEED_ON_ERROR = (
+    "proceed_on_error=false in the job config is the real culprit for the "
+    "failures we saw overnight in east"
+)
+
 #: ``pending_gate_verdict`` at a pending CLOSE for a typed reply with no
 #: intent, and whether the escape lane's record rule would record it as a
-#: refusal once it escapes (over 40 characters, or a question). A row it would
-#: not record is consent-shaped (``_consent_prefix``) or a question
-#: (``is_question``): the rule's two exemptions. A short row never escapes, so
-#: ``no`` with U+200B is re-asked by the engine whatever this column says.
+#: refusal once it escapes (over 40 characters, or a question). The rule's two
+#: exemptions are a loose consent opener (``opens_with_consent_loosely``) and
+#: a question (``is_question``). A short row never escapes, so ``no`` with
+#: U+200B is re-asked by the engine whatever this column says.
+#:
+#: The verdict is the strict reading (#1840 review): a reply the gate does not
+#: recognise as consent-shaped as typed is ``not_an_answer``, so a long one is
+#: withdrawn and reaches the LLM. Only whether it is RECORDED reads loosely.
 SHAPE_ROWS = [
-    # U+FE0E is an emoji modifier, as U+FE0F is.
+    # U+FE0E is an emoji modifier, as U+FE0F is, after an emoji.
     (f"yes {CHECK}{TEXT_SELECTOR}", "confirm", False),
-    # The bare readers stay strict (#1783's corpus): re-asked, not executed.
+    # The bare readers stay strict (#1783's corpus): never executed.
     (f"yes{ZWSP}", "reask", False),
-    (f"{ZWSP}yes", "reask", False),
+    (f"{ZWSP}yes", "not_an_answer", False),
     (f"no{ZWSP}", "not_an_answer", True),
-    # A long consenting reply under markup or a zero-width character opens
-    # with consent, so it is re-asked and never recorded.
-    (f"{ZWSP}Yes,{TAIL}", "reask", False),
-    (f"*Yes*,{TAIL}", "reask", False),
-    (f"**Yes**{TAIL}", "reask", False),
-    (f'"Yes" {DASH}{TAIL}', "reask", False),
+    # A long consenting reply under markup or an invisible character: the gate
+    # does not take it, so it is processed, and it is never recorded.
+    (f"{ZWSP}Yes,{TAIL}", "not_an_answer", False),
+    (f"{LRM}Yes,{TAIL}", "not_an_answer", False),
+    (f"{SHY}Yes,{TAIL}", "not_an_answer", False),
+    (f"{RLI}Yes,{TAIL}", "not_an_answer", False),
+    (f"*Yes*,{TAIL}", "not_an_answer", False),
+    (f"**Yes**{TAIL}", "not_an_answer", False),
+    (f"_Yes_,{TAIL}", "not_an_answer", False),
+    (f"__Yes__,{TAIL}", "not_an_answer", False),
+    (f'"Yes" {DASH}{TAIL}', "not_an_answer", False),
     (
         f"\N{LEFT DOUBLE QUOTATION MARK}Yes\N{RIGHT DOUBLE QUOTATION MARK} "
         f"{DASH}{TAIL}",
-        "reask",
+        "not_an_answer",
         False,
     ),
-    (f"`yes`{TAIL}", "reask", False),
-    # Revision 1: every wrapping mark, not only the opening one.
-    (f"_Yes_,{TAIL}", "reask", False),
-    (f"__Yes__,{TAIL}", "reask", False),
     (
         f"\N{DOUBLE LOW-9 QUOTATION MARK}Yes\N{LEFT DOUBLE QUOTATION MARK} "
         f"{DASH}{TAIL}",
-        "reask",
+        "not_an_answer",
         False,
     ),
     (
         f"\N{LEFT-POINTING DOUBLE ANGLE QUOTATION MARK}Yes"
         f"\N{RIGHT-POINTING DOUBLE ANGLE QUOTATION MARK} {DASH}{TAIL}",
-        "reask",
+        "not_an_answer",
         False,
     ),
-    (f"'Yes' {DASH}{TAIL}", "reask", False),
+    (f"'Yes' {DASH}{TAIL}", "not_an_answer", False),
     (
         "_go ahead_ and close it, the fix held overnight and the alerts are quiet",
-        "reask",
+        "not_an_answer",
         False,
     ),
+    (
+        '"ok" status from the canary was a lie, the 503s are back now',
+        "not_an_answer",
+        False,
+    ),
+    # Undecorated consent openers are the gate's, as on ``main``: re-asked.
+    ("Yes, go ahead and close it, the fix held overnight", "reask", False),
     (
         "that's right, close it, the fix held overnight and the alerts are quiet",
         "reask",
         False,
     ),
-    # A question in any script is substantive and never recorded.
+    # A backtick quotes a word rather than using it, and ``*``/``_`` inside an
+    # identifier are part of it: each of these is processed AND recorded.
+    (f"`yes`{TAIL}", "not_an_answer", True),
+    ("`ok` is false in the /health response from node-3 again", "not_an_answer", True),
+    (
+        "confirm_timeout is 5s on payments, that's the culprit here",
+        "not_an_answer",
+        True,
+    ),
+    (
+        "ok_status flag never flipped on the canary, we can't close yet",
+        "not_an_answer",
+        True,
+    ),
+    (PROCEED_ON_ERROR, "not_an_answer", True),
+    # A question in any script, as an emoji or as Slack's shortcode, is
+    # substantive and never recorded.
     ("can we close it on friday\N{FULLWIDTH QUESTION MARK}", "not_an_answer", False),
     ("\N{INVERTED QUESTION MARK}ok", "not_an_answer", False),
     ("ok \N{ARABIC QUESTION MARK}", "not_an_answer", False),
     ("ok\N{GREEK QUESTION MARK}", "not_an_answer", False),
+    ("friday \N{BLACK QUESTION MARK ORNAMENT}", "not_an_answer", False),
+    ("hmm \N{INTERROBANG}", "not_an_answer", False),
+    (
+        "can we close it on friday instead :question: the soak needs the weekend",
+        "not_an_answer",
+        False,
+    ),
     # The ASCII semicolon the Greek question mark looks like is not a question.
     ("ok;", "reask", False),
     # Negatives: these must still record the refusal.
@@ -263,6 +316,29 @@ SHAPE_ROWS = [
     ),
 ]
 
+#: A modifier is part of the emoji or symbol before it, and an invisible
+#: character anywhere else (#1840 review, F8): the bare class each reply gets
+#: against a pending CLOSE.
+MODIFIER_ROWS = [
+    # After a letter, a digit or a space, or at the start: it stays.
+    (f"yes{TEXT_SELECTOR}", None),
+    (f"{TEXT_SELECTOR}ok", None),
+    (f"close{TEXT_SELECTOR} it", None),
+    (f"yes{EMOJI_SELECTOR}", None),
+    (f"close{EMOJI_SELECTOR} it", None),
+    (f"ok{SKIN}", None),
+    (f"ok {TEXT_SELECTOR}", None),
+    (f"o{SKIN}k", None),
+    (f"ok{SKIN}{EMOJI_SELECTOR}", None),
+    # After an emoji or a symbol: it is part of it.
+    (f"yes {CHECK}{TEXT_SELECTOR}", "explicit_token"),
+    (f"yes {CHECK}{EMOJI_SELECTOR}", "explicit_token"),
+    (f"ok {THUMBS}{SKIN}", "weak_token"),
+    (f"{THUMBS}{SKIN} ok", "weak_token"),
+    # A modifier after a modifier still modifies the emoji they follow.
+    (f"ok {THUMBS}{SKIN}{EMOJI_SELECTOR}", "weak_token"),
+]
+
 
 class TestOneGrammarTwoStrengths:
     @pytest.mark.parametrize("message, verdict, recordable", SHAPE_ROWS)
@@ -271,9 +347,21 @@ class TestOneGrammarTwoStrengths:
             message, "closed", intent_value=None, typed=False
         ) == (verdict, "explicit_token" if verdict == "confirm" else None)
         # The escape lane records a refusal only for a reply that neither
-        # opens with consent nor carries a question.
-        exempt = _consent_prefix(message) or is_question(message)
+        # opens with consent, read loosely, nor carries a question.
+        exempt = opens_with_consent_loosely(message) or is_question(message)
         assert exempt is (not recordable)
+
+    @pytest.mark.parametrize("message, via", MODIFIER_ROWS)
+    def test_a_modifier_counts_only_on_an_emoji_or_a_symbol(self, message, via):
+        assert confirmation_token_class(message, "closed") == via
+
+    @pytest.mark.parametrize("message", [f"*Yes*,{TAIL}", f"{ZWSP}Yes,{TAIL}"])
+    def test_the_gate_reads_strictly_and_the_record_rule_loosely(self, message):
+        """The two readers on one reply: the gate does not take it
+        (``_consent_prefix``, so the LLM sees it), and its withdrawal is not
+        recorded (``opens_with_consent_loosely``)."""
+        assert not _consent_prefix(message)
+        assert opens_with_consent_loosely(message)
 
     @pytest.mark.parametrize("mark", sorted(QUESTION_MARKS))
     def test_every_question_mark_is_a_question(self, mark):
@@ -281,6 +369,14 @@ class TestOneGrammarTwoStrengths:
         assert is_substantive_reply(f"ok {mark}")
         assert pending_gate_verdict(
             f"ok {mark}", "closed", intent_value=None, typed=False
+        ) == ("not_an_answer", None)
+
+    @pytest.mark.parametrize("code", QUESTION_SHORTCODES)
+    def test_every_question_shortcode_is_a_question(self, code):
+        assert is_question(f"ok {code}")
+        assert is_question(f"ok {code.upper()}"), "read case-insensitively"
+        assert pending_gate_verdict(
+            f"ok {code}", "closed", intent_value=None, typed=False
         ) == ("not_an_answer", None)
 
     def test_the_question_marks_are_pinned(self):
@@ -293,7 +389,14 @@ class TestOneGrammarTwoStrengths:
             "\N{SMALL QUESTION MARK}"
             "\N{PRESENTATION FORM FOR VERTICAL QUESTION MARK}"
             "\N{GREEK QUESTION MARK}"
+            "\N{BLACK QUESTION MARK ORNAMENT}"
+            "\N{WHITE QUESTION MARK ORNAMENT}"
+            "\N{INTERROBANG}"
+            "\N{EXCLAMATION QUESTION MARK}"
+            "\N{QUESTION EXCLAMATION MARK}"
+            "\N{DOUBLE QUESTION MARK}"
         )
+        assert QUESTION_SHORTCODES == (":question:", ":grey_question:", ":interrobang:")
         assert not is_question("ok;") and not is_question("")
         assert not is_question(None)
 
@@ -314,40 +417,74 @@ class TestOneGrammarTwoStrengths:
         ) == ("decline", None)
 
 
+def _processing_engine() -> MilestoneEngine:
+    return _engine(
+        InvestigationResponse_Diagnosis(agent_response=REPLY, state_updates={})
+    )
+
+
 class TestTheShapeRowsThroughTheEngine:
     @pytest.mark.parametrize(
         "message",
         [
             f"{ZWSP}Yes, go ahead and close it, the fix held overnight",
             f"_Yes_,{TAIL}",
+            f"{LRM}Yes,{TAIL}",
+            f"{SHY}Yes,{TAIL}",
+            f"{RLI}Yes,{TAIL}",
+            '"ok" status from the canary was a lie, the 503s are back now',
+            # Over 100 characters, so substantive to every reader.
+            "_Yes_, go ahead and close it. We verified the fix in staging and in "
+            "prod overnight and the error has not come back since.",
         ],
     )
-    async def test_a_consent_opener_under_markup_leaves_the_offer_standing(
+    async def test_a_consent_opener_under_markup_is_processed_and_not_recorded(
         self, message
     ):
+        """The gate does not take it: the offer is withdrawn and the LLM
+        processes the reply. It opens with consent once the markup is read
+        past, so the withdrawal is not recorded as a refusal."""
+        case = _pending_close()
+        engine = _processing_engine()
+        await engine.process_turn(case=case, user_message=message)
+        assert case.pending_transition is None, "the gate took the turn"
+        assert case.progress.deferred_disposition_declined_signatures == []
+        engine.generator.generate_structured_output.assert_awaited()
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "`ok` is false in the /health response from node-3 again",
+            "confirm_timeout is 5s on payments, that's the culprit here",
+            "ok_status flag never flipped on the canary, we can't close yet",
+            PROCEED_ON_ERROR,
+            f"`yes`{TAIL}",
+            # Strikethrough negates.
+            "~~ok, close it~~ actually no, keep it open, we still see errors in prod",
+        ],
+    )
+    async def test_a_deflection_is_processed_and_recorded(self, message):
+        """As on ``main``: the reply reaches the LLM and the refusal is
+        recorded. A backtick, and ``*``/``_`` inside an identifier, are not
+        markup around a consent word."""
+        case = _pending_close()
+        engine = _processing_engine()
+        await engine.process_turn(case=case, user_message=message)
+        assert case.pending_transition is None
+        assert case.progress.deferred_disposition_declined_signatures == [SIGNATURE]
+        engine.generator.generate_structured_output.assert_awaited()
+
+    async def test_an_undecorated_consent_opener_is_still_re_asked(self):
+        """The control, unchanged from ``main``: the gate takes it."""
         case = _pending_close()
         before = dict(case.pending_transition)
         engine = _engine()
-        result = await engine.process_turn(case=case, user_message=message)
+        result = await engine.process_turn(
+            case=case,
+            user_message="Yes, go ahead and close it, the fix held overnight",
+        )
         _assert_card_reshown(result, case, before)
         engine.generator.generate_structured_output.assert_not_awaited()
-
-    async def test_a_long_consent_opener_under_markup_is_withdrawn_unrecorded(self):
-        """Over 100 characters, so it is substantive and takes the escape
-        lane, where the record rule reads ``_consent_prefix``."""
-        message = (
-            "_Yes_, go ahead and close it. We verified the fix in staging and in "
-            "prod overnight and the error has not come back since."
-        )
-        assert is_substantive_reply(message)
-        case = _pending_close()
-        engine = _engine(
-            InvestigationResponse_Diagnosis(agent_response=REPLY, state_updates={})
-        )
-        await engine.process_turn(case=case, user_message=message)
-        assert case.pending_transition is None
-        assert case.progress.deferred_disposition_declined_signatures == []
-        engine.generator.generate_structured_output.assert_awaited()
 
     @pytest.mark.parametrize(
         "message",
@@ -355,39 +492,23 @@ class TestTheShapeRowsThroughTheEngine:
             # Short: substantive to the gate only because it is a question.
             "\N{INVERTED QUESTION MARK}ok",
             "can we close it on friday\N{FULLWIDTH QUESTION MARK}",
+            "friday \N{BLACK QUESTION MARK ORNAMENT}",
+            "friday :question:",
             # Long: the record rule alone keeps it unrecorded.
             "what happens to the runbook if we close this case right "
             "now\N{FULLWIDTH QUESTION MARK}",
+            "what happens to the runbook if we close this case right now :question:",
         ],
     )
     async def test_a_question_in_any_script_withdraws_and_records_nothing(
         self, message
     ):
         case = _pending_close()
-        engine = _engine(
-            InvestigationResponse_Diagnosis(agent_response=REPLY, state_updates={})
-        )
+        engine = _processing_engine()
         await engine.process_turn(case=case, user_message=message)
         assert case.pending_transition is None, "the question did not withdraw"
         assert case.progress.deferred_disposition_declined_signatures == []
         engine.generator.generate_structured_output.assert_awaited()
-
-    async def test_struck_through_consent_still_records_the_refusal(self):
-        """The negative control: strikethrough negates, so this is a
-        deflection, withdrawn and recorded."""
-        case = _pending_close()
-        engine = _engine(
-            InvestigationResponse_Diagnosis(agent_response=REPLY, state_updates={})
-        )
-        await engine.process_turn(
-            case=case,
-            user_message=(
-                "~~ok, close it~~ actually no, keep it open, we still see errors "
-                "in prod"
-            ),
-        )
-        assert case.pending_transition is None
-        assert case.progress.deferred_disposition_declined_signatures == [SIGNATURE]
 
 
 # =============================================================================
@@ -420,6 +541,12 @@ NOT_BARE = [
     "Yes please",
     "Sure thing",
 ]
+BOM = "\N{ZERO WIDTH NO-BREAK SPACE}"
+#: Not bare as written, but bare as a client sends it: invisible characters
+#: gone and whitespace trimmed (JavaScript's ``trim()`` strips U+FEFF).
+BARE_AS_SENT = [f"{BOM}Close it", f"Yes{BOM}", f"Proceed{ZWSP}"]
+#: A payload neither way, so the card ships as written.
+CARD_NOT_BARE = [text for text in NOT_BARE if text not in BARE_AS_SENT]
 
 
 class TestTheBareGateReply:
@@ -457,6 +584,19 @@ class TestTheBareGateReply:
         token added to a list is covered without touching the card rule."""
         assert is_bare_gate_reply(token)
 
+    @pytest.mark.parametrize("text", [*BARE_GATE_REPLIES, *BARE_AS_SENT, " Proceed "])
+    def test_a_card_reads_as_sent(self, text):
+        assert card_reads_as_bare_reply(text)
+
+    @pytest.mark.parametrize("text", [f"{BOM}Close it", f"Yes{BOM}", f"Proceed{ZWSP}"])
+    def test_the_strict_reader_alone_misses_what_a_client_sends(self, text):
+        """The reason ``card_reads_as_bare_reply`` exists (#1840 review, F4)."""
+        assert not is_bare_gate_reply(text)
+
+    @pytest.mark.parametrize("text", CARD_NOT_BARE)
+    def test_a_card_that_is_not_bare_either_way(self, text):
+        assert not card_reads_as_bare_reply(text)
+
 
 def _card(label, payload, action_type="DECIDE") -> SuggestedFollowUp:
     return SuggestedFollowUp(label=label, action_type=action_type, payload=payload)
@@ -469,7 +609,9 @@ def card_counter():
 
 
 class TestTheCardRule:
-    @pytest.mark.parametrize("payload", BARE_GATE_REPLIES)
+    @pytest.mark.parametrize(
+        "payload", [*BARE_GATE_REPLIES, *BARE_AS_SENT, " Proceed "]
+    )
     def test_a_bare_payload_sends_the_label(self, card_counter, payload):
         out = _flatten_follow_ups([_card("Check the pool config", payload)], {})
         assert out == [
@@ -483,7 +625,14 @@ class TestTheCardRule:
         card_counter.labels.return_value.inc.assert_called_once()
 
     @pytest.mark.parametrize(
-        "label, payload", [("Yes", "Proceed"), ("Close it", "Yes"), ("No", "Not yet")]
+        "label, payload",
+        [
+            ("Yes", "Proceed"),
+            ("Close it", "Yes"),
+            ("No", "Not yet"),
+            (f"{BOM}Yes", "Proceed"),
+            (f"Close it{ZWSP}", "Yes"),
+        ],
     )
     def test_a_card_whose_label_is_bare_too_is_dropped(
         self, card_counter, label, payload
@@ -494,7 +643,33 @@ class TestTheCardRule:
         card_counter.labels.assert_called_once_with(action="dropped")
         card_counter.labels.return_value.inc.assert_called_once()
 
-    @pytest.mark.parametrize("payload", NOT_BARE)
+    @pytest.mark.parametrize(
+        "label",
+        [
+            # A command would be coerced to RUN, so a click would submit it.
+            "kubectl rollout restart deploy/api",
+            # A results handoff the user never sent would be coerced to EVIDENCE.
+            "Here are the logs from node-3",
+            "I re-ran it, check the output",
+        ],
+    )
+    def test_a_card_whose_label_fails_the_payload_nets_is_dropped(
+        self, card_counter, label, caplog
+    ):
+        """The label never met ``SuggestedFollowUp``'s safety nets; the card
+        rule puts it through them before sending it (#1840 review, F5)."""
+        with caplog.at_level("INFO", logger=turn_records.__name__):
+            out = _flatten_follow_ups([_card(label, "Proceed")], {})
+        assert out == []
+        card_counter.labels.assert_called_once_with(action="dropped")
+        assert "would not stay a DECIDE payload" in caplog.text
+
+    def test_a_label_that_passes_the_nets_is_sent(self, card_counter):
+        out = _flatten_follow_ups([_card("Restart the pods", "Proceed")], {})
+        assert out[0]["payload"] == "Restart the pods"
+        assert out[0]["action_type"] == "DECIDE"
+
+    @pytest.mark.parametrize("payload", CARD_NOT_BARE)
     def test_a_payload_that_is_not_bare_is_untouched(self, card_counter, payload):
         out = _flatten_follow_ups([_card("Yes", payload)], {})
         assert out[0]["payload"] == payload

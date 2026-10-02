@@ -217,7 +217,9 @@ def _apply_inquiry_updates(case: Case, updates: Any, metadata: Dict[str, Any],
     0c commits it when `gate1_bare_consent` holds, through the same
     `_commit_gate1` the click uses, as the terminal gate reads a bare token
     itself (`pending_gate_verdict`; #1783). So a typed "yes" no longer waits
-    on the flag, or on a card left in `last_suggestions` to mint from.
+    on the flag, or on a card left in `last_suggestions` to mint from. The
+    service never offers that reply to the out-of-band classifier: decorated
+    ("looks good :ok_hand:"), it passes the four-word continuation gate.
     """
 
     # Capture pre-turn state for the same-turn-confirmation guard
@@ -490,13 +492,16 @@ together, first match wins:
 - **Bare yes** → execute transition. The WHOLE reply must be one consent token
   valid for the proposal's target. Exactly, a bare reply is the token's words,
   with any whitespace, any listed positive decoration (emoji, Slack shortcode or
-  emoticon) and any emoji modifier (the presentation selectors U+FE0E and U+FE0F,
-  the skin tones) before, between or after the token's words, and only `.` `!` `,`
-  trailing (`yes`, `ok!`, `lgtm 👍`, `👍🏽 ok`, `ok :+1:`). A decoration or modifier inside a word splits
-  it (`o🏽k` is not `ok`), and curly apostrophes read as straight
+  emoticon) before, between or after the token's words, any emoji modifier (the
+  presentation selectors U+FE0E and U+FE0F, the skin tones) on the emoji or symbol
+  it follows, and only `.` `!` `,` trailing (`yes`, `ok!`, `lgtm 👍`, `👍🏽 ok`,
+  `yes ✔︎`, `ok :+1:`). A modifier after a letter, a digit or a space, or at the
+  start, modifies nothing anyone sees, so it stays and the reply is not bare
+  (`ok🏽`, `yes` + U+FE0E; #1840 review). A decoration inside a word splits
+  it (`o👍k` is not `ok`), and curly apostrophes read as straight
   (`that’s right`). `close it`
   consents only to a CLOSE, and `resolve it` / `mark (it) as resolved` only to a
-  RESOLVE. A zero-width character or a wrapping mark is not a decoration, so
+  RESOLVE. An invisible character or a wrapping mark is not a decoration, so
   `yes` carrying U+200B, `**yes**` and `"yes"` are not bare and are re-asked
   (#1840; #1783's corpus). A bare token the intent resolver minted a confirmation
   from executes the same way; a minted *decline* on a bare consent token disagrees
@@ -529,24 +534,32 @@ together, first match wins:
   input** (whitespace-only slips past the route's empty-payload guard) → re-ask,
   as above
 - **A turn carrying an upload, or a non-answer over 40 characters or carrying a
-  question mark in any script** (`is_question`: ASCII, fullwidth, inverted,
-  Arabic, reversed, small, vertical and Greek; #1840) → the message is *not an
-  answer to the gate*: the proposal is **withdrawn** (`cancel_pending_transition`)
-  and the message processed as a normal investigation turn. It is recorded as a
-  refusal only when the text is such a non-answer without a question mark that
-  does not open with a consent token (`_consent_prefix`; #1808). That shape
-  reader is lenient where the bare readers are strict (`_shape_text`, #1840):
-  zero-width characters and wrapping marks (`*`, `_`, a backtick, quotes in any
-  script, an apostrophe not inside a word) read as spaces, and strikethrough's
-  `~` does not, because it negates. "Yes, go ahead and close it. We verified …",
-  "*Yes*, …" and "_Yes_, …" are consent in a sentence, not a deflection, so the
-  offer may come back, and so may "ok but we need to wait for
-  the weekend soak first" (the cost the ruling accepts). An upload alone records
+  question** (`is_question`: a question mark in any script, the question emoji,
+  the interrobang and the double marks, or Slack's `:question:`,
+  `:grey_question:` and `:interrobang:`; #1840) → the message is *not an answer
+  to the gate*: the proposal is **withdrawn** (`cancel_pending_transition`) and
+  the message processed as a normal investigation turn. It is recorded as a
+  refusal only when the text is such a non-answer without a question that does
+  not open with a consent token read loosely (`opens_with_consent_loosely`;
+  #1808, #1840). **Two readers, two strengths** (#1840 review): whether the gate
+  TAKES a turn is read strictly (`_consent_prefix`), because a turn it takes
+  never reaches the LLM, and read loosely "`ok` is false in the /health response
+  from node-3 again" was swallowed. Only whether a withdrawal is RECORDED is read
+  loosely (`_shape_text`): invisible characters (Unicode Cf, and U+034F) and
+  wrapping marks (`*` and `_` where they wrap a word, never inside an
+  identifier; quotes in any script; an apostrophe not inside a word) read as
+  spaces, while a backtick (it quotes a word) and strikethrough's `~` (it
+  negates) do not. So "*Yes*, …", "_Yes_, …" and a "Yes" behind an invisible
+  character are processed and never recorded, as is "Yes, go ahead and close
+  it. We verified …": consent in a sentence, not a deflection, so the offer may
+  come back, and so may "ok but we need to wait for the weekend soak first" (the
+  cost the ruling accepts). "`ok` is false in /health …" and "ok_status flag
+  never flipped …" are processed and recorded. An upload alone records
   nothing. The engine can always re-propose later from fresher state.
 
 So the gate's consumption rule is exact: without an LLM turn it answers only the
 re-asks above (and a bare decline), and it **never** consumes a turn carrying an
-upload, nor a non-answer over 40 characters or carrying a question mark. A re-ask repeats
+upload, nor a non-answer over 40 characters or carrying a question. A re-ask repeats
 **every time** it is earned and **never records a refusal or withdraws the
 proposal**: a terminal proposal must not turn into a decline because the user
 typed more than one word. The one-re-present cap #656 added (a second non-answer
@@ -560,7 +573,7 @@ were both swallowed). And the bare-confirmation rule is its confirm-side mirror:
 it, a confirm-prefixed substantive message ("ok but what is the root cause?") did not
 merely swallow the input — it *executed* the terminal transition on it. The cheap
 re-present answers only the replies listed above; a turn carrying an upload, and a
-non-answer over 40 characters or carrying a question mark, are never consumed by the gate. The short-message re-present also preserves
+non-answer over 40 characters or carrying a question, are never consumed by the gate. The short-message re-present also preserves
 the original motivation of the deterministic path — not sending a bare "hmm" through
 the LLM tool loop. The IntentResolver's LLM classifier tier can map typed text to the
 Yes suggestion: the adoption guard (#721) drops such a mint from substantive text, and
@@ -585,8 +598,12 @@ the server cannot tell from typing: an old "Proceed" card would answer whatever 
 stands when it is clicked. `_flatten_follow_ups`, the one site every LLM follow-up
 passes through on the normal and the terminal path, never ships a DECIDE card whose
 payload the gate reads as a bare reply (`is_bare_gate_reply`: a bare consent to
-either terminal target, so every bare Gate-1 consent too, or a bare decline). The card
-sends its label instead, or is dropped when its label is bare too, counted on
+either terminal target, so every bare Gate-1 consent too, or a bare decline), as
+written or as a client sends it (`card_reads_as_bare_reply`: invisible characters
+removed and whitespace trimmed, since JavaScript's `trim()` strips U+FEFF). The card
+sends its label instead. It is dropped when its label reads as a bare reply too, or
+when the label, put through the payload's own safety nets, would not stay a DECIDE
+payload (a command, a false results handoff; `_label_stays_decide`), counted on
 `faultmaven_llm_decide_card_bare_payload_total{action}`. Engine-authored cards carry
 an intent naming their offer and are outside the rule.
 

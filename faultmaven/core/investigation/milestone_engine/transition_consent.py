@@ -17,18 +17,23 @@ Nothing else stands in for consent (#1838, #1839): a status-dropdown re-pick
 of the pending target re-shows the offer's card, and no LLM-written card ships
 a text the gate reads as a bare reply (``is_bare_gate_reply``).
 
-The grammar has two strengths (#1840). The BARE readers
+The grammar has two strengths (#1840). Every reader that decides what the
+gate DOES with a turn stays strict: the bare readers
 (``confirmation_token_class``, ``gate1_bare_consent``,
-``_user_declines_transition``) stay strict, so a token carrying a zero-width
-character or wrapped in markup is not bare and is re-asked (#1783's corpus).
-The SHAPE reader (``_consent_prefix``) is lenient (``_shape_text``), so a
-reply that opens with consent under markup is never recorded as a refusal.
-Each fails toward a re-ask.
+``_user_declines_transition``), so a token carrying an invisible character or
+wrapped in markup is not bare and is re-asked (#1783's corpus), and the reader
+that decides whether the gate takes the turn at all (``_consent_prefix``,
+``opens_with_consent_token``), so a reply the gate does not recognise reaches
+the LLM. Only the escape lane's record rule reads loosely
+(``opens_with_consent_loosely``, over ``_shape_text``): a reply that opens
+with consent under markup is processed, and never recorded as a refusal. Each
+errs toward the safe side of its own question.
 """
 
 import hashlib
 import logging
 import re
+import unicodedata
 from typing import Any, Literal, Optional
 
 from faultmaven.core.investigation.terminal_transitions import (
@@ -138,32 +143,49 @@ _POSITIVE_DECORATIONS: tuple[str, ...] = tuple(
     )
 )
 
-#: Code points that only modify the emoji before them: the two presentation
+#: Code points that only modify the character before them: the two presentation
 #: selectors, text (U+FE0E, #1840) and emoji (U+FE0F), and the five skin tones.
-#: Each is replaced by a space, like a decoration and never by nothing, so one
-#: inside a word splits it (``o🏽k`` is not ``ok``), while after an emoji
-#: (``✔️``, ``✔︎``, ``👍🏽``) the space is harmless.
+#: One that follows an emoji or a symbol (``✔️``, ``✔︎``, ``👍🏽``) is part of
+#: it, so ``_undecorated`` replaces it by a space, like a decoration and never
+#: by nothing. One that follows a letter, a digit or a space, or opens the
+#: reply, modifies nothing anyone sees: it is an invisible character ON the
+#: reply, and it stays, so ``yes`` + U+FE0E, ``ok🏽`` and ``o🏽k`` are not bare
+#: (#1783: an invisible character on a token never executes; #1840 review).
 _EMOJI_MODIFIERS = frozenset(
     {"\ufe0e", "\ufe0f", *(chr(c) for c in range(0x1F3FB, 0x1F400))}
 )
 
-#: Invisible characters that iOS, Slack and copy-paste insert into a reply:
-#: the zero-width space, non-joiner and joiner, the word joiner and the
-#: byte-order mark (#1840). Only the SHAPE reader (``_shape_text``) makes them
-#: spaces. To a bare reader each is a character like any other, so ``yes``
-#: followed by U+200B is not bare and is re-asked (#1783's corpus pins
-#: ``ok\u200b`` as never executing).
-_ZERO_WIDTH = frozenset({"\u200b", "\u200c", "\u200d", "\u2060", "\ufeff"})
 
-#: A mark a reply may wrap a word in: markdown emphasis and code (``*``, ``_``,
-#: a backtick) and quotes in any script (#1840). A straight apostrophe counts
-#: only where it is not INSIDE a word, so ``that's right`` and ``don't`` keep
-#: theirs (``_normalize_reply`` has already made the curly ones straight).
-#: Strikethrough's ``~`` is deliberately absent, because ``~~ok, close it~~``
-#: negates. Only the SHAPE reader removes these marks; to a bare reader
-#: ``**yes**`` and ``"yes"`` are not bare (#1783).
+def _is_invisible(c: str) -> bool:
+    """Whether ``c`` is in a reply but never seen (#1840): a format character
+    (Unicode category Cf: the zero-width space, non-joiner and joiner, the
+    word joiner, the bidi marks, embeddings and isolates, the soft hyphen, the
+    invisible operators U+2061 to U+2064, the byte-order mark) or the
+    combining grapheme joiner (U+034F, which is a nonspacing mark). iOS, Slack
+    and copy-paste insert them.
+
+    Only the loose reading (``_shape_text``) and the card rule
+    (``card_reads_as_bare_reply``) look past them. To every other reader each
+    is a character like any other, so ``yes`` followed by U+200B is not bare
+    and is re-asked (#1783's corpus pins ``ok`` + U+200B as never executing).
+    """
+    return c == "\u034f" or unicodedata.category(c) == "Cf"
+
+
+#: A mark a reply may wrap a word in (#1840): markdown emphasis, ``*`` and
+#: ``_``, only where it wraps a word, never inside an identifier (so
+#: ``ok_status``, ``confirm_timeout`` and ``proceed_on_error`` keep theirs);
+#: quotes in any script; and a straight apostrophe where it is not INSIDE a
+#: word, so ``that's right`` and ``don't`` keep theirs (``_normalize_reply``
+#: has already made the curly ones straight). A backtick is deliberately
+#: absent: it quotes a word rather than using it (`` `ok` is false in the
+#: /health response``). So is strikethrough's ``~``, because ``~~ok, close
+#: it~~`` negates. Only the loose reading removes these marks; to a bare
+#: reader ``**yes**`` and ``"yes"`` are not bare (#1783).
 _MARKUP_RE = re.compile(
-    r"[*_`\"\u201c\u201d\u201e\u00ab\u00bb\u2039\u203a]|(?<!\w)'|'(?!\w)"
+    r"(?<!\w)[*_]+|[*_]+(?!\w)"
+    r"|[\"\u201c\u201d\u201e\u00ab\u00bb\u2039\u203a]"
+    r"|(?<!\w)'|'(?!\w)"
 )
 
 #: The typed decline tokens. A typed reply declines only when the WHOLE of it
@@ -258,19 +280,26 @@ def offer_click_refusal(
 
 
 def _undecorated(user_message: str) -> str:
-    """``user_message`` normalised, with every emoji modifier and every listed
-    positive decoration replaced by a space, and whitespace collapsed.
+    """``user_message`` normalised, with every listed positive decoration and
+    every emoji modifier that modifies an emoji or a symbol replaced by a
+    space, and whitespace collapsed.
 
     A space, never nothing: one inside a word splits it and cannot reassemble a
-    token (``clo(y)se it``, ``o👍k``, ``o🏽k``). The treatment every bare
-    reader here applies (``confirmation_token_class``, and through it
-    ``gate1_bare_consent``, and ``_user_declines_transition``), and the base
-    of the lenient shape reading (``_shape_text``) that ``_consent_prefix``
-    applies.
+    token (``clo(y)se it``, ``o👍k``). A modifier is replaced only when the
+    character before it in the reply is neither alphanumeric nor whitespace;
+    after a letter, a digit or a space, or at the start, it stays, so the
+    reply is not bare (``_EMOJI_MODIFIERS``). The treatment every strict
+    reader here applies (``confirmation_token_class`` and through it
+    ``gate1_bare_consent``, ``_user_declines_transition``, ``_consent_prefix``),
+    and the base of the loose reading (``_shape_text``).
     """
-    text = "".join(
-        " " if c in _EMOJI_MODIFIERS else c for c in _normalize_reply(user_message)
-    )
+    normalized = _normalize_reply(user_message)
+    kept: list[str] = []
+    for i, c in enumerate(normalized):
+        before = normalized[i - 1] if i else ""
+        modifies = bool(before) and not (before.isalnum() or before.isspace())
+        kept.append(" " if c in _EMOJI_MODIFIERS and modifies else c)
+    text = "".join(kept)
     for decoration in _POSITIVE_DECORATIONS:
         text = text.replace(decoration, " ")
     return " ".join(text.split())
@@ -295,10 +324,11 @@ def confirmation_token_class(
     and lowercased it and made curly single quotes straight, a BARE reply is
     the token's words, with:
 
-    * any whitespace, any listed positive decoration
-      (``_POSITIVE_DECORATIONS``) and any emoji modifier (``_EMOJI_MODIFIERS``:
-      the text and emoji presentation selectors and the skin tones) before,
-      between or after them;
+    * any whitespace and any listed positive decoration
+      (``_POSITIVE_DECORATIONS``) before, between or after them, and any
+      emoji modifier (``_EMOJI_MODIFIERS``: the text and emoji presentation
+      selectors and the skin tones) directly after a character that is
+      neither alphanumeric nor whitespace (an emoji, a symbol);
     * and only ``.``, ``!`` and ``,`` trailing, after the last word.
 
     So ``yes``, ``ok!``, ``lgtm 👍``, ``👍🏽 ok``, ``✔️ yes``, ``ok :+1:``,
@@ -307,15 +337,17 @@ def confirmation_token_class(
     it``, ``ok?``. Such a reply is re-asked, never executed
     (``pending_gate_verdict``).
 
-    A decoration or a modifier is replaced by a space, never by nothing, so
-    one inside a word splits the word and cannot reassemble a token
-    (``clo(y)se it``, ``o👍k``, ``o🏽k``, ``clo️se it``). A target-scoped token
+    A decoration is replaced by a space, never by nothing, so one inside a
+    word splits the word and cannot reassemble a token (``clo(y)se it``,
+    ``o👍k``). A modifier after a letter, a digit or a space, or at the start,
+    modifies nothing anyone sees, so it stays and the reply is not bare
+    (``o🏽k``, ``ok🏽``, ``yes`` + U+FE0E; #1840 review). A target-scoped token
     (``_TARGET_SCOPED_TOKENS``) consents only to its own target.
 
-    This reader is strict, and stays so (#1840): a zero-width character and a
-    wrapping mark are not decorations, so a token carrying either (``"yes"``,
-    ``**yes**``, ``yes`` with a trailing U+200B) is not bare and is re-asked.
-    Only the shape reader (``_shape_text``) reads past them.
+    This reader is strict, and stays so (#1840): an invisible character and
+    a wrapping mark are not decorations, so a token carrying either
+    (``"yes"``, ``**yes**``, ``yes`` with a trailing U+200B) is not bare and
+    is re-asked. Only the loose reading (``_shape_text``) reads past them.
 
     The shared substance screen runs first: ``is_substantive_reply`` is the
     predicate the IntentResolver adoption guard applies to minted intents
@@ -355,34 +387,63 @@ def gate1_bare_consent(user_message: str) -> bool:
 
 
 def _shape_text(user_message: str) -> str:
-    """``user_message`` read leniently, for a SHAPE test only (#1840).
+    """``user_message`` read loosely, for the escape lane's record rule only
+    (#1840).
 
-    Every zero-width character (``_ZERO_WIDTH``) becomes a space, then
+    Every invisible character (``_is_invisible``) becomes a space, then
     ``_undecorated`` runs, then every wrapping mark (``_MARKUP_RE``) becomes a
     space and whitespace is collapsed. So ``_Yes_, go ahead…``, ``"Yes" — …``,
-    ``«Yes» — …`` and ``yes`` behind a U+200B all read as opening with
-    ``yes``, while ``that's right`` keeps its apostrophe and ``~~ok~~`` keeps
-    its strikethrough.
+    ``«Yes» — …`` and a ``Yes`` behind a U+200B or a bidi mark all read as
+    opening with ``yes``, while ``that's right`` keeps its apostrophe and
+    ``ok_status``, `` `ok` `` and ``~~ok~~`` keep the marks that change what
+    they say.
 
-    Never read by a bare test, which stays strict (#1783's corpus): a reply
-    that is consent only under this reading is re-asked, never executed.
+    Read only through ``opens_with_consent_loosely``: never by a bare test
+    (#1783's corpus), and never by a reader that decides whether the gate
+    takes the turn.
     """
-    text = "".join(" " if c in _ZERO_WIDTH else c for c in user_message)
+    text = "".join(" " if _is_invisible(c) else c for c in user_message)
     return " ".join(_MARKUP_RE.sub(" ", _undecorated(text)).split())
 
 
 def _consent_prefix(user_message: str) -> bool:
     """Whether ``user_message`` OPENS with a consent token on a word boundary,
-    read leniently (``_shape_text``; #1808, #1840).
+    after the same treatment ``confirmation_token_class`` gives it (#1808).
 
-    Modifiers, positive decorations, zero-width characters and wrapping marks
-    become spaces first, so ``👍 go ahead and close it…`` opens with ``go
-    ahead`` and ``*Yes*, close it…`` with ``yes``. Says nothing about length or
-    what follows: ``ok but we need to wait for the weekend soak first`` opens
-    with consent. One grammar, read by ``opens_with_consent_token`` and by the
-    engine's escape lane, which records no refusal for a reply that opens with
-    consent. Lenient because both readers fail toward a re-ask: a reply this
-    calls consent-shaped is re-asked or withdrawn, and never executed.
+    Strict. Modifiers and positive decorations become spaces first, so ``👍 go
+    ahead and close it…`` opens with ``go ahead``; an invisible character or a
+    wrapping mark does not, so ``*Yes*, …`` does not open with consent here.
+    Says nothing about length or what follows: ``ok but we need to wait for
+    the weekend soak first`` opens with consent.
+
+    Read by ``opens_with_consent_token``, which decides whether the gate TAKES
+    a turn and answers it with a re-ask and no LLM call. That is why it stays
+    strict: read loosely, `` `ok` is false in the /health response from node-3
+    again`` was swallowed and re-asked where it must reach the LLM (#1840
+    review). Whether a turn the gate does not take is RECORDED as a refusal is
+    a different question, answered loosely by ``opens_with_consent_loosely``.
+    """
+    if not user_message:
+        return False
+    return _matches_gate_token(
+        _undecorated(user_message),
+        _EXPLICIT_CONFIRM_TOKENS + _WEAK_CONFIRM_TOKENS,
+    )
+
+
+def opens_with_consent_loosely(user_message: str) -> bool:
+    """Whether ``user_message`` opens with a consent token once invisible
+    characters and wrapping marks are read past (``_shape_text``; #1840):
+    ``*Yes*, …``, ``_Yes_, …``, ``"Yes" — …``, a ``Yes`` behind a U+200B.
+
+    For the engine's escape-lane record rule ONLY. A reply that reaches that
+    rule has already escaped the gate (it is over 40 characters, or a
+    question): it is withdrawn and the LLM processes it whatever this says.
+    This decides only whether the withdrawal is RECORDED as a refusal, so
+    reading loosely costs at most a refusal left unrecorded, and a consenting
+    reply under markup is never recorded as one. Never read by anything that
+    decides whether the gate takes the turn: read loosely there, evidence is
+    answered with a re-ask and no LLM call (``_consent_prefix``).
     """
     if not user_message:
         return False
@@ -400,7 +461,10 @@ def opens_with_consent_token(user_message: str) -> bool:
     reply that opens with a token may go on to refuse ("ok, don't close it
     yet"). It marks the replies the gate answers itself with a re-ask rather
     than sending them down the escape lane, so the set of replies the gate
-    consumes did not move when consent narrowed (#1783).
+    consumes did not move when consent narrowed (#1783). Strict, through
+    ``_consent_prefix``, for the same reason: a reply it marks never reaches
+    the LLM, so it must not read past markup or invisible characters (#1840
+    review).
     """
     if not user_message or is_substantive_reply(user_message):
         return False
@@ -420,7 +484,7 @@ def _user_declines_transition(user_message: str) -> bool:
     the pod``). A multi-token refusal is re-asked each time it is sent (a
     re-ask has no cap); the Not-yet click declines in one step.
 
-    Strict, like the bare consent: ``no`` carrying a zero-width character, or
+    Strict, like the bare consent: ``no`` carrying an invisible character, or
     ``*no*``, is not a bare decline (#1840).
     """
     if not user_message or is_substantive_reply(user_message):
@@ -440,13 +504,29 @@ def is_bare_gate_reply(text: str) -> bool:
     A card whose click sends such a text cannot be told from the user typing
     it, and would answer whatever offer stands when it is clicked. So
     ``_flatten_follow_ups`` never ships an LLM-written DECIDE card whose
-    payload this is true for.
+    payload reads as one, as written or as sent (``card_reads_as_bare_reply``).
     """
     return (
         confirmation_token_class(text, "closed") is not None
         or confirmation_token_class(text, "resolved") is not None
         or _user_declines_transition(text)
     )
+
+
+def card_reads_as_bare_reply(text: str) -> bool:
+    """Whether a card whose click sends ``text`` could reach the gate as a
+    bare reply (#1839): ``is_bare_gate_reply`` on the text as written, or as a
+    client sends it, with every invisible character (``_is_invisible``)
+    removed and whitespace trimmed.
+
+    The two differ because a client trims with JavaScript's ``trim()``, which
+    strips U+FEFF where Python's ``strip()`` does not: ``Close it`` behind a
+    U+FEFF is not bare as written, and arrives as ``Close it``. Over-reading
+    here costs a card its payload, never a consent. ``_flatten_follow_ups``
+    reads it for a card's payload and for its label.
+    """
+    sent = "".join(c for c in text if not _is_invisible(c)).strip()
+    return is_bare_gate_reply(text) or is_bare_gate_reply(sent)
 
 
 def pending_gate_verdict(
