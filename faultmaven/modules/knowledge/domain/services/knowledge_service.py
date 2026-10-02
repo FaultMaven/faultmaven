@@ -2003,10 +2003,12 @@ class KnowledgeService:
                 )
 
             # DTO build + tag filter over the RBAC-isolated set. Response shape
-            # is kept identical to the legacy conversion_drafts path so the
-            # dashboard needs no contract change; conversion-pipeline metadata
-            # (domain/service/severity/quality_score) is null for built-ins,
-            # which never went through that pipeline.
+            # is the legacy conversion_drafts path's plus the two trust fields
+            # (verification_level / verification_status, #878) — an additive
+            # change, so the dashboard needs no contract change;
+            # conversion-pipeline metadata (domain/service/severity/
+            # quality_score) is null for built-ins, which never went through
+            # that pipeline.
             all_documents: List[Dict[str, Any]] = []
             for item in items:
                 tag_list = list(item.tags) if item.tags else []
@@ -2037,6 +2039,7 @@ class KnowledgeService:
                             "severity": meta.get("severity"),
                             "quality_score": meta.get("quality_score"),
                         },
+                        **KnowledgeService._verification_fields(item),
                     }
                 )
 
@@ -2114,6 +2117,20 @@ class KnowledgeService:
                 "severity": meta.get("severity"),
                 "quality_score": meta.get("quality_score"),
             },
+            **KnowledgeService._verification_fields(item),
+        }
+
+    @staticmethod
+    def _verification_fields(item: Any) -> Dict[str, Any]:
+        """The trust fields every document read carries (#878).
+
+        One helper for ``list_documents`` and ``_document_dto`` so the two
+        shapes cannot drift; the status comes from the one rule,
+        ``KnowledgeItem.get_verification_status``.
+        """
+        return {
+            "verification_level": int(item.verification_level),
+            "verification_status": item.get_verification_status(),
         }
 
     async def get_document(self, document_id: str) -> Optional[Dict[str, Any]]:
