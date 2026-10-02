@@ -113,6 +113,19 @@ from faultmaven.modules.preprocessing.extractors.sshd_auth import (
 # mail.example.com`` yields ``rhost``. Syslog key/value is ``=``-delimited,
 # so no producer measured here emits that shape; the lookbehind covers the
 # value-position half of it.
+#
+# Overlap (fm#1574, fm#1588): this pattern and ``USER_FOR_RE`` both match
+# ``for invalid user <name>`` (and its ``illegal user`` spelling) — ``user
+# <name>`` here, ``for invalid user <name>`` there. The match spans are
+# nested, this pattern's inside the other's, and the group-1 spans are
+# identical: one account, two matches. ``extract_usernames`` runs neither
+# pattern on a line ``sshd_auth`` reads with sshd's user slot (fm#1668); it
+# runs both only on a line the module docstring's case 3 covers, and
+# de-duplicates the names per line. Its consumers count distinct names per
+# line — the registry path de-duplicates again, by exact value, in
+# ``entities/line_tally.py``. A consumer that wants offsets (``finditer``,
+# for masking, highlighting or citation) must apply the same fm#1668 rule
+# and de-duplicate on the group-1 span, or merge overlapping match spans.
 USER_FIELD_RE = re.compile(
     r"(?<![\w=])user[= ]+([a-zA-Z_][a-zA-Z0-9._\-]{0,31})\b(?![\w.\-]*=)",
     re.IGNORECASE,
@@ -122,6 +135,7 @@ USER_FIELD_RE = re.compile(
 # the same "not a field name" lookahead as the field pattern: the rule is a
 # property of what a username is, not of which branch happened to capture it.
 # ``illegal user `` is OpenSSH auth-pam.c's spelling of ``invalid user ``.
+# Overlaps ``USER_FIELD_RE`` on ``for invalid user <name>``: see its comment.
 USER_FOR_RE = re.compile(
     r"\bfor (?:(?:invalid|illegal) user )?([a-zA-Z_][a-zA-Z0-9._\-]{0,31})\b"
     r"(?![\w.\-]*=)",
