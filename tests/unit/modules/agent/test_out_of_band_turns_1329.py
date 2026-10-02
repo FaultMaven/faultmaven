@@ -557,6 +557,33 @@ class TestControls:
         assert saved.state == CaseState.INVESTIGATING
         assert saved.messages[-2]["metadata"].get("out_of_band") is None
 
+    async def test_a_decorated_consent_after_gate1_is_still_triaged(
+        self, engine, recording_case_repository, case
+    ):
+        """The guard's other conjunct (#1841): the exemption is for a bare
+        consent while Gate 1 is PENDING. With Gate 1 confirmed, the same reply
+        is ordinary chat to the aside lane, so it is triaged as before, and
+        verdict "2" (aside) answers it out of band."""
+        from faultmaven.core.investigation.milestone_engine.transition_consent import (
+            gate1_bare_consent,
+        )
+
+        service = _service(engine, recording_case_repository, InMemoryTurnLedger(), "2")
+        query = "looks good :ok_hand:"
+        assert case.state == CaseState.INVESTIGATING
+        assert case.inquiry.problem_statement_confirmed
+        assert gate1_bare_consent(query), "premise: the reply the exemption names"
+
+        _, _, saved = await _turn(service, recording_case_repository, case, query=query)
+
+        caps = [
+            c.kwargs.get("max_tokens")
+            for c in engine.deps.llm_provider.route.call_args_list
+        ]
+        assert TRIAGE_MAX_TOKENS in caps, "the triage was not consulted"
+        engine.process_turn.assert_not_called()
+        assert saved.messages[-2]["metadata"]["out_of_band"] == "off_topic"
+
     async def test_a_typed_answer_to_an_offered_choice_is_incident_work(
         self, engine, recording_case_repository, case
     ):

@@ -15,7 +15,8 @@ engine now reads itself while Gate 1 is pending (#1841).
 
 Nothing else stands in for consent (#1838, #1839): a status-dropdown re-pick
 of the pending target re-shows the offer's card, and no LLM-written card ships
-a text the gate reads as a bare reply (``is_bare_gate_reply``).
+a text the gate reads as a bare reply, as written or as a client sends it
+(``card_reads_as_bare_reply``).
 
 The grammar has two strengths (#1840). Every reader that decides what the
 gate DOES with a turn stays strict: the bare readers
@@ -175,7 +176,8 @@ def _is_invisible(c: str) -> bool:
 #: A mark a reply may wrap a word in (#1840): markdown emphasis, ``*`` and
 #: ``_``, only where it wraps a word, never inside an identifier (so
 #: ``ok_status``, ``confirm_timeout`` and ``proceed_on_error`` keep theirs);
-#: quotes in any script; and a straight apostrophe where it is not INSIDE a
+#: quotes in these scripts (``"``, the curly and low-9 double quotes, and the
+#: double and single guillemets); and a straight apostrophe where it is not INSIDE a
 #: word, so ``that's right`` and ``don't`` keep theirs (``_normalize_reply``
 #: has already made the curly ones straight). A backtick is deliberately
 #: absent: it quotes a word rather than using it (`` `ok` is false in the
@@ -352,8 +354,7 @@ def confirmation_token_class(
     The shared substance screen runs first: ``is_substantive_reply`` is the
     predicate the IntentResolver adoption guard applies to minted intents
     (#721), so the two confirm lanes cannot drift apart (INV-26). It reads a
-    question mark in any script (``is_question``), so ``ok？`` is not bare
-    either.
+    question mark (``is_question``), so ``ok？`` is not bare either.
     """
     if not user_message or is_substantive_reply(user_message):
         return None
@@ -386,15 +387,34 @@ def gate1_bare_consent(user_message: str) -> bool:
     return confirmation_token_class(user_message, None) is not None
 
 
+def _is_modifier_or_selector(c: str) -> bool:
+    """Whether ``c`` modifies or selects the presentation of the character
+    before it: an emoji modifier (``_EMOJI_MODIFIERS``), or any variation
+    selector, VS1 to VS16 (U+FE00 to U+FE0F) or VS17 to VS256 (U+E0100 to
+    U+E01EF) (#1840 review).
+
+    Read by the loose reading (``_shape_text``) alone, which makes every one a
+    space wherever it stands. The strict readers keep ``_undecorated``'s rule,
+    under which one that follows a letter, a digit or a space, or opens the
+    reply, stays, so the reply is not bare. Reading past it is safe only in
+    the loose reader, because that reader decides nothing but whether a reply
+    the gate did not take is RECORDED as a refusal: a stray U+FE0F or skin tone
+    before ``Yes, go ahead…`` then costs no refusal, as on ``main``.
+    """
+    o = ord(c)
+    return c in _EMOJI_MODIFIERS or 0xFE00 <= o <= 0xFE0F or 0xE0100 <= o <= 0xE01EF
+
+
 def _shape_text(user_message: str) -> str:
     """``user_message`` read loosely, for the escape lane's record rule only
     (#1840).
 
-    Every invisible character (``_is_invisible``) becomes a space, then
-    ``_undecorated`` runs, then every wrapping mark (``_MARKUP_RE``) becomes a
+    Every invisible character (``_is_invisible``) and every modifier or
+    variation selector (``_is_modifier_or_selector``) becomes a space, wherever
+    it stands, then ``_undecorated`` runs, then every wrapping mark (``_MARKUP_RE``) becomes a
     space and whitespace is collapsed. So ``_Yes_, go ahead…``, ``"Yes" — …``,
-    ``«Yes» — …`` and a ``Yes`` behind a U+200B or a bidi mark all read as
-    opening with ``yes``, while ``that's right`` keeps its apostrophe and
+    ``«Yes» — …`` and a ``Yes`` behind a U+200B, a bidi mark, a stray U+FE0F or
+    a skin tone all read as opening with ``yes``, while ``that's right`` keeps its apostrophe and
     ``ok_status``, `` `ok` `` and ``~~ok~~`` keep the marks that change what
     they say.
 
@@ -402,7 +422,10 @@ def _shape_text(user_message: str) -> str:
     (#1783's corpus), and never by a reader that decides whether the gate
     takes the turn.
     """
-    text = "".join(" " if _is_invisible(c) else c for c in user_message)
+    text = "".join(
+        " " if _is_invisible(c) or _is_modifier_or_selector(c) else c
+        for c in user_message
+    )
     return " ".join(_MARKUP_RE.sub(" ", _undecorated(text)).split())
 
 
@@ -557,8 +580,7 @@ def pending_gate_verdict(
       consent-shaped reply that is not bare, a reply whose text and minted
       intent disagree, or a minted confirmation on text that is not bare;
     * ``not_an_answer`` — the reply answers neither way, a minted decline on
-      a question included (#1813; ``is_question``, a question mark in any
-      script, #1840): the escape lane's question rule then withdraws the
+      a question included (#1813; ``is_question``, #1840): the escape lane's question rule then withdraws the
       proposal and records nothing. The caller re-asks a short one and sends
       a substantive one down the escape lane.
 

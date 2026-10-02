@@ -193,8 +193,8 @@ def _finish_deterministic_turn(
     resetting it cannot change how long one stands: a pending terminal
     proposal stands until the user answers it (its own click, a bare consent token
     or a decline), or sends a turn the gate never consumes — one carrying an
-    upload, or a non-answer over 40 characters or carrying a question mark in
-    any script (``is_question``) — which the gate's own escape lane withdraws
+    upload, or a non-answer over 40 characters or carrying a question mark
+    (``is_question``) — which the gate's own escape lane withdraws
     it for. Everything else the gate answers
     with the proposal's buttons, every time and never recording a refusal: a
     consent-shaped reply that is not bare and that ``is_substantive_reply``

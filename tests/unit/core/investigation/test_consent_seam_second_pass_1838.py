@@ -6,8 +6,9 @@ The invariant these pin, from the plan:
   or on a typed reply that is a bare consent token. A status-dropdown re-pick
   of the pending target re-shows the card (#1838), and no LLM-written DECIDE
   card sends a text the gate reads as a bare reply (#1839).
-* A reply that opens with consent, or that carries a question in any script,
-  is never recorded as a refusal (#1840). The gate itself reads strictly, so a
+* A reply that opens with consent, or that carries a question mark the gate
+  reads (``QUESTION_MARKS``, ``QUESTION_SHORTCODES``), is never recorded as a
+  refusal (#1840). The gate itself reads strictly, so a
   reply it does not recognise as typed reaches the LLM (#1840 review).
 * A bare typed consent commits a pending Gate 1 without the LLM (#1841).
 * #1783's must-execute and must-not-execute corpora are unchanged
@@ -177,6 +178,16 @@ EMOJI_SELECTOR = "\N{VARIATION SELECTOR-16}"
 SKIN = "\N{EMOJI MODIFIER FITZPATRICK TYPE-4}"
 THUMBS = "\N{THUMBS UP SIGN}"
 
+CGJ = "\N{COMBINING GRAPHEME JOINER}"
+TEXT_SELECTOR_17 = "\N{VARIATION SELECTOR-17}"
+
+#: 119 characters, so with one character before it over 100: substantive to
+#: every reader, and withdrawn whatever the gate thinks of its opening.
+LONG_CONSENT = (
+    "Yes, go ahead and close it. We verified the fix in staging and in prod "
+    "overnight and the error has not come back since."
+)
+
 #: Over 100 characters, so substantive even to ``is_substantive_reply``.
 PROCEED_ON_ERROR = (
     "proceed_on_error=false in the job config is the real culprit for the "
@@ -206,6 +217,23 @@ SHAPE_ROWS = [
     (f"{LRM}Yes,{TAIL}", "not_an_answer", False),
     (f"{SHY}Yes,{TAIL}", "not_an_answer", False),
     (f"{RLI}Yes,{TAIL}", "not_an_answer", False),
+    (f"{CGJ}Yes,{TAIL}", "not_an_answer", False),
+    # A modifier or a selector where it modifies nothing: the strict readers
+    # keep it, so the gate does not take the reply; the loose record reader
+    # reads past it, so it is not recorded (Revision 2, F1).
+    (f"{THUMBS} {EMOJI_SELECTOR}Yes,{TAIL}", "not_an_answer", False),
+    (
+        f"go{EMOJI_SELECTOR}ahead and close it, the fix held overnight and the "
+        "alerts are quiet",
+        "not_an_answer",
+        False,
+    ),
+    (
+        f"No{EMOJI_SELECTOR}, keep it open {DASH} errors are still coming in from "
+        "the east region",
+        "not_an_answer",
+        True,
+    ),
     (f"*Yes*,{TAIL}", "not_an_answer", False),
     (f"**Yes**{TAIL}", "not_an_answer", False),
     (f"_Yes_,{TAIL}", "not_an_answer", False),
@@ -262,12 +290,14 @@ SHAPE_ROWS = [
         True,
     ),
     (PROCEED_ON_ERROR, "not_an_answer", True),
-    # A question in any script, as an emoji or as Slack's shortcode, is
+    # A question mark the gate reads, as an emoji or as Slack's shortcode, is
     # substantive and never recorded.
     ("can we close it on friday\N{FULLWIDTH QUESTION MARK}", "not_an_answer", False),
     ("\N{INVERTED QUESTION MARK}ok", "not_an_answer", False),
     ("ok \N{ARABIC QUESTION MARK}", "not_an_answer", False),
     ("ok\N{GREEK QUESTION MARK}", "not_an_answer", False),
+    ("ok \N{ARMENIAN QUESTION MARK}", "not_an_answer", False),
+    ("ok \N{ETHIOPIC QUESTION MARK}", "not_an_answer", False),
     ("friday \N{BLACK QUESTION MARK ORNAMENT}", "not_an_answer", False),
     ("hmm \N{INTERROBANG}", "not_an_answer", False),
     (
@@ -389,6 +419,8 @@ class TestOneGrammarTwoStrengths:
             "\N{SMALL QUESTION MARK}"
             "\N{PRESENTATION FORM FOR VERTICAL QUESTION MARK}"
             "\N{GREEK QUESTION MARK}"
+            "\N{ARMENIAN QUESTION MARK}"
+            "\N{ETHIOPIC QUESTION MARK}"
             "\N{BLACK QUESTION MARK ORNAMENT}"
             "\N{WHITE QUESTION MARK ORNAMENT}"
             "\N{INTERROBANG}"
@@ -432,7 +464,14 @@ class TestTheShapeRowsThroughTheEngine:
             f"{LRM}Yes,{TAIL}",
             f"{SHY}Yes,{TAIL}",
             f"{RLI}Yes,{TAIL}",
+            f"{CGJ}Yes,{TAIL}",
             '"ok" status from the canary was a lie, the 503s are back now',
+            # A stray modifier or selector before a long consent (Revision 2,
+            # F1): kept by the strict readers, read past by the record rule.
+            f"{EMOJI_SELECTOR}{LONG_CONSENT}",
+            f"{SKIN}{LONG_CONSENT}",
+            f"{TEXT_SELECTOR}{LONG_CONSENT}",
+            f"{TEXT_SELECTOR_17}{LONG_CONSENT}",
             # Over 100 characters, so substantive to every reader.
             "_Yes_, go ahead and close it. We verified the fix in staging and in "
             "prod overnight and the error has not come back since.",

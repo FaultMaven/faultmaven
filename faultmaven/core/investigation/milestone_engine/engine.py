@@ -124,7 +124,7 @@ from .response_synthesis import (
 # confirmation on text that is not bare; a status-dropdown re-pick of the
 # pending target (#1838); and a short (at most this many characters)
 # question-free non-answer ("hm"). It NEVER consumes a turn carrying an upload,
-# nor a non-answer longer than this or carrying a question mark in any script
+# nor a non-answer longer than this or carrying a question mark
 # (``is_question``, #1840) — new evidence, a question, an instruction to keep
 # investigating: those withdraw the proposal and are processed as a normal
 # investigation turn, so the gate can never swallow them.
@@ -798,7 +798,7 @@ class MilestoneEngine:
                             # is a REFUSAL splits on the two halves of
                             # message_is_substantive, which the gate
                             # deliberately conflates. A QUESTION (a question
-                            # mark in any script, ``is_question``; #1840) is a
+                            # mark, ``is_question``; #1840) is a
                             # user deciding — "what happens to the runbook if
                             # I close this?" — and recording it would make the
                             # affordance disappear, unexplained, until a
