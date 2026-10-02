@@ -882,7 +882,8 @@ async def update_session(
 
     Args:
         session_id: Session identifier
-        updates: Dict of fields to update (metadata, timeout_minutes, etc.)
+        updates: Fields to update. Only `metadata` (a JSON object, which
+            replaces the stored one) may be updated.
 
     Returns:
         Updated session information
@@ -890,7 +891,8 @@ async def update_session(
     Raises:
         404: Session not found
         403: User not authorized to update this session
-        400: Invalid update fields (trying to update case data)
+        400: Any field other than `metadata`, or a `metadata` that is not a
+            JSON object. Nothing is updated.
     """
     try:
         # Get session to check ownership

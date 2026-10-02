@@ -20,10 +20,13 @@ Version: 2.0 (Spec-Compliant Refactor - 2025-10-23)
 Reference: docs/architecture/case-and-session-concepts.md
 """
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
+
+from pydantic import ValidationError
 
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
@@ -31,6 +34,45 @@ from faultmaven.models import SessionContext
 from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
+
+#: The only ``SessionContext`` fields a client may set through
+#: ``update_session`` (#1834). An allow-list, because the deny-list it replaced
+#: left ``session_id`` writable, and ``save()`` keys its write on that field: a
+#: caller could overwrite another session's record. ``expires_at`` changes only
+#: through ``extend_session``; ``client_id`` belongs to the resumption index.
+CLIENT_UPDATABLE_SESSION_FIELDS = frozenset({"metadata"})
+
+#: The 400 for a value of the wrong type, one fixed message per allowed field.
+#: Keyed by field name, never by caller input, and never carrying pydantic's
+#: text or the submitted value. Every allowed field needs an entry.
+_FIELD_MESSAGES: Dict[str, str] = {
+    "metadata": "metadata must be a JSON object",
+}
+
+#: The refusal names at most this many keys, each clipped to this many
+#: characters: the keys are caller input, and unbounded they made the 400 as
+#: large as the request body.
+_MAX_NAMED_REFUSALS = 5
+_MAX_REFUSED_NAME_CHARS = 64
+
+
+def _refusal_message(refused: List[str]) -> str:
+    """Name the first few refused keys, clipped, then how many there were."""
+    named = []
+    for key in refused[:_MAX_NAMED_REFUSALS]:
+        shown = repr(key)
+        if len(shown) > _MAX_REFUSED_NAME_CHARS:
+            shown = shown[: _MAX_REFUSED_NAME_CHARS - 1] + "…"
+        named.append(shown)
+    if len(refused) > len(named):
+        named.append("…")
+    allowed = ", ".join(
+        repr(field) for field in sorted(CLIENT_UPDATABLE_SESSION_FIELDS)
+    )
+    return (
+        f"Session fields cannot be updated: {', '.join(named)} "
+        f"({len(refused)} refused). Only {allowed} may be updated."
+    )
 
 
 class AuthSessionService:
@@ -231,13 +273,17 @@ class AuthSessionService:
 
         Args:
             session_id: Session identifier
-            updates: Updates to apply (metadata only - no case data allowed)
+            updates: Fields to set; only those in CLIENT_UPDATABLE_SESSION_FIELDS
 
         Returns:
             True if update successful
 
         Raises:
-            ValidationException: If updates contain forbidden fields
+            ValidationException: If updates name any other field, or a value
+                fails SessionContext validation or is not representable as
+                JSON. Nothing is applied either way.
+            ServiceException: If the stored record names a session id other
+                than the one it was read by. Nothing is written.
         """
         if not session_id or not session_id.strip():
             raise ValidationException("session_id cannot be empty")
@@ -245,33 +291,56 @@ class AuthSessionService:
         if not updates:
             raise ValidationException("updates cannot be empty")
 
-        # Validate no case data in updates (spec compliance)
-        forbidden_fields = {
-            "case_history",
-            "current_case_id",
-            "data_uploads",
-            "agent_state",
-        }
-        if any(field in updates for field in forbidden_fields):
-            raise ValidationException(
-                f"Cannot update session with case data. Forbidden fields: {forbidden_fields}. "
-                "Sessions are for authentication only per spec lines 102-107."
-            )
+        # An allow-list, checked before anything is read or applied: a body
+        # with one permitted key and one refused key changes nothing.
+        refused = sorted(set(updates) - CLIENT_UPDATABLE_SESSION_FIELDS)
+        if refused:
+            raise ValidationException(_refusal_message(refused))
+
+        # NaN, ±Infinity (``1e400`` parses as inf) and lone surrogates pass
+        # ``Dict[str, Any]``, are saved, and then every read of the session
+        # answers 500 because no response can render them. Refuse them here.
+        if "metadata" in updates:
+            try:
+                json.dumps(
+                    updates["metadata"], allow_nan=False, ensure_ascii=False
+                ).encode("utf-8")
+            except (ValueError, TypeError, UnicodeEncodeError, RecursionError):
+                raise ValidationException(
+                    "metadata must hold only JSON values"
+                ) from None
 
         session = await self.get_session(session_id)
         if not session:
             return False
 
-        # Apply updates
-        for key, value in updates.items():
-            if hasattr(session, key):
-                setattr(session, key, value)
+        # Re-validate the whole record so a wrong-typed value is refused, not
+        # stored. model_validate, never model_copy(update=...): a copy skips
+        # validation of the values it is handed. The message comes from
+        # _FIELD_MESSAGES by the failing field's name, so neither pydantic's
+        # text nor the submitted value reaches the caller.
+        try:
+            updated = SessionContext.model_validate({**session.model_dump(), **updates})
+        except ValidationError as exc:
+            errors = exc.errors()
+            field = errors[0]["loc"][0] if errors and errors[0]["loc"] else None
+            raise ValidationException(
+                _FIELD_MESSAGES.get(field, "session update is invalid")
+            ) from None
 
-        session.updated_at = datetime.now(timezone.utc)
+        # save() keys its write on the record's own session_id. A stored record
+        # claiming another id would redirect this write onto that session: the
+        # #1834 mechanism, reached from the stored side instead of the body.
+        if updated.session_id != session_id:
+            raise ServiceException(
+                "Stored session record does not match the id it was read by; "
+                "not updated"
+            )
 
-        # Persist
+        updated.updated_at = datetime.now(timezone.utc)
+
         if self.session_store:
-            await self.session_store.save(session)
+            await self.session_store.save(updated)
 
         return True
 
