@@ -395,6 +395,47 @@ that rejects `budget_tokens`, and `adaptive` as `enabled` (with the configured
 budget) on a model that rejects adaptive, each with one WARNING per model id
 and mode per process. The substituted shape's own guards apply.
 
+**Thinking controls at the INVESTIGATING call (#1800).**
+
+Measured 2026-10-02 by `scripts/anthropic_thinking_controls.py`. Each call
+replays a real INVESTIGATING request (case at turn 6, schema
+`InvestigationResponse_Diagnosis`, `max_tokens` 8000, about 154k characters
+with six tools) built offline by the API for that model, with no network I/O.
+The provider's per-model `tool_choice` is unchanged (`any` on Opus 5; `auto`
+plus the forcing sentence on Opus 5.5 and Fable 5.1, which 400 on forced tool
+use). No model gets a `thinking` key under the default
+`ANTHROPIC_THINKING_MODE=off`; only the control under test varies. Each call
+was sent once, in table order. Per model, `omitted` ran first and wrote the
+prompt cache, and later variants may have read it, so the elapsed differences
+are not attributable to the control alone.
+
+| model | control | content blocks | output tokens | of which thinking | visible | elapsed |
+|---|---|---|---|---|---|---|
+| `claude-opus-5` | omitted (today's `off`) | `tool_use` | 3844 | 0 | 3844 | 42 s |
+| `claude-opus-5` | `output_config.effort: low` | `tool_use` | 2495 | 0 | 2495 | 30 s |
+| `claude-opus-5` | `thinking: {type: disabled}` | `tool_use` | 3356 | 0 | 3356 | 35 s |
+| `claude-opus-5-5` | omitted (today's `off`) | `thinking`, `text`, `tool_use` | 5397 | 1206 | 4191 | 49 s |
+| `claude-opus-5-5` | `output_config.effort: low` | `tool_use` | 1948 | 0 | 1948 | 21 s |
+| `claude-fable-5-1` | omitted (today's `off`) | `thinking`, `tool_use` | 5463 | 1720 | 3743 | 67 s |
+| `claude-fable-5-1` | `output_config.effort: low` | `thinking`, `tool_use` | 4124 | 893 | 3231 | 52 s |
+
+- **Opus 5:** with forced `tool_choice: any` there is no thinking under any of
+  the three controls, so omitting `thinking` already holds at this call.
+  `{type: disabled}` is accepted (200). `effort: low` cut output by about 35%.
+- **Opus 5.5:** omitting `thinking` runs adaptive; the model's documented
+  default effort is `medium` (not observed by this run). It gave 1206 thinking
+  tokens plus a `text` block. `effort: low` gives no thinking and about a third
+  of the output.
+- **Fable 5.1:** `effort: low` halves thinking (1720 to 893) but does not
+  remove it; no measured control turns thinking off. On this turn `max_tokens`
+  8000 held (5463 used with `thinking` omitted), but only one turn was
+  measured: a larger INVESTIGATING turn recorded on #1800 (2026-09-29, about
+  50k input tokens) hit `max_tokens` 8000 on Fable 5.1 with about 954 visible
+  tokens, so that headroom is not general.
+
+Today's `off` still omits the `thinking` key, so on Opus 5.5 and Fable 5.1 it
+does not turn thinking off. Changing that is pending an owner ruling (#1800).
+
 ### HuggingFace Inference API
 - Does not support OpenAI-compatible tool calling
 - `supports_tool_calling()` always returns `False`
