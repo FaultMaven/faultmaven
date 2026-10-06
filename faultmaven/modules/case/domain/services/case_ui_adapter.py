@@ -156,10 +156,7 @@ def _extract_problem_verification(case: Case) -> Optional[ProblemVerificationDat
             user_impact += f" - {affected_users}"
 
     pv = case.problem_verification
-    history = (pv.statement_history if pv else None) or []
-    original = next((r.text for r in history if r.kind.value == "confirmed"), None)
-    if original is not None and original.strip() == (case.description or "").strip():
-        original = None
+    original = pv.original_statement(case.description or "") if pv else None
     return ProblemVerificationData(
         urgency_level=urgency_level,
         severity=severity,

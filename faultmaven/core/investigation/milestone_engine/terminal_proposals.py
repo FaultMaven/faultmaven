@@ -8,7 +8,10 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     engine_proposed_resolution_total,
     evidence_need_status_changed_total,
 )
-from faultmaven.core.investigation.problem_status import problem_on_hold
+from faultmaven.core.investigation.problem_status import (
+    FALSE_ALARM_CLOSURE_REASON,
+    problem_on_hold,
+)
 from faultmaven.modules.case.contracts import (
     TERMINAL_HYPOTHESIS_STATES,
     Case,
@@ -364,22 +367,6 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
         f"Proposed RESOLVED transition for case {case.case_id} "
         f"(engine backstop: resolution readiness is READY and no other "
         f"opener proposed it this turn; pending user confirmation)"
-    )
-
-
-#: The closure reason a false-alarm finding derives (``derive_closure_reason``).
-FALSE_ALARM_CLOSURE_REASON = "closed_false_alarm"
-
-
-def is_engine_false_alarm_close(pending: "dict | None") -> bool:
-    """Whether ``pending`` is the engine's own false-alarm close offer — the one
-    offer a revision or a withdrawal may take back without the user answering
-    it, because the finding it rested on no longer stands."""
-    return bool(
-        pending
-        and pending.get("to_state") == "closed"
-        and pending.get("closure_reason") == FALSE_ALARM_CLOSURE_REASON
-        and "justifying_signature" in pending
     )
 
 

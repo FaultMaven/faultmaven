@@ -371,9 +371,8 @@ class ReportGenerationService:
         description = case.description or "No description provided."
         lines = ["## Problem Statement\n", f"{description}\n"]
         pv = getattr(case, "problem_verification", None)
-        history = getattr(pv, "statement_history", None) or []
-        original = next((r.text for r in history if r.kind.value == "confirmed"), None)
-        if original and original.strip() != description.strip():
+        original = pv.original_statement(case.description or "") if pv else None
+        if original:
             lines.append(f"Originally reported as: {original}\n")
         return lines
 

@@ -31,13 +31,14 @@ from faultmaven.core.investigation.problem_status import (
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
 from faultmaven.modules.case.contracts import CaseState, ProblemStatus
 
+from .stage_gates import _add_system_feedback
 from .transition_consent import (
     TYPED_CONFIRMATION_LINE,
     offer_intent_fields,
 )
 
 if TYPE_CHECKING:
-    from faultmaven.modules.case.contracts import Case
+    from faultmaven.modules.case.contracts import Case, PendingRevision
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,26 @@ logger = logging.getLogger(__name__)
 #: turn that follows the replay runs the proposers with its own metadata, so an
 #: offer the replayed state warrants is made there, with its card, unexecuted.
 REPLAY_METADATA_KEY = "replaying_staged_cause_work"
+
+#: What an offer made inside the replay writes beside ``pending_transition``:
+#: the same-turn guard (#722: a proposal is never confirmed by the message that
+#: produced it), the card, and the prose that explains it. Carried into the
+#: turn's own metadata whenever the replay leaves an offer standing, whichever
+#: proposer made it — so the user's "yes" to the revised statement cannot
+#: execute it, and the offer reaches the user with its card. The proposers in
+#: the apply path's tail also stand down under ``REPLAY_METADATA_KEY``; this is
+#: what covers the ones that do not (the stage-gate side effects) and any added
+#: later — every proposer writes the same-turn guard beside its offer.
+PROPOSAL_KEYS = (
+    "transition_proposed_this_turn",
+    "override_suggestions",
+    "rca_infeasible_closure_message",
+    "deferred_solution_gate_message",
+    "false_alarm_closure_message",
+    "resolution_ready_gate_message",
+    "resolution_readiness_verdict",
+    "resolution_readiness_missing",
+)
 
 #: The keys a replayed turn's apply step writes that the confirmation turn's
 #: progress reading and turn record must see. The LLM's own response metadata
@@ -171,12 +192,17 @@ async def confirm_revision(
             "status_transitioned": False,
             REPLAY_METADATA_KEY: True,
         }
+        offer_before = case.pending_transition
         await responses._apply_investigation_updates(case, updates, bundle_metadata)
+        if case.pending_transition and case.pending_transition is not offer_before:
+            for key in PROPOSAL_KEYS:
+                if key in bundle_metadata:
+                    metadata[key] = bundle_metadata[key]
         for key in REPLAYED_KEYS:
             replayed[key].extend(bundle_metadata.get(key, []))
         feedback = bundle_metadata.get("system_feedback")
         if feedback:
-            _append_feedback(metadata, feedback)
+            _add_system_feedback(metadata, feedback)
 
     metadata["statement_commit"] = {
         "statement": pending.text,
@@ -209,11 +235,35 @@ def merge_statement_commit(metadata: dict) -> None:
     metadata["problem_status_changed"] = True
 
 
+#: How the decline note names each kind of staged cause work.
+_STAGED_WORK_NOUNS = (
+    ("hypotheses_to_add", "hypothesis(es)"),
+    ("causal_nodes_to_add", "causal node(s)"),
+    ("causal_edges_to_add", "causal link(s)"),
+    ("solutions_to_add", "proposed solution(s)"),
+    ("root_cause_conclusion", "root-cause conclusion"),
+)
+
+
+def staged_work_summary(pending: PendingRevision | None) -> str | None:
+    """What a decline discards: the cause work staged on the revision, by kind
+    — so the model knows to re-send what still holds once the problem is
+    verified, rather than assume it was recorded."""
+    if pending is None:
+        return None
+    counts: dict[str, int] = {}
+    for bundle in pending.staged:
+        for field, noun in _STAGED_WORK_NOUNS:
+            value = bundle.updates.get(field)
+            if value:
+                counts[noun] = counts.get(noun, 0) + (
+                    len(value) if isinstance(value, list) else 1
+                )
+    if not counts:
+        return None
+    return ", ".join(f"{n} {noun}" for noun, n in counts.items())
+
+
 def _quoted(text: str) -> str:
     text = (text or "").strip()
     return "\n".join(f"> {line}" if line else ">" for line in text.split("\n"))
-
-
-def _append_feedback(metadata: dict, message: str) -> None:
-    current = metadata.get("system_feedback", "") or ""
-    metadata["system_feedback"] = "\n".join(p for p in (current, message) if p).strip()

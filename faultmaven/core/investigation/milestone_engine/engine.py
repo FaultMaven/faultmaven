@@ -102,7 +102,12 @@ from .response_synthesis import (
     _record_deferred_disposition_decline,
 )
 from .stage_gates import _add_system_feedback
-from .statement_revision import confirm_revision, revision_offer, revision_pending
+from .statement_revision import (
+    confirm_revision,
+    revision_offer,
+    revision_pending,
+    staged_work_summary,
+)
 
 # =============================================================================
 # Evidence Category - Milestone Mapping (Option 2.5: System-Inferred Attribution)
@@ -896,13 +901,21 @@ class MilestoneEngine:
                     await confirm_revision(self.responses, self.deps, case, metadata)
                 elif revision_verdict == "decline":
                     declined = decline_revision(case)
+                    discarded = staged_work_summary(declined)
                     metadata["problem_status_changed"] = True
                     _add_system_feedback(
                         metadata,
                         "The user declined the revised problem statement"
                         + (f" ('{declined.text[:160]}')" if declined else "")
                         + "; the confirmed statement stands. Work from their "
-                        "clarification.",
+                        "clarification."
+                        + (
+                            f" The cause work held for that revision ({discarded}) "
+                            "was discarded, not recorded: re-send what still holds "
+                            "once the problem is verified."
+                            if discarded
+                            else ""
+                        ),
                     )
 
             # 0c. Detect explicit user intent to close/resolve case

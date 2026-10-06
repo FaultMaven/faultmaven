@@ -63,6 +63,9 @@ logger = logging.getLogger(__name__)
 #: most this many characters (``causal_graph.ingestion.seed_problem_node``).
 MAX_STATEMENT_CHARS = 500
 
+#: The closure reason a false-alarm finding derives (``derive_closure_reason``).
+FALSE_ALARM_CLOSURE_REASON = "closed_false_alarm"
+
 
 def cause_work_accepted(case: Case) -> bool:
     """Whether this case accepts cause work: hypotheses, chains, a root-cause
@@ -313,6 +316,7 @@ def invalidate_problem(case: Case, *, evidence_ids: list[str], basis: str) -> No
         rationale=basis.strip(),
         evidence_ids=list(evidence_ids),
         turn=case.current_turn,
+        prior_status=case.progress.problem_status,
     )
     pv.statement_history.append(
         ProblemStatementRecord(
@@ -331,8 +335,9 @@ def invalidate_problem(case: Case, *, evidence_ids: list[str], basis: str) -> No
 
 
 def withdraw_invalidation(case: Case, *, basis: str) -> bool:
-    """The user disputed the false-alarm finding: the problem is unverified
-    again. Returns whether there was a finding to withdraw."""
+    """The user disputed the false-alarm finding: the problem returns to where
+    it stood before the finding — verified if it was, since nothing refuted
+    that verification. Returns whether there was a finding to withdraw."""
     pv = case.problem_verification
     if case.progress.problem_status != ProblemStatus.INVALIDATED:
         return False
@@ -344,23 +349,36 @@ def withdraw_invalidation(case: Case, *, basis: str) -> bool:
             rationale=(basis or "").strip() or None,
         )
     )
-    pv.invalidation = None
-    _move(case, ProblemStatus.UNVERIFIED, via="false_alarm_withdrawn")
+    _clear_invalidation(case, via="false_alarm_withdrawn")
     return True
+
+
+def _clear_invalidation(case: Case, *, via: str) -> None:
+    pv = case.problem_verification
+    prior = pv.invalidation.prior_status if pv.invalidation else None
+    pv.invalidation = None
+    _move(case, prior or ProblemStatus.UNVERIFIED, via=via)
 
 
 def edit_statement_refusal(case: Case, text: str) -> str | None:
     """Why the user cannot edit the statement directly now, or None."""
     if not (text or "").strip():
         return "the problem statement cannot be empty during an investigation"
+    if len(text.strip()) > MAX_STATEMENT_CHARS:
+        return f"the problem statement exceeds {MAX_STATEMENT_CHARS} characters"
     if case.progress.problem_status == ProblemStatus.REVISION_PENDING:
         return "a revised statement is awaiting confirmation; answer it first"
     return None
 
 
 def edit_statement(case: Case, text: str) -> None:
-    """The user edited the statement directly. The status is unchanged — an
-    edit is the user's word, not evidence."""
+    """The user edited the statement directly. An edit is the user's word, not
+    evidence, so it never verifies: a verified problem stays verified (the user
+    sharpened wording the evidence already showed), an unverified one stays
+    unverified. The open symptom needs asked for evidence of the old wording
+    and are superseded. A false-alarm finding was a finding about the old
+    statement: it is cleared, the problem is unverified against the new one,
+    and the engine's offer to close on that finding is withdrawn."""
     text = text.strip()
     if case.problem_verification is None:
         # The Gate-1 transition always creates the record; a case without one
@@ -374,6 +392,14 @@ def edit_statement(case: Case, text: str) -> None:
             kind=StatementRecordKind.EDITED, text=text, turn=case.current_turn
         )
     )
+    _supersede_symptom_needs(
+        case, f"the user edited the problem statement at turn {case.current_turn}"
+    )
+    if case.progress.problem_status == ProblemStatus.INVALIDATED:
+        case.problem_verification.invalidation = None
+        _move(case, ProblemStatus.UNVERIFIED, via="statement_edited")
+        if is_engine_false_alarm_close(case.pending_transition):
+            case.pending_transition = None
 
 
 def record_confirmed_statement(case: Case) -> None:
@@ -385,6 +411,18 @@ def record_confirmed_statement(case: Case) -> None:
             text=current_statement(case),
             turn=case.current_turn,
         )
+    )
+
+
+def is_engine_false_alarm_close(pending: dict | None) -> bool:
+    """Whether ``pending`` is the engine's own false-alarm close offer — the one
+    offer a revision, a withdrawal or an edit may take back without the user
+    answering it, because the finding it rested on no longer stands."""
+    return bool(
+        pending
+        and pending.get("to_state") == "closed"
+        and pending.get("closure_reason") == FALSE_ALARM_CLOSURE_REASON
+        and "justifying_signature" in pending
     )
 
 

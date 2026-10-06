@@ -43,6 +43,7 @@ from faultmaven.core.investigation.problem_status import (
     cause_work_staged,
     invalidate_problem,
     invalidation_refusal,
+    is_engine_false_alarm_close,
     propose_revision,
     revision_refusal,
     stage_cause_work,
@@ -109,10 +110,45 @@ from .statement_revision import REPLAY_METADATA_KEY
 from .terminal_proposals import (
     _maybe_propose_deferred_close,
     _maybe_propose_false_alarm_close,
-    is_engine_false_alarm_close,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _reclassify_premature_causal_absence(case: Case, metadata: dict[str, Any]) -> None:
+    """A cause cannot have been eliminated before the problem it caused is
+    verified: a causal_absence row then means "the problem is not there", which
+    is symptom_absence. This turn's rows are reclassified rather than dropped —
+    ``evidence_added`` is positional, and new_index_N refs this turn index into
+    it. Judged against the turn's own verification (after step 2b), never the
+    status the turn began with or an optimistic claim 2b reverts. Without this,
+    one such row reads resolution-READY on a never-verified case
+    (``assess_resolution_readiness``) and pivots a false-alarm close to RESOLVED
+    (INV-37)."""
+    if cause_work_accepted(case):
+        return
+    created = set(metadata.get("evidence_added") or [])
+    rows = [
+        e
+        for e in case.evidence
+        if e.evidence_id in created
+        and e.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+    ]
+    if not rows:
+        return
+    for row in rows:
+        row.category = EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE
+    metadata.setdefault("validation_repairs", []).append(
+        f"{len(rows)} causal_absence_evidence row(s) recorded before the problem "
+        "was verified were recorded as symptom_absence_evidence"
+    )
+    _add_system_feedback(
+        metadata,
+        f"{len(rows)} causal_absence_evidence row(s) arrived before the problem "
+        "was verified and were recorded as symptom_absence_evidence: a cause can "
+        "only be shown eliminated once the problem it caused is verified.",
+    )
+
 
 #: The state-update fields that are cause work. While a revised statement
 #: awaits the user's re-confirmation they are staged on it rather than applied
@@ -576,7 +612,12 @@ class ResponseApplier:
             )
 
     def _apply_verification_updates(
-        self, case: Case, updates: Any, metadata: dict[str, Any]
+        self,
+        case: Case,
+        updates: Any,
+        metadata: dict[str, Any],
+        *,
+        status_at_start: ProblemStatus,
     ) -> None:
         """Step 2c: the statement is inaccurate, the problem never existed, or
         the user disputes a false-alarm finding.
@@ -605,7 +646,13 @@ class ResponseApplier:
 
         revision = (vu.revised_problem_statement or "").strip()
         invalidated = vu.problem_invalidated is True
-        verified_this_turn = "symptom_verified" in metadata["milestones_completed"]
+        # Whichever writer verified it — the cited symptom claim or a runbook
+        # fix the user confirmed (knowledge_resolution, which records no
+        # milestone). Either contradicts a false-alarm finding.
+        verified_this_turn = (
+            status_at_start != ProblemStatus.VERIFIED
+            and case.progress.problem_status == ProblemStatus.VERIFIED
+        )
 
         if vu.invalidation_withdrawn is True:
             if (vu.withdrawal_basis or "").strip() and withdraw_invalidation(
@@ -691,7 +738,10 @@ class ResponseApplier:
                 return
             if pending:
                 self._withdraw_engine_false_alarm_close(case, metadata)
-            if verified_this_turn:
+            if "symptom_verified" in metadata["milestones_completed"]:
+                # The cited claim verified the revised problem, so it is
+                # granted on confirmation. A runbook fix the user confirmed
+                # stands on its own: a decline returns to it (verified).
                 unverify_problem(case, via="superseded_by_revision")
                 metadata["milestones_completed"].remove("symptom_verified")
             propose_revision(
@@ -844,6 +894,7 @@ class ResponseApplier:
         user_message: str = "",
     ) -> None:
         """Apply updates during INVESTIGATING phase."""
+        status_at_start = case.progress.problem_status
         # 0. Check for Proactive Blocker Detection — surface as system feedback
         if hasattr(updates, "missing_critical_data") and updates.missing_critical_data:
             blocker = updates.missing_critical_data
@@ -984,30 +1035,6 @@ class ResponseApplier:
             # (gated on cause uncertainty), not by an engine emission ban —
             # causal_evidence is always allowed during INVESTIGATING.
             for ev_item in updates.evidence_to_add:
-                # A cause cannot have been eliminated before the problem it
-                # caused is verified: a causal_absence row then means "the
-                # problem is not there", which is symptom_absence. Reclassified
-                # rather than dropped — ``evidence_added`` is positional, and
-                # new_index_N refs this turn index into it. Without this, one
-                # such row reads resolution-READY on a never-verified case
-                # (``assess_resolution_readiness``) and pivots a false-alarm
-                # close to RESOLVED (INV-37).
-                if (
-                    ev_item.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
-                    and not cause_work_accepted(case)
-                ):
-                    ev_item.category = EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE
-                    metadata.setdefault("validation_repairs", []).append(
-                        "causal_absence_evidence recorded before the problem was "
-                        "verified was recorded as symptom_absence_evidence"
-                    )
-                    _add_system_feedback(
-                        metadata,
-                        "A causal_absence_evidence row arrived before the problem "
-                        "was verified and was recorded as symptom_absence_evidence: "
-                        "a cause can only be shown eliminated once the problem it "
-                        "caused is verified.",
-                    )
                 # Infer milestone attribution (Tier 2 + Tier 3)
                 milestones_completed_this_turn = metadata.get(
                     "milestones_completed", []
@@ -1102,11 +1129,21 @@ class ResponseApplier:
                         result.warnings
                     )
 
+        # The verification is final for the symptom claim: a causal_absence row
+        # recorded on a problem still unverified is reclassified before step 2c
+        # reads the turn's rows (a false-alarm finding may cite it).
+        _reclassify_premature_causal_absence(case, metadata)
+
         # 2c. What the evidence says about the statement itself: inaccurate
         # (a revision for the user to re-confirm) or never present (a false
         # alarm), or a false-alarm finding the user disputes. After 2b, so the
         # turn's own verification is final and its evidence ids resolvable.
-        self._apply_verification_updates(case, updates, metadata)
+        self._apply_verification_updates(
+            case, updates, metadata, status_at_start=status_at_start
+        )
+        # And again for the status the turn ends with: a revision on the
+        # verifying turn leaves the problem unverified until the user confirms.
+        _reclassify_premature_causal_absence(case, metadata)
 
         # 2d. While a revision awaits re-confirmation, this turn's cause work
         # is held on it, with the evidence ids its refs resolve against, and
@@ -1496,6 +1533,28 @@ class ResponseApplier:
                     "statement, then applied under the same gates as any "
                     "proposal (a permanent fix still needs an established "
                     "cause). Do not re-propose them.",
+                )
+            refused_signals = [
+                name
+                for name in _STAGED_GATE_SIGNALS
+                if getattr(gate_signals, name, None)
+            ]
+            if (
+                refused_signals
+                and case.progress.problem_status == ProblemStatus.INVALIDATED
+            ):
+                # Nothing is accepted or verified against a symptom the
+                # evidence showed was never present — and a verified mitigation
+                # would bar the very finding it was recorded under.
+                gate_signals = gate_signals.model_copy(
+                    update={name: None for name in refused_signals}
+                )
+                _add_system_feedback(
+                    metadata,
+                    f"{', '.join(refused_signals)} NOT ACCEPTED: the evidence "
+                    "showed the reported symptom was never present, so there is "
+                    "nothing to mitigate or fix. If the user disputes the "
+                    "finding, record it (invalidation_withdrawn).",
                 )
             _apply_stage_gate_signals(case, gate_signals, user_message, metadata)
 

@@ -54,8 +54,26 @@ async def _apply_turn_response(
     case_updated, response_metadata = await responses.process_response_structured(
         case, user_message, response_obj, attachments, upload_report
     )
-    # Merge response metadata with early metadata (which may have transition_proposed_this_turn)
+    # Merge response metadata with early metadata (which may have
+    # transition_proposed_this_turn). The two accumulators written before the
+    # LLM call — a declined revision's note, a refused hypothesis action, a
+    # replay's refusals and repairs — are merged with the response's own, never
+    # replaced by them: the turn record is the only way the next turn learns
+    # of them.
+    early_feedback = metadata.get("system_feedback") or ""
+    early_repairs = list(metadata.get("validation_repairs") or [])
     metadata.update(response_metadata)
+    if early_feedback:
+        live_feedback = metadata.get("system_feedback") or ""
+        if early_feedback not in live_feedback:
+            metadata["system_feedback"] = "\n".join(
+                part for part in (early_feedback, live_feedback) if part
+            )
+    if early_repairs:
+        live_repairs = list(metadata.get("validation_repairs") or [])
+        metadata["validation_repairs"] = early_repairs + [
+            r for r in live_repairs if r not in early_repairs
+        ]
     # A revision confirmed this turn replayed its staged cause work BEFORE the
     # LLM call, into lists the update above just replaced. Fold them back, and
     # re-derive the outcome the response pipeline settled without them.

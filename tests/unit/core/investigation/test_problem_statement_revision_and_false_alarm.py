@@ -26,13 +26,11 @@ from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngin
 from faultmaven.core.investigation.milestone_engine.progress import (
     check_if_progress_made,
 )
-from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
-    FALSE_ALARM_CLOSURE_REASON,
-)
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     revision_offer_key,
 )
 from faultmaven.core.investigation.problem_status import (
+    FALSE_ALARM_CLOSURE_REASON,
     cancel_revision,
     commit_revision,
     decline_revision,
@@ -401,6 +399,46 @@ class TestTransitions:
             StatementRecordKind.INVALIDATION_WITHDRAWN,
         ]
 
+    def test_a_withdrawn_finding_returns_a_verified_problem_to_verified(self):
+        case = _case(ProblemStatus.VERIFIED)
+        absent = _with(case, _evidence(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, "a"))
+        invalidate_problem(case, evidence_ids=absent, basis="the alert misfired")
+        assert withdraw_invalidation(case, basis="the user saw the outage too")
+        assert case.progress.problem_status == ProblemStatus.VERIFIED
+
+    def test_an_edit_longer_than_the_problem_node_holds_is_refused(self):
+        case = _case(ProblemStatus.VERIFIED)
+        assert "exceeds" in edit_statement_refusal(case, "x" * 501)
+        assert edit_statement_refusal(case, "x" * 500) is None
+
+    def test_an_edit_supersedes_the_open_symptom_needs(self):
+        case = _case()
+        need = _symptom_need(case)
+        edit_statement(case, REVISED)
+        assert need.state == NeedState.SUPERSEDED
+        assert case.progress.problem_status == ProblemStatus.UNVERIFIED
+
+    async def test_an_edit_clears_a_false_alarm_and_withdraws_its_close(self):
+        engine, case = _engine(), _case()
+        await _apply(
+            engine,
+            case,
+            _DSU(
+                evidence_to_add=[_row(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, "a1")],
+                verification_updates=ProblemVerificationUpdate(
+                    problem_invalidated=True,
+                    invalidation_evidence_ids=["new_index_0"],
+                    invalidation_basis="no errors in the window",
+                ),
+            ),
+        )
+        assert case.pending_transition
+        edit_statement(case, REVISED)
+        assert case.progress.problem_status == ProblemStatus.UNVERIFIED
+        assert case.problem_verification.invalidation is None
+        assert case.pending_transition is None
+        assert derive_closure_reason(case) != FALSE_ALARM_CLOSURE_REASON
+
     def test_an_edit_on_a_case_missing_its_verification_record_creates_it(self):
         case = _case(ProblemStatus.VERIFIED)
         case.problem_verification = None
@@ -652,6 +690,87 @@ class TestApplyStep:
         readiness = assess_resolution_readiness(case)
         assert readiness.verdict != readiness.READY
 
+    async def test_a_causal_absence_is_judged_after_an_unsupported_claim_reverts(self):
+        """Step 1 verifies optimistically; 2b reverts a claim no evidence
+        supports. The row is judged against the reverted status."""
+        engine, case = _engine(), _case()
+        await _apply(
+            engine,
+            case,
+            _DSU(
+                milestones=MilestoneUpdates(symptom_verified=True),
+                evidence_to_add=[_row(EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, "g")],
+            ),
+        )
+        assert case.progress.problem_status == ProblemStatus.UNVERIFIED
+        (row,) = case.evidence
+        assert row.category == EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE
+
+    async def test_a_false_alarm_may_cite_a_row_reclassified_the_same_turn(self):
+        engine, case = _engine(), _case()
+        await _apply(
+            engine,
+            case,
+            _DSU(
+                evidence_to_add=[_row(EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, "g")],
+                verification_updates=ProblemVerificationUpdate(
+                    problem_invalidated=True,
+                    invalidation_evidence_ids=["new_index_0"],
+                    invalidation_basis="no errors in the window",
+                ),
+            ),
+        )
+        assert case.progress.problem_status == ProblemStatus.INVALIDATED
+
+    async def test_a_causal_absence_on_a_revision_turn_is_symptom_absence(self):
+        engine, case = _engine(), _case()
+        await _apply(
+            engine,
+            case,
+            _DSU(
+                milestones=MilestoneUpdates(symptom_verified=True),
+                evidence_to_add=[
+                    _row(EvidenceCategory.SYMPTOM_EVIDENCE, "s1"),
+                    _row(EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, "g"),
+                ],
+                verification_updates=_revision_update("new_index_0"),
+            ),
+            _Response("timeouts in the gateway log"),
+        )
+        assert case.progress.problem_status == ProblemStatus.REVISION_PENDING
+        assert case.evidence[1].category == EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE
+
+    async def test_a_causal_absence_on_a_verified_problem_stays_causal(self):
+        engine, case = _engine(), _case(ProblemStatus.VERIFIED)
+        await _apply(
+            engine,
+            case,
+            _DSU(evidence_to_add=[_row(EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, "g")]),
+        )
+        (row,) = case.evidence
+        assert row.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+
+    async def test_a_false_alarm_accepts_no_mitigation_signal(self):
+        engine, case = _engine(), _case()
+        absent = _with(case, _evidence(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, "a"))
+        invalidate_problem(case, evidence_ids=absent, basis="the alert misfired")
+        case.progress.mitigation = MitigationRecord(
+            description="fail over", proposed_at_turn=3
+        )
+        meta = await _apply(
+            engine,
+            case,
+            _DSU(
+                milestones=MilestoneUpdates(
+                    mitigation_accepted=True, mitigation_verified=True
+                )
+            ),
+        )
+        assert not case.progress.mitigation.verified
+        assert "mitigation_accepted, mitigation_verified NOT ACCEPTED" in (
+            meta["system_feedback"]
+        )
+
     async def test_rca_infeasible_is_applied(self):
         engine, case = _engine(), _case(ProblemStatus.VERIFIED)
         await _apply(
@@ -864,6 +983,78 @@ class TestStagingAcrossTheHandshake:
         assert case.hypotheses["hyp_0000000000dd"].root_node_id is None
         assert "hypothesis root refs" in meta["system_feedback"]
 
+    async def test_a_yes_never_executes_an_rca_close_the_replay_made(self):
+        """The stage-gate side effect proposes 'close as stabilized' when a
+        mitigation verifies on an rca_infeasible problem. Replayed, it must
+        still arrive as an offer with its card, never executed by the "yes"
+        that confirmed the statement (#1871 review)."""
+        from faultmaven.core.investigation.milestone_engine.transition_consent import (
+            terminal_offer_key,
+        )
+        from faultmaven.core.investigation.schemas import SolutionToAdd
+
+        engine, case = _engine(), _case()
+        case.problem_verification.rca_infeasible = True
+        case.problem_verification.rca_infeasible_rationale = "black-box vendor API"
+        await _apply(
+            engine,
+            case,
+            _DSU(
+                evidence_to_add=[_row(EvidenceCategory.SYMPTOM_EVIDENCE, "s1")],
+                verification_updates=_revision_update("new_index_0"),
+                solutions_to_add=[
+                    SolutionToAdd(
+                        solution_type="workaround",
+                        description="route checkout through the backup region",
+                        estimated_impact="restores checkout",
+                        risks="higher latency",
+                    )
+                ],
+                milestones=MilestoneUpdates(
+                    mitigation_accepted=True, mitigation_verified=True
+                ),
+            ),
+        )
+        case.current_turn += 1
+
+        result = await engine.process_turn(case=case, user_message="yes")
+
+        updated = result["case_updated"]
+        assert updated.state == CaseState.INVESTIGATING
+        assert updated.pending_transition["to_state"] == "closed"
+        keys = {
+            (f.get("intent") or {}).get("proposal_id")
+            for f in result["suggested_follow_ups"]
+        }
+        assert keys == {terminal_offer_key(updated.pending_transition)}
+
+    async def test_a_decline_note_survives_the_live_turns_own_feedback(self):
+        """Feedback written before the LLM call (the decline note) is merged
+        with the live turn's own, never replaced by it (#1871 review)."""
+        engine, case = _engine(), _case()
+        _propose(case)
+        engine.generator.generate_structured_output = AsyncMock(
+            return_value=InvestigationResponse_Diagnosis(
+                agent_response="Understood.",
+                state_updates={
+                    "hypotheses_to_add": [
+                        {
+                            "statement": CAUSE,
+                            "category": "database",
+                            "likelihood": 0.5,
+                            "rationale": "r",
+                        }
+                    ]
+                },
+            )
+        )
+
+        await engine.process_turn(case=case, user_message="no")
+
+        feedback = case.turn_history[-1].system_feedback or ""
+        assert "declined the revised problem statement" in feedback
+        assert "CAUSE WORK NOT ACCEPTED" in feedback
+
     async def test_a_decline_discards_the_stage(self):
         engine, case = _engine(), _case()
         await _apply(engine, case, _revision_turn_with_cause_work())
@@ -876,6 +1067,8 @@ class TestStagingAcrossTheHandshake:
         assert updated.description == STATEMENT
         assert updated.hypotheses == {}
         assert updated.problem_verification.pending_revision is None
+        feedback = updated.turn_history[-1].system_feedback or ""
+        assert "(1 hypothesis(es), 1 causal node(s)) was discarded" in feedback
 
 
 # ---------------------------------------------------------------------------

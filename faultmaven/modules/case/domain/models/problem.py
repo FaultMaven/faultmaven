@@ -482,6 +482,9 @@ class ProblemInvalidation(BaseModel):
     rationale: str
     evidence_ids: List[str] = Field(default_factory=list)
     turn: int = 0
+    #: Where the problem stood when the finding was recorded. A withdrawn
+    #: finding returns there: a verification it overrode was never refuted.
+    prior_status: ProblemStatus = ProblemStatus.UNVERIFIED
     recorded_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -662,6 +665,22 @@ class ProblemVerification(BaseModel):
     # ============================================================
     # Computed Properties
     # ============================================================
+    def original_statement(self, current: str) -> Optional[str]:
+        """The statement Gate 1 confirmed, when the statement in force
+        (``current``) no longer reads that way — a revision or an edit changed
+        it. None when it was never changed."""
+        original = next(
+            (
+                r.text
+                for r in self.statement_history
+                if r.kind == StatementRecordKind.CONFIRMED
+            ),
+            None,
+        )
+        if original is None or original.strip() == (current or "").strip():
+            return None
+        return original
+
     @property
     def is_complete(self) -> bool:
         """Check if verification has all required data"""

@@ -1005,8 +1005,11 @@ gate's own grammar, before the LLM call — the revision commits: description,
 `symptom_statement` and the causal graph's PROBLEM node (re-texted in place, so
 chains keep their anchor) change together, open symptom needs are superseded, a
 checkpoint is taken, the KB pre-fetch re-runs, the status becomes `verified`, and
-the staged work replays through the normal apply path. A decline returns the
-case to where it was and records the wording.
+the staged work replays through the normal apply path. Any offer the replay
+makes carries its same-turn guard and card into the confirmation turn, so the
+"yes" that confirmed the statement never executes it. A decline returns the
+case to where it was, records the wording, and tells the model which staged
+work it discarded.
 
 **(c) False alarm.** The LLM sends `verification_updates.problem_invalidated`
 with `symptom_absence_evidence` from where and when the symptom was reported.
@@ -1015,10 +1018,26 @@ guard refuses it once the problem was acted on, or when a cause was confirmed
 eliminated (`causal_absence`), which proves the problem existed. The case moves
 to `invalidated`, the engine offers the close once (INV-46), and resolution is
 not eligible. Declined, the case holds: no hypotheses, updates, chains,
-solutions or mitigations; housekeeping, repair patterns and the stall counter
-pause. Two exits: new evidence of a different problem (a revision, which
-withdraws the engine's close offer), or the user disputing the finding
-(`invalidation_withdrawn`, back to `unverified`).
+solutions or mitigations, and no mitigation or solution signal is accepted;
+housekeeping, repair patterns and the stall counter pause. Two exits: new
+evidence of a different problem (a revision, which withdraws the engine's close
+offer), or the user disputing the finding (`invalidation_withdrawn`, back to
+where the problem stood before the finding — `verified` if it was, since nothing
+refuted that verification).
+
+A `causal_absence` row is judged against the turn's own verification, after the
+step-2b review and again after step 2c: on a problem not verified by then it is
+recorded as `symptom_absence`.
+
+**A user's edit.** Editing the description during an investigation goes
+through the same writer (`edit_statement`), so the three stores stay aligned,
+and supersedes the open symptom needs. An edit is the user's word, not
+evidence: it never verifies, and a verified problem stays verified (the user
+sharpened wording the evidence already showed). On a false alarm the finding
+was about the old wording, so the edit clears it, returns the problem to
+`unverified` and withdraws the engine's close offer. An empty edit, one longer
+than the PROBLEM node holds (500 characters), or one made while a revision
+waits is refused.
 
 Every change is recorded in `problem_verification.statement_history`, opening
 with the statement Gate 1 confirmed; the resolution and closure summaries show
