@@ -682,8 +682,8 @@ CREATE TABLE hypotheses (
     path JSONB NOT NULL DEFAULT '[]',               -- ordered causal_nodes.node_id chain
 
     statement TEXT NOT NULL,
-    -- HypothesisState enum: captured | active | validated | refuted | inconclusive | retired
-    state VARCHAR(20) NOT NULL DEFAULT 'captured',
+    -- HypothesisState enum: active | validated | refuted | inconclusive | retired
+    state VARCHAR(20) NOT NULL DEFAULT 'active',
     likelihood NUMERIC(3, 2) DEFAULT 0.5,           -- 0..1
     initial_likelihood NUMERIC(3, 2) DEFAULT 0.5,
     category VARCHAR(50) NOT NULL,
@@ -713,7 +713,7 @@ CREATE TABLE hypotheses (
     CONSTRAINT hypotheses_statement_not_empty
         CHECK (LENGTH(TRIM(statement)) > 0),
     CONSTRAINT hypotheses_state_check
-        CHECK (state IN ('captured', 'active', 'validated', 'refuted', 'inconclusive', 'retired')),
+        CHECK (state IN ('active', 'validated', 'refuted', 'inconclusive', 'retired')),
     CONSTRAINT hypotheses_likelihood_range
         CHECK (likelihood IS NULL OR (likelihood >= 0 AND likelihood <= 1))
 );

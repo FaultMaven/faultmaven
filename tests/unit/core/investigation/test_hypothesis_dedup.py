@@ -51,6 +51,7 @@ from faultmaven.modules.case.contracts import (
     HypothesisCategory,
     HypothesisState,
     InquiryData,
+    ProblemStatus,
     ProblemVerification,
 )
 
@@ -173,7 +174,9 @@ def _case(symptom_verified: bool = True) -> Case:
         ),
     )
     case.current_turn = 5
-    case.progress.symptom_verified = symptom_verified
+    case.progress.problem_status = (
+        ProblemStatus.VERIFIED if symptom_verified else ProblemStatus.UNVERIFIED
+    )
     return case
 
 
@@ -184,8 +187,8 @@ def _add_hyp(case: Case, statement: str, category, state=HypothesisState.ACTIVE)
         category=category,
         initial_likelihood=0.4,
         current_turn=case.current_turn,
-        state=state,
     )
+    h.state = state
     case.hypotheses[h.hypothesis_id] = h
     return h
 
@@ -402,7 +405,6 @@ async def test_revival_of_refuted_cause_is_minted():
         category=HypothesisCategory.DATABASE,
         initial_likelihood=0.2,
         current_turn=case.current_turn,
-        state=HypothesisState.ACTIVE,
     )
     refuted.state = HypothesisState.REFUTED
     refuted.refutation_reason = "pool metrics were flat"

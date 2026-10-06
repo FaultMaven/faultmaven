@@ -41,6 +41,7 @@ from faultmaven.modules.case.contracts import (
     HypothesisGenerationMode,
     HypothesisState,
     InquiryData,
+    ProblemStatus,
 )
 
 # The documented likelihood formula (update_likelihood_from_evidence):
@@ -72,7 +73,7 @@ def _make_case() -> Case:
         inquiry=inquiry,
     )
     case.current_turn = 5
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     return case
 
 

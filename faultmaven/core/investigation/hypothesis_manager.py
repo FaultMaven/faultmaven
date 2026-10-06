@@ -11,8 +11,8 @@ Design Reference:
 - docs/architecture/investigation-engine/investigation-data-models.md (§3 Hypothesis Lifecycle)
 
 Hypothesis Lifecycle (matches HypothesisState enum):
-- CAPTURED: Opportunistic hypothesis (not yet promoted to active testing)
-- ACTIVE: Currently being tested (promoted from CAPTURED or systematic generation)
+- ACTIVE: Currently being tested. Formed only on a verified problem
+  (``problem_status.cause_work_accepted``)
 - VALIDATED: Confirmed by evidence (likelihood ≥0.70 + ≥2 supporting evidence)
 - REFUTED: Disproved by evidence (likelihood ≤0.20 + ≥2 refuting evidence)
 - INCONCLUSIVE: System-automated — likelihood 0.3–0.5 stagnant for 3+ turns,
@@ -180,7 +180,7 @@ class HypothesisManager:
     """Unified hypothesis lifecycle and confidence management
 
     Responsibilities:
-    - Create new hypotheses (CAPTURED or ACTIVE)
+    - Create new hypotheses (always ACTIVE)
     - Update confidence based on evidence
     - Apply confidence decay for stagnation
     - Detect and prevent anchoring bias
@@ -197,8 +197,8 @@ class HypothesisManager:
     def active_hypotheses(case: "Case") -> list[Hypothesis]:
         """Return the case's ACTIVE hypotheses.
 
-        ACTIVE = the LLM is still testing the theory (not CAPTURED/VALIDATED/
-        REFUTED/RETIRED). This is the single source of truth for the
+        ACTIVE = the LLM is still testing the theory (not VALIDATED/
+        REFUTED/INCONCLUSIVE/RETIRED). This is the single source of truth for the
         ``cause_state=CANDIDATES`` derivation (redesign R1 / Q4) — do not
         re-implement the count elsewhere.
         """
@@ -216,40 +216,6 @@ class HypothesisManager:
         hypothesis emission under uncertainty ships with this derivation.
         """
         return len(HypothesisManager.active_hypotheses(case))
-
-    @staticmethod
-    def activate_queued_hypotheses(case: "Case") -> list[str]:
-        """Promote CAPTURED (queued-pending-symptom-anchor) hypotheses to ACTIVE
-        once the symptom is verified.
-
-        Cause hypotheses formed before the symptom is verified are *queued* as
-        CAPTURED rather than dropped (data of any order is retained) and rather
-        than activated on an unverified premise. CAPTURED is produced ONLY by that
-        pre-anchor queue (nothing else emits it), so every CAPTURED hypothesis here
-        is a queued one. They activate as **un-validated ACTIVE candidates** (no
-        evidence links, capped prior) — subject to the normal decay / anti-anchoring
-        culling, so a stale queued theory cannot pollute a conclusion (it simply
-        fails to gather support and decays). Forward-only: a promoted hypothesis is
-        not demoted back to CAPTURED.
-
-        Returns the promoted hypothesis ids (for turn-progress accounting).
-        """
-        promoted: list[str] = []
-        for h in case.hypotheses.values():
-            if h.state == HypothesisState.CAPTURED:
-                h.state = HypothesisState.ACTIVE
-                # Activation starts the stagnation clock: a queued theory does
-                # not bank the turns it spent CAPTURED (the age-based sweep skips
-                # non-ACTIVE hypotheses, so an un-refreshed last_progress_at_turn
-                # from its creation turn would charge those turns the instant it
-                # goes ACTIVE and pre-age a fresh candidate). Match the
-                # create_hypothesis grace — decay counts from activation, and a
-                # counter accrued while queued would trip anti-anchoring at once.
-                h.last_progress_at_turn = case.current_turn
-                h.last_updated_turn = case.current_turn
-                h.iterations_without_progress = 0
-                promoted.append(h.hypothesis_id)
-        return promoted
 
     @staticmethod
     def calculate_evidence_ratio(hypothesis: Hypothesis) -> float:
@@ -277,7 +243,6 @@ class HypothesisManager:
         initial_likelihood: float,
         current_turn: int,
         generation_mode: HypothesisGenerationMode = HypothesisGenerationMode.SYSTEMATIC,
-        state: HypothesisState = HypothesisState.ACTIVE,
     ) -> Hypothesis:
         """Create new hypothesis.
 
@@ -297,7 +262,7 @@ class HypothesisManager:
             category=category,
             likelihood=capped_likelihood,
             initial_likelihood=capped_likelihood,
-            state=state,
+            state=HypothesisState.ACTIVE,
             generation_mode=generation_mode,
             generated_at_turn=current_turn,
             last_updated_turn=current_turn,

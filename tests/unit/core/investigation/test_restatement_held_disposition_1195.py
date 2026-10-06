@@ -102,6 +102,7 @@ from faultmaven.modules.case.contracts import (
     NodeEvidenceLink,
     NodeState,
     NodeType,
+    ProblemStatus,
     ProblemVerification,
     ValidationMethod,
 )
@@ -222,7 +223,7 @@ def _restatement_held_case(
         ),
     )
     case.turns_without_progress = turns_without_progress
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     case.evidence = [
         _causal_evidence(
             "e1", "container memory cgroup limit is 400Mi on the payments deployment"
@@ -520,7 +521,7 @@ def test_the_carve_out_requires_a_verified_symptom():
     the closure report's "the reported problem was never established" arm
     reachable for this population."""
     case = _restatement_held_case()
-    case.progress.symptom_verified = False
+    case.progress.problem_status = ProblemStatus.UNVERIFIED
     assert restatement_held_root_ids(case) == {ROOT_ID}  # the hold is real
     assert summarize_restatement_hold(case).is_sole_root_block is True
     assert restatement_hold_governs(case) is None  # but it does not govern
@@ -540,7 +541,7 @@ def test_governing_predicate_is_one_read_not_a_checklist():
     ):
         assert restatement_hold_governs(case) is None
     unanchored = _restatement_held_case()
-    unanchored.progress.symptom_verified = False
+    unanchored.progress.problem_status = ProblemStatus.UNVERIFIED
     assert restatement_hold_governs(unanchored) is None
 
 

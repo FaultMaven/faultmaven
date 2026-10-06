@@ -2961,9 +2961,8 @@
         "type": "object"
       },
       "HypothesisState": {
-        "description": "Hypothesis lifecycle state",
+        "description": "Hypothesis lifecycle state.\n\nA hypothesis is formed ACTIVE, and only once the case's reported problem\nhas been verified by evidence.",
         "enum": [
-          "captured",
           "active",
           "validated",
           "refuted",
@@ -3021,7 +3020,7 @@
           },
           "state": {
             "$ref": "#/components/schemas/HypothesisState",
-            "description": "Status: CAPTURED | ACTIVE | VALIDATED | REFUTED | INCONCLUSIVE | RETIRED"
+            "description": "Status: ACTIVE | VALIDATED | REFUTED | INCONCLUSIVE | RETIRED"
           },
           "text": {
             "description": "Hypothesis statement",
@@ -6859,7 +6858,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "10.0.0"
+    "version": "11.0.0"
   },
   "openapi": "3.1.0",
   "paths": {

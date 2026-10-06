@@ -125,7 +125,7 @@ class HypothesisSummary(BaseModel):
     likelihood: float = Field(ge=0.0, le=1.0, description="Likelihood score (0.0-1.0)")
 
     state: HypothesisState = Field(
-        description="Status: CAPTURED | ACTIVE | VALIDATED | REFUTED | INCONCLUSIVE | RETIRED"
+        description="Status: ACTIVE | VALIDATED | REFUTED | INCONCLUSIVE | RETIRED"
     )
 
     evidence_count: int = Field(

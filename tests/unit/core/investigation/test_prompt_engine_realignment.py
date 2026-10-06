@@ -47,6 +47,7 @@ from faultmaven.modules.case.contracts import (
     HypothesisGenerationMode,
     HypothesisState,
     InquiryData,
+    ProblemStatus,
     ProblemVerification,
     RootCauseConclusion,
 )
@@ -138,7 +139,7 @@ def _case(hyps=None) -> Case:
         ),
     )
     case.hypotheses = {h.hypothesis_id: h for h in (hyps or [])}
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     return case
 
 

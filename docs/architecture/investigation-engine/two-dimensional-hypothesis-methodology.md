@@ -1459,8 +1459,8 @@ variables, milestones, and confidence stay consistent.
   **OR / alternatives:** distinct chains that independently produce the same effect
   node (horizontal convergence, S2).
 - A **`Hypothesis` becomes a chain** — a root→`D` path through the DAG. The
-  existing `HypothesisState` (CAPTURED / ACTIVE / VALIDATED / REFUTED /
-  INCONCLUSIVE / RETIRED, [data-models §3](./investigation-data-models.md#3-hypothesis-workflow))
+  existing `HypothesisState` (ACTIVE / VALIDATED / REFUTED / INCONCLUSIVE /
+  RETIRED, [data-models §3](./investigation-data-models.md#3-hypothesis-workflow))
   now describes the *chain*; node `state` is the finer-grained rung signal.
 - **Evidence links target nodes, not the whole chain.** The `hypothesis_evidence`
   junction (`HypothesisEvidenceLink`) gains a `node_id`, so a SUPPORTS / REFUTES

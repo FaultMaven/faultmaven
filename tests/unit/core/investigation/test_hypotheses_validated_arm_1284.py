@@ -53,6 +53,7 @@ from faultmaven.modules.case.contracts import (
     NodeEvidenceLink,
     NodeState,
     NodeType,
+    ProblemStatus,
     ProblemVerification,
     ValidationMethod,
 )
@@ -151,7 +152,7 @@ def _validating_case() -> Case:
             generated_at_turn=1,
         )
     }
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     return case
 
 

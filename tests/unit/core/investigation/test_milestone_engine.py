@@ -21,6 +21,7 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     InquiryData,
     InvestigationStage,
+    ProblemStatus,
     ProblemVerification,
 )
 
@@ -323,6 +324,8 @@ class TestMilestoneEngine:
         NOT populate the causal graph — the hypothesis stays flat (root_node_id is
         None)."""
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        # Hypotheses are formed only on a verified problem.
+        base_case.progress.problem_status = ProblemStatus.VERIFIED
 
         # Content is irrelevant to the assertion — only that a flat hypothesis is
         # added and the graph stays empty.
@@ -672,7 +675,7 @@ class TestMilestoneEngine:
 
         # Start in INVESTIGATING with resolution-ready case
         base_case.state = CaseState.INVESTIGATING
-        base_case.progress.symptom_verified = True
+        base_case.progress.problem_status = ProblemStatus.VERIFIED
         _make_resolution_ready(base_case)
 
         # ===== TURN N: the engine sees READY and opens the handshake =====
@@ -857,7 +860,7 @@ class TestMilestoneEngine:
 
         # Start in INVESTIGATING with some progress
         base_case.state = CaseState.INVESTIGATING
-        base_case.progress.symptom_verified = True
+        base_case.progress.problem_status = ProblemStatus.VERIFIED
 
         # User clicks "Close" in dropdown - frontend sends status_transition intent
         result = await engine.process_turn(
@@ -1278,7 +1281,7 @@ class TestReadinessAssessments:
         case = self._make_case()
         # A known root cause presupposes a verified symptom (the anchor the RCC
         # backstop in _cause_identified requires).
-        case.progress.symptom_verified = True
+        case.progress.problem_status = ProblemStatus.VERIFIED
         case.root_cause_conclusion = RootCauseConclusion(
             root_cause="Connection pool exhaustion",
             confidence_level="verified",
@@ -2121,7 +2124,7 @@ class TestRootCauseConclusionPersistence:
 
         from faultmaven.modules.case.contracts import CauseState
 
-        base_case.progress.symptom_verified = True
+        base_case.progress.problem_status = ProblemStatus.VERIFIED
         base_case.progress.root_cause_likelihood = 0.85
         base_case.progress.root_cause_method = "direct_analysis"
         base_case.progress.cause_state = CauseState.IDENTIFIED
@@ -2642,7 +2645,7 @@ class TestVerificationStatusRecordedOnTurn:
                 hypothesis_id=f"hyp_0000000000{i:02x}",
                 statement=f"hypothesis {i}",
                 category=cats[i % 2],
-                state=HypothesisState.CAPTURED,
+                state=HypothesisState.ACTIVE,
                 rationale="a reason",
                 generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
                 generated_at_turn=1,

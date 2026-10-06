@@ -60,7 +60,6 @@ class TestRefutationReasonInvariant:
     @pytest.mark.parametrize(
         "state",
         [
-            HypothesisState.CAPTURED,
             HypothesisState.ACTIVE,
             HypothesisState.VALIDATED,
             HypothesisState.RETIRED,
@@ -81,7 +80,6 @@ class TestRefutationReasonInvariant:
     @pytest.mark.parametrize(
         "state",
         [
-            HypothesisState.CAPTURED,
             HypothesisState.ACTIVE,
             HypothesisState.VALIDATED,
             HypothesisState.RETIRED,

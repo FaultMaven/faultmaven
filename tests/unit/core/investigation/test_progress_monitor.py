@@ -21,6 +21,7 @@ from faultmaven.modules.case.contracts import (
     HypothesisState,
     InquiryData,
     InvestigationProgress,
+    ProblemStatus,
     ProblemVerification,
     TurnOutcome,
     TurnProgress,
@@ -150,7 +151,7 @@ class TestProgressTransparency:
             create_turn(5, outcome=TurnOutcome.DATA_REQUESTED),
         ]
         # Mark the milestone as completed on progress
-        base_case.progress.symptom_verified = True
+        base_case.progress.problem_status = ProblemStatus.VERIFIED
 
         # Only 2 investigative turns since milestone (4, 5), below threshold
         result = monitor.check_progress(base_case)
@@ -198,7 +199,7 @@ class TestProgressTransparency:
             ),  # milestone resets counter
             create_turn(6, outcome=TurnOutcome.DATA_REQUESTED),
         ]
-        base_case.progress.symptom_verified = True
+        base_case.progress.problem_status = ProblemStatus.VERIFIED
 
         # Only 1 investigative turn since milestone (turn 6), below threshold
         result = monitor.check_progress(base_case)
@@ -207,7 +208,7 @@ class TestProgressTransparency:
     def test_pending_milestone_identified_correctly(self, monitor, base_case):
         """Should identify the first incomplete milestone for the stage."""
         # symptom_verified is done, root_cause_identified is not
-        base_case.progress.symptom_verified = True
+        base_case.progress.problem_status = ProblemStatus.VERIFIED
         base_case.turn_history = [
             create_turn(1, milestones_completed=["symptom_verified"]),
             create_turn(2, outcome=TurnOutcome.DATA_PROVIDED, evidence_added=["ev_1"]),
@@ -246,7 +247,7 @@ class TestProgressTransparency:
             # symptom verified AND cause identified (engine-derived) — the only
             # DIAGNOSIS milestone left is solution_proposed.
             progress=InvestigationProgress(
-                symptom_verified=True,
+                problem_status=ProblemStatus.VERIFIED,
                 cause_state=CauseState.IDENTIFIED,
                 root_cause_likelihood=0.7,
                 root_cause_method="hypothesis_validation",

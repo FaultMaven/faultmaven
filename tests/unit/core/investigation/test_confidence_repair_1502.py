@@ -73,6 +73,7 @@ from faultmaven.modules.case.contracts import (
     HypothesisState,
     InquiryData,
     NodeType,
+    ProblemStatus,
     ProblemVerification,
     TurnOutcome,
 )
@@ -832,6 +833,8 @@ def _graph_case() -> Case:
         ),
     )
     case.current_turn = 4
+    # Chain emission is cause work: accepted only on a verified problem.
+    case.progress.problem_status = ProblemStatus.VERIFIED
     case.evidence.append(
         Evidence(
             evidence_id=EV_ID,

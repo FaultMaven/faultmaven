@@ -29,6 +29,7 @@ from faultmaven.infrastructure.persistence.database import (
     reset_engine,
 )
 from faultmaven.infrastructure.persistence.models import Base
+from faultmaven.modules.case.contracts import ProblemStatus
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
@@ -434,7 +435,7 @@ async def test_hypothesis_validation_flow(db_repository: SQLiteCaseRepository):
         hypothesis_id=hyp_id,
         statement="Database connection leak",
         category=HypothesisCategory.DATA,
-        state=HypothesisState.CAPTURED,
+        state=HypothesisState.ACTIVE,
         likelihood=0.5,
         generation_mode=HypothesisGenerationMode.SYSTEMATIC,
         rationale="Connection count increases over time",
@@ -613,7 +614,7 @@ async def test_complex_case_persistence(db_repository: SQLiteCaseRepository):
     )
 
     # Add progress
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
 
     # Add turn tracking
     case.current_turn = 5

@@ -174,9 +174,13 @@ class InvestigationProgress(BaseModel):
     # ============================================================
     # PROGRESS INDICATORS (LLM context, non-stage-driving)
     # ============================================================
-    symptom_verified: bool = Field(
-        default=False,
-        description="Symptom confirmed with evidence"
+    # One writer: core/investigation/problem_status.py. Cause work
+    # (hypotheses, chains, root-cause conclusions) is accepted only when
+    # VERIFIED. ``symptom_verified`` is a read-only property
+    # (problem_status == VERIFIED), never stored.
+    problem_status: ProblemStatus = Field(
+        default=ProblemStatus.UNVERIFIED,   # UNVERIFIED | VERIFIED
+        description="Where the confirmed problem statement stands against the evidence"
     )
 
     solution_proposed: bool = Field(
@@ -1645,8 +1649,7 @@ class HypothesisCategory(str, Enum):
     OTHER = "other"  # Doesn't fit above categories
 
 class HypothesisState(str, Enum):
-    CAPTURED = "captured"       # Initial state, just recorded
-    ACTIVE = "active"           # Under active investigation
+    ACTIVE = "active"           # Under active investigation — the state every hypothesis is formed in, and only on a verified problem
     VALIDATED = "validated"     # Derived from the chain ROOT node being VALIDATED (project_hypothesis_states_from_roots — sole producer); no flat likelihood threshold
     REFUTED = "refuted"         # Explicit refute (user/LLM via refute_hypothesis) or the M6 net-refuted machinery; no flat likelihood threshold
     INCONCLUSIVE = "inconclusive"  # likelihood 0.3–0.5 + stagnant 3+ turns (no evidence change)
@@ -1659,7 +1662,7 @@ class HypothesisState(str, Enum):
 
 | Status | Trigger | Who sets it |
 |---|---|---|
-| `CAPTURED` → `ACTIVE` | LLM starts investigating the hypothesis | LLM (structured output) |
+| (formed) → `ACTIVE` | LLM `hypotheses_to_add`, accepted only once `problem_status` is VERIFIED — read at the status the turn ends with, so a turn that verifies the symptom can form its hypotheses; refused (not queued) before that | LLM (structured output); gate `problem_status.cause_work_accepted` |
 | `ACTIVE` → `VALIDATED` | Chain ROOT node reaches VALIDATED (2+ independent causal supports, or counterfactual confirmation) | **Engine** — `project_hypothesis_states_from_roots` (sole VALIDATED producer; runs after node-state settling and at the terminal confirm-stamp) |
 | `ACTIVE` (state unchanged) | User clicks a "validate" DECIDE suggestion (`hypothesis_action` intent) | **Engine** — records a strong prior (`likelihood = 1.0`) + feedback; VALIDATED still comes only from the chain root, so the belief is realized once evidence validates that root (the definitive user confirmation is the RESOLVED handshake) |
 | `ACTIVE` → `REFUTED` | LLM structured output (`HypothesisUpdate.status = REFUTED` + `refutation_reason`), or the M6 net-refuted / failed-fix machinery | LLM / **Engine** (`_net_refuted`, `demote_disconfirmed_cause_via_evidence`) |

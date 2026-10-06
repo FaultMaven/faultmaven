@@ -51,6 +51,7 @@ from faultmaven.modules.case.contracts import (
     NodeEvidenceLink,
     NodeState,
     NodeType,
+    ProblemStatus,
     ProblemVerification,
     RootCauseConclusion,
     ValidationMethod,
@@ -152,7 +153,7 @@ def _case(nodes=(), edges=(), evidence=(), hyps=()) -> Case:
     # The cause-identification anchor; these fixtures model an investigation that
     # has already verified its symptom, so the tests exercise precedence rather
     # than the anchor.
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     return case
 
 

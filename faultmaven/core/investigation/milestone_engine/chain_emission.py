@@ -15,11 +15,13 @@ from faultmaven.core.investigation.causal_graph.pruning import (
 from faultmaven.core.investigation.lifecycle_metrics import (
     hypothesis_root_adoption_refused_total,
 )
+from faultmaven.core.investigation.problem_status import cause_work_accepted
 from faultmaven.modules.case.contracts import (
     Case,
     NodeType,
 )
 
+from .cause_work import refuse_cause_work
 from .stage_gates import (
     _add_system_feedback,
 )
@@ -46,11 +48,36 @@ def _apply_chain_emission(
     rather than raising. ``path`` may be ``[]`` when the chain has not yet
     reached ``D`` (still being expanded); the model permits ``root_node_id``
     set with an empty path.
+
+    Chain STRUCTURE — new nodes, edges, deductive validations, and pointing a
+    hypothesis at a root (``root_node_ref``, which can re-root a standing
+    hypothesis and prune its old chain) — is cause work, accepted only on a
+    verified problem (``cause_work_accepted``, read at the status the turn ends
+    with, so a turn that verifies the symptom can emit its chain). Evidence
+    links onto nodes that already stand follow the rule for links onto
+    standing hypotheses and still apply; a link naming a refused same-turn
+    node resolves to nothing and is skipped.
     """
+    nodes = list(getattr(updates, "causal_nodes_to_add", None) or [])
+    edges = list(getattr(updates, "causal_edges_to_add", None) or [])
+    deductive = list(getattr(updates, "deductive_validations", None) or [])
+    root_refs = dict(metadata.get("hyp_root_refs", {}))
+    if (nodes or edges or deductive or root_refs) and not cause_work_accepted(case):
+        refuse_cause_work(
+            case.case_id,
+            metadata,
+            kind="chain",
+            what=(
+                f"a causal chain ({len(nodes)} nodes, {len(edges)} edges, "
+                f"{len(deductive)} deductive validations, {len(root_refs)} "
+                "hypothesis root refs)"
+            ),
+        )
+        nodes, edges, deductive, root_refs = [], [], [], {}
     created = ingest_emitted_chain(
         case,
-        getattr(updates, "causal_nodes_to_add", None) or [],
-        getattr(updates, "causal_edges_to_add", None) or [],
+        nodes,
+        edges,
         getattr(updates, "node_evidence_links", None) or [],
         case.current_turn,
         evidence_created_ids=metadata.get("evidence_added", []),
@@ -135,7 +162,7 @@ def _apply_chain_emission(
     # handed over.
     abandoned: list[list] = []
     contested: list[tuple[str, str]] = []
-    for hyp_id, ref in metadata.get("hyp_root_refs", {}).items():
+    for hyp_id, ref in root_refs.items():
         root_id = _resolve_root(ref)
         hyp = case.hypotheses.get(hyp_id)
         if root_id is None or hyp is None:
@@ -213,7 +240,7 @@ def _apply_chain_emission(
     # checked. ``_resolve_root`` enforces ROOT-only (a survivor must be a root
     # cause); an unresolvable/non-root ref is silently dropped.
     survivor_ids: set[str] = set()
-    for dv in getattr(updates, "deductive_validations", None) or []:
+    for dv in deductive:
         root_id = _resolve_root(getattr(dv, "survivor_node_ref", None))
         if root_id is not None:
             survivor_ids.add(root_id)

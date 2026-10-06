@@ -28,7 +28,7 @@ Standardized terms used throughout this document. Where the codebase already has
 
 | Term | Meaning |
 |---|---|
-| **Hypothesis layer** | `case.hypotheses` — candidate root-cause *claims* and their `HypothesisState` (CAPTURED / ACTIVE / VALIDATED / REFUTED / INCONCLUSIVE / RETIRED). The claim layer. |
+| **Hypothesis layer** | `case.hypotheses` — candidate root-cause *claims* and their `HypothesisState` (ACTIVE / VALIDATED / REFUTED / INCONCLUSIVE / RETIRED). The claim layer. |
 | **Causal-graph layer** | `case.causal_nodes` / `causal_edges` — the *materialized* graph of PROBLEM / INTERMEDIATE / ROOT nodes whose states are set only by grounding. The node layer. |
 | **Candidate / residual candidate** | A *candidate* (root-cause claim) is a hypothesis (`case.hypotheses`). Runbook-sourced causes reach the model as retrieved prose and enter the hypothesis space only when the model proposes them (the mechanical KB cause seeder that instantiated them directly was removed in fm#1295). |
 | **Assessment variable** | A signal *recomputed every turn* from case state (e.g. `cause_state`). It reflects a reading, not a committed decision. Contrast with a **disposition**. |

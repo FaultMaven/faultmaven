@@ -50,6 +50,7 @@ from faultmaven.modules.case.contracts import (
     NodeEvidenceLink,
     NodeState,
     NodeType,
+    ProblemStatus,
     ProblemVerification,
     RootCauseConclusion,
     ValidationMethod,
@@ -144,6 +145,8 @@ def _case(*, nodes=None, evidence=None, hyps=None) -> Case:
         ),
     )
     case.current_turn = 4
+    # Chain emission is cause work: accepted only on a verified problem.
+    case.progress.problem_status = ProblemStatus.VERIFIED
     case.causal_nodes = {n.node_id: n for n in (nodes or [])}
     case.evidence = evidence or []
     case.hypotheses = {h.hypothesis_id: h for h in (hyps or [])}

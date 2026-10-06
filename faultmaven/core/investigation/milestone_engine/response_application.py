@@ -8,13 +8,14 @@ from uuid import uuid4
 from faultmaven.core.investigation.causal_graph.similarity import (
     find_duplicate_hypothesis,
 )
-from faultmaven.core.investigation.hypothesis_manager import (
-    HypothesisManager,
-)
 from faultmaven.core.investigation.lifecycle_metrics import (
     hypothesis_dedup_skipped_total,
     inquiry_classified_without_statement_total,
     inquiry_handshake_deferred_total,
+)
+from faultmaven.core.investigation.milestone_engine.cause_work import (
+    refuse_cause_work,
+    report_refused_cause_work,
 )
 from faultmaven.core.investigation.milestone_engine.chain_emission import (
     _apply_chain_emission,
@@ -35,6 +36,11 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
     _determine_turn_outcome,
     _report_turn_uploads,
 )
+from faultmaven.core.investigation.problem_status import (
+    cause_work_accepted,
+    unverify_problem,
+    verify_problem,
+)
 from faultmaven.core.investigation.schemas import (
     BaseInteractionResponse,
     InquiryResponse,
@@ -42,10 +48,8 @@ from faultmaven.core.investigation.schemas import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CauseState,
     ConfidenceLevel,
     Evidence,
-    HypothesisState,
     InvestigationActionType,
     JournalEntry,
     KnowledgeMatch,
@@ -91,6 +95,10 @@ from .terminal_proposals import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: What a refused hypothesis's ``new_index_N`` slot resolves to: no hypothesis,
+#: so a link or update naming it is skipped by its consumer's existence check.
+_REFUSED_HYPOTHESIS_SLOT = "refused_before_verification"
 
 
 class ResponseApplier:
@@ -523,6 +531,66 @@ class ResponseApplier:
                 case.case_id,
             )
 
+    def _apply_cause_claims(
+        self, case: Case, updates: Any, metadata: dict[str, Any]
+    ) -> None:
+        """Step 2c: the root-cause conclusion and the likelihood / method the
+        LLM attaches to it.
+
+        These are cause claims, so they need a verified problem
+        (``cause_work_accepted``). Read after step 2b, the status is the one
+        the turn ends with. A refused claim is not stored and the model is
+        told why: the evidence behind it is already on the case, so nothing
+        is lost by concluding again once the symptom is verified.
+
+        A likelihood of 0 is no claim: it is what a provider that fills every
+        optional field sends when the model has no cause in mind. The
+        IDENTIFIED floor for likelihood and method is the recompute's
+        (``cause_state``), not this step's.
+        """
+        rcc = getattr(updates, "root_cause_conclusion", None)
+        m = getattr(updates, "milestones", None)
+        likelihood = getattr(m, "root_cause_likelihood", None) if m else None
+        method = getattr(m, "root_cause_method", None) if m else None
+        claimed = [
+            name
+            for name, present in (
+                ("a root_cause_conclusion", bool(rcc)),
+                ("a root_cause_likelihood", bool(likelihood)),
+                ("a root_cause_method", bool(method)),
+            )
+            if present
+        ]
+        if not claimed:
+            return
+
+        if not cause_work_accepted(case):
+            refuse_cause_work(
+                case.case_id, metadata, kind="conclusion", what=", ".join(claimed)
+            )
+            return
+
+        p = case.progress
+        if rcc:
+            metadata["rcc_authored_this_turn"] = True
+            case.root_cause_conclusion = RootCauseConclusion(
+                root_cause=rcc.root_cause,
+                mechanism=rcc.mechanism,
+                evidence_basis=rcc.evidence_ids,
+                likelihood=rcc.likelihood,
+                confidence_level=ConfidenceLevel.from_score(rcc.likelihood),
+                # INV-35: attribution hint; the chain nodes/hypotheses this turn
+                # are ingested later (_apply_chain_emission), so the engine
+                # resolves this to validated_hypothesis_id at cause-state recompute
+                # (link_llm_rcc_to_cause tier 1), not here.
+                names_root_node_id=getattr(rcc, "names_root_node_id", None),
+            )
+        if likelihood:
+            p.root_cause_likelihood = likelihood
+        if method:
+            # The schema's Literal admits only valid methods.
+            p.root_cause_method = method
+
     async def _apply_investigation_updates(
         self,
         case: Case,
@@ -567,25 +635,6 @@ class ResponseApplier:
                     }
                 )
 
-        # 1a. Save Root Cause Conclusion
-        # Must happen before milestone processing so the KB pre-fetch below
-        # can use the conclusion text in the same turn.
-        if hasattr(updates, "root_cause_conclusion") and updates.root_cause_conclusion:
-            rcc = updates.root_cause_conclusion
-            metadata["rcc_authored_this_turn"] = True
-            case.root_cause_conclusion = RootCauseConclusion(
-                root_cause=rcc.root_cause,
-                mechanism=rcc.mechanism,
-                evidence_basis=rcc.evidence_ids,
-                likelihood=rcc.likelihood,
-                confidence_level=ConfidenceLevel.from_score(rcc.likelihood),
-                # INV-35: attribution hint; the chain nodes/hypotheses this turn
-                # are ingested later (_apply_chain_emission), so the engine
-                # resolves this to validated_hypothesis_id at cause-state recompute
-                # (link_llm_rcc_to_cause tier 1), not here.
-                names_root_node_id=getattr(rcc, "names_root_node_id", None),
-            )
-
         # 1b. v3 KB-Resolution signal: milestone collapse (state authoring
         # only). When the user confirms a runbook fix worked, the LLM emits
         # `knowledge_resolution` alongside `root_cause_conclusion`,
@@ -612,7 +661,10 @@ class ResponseApplier:
             # Establish the cause-identification anchor so the milestone
             # collapse's RootCauseConclusion is honored by the M5 / readiness
             # gates (which require a verified symptom for the RCC signal).
-            case.progress.symptom_verified = True
+            # Not appended to ``milestones_completed``: that list is reviewed
+            # against cited evidence at step 2b, and this verification rests
+            # on the user's confirmation, not on a citation.
+            verify_problem(case, via="knowledge_resolution")
             logger.info(
                 "Case %s: knowledge_resolution signalled during INVESTIGATING; "
                 "match_id=%s, type=%s. Standard ProposedTransition handshake handles disposition.",
@@ -635,56 +687,22 @@ class ResponseApplier:
             # step (the prompt's KB-resolution flow mandates SolutionToAdd +
             # solution_accepted in one response) — they are applied by
             # ``_apply_stage_gate_signals`` AFTER step 5 below.
-            milestone_fields = [
-                # Progress indicators (LLM context, non-stage-driving)
-                "symptom_verified",
-                # cause_state — engine-derived from a validated, uncontested
-                #   chain root at the recompute (§9.2 / INV-35), never LLM-set;
-                #   there is no root_cause_identified self-claim to honor here.
-                # solution_proposed — engine-derived from live SOLUTION offers
-                #   at the assessment recompute (INV-32), never LLM-set
-                # solution_verified — requires User-Agent Handshake
-            ]
-
-            for field in milestone_fields:
-                if getattr(m, field, False):
-                    # Only append if transitioning from False to True
-                    if not getattr(p, field, False):
-                        setattr(p, field, True)
-                        metadata["milestones_completed"].append(field)
+            # The only progress indicator the LLM claims is the symptom.
+            # cause_state is engine-derived from a validated, uncontested chain
+            # root at the recompute (§9.2 / INV-35); solution_proposed is
+            # engine-derived from live SOLUTION offers (INV-32);
+            # solution_verified requires the User-Agent Handshake. The
+            # milestone is recorded on the edge only.
+            if m.symptom_verified and verify_problem(case, via="symptom_claim"):
+                metadata["milestones_completed"].append("symptom_verified")
 
             _apply_symptom_retraction(case, m, response_obj, metadata)
 
-            if m.root_cause_likelihood is not None:
-                p.root_cause_likelihood = m.root_cause_likelihood
             if getattr(m, "solution_feasible", None) is not None:
                 p.solution_feasible = SolutionFeasible(m.solution_feasible)
-            _valid_methods = {
-                "direct_analysis",
-                "hypothesis_validation",
-                "single_shot_validation",
-                "correlation",
-                "user_provided",
-                "other",
-            }
-            if m.root_cause_method:
-                if m.root_cause_method in _valid_methods:
-                    p.root_cause_method = m.root_cause_method
-                else:
-                    logger.warning(
-                        f"LLM returned invalid root_cause_method '{m.root_cause_method}', "
-                        f"mapping to 'other'"
-                    )
-                    p.root_cause_method = "other"
 
-            # Ensure consistency: if cause_state was just set to IDENTIFIED,
-            # root_cause_method and root_cause_likelihood must also be set
-            if p.cause_state == CauseState.IDENTIFIED:
-                if not p.root_cause_method:
-                    p.root_cause_method = m.root_cause_method or "direct_analysis"
-                if p.root_cause_likelihood == 0.0:
-                    p.root_cause_likelihood = m.root_cause_likelihood or 0.8
-
+            # root_cause_likelihood / root_cause_method are cause claims: they
+            # are applied at step 2c, once this turn's verification is final.
             # KB-remediation pre-fetch is triggered on the cause_state→IDENTIFIED
             # edge AFTER the end-of-turn chain recompute (INV-35) — cause_state is
             # engine-derived there, not from any milestone applied in this block.
@@ -801,8 +819,10 @@ class ResponseApplier:
             for result in validation_results:
                 if not result.is_valid:
                     # Revert the milestone — evidence doesn't support the claim.
-                    if hasattr(case.progress, result.milestone):
-                        setattr(case.progress, result.milestone, False)
+                    # Only the symptom claim can be here: step 1 records no
+                    # other milestone, and the stage gates apply at step 5b.
+                    if result.milestone == "symptom_verified":
+                        unverify_problem(case, via="unsupported_claim")
                     if result.milestone in metadata["milestones_completed"]:
                         metadata["milestones_completed"].remove(result.milestone)
                     logger.warning(
@@ -814,52 +834,64 @@ class ResponseApplier:
                         result.warnings
                     )
 
+        # 2c. Cause claims — the root-cause conclusion and the likelihood /
+        # method the LLM attaches to it. Cause work is accepted only on a
+        # verified problem (``cause_work_accepted``), and this is the first
+        # point where the turn's verification is final: step 1 applied the
+        # claim and step 2b reverted it if the cited evidence did not hold.
+        # So a turn that verifies the symptom AND concludes the cause lands
+        # both. Nothing between step 1 and here reads these fields.
+        self._apply_cause_claims(case, updates, metadata)
+
         # 3. Add/Update Hypotheses
         #
-        # Redesign R5/§2: the former path-conditional hypothesis ban is
-        # removed. Hypothesis formation is always allowed during
-        # INVESTIGATING; the prompt (gated on cause uncertainty) decides when
-        # the diagnostic machinery runs, not an engine emission ban.
+        # Hypotheses are formed only on a verified problem. ``cause_work_accepted``
+        # reads the status the turn ENDS with — step 1 applied this turn's
+        # symptom claim and step 2b reverted it if the cited evidence did not
+        # hold — so a turn that verifies the symptom and proposes its cause
+        # mints the hypotheses ACTIVE on the spot (the opportunistic flow).
+        # On an unverified problem they are refused, not queued: the evidence
+        # behind them is already recorded, and the pool evaluation links it to
+        # the hypotheses once they form.
         #
-        # Cause hypotheses are anchored on a VERIFIED symptom. ``symptom_verified``
-        # is already applied (step 1) and reverted if unsupported (step 2b) by now,
-        # so it holds this turn's final value.
-        #  - Anchored (symptom_verified): first FLUSH any hypotheses queued
-        #    (CAPTURED) on an earlier unverified turn → ACTIVE — applied
-        #    automatically, with no LLM re-emission. Then add this turn's
-        #    hypotheses as ACTIVE.
-        #  - Unanchored: QUEUE this turn's hypotheses as CAPTURED — never drop them
-        #    (data of any order is retained), but hold them out of the ACTIVE
-        #    differential (CAPTURED is excluded from count_active / chain grounding
-        #    / UI) until the anchor lands. This gates activation of cause hypotheses
-        #    only — not runbook retrieval / early triage before verification.
-        anchored = case.progress.symptom_verified
         # ``hyp_emit_order`` is the positional list ``new_index_N`` refs resolve
-        # against (INV-36). It mirrors ``hypotheses_generated`` per item — SAME
-        # base, including the promoted-CAPTURED prefix that was already the
-        # pre-INV-36 resolution base (the LLM's ``new_index_N`` offset by
-        # ``len(promoted)`` is a pre-existing behavior, preserved verbatim here,
-        # not introduced) — EXCEPT a dedup skip records the CANONICAL existing id
-        # instead of a new one, so downstream refs (evidence links, updates, need
-        # motivators) that target a skipped duplicate resolve to the kept
-        # hypothesis rather than shifting onto the wrong sibling.
-        # ``hypotheses_generated`` stays truly-new so telemetry / turn-outcome
-        # progress do not count a dedup as generation (a skip is not diagnostic
-        # progress — the DF-6 exhaustion signal).
+        # against (INV-36). It mirrors ``hypotheses_generated`` per item EXCEPT
+        # that a dedup skip records the CANONICAL existing id instead of a new
+        # one, so downstream refs (evidence links, updates, need motivators)
+        # that target a skipped duplicate resolve to the kept hypothesis rather
+        # than shifting onto the wrong sibling. ``hypotheses_generated`` stays
+        # truly-new so telemetry / turn-outcome progress do not count a dedup as
+        # generation (a skip is not diagnostic progress — the DF-6 exhaustion
+        # signal). A refused emission records nothing, so a ref to it resolves
+        # to nothing and the link that names it is skipped.
         emit_order: list[str] = metadata.setdefault("hyp_emit_order", [])
-        if anchored:
-            promoted = HypothesisManager.activate_queued_hypotheses(case)
-            if promoted:
-                metadata["hypotheses_generated"].extend(promoted)
-                emit_order.extend(promoted)
-                logger.info(
-                    "Promoted %d queued (CAPTURED) hypotheses to ACTIVE on "
-                    "symptom verification",
-                    len(promoted),
+        hypotheses_in = list(getattr(updates, "hypotheses_to_add", None) or [])
+        if hypotheses_in and not cause_work_accepted(case):
+            # Refused, not queued. Positions are kept so a ``new_index_N`` ref
+            # this turn still means what the model meant: an item that restates
+            # a hypothesis already standing (a standing one survives a
+            # retraction) maps onto it, exactly as the dedup below would, and
+            # links onto it still apply; any other slot resolves to nothing,
+            # so a link naming it is skipped.
+            refused = 0
+            for h_item in hypotheses_in:
+                dup_id = find_duplicate_hypothesis(h_item.statement, case)
+                if dup_id is not None:
+                    emit_order.append(dup_id)
+                else:
+                    emit_order.append(_REFUSED_HYPOTHESIS_SLOT)
+                    refused += 1
+            if refused:
+                refuse_cause_work(
+                    case.case_id,
+                    metadata,
+                    kind="hypothesis",
+                    what=f"{refused} hypothesis(es)",
+                    count=refused,
                 )
-        new_hyp_state = HypothesisState.ACTIVE if anchored else HypothesisState.CAPTURED
-        if hasattr(updates, "hypotheses_to_add") and updates.hypotheses_to_add:
-            for h_item in updates.hypotheses_to_add:
+            hypotheses_in = []
+        if hypotheses_in:
+            for h_item in hypotheses_in:
                 # INV-36: a statement that duplicates a standing (non-terminal)
                 # hypothesis is not minted a second time — duplicates spuriously
                 # re-satisfy the ≥2-active work gate, corrupting the axis that
@@ -903,7 +935,6 @@ class ResponseApplier:
                     category=h_item.category,
                     initial_likelihood=h_item.likelihood,
                     current_turn=case.current_turn,
-                    state=new_hyp_state,
                 )
                 case.hypotheses[h.hypothesis_id] = h
                 metadata["hypotheses_generated"].append(h.hypothesis_id)
@@ -1169,6 +1200,8 @@ class ResponseApplier:
         # the LLM as a one-turn nudge (T2a) to re-root it or declare it
         # separate, rather than guessing.
         _nudge_ambiguous_orphan_chains(case, metadata)
+        # One note for everything refused this turn (cause_work.py).
+        report_refused_cause_work(metadata)
 
         # Deferred likelihood updates — applied AFTER both link passes (flat
         # step 4 AND chain emission above), so the B1 evidence-free cap judges

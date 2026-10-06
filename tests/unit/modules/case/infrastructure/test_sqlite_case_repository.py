@@ -27,6 +27,7 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.infrastructure.persistence.models import Base
+from faultmaven.modules.case.contracts import ProblemStatus
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.causal import (
     CausalEdge,
@@ -141,7 +142,7 @@ def _make_hypothesis(
     return Hypothesis(
         statement=statement,
         category=HypothesisCategory.DATABASE,
-        state=HypothesisState.CAPTURED,
+        state=HypothesisState.ACTIVE,
         likelihood=0.6,
         initial_likelihood=0.6,
         generated_at_turn=1,
@@ -238,7 +239,7 @@ class TestSaveAndGet:
             investigation_strategy=InvestigationStrategy.ACTIVE_INCIDENT,
             inquiry=inquiry,
         )
-        case.progress.symptom_verified = True
+        case.progress.problem_status = ProblemStatus.VERIFIED
         case.current_turn = 3
         case.message_count = 6
 

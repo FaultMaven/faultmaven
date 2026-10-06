@@ -30,6 +30,7 @@ from faultmaven.modules.case.contracts import (
     EvidenceCategory,
     EvidenceSourceType,
     InquiryData,
+    ProblemStatus,
     ProblemVerification,
     TemporalState,
 )
@@ -58,7 +59,9 @@ def _case(*, verified=True, temporal=TemporalState.ONGOING, evidence=()) -> Case
             temporal_state=temporal,
         ),
     )
-    case.progress.symptom_verified = verified
+    case.progress.problem_status = (
+        ProblemStatus.VERIFIED if verified else ProblemStatus.UNVERIFIED
+    )
     case.evidence = list(evidence)
     return case
 

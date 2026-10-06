@@ -19,6 +19,7 @@ from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngin
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     terminal_offer_key,
 )
+from faultmaven.modules.case.contracts import ProblemStatus
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
@@ -171,7 +172,7 @@ async def test_ui_dropdown_investigating_to_closed_emits_canonical_close_pair():
         investigation_tools=MagicMock(),
     )
     case = _make_investigating_case()
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     result = await engine.process_turn(
         case=case,
         user_message="Close this case as unresolved.",
@@ -208,11 +209,11 @@ async def test_ui_dropdown_resolve_is_refused():
         investigation_tools=MagicMock(),
     )
     ready = _make_investigating_case()
-    ready.progress.symptom_verified = True
+    ready.progress.problem_status = ProblemStatus.VERIFIED
     _fill_for_resolution_ready(ready)
 
     thin = _make_investigating_case()
-    thin.progress.symptom_verified = True
+    thin.progress.problem_status = ProblemStatus.VERIFIED
 
     for label, case in (("resolution-ready", ready), ("thin", thin)):
         with pytest.raises(ValueError, match="not a user-selectable case action"):
@@ -248,7 +249,7 @@ async def test_ui_dropdown_close_pivots_to_resolve_when_resolution_grade():
         investigation_tools=MagicMock(),
     )
     case = _make_investigating_case()
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     _fill_for_resolution_ready(case)  # root cause + solution → resolution-grade
 
     result = await engine.process_turn(
@@ -300,7 +301,7 @@ async def test_check_automatic_transitions_sets_override_for_resolved():
         investigation_tools=MagicMock(),
     )
     case = _make_investigating_case()
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     _fill_for_resolution_ready(case)
 
     fake_response = MagicMock()
@@ -428,7 +429,7 @@ async def test_llm_emit_resolved_pivots_to_close_when_thin():
         investigation_tools=MagicMock(),
     )
     case = _make_investigating_case()
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     # Deliberately thin — no root cause, no solutions, no evidence.
 
     fake_response = MagicMock()
@@ -466,7 +467,7 @@ async def test_llm_emit_closed_pivots_to_resolved_when_resolution_grade():
         investigation_tools=MagicMock(),
     )
     case = _make_investigating_case()
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     _fill_for_resolution_ready(case)  # root cause + solution → resolution-grade
 
     fake_response = MagicMock()
@@ -505,7 +506,7 @@ async def test_llm_emit_resolved_needs_info_keeps_resolve_with_flag():
         investigation_tools=MagicMock(),
     )
     case = _make_investigating_case()
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause="Alignment test root cause",
         confidence_level=ConfidenceLevel.CONFIDENT,
@@ -558,7 +559,7 @@ async def test_llm_emit_resolved_ready_keeps_resolve_pair():
         investigation_tools=MagicMock(),
     )
     case = _make_investigating_case()
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     _fill_for_resolution_ready(case)
 
     fake_response = MagicMock()

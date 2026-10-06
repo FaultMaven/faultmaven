@@ -35,6 +35,7 @@ from faultmaven.core.investigation.verification_status import (
     VerificationStatus,
     assess_verification_status,
 )
+from faultmaven.modules.case.contracts import ProblemStatus
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.problem import (
@@ -104,7 +105,11 @@ def _investigating_case(*, symptom_verified: bool = False) -> Case:
         state=CaseState.INVESTIGATING,
         description="Production API is returning 500s",
         inquiry=inquiry,
-        progress=InvestigationProgress(symptom_verified=symptom_verified),
+        progress=InvestigationProgress(
+            problem_status=(
+                ProblemStatus.VERIFIED if symptom_verified else ProblemStatus.UNVERIFIED
+            )
+        ),
     )
     return case
 
@@ -263,7 +268,7 @@ def _insufficient_evidence_case() -> Case:
             hypothesis_id=f"hyp_{i:012x}",
             statement=f"hypothesis {i}",
             category=cats[i % 2],
-            state=HypothesisState.CAPTURED,
+            state=HypothesisState.ACTIVE,
             rationale="a reason",
             generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
             generated_at_turn=1,
@@ -440,7 +445,7 @@ class TestNotYetProductivePullback:
                 hypothesis_id="hyp_000000000001",
                 statement="the connection pool is exhausted",
                 category=list(HypothesisCategory)[0],
-                state=HypothesisState.CAPTURED,
+                state=HypothesisState.ACTIVE,
                 rationale="a reason",
                 generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
                 generated_at_turn=1,

@@ -54,6 +54,7 @@ from faultmaven.core.investigation.schemas import MilestoneUpdates, SolutionToAd
 from faultmaven.core.investigation.terminal_transitions import (
     derive_solution_surface,
 )
+from faultmaven.modules.case.contracts import ProblemStatus
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
@@ -109,7 +110,7 @@ def _make_case(*, established: bool = True) -> Case:
     )
     case.current_turn = 5
     if established:
-        case.progress.symptom_verified = True
+        case.progress.problem_status = ProblemStatus.VERIFIED
         case.evidence.append(
             Evidence(
                 evidence_id="ev_000000000001",
@@ -385,7 +386,7 @@ class TestLicenseLostWithdrawal:
 
     async def test_noop_without_pending_offers(self):
         case = _make_case(established=False)
-        case.progress.symptom_verified = False
+        case.progress.problem_status = ProblemStatus.UNVERIFIED
         metadata: dict = {}
         assert _withdraw_unlicensed_solution_offers(case, metadata) == 0
         assert metadata == {}
@@ -465,7 +466,7 @@ class TestZoneFrameFollowsDerivation:
         # frame at "awaiting execution". Derived OFF, the frame re-opens.
         case = _make_case(established=False)
         p = case.progress
-        p.symptom_verified = True
+        p.problem_status = ProblemStatus.VERIFIED
         p.cause_state = CauseState.CANDIDATES
         p.solution_proposed = False
         emphasis = _get_diagnosis_focus_emphasis(p)
@@ -478,7 +479,7 @@ class TestZoneFrameFollowsDerivation:
         # follow-up tracked on #656, not this change).
         case = _make_case(established=False)
         p = case.progress
-        p.symptom_verified = True
+        p.problem_status = ProblemStatus.VERIFIED
         p.cause_state = CauseState.IDENTIFIED
         p.solution_proposed = True
         assert "awaiting execution" in _get_diagnosis_focus_emphasis(p)
@@ -519,7 +520,7 @@ class TestSameTurnCreateThenWithdraw:
 class TestWorkingConclusionLicense:
     def _case_with_pending_offer(self) -> Case:
         case = _make_case(established=False)
-        case.progress.symptom_verified = True
+        case.progress.problem_status = ProblemStatus.VERIFIED
         # The hypothesis the 0.65 conclusion is built from: the recompute
         # rebuilds the working conclusion from the hypotheses before its
         # license re-check, so a conclusion with nothing behind it would not

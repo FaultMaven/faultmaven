@@ -52,6 +52,7 @@ from faultmaven.models.interfaces import ILLMProvider
 from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
     _backfill_consumed_turn,
 )
+from faultmaven.modules.case.contracts import ProblemStatus
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
@@ -176,7 +177,7 @@ def _resolution_ready_case() -> Case:
     """Carries a root cause, a fix and a qualifying causal-absence row, the
     only shape on which a CLOSE request pivots to a RESOLVE offer."""
     case = _investigating_case()
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause="etcd peer certificate expired on member 2",
         mechanism="Expired peer cert drops the member from the quorum.",

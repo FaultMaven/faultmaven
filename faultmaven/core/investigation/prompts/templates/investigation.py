@@ -92,10 +92,13 @@ an evidence row.
    for the failure and a causal row linked to the hypothesis it supports.
    AND does at least one hypothesis already exist (or are you creating one this turn)?
    YES → causal_evidence; link to hypothesis
-   NO (no hypothesis yet) → wait. Do NOT create a row yet — read the
-     content as background, form a hypothesis (hypotheses_to_add),
-     then revisit. There is no longer a "contextual_evidence" escape
-     hatch.
+   NO, and the symptom is verified (or you verify it in this response) →
+     form the hypothesis it supports (hypotheses_to_add) in this response
+     and link the row to it.
+   NO, and the symptom is not verified yet → causal_evidence, with no
+     link. Hypotheses are accepted only once the symptom is verified; the
+     row is kept and you link it when they form. There is no
+     "contextual_evidence" escape hatch.
 
 3. Is this evidence RE-CHECKING a previously verified symptom or cause to
    confirm a fix held (re-verification)? Two distinct outcomes — the

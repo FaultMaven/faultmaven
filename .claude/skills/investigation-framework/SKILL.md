@@ -60,7 +60,7 @@ If the design docs and the existing code appear to contradict each other, **stop
 **This skill governs:**
 - Investigation orchestration and lifecycle (milestones, stages, transitions)
 - Agent behavior, prompts, and the 7 behavioral rules
-- Hypothesis lifecycle (CAPTURED → ACTIVE → VALIDATED/REFUTED/RETIRED) and confidence dynamics
+- Hypothesis lifecycle (ACTIVE → VALIDATED/REFUTED/INCONCLUSIVE/RETIRED; formed only on a verified problem) and confidence dynamics
 - Agent tool design and invocation (read-path tools like `search_file`, `deep_analysis`, KB Q&A tools)
 - Context building, journal, progress reporting
 

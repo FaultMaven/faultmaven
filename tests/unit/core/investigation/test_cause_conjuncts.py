@@ -47,6 +47,7 @@ from faultmaven.modules.case.contracts import (
     NodeEvidenceLink,
     NodeState,
     NodeType,
+    ProblemStatus,
     ProblemVerification,
     ValidationMethod,
 )
@@ -146,7 +147,7 @@ def _conjunction_case(*, and_group: str | None = "g1", second_supports=("b1", "b
         generated_at_turn=1,
     )
     case.hypotheses = {hyp.hypothesis_id: hyp}
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     return case, d
 
 

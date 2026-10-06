@@ -248,7 +248,7 @@ class TestHypothesisEvidenceLinkSerialization:
             hypothesis_id="hyp_0123456789ab",
             statement="Test hypothesis",
             category=HypothesisCategory.CODE,
-            state=HypothesisState.CAPTURED,
+            state=HypothesisState.ACTIVE,
             likelihood=0.5,
             initial_likelihood=0.5,
             evidence_links=[],

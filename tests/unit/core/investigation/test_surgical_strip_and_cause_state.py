@@ -35,6 +35,7 @@ from faultmaven.modules.case.contracts import (
     EvidenceCategory,
     EvidenceSourceType,
     InvestigationProgress,
+    ProblemStatus,
     RootCauseConclusion,
     Solution,
     SolutionFeasible,
@@ -597,7 +598,7 @@ class TestDeferredImplementationClose:
             mechanism="The pods present sts.amazonaws.com; the provider lists "
             "a different audience, so AssumeRole is rejected.",
         )
-        case.progress.symptom_verified = True
+        case.progress.problem_status = ProblemStatus.VERIFIED
 
         offers = 0
         for turn in range(6):

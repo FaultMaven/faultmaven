@@ -32,7 +32,7 @@ This document defines the investigation architecture for FaultMaven's investigat
 - Case states: INQUIRY → INVESTIGATING → RESOLVED/CLOSED
 - INQUIRY phase and two-step confirmation for entering INVESTIGATING
 - User-Agent Handshake for disposition transitions (RESOLVED/CLOSED)
-- Hypothesis lifecycle (CAPTURED → ACTIVE → VALIDATED/REFUTED/INCONCLUSIVE/RETIRED)
+- Hypothesis lifecycle (ACTIVE → VALIDATED/REFUTED/INCONCLUSIVE/RETIRED), formed only on a verified problem
 - Knowledge base pre-check and fast-track resolution
 - Input sanitization and token budget management
 
@@ -613,7 +613,7 @@ unaffected by dedup).
 
 The hypothesis lifecycle:
 
-- **CAPTURED** → **ACTIVE** → **VALIDATED** / **REFUTED** / **INCONCLUSIVE** / **RETIRED**
+- **ACTIVE** → **VALIDATED** / **REFUTED** / **INCONCLUSIVE** / **RETIRED** — formed ACTIVE, and only once `problem_status` is VERIFIED (the same turn may verify it)
 - Evidence links with stances: SUPPORTS, REFUTES, NEUTRAL
 - Confidence formula: `initial + (0.15 x supporting) - (0.20 x refuting)`
 - Stagnation decay: `likelihood x 0.85` once per stagnant turn (a turn that touched the hypothesis without progress); a hypothesis whose causal support stands (uncontradicted) is never aged by time alone ([methodology §6](./two-dimensional-hypothesis-methodology.md))
@@ -985,7 +985,7 @@ class InvestigationProgress(BaseModel):
     mitigation: MitigationRecord | None = None   # single forward-only insert (INV-24)
 
     # Assessment variables (engine-derived / recomputed each turn — never path-stripped)
-    symptom_verified: bool = False                     # Problem symptoms confirmed with evidence
+    problem_status: ProblemStatus = ProblemStatus.UNVERIFIED  # one writer: problem_status.py; symptom_verified is its derived view
     cause_state: CauseState = CauseState.UNKNOWN       # UNKNOWN | CANDIDATES | IDENTIFIED
     solution_state: SolutionState = SolutionState.UNKNOWN
     solution_feasible: SolutionFeasible = SolutionFeasible.NOW
@@ -1333,7 +1333,7 @@ All open questions from the initial draft have been resolved.
 | **Phase** | An active work period: INQUIRY or INVESTIGATING. The case is being actively worked on. |
 | **Disposition** | A terminal resolution: RESOLVED or CLOSED. The case has reached its final state. |
 | **Case Action** | Any phase transition or disposition change (e.g., INQUIRY → INVESTIGATING, INVESTIGATING → RESOLVED). Recorded as `CaseAction` entries in the `case_actions` table (managed by `CaseActionManager`). |
-| **Status** | A passive descriptive label on entities (e.g., hypothesis state: CAPTURED, ACTIVE, VALIDATED). |
+| **Status** | A passive descriptive label on entities (e.g., hypothesis state: ACTIVE, VALIDATED, REFUTED). |
 | **State/CaseState** | A complete technical snapshot of the case at a point in time. |
 | **Investigation State** | The current state of an investigation, defined by two dimensions: Stage (where the investigation is) and Investigation Milestones (what has been established and acted upon). See §4.1. |
 | **Stage** | One of DIAGNOSIS, MITIGATION, or TREATMENT (within the INVESTIGATING phase only). Computed from gate milestones. Determines which prompt the LLM receives. |

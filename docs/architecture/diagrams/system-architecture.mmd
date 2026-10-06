@@ -60,7 +60,7 @@ flowchart TB
         Milestone["<b>milestone_engine/</b><br/>process_turn(turn)<br/><i>INQUIRY → INVESTIGATING → TERMINAL</i>"]
         subgraph ENG_INNER[" "]
             direction LR
-            HypMgr["hypothesis_manager<br/>CAPTURED → ACTIVE<br/>→ VALIDATED / REFUTED<br/>· confidence decay"]
+            HypMgr["hypothesis_manager<br/>ACTIVE (verified problem only)<br/>→ VALIDATED / REFUTED<br/>· confidence decay"]
             ProgMon["progress_monitor<br/>· turn history<br/>· repair-pattern detection<br/>· journal entries"]
             IntentRes["intent_resolver<br/>bounded-choice matching<br/>confirmation routing"]
             Prompts["prompts/<br/>INQUIRY · INVESTIGATING<br/>· TERMINAL templates<br/>+ context_builder"]

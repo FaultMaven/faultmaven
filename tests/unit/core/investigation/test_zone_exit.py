@@ -40,6 +40,7 @@ from faultmaven.core.investigation.prompts.templates.assembly import (
 from faultmaven.core.investigation.prompts.templates.diagnosis import (
     _RCA_DIAGNOSIS_BLOCK,
 )
+from faultmaven.modules.case.contracts import ProblemStatus
 from faultmaven.modules.case.domain.models.problem import InvestigationStage
 from faultmaven.modules.case.domain.models.progress import CauseState
 from faultmaven.modules.case.domain.models.solution import (
@@ -86,7 +87,7 @@ class TestZonePendingEmphasis:
         from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 
         p = InvestigationProgress()
-        p.symptom_verified = True
+        p.problem_status = ProblemStatus.VERIFIED
         p.cause_state = CauseState.IDENTIFIED
         p.solution_proposed = True
         return p

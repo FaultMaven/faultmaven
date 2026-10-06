@@ -530,6 +530,19 @@ hypothesis_dedup_skipped_total = Counter(
     "gate from duplicate inflation. One increment per skipped item.",
 )
 
+# Cause work arrived before the problem was verified and was refused
+# (``problem_status.cause_work_accepted``). ``kind`` is ``hypothesis`` (one per
+# refused hypotheses_to_add item), ``chain`` (one per turn whose causal chain
+# emission was refused) or ``conclusion`` (one per refused root-cause
+# conclusion or likelihood/method claim). A sustained rate on one provider
+# means the model hypothesizes before verifying the symptom.
+cause_work_refused_unverified_total = Counter(
+    "faultmaven_cause_work_refused_unverified_total",
+    "Cause work (hypotheses, causal chains, root-cause conclusions) refused "
+    "because the problem was not yet verified on the turn it arrived.",
+    ["kind"],
+)
+
 # fm#1091 soundness telemetry. An LLM ``root_node_ref`` named a chain root that
 # ANOTHER hypothesis already owns, so the attach was refused (one cause = one
 # chain, M3/§7.8). Adopting a foreign chain re-labels the adopting hypothesis's

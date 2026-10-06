@@ -23,6 +23,7 @@ from faultmaven.modules.case.contracts import (
     CaseSeverity,
     CaseState,
     InquiryData,
+    ProblemStatus,
     ProblemVerification,
 )
 
@@ -46,7 +47,9 @@ def _case(verified=True) -> Case:
             symptom_statement="checkout 500s", severity=CaseSeverity.HIGH
         ),
     )
-    case.progress.symptom_verified = verified
+    case.progress.problem_status = (
+        ProblemStatus.VERIFIED if verified else ProblemStatus.UNVERIFIED
+    )
     return case
 
 

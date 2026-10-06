@@ -29,6 +29,7 @@ from faultmaven.core.investigation.terminal_transitions import (
     confirm_pending_transition,
     propose_transition,
 )
+from faultmaven.modules.case.contracts import ProblemStatus
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import (
     LEGAL_TRANSITIONS,
@@ -904,7 +905,7 @@ class TestINV14_DropdownUsesStandardHandshake:
         """
         engine, _ = self._engine_and_repo()
         case = _make_investigating_case()
-        case.progress.symptom_verified = True
+        case.progress.problem_status = ProblemStatus.VERIFIED
 
         result = await engine.process_turn(
             case=case,
@@ -1617,7 +1618,7 @@ class TestINV13_AckTurnVsQATurnSuggestions:
 
         # Mark a milestone completed → completed_milestones property
         # returns non-empty → substance gate PASS → regen offered
-        case.progress.symptom_verified = True
+        case.progress.problem_status = ProblemStatus.VERIFIED
 
         suggestions = _closed_suggestions(case, remaining=5)
         assert suggestions, "CLOSED + substance must yield the regen suggestion"
@@ -1879,7 +1880,9 @@ class TestINV16_LLMSoleAuthorityForMilestoneAdvancement:
         # The dual-pathway risk: any assignment like `case.progress.X = ...`
         # signals milestone advancement happening outside the LLM path.
         forbidden_patterns = [
-            "case.progress.symptom_verified =",
+            "case.progress.problem_status =",
+            "verify_problem(",
+            "unverify_problem(",
             "case.progress.root_cause_identified =",
             "case.progress.solution_proposed =",
             "case.progress.mitigation_accepted =",

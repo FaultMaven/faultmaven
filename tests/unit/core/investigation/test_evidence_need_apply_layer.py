@@ -52,6 +52,7 @@ from faultmaven.modules.case.contracts import (
     NeedPriority,
     NeedPurpose,
     NeedState,
+    ProblemStatus,
     UploadedFile,
 )
 
@@ -85,7 +86,9 @@ def _make_case(
     )
     case.current_turn = 5
     if state == CaseState.INVESTIGATING:
-        case.progress.symptom_verified = symptom_verified
+        case.progress.problem_status = (
+            ProblemStatus.VERIFIED if symptom_verified else ProblemStatus.UNVERIFIED
+        )
     return case
 
 

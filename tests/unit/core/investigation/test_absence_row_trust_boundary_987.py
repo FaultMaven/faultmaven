@@ -58,6 +58,7 @@ from faultmaven.modules.case.contracts import (
     InvestigationActionType,
     NodeState,
     NodeType,
+    ProblemStatus,
     ProblemVerification,
     ProposedAction,
 )
@@ -89,7 +90,7 @@ def _case() -> Case:
         ),
     )
     case.current_turn = 9
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     return case
 
 

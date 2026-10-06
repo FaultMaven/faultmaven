@@ -50,7 +50,7 @@ from faultmaven.modules.agent.domain.services.orientation import (
     OrientationKind,
     build_orientation,
 )
-from faultmaven.modules.case.contracts import MitigationRecord
+from faultmaven.modules.case.contracts import MitigationRecord, ProblemStatus
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
@@ -174,7 +174,7 @@ def _investigating(*, cause: bool = False, absence: bool = False) -> Case:
     case.progress = InvestigationProgress()
     case.current_turn = 5
     if cause:
-        case.progress.symptom_verified = True
+        case.progress.problem_status = ProblemStatus.VERIFIED
         case.root_cause_conclusion = RootCauseConclusion(
             root_cause="The checkout pool's max connections was lowered to 5.",
             mechanism="Requests queue past the gateway timeout and return 503.",

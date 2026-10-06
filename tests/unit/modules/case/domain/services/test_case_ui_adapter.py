@@ -20,6 +20,7 @@ from faultmaven.models.case_ui import (
     CaseUIResponse_Investigating,
     CaseUIResponse_Resolved,
 )
+from faultmaven.modules.case.contracts import ProblemStatus
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
@@ -432,7 +433,7 @@ class TestTransformInvestigating:
 
     def test_progress_summary(self):
         case = _make_investigating_case()
-        case.progress.symptom_verified = True
+        case.progress.problem_status = ProblemStatus.VERIFIED
 
         result = transform_case_for_ui(case)
 
@@ -543,7 +544,7 @@ class TestTransformInvestigating:
         # symptom verified AND cause identified (engine-derived); only
         # solution_proposed remains in DIAGNOSIS.
         case.progress = InvestigationProgress(
-            symptom_verified=True,
+            problem_status=ProblemStatus.VERIFIED,
             cause_state=CauseState.IDENTIFIED,
             root_cause_likelihood=0.7,
             root_cause_method="hypothesis_validation",
@@ -640,6 +641,22 @@ class TestTransformResolved:
         result = transform_case_for_ui(case)
 
         assert result.resolution_summary.total_duration_minutes == 135  # 2h15m
+
+    def test_a_hypothesis_set_aside_untested_is_not_counted_as_tested(self):
+        """Retired with no evidence and no chain: considered, never tested —
+        the rows migration 007 retired from the old queue among them."""
+        case = _make_resolved_case()
+        tested = _make_hypothesis(state=HypothesisState.REFUTED)
+        worked = _make_hypothesis(state=HypothesisState.ACTIVE)
+        set_aside = _make_hypothesis(
+            state=HypothesisState.RETIRED,
+            retirement_reason="Proposed before the problem was verified, and never pursued.",
+        )
+        case.hypotheses = {h.hypothesis_id: h for h in (tested, worked, set_aside)}
+
+        result = transform_case_for_ui(case)
+
+        assert result.resolution_summary.hypotheses_tested == 2
 
     def test_resolved_reports_available(self):
         case = _make_resolved_case()

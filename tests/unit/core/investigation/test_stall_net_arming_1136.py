@@ -49,6 +49,7 @@ from faultmaven.modules.case.contracts import (
     NeedPriority,
     NeedPurpose,
     NeedState,
+    ProblemStatus,
     Solution,
     SolutionType,
     TurnOutcome,
@@ -400,7 +401,7 @@ def test_the_three_status_branches_are_mutually_exclusive():
     grounded = _grounded_stalled()
     not_grounded = _case(current_turn=15, turns_without_progress=7)
     not_grounded.state = CaseState.INVESTIGATING
-    not_grounded.progress.symptom_verified = True
+    not_grounded.progress.problem_status = ProblemStatus.VERIFIED
     vacuum = _case(
         n_hypotheses=0, n_categories=0, current_turn=15, turns_without_progress=7
     )

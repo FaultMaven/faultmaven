@@ -56,6 +56,7 @@ from faultmaven.modules.case.contracts import (
     NodeEvidenceLink,
     NodeState,
     NodeType,
+    ProblemStatus,
     ProblemVerification,
     ValidationMethod,
 )
@@ -351,7 +352,7 @@ def _differential_via_evidence():
     edges = [_edge(survivor.node_id, d.node_id), _edge(sibling.node_id, d.node_id)]
     case = _case([d, survivor, sibling], edges=edges, evidence=[ev])
     case.hypotheses = {"hyp_000000000001": _hyp(survivor.node_id)}
-    case.progress.symptom_verified = True  # cause-identification anchor
+    case.progress.problem_status = ProblemStatus.VERIFIED  # cause-identification anchor
     return case, survivor.node_id
 
 

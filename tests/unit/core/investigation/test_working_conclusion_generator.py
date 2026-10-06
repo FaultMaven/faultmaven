@@ -22,6 +22,7 @@ from faultmaven.modules.case.contracts import (
     InquiryData,
     InvestigationMomentum,
     InvestigationProgress,
+    ProblemStatus,
     ProblemVerification,
     TurnOutcome,
     TurnProgress,
@@ -140,7 +141,7 @@ class TestWorkingConclusionGeneration:
     def test_generates_early_stage_conclusion(self, base_case):
         """Should generate early stage conclusion when no hypotheses."""
         base_case.hypotheses = {}
-        base_case.progress.symptom_verified = False
+        base_case.progress.problem_status = ProblemStatus.UNVERIFIED
 
         conclusion = generate_working_conclusion(base_case, current_turn=1)
 
@@ -276,7 +277,7 @@ class TestNextStepsGeneration:
 
     def test_suggests_verify_symptom_first(self, base_case):
         """Should suggest symptom verification when not done."""
-        base_case.progress.symptom_verified = False
+        base_case.progress.problem_status = ProblemStatus.UNVERIFIED
 
         metrics = calculate_progress_metrics(base_case, current_turn=1)
 
@@ -284,7 +285,7 @@ class TestNextStepsGeneration:
 
     def test_suggests_investigation_after_symptom(self, base_case):
         """Should suggest investigation steps after symptom verified."""
-        base_case.progress.symptom_verified = True
+        base_case.progress.problem_status = ProblemStatus.VERIFIED
 
         metrics = calculate_progress_metrics(base_case, current_turn=1)
 
@@ -295,7 +296,7 @@ class TestNextStepsGeneration:
         """Should suggest solution after root cause identified."""
         from faultmaven.modules.case.contracts import CauseState
 
-        base_case.progress.symptom_verified = True
+        base_case.progress.problem_status = ProblemStatus.VERIFIED
         base_case.progress.cause_state = CauseState.IDENTIFIED
         base_case.progress.solution_proposed = False
 
@@ -401,7 +402,7 @@ class TestSupportDensityThresholds:
         """
         from faultmaven.modules.case.contracts import CauseState
 
-        base_case.progress.symptom_verified = True
+        base_case.progress.problem_status = ProblemStatus.VERIFIED
         base_case.progress.cause_state = CauseState.CANDIDATES
         base_case.hypotheses = {
             "hyp_000000000001": create_hypothesis(
@@ -431,7 +432,7 @@ class TestSupportDensityThresholds:
         yet something to validate."""
         from faultmaven.modules.case.contracts import CauseState
 
-        base_case.progress.symptom_verified = True
+        base_case.progress.problem_status = ProblemStatus.VERIFIED
         base_case.progress.cause_state = CauseState.CANDIDATES
         base_case.hypotheses = {
             "hyp_000000000001": create_hypothesis(

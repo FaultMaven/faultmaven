@@ -57,6 +57,7 @@ from faultmaven.modules.case.contracts import (
     NodeEvidenceLink,
     NodeState,
     NodeType,
+    ProblemStatus,
     ProblemVerification,
     RootCauseConclusion,
     ValidationMethod,
@@ -150,7 +151,7 @@ def _case(nodes=None, edges=None, evidence=None, hyps=None) -> Case:
     case.causal_edges = edges or []
     case.evidence = evidence or []
     case.hypotheses = {h.hypothesis_id: h for h in (hyps or [])}
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     return case
 
 

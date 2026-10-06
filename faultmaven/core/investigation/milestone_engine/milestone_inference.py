@@ -2,6 +2,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from faultmaven.core.investigation.problem_status import unverify_problem
 from faultmaven.core.investigation.schemas import (
     BaseInteractionResponse,
     InquiryResponse,
@@ -80,7 +81,7 @@ def _apply_symptom_retraction(
         )
         return False
 
-    case.progress.symptom_verified = False
+    unverify_problem(case, via="retraction")
     metadata.setdefault("milestones_retracted", []).append("symptom_verified")
     logger.info(
         "Case %s: symptom_verified RETRACTED at turn %s — %s",
