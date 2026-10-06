@@ -113,6 +113,11 @@ def _terminal_confirmation_response(case) -> str:
     closure_reason = getattr(case, "closure_reason", "") or ""
     if closure_reason == "inquiry_only":
         return "Case closed without investigation."
+    if closure_reason == "closed_false_alarm":
+        return (
+            "Case closed as a false alarm — the reported problem was not "
+            "present. The evidence is preserved in the closure summary."
+        )
     if closure_reason == "closed_insufficient_evidence":
         return (
             "Case closed — insufficient evidence to ground a cause. "

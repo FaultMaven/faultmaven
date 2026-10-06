@@ -21,6 +21,10 @@ from .cause_state import (
 )
 from .progress import confirmed_transition_arms
 from .stage_gates import _close_confirmation_suggestions
+from .statement_revision import (
+    revision_confirmation_suggestions,
+    revision_presentation,
+)
 from .terminal_replies import (
     _compose_terminal_reply,
     _resolution_confirmation_suggestions,
@@ -222,8 +226,9 @@ async def _refuse_offer_click(
     reply is ``STALE_OFFER_LINE`` and then the standing offer again, exactly as
     the gate re-asks any non-answer: ``standing="terminal"`` re-shows the
     pending transition with its pair, ``"gate1"`` re-shows the problem
-    statement with its pair, and ``None`` (nothing a click can answer is
-    standing) is the line alone. No LLM call on any of them.
+    statement with its pair, ``"revision"`` re-shows the revised statement
+    with its pair, and ``None`` (nothing a click can answer is standing) is the
+    line alone. No LLM call on any of them.
     """
     follow_ups: list = []
     agent_response = STALE_OFFER_LINE
@@ -235,6 +240,9 @@ async def _refuse_offer_click(
         presentation = _gate1_statement_presentation(case)
         agent_response = f"{STALE_OFFER_LINE}\n\n{presentation}"
         follow_ups = _investigation_confirmation_suggestions(case)
+    elif standing == "revision":
+        agent_response = f"{STALE_OFFER_LINE}\n\n{revision_presentation(case)}"
+        follow_ups = revision_confirmation_suggestions(case)
 
     confirmation_click_refused_total.labels(
         gate=standing or "none", reason=reason

@@ -308,6 +308,13 @@ class InvestigationStrategy(str, Enum):
 # order below, most specific first:
 #
 #   - inquiry_only: INQUIRY → CLOSED (no investigation started)
+#   - closed_false_alarm: the evidence showed the reported symptom was never
+#     present where and when it was reported (``problem_status`` INVALIDATED,
+#     with the absence evidence cited). A FINDING, not a failure: the
+#     investigation succeeded in showing there was nothing to fix. First among
+#     the INVESTIGATING reasons because it is decisive — no cause, fix or
+#     mitigation can stand on a problem that never existed. The one close the
+#     engine itself offers on a finding (problem_status.invalidate_problem).
 #   - solution_deferred: the cause is IDENTIFIED and a fix is documented, but
 #     implementation happens out-of-band (a change request, a maintenance
 #     window, another team) — `solution_feasible == DEFERRED` with a solution on
@@ -364,6 +371,7 @@ class InvestigationStrategy(str, Enum):
 
 VALID_CLOSURE_REASONS: set[str] = {
     "inquiry_only",
+    "closed_false_alarm",
     "solution_deferred",
     "closed_rca_infeasible",
     "mitigation_sufficient",

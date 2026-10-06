@@ -449,7 +449,27 @@ class CaseService(ICaseService):
             if not existing:
                 return False
 
-            touches_state = any(k in state_fields for k in safe_updates)
+            # During an investigation the description IS the problem
+            # statement, held in three stores (description, the verification
+            # record, the causal graph's PROBLEM node); an edit takes the
+            # versioned path through the one writer that keeps them aligned.
+            edits_statement = (
+                "description" in safe_updates
+                and existing.state == CaseState.INVESTIGATING
+            )
+            if edits_statement:
+                from faultmaven.core.investigation.problem_status import (
+                    edit_statement_refusal,
+                )
+
+                refusal = edit_statement_refusal(
+                    existing, safe_updates["description"] or ""
+                )
+                if refusal:
+                    raise ValidationException(f"description: {refusal}")
+            touches_state = edits_statement or any(
+                k in state_fields for k in safe_updates
+            )
             touches_metadata = any(k in metadata_fields for k in safe_updates)
 
             if not touches_state and touches_metadata:
@@ -468,7 +488,16 @@ class CaseService(ICaseService):
 
                 async def apply(case: Case) -> None:
                     for key, value in safe_updates.items():
-                        if hasattr(case, key):
+                        if (
+                            key == "description"
+                            and case.state == CaseState.INVESTIGATING
+                        ):
+                            from faultmaven.core.investigation.problem_status import (
+                                edit_statement,
+                            )
+
+                            edit_statement(case, value)
+                        elif hasattr(case, key):
                             setattr(case, key, value)
 
                 await update_case_with_retry(self.repository, case_id, apply)

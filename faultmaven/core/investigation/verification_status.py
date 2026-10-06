@@ -43,6 +43,7 @@ from faultmaven.core.investigation.exhaustion_thresholds import (
 from faultmaven.modules.case.contracts import (
     NeedObtainability,
     NeedPurpose,
+    ProblemStatus,
     VerificationStatus,
 )
 
@@ -316,6 +317,13 @@ def assess_verification_status(
     status keeps the wall while the affordances drop the data ask, because
     neither cell is true alone. See the comments at those branches.
     """
+    # A hold is not a point on either axis: the case waits on the user's answer
+    # about the problem itself, so neither grounding nor a stall is judged.
+    status = case.progress.problem_status if case.progress else None
+    if status == ProblemStatus.REVISION_PENDING:
+        return VerificationStatus.REVISION_PENDING
+    if status == ProblemStatus.INVALIDATED:
+        return VerificationStatus.PROBLEM_INVALIDATED
     if _is_grounded(case, grade=grade):
         # Grounded × stalled = TREATMENT_BLOCKED, meaning "have a cause but can't
         # reach a *verified fix*". That is a fix-reachability stall — the time

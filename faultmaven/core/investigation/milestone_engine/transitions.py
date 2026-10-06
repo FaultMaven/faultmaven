@@ -6,6 +6,7 @@ from typing import Any
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     pending_gate_verdict,
 )
+from faultmaven.core.investigation.problem_status import record_confirmed_statement
 from faultmaven.modules.case.contracts import (
     Case,
     CaseAction,
@@ -17,8 +18,10 @@ from faultmaven.modules.case.contracts import (
 )
 
 from .stage_gates import (
+    _add_system_feedback,
     _close_confirmation_suggestions,
 )
+from .statement_revision import revision_pending
 from .terminal_replies import (
     _build_resolution_confirmation,
     _resolution_confirmation_suggestions,
@@ -127,6 +130,8 @@ class TransitionManager:
                 verification_kwargs["temporal_state"] = TemporalState.HISTORICAL
 
         case.problem_verification = ProblemVerification(**verification_kwargs)
+        # The statement's history opens with the one the user just confirmed.
+        record_confirmed_statement(case)
 
         # The INQUIRY → INVESTIGATING transition carries Gate 1
         # (problem-statement confirmation) only. There is no path fork
@@ -379,6 +384,18 @@ class TransitionManager:
         response_obj = metadata.get("response_obj")
         if response_obj and hasattr(response_obj, "state_updates"):
             proposed = getattr(response_obj.state_updates, "proposed_transition", None)
+            if proposed and revision_pending(case):
+                # The case is waiting on the user's answer about the problem
+                # itself; no transition may compete with that question. The
+                # model cannot tell who asked for this one, so it is refused
+                # whoever did — the user's own close (status menu, REST)
+                # cancels the revision first and reaches its own path.
+                _add_system_feedback(
+                    metadata,
+                    "TRANSITION NOT PROPOSED: a revised problem statement is "
+                    "awaiting the user's confirmation. Let them answer it first.",
+                )
+                proposed = None
             if proposed:
                 from faultmaven.core.investigation.terminal_transitions import (
                     assess_closure_readiness,

@@ -24,6 +24,7 @@ import pytest
 
 import faultmaven
 import faultmaven.core.investigation.milestone_engine.cause_state as cause_state
+import faultmaven.core.investigation.milestone_engine.statement_revision as statement_revision
 import faultmaven.core.investigation.milestone_engine.terminal_replies as terminal_replies
 import faultmaven.core.investigation.milestone_engine.transition_consent as transition_consent
 import faultmaven.core.investigation.terminal_transitions as terminal_transitions
@@ -34,12 +35,20 @@ from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngin
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _apply_stage_gate_side_effects,
 )
+from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
+    _maybe_propose_false_alarm_close,
+)
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     gate1_offer_key,
+    revision_offer_key,
     terminal_offer_key,
 )
 from faultmaven.core.investigation.milestone_engine.turn_completion import (
     _compose_turn_reply,
+)
+from faultmaven.core.investigation.problem_status import (
+    invalidate_problem,
+    propose_revision,
 )
 from faultmaven.core.investigation.schemas import (
     InvestigationResponse_Diagnosis,
@@ -72,6 +81,7 @@ BUILDERS = (
     "_resolution_confirmation_suggestions",
     "_close_confirmation_suggestions",
     "_investigation_confirmation_suggestions",
+    "revision_confirmation_suggestions",
 )
 PACKAGE = Path(faultmaven.__file__).resolve().parent
 STATEMENT = "Checkout API returns 503 for all users since 14:00 UTC"
@@ -93,14 +103,17 @@ def _census() -> dict[tuple[str, int], int]:
     return sites
 
 
-def test_the_census_finds_the_eighteen_sites_and_each_passes_the_case():
-    """State N: 18. The plan's 17 sites, plus the one this change adds —
+def test_the_census_finds_the_twenty_one_sites_and_each_passes_the_case():
+    """State N: 21. The plan's 17 sites, plus the one #1812 added —
     ``transition_turns._refuse_offer_click`` re-shows the Gate 1 pair beside
-    its "earlier offer" line. A builder takes the case (no default), because
-    its key is the case's standing offer; a zero-argument call could name none.
+    its "earlier offer" line — and the three the statement-revision handshake
+    adds: its pair served by ``engine_owned_affordances`` and re-shown by
+    ``_refuse_offer_click``, and the false-alarm close the engine offers. A
+    builder takes the case (no default), because its key is the case's
+    standing offer; a zero-argument call could name none.
     """
     sites = _census()
-    assert len(sites) == 18, sorted(sites)
+    assert len(sites) == 21, sorted(sites)
     assert all(n == 1 for n in sites.values()), sorted(sites.items())
 
 
@@ -126,7 +139,12 @@ def built(monkeypatch):
 
     # ``terminal_replies`` and ``cause_state`` bind it at import;
     # ``stage_gates`` imports it from ``transition_consent`` at call time.
-    for module in (terminal_replies, cause_state, transition_consent):
+    for module in (
+        terminal_replies,
+        cause_state,
+        transition_consent,
+        statement_revision,
+    ):
         monkeypatch.setattr(module, "offer_intent_fields", spy)
     return records
 
@@ -407,8 +425,58 @@ async def _stale_click_on_gate1():
     assert _keys(result["suggested_follow_ups"]) == [gate1_offer_key(STATEMENT)] * 2
 
 
+REVISED = "Checkout API returns 503 only for EU-region users since 14:00 UTC"
+
+
+def _revision_case() -> Case:
+    case = _investigating()
+    propose_revision(
+        case,
+        text=REVISED,
+        evidence_ids=[],
+        basis="the gateway log shows 503s only from eu-west",
+        offer_key=revision_offer_key(REVISED),
+    )
+    return case
+
+
+async def _revision_pending_turn():
+    """affordances.py: the statement-revision pair, served while it waits."""
+    case = _revision_case()
+    gate, pair = engine_owned_affordances(case)
+    assert gate == "statement_revision"
+    assert _keys(pair) == [revision_offer_key(REVISED)] * 2
+
+
+async def _stale_click_on_the_revision():
+    """transition_turns.py: a refused click re-shows the revision with its pair."""
+    case = _revision_case()
+    result = await _engine().process_turn(
+        case=case,
+        user_message="Yes, the revised problem statement is right.",
+        intent_type="confirmation",
+        intent_data={"value": True, "proposal_id": "revision:0000000000000000"},
+    )
+    assert _keys(result["suggested_follow_ups"]) == [revision_offer_key(REVISED)] * 2
+
+
+async def _false_alarm_close():
+    """terminal_proposals.py: the close the engine offers on a false alarm."""
+    case = _investigating()
+    invalidate_problem(case, evidence_ids=[], basis="nothing failed in that window.")
+    metadata = {"problem_invalidated_this_turn": True}
+    _maybe_propose_false_alarm_close(case, metadata)
+    assert (
+        _keys(metadata["override_suggestions"])
+        == [terminal_offer_key(case.pending_transition)] * 2
+    )
+
+
 DRIVERS = [
     _gate1_pending_turn,
+    _revision_pending_turn,
+    _stale_click_on_the_revision,
+    _false_alarm_close,
     _stale_click_on_gate1,
     _rca_infeasible_close,
     lambda: _deferred_disposition(resolvable=False),

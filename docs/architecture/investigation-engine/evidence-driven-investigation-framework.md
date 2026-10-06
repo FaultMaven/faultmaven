@@ -918,18 +918,37 @@ The new equivalent: if evidence reveals root cause immediately, the agent create
 
 ## 9. Problem Refinement During DIAGNOSIS
 
-### 9.1 Current State
+### 9.1 What the statement is
 
-The problem description (ProblemVerification.symptom_statement) is set when entering INVESTIGATING and is essentially static. The LLM receives it as context every turn but has no mechanism to refine it.
+The problem statement (`ProblemVerification.symptom_statement`, mirrored in
+`case.description` and the causal graph's PROBLEM node) describes what is
+OBSERVED — the symptom, the component, the scope, the time. It never names a
+cause: a cause is a hypothesis, and folding one into the statement would let the
+restatement guard hold every correct root as a restatement of the problem.
 
-### 9.2 Proposed Enhancement
+### 9.2 When the evidence says the statement is wrong
 
-During DIAGNOSIS, the agent should be able to refine the problem statement as understanding evolves. For example:
+The statement Gate 1 confirmed can turn out inaccurate (the problem is real but
+mis-stated) or false (the reported symptom was never present). Both are carried
+by `verification_updates` in the LLM response and handled by the one writer of
+`problem_status` (`core/investigation/problem_status.py`):
 
-- Initial: "Checkout is slow"
-- After evidence: "Payment gateway connection pool exhausted after v2.1.3 deploy"
+- **Inaccurate** — `revised_problem_statement` with the symptom evidence that
+  shows the problem as revised. The engine presents it and the user re-confirms
+  it before it applies; cause work arriving meanwhile is staged and replayed on
+  confirmation. Example: the user reports "the database is slow", the evidence
+  shows API requests to `/orders` timing out while database latency is normal →
+  revise to "API requests to /orders time out after 30s; database latency is
+  normal". The exhausted connection pool behind it is a hypothesis.
+- **False** — `problem_invalidated` with `symptom_absence_evidence` from where
+  and when the symptom was reported. The engine offers to close the case as a
+  false alarm; it is never resolved.
 
-This is implemented via `verification_updates` in the LLM response, allowing updates to ProblemVerification fields. The refinement history is preserved in turn records for audit trail.
+Added precision alone is not a revision: it belongs in the evidence. The full
+rules — guards, the handshake, the holds — are in
+[investigation-lifecycle-logic.md §1.4.1](./investigation-lifecycle-logic.md#141-verifying-the-problem-statement-three-outcomes)
+and INV-44–INV-46. Every change is recorded in
+`problem_verification.statement_history`.
 
 ### 9.3 Issue Tracking vs Hypothesis Tracking
 

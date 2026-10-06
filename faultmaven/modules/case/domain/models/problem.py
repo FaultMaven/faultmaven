@@ -387,6 +387,107 @@ class Correlation(BaseModel):
         return v
 
 
+class ProblemStatus(str, Enum):
+    """Where the confirmed problem statement stands against the evidence.
+
+    The single source of truth for "is the problem verified":
+    ``InvestigationProgress.symptom_verified`` is derived from it and never
+    stored. Every transition is written by
+    ``faultmaven.core.investigation.problem_status`` — nothing else assigns it.
+    """
+
+    UNVERIFIED = "unverified"
+    """The statement is confirmed by the user but not yet shown by evidence.
+    No cause work (hypotheses, chains, root-cause conclusions) is accepted."""
+
+    VERIFIED = "verified"
+    """Evidence shows the stated symptom. Cause work is accepted."""
+
+    REVISION_PENDING = "revision_pending"
+    """Evidence shows a real problem the confirmed statement describes
+    inaccurately. A revised statement waits for the user's re-confirmation;
+    cause work arriving meanwhile is staged and applied on confirmation."""
+
+    INVALIDATED = "invalidated"
+    """Evidence shows the reported symptom was never present: a false alarm.
+    The case can be closed, never resolved; nothing progresses until new
+    evidence shows a problem, or the user disputes the finding."""
+
+
+class StatementRecordKind(str, Enum):
+    """What happened to the problem statement at one point in the case."""
+
+    CONFIRMED = "confirmed"
+    """The user confirmed the statement that opened the investigation."""
+
+    REVISED = "revised"
+    """The user re-confirmed a revision the evidence called for."""
+
+    EDITED = "edited"
+    """The user edited the statement directly."""
+
+    INVALIDATED = "invalidated"
+    """The evidence showed the reported symptom was never present."""
+
+    INVALIDATION_WITHDRAWN = "invalidation_withdrawn"
+    """A false-alarm finding was withdrawn after the user disputed it."""
+
+
+class ProblemStatementRecord(BaseModel):
+    """One event in the problem statement's history. ``text`` is the statement
+    the event concerns: the new one for confirmed/revised/edited, the one
+    found absent for invalidated."""
+
+    kind: StatementRecordKind
+    text: str
+    turn: int = 0
+    evidence_ids: List[str] = Field(default_factory=list)
+    rationale: Optional[str] = None
+    recorded_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class StagedCauseWork(BaseModel):
+    """The cause work one turn sent while a revision awaited re-confirmation.
+
+    ``updates`` is that turn's cause-work subset of the state update, dumped as
+    JSON. ``evidence_added`` is the evidence ids the turn minted, in order —
+    what its ``new_index_N`` evidence refs resolve against — so the work
+    replays a turn later exactly as it would have applied then. One bundle per
+    turn, because ``new_index_N`` refs are per turn.
+    """
+
+    turn: int
+    updates: Dict[str, Any] = Field(default_factory=dict)
+    evidence_added: List[str] = Field(default_factory=list)
+
+
+class PendingRevision(BaseModel):
+    """A revised statement awaiting the user's re-confirmation, and the cause
+    work that arrived while it waited. The staged work is replayed through the
+    normal apply path when the user confirms, and discarded when they decline.
+    """
+
+    text: str
+    evidence_ids: List[str] = Field(default_factory=list)
+    basis: str = ""
+    proposed_at_turn: int = 0
+    prior_status: ProblemStatus = ProblemStatus.UNVERIFIED
+    offer_key: str = ""
+    staged: List[StagedCauseWork] = Field(default_factory=list)
+
+
+class ProblemInvalidation(BaseModel):
+    """The finding that the reported symptom was never present."""
+
+    rationale: str
+    evidence_ids: List[str] = Field(default_factory=list)
+    turn: int = 0
+    #: Where the problem stood when the finding was recorded. A withdrawn
+    #: finding returns there: a verification it overrode was never refuted.
+    prior_status: ProblemStatus = ProblemStatus.UNVERIFIED
+    recorded_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class ProblemVerification(BaseModel):
     """
     Consolidated problem verification data.
@@ -518,6 +619,36 @@ class ProblemVerification(BaseModel):
     )
 
     # ============================================================
+    # Statement lifecycle — written only by core/investigation/problem_status
+    # ============================================================
+    statement_history: List[ProblemStatementRecord] = Field(
+        default_factory=list,
+        description=(
+            "Every change to the problem statement, oldest first: the "
+            "confirmation that opened the investigation, re-confirmed "
+            "revisions, direct edits, and false-alarm findings."
+        ),
+    )
+
+    pending_revision: Optional[PendingRevision] = Field(
+        default=None,
+        description="A revised statement awaiting the user's re-confirmation.",
+    )
+
+    invalidation: Optional[ProblemInvalidation] = Field(
+        default=None,
+        description="Why the reported symptom was found never to have been present.",
+    )
+
+    declined_revision_keys: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Offer keys of revisions the user declined, so the same wording is "
+            "not proposed again."
+        ),
+    )
+
+    # ============================================================
     # Metadata
     # ============================================================
     verified_at: Optional[datetime] = Field(
@@ -534,6 +665,22 @@ class ProblemVerification(BaseModel):
     # ============================================================
     # Computed Properties
     # ============================================================
+    def original_statement(self, current: str) -> Optional[str]:
+        """The statement Gate 1 confirmed, when the statement in force
+        (``current``) no longer reads that way — a revision or an edit changed
+        it. None when it was never changed."""
+        original = next(
+            (
+                r.text
+                for r in self.statement_history
+                if r.kind == StatementRecordKind.CONFIRMED
+            ),
+            None,
+        )
+        if original is None or original.strip() == (current or "").strip():
+            return None
+        return original
+
     @property
     def is_complete(self) -> bool:
         """Check if verification has all required data"""

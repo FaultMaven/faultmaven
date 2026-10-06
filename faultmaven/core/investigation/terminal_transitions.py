@@ -53,6 +53,7 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     CauseState,
     InvestigationActionType,
+    ProblemStatus,
     SolutionState,
     WorkingConclusion,
 )
@@ -523,6 +524,10 @@ def derive_closure_reason(case: "Case") -> str:
     Derived most-specific-first:
 
     - ``inquiry_only`` — case is still in INQUIRY (no investigation started).
+    - ``closed_false_alarm`` — the evidence showed the reported symptom was
+      never present (``problem_status`` INVALIDATED). Decisive, so first among
+      the INVESTIGATING reasons: nothing else can stand on a problem that never
+      existed.
     - ``solution_deferred`` — the cause is identified and a fix is documented,
       but it was never applied: implementation happens out-of-band (a change
       request, a maintenance window, another team), or the case simply closed
@@ -573,6 +578,9 @@ def derive_closure_reason(case: "Case") -> str:
     """
     if case.state == CaseState.INQUIRY:
         return "inquiry_only"
+
+    if case.progress.problem_status == ProblemStatus.INVALIDATED:
+        return "closed_false_alarm"
 
     if _fix_documented_not_applied(case):
         return "solution_deferred"
@@ -1049,6 +1057,12 @@ def execute_user_closure(case: Case, user_id: str) -> str:
             INVESTIGATING) state — callers should pre-check terminal
             states and surface those as a conflict.
     """
+    from faultmaven.core.investigation.problem_status import cancel_revision
+
+    # The user's own close moves past a revision awaiting re-confirmation: it
+    # is cancelled (not declined), and the reason derives from where the case
+    # stood before the revision was proposed.
+    cancel_revision(case)
     reason = derive_closure_reason(case)
     _execute_closed_transition(case, user_id, reason)
     return reason
@@ -1104,6 +1118,20 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
     # SolutionToAdd — and must still resolve. Requiring a solution record here was
     # the documented stuck-loop: the gate refused a clear "yes, it's resolved" and
     # kept demanding a "documented solution" the user did not have, then closed.
+    # A false alarm is never resolved: the evidence showed there was nothing to
+    # fix. SUGGEST_CLOSE, so disposition eligibility reads resolved
+    # "not_eligible" rather than "needs_info".
+    if case.progress.problem_status == ProblemStatus.INVALIDATED:
+        return ResolutionReadiness(
+            verdict=ResolutionReadiness.SUGGEST_CLOSE,
+            message=(
+                "The evidence showed the reported problem was never present, so "
+                "there is nothing to resolve. You can **close** the case instead; "
+                "it will be recorded as a false alarm."
+            ),
+            missing=[],
+        )
+
     has_cause = _cause_identified(case)
     has_solution = bool(case.solutions and len(case.solutions) > 0)
     has_evidence = bool(case.evidence and len(case.evidence) > 0)
@@ -1281,7 +1309,11 @@ def assess_closure_readiness(case: "Case") -> ClosureReadiness:
     # (an out-of-band fix yields causal_absence with neither) — that was the same
     # over-constraint the resolution gate carried. A merely stabilized case has
     # symptom_absence but no causal_absence, so it correctly does NOT pivot.
-    if _has_causal_absence(case):
+    # Never on a false alarm: there is no cause to have eliminated.
+    if (
+        case.progress.problem_status != ProblemStatus.INVALIDATED
+        and _has_causal_absence(case)
+    ):
         rc = (
             getattr(case.root_cause_conclusion, "root_cause", None)
             or "the identified root cause"

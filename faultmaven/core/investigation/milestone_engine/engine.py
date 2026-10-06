@@ -65,6 +65,10 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
 from faultmaven.core.investigation.milestone_engine.vectorization import (
     EvidenceVectorizer,
 )
+from faultmaven.core.investigation.problem_status import (
+    cancel_revision,
+    decline_revision,
+)
 from faultmaven.core.investigation.progress_monitor import ProgressMonitor
 from faultmaven.core.investigation.state_validator import StateValidator
 from faultmaven.core.investigation.terminal_transitions import is_question
@@ -82,6 +86,7 @@ from faultmaven.modules.agent.tools.vectorize_file_tool import VECTORIZED_SYSTEM
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
+    ProblemStatus,
     TurnOutcome,
 )
 from faultmaven.modules.case.domain.services.case_action_manager import (
@@ -95,6 +100,13 @@ from .response_synthesis import (
     _DISPOSITION_GATE_ANSWERED_KEY,
     _note_engine_disposition_withdrawn,
     _record_deferred_disposition_decline,
+)
+from .stage_gates import _add_system_feedback
+from .statement_revision import (
+    confirm_revision,
+    revision_offer,
+    revision_pending,
+    staged_work_summary,
 )
 
 # =============================================================================
@@ -847,6 +859,65 @@ class MilestoneEngine:
                                 user_message=user_message,
                             )
 
+            # 0b'. A revised problem statement awaiting re-confirmation
+            # (statement_revision.py). Exclusive with a pending transition, so
+            # 0b above never ran on this turn. The click names its offer
+            # (#1812); the text is read by the disposition gate's own grammar
+            # (``pending_gate_verdict``): a click or a bare "yes" confirms and
+            # the revision commits BEFORE the LLM call, so the model works this
+            # turn on the revised statement with the staged cause work already
+            # replayed; a decline returns the case to where it was; anything
+            # substantive is answered as an ordinary turn, the revision still
+            # standing and its card composed again.
+            if revision_pending(case) and intent_type in (
+                None,
+                "conversation",
+                "confirmation",
+            ):
+                revision_intent: bool | None = None
+                if intent_type == "confirmation":
+                    raw_value = (intent_data or {}).get("value")
+                    revision_intent = (
+                        True
+                        if raw_value is True
+                        else False if raw_value is False else None
+                    )
+                    if not typed:
+                        refusal = offer_click_refusal(intent_data, revision_offer(case))
+                        if refusal is not None:
+                            return await _refuse_offer_click(
+                                self.deps.repository,
+                                case=case,
+                                upload_report=upload_report,
+                                user_message=user_message,
+                                standing="revision",
+                                reason=refusal,
+                            )
+                        click_answered_by_gate = True
+                revision_verdict, _ = pending_gate_verdict(
+                    user_message, None, intent_value=revision_intent, typed=typed
+                )
+                if revision_verdict == "confirm":
+                    await confirm_revision(self.responses, self.deps, case, metadata)
+                elif revision_verdict == "decline":
+                    declined = decline_revision(case)
+                    discarded = staged_work_summary(declined)
+                    metadata["problem_status_changed"] = True
+                    _add_system_feedback(
+                        metadata,
+                        "The user declined the revised problem statement"
+                        + (f" ('{declined.text[:160]}')" if declined else "")
+                        + "; the confirmed statement stands. Work from their "
+                        "clarification."
+                        + (
+                            f" The cause work held for that revision ({discarded}) "
+                            "was discarded, not recorded: re-send what still holds "
+                            "once the problem is verified."
+                            if discarded
+                            else ""
+                        ),
+                    )
+
             # 0c. Detect explicit user intent to close/resolve case
             # This handles cases where user explicitly says "close this case" or "mark as resolved"
             # without relying on LLM to set solution_verified=True
@@ -897,6 +968,10 @@ class MilestoneEngine:
 
                 # Handle each status transition
                 if to_status_str == "closed":
+                    # The user's own close moves past a revision awaiting
+                    # re-confirmation: it is cancelled, not declined.
+                    if revision_pending(case):
+                        cancel_revision(case)
                     return await _close_on_explicit_intent(
                         self.deps.repository,
                         assess_closure_readiness=assess_closure_readiness,
@@ -1062,6 +1137,18 @@ class MilestoneEngine:
             # ============================================================
             # Applies the state change BEFORE LLM processing so the agent
             # sees updated hypothesis state in its context and can acknowledge.
+            elif (
+                intent_type == "hypothesis_action"
+                and intent_data
+                and case.progress.problem_status == ProblemStatus.INVALIDATED
+            ):
+                # A false alarm holds the hypotheses where they stand: there is
+                # no problem to refute or validate a cause against.
+                _add_system_feedback(
+                    metadata,
+                    "The user's hypothesis action was not applied: the reported "
+                    "problem was found not present.",
+                )
             elif intent_type == "hypothesis_action" and intent_data:
                 _apply_hypothesis_action_intent(
                     self.deps.hypothesis_manager,

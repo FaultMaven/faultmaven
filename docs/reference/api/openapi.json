@@ -4518,6 +4518,54 @@
             ],
             "description": "Scope of impact (services, users, regions)"
           },
+          "invalidation_finding": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What showed the reported problem was not present (false alarm).",
+            "title": "Invalidation Finding"
+          },
+          "original_problem_statement": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The statement the investigation opened on, when the evidence has since revised it; null when it was never revised.",
+            "title": "Original Problem Statement"
+          },
+          "pending_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The revised statement awaiting the user's confirmation.",
+            "title": "Pending Revision"
+          },
+          "problem_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the confirmed problem statement stands against the evidence: unverified | verified | revision_pending (a revised statement awaits the user's confirmation) | invalidated (the reported problem was not present: a false alarm)",
+            "title": "Problem Status"
+          },
           "severity": {
             "anyOf": [
               {
@@ -6858,7 +6906,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "11.0.0"
+    "version": "11.1.0"
   },
   "openapi": "3.1.0",
   "paths": {

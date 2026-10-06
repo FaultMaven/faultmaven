@@ -12,9 +12,11 @@ from faultmaven.core.investigation.lifecycle_metrics import (
 )
 from faultmaven.core.investigation.milestone_engine.turn_records import (
     _create_turn_record,
+    _determine_turn_outcome,
     _perform_hypothesis_housekeeping,
     _resolve_id_ref,
 )
+from faultmaven.core.investigation.problem_status import problem_on_hold
 from faultmaven.core.investigation.state_validator import ValidationSeverity
 from faultmaven.core.investigation.working_conclusion_generator import (
     calculate_progress_metrics,
@@ -25,6 +27,7 @@ from .affordances import engine_owned_affordances
 from .progress import score_progress
 from .response_synthesis import is_agent_response_synthesized
 from .stage_gates import _refresh_working_conclusion
+from .statement_revision import merge_statement_commit
 from .terminal_proposals import (
     _maybe_propose_confirmed_resolution,
     _sweep_needs_for_terminal_hypotheses,
@@ -51,8 +54,37 @@ async def _apply_turn_response(
     case_updated, response_metadata = await responses.process_response_structured(
         case, user_message, response_obj, attachments, upload_report
     )
-    # Merge response metadata with early metadata (which may have transition_proposed_this_turn)
+    # Merge response metadata with early metadata (which may have
+    # transition_proposed_this_turn). The two accumulators written before the
+    # LLM call — a declined revision's note, a refused hypothesis action, a
+    # replay's refusals and repairs — are merged with the response's own, never
+    # replaced by them: the turn record is the only way the next turn learns
+    # of them.
+    early_feedback = metadata.get("system_feedback") or ""
+    early_repairs = list(metadata.get("validation_repairs") or [])
     metadata.update(response_metadata)
+    if early_feedback:
+        live_feedback = metadata.get("system_feedback") or ""
+        if early_feedback not in live_feedback:
+            metadata["system_feedback"] = "\n".join(
+                part for part in (early_feedback, live_feedback) if part
+            )
+    if early_repairs:
+        live_repairs = list(metadata.get("validation_repairs") or [])
+        metadata["validation_repairs"] = early_repairs + [
+            r for r in live_repairs if r not in early_repairs
+        ]
+    # A revision confirmed this turn replayed its staged cause work BEFORE the
+    # LLM call, into lists the update above just replaced. Fold them back, and
+    # re-derive the outcome the response pipeline settled without them.
+    if metadata.get("statement_commit"):
+        merge_statement_commit(metadata)
+        state_updates = getattr(response_obj, "state_updates", None)
+        metadata["outcome"] = _determine_turn_outcome(
+            case_updated,
+            metadata,
+            getattr(state_updates, "outcome", None) or TurnOutcome.CONVERSATION,
+        )
 
     # 4a. Stage-gate compliance is now handled via LLM milestone output
     # (Framework §4.1). The LLM sets stage-gate milestones in its
@@ -84,7 +116,7 @@ async def _apply_turn_response(
 
     # 4b. Re-score progress now that EVERY arm writer has run (#1270).
     #
-    # ``status_transitioned`` is one of the nine arms
+    # ``status_transitioned`` is one of the arms
     # ``check_if_progress_made`` scores, and ``_check_automatic_transitions``
     # is its only writer on this path — five lines AFTER the read above.
     # So an automatic INQUIRY→INVESTIGATING transition never counted as
@@ -128,12 +160,16 @@ async def _apply_turn_response(
 
     # 5. Phase 4: Hypothesis Housekeeping (Decay & Anchoring)
     # This happens after transitions but before recording the turn
-    _perform_hypothesis_housekeeping(
-        hypothesis_manager,
-        case_updated,
-        metadata,
-        investigation_advanced=metadata["progress_made"],
-    )
+    # Paused while the case holds on the user or on new evidence (a revision
+    # awaiting re-confirmation, a false alarm): stagnation, decay, anchoring
+    # and age-out all read turns, and a hold turn is not a stagnant one.
+    if not problem_on_hold(case_updated):
+        _perform_hypothesis_housekeeping(
+            hypothesis_manager,
+            case_updated,
+            metadata,
+            investigation_advanced=metadata["progress_made"],
+        )
 
     # Step 5.5: Calculate progress metrics
     progress_metrics = calculate_progress_metrics(
@@ -175,16 +211,23 @@ async def _apply_turn_response(
             for i in validation_issues
         ]
 
-    # Step 5.8: Update progress tracking (before stagnation check)
+    # Step 5.8: Update progress tracking (before stagnation check). Frozen
+    # during a hold, or the turn the hold lifts would read as a stall.
     if metadata.get("progress_made", False):
         case_updated.turns_without_progress = 0
-    else:
+    elif not problem_on_hold(case_updated):
         case_updated.turns_without_progress += 1
 
     # Step 5.9: Progress monitoring (before recording turn)
     # Check if transparent mode should activate and/or repair
     # patterns are detected. Replaces the old stagnation detector.
-    progress_result = progress_monitor.check_progress(case_updated)
+    # No repair patterns during a hold: they rewrite hypotheses (the deadlock
+    # repair retires INCONCLUSIVE ones) the hold has frozen.
+    progress_result = (
+        None
+        if problem_on_hold(case_updated)
+        else progress_monitor.check_progress(case_updated)
+    )
     stagnation_str: str | None = None
     if progress_result:
         # Record repair pattern if detected

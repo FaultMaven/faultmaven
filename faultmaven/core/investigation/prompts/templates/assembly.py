@@ -15,6 +15,7 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     InvestigationProgress,
     InvestigationStage,
+    ProblemStatus,
 )
 from faultmaven.modules.case.domain.models.progress import CauseState
 
@@ -71,8 +72,13 @@ def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress", case=None) 
     on DIAGNOSIS turns. Informs the agent where the investigation stands and
     what would advance it, WITHOUT overriding the user's question.
 
-    Four states based on progress milestone state:
-    - Zone 1: symptom_verified=False — verify problem exists
+    Two holds come first — the problem statement itself is in question:
+    - REVISION_PENDING: a revised statement awaits the user's re-confirmation
+    - INVALIDATED: the evidence showed the reported symptom was never present
+
+    Then four states based on progress milestone state:
+    - Zone 1: symptom_verified=False — a three-way verdict: verified, revised
+      (inaccurate statement) or invalidated (false alarm)
     - Zone 2: symptom_verified=True, cause_state != IDENTIFIED — root cause analysis
     - Zone 3: cause_state == IDENTIFIED, solution_proposed=False — propose fix
     - Zone 3 pending: solution_proposed=True — awaiting execution, NON-suppressive
@@ -85,12 +91,43 @@ def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress", case=None) 
     the failure mode in which an investigation queries the last 30 minutes for
     a symptom observed two hours earlier.
     """
+    if progress.problem_status == ProblemStatus.REVISION_PENDING:
+        return """
+**INVESTIGATION PROGRESS: Revised problem statement awaiting confirmation**
+The evidence showed a different problem than the one the user confirmed, and
+the revised statement is waiting for their answer (the engine shows it to them
+below your reply). Answer what they asked. Cause work you send now is held and
+applied when they confirm; if they correct the revision, send a better
+revised_problem_statement. Do not propose a transition until they answer.
+"""
+    if progress.problem_status == ProblemStatus.INVALIDATED:
+        return """
+**INVESTIGATION PROGRESS: Reported problem not present (false alarm)**
+The evidence showed the reported symptom was not present where and when it was
+reported. There is nothing to diagnose or fix, and hypotheses, solutions and
+mitigations are not accepted. Two things move the case:
+- New evidence of a DIFFERENT problem: send it with revised_problem_statement
+  (describing what is observed) for the user to confirm.
+- The user disputes the finding with new information: set
+  invalidation_withdrawn with withdrawal_basis, and verification starts again.
+Otherwise the right outcome is closing the case.
+"""
     if not progress.symptom_verified:
         return """
 **INVESTIGATION PROGRESS: Symptom verification pending**
-No symptoms have been formally confirmed. When analyzing data, look for
-evidence the problem exists — errors, anomalies, user impact — to advance
-symptom_verified.
+No symptoms have been formally confirmed. Check the data against the confirmed
+problem statement and reach one of three verdicts:
+- It shows the stated symptom → symptom_verified, with the symptom_evidence.
+- It shows a real problem the statement describes INACCURATELY — a different
+  symptom, component, scope or time, such that the statement would misdirect
+  the investigation → verification_updates.revised_problem_statement, citing
+  the symptom_evidence. Describe what is observed, never its cause. Added
+  precision alone is not a revision.
+- It shows the reported symptom was NEVER present where and when it was
+  reported (a false alarm) → verification_updates.problem_invalidated, citing
+  symptom_absence_evidence from that window.
+The problem not happening right now is NOT a false alarm, and missing data is
+neither a revision nor a false alarm — ask for the data.
 
 Cause work waits for it: hypotheses, causal chains and root-cause conclusions
 are not accepted until the symptom is verified. When the data that verifies it
@@ -141,9 +178,11 @@ hypothesis's chain root are what let the engine mark the cause identified.
 
 If new data shows the symptom claim itself was wrong — misread data, the wrong
 system, an artefact — do not absorb it as noise. Say so, record it, and set
-symptom_verified=False with a justification. (The problem merely not occurring
-right now is NOT that: an existing problem is investigable whether or not it is
-currently firing.)
+symptom_verified=False with a justification; if the data shows what the
+problem actually is, send the revised_problem_statement for the user to
+confirm, or problem_invalidated if it was never present. (The problem merely
+not occurring right now is NOT that: an existing problem is investigable
+whether or not it is currently firing.)
 """
     elif (
         progress.cause_state == CauseState.IDENTIFIED and not progress.solution_proposed

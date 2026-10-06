@@ -15,7 +15,10 @@ from faultmaven.core.investigation.causal_graph.pruning import (
 from faultmaven.core.investigation.lifecycle_metrics import (
     hypothesis_root_adoption_refused_total,
 )
-from faultmaven.core.investigation.problem_status import cause_work_accepted
+from faultmaven.core.investigation.problem_status import (
+    cause_work_accepted,
+    cause_work_staged,
+)
 from faultmaven.modules.case.contracts import (
     Case,
     NodeType,
@@ -61,8 +64,24 @@ def _apply_chain_emission(
     nodes = list(getattr(updates, "causal_nodes_to_add", None) or [])
     edges = list(getattr(updates, "causal_edges_to_add", None) or [])
     deductive = list(getattr(updates, "deductive_validations", None) or [])
+    node_links = list(getattr(updates, "node_evidence_links", None) or [])
     root_refs = dict(metadata.get("hyp_root_refs", {}))
-    if (nodes or edges or deductive or root_refs) and not cause_work_accepted(case):
+    if cause_work_staged(case):
+        # Held on the pending revision at step 2d, replayed on confirmation.
+        # A re-root sent through hypotheses_to_update is not staged (updates
+        # apply while a revision waits), so it is refused rather than lost
+        # without a word: the model sends it again once the problem is
+        # verified.
+        nodes, edges, deductive, node_links = [], [], [], []
+        if root_refs:
+            refuse_cause_work(
+                case.case_id,
+                metadata,
+                kind="chain",
+                what=f"{len(root_refs)} hypothesis root refs",
+            )
+            root_refs = {}
+    elif (nodes or edges or deductive or root_refs) and not cause_work_accepted(case):
         refuse_cause_work(
             case.case_id,
             metadata,
@@ -78,7 +97,7 @@ def _apply_chain_emission(
         case,
         nodes,
         edges,
-        getattr(updates, "node_evidence_links", None) or [],
+        node_links,
         case.current_turn,
         evidence_created_ids=metadata.get("evidence_added", []),
         validation_repairs=metadata.setdefault("validation_repairs", []),

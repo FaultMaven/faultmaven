@@ -3322,7 +3322,7 @@ class TestATerminalCaseAnswersNothingStored:
             "modules/agent/domain/services/investigation_service/clarification.py"
         )
         assert builders == {
-            # The three engine GATE builders. Each is emitted beside a
+            # The four engine GATE builders. Each is emitted beside a
             # ``propose_transition`` or an open Gate 1, so never on a terminal
             # case — which is what makes the terminal guard free.
             (
@@ -3337,6 +3337,13 @@ class TestATerminalCaseAnswersNothingStored:
                 engine_stage_gates,
                 "_close_confirmation_suggestions",
             ),  # pending -> CLOSED
+            # The statement-revision handshake: Gate 1 inside INVESTIGATING,
+            # served only while ``revision_pending`` (INVESTIGATING by
+            # definition), so never on a terminal case.
+            (
+                "core/investigation/milestone_engine/statement_revision.py",
+                "revision_confirmation_suggestions",
+            ),
             # Not producers. ``_stored_suggestions`` re-materialises this
             # turn's clarification choices as stored entries, and
             # ``_clarification_suggestions_for_failed`` mints those choices —

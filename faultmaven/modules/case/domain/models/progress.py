@@ -4,7 +4,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .problem import InvestigationStage
+from .problem import InvestigationStage, ProblemStatus
 
 # ============================================================
 # Investigation Progress Models (Section 3)
@@ -30,23 +30,6 @@ class CauseState(str, Enum):
 
     IDENTIFIED = "identified"
     """Single cause known with grounded confidence. Diagnostic machinery skipped."""
-
-
-class ProblemStatus(str, Enum):
-    """Where the confirmed problem statement stands against the evidence.
-
-    The single source of truth for "is the problem verified":
-    ``InvestigationProgress.symptom_verified`` is derived from it and never
-    stored. Every transition is written by
-    ``faultmaven.core.investigation.problem_status`` — nothing else assigns it.
-    """
-
-    UNVERIFIED = "unverified"
-    """The statement is confirmed by the user but not yet shown by evidence.
-    No cause work (hypotheses, chains, root-cause conclusions) is accepted."""
-
-    VERIFIED = "verified"
-    """Evidence shows the stated symptom. Cause work is accepted."""
 
 
 class VerificationStatus(str, Enum):
@@ -103,6 +86,18 @@ class VerificationStatus(str, Enum):
     stops it telling the USER the opposite in the same turn. The recovery is to
     state the cause DISTINCTLY — name the mechanism, or settle the overlapping
     alternative — never to fetch more evidence."""
+
+    REVISION_PENDING = "revision_pending"
+    """Neither axis applies: the problem is real but its statement is being
+    revised, and the case waits on the user's re-confirmation
+    (``problem_status`` REVISION_PENDING). No grounding is judged until it is
+    answered."""
+
+    PROBLEM_INVALIDATED = "problem_invalidated"
+    """Neither axis applies: the evidence showed the reported symptom was never
+    present (``problem_status`` INVALIDATED). There is no cause to ground; the
+    case waits on a close, on evidence of a different problem, or on the user
+    disputing the finding."""
 
 
 class CauseAssuranceGrade(str, Enum):

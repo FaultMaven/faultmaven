@@ -8,6 +8,10 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     engine_proposed_resolution_total,
     evidence_need_status_changed_total,
 )
+from faultmaven.core.investigation.problem_status import (
+    FALSE_ALARM_CLOSURE_REASON,
+    problem_on_hold,
+)
 from faultmaven.modules.case.contracts import (
     TERMINAL_HYPOTHESIS_STATES,
     Case,
@@ -63,6 +67,10 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     it is on the table.
     """
     p = case.progress
+    if problem_on_hold(case):
+        # A revision awaiting re-confirmation or a false alarm: no engine
+        # offer may compete with the question the case is waiting on.
+        return
     if p.solution_feasible != SolutionFeasible.DEFERRED:
         return
     # Only meaningful once a fix is actually on record.
@@ -244,6 +252,8 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
     both proposers key the same signature, declining one cannot leave the
     other free to re-ask the settled question on the next turn.
     """
+    if problem_on_hold(case):
+        return
     # This is what makes it a BACKSTOP: the call site runs it last, after every
     # other opener, so anything they proposed is standing here and this returns.
     # On a case that is both DEFERRED and confirmed, the deferred proposer's own
@@ -357,6 +367,46 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
         f"Proposed RESOLVED transition for case {case.case_id} "
         f"(engine backstop: resolution readiness is READY and no other "
         f"opener proposed it this turn; pending user confirmation)"
+    )
+
+
+def _maybe_propose_false_alarm_close(case: "Case", metadata: dict) -> None:
+    """Offer to close a case whose evidence showed the reported symptom was
+    never present — the one close the engine offers on a finding.
+
+    Offered once, on the turn the finding is made: a decline is recorded
+    (``justifying_signature``, fm#1122) and the case then holds, with the close
+    still on the status menu, until new evidence names a different problem or
+    the user disputes the finding. RESOLVED is never offered — there was
+    nothing to fix.
+    """
+    if not metadata.get("problem_invalidated_this_turn"):
+        return
+    if case.is_terminal or getattr(case, "pending_transition", None):
+        return
+    invalidation = case.problem_verification.invalidation
+    message = (
+        "The evidence shows the reported problem was not present where and "
+        f"when it was reported: {invalidation.rationale} There is nothing to "
+        "fix, so this case cannot be resolved. Shall we **close** it as a "
+        "false alarm? If you have information showing the problem is real, "
+        "say so and the investigation continues."
+    )
+    from faultmaven.core.investigation.terminal_transitions import (
+        propose_transition,
+    )
+
+    propose_transition(case=case, to_state="closed", summary=message)
+    case.pending_transition["justifying_signature"] = (
+        f"{FALSE_ALARM_CLOSURE_REASON}|{invalidation.turn}"
+    )
+    metadata["transition_proposed_this_turn"] = True
+    metadata["override_suggestions"] = _close_confirmation_suggestions(case)
+    metadata["false_alarm_closure_message"] = message
+    logger.info(
+        "Proposed CLOSED (false alarm) for case %s at turn %s",
+        case.case_id,
+        case.current_turn,
     )
 
 

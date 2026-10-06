@@ -304,7 +304,21 @@ class APICaseService(BaseService):
                     case.title = value.strip()
 
                 elif key == "description":
-                    case.description = value.strip() if value else ""
+                    if case.state == CaseState.INVESTIGATING:
+                        # During an investigation the description IS the
+                        # problem statement, held in three stores; the edit
+                        # goes through the one writer that keeps them aligned.
+                        from faultmaven.core.investigation.problem_status import (
+                            edit_statement,
+                            edit_statement_refusal,
+                        )
+
+                        refusal = edit_statement_refusal(case, value or "")
+                        if refusal:
+                            raise ValidationException(f"description: {refusal}")
+                        edit_statement(case, value)
+                    else:
+                        case.description = value.strip() if value else ""
 
                 elif key == "state":
                     if isinstance(value, str):

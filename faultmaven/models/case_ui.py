@@ -424,6 +424,34 @@ class ProblemVerificationData(BaseModel):
         default=None, description="Human-readable user impact summary", max_length=1000
     )
 
+    problem_status: Optional[str] = Field(
+        default=None,
+        description=(
+            "Where the confirmed problem statement stands against the evidence: "
+            "unverified | verified | revision_pending (a revised statement awaits "
+            "the user's confirmation) | invalidated (the reported problem was not "
+            "present: a false alarm)"
+        ),
+    )
+
+    original_problem_statement: Optional[str] = Field(
+        default=None,
+        description=(
+            "The statement the investigation opened on, when the evidence has "
+            "since revised it; null when it was never revised."
+        ),
+    )
+
+    pending_revision: Optional[str] = Field(
+        default=None,
+        description="The revised statement awaiting the user's confirmation.",
+    )
+
+    invalidation_finding: Optional[str] = Field(
+        default=None,
+        description="What showed the reported problem was not present (false alarm).",
+    )
+
 
 # ============================================================
 # Phase-Adaptive Response Models

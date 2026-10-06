@@ -1,6 +1,6 @@
 """Progress is scored after EVERY arm writer has run (#1270).
 
-``check_if_progress_made`` is a NOR over nine arms written onto one working
+``check_if_progress_made`` is a NOR over its arms written onto one working
 dict during a turn. The generation path used to take that reading five lines
 before ``_check_automatic_transitions`` wrote the ``status_transitioned`` arm,
 so an automatic INQUIRY->INVESTIGATING transition never counted as progress and

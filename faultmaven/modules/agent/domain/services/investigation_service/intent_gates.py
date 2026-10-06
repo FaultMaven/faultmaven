@@ -3,6 +3,9 @@
 from faultmaven.core.investigation.milestone_engine.affordances import (
     gate1_statement_is_confirmable,
 )
+from faultmaven.core.investigation.milestone_engine.statement_revision import (
+    revision_pending,
+)
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     gate1_bare_consent,
 )
@@ -148,6 +151,19 @@ def _minted_intent_swallows_gate_consent(
     # So a mint on "ok, don't start yet" or "yes please" is dropped here, and
     # the text is processed as a normal turn, where the LLM's flag meets the
     # same test.
-    return (confirms_pending_transition and is_substantive_reply(user_message)) or (
-        commits_gate_one and not gate1_bare_consent(user_message)
+    # The statement-revision handshake: Gate 1 again, inside INVESTIGATING.
+    # Engine section 0b' reads a minted confirmation with the disposition
+    # gate's grammar, which commits only a bare consent token; the same screen
+    # here drops a mint on anything else, so the text is processed as an
+    # ordinary turn with the revision still standing.
+    commits_revision = (
+        minted.type == IntentType.CONFIRMATION
+        and minted.confirmation_value is True
+        and revision_pending(case)
+    )
+
+    return (
+        (confirms_pending_transition and is_substantive_reply(user_message))
+        or (commits_gate_one and not gate1_bare_consent(user_message))
+        or (commits_revision and not gate1_bare_consent(user_message))
     )

@@ -326,6 +326,53 @@ class TestUpdateCase:
         mock_repo.save.assert_awaited()
         mock_repo.update_metadata_fields.assert_not_awaited()
 
+    @staticmethod
+    def _make_investigating_case():
+        """An INVESTIGATING case: its description IS the problem statement."""
+        from faultmaven.modules.case.contracts import ProblemVerification
+
+        case = _make_case(description="checkout is slow")
+        object.__setattr__(
+            case,
+            "problem_verification",
+            ProblemVerification(symptom_statement="checkout is slow", severity="HIGH"),
+        )
+        case.inquiry.proposed_problem_statement = "checkout is slow"
+        case.inquiry.problem_statement_confirmed = True
+        case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
+        object.__setattr__(case, "state", CaseState.INVESTIGATING)
+        return case
+
+    @pytest.mark.asyncio
+    async def test_an_investigation_statement_edit_moves_every_store(
+        self, service, mock_repo
+    ):
+        """During an investigation the description is the problem statement,
+        held in three stores; the edit takes the versioned path through the one
+        writer that keeps them aligned, never the scoped metadata UPDATE."""
+        case = self._make_investigating_case()
+        mock_repo.get.return_value = case
+        result = await service.update_case(
+            "case_abc123abc123", {"description": "orders time out after 30s"}
+        )
+        assert result is True
+        mock_repo.update_metadata_fields.assert_not_awaited()
+        saved = mock_repo.save.await_args.args[0]
+        assert saved.description == "orders time out after 30s"
+        assert saved.problem_verification.symptom_statement == (
+            "orders time out after 30s"
+        )
+        assert saved.problem_verification.statement_history[-1].kind.value == "edited"
+
+    @pytest.mark.asyncio
+    async def test_an_empty_investigation_statement_is_refused(
+        self, service, mock_repo
+    ):
+        mock_repo.get.return_value = self._make_investigating_case()
+        with pytest.raises(ValidationException, match="cannot be empty"):
+            await service.update_case("case_abc123abc123", {"description": "  "})
+        mock_repo.save.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_mixed_updates_use_versioned_save(self, service, mock_repo):
         """If any state field is present, the whole update is versioned."""

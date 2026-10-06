@@ -1682,4 +1682,20 @@ asked to accept, and it belongs to a person.
 # that case label no longer type-checks and is deleted with the pin bump.
 # faultmaven-copilot styles every state other than validated/refuted by default,
 # and faultmaven-slack-agent and fm-sre-simulator only regenerate.
-API_CONTRACT_VERSION = "11.0.0"
+# 11.1.0 — MINOR. `ProblemVerificationData` gains four optional fields saying
+# where the confirmed problem statement stands against the evidence:
+# `problem_status` (unverified | verified | revision_pending | invalidated),
+# `original_problem_statement` (the statement the investigation opened on, when
+# the evidence has since revised it), `pending_revision` (a revised statement
+# awaiting the user's confirmation) and `invalidation_finding` (what showed the
+# reported problem was not present).
+#
+# `closure_reason` gains the value `closed_false_alarm` — a case closed because
+# the reported problem was found not present. The field is published as a plain
+# string, so the schema does not change, but every client that maps the values
+# to labels needs the new one: faultmaven-dashboard `closureReason.ts` and
+# faultmaven-copilot `case-service.ts` (both pin their key sets in a test); a
+# client without it falls back to its generic "Closed" label. The revision card
+# needs no client change: it is a DECIDE pair carrying `confirmation` intents,
+# rendered like Gate 1's.
+API_CONTRACT_VERSION = "11.1.0"

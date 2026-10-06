@@ -675,7 +675,7 @@ propose_transition(
     to_status="closed",
     summary=closure.message,
     # closure_reason derived by engine via derive_closure_reason():
-    # inquiry_only | solution_deferred | closed_rca_infeasible | mitigation_sufficient | closed_restatement_held | closed_insufficient_evidence
+    # inquiry_only | closed_false_alarm | solution_deferred | closed_rca_infeasible | mitigation_sufficient | closed_restatement_held | closed_insufficient_evidence
 )
 # User confirms → _execute_closed_transition(case, user_id, closure_reason)
 ```
@@ -968,6 +968,80 @@ State updates occur at specific points within a turn to ensure consistency:
 7. **Return response to user**
 
 **Rationale**: Disposition actions happen last to ensure all state is consistent before case becomes immutable. Gate milestones are applied from the LLM's structured output alongside progress milestones; the new stage's prompt takes effect on the next turn.
+
+### 1.4.1 Verifying the problem statement: three outcomes
+
+Gate 1 confirms a problem *statement*; it does not confirm the problem. Checking
+the statement against the evidence has three outcomes, and
+`InvestigationProgress.problem_status` records which one the case is in. Its one
+writer is `core/investigation/problem_status.py` (INV-44); `symptom_verified` is
+its derived boolean view.
+
+| Status | Meaning | Cause work | Close | Resolve |
+|---|---|---|---|---|
+| `unverified` | confirmed, not yet evidenced (Zone 1) | refused | yes | no |
+| `verified` | the evidence shows the stated symptom | accepted | yes | per readiness |
+| `revision_pending` | the problem is real, the statement inaccurate; a revision awaits the user | **staged** | the user's own close cancels the revision | no |
+| `invalidated` | the reported symptom was never present: a false alarm | refused | engine-offered, `closed_false_alarm` | never |
+
+**(a) Verified.** The LLM's justified `symptom_verified` claim, backed by cited
+symptom evidence (the step-2b review), moves `unverified → verified`. Cause work
+is accepted from then on, and the gates read the status the turn ENDS with, so
+one turn can verify, form hypotheses, emit the chain and identify the cause.
+
+**(b) Inaccurate statement.** The LLM sends
+`verification_updates.revised_problem_statement` with the symptom evidence that
+shows the problem as revised. The guard (`revision_refusal`) requires that
+evidence and a basis, refuses a revision that restates the current statement or
+a cause (the statement describes what is OBSERVED, never why), refuses wording
+the user already declined, and refuses once the statement has been acted on — a
+cause identified and uncontested, or a mitigation or fix *verified* (an accepted
+fix that failed does not bar it: that is when a mis-statement surfaces). The
+case moves to `revision_pending`, and the engine presents the revision on every
+pending turn with a confirm/clarify pair keyed on its wording (INV-45). Cause
+work arriving while it waits is staged on the revision with the evidence ids its
+refs resolve against. On a click or a bare "yes" — read by the disposition
+gate's own grammar, before the LLM call — the revision commits: description,
+`symptom_statement` and the causal graph's PROBLEM node (re-texted in place, so
+chains keep their anchor) change together, open symptom needs are superseded, a
+checkpoint is taken, the KB pre-fetch re-runs, the status becomes `verified`, and
+the staged work replays through the normal apply path. Any offer the replay
+makes carries its same-turn guard and card into the confirmation turn, so the
+"yes" that confirmed the statement never executes it. A decline returns the
+case to where it was, records the wording, and tells the model which staged
+work it discarded.
+
+**(c) False alarm.** The LLM sends `verification_updates.problem_invalidated`
+with `symptom_absence_evidence` from where and when the symptom was reported.
+"Not happening right now" is not a false alarm, and neither is missing data. The
+guard refuses it once the problem was acted on, or when a cause was confirmed
+eliminated (`causal_absence`), which proves the problem existed. The case moves
+to `invalidated`, the engine offers the close once (INV-46), and resolution is
+not eligible. Declined, the case holds: no hypotheses, updates, chains,
+solutions or mitigations, and no mitigation or solution signal is accepted;
+housekeeping, repair patterns and the stall counter pause. Two exits: new
+evidence of a different problem (a revision, which withdraws the engine's close
+offer), or the user disputing the finding (`invalidation_withdrawn`, back to
+where the problem stood before the finding — `verified` if it was, since nothing
+refuted that verification).
+
+A `causal_absence` row is judged against the turn's own verification, after the
+step-2b review and again after step 2c: on a problem not verified by then it is
+recorded as `symptom_absence`.
+
+**A user's edit.** Editing the description during an investigation goes
+through the same writer (`edit_statement`), so the three stores stay aligned,
+and supersedes the open symptom needs. An edit is the user's word, not
+evidence: it never verifies, and a verified problem stays verified (the user
+sharpened wording the evidence already showed). On a false alarm the finding
+was about the old wording, so the edit clears it, returns the problem to
+`unverified` and withdraws the engine's close offer. An empty edit, one longer
+than the PROBLEM node holds (500 characters), or one made while a revision
+waits is refused.
+
+Every change is recorded in `problem_verification.statement_history`, opening
+with the statement Gate 1 confirmed; the resolution and closure summaries show
+"Originally reported as" when the statement was revised.
 
 ### 1.5 Manual Case Action Requests
 
@@ -2066,10 +2140,14 @@ The retrospective shape is **direct** vs **mitigated**, derived from
 
 `closure_reason` is `None` for all RESOLVED cases — resolution itself is the
 categorization. Only CLOSED cases carry a `closure_reason` value (`inquiry_only`,
-`solution_deferred`, `closed_rca_infeasible`, `mitigation_sufficient`,
-`closed_restatement_held`, or `closed_insufficient_evidence`).
-`derive_closure_reason` (in `terminal_transitions.py`) picks the most specific
-reason first: `inquiry_only` when the case never left INQUIRY; `solution_deferred`
+`closed_false_alarm`, `solution_deferred`, `closed_rca_infeasible`,
+`mitigation_sufficient`, `closed_restatement_held`, or
+`closed_insufficient_evidence`). `derive_closure_reason` (in
+`terminal_transitions.py`) picks the most specific reason first: `inquiry_only`
+when the case never left INQUIRY; `closed_false_alarm` when the evidence showed
+the reported symptom was never present (`problem_status` INVALIDATED —
+[§ Verifying the problem statement](#141-verifying-the-problem-statement-three-outcomes));
+`solution_deferred`
 when a fix is documented but was never applied; `closed_rca_infeasible` when RCA
 was declared infeasible with a rationale; `mitigation_sufficient` when a
 mitigation is verified; `closed_restatement_held` when the restatement guard held

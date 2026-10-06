@@ -24,7 +24,7 @@ them. One live arm on either side holds it at 0, and it therefore fires only on 
 | **engine dry, user still supplying** | **not stalled — invisible** | `engine_advanced=false`, `user_supplied_new=true` |
 | both dry | stalled | both false, frontier flat |
 
-Four of the predicate's nine arms — `novel_evidence_added`,
+Four of the predicate's arms — `novel_evidence_added`,
 `novel_solutions_proposed`, `novel_files_uploaded`, `status_transitioned`,
 `hypothesis_evidence_links_applied` — exist only on the engine's in-flight
 working dict and were written nowhere. The stored `TurnProgress` keeps the *raw*
