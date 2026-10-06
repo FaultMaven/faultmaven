@@ -97,7 +97,7 @@ class CaseState(str, Enum):
     DISPOSITION: Case closed WITHOUT solution.
     Investigation completed without a verified fix, or inquiry-only.
 
-    closure_reason = inquiry_only | solution_deferred | closed_rca_infeasible | mitigation_sufficient | closed_restatement_held | closed_insufficient_evidence
+    closure_reason = inquiry_only | closed_false_alarm | solution_deferred | closed_rca_infeasible | mitigation_sufficient | closed_restatement_held | closed_insufficient_evidence
     Engine-derived via derive_closure_reason(). Never authored by the LLM.
     Note: a case stabilized by a verified mitigation closes as "mitigation_sufficient"
     (the former "mitigation_sufficient" reason was folded in — the documented
@@ -179,9 +179,15 @@ class InvestigationProgress(BaseModel):
     # VERIFIED. ``symptom_verified`` is a read-only property
     # (problem_status == VERIFIED), never stored.
     problem_status: ProblemStatus = Field(
-        default=ProblemStatus.UNVERIFIED,   # UNVERIFIED | VERIFIED
+        default=ProblemStatus.UNVERIFIED,   # UNVERIFIED | VERIFIED | REVISION_PENDING | INVALIDATED
         description="Where the confirmed problem statement stands against the evidence"
     )
+    # ProblemVerification carries the statement's lifecycle beside it:
+    # statement_history (confirmed / revised / edited / invalidated /
+    # invalidation_withdrawn records), pending_revision (text, evidence, basis,
+    # prior_status, offer_key, staged cause work per turn), invalidation
+    # (rationale, evidence, turn) and declined_revision_keys.
+    # investigation-lifecycle-logic.md §1.4.1.
 
     solution_proposed: bool = Field(
         default=False,
@@ -533,7 +539,7 @@ class Case(BaseModel):
 
     closure_reason: Optional[str] = Field(
         default=None,
-        description="None for RESOLVED. For CLOSED: inquiry_only | solution_deferred | closed_rca_infeasible | mitigation_sufficient | closed_restatement_held | closed_insufficient_evidence. Engine-derived via derive_closure_reason(); never set by the LLM."
+        description="None for RESOLVED. For CLOSED: inquiry_only | closed_false_alarm | solution_deferred | closed_rca_infeasible | mitigation_sufficient | closed_restatement_held | closed_insufficient_evidence. Engine-derived via derive_closure_reason(); never set by the LLM."
     )
 
     # ============================================================

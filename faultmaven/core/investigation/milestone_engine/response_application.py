@@ -31,29 +31,43 @@ from faultmaven.core.investigation.milestone_engine.hypothesis_updates import (
 )
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     gate1_bare_consent,
+    revision_offer_key,
 )
 from faultmaven.core.investigation.milestone_engine.turn_records import (
     _determine_turn_outcome,
     _report_turn_uploads,
+    _resolve_id_ref,
 )
 from faultmaven.core.investigation.problem_status import (
     cause_work_accepted,
+    cause_work_staged,
+    invalidate_problem,
+    invalidation_refusal,
+    propose_revision,
+    revision_refusal,
+    stage_cause_work,
     unverify_problem,
     verify_problem,
+    withdraw_invalidation,
 )
 from faultmaven.core.investigation.schemas import (
     BaseInteractionResponse,
     InquiryResponse,
     TerminalResponse,
 )
+from faultmaven.core.investigation.terminal_transitions import (
+    cancel_pending_transition,
+)
 from faultmaven.modules.case.contracts import (
     Case,
     ConfidenceLevel,
     Evidence,
+    EvidenceCategory,
     InvestigationActionType,
     JournalEntry,
     KnowledgeMatch,
     KnowledgeResolution,
+    ProblemStatus,
     ProposedAction,
     RootCauseConclusion,
     Solution,
@@ -79,6 +93,7 @@ from .milestone_inference import (
     _resolve_evidence_source,
     validate_reasoning_first,
 )
+from .response_synthesis import _note_engine_disposition_withdrawn
 from .stage_gates import (
     _add_system_feedback,
     _apply_stage_gate_signals,
@@ -90,11 +105,40 @@ from .stage_gates import (
     _supersede_pending_solution_offers,
     llm_claimable_milestones,
 )
+from .statement_revision import REPLAY_METADATA_KEY
 from .terminal_proposals import (
     _maybe_propose_deferred_close,
+    _maybe_propose_false_alarm_close,
+    is_engine_false_alarm_close,
 )
 
 logger = logging.getLogger(__name__)
+
+#: The state-update fields that are cause work. While a revised statement
+#: awaits the user's re-confirmation they are staged on it rather than applied
+#: (``problem_status.cause_work_staged``), and replayed through this same apply
+#: path when the user confirms. ``milestones`` contributes only its two cause
+#: claims (``_STAGED_MILESTONE_FIELDS``).
+_STAGED_FIELDS = (
+    "hypotheses_to_add",
+    "hypothesis_evidence_links",
+    "causal_nodes_to_add",
+    "causal_edges_to_add",
+    "node_evidence_links",
+    "deductive_validations",
+    "root_cause_conclusion",
+    "solutions_to_add",
+)
+_STAGED_MILESTONE_FIELDS = ("root_cause_likelihood", "root_cause_method")
+#: Compliance signals that name the turn's own proposals. When a staging turn
+#: holds its solutions, these are held with them — replayed after them, so they
+#: register against the actions the replay creates — rather than rejected now
+#: as "not registered" against a proposal that is merely waiting.
+_STAGED_GATE_SIGNALS = (
+    "solution_accepted",
+    "mitigation_accepted",
+    "mitigation_verified",
+)
 
 #: What a refused hypothesis's ``new_index_N`` slot resolves to: no hypothesis,
 #: so a link or update naming it is skipped by its consumer's existence check.
@@ -531,6 +575,206 @@ class ResponseApplier:
                 case.case_id,
             )
 
+    def _apply_verification_updates(
+        self, case: Case, updates: Any, metadata: dict[str, Any]
+    ) -> None:
+        """Step 2c: the statement is inaccurate, the problem never existed, or
+        the user disputes a false-alarm finding.
+
+        Each proposal passes its guard in ``problem_status`` or is refused with
+        a note to the model. Two shapes are contradictions and refuse
+        everything they carry: a revision and a false-alarm finding together,
+        and a false-alarm finding on the turn that verified the symptom. A
+        revision on the turn that verified the symptom wins: the verification
+        was of the revised problem, so it is granted when the user confirms.
+        """
+        vu = getattr(updates, "verification_updates", None)
+        if vu is None:
+            return
+        pv = case.problem_verification
+        if pv is not None and vu.rca_infeasible is not None:
+            pv.rca_infeasible = bool(vu.rca_infeasible)
+            pv.rca_infeasible_rationale = vu.rca_infeasible_rationale
+        if pv is None:
+            return
+
+        created = metadata.get("evidence_added", [])
+
+        def _ids(refs) -> list[str]:
+            return [_resolve_id_ref(r, created, "ev_") for r in (refs or [])]
+
+        revision = (vu.revised_problem_statement or "").strip()
+        invalidated = vu.problem_invalidated is True
+        verified_this_turn = "symptom_verified" in metadata["milestones_completed"]
+
+        if vu.invalidation_withdrawn is True:
+            if (vu.withdrawal_basis or "").strip() and withdraw_invalidation(
+                case, basis=vu.withdrawal_basis
+            ):
+                self._withdraw_engine_false_alarm_close(case, metadata)
+                metadata["problem_status_changed"] = True
+            else:
+                _add_system_feedback(
+                    metadata,
+                    "FALSE-ALARM WITHDRAWAL NOT ACCEPTED: "
+                    + (
+                        "no false-alarm finding stands."
+                        if case.progress.problem_status.value != "invalidated"
+                        else "say what the user said that disputes the finding "
+                        "(withdrawal_basis)."
+                    ),
+                )
+
+        if revision and invalidated:
+            _add_system_feedback(
+                metadata,
+                "STATEMENT REVISION AND FALSE-ALARM FINDING NOT ACCEPTED: they "
+                "contradict each other — a revision says a problem exists, a "
+                "false alarm says none does. Send the one the evidence supports.",
+            )
+            return
+
+        if invalidated:
+            refusal = (
+                "the same response verified the symptom"
+                if verified_this_turn
+                else (
+                    "a transition is awaiting the user's answer"
+                    if case.pending_transition
+                    else invalidation_refusal(
+                        case, _ids(vu.invalidation_evidence_ids), vu.invalidation_basis
+                    )
+                )
+            )
+            if refusal:
+                _add_system_feedback(
+                    metadata, f"FALSE-ALARM FINDING NOT ACCEPTED: {refusal}."
+                )
+                return
+            invalidate_problem(
+                case,
+                evidence_ids=_ids(vu.invalidation_evidence_ids),
+                basis=vu.invalidation_basis,
+            )
+            metadata["problem_status_changed"] = True
+            metadata["problem_invalidated_this_turn"] = True
+            return
+
+        pending_revision = pv.pending_revision
+        if (
+            revision
+            and pending_revision is not None
+            and revision == pending_revision.text.strip()
+        ):
+            # The wording already awaiting the user, sent again: nothing moves,
+            # and it must not read as progress on a turn spent waiting.
+            return
+
+        if revision:
+            key = revision_offer_key(revision)
+            pending = case.pending_transition
+            refusal = (
+                "a transition is awaiting the user's answer"
+                if pending and not is_engine_false_alarm_close(pending)
+                else revision_refusal(
+                    case,
+                    revision,
+                    _ids(vu.revision_evidence_ids),
+                    vu.revision_basis,
+                    key,
+                )
+            )
+            if refusal:
+                _add_system_feedback(
+                    metadata, f"STATEMENT REVISION NOT ACCEPTED: {refusal}."
+                )
+                return
+            if pending:
+                self._withdraw_engine_false_alarm_close(case, metadata)
+            if verified_this_turn:
+                unverify_problem(case, via="superseded_by_revision")
+                metadata["milestones_completed"].remove("symptom_verified")
+            propose_revision(
+                case,
+                text=revision,
+                evidence_ids=_ids(vu.revision_evidence_ids),
+                basis=vu.revision_basis,
+                offer_key=key,
+            )
+            metadata["problem_status_changed"] = True
+            metadata["revision_proposed_this_turn"] = True
+
+    @staticmethod
+    def _withdraw_engine_false_alarm_close(
+        case: Case, metadata: dict[str, Any]
+    ) -> None:
+        """Take back the engine's own false-alarm close offer: the finding it
+        rested on no longer stands. The offer is withdrawn, not declined —
+        nothing is recorded against it."""
+        pending = case.pending_transition
+        if pending and is_engine_false_alarm_close(pending):
+            _note_engine_disposition_withdrawn(case, metadata)
+            cancel_pending_transition(case)
+
+    @staticmethod
+    def _stage_cause_work(case: Case, updates: Any, metadata: dict[str, Any]) -> None:
+        """Step 2d: hold this turn's cause work on the pending revision."""
+        subset: dict[str, Any] = {}
+        for name in _STAGED_FIELDS:
+            value = getattr(updates, name, None)
+            if value:
+                subset[name] = (
+                    [item.model_dump(mode="json") for item in value]
+                    if isinstance(value, list)
+                    else value.model_dump(mode="json")
+                )
+        # The same fix re-sent on a later hold turn is staged once.
+        if "solutions_to_add" in subset:
+            staged_before = {
+                (item.get("description") or "").strip().casefold()
+                for bundle in case.problem_verification.pending_revision.staged
+                for item in bundle.updates.get("solutions_to_add", [])
+            }
+            fresh = [
+                item
+                for item in subset["solutions_to_add"]
+                if (item.get("description") or "").strip().casefold()
+                not in staged_before
+            ]
+            if fresh:
+                subset["solutions_to_add"] = fresh
+            else:
+                del subset["solutions_to_add"]
+        milestones = getattr(updates, "milestones", None)
+        if milestones is not None:
+            claims = {
+                name: getattr(milestones, name, None)
+                for name in _STAGED_MILESTONE_FIELDS
+                if getattr(milestones, name, None) is not None
+            }
+            if getattr(updates, "solutions_to_add", None):
+                held = [
+                    name
+                    for name in _STAGED_GATE_SIGNALS
+                    if getattr(milestones, name, None) is True
+                ]
+                claims.update({name: True for name in held})
+                if held:
+                    metadata["staged_gate_signals"] = held
+            if claims:
+                subset["milestones"] = claims
+        if not subset:
+            return
+        stage_cause_work(
+            case, updates=subset, evidence_added=metadata.get("evidence_added", [])
+        )
+        metadata["cause_work_staged"] = sorted(subset)
+        logger.info(
+            "Case %s: staged %s pending re-confirmation of the revised statement",
+            case.case_id,
+            sorted(subset),
+        )
+
     def _apply_cause_claims(
         self, case: Case, updates: Any, metadata: dict[str, Any]
     ) -> None:
@@ -740,6 +984,30 @@ class ResponseApplier:
             # (gated on cause uncertainty), not by an engine emission ban —
             # causal_evidence is always allowed during INVESTIGATING.
             for ev_item in updates.evidence_to_add:
+                # A cause cannot have been eliminated before the problem it
+                # caused is verified: a causal_absence row then means "the
+                # problem is not there", which is symptom_absence. Reclassified
+                # rather than dropped — ``evidence_added`` is positional, and
+                # new_index_N refs this turn index into it. Without this, one
+                # such row reads resolution-READY on a never-verified case
+                # (``assess_resolution_readiness``) and pivots a false-alarm
+                # close to RESOLVED (INV-37).
+                if (
+                    ev_item.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+                    and not cause_work_accepted(case)
+                ):
+                    ev_item.category = EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE
+                    metadata.setdefault("validation_repairs", []).append(
+                        "causal_absence_evidence recorded before the problem was "
+                        "verified was recorded as symptom_absence_evidence"
+                    )
+                    _add_system_feedback(
+                        metadata,
+                        "A causal_absence_evidence row arrived before the problem "
+                        "was verified and was recorded as symptom_absence_evidence: "
+                        "a cause can only be shown eliminated once the problem it "
+                        "caused is verified.",
+                    )
                 # Infer milestone attribution (Tier 2 + Tier 3)
                 milestones_completed_this_turn = metadata.get(
                     "milestones_completed", []
@@ -834,14 +1102,29 @@ class ResponseApplier:
                         result.warnings
                     )
 
-        # 2c. Cause claims — the root-cause conclusion and the likelihood /
+        # 2c. What the evidence says about the statement itself: inaccurate
+        # (a revision for the user to re-confirm) or never present (a false
+        # alarm), or a false-alarm finding the user disputes. After 2b, so the
+        # turn's own verification is final and its evidence ids resolvable.
+        self._apply_verification_updates(case, updates, metadata)
+
+        # 2d. While a revision awaits re-confirmation, this turn's cause work
+        # is held on it, with the evidence ids its refs resolve against, and
+        # replayed through this same path when the user confirms. The cause
+        # steps below then skip it.
+        staging = cause_work_staged(case)
+        if staging:
+            self._stage_cause_work(case, updates, metadata)
+
+        # 2e. Cause claims — the root-cause conclusion and the likelihood /
         # method the LLM attaches to it. Cause work is accepted only on a
         # verified problem (``cause_work_accepted``), and this is the first
         # point where the turn's verification is final: step 1 applied the
         # claim and step 2b reverted it if the cited evidence did not hold.
         # So a turn that verifies the symptom AND concludes the cause lands
         # both. Nothing between step 1 and here reads these fields.
-        self._apply_cause_claims(case, updates, metadata)
+        if not staging:
+            self._apply_cause_claims(case, updates, metadata)
 
         # 3. Add/Update Hypotheses
         #
@@ -866,7 +1149,9 @@ class ResponseApplier:
         # to nothing and the link that names it is skipped.
         emit_order: list[str] = metadata.setdefault("hyp_emit_order", [])
         hypotheses_in = list(getattr(updates, "hypotheses_to_add", None) or [])
-        if hypotheses_in and not cause_work_accepted(case):
+        if staging:
+            hypotheses_in = []  # held at step 2d
+        elif hypotheses_in and not cause_work_accepted(case):
             # Refused, not queued. Positions are kept so a ``new_index_N`` ref
             # this turn still means what the model meant: an item that restates
             # a hypothesis already standing (a standing one survives a
@@ -952,7 +1237,15 @@ class ResponseApplier:
         # applied before; connecting it lets M6 demotion fire on the LLM's own
         # refutation, not only on REFUTES evidence links. (Other state
         # transitions are intentionally deferred — see _apply_hypothesis_updates.)
-        if getattr(updates, "hypotheses_to_update", None):
+        false_alarm = case.progress.problem_status == ProblemStatus.INVALIDATED
+        if getattr(updates, "hypotheses_to_update", None) and false_alarm:
+            # Nothing to refute or support against: the problem never existed.
+            _add_system_feedback(
+                metadata,
+                "HYPOTHESIS UPDATES NOT ACCEPTED: the reported problem was found "
+                "not present, so there is no cause to update hypotheses about.",
+            )
+        elif getattr(updates, "hypotheses_to_update", None):
             _apply_hypothesis_updates(
                 self.deps.hypothesis_manager,
                 case,
@@ -964,8 +1257,16 @@ class ResponseApplier:
         # 4. Link Evidence (Partial Application Check)
         # Note: Hypothesis-evidence linking is best-effort. The LLM may reference
         # evidence IDs that don't exist yet (timing issue), so we silently skip failed links.
-        if (
-            hasattr(updates, "hypothesis_evidence_links")
+        if getattr(updates, "hypothesis_evidence_links", None) and false_alarm:
+            _add_system_feedback(
+                metadata,
+                "HYPOTHESIS EVIDENCE LINKS NOT ACCEPTED: the reported problem "
+                "was found not present, so there is no cause to weigh evidence "
+                "against.",
+            )
+        elif (
+            not staging
+            and hasattr(updates, "hypothesis_evidence_links")
             and updates.hypothesis_evidence_links
         ):
             _apply_hypothesis_evidence_links(
@@ -1003,7 +1304,18 @@ class ResponseApplier:
         # Redesign R5/§2: the former pre-path solutions ban is removed. There
         # is no path commit gate; solution/workaround proposals are allowed
         # opportunistically during INVESTIGATING.
-        if hasattr(updates, "solutions_to_add") and updates.solutions_to_add:
+        if getattr(updates, "solutions_to_add", None) and false_alarm:
+            _add_system_feedback(
+                metadata,
+                "SOLUTIONS NOT ACCEPTED: the reported problem was found not "
+                "present, so there is nothing to fix or mitigate.",
+            )
+        if (
+            not staging
+            and not false_alarm
+            and hasattr(updates, "solutions_to_add")
+            and updates.solutions_to_add
+        ):
             for s_item in updates.solutions_to_add:
                 # R9: causal-graph linkage carried by the emission (optional;
                 # honor-or-reject). ``quadrant`` is recorded as DATA — the M5
@@ -1170,7 +1482,22 @@ class ResponseApplier:
         # prompt's KB-resolution flow emits SolutionToAdd + solution_accepted
         # in ONE response; see _apply_stage_gate_signals).
         if updates.milestones:
-            _apply_stage_gate_signals(case, updates.milestones, user_message, metadata)
+            gate_signals = updates.milestones
+            held = metadata.get("staged_gate_signals")
+            if held:
+                # Held with the solutions they accept (step 2d).
+                gate_signals = gate_signals.model_copy(
+                    update={name: None for name in held}
+                )
+                _add_system_feedback(
+                    metadata,
+                    f"{', '.join(held)} and the solutions this response proposed "
+                    "are held until the user confirms the revised problem "
+                    "statement, then applied under the same gates as any "
+                    "proposal (a permanent fix still needs an established "
+                    "cause). Do not re-propose them.",
+                )
+            _apply_stage_gate_signals(case, gate_signals, user_message, metadata)
 
         # 6. Journal Entries (append-only investigation memory)
         if hasattr(updates, "journal_entries") and updates.journal_entries:
@@ -1245,7 +1572,13 @@ class ResponseApplier:
 
         # Deferred-implementation disposition: if the fix is known but can't be
         # applied this session, propose CLOSE-with-documented-solution (§3.1 row 3).
-        _maybe_propose_deferred_close(case, metadata)
+        # Not inside a staged-work replay: there the offer would be executed by
+        # the user's "yes" to the revised statement (REPLAY_METADATA_KEY). The
+        # live turn that follows the replay runs these with its own metadata.
+        if not metadata.get(REPLAY_METADATA_KEY):
+            _maybe_propose_deferred_close(case, metadata)
+            # False alarm: offer the close the finding calls for (once).
+            _maybe_propose_false_alarm_close(case, metadata)
 
         # Bug #4: Evidence-Milestone Linking (Moved here to ensure evidence exists)
         # LLM-claimed milestones only. This runs AFTER the assessment recompute,

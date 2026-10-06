@@ -335,7 +335,7 @@ state_updates.evidence_to_add[]                             | description | deli
 state_updates.evidence_to_add[].category                    | description | deliberat    | a226544e1e9f | 1 1
 state_updates.proposed_transition                           | description | reason       | 9e2de6d7389b | 1 1
 suggested_follow_ups[].body                                 | description | reason       | b9369e54eb23 | 1 1
-# InvestigationResponse_Treatment (30): not sent live; each hit is Diagnosis's text at the same path
+# InvestigationResponse_Treatment (33): not sent live; each hit is Diagnosis's text at the same path
 state_updates.causal_edges_to_add[]                         | required[]  | reason       | 0c4d01e81bb3 | 0 1
 state_updates.causal_edges_to_add[].reasoning               | key         | reason       | 0c4d01e81bb3 | 1 1
 state_updates.causal_edges_to_add[].reasoning               | title       | reason       | 0c4d01e81bb3 | 1 1
@@ -365,6 +365,9 @@ state_updates.node_evidence_links[]                         | required[]  | reas
 state_updates.node_evidence_links[].reasoning               | key         | reason       | 0c4d01e81bb3 | 1 1
 state_updates.node_evidence_links[].reasoning               | title       | reason       | 0c4d01e81bb3 | 1 1
 state_updates.proposed_transition                           | description | reason       | 9e2de6d7389b | 1 1
+state_updates.verification_updates                          | required[]  | rationale    | 620a5898364c | 0 1
+state_updates.verification_updates.rca_infeasible_rationale | key         | rationale    | b28c2f0137cc | 1 1
+state_updates.verification_updates.rca_infeasible_rationale | title       | rationale    | b28c2f0137cc | 1 1
 suggested_follow_ups[].body                                 | description | reason       | b9369e54eb23 | 1 1
 # InvestigationResponse_General (33): not sent live; each hit is Diagnosis's text at the same path
 state_updates.causal_edges_to_add[]                         | required[]  | reason       | 0c4d01e81bb3 | 0 1

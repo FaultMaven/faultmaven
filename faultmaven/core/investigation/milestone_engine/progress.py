@@ -76,6 +76,12 @@ def check_if_progress_made(metadata: dict[str, Any]) -> bool:
     if metadata.get("status_transitioned"):
         return True
 
+    # Where the problem stands moved: a revision proposed, confirmed or
+    # declined, a false alarm found or withdrawn. The case learned something
+    # about the problem itself.
+    if metadata.get("problem_status_changed"):
+        return True
+
     # Investigative progress: active diagnostic behaviors
     outcome = metadata.get("outcome")
     if outcome in (
@@ -149,7 +155,7 @@ def score_progress(metadata: dict[str, Any]) -> bool:
     exists to prevent, so the count is deliberately not restated as a number
     that can rot.
 
-    Monotone because :func:`check_if_progress_made` reads the nine ARMS and
+    Monotone because :func:`check_if_progress_made` reads the ten ARMS and
     never the ``progress_made`` key. A plain
     ``metadata["progress_made"] = check_if_progress_made(metadata)`` therefore
     DESTROYS a ``True`` an earlier writer put on the dict, and the generation

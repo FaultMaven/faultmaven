@@ -16,6 +16,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     pending_action_superseded_stale_total,
     solution_offer_superseded_total,
 )
+from faultmaven.core.investigation.problem_status import problem_on_hold
 from faultmaven.core.investigation.prompts.context_builder.budget import (
     structural_index_is_searchable,
 )
@@ -654,6 +655,7 @@ def _apply_stage_gate_side_effects(
             rca_infeasible
             and not getattr(case, "pending_transition", None)
             and not case.is_terminal
+            and not problem_on_hold(case)
         ):
             # The generic fallback is fine for the user-facing sentence but is
             # NOT a rationale: derive_closure_reason's guard requires a real one

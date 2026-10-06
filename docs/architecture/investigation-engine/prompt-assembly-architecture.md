@@ -198,7 +198,9 @@ The `{adaptive_instructions}` placeholder is filled by `_select_diagnosis_block(
 
 | Zone | Condition | Focus emphasis |
 | --- | --- | --- |
-| Zone 1 | `symptom_verified=False` | "Symptom verification pending — search for evidence the problem exists" |
+| Revision hold | `problem_status=revision_pending` | "Revised problem statement awaiting confirmation — answer the user; cause work is held until they confirm; no transitions" |
+| False-alarm hold | `problem_status=invalidated` | "Reported problem not present — nothing to diagnose; exits are a revision naming a different problem, or the user's dispute" |
+| Zone 1 | `symptom_verified=False` | "Symptom verification pending — reach one of three verdicts: verified, revised (inaccurate statement), or invalidated (false alarm); cause work waits for verification" |
 | Zone 2 | `symptom_verified=True`, `cause_state != IDENTIFIED` | "Root cause analysis — form hypotheses, search for causal evidence" |
 | Zone 3 | `cause_state == IDENTIFIED`, `solution_proposed=False` | "Solution needed — propose a concrete, executable fix" |
 | Zone 3 pending | `solution_proposed=True` | "Solution proposal issued — awaiting execution. Hold for the result; NOT a freeze — new evidence, a dispute, or a competing cause reopens root-cause analysis (INV-33)." |

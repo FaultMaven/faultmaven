@@ -217,6 +217,7 @@ TYPED_CONFIRMATION_LINE = "To confirm, click **Yes** or reply with the single wo
 #: The prefix that marks a Gate 1 offer key, so it can never equal a terminal
 #: offer's key (a ``proposed_at`` timestamp).
 _GATE1_KEY_PREFIX = "gate1:"
+_REVISION_KEY_PREFIX = "revision:"
 
 
 def terminal_offer_key(pending: Optional[dict[str, Any]]) -> Optional[str]:
@@ -233,6 +234,10 @@ def terminal_offer_key(pending: Optional[dict[str, Any]]) -> Optional[str]:
     return (pending or {}).get("proposed_at") or None
 
 
+def _statement_digest(statement: Optional[str]) -> str:
+    return hashlib.sha256((statement or "").strip().encode()).hexdigest()[:16]
+
+
 def gate1_offer_key(statement: Optional[str]) -> str:
     """The key of the Gate 1 offer that presents ``statement``.
 
@@ -240,8 +245,14 @@ def gate1_offer_key(statement: Optional[str]) -> str:
     the stripped statement. It is 22 characters, well clear of Slack's
     button-value limit. A statement revised to identical text keeps its key.
     """
-    digest = hashlib.sha256((statement or "").strip().encode()).hexdigest()[:16]
-    return f"{_GATE1_KEY_PREFIX}{digest}"
+    return f"{_GATE1_KEY_PREFIX}{_statement_digest(statement)}"
+
+
+def revision_offer_key(statement: Optional[str]) -> str:
+    """The key of the statement-revision offer that presents ``statement``:
+    Gate 1's rule — the offer is the wording shown — under its own prefix, so a
+    click on one card never answers the other."""
+    return f"{_REVISION_KEY_PREFIX}{_statement_digest(statement)}"
 
 
 def offer_intent_fields(

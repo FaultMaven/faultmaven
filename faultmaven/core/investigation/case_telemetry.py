@@ -11,7 +11,7 @@ recorded can answer it:
   (hypotheses, solutions, milestones, links). One live arm on either side holds
   the counter at 0, so it fires only on a JOINT stall and cannot isolate the
   engine.
-* Four of that predicate's nine arms — ``novel_evidence_added``,
+* Four of that predicate's arms — ``novel_evidence_added``,
   ``novel_solutions_proposed``, ``novel_files_uploaded``,
   ``status_transitioned`` and ``hypothesis_evidence_links_applied`` — live only
   on the engine's in-flight working dict and are **written nowhere**. The stored
@@ -172,6 +172,7 @@ PREDICATE_ARM_KEYS: tuple[str, ...] = (
     "novel_files_uploaded",
     "hypothesis_evidence_links_applied",
     "status_transitioned",
+    "problem_status_changed",
     "outcome_progress",
 )
 

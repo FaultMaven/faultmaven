@@ -26,6 +26,7 @@ from faultmaven.modules.case.contracts import (
     Hypothesis,
     HypothesisState,
     InvestigationMomentum,
+    ProblemStatus,
     WorkingConclusion,
 )
 from faultmaven.modules.case.domain.models.progress import CauseState
@@ -100,6 +101,12 @@ def generate_working_conclusion(
     Returns:
         WorkingConclusion representing agent's current understanding
     """
+    # A hold says where the PROBLEM stands, and no hypothesis summary may read
+    # as if the case were still converging on a cause.
+    hold = _hold_conclusion(case)
+    if hold is not None:
+        return hold
+
     # Get active hypotheses
     hypotheses = list(case.hypotheses.values())
     active_hypotheses = [
@@ -478,6 +485,37 @@ def is_early_stage_conclusion(conclusion) -> bool:
         return True
     return not (getattr(conclusion, "likelihood", 0) or 0) > 0 and not (
         getattr(conclusion, "supporting_evidence_ids", None) or []
+    )
+
+
+def _hold_conclusion(case: Case) -> WorkingConclusion | None:
+    """The working conclusion while the problem itself is in question: a
+    revised statement awaiting re-confirmation, or a false alarm."""
+    status = case.progress.problem_status
+    pv = case.problem_verification
+    if status == ProblemStatus.REVISION_PENDING and pv and pv.pending_revision:
+        statement = (
+            "The evidence shows a different problem than the one confirmed; "
+            f"awaiting the user's confirmation of: {pv.pending_revision.text}"
+        )
+        caveats = ["Cause work is held until the revised statement is confirmed"]
+        evidence = list(pv.pending_revision.evidence_ids)
+    elif status == ProblemStatus.INVALIDATED and pv and pv.invalidation:
+        statement = (
+            "The reported problem was not present where and when it was "
+            f"reported: {pv.invalidation.rationale}"
+        )
+        caveats = ["No cause can be investigated for a problem that did not occur"]
+        evidence = list(pv.invalidation.evidence_ids)
+    else:
+        return None
+    return WorkingConclusion(
+        statement=statement,
+        likelihood=0.0,
+        reasoning="The problem statement itself is in question",
+        supporting_evidence_ids=evidence,
+        caveats=caveats,
+        updated_at=datetime.now(timezone.utc),
     )
 
 

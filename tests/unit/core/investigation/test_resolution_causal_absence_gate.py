@@ -19,7 +19,11 @@ from faultmaven.core.investigation.terminal_transitions import (
     assess_closure_readiness,
     assess_resolution_readiness,
 )
-from faultmaven.modules.case.contracts import EvidenceCategory, EvidenceStance
+from faultmaven.modules.case.contracts import (
+    EvidenceCategory,
+    EvidenceStance,
+    ProblemStatus,
+)
 
 
 def _case(*, cats=(), solutions=1, cause=True):
@@ -32,7 +36,9 @@ def _case(*, cats=(), solutions=1, cause=True):
         solutions=[SimpleNamespace(title="failover") for _ in range(solutions)],
         evidence=[SimpleNamespace(category=c) for c in cats],
         hypotheses={},
-        progress=SimpleNamespace(completed_milestones=[]),
+        progress=SimpleNamespace(
+            completed_milestones=[], problem_status=ProblemStatus.VERIFIED
+        ),
     )
 
 
@@ -126,7 +132,9 @@ class TestCauseStateAuthoritative:
             evidence=[SimpleNamespace(category=c) for c in cats],
             hypotheses={},
             progress=SimpleNamespace(
-                completed_milestones=[], cause_state=CauseState.IDENTIFIED
+                completed_milestones=[],
+                cause_state=CauseState.IDENTIFIED,
+                problem_status=ProblemStatus.VERIFIED,
             ),
         )
 

@@ -534,7 +534,7 @@ def _recompute_assessment_state(
         milestones = metadata.setdefault("milestones_completed", [])
         if "root_cause_identified" not in milestones:
             milestones.append("root_cause_identified")
-    # #1284: ``hypotheses_validated`` is one of the nine progress arms and a
+    # #1284: ``hypotheses_validated`` is one of the progress arms and a
     # field on every persisted turn record, and nothing wrote it — five
     # consumers read a permanently-empty list (the momentum bands summed three
     # inputs of which one was always 0, the loop fingerprint carried a constant

@@ -447,10 +447,14 @@ If a temporary workaround was applied during the mitigation stage:
 Your understanding of the problem is not fixed — it MUST evolve as new evidence arrives,
 even during the treatment stage.
 
-1. **Refine the Problem Statement**
-   - If verification evidence reveals the root cause was different than diagnosed,
-     update the problem statement. A failed fix is evidence — it tells you the
-     original diagnosis was incomplete or wrong.
+1. **Revisit the Diagnosis — and, if the evidence says so, the Statement**
+   - A failed fix is evidence: it tells you the original diagnosis was
+     incomplete or wrong. A different CAUSE is a new hypothesis, never a new
+     problem statement.
+   - If the verification evidence shows the problem itself was mis-stated — a
+     different symptom, component, scope or time — send
+     `verification_updates.revised_problem_statement` (what is observed, never
+     why) with the symptom_evidence that shows it, for the user to re-confirm.
 
 2. **Challenge Past Assumptions**
    - When a fix fails, don't just try harder — question WHETHER the diagnosis was

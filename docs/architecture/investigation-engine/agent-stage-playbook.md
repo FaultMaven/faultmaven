@@ -220,8 +220,9 @@ DIAGNOSIS has three internal zones. Zone membership is determined by the diagnos
 
 1. Apply the three-step diagnostic pattern: search for symptom signatures using `search_file` → evaluate against conclusive criteria → advance with citation or ask specifically.
 2. When asking for data, apply the specificity standard: what log or metric, from what source, for what timeframe.
-3. Do not form hypotheses until `symptom_verified = True`.
-4. **Extract scope and timeline from the symptom evidence.** When evidence confirms the symptom, actively note and state:
+3. Do not form hypotheses until `symptom_verified = True` — the engine refuses them before then; verifying and forming them in one response is fine.
+4. **Reach a verdict on the confirmed statement, not just on "is there a problem".** The data shows the stated symptom (verify); shows a real problem the statement describes inaccurately — a different symptom, component, scope or time (`verification_updates.revised_problem_statement`, observed behaviour only, for the user to re-confirm); or shows the reported symptom was never present where and when it was reported (`verification_updates.problem_invalidated`, citing `symptom_absence_evidence`; the engine offers to close as a false alarm). A problem not happening right now is not a false alarm, and missing data is neither — ask for the data. See [investigation-lifecycle-logic.md §1.4.1](./investigation-lifecycle-logic.md#141-verifying-the-problem-statement-three-outcomes).
+5. **Extract scope and timeline from the symptom evidence.** When evidence confirms the symptom, actively note and state:
    - **Scope** — how many systems, services, pods, or users are affected. Wide scope (multiple regions, many pods) signals a systemic cause; narrow scope (single pod, single user) signals an isolated cause. This directly shapes which hypothesis categories Zone 2 prioritises first.
    - **Timeline** — the first occurrence timestamp. This becomes the anchor for all Zone 2 searches — every data request in Zone 2 should reference this window. Without a timeline, change searches are unbounded and noisy.
    - These are extracted facts, not tracked variables. State them explicitly in the response when found. Do not delay `symptom_verified` waiting for them, but actively look for them in the same evidence.

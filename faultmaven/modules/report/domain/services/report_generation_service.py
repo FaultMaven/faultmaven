@@ -341,6 +341,9 @@ class ReportGenerationService:
 
     _CLOSURE_REASON_LABELS = {
         "inquiry_only": "Inquiry only — no investigation started",
+        "closed_false_alarm": (
+            "Closed — false alarm: the reported problem was not present"
+        ),
         "solution_deferred": (
             "Closed — cause identified and fix documented, implementation deferred"
         ),
@@ -360,6 +363,39 @@ class ReportGenerationService:
             "Closed — insufficient evidence to establish the problem or its cause"
         ),
     }
+
+    @staticmethod
+    def _problem_statement_section(case: Case) -> List[str]:
+        """The Problem Statement section: the statement in force, and — when
+        the evidence revised it — the one originally reported."""
+        description = case.description or "No description provided."
+        lines = ["## Problem Statement\n", f"{description}\n"]
+        pv = getattr(case, "problem_verification", None)
+        history = getattr(pv, "statement_history", None) or []
+        original = next((r.text for r in history if r.kind.value == "confirmed"), None)
+        if original and original.strip() != description.strip():
+            lines.append(f"Originally reported as: {original}\n")
+        return lines
+
+    def _false_alarm_finding_block(self, case: Case) -> List[str]:
+        """What showed the reported problem was never present, cited."""
+        pv = getattr(case, "problem_verification", None)
+        invalidation = getattr(pv, "invalidation", None)
+        block = ["## Finding — The Reported Problem Was Not Present\n"]
+        if invalidation is None:
+            block.append("The evidence showed the reported symptom was not present.\n")
+            return block
+        block.append(f"{invalidation.rationale}\n")
+        cited = [
+            e
+            for e in (case.evidence or [])
+            if e.evidence_id in set(invalidation.evidence_ids)
+        ]
+        for ev in cited:
+            block.append(f"- {ev.summary} (`{ev.evidence_id}`)")
+        if cited:
+            block.append("")
+        return block
 
     def _format_closure_reason_label(self, reason: Optional[str]) -> str:
         """Map a closure_reason enum string to a human label."""
@@ -747,7 +783,6 @@ class ReportGenerationService:
         report should narrate rather than re-enumerate.
         """
         title = case.title or "Untitled Case"
-        description = case.description or "No description provided."
         created = to_json_compatible(case.created_at) if case.created_at else "Unknown"
         resolved = (
             to_json_compatible(case.resolved_at) if case.resolved_at else "Unknown"
@@ -758,8 +793,7 @@ class ReportGenerationService:
 
         parts = [
             f"# Resolution Summary: {title}\n",
-            "## Problem Statement\n",
-            f"{description}\n",
+            *self._problem_statement_section(case),
         ]
 
         # Root Cause — prefer the authoritative root_cause_conclusion,
@@ -1035,7 +1069,6 @@ class ReportGenerationService:
         the case never reached.
         """
         title = case.title or "Untitled Case"
-        description = case.description or "No description provided."
         created = to_json_compatible(case.created_at) if case.created_at else "Unknown"
         closed = to_json_compatible(case.closed_at) if case.closed_at else "Unknown"
         duration = context.get("duration", "Unknown")
@@ -1052,8 +1085,7 @@ class ReportGenerationService:
 
         parts = [
             f"# Closure Summary: {title}\n",
-            "## Problem Statement\n",
-            f"{description}\n",
+            *self._problem_statement_section(case),
         ]
 
         # Investigation State — how far diagnosis progressed
@@ -1083,7 +1115,9 @@ class ReportGenerationService:
         # honest partial: what could NOT be resolved, and why. This is the
         # flywheel/calibration signal (§5.4); it is rendered from persisted case
         # state, so no separate snapshot column is needed.
-        if closure_reason_raw == "closed_insufficient_evidence":
+        if closure_reason_raw == "closed_false_alarm":
+            parts.extend(self._false_alarm_finding_block(case))
+        elif closure_reason_raw == "closed_insufficient_evidence":
             parts.extend(self._insufficient_evidence_boundary_block(case, hypotheses))
         # #1195: the same capture obligation, the opposite finding. Without its
         # own block a restatement-held close would render no boundary section at
@@ -1152,7 +1186,14 @@ class ReportGenerationService:
         # repeats the move that did not work). A deferred fix, an unreachable
         # cause, and a sufficient mitigation each already carry their own next
         # step, so a "start here next time" block would misdescribe them.
-        if closure_reason_raw == "closed_restatement_held":
+        if closure_reason_raw == "closed_false_alarm":
+            parts.append("## Recommendation\n")
+            parts.append(
+                "Review the signal that raised this report — the alert "
+                "threshold, the dashboard query, or the system it was read "
+                "from — so it does not raise the same false alarm again.\n"
+            )
+        elif closure_reason_raw == "closed_restatement_held":
             # #1195: the lead is not in doubt here — its WORDING is. Pointing a
             # follow-up at "start from the most promising lead" would repeat the
             # move that did not work.

@@ -5,6 +5,7 @@ from faultmaven.core.investigation.causal_graph.similarity import (
     hypothesis_statements_duplicate,
 )
 from faultmaven.core.investigation.cause_assurance import evidence_datum_key
+from faultmaven.core.investigation.problem_status import problem_on_hold
 from faultmaven.core.investigation.prompts.templates.investigation import (
     SCHEMA_INSTRUCTIONS,
 )
@@ -18,6 +19,10 @@ from faultmaven.core.investigation.verification_status import (
 from faultmaven.modules.case.contracts import Case, CaseState
 
 from .cause_state import _investigation_confirmation_suggestions
+from .statement_revision import (
+    revision_confirmation_suggestions,
+    revision_pending,
+)
 
 
 def gate1_statement_is_confirmable(statement_at_turn_start: "str | None") -> bool:
@@ -611,6 +616,7 @@ _GATE_VERIFICATION_STATUS: dict[str, VerificationStatus] = {
     "restatement_held": VerificationStatus.RESTATEMENT_HELD,
     "not_yet_productive": VerificationStatus.NOT_YET_PRODUCTIVE,
     "treatment_blocked": VerificationStatus.TREATMENT_BLOCKED,
+    "statement_revision": VerificationStatus.REVISION_PENDING,
 }
 
 
@@ -661,6 +667,11 @@ def engine_owned_affordances(
     if _gate1_is_pending(case):
         return ("gate1", _investigation_confirmation_suggestions(case))
 
+    # The statement-revision handshake: Gate 1 again, inside INVESTIGATING.
+    # Exclusive with a pending transition by construction (problem_status).
+    if revision_pending(case):
+        return ("statement_revision", revision_confirmation_suggestions(case))
+
     # The four mid-investigation readings below all ask the SAME join, and each
     # used to recompute it — across the two ``engine_owned_affordances`` call
     # sites that is up to eight recomputes per turn, each now carrying a
@@ -681,6 +692,11 @@ def engine_owned_affordances(
     # ``_insufficient_evidence_handoff_pending`` already ran first, so this
     # restores the pre-existing cost profile rather than adding to it.
     if case.state != CaseState.INVESTIGATING:
+        return None
+    # A false alarm holds on the user or on new evidence, not on a stall: the
+    # readings below ask for data that would ground a cause, and there is no
+    # problem to ground one for. (A pending revision returned above.)
+    if problem_on_hold(case):
         return None
     if not is_progress_stalled(case):
         return None

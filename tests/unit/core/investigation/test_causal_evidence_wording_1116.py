@@ -63,10 +63,10 @@ class TestDecisionTreeCounts:
         assert "DECISION TREE (4 categories)" in INVESTIGATION_BASE
 
     def test_step_one_continues_to_the_steps_that_exist(self):
-        assert "CONTINUE evaluating steps 2-3" in INVESTIGATION_BASE
-        assert "steps 2-4" not in INVESTIGATION_BASE
+        assert "CONTINUE evaluating steps 2-4" in INVESTIGATION_BASE
+        assert "steps 2-5" not in INVESTIGATION_BASE
         assert (
-            "\n4. "
+            "\n5. "
             not in INVESTIGATION_BASE[
                 INVESTIGATION_BASE.find("DECISION TREE") : INVESTIGATION_BASE.find(
                     "CREATING EVIDENCE RECORDS"

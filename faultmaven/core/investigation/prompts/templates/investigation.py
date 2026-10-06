@@ -74,7 +74,7 @@ provide background context via the structural index without needing
 an evidence row.
 
 1. Does this evidence show the PROBLEM EXISTS (errors, crashes, failures, latency spikes)?
-   YES → symptom_evidence; then CONTINUE evaluating steps 2-3 (an extract can be multi-classified)
+   YES → symptom_evidence; then CONTINUE evaluating steps 2-4 (an extract can be multi-classified)
    NO  → continue to 2
 
    NOTE: A single artifact can satisfy multiple steps. An OOM crash
@@ -130,6 +130,15 @@ an evidence row.
    proves. A REFUTES on an absence row is read as a FAILED fix — the opposite
    of what the row records. The engine REFUSES any link you emit on either
    absence category, on either axis, and records the violation.
+
+4. Does this evidence show the REPORTED symptom was never present where and
+   when it was reported (the alert misfired, the dashboard read the wrong
+   system, nothing was failing)? → `symptom_absence_evidence`, even before the
+   symptom was ever verified, and cite it in
+   `verification_updates.invalidation_evidence_ids`. Not for a symptom that is
+   merely quiet NOW: a past failure is still a failure. A cause cannot be
+   shown eliminated before the problem it caused is verified, so
+   `causal_absence_evidence` is recorded as symptom_absence until then.
 
 CREATING EVIDENCE RECORDS (evidence_to_add):
 When your analysis discovers a claim-relevant slice not already

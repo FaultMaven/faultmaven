@@ -155,12 +155,25 @@ def _extract_problem_verification(case: Case) -> Optional[ProblemVerificationDat
         if affected_users:
             user_impact += f" - {affected_users}"
 
+    pv = case.problem_verification
+    history = (pv.statement_history if pv else None) or []
+    original = next((r.text for r in history if r.kind.value == "confirmed"), None)
+    if original is not None and original.strip() == (case.description or "").strip():
+        original = None
     return ProblemVerificationData(
         urgency_level=urgency_level,
         severity=severity,
         temporal_state=temporal_state,
         impact=impact,
         user_impact=user_impact,
+        problem_status=case.progress.problem_status.value if case.progress else None,
+        original_problem_statement=original,
+        pending_revision=(
+            pv.pending_revision.text if pv and pv.pending_revision else None
+        ),
+        invalidation_finding=(
+            pv.invalidation.rationale if pv and pv.invalidation else None
+        ),
     )
 
 

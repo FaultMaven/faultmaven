@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 11.0.0
+**Version:** 11.1.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -6247,6 +6247,10 @@ Problem verification details for INVESTIGATING phase.
 **Properties:**
 
 - `impact` (object, optional) — Scope of impact (services, users, regions)
+- `invalidation_finding` (object, optional) — What showed the reported problem was not present (false alarm).
+- `original_problem_statement` (object, optional) — The statement the investigation opened on, when the evidence has since revised it; null when it was never revised.
+- `pending_revision` (object, optional) — The revised statement awaiting the user's confirmation.
+- `problem_status` (object, optional) — Where the confirmed problem statement stands against the evidence: unverified | verified | revision_pending (a revised statement awaits the user's confirmation) | invalidated (the reported problem was not present: a false alarm)
 - `severity` (object, optional) — Severity: critical | high | medium | low
 - `temporal_state` (object, optional) — When the problem occurred and its temporal pattern
 - `urgency_level` (object, optional) — Urgency: critical | high | medium | low | unknown

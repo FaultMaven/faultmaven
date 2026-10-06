@@ -43,6 +43,7 @@ from .response_synthesis import (
     is_agent_response_synthesized,
 )
 from .stage_gates import _close_confirmation_suggestions
+from .statement_revision import revision_presentation
 from .terminal_replies import (
     _build_resolution_confirmation,
     _resolution_confirmation_suggestions,
@@ -222,6 +223,16 @@ async def _compose_turn_reply(
         )
         follow_ups = metadata["override_suggestions"]
         gate_prose_appended = True
+    elif metadata.get("false_alarm_closure_message"):
+        # False alarm: the evidence showed the reported symptom was never
+        # present, and the ENGINE offers the close that finding calls for —
+        # so, like its engine-proposed siblings, it says why below the reply.
+        agent_response_text = _prose_with_gate_notice(
+            agent_response_text,
+            metadata["false_alarm_closure_message"],
+        )
+        follow_ups = metadata["override_suggestions"]
+        gate_prose_appended = True
     elif metadata.get("deferred_solution_gate_message"):
         # Deferred-implementation disposition: the ENGINE proposed this
         # one, so its rationale has to be rendered the same way the
@@ -352,6 +363,13 @@ async def _compose_turn_reply(
             _gate1_presentation = _gate1_statement_presentation(case_updated)
             agent_response_text = _prose_with_gate_notice(
                 agent_response_text, _gate1_presentation
+            )
+        elif gate_name == "statement_revision":
+            # The revision handshake is Gate 1 inside INVESTIGATING, so it
+            # ships its text with its buttons on the same terms: composed
+            # below the reply, every pending turn.
+            agent_response_text = _prose_with_gate_notice(
+                agent_response_text, revision_presentation(case_updated)
             )
 
         follow_ups = gate_affordances
@@ -612,7 +630,7 @@ async def _compose_turn_reply(
                 if response_synthesized
                 else {}
             ),
-            # #1142 handoff. Four of the nine arms
+            # #1142 handoff. Four of the predicate's arms
             # ``check_if_progress_made`` scores — ``novel_evidence_added``,
             # ``novel_solutions_proposed``, ``status_transitioned``,
             # ``hypothesis_evidence_links_applied`` — live only on the

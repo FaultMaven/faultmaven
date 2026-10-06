@@ -580,7 +580,7 @@ calls. See §10.4.
 | Evidence found matching a need | LLM emits update: status → `FULFILLED`, `fulfilling_evidence_ids` appended |
 | Partial evidence found | LLM emits update: status → `PARTIALLY_MET` |
 | Hypothesis retired | Engine deterministically removes hyp_id from `motivating_hypothesis_ids`; if list becomes empty AND `purpose=causal_verification`, need → `SUPERSEDED` |
-| Problem statement refined | LLM may emit updates revising symptom needs (rewrite, supersede, add) |
+| Problem statement revised (re-confirmed) or found a false alarm | The **engine** supersedes every PENDING / PARTIALLY_MET symptom need (`problem_status._supersede_symptom_needs`): they asked for evidence of a statement that no longer stands. The LLM adds needs for the revised statement |
 | Mitigation applied | LLM re-checks the confirmed `SYMPTOM_EVIDENCE` rows (the re-verification checklist, §8.4) by attempting to extract `SYMPTOM_ABSENCE_EVIDENCE`; absence row stands alone vs. the problem statement. Any FULFILLED need keeps its status |
 | Solution applied | LLM re-checks confirmed `CAUSAL_EVIDENCE` rows by attempting to extract `CAUSAL_ABSENCE_EVIDENCE` (stand-alone audit row — not linked to a hypothesis; a fix confirms the cause), and refreshes symptom-absence |
 | LLM judges a need irrelevant | LLM emits update: status → `SUPERSEDED` (any time) |
@@ -644,8 +644,9 @@ Notes:
   supersession only fires when all motivators are gone.
 - `symptom_verification` needs have `motivating_hypothesis_ids=[]`
   (motivated by the problem statement). They are exempt from this
-  rule; only LLM judgment or problem-statement refinement can
-  supersede them.
+  rule; only LLM judgment or a change to the problem statement can
+  supersede them — the engine supersedes them when a revised
+  statement is re-confirmed or the problem is found a false alarm.
 - FULFILLED needs are not auto-superseded — they remain as audit of
   what *was* collected, even if the hypothesis later goes terminal.
 - The LLM can supersede explicitly at any time via update emissions.

@@ -46,6 +46,7 @@ from faultmaven.modules.case.contracts import (
     CauseState,
     EvidenceCategory,
     EvidenceSourceType,
+    ProblemStatus,
 )
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.evidence import UploadedFile
@@ -793,6 +794,11 @@ class TestCheckpointing:
         )
 
         case = _make_investigating_case(current_turn=5)
+        # A case that reached a root cause verified its problem first. Without
+        # it the turn's causal_absence row is recorded as symptom_absence (a
+        # cause cannot be shown eliminated before its problem is verified,
+        # INV-46), and the proposal stays NEEDS_INFO.
+        case.progress.problem_status = ProblemStatus.VERIFIED
         # Add root cause + solution so resolution readiness check passes
         case.root_cause_conclusion = RootCauseConclusion(
             root_cause="Connection pool timeout misconfigured",

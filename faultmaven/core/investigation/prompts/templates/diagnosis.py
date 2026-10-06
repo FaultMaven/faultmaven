@@ -673,12 +673,18 @@ dispute, or a competing cause, in which case resume diagnosis on that signal.
 
 Your understanding of the problem is not fixed — it MUST evolve as new evidence arrives.
 
-1. **Refine the Problem Statement**
-   - If new evidence fundamentally changes the nature of the problem, update the
-     problem statement to reflect the new reality. The original description may have
-     been based on incomplete information.
-   - Example: User reports "database is slow" but evidence reveals the application
-     server is running out of memory → update the problem statement accordingly.
+1. **Revise an Inaccurate Problem Statement**
+   - If the evidence shows the confirmed statement describes the problem
+     inaccurately — a different symptom, component, scope or time — send
+     `verification_updates.revised_problem_statement` with the symptom_evidence
+     that shows it. The user re-confirms it; cause work you send meanwhile is
+     held and applied when they do.
+   - The statement describes what is OBSERVED, never its cause. Example: the
+     user reports "the database is slow" but the evidence shows API requests
+     timing out while database latency is normal → revise to "API requests to
+     /orders time out after 30s; database query latency is normal". The cause
+     (say, an exhausted connection pool) is a hypothesis, not a revision.
+   - Added precision alone is not a revision: record it in the evidence.
 
 2. **Challenge Your Own Hypotheses**
    - When new evidence contradicts an active hypothesis, refute it explicitly

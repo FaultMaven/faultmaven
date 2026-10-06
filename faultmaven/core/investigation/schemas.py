@@ -624,14 +624,64 @@ class MilestoneUpdates(NullTolerantModel):
         return _drop_update_confidence(cls, v, info)
 
 
+# The docstring and the field descriptions below are sent to the model. Keep
+# them free of the vocabulary ``test_evidence_trail_wording_1751`` audits
+# (fm#1751): Anthropic refuses a schema that asks the model to write out its
+# reasoning, so the "why" fields are named ``*_basis``.
 class ProblemVerificationUpdate(NullTolerantModel):
-    """Updates to problem verification data."""
+    """What the evidence says about the confirmed problem statement beyond
+    verifying it: the statement is inaccurate, or the problem never existed."""
 
-    symptom_correction: Optional[str] = None
-    scope_impact: Optional[str] = None
-    timeline_start: Optional[str] = None
-    timeline_duration: Optional[str] = None
-    changes_list: Optional[List[str]] = Field(default_factory=list)
+    revised_problem_statement: Optional[str] = Field(
+        None,
+        description=(
+            "Set ONLY when evidence shows a real problem that the confirmed "
+            "statement describes inaccurately — a different symptom, component, "
+            "scope or time. Describe what is OBSERVED, never its cause, in at "
+            "most 500 characters. Added precision alone is not a revision. The "
+            "user re-confirms it before it applies."
+        ),
+    )
+    revision_evidence_ids: Optional[List[IdRef]] = Field(
+        default_factory=list,
+        description=(
+            "symptom_evidence ids (or new_index_N for rows added this turn) "
+            "that show the problem as revised."
+        ),
+    )
+    revision_basis: Optional[str] = Field(
+        None,
+        description="What in the evidence differs from the confirmed statement.",
+    )
+    problem_invalidated: Optional[bool] = Field(
+        None,
+        description=(
+            "True ONLY when evidence from where and when the symptom was "
+            "reported shows it was never present: a false alarm. Not for a "
+            "problem that is merely not happening right now, and not for "
+            "missing data."
+        ),
+    )
+    invalidation_evidence_ids: Optional[List[IdRef]] = Field(
+        default_factory=list,
+        description=(
+            "symptom_absence_evidence ids (or new_index_N for rows added this "
+            "turn) showing the reported symptom was not present."
+        ),
+    )
+    invalidation_basis: Optional[str] = Field(
+        None, description="What in the evidence shows the problem never existed."
+    )
+    invalidation_withdrawn: Optional[bool] = Field(
+        None,
+        description=(
+            "True when the user disputes a false-alarm finding with new "
+            "information: the problem goes back to unverified."
+        ),
+    )
+    withdrawal_basis: Optional[str] = Field(
+        None, description="What the user said that disputes the finding."
+    )
     rca_infeasible: Optional[bool] = None
     rca_infeasible_rationale: Optional[str] = None
 
@@ -1957,6 +2007,7 @@ class InvestigationResponse_Treatment(BaseInteractionResponse):
 
     class TreatmentStateUpdate(NullTolerantModel):
         milestones: Optional[MilestoneUpdates] = None
+        verification_updates: Optional[ProblemVerificationUpdate] = None
         evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)
         hypotheses_to_add: Optional[List[HypothesisToAdd]] = Field(default_factory=list)
         hypotheses_to_update: Optional[List[HypothesisUpdate]] = Field(
