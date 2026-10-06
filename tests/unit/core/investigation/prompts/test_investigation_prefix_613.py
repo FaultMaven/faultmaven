@@ -63,6 +63,7 @@ from faultmaven.modules.case.contracts import (
     JournalEntry,
     NodeState,
     NodeType,
+    ProblemStatus,
     ProblemVerification,
     ProposedAction,
     TurnOutcome,
@@ -325,7 +326,9 @@ def _case(
         symptom_statement="checkout pods restart every ~40s",
         severity=CaseSeverity.HIGH,
     )
-    case.progress.symptom_verified = symptom_verified
+    case.progress.problem_status = (
+        ProblemStatus.VERIFIED if symptom_verified else ProblemStatus.UNVERIFIED
+    )
     case.progress.solution_accepted = solution_accepted
     if observed is not None:
         case.evidence.append(_dated_symptom(observed))

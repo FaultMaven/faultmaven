@@ -92,6 +92,10 @@ No symptoms have been formally confirmed. When analyzing data, look for
 evidence the problem exists — errors, anomalies, user impact — to advance
 symptom_verified.
 
+Cause work waits for it: hypotheses, causal chains and root-cause conclusions
+are not accepted until the symptom is verified. When the data that verifies it
+also shows the cause, verify and form the hypotheses in the same response.
+
 Data showing the problem at an earlier time DOES verify it — a problem is worth
 investigating while it EXISTS (evidence still collectible, root cause
 unidentified, solution unknown), whether or not it is firing right now. Do not

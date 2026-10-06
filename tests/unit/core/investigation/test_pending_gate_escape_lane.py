@@ -42,6 +42,7 @@ from faultmaven.core.investigation.terminal_transitions import (
     closure_verdict,
     deferred_disposition_signature,
 )
+from faultmaven.modules.case.contracts import ProblemStatus
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
@@ -95,7 +96,7 @@ def _resolution_ready_case() -> Case:
     """
     case = _investigating_case_with_pending_close()
     case.pending_transition = None
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause="etcd peer certificate expired on member 2",
         mechanism="Expired peer cert drops the member from the quorum.",

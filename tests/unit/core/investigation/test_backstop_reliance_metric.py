@@ -28,6 +28,7 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
     InquiryData,
+    ProblemStatus,
 )
 from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
@@ -85,7 +86,7 @@ def test_leg_chain_when_cause_state_identified():
     case = _case()
     case.progress = InvestigationProgress(
         cause_state=CauseState.IDENTIFIED,
-        symptom_verified=True,
+        problem_status=ProblemStatus.VERIFIED,
         root_cause_likelihood=0.7,
         root_cause_method="hypothesis_validation",
     )
@@ -94,14 +95,14 @@ def test_leg_chain_when_cause_state_identified():
 
 def test_leg_rcc_backstop_when_symptom_verified_and_no_chain():
     case = _case()
-    case.progress.symptom_verified = True  # cause_state stays UNKNOWN
+    case.progress.problem_status = ProblemStatus.VERIFIED  # cause_state stays UNKNOWN
     case.root_cause_conclusion = _rcc()
     assert cause_identification_leg(case) == "rcc"
 
 
 def test_leg_working_conclusion_backstop_above_threshold():
     case = _case()
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     case.working_conclusion = _working(CAUSE_IDENTIFIED_LIKELIHOOD)  # exactly the bar
     assert cause_identification_leg(case) == "working_conclusion"
 
@@ -114,7 +115,7 @@ def test_leg_none_when_symptom_unverified_blocks_backstops():
     """The backstops are anchored on a verified symptom — an unanchored RCC does
     not count as a known cause (so a resolution licensed by it is impossible)."""
     case = _case()
-    case.progress.symptom_verified = False
+    case.progress.problem_status = ProblemStatus.UNVERIFIED
     case.root_cause_conclusion = _rcc()
     assert cause_identification_leg(case) is None
 
@@ -122,7 +123,7 @@ def test_leg_none_when_symptom_unverified_blocks_backstops():
 def test_leg_none_when_contested_suppresses_backstops():
     """While identification is MECE-contested, no backstop proxy counts."""
     case = _case()
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     case.progress.cause_identification_contested = True
     case.root_cause_conclusion = _rcc()
     assert cause_identification_leg(case) is None
@@ -130,7 +131,7 @@ def test_leg_none_when_contested_suppresses_backstops():
 
 def test_working_conclusion_below_threshold_is_none():
     case = _case()
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     case.working_conclusion = _working(CAUSE_IDENTIFIED_LIKELIHOOD - 0.1)
     assert cause_identification_leg(case) is None
 
@@ -141,7 +142,7 @@ def test_chain_takes_precedence_over_rcc():
     case = _case()
     case.progress = InvestigationProgress(
         cause_state=CauseState.IDENTIFIED,
-        symptom_verified=True,
+        problem_status=ProblemStatus.VERIFIED,
         root_cause_likelihood=0.7,
         root_cause_method="hypothesis_validation",
     )
@@ -151,7 +152,7 @@ def test_chain_takes_precedence_over_rcc():
 
 def test_rcc_takes_precedence_over_working_conclusion():
     case = _case()
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     case.root_cause_conclusion = _rcc()
     case.working_conclusion = _working(0.9)
     assert cause_identification_leg(case) == "rcc"
@@ -167,17 +168,17 @@ def _matrix_cases():
     c1 = _case()
     c1.progress = InvestigationProgress(
         cause_state=CauseState.IDENTIFIED,
-        symptom_verified=True,
+        problem_status=ProblemStatus.VERIFIED,
         root_cause_likelihood=0.7,
         root_cause_method="hypothesis_validation",
     )
     # rcc
     c2 = _case()
-    c2.progress.symptom_verified = True
+    c2.progress.problem_status = ProblemStatus.VERIFIED
     c2.root_cause_conclusion = _rcc()
     # working_conclusion
     c3 = _case()
-    c3.progress.symptom_verified = True
+    c3.progress.problem_status = ProblemStatus.VERIFIED
     c3.working_conclusion = _working(0.8)
     # none — empty
     c4 = _case()
@@ -186,7 +187,7 @@ def _matrix_cases():
     c5.root_cause_conclusion = _rcc()
     # none — contested
     c6 = _case()
-    c6.progress.symptom_verified = True
+    c6.progress.problem_status = ProblemStatus.VERIFIED
     c6.progress.cause_identification_contested = True
     c6.root_cause_conclusion = _rcc()
     return [c1, c2, c3, c4, c5, c6]
@@ -220,7 +221,7 @@ def test_finalize_emits_resolution_cause_leg_once():
     pins coverage + labeling; the pre/post-stamp regression lives with the real
     stamp machinery in test_chain_cause_state.py."""
     case = _case()
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     case.root_cause_conclusion = _rcc()
     assert cause_identification_leg(case) == "rcc"
 

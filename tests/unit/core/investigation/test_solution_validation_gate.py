@@ -37,6 +37,7 @@ from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _solution_cause_validated,
 )
 from faultmaven.core.investigation.schemas import SolutionToAdd
+from faultmaven.modules.case.contracts import ProblemStatus
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.causal import (
     CausalNode,
@@ -105,7 +106,7 @@ def _make_case(cause_state: CauseState, *, with_symptom: bool = False) -> Case:
         # identification — the fallback signals in ``_cause_identified`` (a set
         # RootCauseConclusion / a working_conclusion at threshold) are only
         # trusted once the symptom is verified.
-        case.progress.symptom_verified = True
+        case.progress.problem_status = ProblemStatus.VERIFIED
         case.evidence.append(
             Evidence(
                 evidence_id="ev_000000000001",

@@ -42,6 +42,7 @@ from faultmaven.modules.case.contracts import (
     NodeEvidenceLink,
     NodeState,
     NodeType,
+    ProblemStatus,
     ProblemVerification,
     ValidationMethod,
 )
@@ -75,7 +76,7 @@ def _hyp(category: HypothesisCategory, seed: int) -> Hypothesis:
         hypothesis_id=f"hyp_{seed:012x}",
         statement=f"hypothesis {seed}",
         category=category,
-        state=HypothesisState.CAPTURED,
+        state=HypothesisState.ACTIVE,
         rationale="a reason",
         generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
         generated_at_turn=1,
@@ -157,7 +158,7 @@ def _case(
         # A legitimate grounding is symptom-anchored (the grounding axis requires
         # a verified symptom — see _is_grounded). The seam tests below override
         # this to False to model the composition-seam pathology.
-        case.progress.symptom_verified = True
+        case.progress.problem_status = ProblemStatus.VERIFIED
     return case
 
 
@@ -446,7 +447,7 @@ def test_time_arm_false_positive_fails_forward_when_the_cause_is_grounded():
     case.causal_edges = [
         CausalEdge(cause_node_id=root.node_id, effect_node_id=d.node_id)
     ]
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     case.turns_without_progress = 0
     assert assess_verification_status(case) == VerificationStatus.HEALTHY
 
@@ -478,7 +479,7 @@ def test_grounding_trace_flags_seam_divergence(caplog):
         current_turn=9,
         turns_without_progress=5,
     )
-    case.progress.symptom_verified = False
+    case.progress.problem_status = ProblemStatus.UNVERIFIED
     case.progress.cause_assurance = grade_cause_assurance(case)
     case.progress.verification_status = assess_verification_status(case)
 
@@ -558,7 +559,7 @@ def test_validated_root_without_verified_symptom_is_not_grounded():
         current_turn=9,
         turns_without_progress=5,
     )
-    case.progress.symptom_verified = False
+    case.progress.problem_status = ProblemStatus.UNVERIFIED
     # The raw §7 grade still reads CONFIRMED — its drift-lock is untouched...
     assert grade_cause_assurance(case) == CauseAssuranceGrade.CONFIRMED
     # ...but the disposition join must NOT read HEALTHY: no verified symptom means
@@ -579,7 +580,7 @@ def test_grounding_requires_the_verified_symptom_anchor():
     assert case.progress.symptom_verified is True  # set by the grounded helper
     assert assess_verification_status(case) == VerificationStatus.HEALTHY
     # Flip only the anchor off → no longer grounded (work gate still passed → OPEN).
-    case.progress.symptom_verified = False
+    case.progress.problem_status = ProblemStatus.UNVERIFIED
     assert assess_verification_status(case) == VerificationStatus.OPEN
 
 
@@ -604,12 +605,12 @@ def test_grounded_but_symptom_unverified_stalled_is_insufficient_not_treatment_b
         current_turn=9,
         turns_without_progress=5,
     )
-    case.progress.symptom_verified = False
+    case.progress.problem_status = ProblemStatus.UNVERIFIED
     # The §7 grade is unchanged (still CONFIRMED) — only the join's axis moved.
     assert grade_cause_assurance(case) == CauseAssuranceGrade.CONFIRMED
     assert assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
     # With the symptom verified, the SAME stalled grounded case is TREATMENT_BLOCKED.
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     assert assess_verification_status(case) == VerificationStatus.TREATMENT_BLOCKED
 
 
@@ -649,7 +650,7 @@ def _mechanistic_case(**overrides) -> Case:
     case.causal_edges = [
         CausalEdge(cause_node_id=root.node_id, effect_node_id=d.node_id)
     ]
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     return case
 
 
@@ -687,7 +688,7 @@ def test_in_flight_pair_splits_on_a_validated_root_not_on_confirmation():
     """
     grounded_stalled = _mechanistic_case(current_turn=15, turns_without_progress=7)
     no_root_stalled = _work_done(current_turn=15, turns_without_progress=7)
-    no_root_stalled.progress.symptom_verified = True
+    no_root_stalled.progress.problem_status = ProblemStatus.VERIFIED
 
     assert (
         assess_verification_status(grounded_stalled)
@@ -702,7 +703,7 @@ def test_in_flight_pair_splits_on_a_validated_root_not_on_confirmation():
 def test_symptom_anchor_still_gates_the_mechanistic_arm():
     """Loosening the GRADE bar must not loosen the symptom anchor with it."""
     case = _mechanistic_case(current_turn=15, turns_without_progress=7)
-    case.progress.symptom_verified = False
+    case.progress.problem_status = ProblemStatus.UNVERIFIED
     assert assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
 
 

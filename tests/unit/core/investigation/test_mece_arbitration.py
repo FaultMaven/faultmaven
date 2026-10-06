@@ -50,6 +50,7 @@ from faultmaven.modules.case.contracts import (
     NodeEvidenceLink,
     NodeState,
     NodeType,
+    ProblemStatus,
     ProblemVerification,
     RootCauseConclusion,
     ValidationMethod,
@@ -137,7 +138,7 @@ def _case(nodes, edges=None, evidence=None, hyps=None) -> Case:
     case.causal_edges = edges or []
     case.evidence = evidence or []
     case.hypotheses = {h.hypothesis_id: h for h in (hyps or [])}
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     return case
 
 
@@ -240,7 +241,7 @@ def test_flag_records_contest_existence_independent_of_symptom_anchor():
     already behaviorally enforced, so it must be observable too; verifying
     the symptom later is NOT a second contest event."""
     case = _specimen_case()
-    case.progress.symptom_verified = False
+    case.progress.problem_status = ProblemStatus.UNVERIFIED
     with patch(
         "faultmaven.core.investigation.milestone_engine.cause_state."
         "cause_identification_held_mece_total"
@@ -248,7 +249,7 @@ def test_flag_records_contest_existence_independent_of_symptom_anchor():
         _recompute_cause_state_from_chain(case)
         assert case.progress.cause_identification_contested is True
         assert counter.inc.call_count == 1
-        case.progress.symptom_verified = True
+        case.progress.problem_status = ProblemStatus.VERIFIED
         _recompute_cause_state_from_chain(case)
     assert case.progress.cause_identification_contested is True
     assert case.progress.cause_state == CauseState.CANDIDATES

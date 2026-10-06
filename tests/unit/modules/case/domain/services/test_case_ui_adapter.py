@@ -20,6 +20,7 @@ from faultmaven.models.case_ui import (
     CaseUIResponse_Investigating,
     CaseUIResponse_Resolved,
 )
+from faultmaven.modules.case.contracts import ProblemStatus
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
@@ -432,7 +433,7 @@ class TestTransformInvestigating:
 
     def test_progress_summary(self):
         case = _make_investigating_case()
-        case.progress.symptom_verified = True
+        case.progress.problem_status = ProblemStatus.VERIFIED
 
         result = transform_case_for_ui(case)
 
@@ -543,7 +544,7 @@ class TestTransformInvestigating:
         # symptom verified AND cause identified (engine-derived); only
         # solution_proposed remains in DIAGNOSIS.
         case.progress = InvestigationProgress(
-            symptom_verified=True,
+            problem_status=ProblemStatus.VERIFIED,
             cause_state=CauseState.IDENTIFIED,
             root_cause_likelihood=0.7,
             root_cause_method="hypothesis_validation",

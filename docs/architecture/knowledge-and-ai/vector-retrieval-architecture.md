@@ -450,7 +450,7 @@ Not all claims carry equal evidentiary weight. A future improvement is to distin
 2. **Correlated evidence** — multiple retrieved chunks together support an inference (e.g., "Logs show OOM events correlating with the deployment at 14:32, and metrics show memory climbing from 14:15"). Medium confidence, multiple citations, agent should show reasoning chain.
 3. **Speculative synthesis** — the agent connects dots not explicitly connected in any source. Low confidence, explicitly flagged as hypothesis.
 
-This maps onto FaultMaven's existing hypothesis lifecycle (CAPTURED → ACTIVE → VALIDATED/REFUTED) where confidence scoring already distinguishes verified from speculative findings. Extending this to citation-level confidence would make the trust boundary explicit in the UX.
+This maps onto FaultMaven's existing hypothesis lifecycle (ACTIVE → VALIDATED/REFUTED) where confidence scoring already distinguishes verified from speculative findings. Extending this to citation-level confidence would make the trust boundary explicit in the UX.
 
 ---
 

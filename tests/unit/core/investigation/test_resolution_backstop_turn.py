@@ -31,6 +31,7 @@ from faultmaven.core.investigation.terminal_transitions import (
     assess_resolution_readiness,
     derive_disposition_eligibility,
 )
+from faultmaven.modules.case.contracts import ProblemStatus
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
@@ -114,7 +115,7 @@ def _case(*, absence: EvidenceCategory | None, collected_by="user") -> Case:
     case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
     case.state = CaseState.INVESTIGATING
     case.progress = InvestigationProgress()
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause=(
             "The IAM OIDC provider is registered with client ID "

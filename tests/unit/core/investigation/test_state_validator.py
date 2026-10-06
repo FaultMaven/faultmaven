@@ -27,6 +27,7 @@ from faultmaven.modules.case.contracts import (
     InvestigationProgress,
     NodeState,
     NodeType,
+    ProblemStatus,
     ProblemVerification,
     ValidationMethod,
 )
@@ -64,7 +65,7 @@ class TestMilestoneOrdering:
 
     def test_valid_milestone_order(self, validator, base_case):
         """Valid milestone ordering should have no errors."""
-        base_case.progress.symptom_verified = True
+        base_case.progress.problem_status = ProblemStatus.VERIFIED
         base_case.progress.solution_proposed = True
         base_case.progress.solution_accepted = True
         base_case.progress.solution_verified = True

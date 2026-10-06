@@ -54,13 +54,14 @@ class HypothesisCategory(str, Enum):
     """Does not fit above categories"""
 
 
+# This docstring is published: it becomes the schema ``description`` of
+# HypothesisState in docs/reference/api/. Keep it consumer-facing. The gate it
+# describes is ``core/investigation/problem_status.cause_work_accepted``.
 class HypothesisState(str, Enum):
-    """Hypothesis lifecycle state"""
+    """Hypothesis lifecycle state.
 
-    CAPTURED = "captured"
-    """
-    Generated but not yet actively testing.
-    Hypothesis is in the queue.
+    A hypothesis is formed ACTIVE, and only once the case's reported problem
+    has been verified by evidence.
     """
 
     ACTIVE = "active"
@@ -208,7 +209,7 @@ class Hypothesis(BaseModel):
     )
 
     state: HypothesisState = Field(
-        default=HypothesisState.CAPTURED, description="Current hypothesis state"
+        default=HypothesisState.ACTIVE, description="Current hypothesis state"
     )
 
     likelihood: float = Field(

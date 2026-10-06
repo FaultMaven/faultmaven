@@ -23,6 +23,7 @@ from faultmaven.core.investigation.schemas import (
     InvestigationResponse_Diagnosis,
     MilestoneUpdates,
 )
+from faultmaven.modules.case.contracts import ProblemStatus
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
@@ -82,7 +83,7 @@ def _case(*, causal_absence: bool) -> Case:
     case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
     case.state = CaseState.INVESTIGATING
     case.progress = InvestigationProgress()
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     # cause_state is RE-DERIVED from the causal graph every turn, so presetting
     # it is overwritten before the proposer runs (observed: the first draft of
     # this test set IDENTIFIED and the trace still read `cause_state=unknown`,

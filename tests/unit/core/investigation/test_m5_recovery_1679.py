@@ -34,6 +34,7 @@ from faultmaven.core.investigation.milestone_engine.response_application import 
     ResponseApplier,
 )
 from faultmaven.core.investigation.schemas import MilestoneUpdates, SolutionToAdd
+from faultmaven.modules.case.contracts import ProblemStatus
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.conclusion import WorkingConclusion
 from faultmaven.modules.case.domain.models.evidence import (
@@ -138,7 +139,7 @@ def _case(
         ),
     )
     case.current_turn = 4
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     case.evidence.append(
         Evidence(
             evidence_id="ev_000000000001",

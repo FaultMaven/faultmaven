@@ -61,6 +61,7 @@ from faultmaven.modules.case.contracts import (
     NeedPriority,
     NeedPurpose,
     NeedState,
+    ProblemStatus,
 )
 from tests.utils import generate_case_id
 
@@ -86,7 +87,7 @@ def _case(turn: int = 10) -> Case:
         inquiry=inquiry,
     )
     case.current_turn = turn
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     return case
 
 

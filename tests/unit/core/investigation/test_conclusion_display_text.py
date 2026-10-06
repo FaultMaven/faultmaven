@@ -47,6 +47,7 @@ from faultmaven.modules.case.contracts import (
     NodeEvidenceLink,
     NodeState,
     NodeType,
+    ProblemStatus,
     ProblemVerification,
     ValidationMethod,
     established_by_for_display,
@@ -150,7 +151,7 @@ def _confirmed_case():
         generated_at_turn=1,
     )
     case.hypotheses = {hyp.hypothesis_id: hyp}
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     _recompute_cause_state_from_chain(case)
     case.evidence.append(_evidence("absence", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE))
     case.evidence[-1].collected_at_turn = 8

@@ -515,7 +515,10 @@ evidence directly. You may do several in one turn if the evidence supports it.
    These are extracted facts, not tracked variables. Do not delay symptom_verified
    waiting for them — but actively extract and state them when found in the same evidence.
 
-   Do not form hypotheses until symptom_verified = True.
+   Do not form hypotheses until symptom_verified = True: hypotheses, causal
+   chains and root-cause conclusions sent before then are not accepted. When
+   the same data verifies the symptom AND shows its cause, do both in ONE
+   response — set symptom_verified, then form the hypotheses and chain.
 
 2. **Form Hypotheses** — Based on evidence, generate theories about WHY.
 

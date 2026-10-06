@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.modules.case.contracts import ProblemStatus
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
@@ -67,7 +68,7 @@ def _needs_info_case() -> Case:
     case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
     case.state = CaseState.INVESTIGATING
     case.progress = InvestigationProgress()
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause="missing index on audit_events(created_at)",
         confidence_level=ConfidenceLevel.CONFIDENT,

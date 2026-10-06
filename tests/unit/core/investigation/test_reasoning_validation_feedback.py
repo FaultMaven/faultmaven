@@ -44,6 +44,7 @@ from faultmaven.modules.case.contracts import (
     InquiryData,
     InvestigationProgress,
     MitigationRecord,
+    ProblemStatus,
     ProblemVerification,
 )
 
@@ -52,7 +53,7 @@ from faultmaven.modules.case.contracts import (
 # mapping; ``test_every_settable_milestone_has_a_recorded_state`` keeps it in
 # step with the schema.
 _RECORD = {
-    "symptom_verified": lambda p: setattr(p, "symptom_verified", True),
+    "symptom_verified": lambda p: setattr(p, "problem_status", ProblemStatus.VERIFIED),
     "solution_accepted": lambda p: setattr(p, "solution_accepted", True),
     "mitigation_accepted": lambda p: setattr(
         p, "mitigation", MitigationRecord(proposed_at_turn=1, accepted=True)
@@ -144,12 +145,14 @@ class TestRestatementIsNotJudged:
 
     def test_an_unknown_milestone_reads_as_not_recorded(self):
         """Fail closed: a name the lookup does not know is still validated."""
-        progress = InvestigationProgress(symptom_verified=True, solution_accepted=True)
+        progress = InvestigationProgress(
+            problem_status=ProblemStatus.VERIFIED, solution_accepted=True
+        )
 
         assert _milestone_already_recorded(progress, "not_a_milestone") is False
 
     def test_restatement_beside_a_new_claim_implicates_only_the_new_one(self):
-        progress = InvestigationProgress(symptom_verified=True)
+        progress = InvestigationProgress(problem_status=ProblemStatus.VERIFIED)
 
         is_valid, errors, offending = validate_reasoning_first(
             _response(
@@ -163,7 +166,7 @@ class TestRestatementIsNotJudged:
         assert offending == {"solution_accepted"}
 
     def test_restatement_alone_needs_no_evidence_trail(self):
-        progress = InvestigationProgress(symptom_verified=True)
+        progress = InvestigationProgress(problem_status=ProblemStatus.VERIFIED)
 
         is_valid, _, offending = validate_reasoning_first(
             _response(MilestoneUpdates(symptom_verified=True), None),
@@ -309,7 +312,7 @@ class TestStripReachesNextPrompt:
     async def test_restated_milestone_produces_no_feedback(self, mock_llm, mock_repo):
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
         case = _investigating_case()
-        case.progress.symptom_verified = True
+        case.progress.problem_status = ProblemStatus.VERIFIED
 
         mock_llm.generate.return_value = _claims_symptom_verified_unjustified()
         result = await engine.process_turn(case, "it still fails")

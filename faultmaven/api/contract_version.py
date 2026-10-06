@@ -1668,4 +1668,18 @@ asked to accept, and it belongs to a person.
 # whatever contract that build pins. Clients should adopt this version before a
 # server carrying it rolls out under `TENANT_PROVIDER=multi`, because from that
 # moment rows outside the operator's enterprise reach the running client.
-API_CONTRACT_VERSION = "10.0.0"
+# 11.0.0 — MAJOR. `HypothesisState` loses `captured`. It was the queue for
+# hypotheses formed before the case's reported problem was verified; the engine
+# now refuses those instead, so every hypothesis is formed `active`. Rows still
+# `captured` are migrated to `retired` (alembic 007).
+#
+# MAJOR is not a judgement call here: a published enum value was removed, which
+# narrows a response type a client may switch on. The measured impact is small.
+# A deployed server at this version never emits `captured`, so a running client
+# of any build sees only values it already handles. faultmaven-dashboard has the
+# one hand-written branch on it (`CaseTabs.tsx`, a `case 'captured':` that falls
+# through to the default style); once it regenerates its types at this version
+# that case label no longer type-checks and is deleted with the pin bump.
+# faultmaven-copilot styles every state other than validated/refuted by default,
+# and faultmaven-slack-agent and fm-sre-simulator only regenerate.
+API_CONTRACT_VERSION = "11.0.0"

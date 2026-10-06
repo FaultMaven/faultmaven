@@ -49,6 +49,7 @@ from faultmaven.modules.case.contracts import (
     EvidenceCategory,
     EvidenceSourceType,
     InquiryData,
+    ProblemStatus,
 )
 from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
@@ -79,7 +80,7 @@ def _make_investigating_case() -> Case:
 
 
 def _attach_root_cause(case: Case) -> None:
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause="Connection pool exhaustion under load",
         confidence_level=ConfidenceLevel.CONFIDENT,
@@ -165,7 +166,7 @@ def test_pivot_message_handles_out_of_band_fix_without_record():
     canonical SUGGEST_RESOLVE prose (which reads gracefully), never a
     self-contradictory 'Root cause: Not yet identified' rendering."""
     case = _make_investigating_case()
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     _attach_causal_absence(case)  # no root cause, no solution on record
     assert assess_closure_readiness(case).verdict == ClosureReadiness.SUGGEST_RESOLVE
     propose_transition(case, to_state="closed", summary="Closing as unresolved.")

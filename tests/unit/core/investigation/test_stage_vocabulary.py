@@ -53,6 +53,7 @@ from faultmaven.modules.case.contracts import (
     InvestigationProgress,
     InvestigationStage,
     MitigationRecord,
+    ProblemStatus,
 )
 
 # The display strings the deleted mapping used to produce. None of them may
@@ -86,7 +87,7 @@ def _make_case(
     )
     case.current_turn = 5
     if state == CaseState.INVESTIGATING:
-        case.progress.symptom_verified = True
+        case.progress.problem_status = ProblemStatus.VERIFIED
         if stage == InvestigationStage.MITIGATION:
             case.progress.mitigation = MitigationRecord(
                 proposed_at_turn=case.current_turn, accepted=True

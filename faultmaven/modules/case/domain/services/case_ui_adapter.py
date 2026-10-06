@@ -574,9 +574,7 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
     resolution_summary = ResolutionSummary(
         total_duration_minutes=duration_minutes,
         milestones_completed=len(case.progress.completed_milestones),
-        hypotheses_tested=len(
-            [h for h in case.hypotheses.values() if h.state != HypothesisState.CAPTURED]
-        ),
+        hypotheses_tested=len(case.hypotheses),
         evidence_collected=len(case.evidence),
         key_insights=key_insights,
     )

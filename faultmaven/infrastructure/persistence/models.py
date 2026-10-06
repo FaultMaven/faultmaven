@@ -82,7 +82,6 @@ class CaseState(str, enum.Enum):
 
 
 class HypothesisState(str, enum.Enum):
-    CAPTURED = "captured"
     ACTIVE = "active"
     VALIDATED = "validated"
     REFUTED = "refuted"
@@ -2038,7 +2037,7 @@ class HypothesisModel(Base):
     path = Column(JsonBlob, nullable=False, server_default="[]")
 
     statement = Column(Text, nullable=False)
-    state = Column(String(20), nullable=False, server_default="captured", index=True)
+    state = Column(String(20), nullable=False, server_default="active", index=True)
     likelihood = Column(Numeric(3, 2), nullable=True, server_default="0.5")
     initial_likelihood = Column(Numeric(3, 2), nullable=True, server_default="0.5")
     category = Column(String(50), nullable=False, index=True)
@@ -2087,7 +2086,7 @@ class HypothesisModel(Base):
             "LENGTH(TRIM(statement)) > 0", name="hypotheses_statement_not_empty"
         ),
         CheckConstraint(
-            "state IN ('captured', 'active', 'validated', 'refuted', 'inconclusive', 'retired')",
+            "state IN ('active', 'validated', 'refuted', 'inconclusive', 'retired')",
             name="hypotheses_state_check",
         ),
         CheckConstraint(

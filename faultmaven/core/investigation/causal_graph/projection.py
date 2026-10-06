@@ -11,8 +11,8 @@ if TYPE_CHECKING:
 
 
 # A hypothesis is a STANDING cause only while ACTIVE or VALIDATED — a REFUTED,
-# RETIRED (abandoned/decayed) or CAPTURED (not-yet-pursued) one is not, so a stale
-# root under it must not keep grounding the case. One definition, used by every
+# RETIRED (abandoned/decayed) or INCONCLUSIVE one is not, so a stale root under
+# it must not keep grounding the case. One definition, used by every
 # chain-mode cause_state query below.
 _STANDING_HYP_STATES = {HypothesisState.ACTIVE, HypothesisState.VALIDATED}
 
@@ -109,9 +109,9 @@ def project_hypothesis_states_from_roots(case: Case) -> HypothesisProjection:
     changed = False
     newly_validated: list[str] = []
     for hyp in case.hypotheses.values():
-        # Only ACTIVE/VALIDATED are projection targets — CAPTURED (not yet
-        # active), REFUTED, and RETIRED are owned by other lifecycle paths and
-        # must never be overwritten here (the REFUTED no-clobber rule).
+        # Only ACTIVE/VALIDATED are projection targets — INCONCLUSIVE, REFUTED
+        # and RETIRED are owned by other lifecycle paths and must never be
+        # overwritten here (the REFUTED no-clobber rule).
         if hyp.state not in (HypothesisState.ACTIVE, HypothesisState.VALIDATED):
             continue
         root = case.causal_nodes.get(hyp.root_node_id) if hyp.root_node_id else None

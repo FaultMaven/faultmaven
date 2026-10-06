@@ -30,6 +30,7 @@ from faultmaven.modules.case.contracts import (
     EvidenceCategory,
     EvidenceSourceType,
     InquiryData,
+    ProblemStatus,
 )
 from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
@@ -61,7 +62,7 @@ def _make_investigating_case() -> Case:
 def _attach_root_cause(case: Case) -> None:
     # A known root cause presupposes a verified symptom (the cause-identification
     # anchor that _cause_identified's RCC backstop requires).
-    case.progress.symptom_verified = True
+    case.progress.problem_status = ProblemStatus.VERIFIED
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause="Connection pool exhaustion under load",
         confidence_level=ConfidenceLevel.CONFIDENT,

@@ -32,6 +32,23 @@ class CauseState(str, Enum):
     """Single cause known with grounded confidence. Diagnostic machinery skipped."""
 
 
+class ProblemStatus(str, Enum):
+    """Where the confirmed problem statement stands against the evidence.
+
+    The single source of truth for "is the problem verified":
+    ``InvestigationProgress.symptom_verified`` is derived from it and never
+    stored. Every transition is written by
+    ``faultmaven.core.investigation.problem_status`` — nothing else assigns it.
+    """
+
+    UNVERIFIED = "unverified"
+    """The statement is confirmed by the user but not yet shown by evidence.
+    No cause work (hypotheses, chains, root-cause conclusions) is accepted."""
+
+    VERIFIED = "verified"
+    """Evidence shows the stated symptom. Cause work is accepted."""
+
+
 class VerificationStatus(str, Enum):
     """The join of two orthogonal axes — grounding (is a cause grounded?) ×
     progress (has progress stalled?) — plus the below-the-work-gate state
@@ -235,10 +252,13 @@ class InvestigationProgress(BaseModel):
        ``solution_verified`` is set only on the user's explicit confirmation,
        never by the LLM; that confirmed resolution also backfills
        ``solution_accepted``.
-    2. PROGRESS INDICATORS (``symptom_verified``, ``solution_proposed``).
-       Provide LLM context and analytics. Non-driving. ``symptom_verified`` is
-       set by the LLM in structured output; ``solution_proposed`` is
-       engine-derived from the standing SOLUTION proposal.
+    2. PROGRESS INDICATORS (``problem_status``, ``solution_proposed``).
+       ``problem_status`` is moved by the LLM's justified symptom claims
+       through ``core/investigation/problem_status.py`` and gates cause work:
+       no hypothesis, chain or root-cause conclusion is accepted until it is
+       VERIFIED. ``symptom_verified`` is its derived boolean view.
+       ``solution_proposed`` is engine-derived from the standing SOLUTION
+       proposal.
     3. ASSESSMENT VARIABLES. Truth signals the engine recomputes every
        INVESTIGATING turn, NEVER path-stripped: ``cause_state``,
        ``cause_identification_contested``, ``cause_assurance``,
@@ -288,12 +308,17 @@ class InvestigationProgress(BaseModel):
 
     # ============================================================
     # PROGRESS INDICATORS (LLM context, non-stage-driving)
-    # Advisory, not controlling. symptom_verified is set by the LLM in
-    # structured output; solution_proposed is engine-derived (see its field).
+    # problem_status is moved by the LLM's justified symptom claims through
+    # core/investigation/problem_status.py, its only writer; solution_proposed
+    # is engine-derived (see its field).
     # ============================================================
-    symptom_verified: bool = Field(
-        default=False,
-        description="Symptom confirmed with concrete evidence (logs, metrics, user reports)",
+    problem_status: ProblemStatus = Field(
+        default=ProblemStatus.UNVERIFIED,
+        description=(
+            "Where the confirmed problem statement stands against the "
+            "evidence. VERIFIED once evidence shows the stated symptom; cause "
+            "work is accepted only then."
+        ),
     )
 
     solution_proposed: bool = Field(
@@ -505,6 +530,13 @@ class InvestigationProgress(BaseModel):
             solution_accepted=self.solution_accepted,
             solution_verified=self.solution_verified,
         )
+
+    @property
+    def symptom_verified(self) -> bool:
+        """Whether evidence shows the stated symptom — the boolean view of
+        ``problem_status``. Read-only: transitions go through
+        ``core/investigation/problem_status.py``."""
+        return self.problem_status == ProblemStatus.VERIFIED
 
     @property
     def verification_complete(self) -> bool:

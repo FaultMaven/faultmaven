@@ -197,7 +197,7 @@ def find_duplicate_hypothesis(statement: str, case: "Case") -> str | None:
     and instructs "open a NEW hypothesis if that theory is back in play"), so
     deduping against them would DEADLOCK the revival — the re-mint refused here
     and the update refused there, with contradictory guidance. The gate-inflation
-    vector is duplicate ACTIVE/CAPTURED records; a revival minting a fresh
+    vector is duplicate standing records; a revival minting a fresh
     hypothesis is legitimate diagnostic work, not spurious inflation. The caller
     surfaces the matched id to the LLM so a genuine re-examination updates the
     standing hypothesis rather than cloning it."""

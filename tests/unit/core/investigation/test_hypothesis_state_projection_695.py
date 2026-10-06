@@ -155,7 +155,7 @@ def test_hypothesis_pointing_at_missing_node_never_validates():
 
 
 # --------------------------------------------------------------------------- #
-# Condition 2 — REFUTED / RETIRED / CAPTURED are never clobbered
+# Condition 2 — REFUTED / RETIRED / INCONCLUSIVE are never clobbered
 # --------------------------------------------------------------------------- #
 
 
@@ -180,14 +180,14 @@ def test_refuted_hypothesis_not_projected_even_if_root_validated():
     assert hyp.state == HypothesisState.REFUTED
 
 
-def test_retired_and_captured_untouched():
+def test_retired_and_inconclusive_untouched():
     root = _root(_nid(6), NodeState.VALIDATED)
     retired = _hyp(HypothesisState.RETIRED, root.node_id)
-    captured = _hyp(HypothesisState.CAPTURED, root.node_id)
-    case = _case(nodes=[root], hyps=[retired, captured])
+    inconclusive = _hyp(HypothesisState.INCONCLUSIVE, root.node_id)
+    case = _case(nodes=[root], hyps=[retired, inconclusive])
     assert project_hypothesis_states_from_roots(case).changed is False
     assert retired.state == HypothesisState.RETIRED
-    assert captured.state == HypothesisState.CAPTURED
+    assert inconclusive.state == HypothesisState.INCONCLUSIVE
 
 
 # --------------------------------------------------------------------------- #

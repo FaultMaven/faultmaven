@@ -86,7 +86,7 @@ def _hyp(category: HypothesisCategory, seed: int) -> Hypothesis:
         hypothesis_id=f"hyp_{seed:012x}",
         statement=f"hypothesis {seed}",
         category=category,
-        state=HypothesisState.CAPTURED,
+        state=HypothesisState.ACTIVE,
         rationale="a reason",
         generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
         generated_at_turn=1,

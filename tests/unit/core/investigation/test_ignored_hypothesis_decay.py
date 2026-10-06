@@ -150,7 +150,6 @@ def test_sweep_does_not_touch_non_active_hypotheses():
     hm = HypothesisManager()
     for state in (
         HypothesisState.RETIRED,
-        HypothesisState.CAPTURED,
         HypothesisState.INCONCLUSIVE,
     ):
         h = _hyp(created_turn=0, state=state)
@@ -267,47 +266,6 @@ def test_ignored_hypothesis_eventually_trips_stagnation_anchoring():
             assert "Broaden the differential" in meta.get("system_feedback", "")
             break
     assert retired, "an ignored hypothesis never tripped stagnation anchoring"
-
-
-def test_captured_promotion_starts_a_fresh_stagnation_clock():
-    """A hypothesis queued CAPTURED before symptom verification must not bank the
-    turns it spent queued: on promotion to ACTIVE its stagnation clock restarts,
-    so it gets the same grace as a freshly-created ACTIVE candidate and is NOT
-    instantly aged/decayed on its first active turn."""
-    hm = HypothesisManager()
-    eng = _engine()
-
-    # Created CAPTURED at turn 0; the case then spends several turns verifying the
-    # symptom before promotion at turn 5.
-    h = _hyp(created_turn=0, state=HypothesisState.CAPTURED)
-    promote_turn = 5
-    case = _case(promote_turn)
-    case.hypotheses = {h.hypothesis_id: h}
-
-    promoted = hm.activate_queued_hypotheses(case)
-    assert promoted == [h.hypothesis_id]
-    # Clock restarted at activation — not left at the creation turn.
-    assert h.last_progress_at_turn == promote_turn
-    assert h.last_updated_turn == promote_turn
-
-    prior = h.likelihood
-    # First ACTIVE housekeeping turn (same turn as promotion): no aging yet — the
-    # age since (re)start is 0, well under the threshold.
-    _perform_hypothesis_housekeeping(
-        eng.deps.hypothesis_manager, case, {}, investigation_advanced=True
-    )
-    assert h.iterations_without_progress == 0
-    assert h.likelihood == prior
-
-    # It only ages after the SAME threshold a fresh ACTIVE candidate would.
-    grace_turn = promote_turn + IGNORED_STAGNATION_TURN_THRESHOLD - 1
-    case2 = _case(grace_turn)
-    case2.hypotheses = {h.hypothesis_id: h}
-    _perform_hypothesis_housekeeping(
-        eng.deps.hypothesis_manager, case2, {}, investigation_advanced=True
-    )
-    assert h.iterations_without_progress == 0
-    assert h.likelihood == prior
 
 
 # ---------------------------------------------------------------------------

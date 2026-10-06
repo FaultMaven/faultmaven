@@ -27,6 +27,7 @@ from faultmaven.modules.case.contracts import (
     HypothesisState,
     InquiryData,
     NodeType,
+    ProblemStatus,
     ProblemVerification,
 )
 
@@ -51,6 +52,8 @@ def _case() -> Case:
         ),
     )
     case.current_turn = 4
+    # Chain emission is cause work: accepted only on a verified problem.
+    case.progress.problem_status = ProblemStatus.VERIFIED
     return case
 
 

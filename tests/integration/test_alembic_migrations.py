@@ -15,6 +15,7 @@ Usage:
     pytest tests/integration/test_alembic_migrations.py -v
 """
 
+import json
 import os
 import shlex
 import sqlite3
@@ -37,11 +38,11 @@ TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 # the 001-053 chain) plus additive revisions on top of it, so the seed
 # assertions below reverse the whole schema with "downgrade base" and each
 # additive revision is stepped over on its own.
-HEAD_REVISION = "f37066de2792"  # 006_kb_conversion_source_storage_ref_null
+HEAD_REVISION = "497ae8900ae2"  # 007_problem_status_single_source
 #: The baseline, which every additive revision parents onto.
 BASELINE_REVISION = "a1e0c17bd001"  # 001_enterprise_baseline
 #: The first additive revision.
-LLM_USAGE_REVISION = "65913afe773c"  # 002_llm_usage_ledger
+LLM_USAGE_REVISION = "65913afe773c"  # 002_llm_usage_ledger  # pragma: allowlist secret
 #: The cross-enterprise operator case metadata functions.
 ADMIN_CASE_METADATA_REVISION = "baa28e79ebab"  # 003_admin_case_metadata
 #: The baseline's definer trigger guards re-settled.
@@ -50,7 +51,11 @@ DEFINER_TRIGGER_HARDENING_REVISION = "14d4bfdd406e"  # 004_definer_trigger_harde
 DEFINER_SEARCH_PATH_REVISION = "1c5a2ad13a65"  # 005_definer_search_path_without_public
 #: ``006_kb_conversion_source_storage_ref_null``: KB conversion-source rows
 #: stop carrying a filesystem path in storage_ref.
-CONVERSION_SOURCE_REF_REVISION = "f37066de2792"
+CONVERSION_SOURCE_REF_REVISION = "f37066de2792"  # pragma: allowlist secret
+#: ``007_problem_status_single_source``: ``symptom_verified`` becomes
+#: ``problem_status`` in the progress blob, and ``captured`` leaves
+#: ``hypotheses.state``.
+PROBLEM_STATUS_REVISION = "497ae8900ae2"
 #: The tables 002_llm_usage_ledger adds (#640).
 LLM_USAGE_TABLES = ["llm_turn_spend", "llm_usage_daily"]
 
@@ -606,6 +611,223 @@ class TestConversionSourceStorageRefRevision:
         )
         restored = sql.index("SET LOCAL row_security TO DEFAULT;")
         assert off < update < restored, sql
+
+
+class TestProblemStatusRevision:
+    """007 moves ``symptom_verified`` to ``problem_status`` and retires the
+    ``captured`` hypothesis state — and the SQLite table rebuild that drops
+    ``captured`` from the CHECK keeps every row that references a hypothesis.
+
+    Its PostgreSQL half, where the UPDATEs run under ``row_security = off``:
+    ``tests/integration/security/test_problem_status_migration_postgres.py``.
+    """
+
+    #: ``(case_id, progress)`` as seeded at the parent revision.
+    PROGRESS = [
+        ("case_1", '{"symptom_verified": true, "cause_state": "unknown"}'),
+        ("case_2", '{"symptom_verified": false}'),
+        ("case_3", "{}"),
+    ]
+    #: ``(hypothesis_id, state)`` as seeded, all on case_1.
+    HYPOTHESES = [("hyp_queued", "captured"), ("hyp_active", "active")]
+
+    def _seed(self) -> None:
+        enterprise = TestStandaloneTenancySeed.STANDALONE_ENTERPRISE_ID
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute(
+                "INSERT INTO users (user_id, enterprise_id, username, email, "
+                "display_name, created_at, updated_at) VALUES ('u1', ?, 'u1', "
+                "'u1@example.com', 'U One', datetime('now'), datetime('now'))",
+                (enterprise,),
+            )
+            for case_id, progress in self.PROGRESS:
+                conn.execute(
+                    "INSERT INTO cases (case_id, enterprise_id, user_id, title, "
+                    "progress, created_at, updated_at) VALUES (?, ?, 'u1', 't', ?, "
+                    "datetime('now'), datetime('now'))",
+                    (case_id, enterprise, progress),
+                )
+            for hypothesis_id, state in self.HYPOTHESES:
+                conn.execute(
+                    "INSERT INTO hypotheses (hypothesis_id, enterprise_id, case_id, "
+                    "statement, category, state) VALUES (?, ?, 'case_1', 's', "
+                    "'code', ?)",
+                    (hypothesis_id, enterprise, state),
+                )
+            conn.execute(
+                "INSERT INTO evidence (evidence_id, enterprise_id, case_id, "
+                "category, summary) VALUES ('ev_1', ?, 'case_1', "
+                "'symptom_evidence', 's')",
+                (enterprise,),
+            )
+            conn.execute(
+                "INSERT INTO hypothesis_evidence (hypothesis_id, evidence_id, "
+                "enterprise_id, relationship_type) VALUES "
+                "('hyp_queued', 'ev_1', ?, 'supports')",
+                (enterprise,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _progress() -> dict:
+        return {
+            case_id: json.loads(progress)
+            for case_id, progress in query_rows(
+                TEST_DB, "SELECT case_id, progress FROM cases"
+            )
+        }
+
+    @staticmethod
+    def _hypotheses() -> dict:
+        return {
+            hypothesis_id: (state, reason)
+            for hypothesis_id, state, reason in query_rows(
+                TEST_DB,
+                "SELECT hypothesis_id, state, retirement_reason FROM hypotheses",
+            )
+        }
+
+    def test_upgrade_moves_the_key_retires_the_queue_and_keeps_the_links(
+        self, clean_database, database_url
+    ):
+        result = run_alembic(f"upgrade {CONVERSION_SOURCE_REF_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        self._seed()
+
+        result = run_alembic(f"upgrade {PROBLEM_STATUS_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        assert "moved symptom_verified on 2 row(s)" in result.stderr
+        assert "retired queued hypotheses on 1 row(s)" in result.stderr
+
+        progress = self._progress()
+        assert progress["case_1"] == {
+            "problem_status": "verified",
+            "cause_state": "unknown",
+        }
+        assert progress["case_2"] == {"problem_status": "unverified"}
+        assert progress["case_3"] == {}  # no key: the field's default applies
+
+        hypotheses = self._hypotheses()
+        assert hypotheses["hyp_active"] == ("active", None)
+        state, reason = hypotheses["hyp_queued"]
+        assert state == "retired" and "revision 007" in reason
+
+        # The rebuild ran with foreign keys off: the link survives.
+        assert query_rows(TEST_DB, "SELECT hypothesis_id FROM hypothesis_evidence") == [
+            ("hyp_queued",)
+        ]
+
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            with pytest.raises(sqlite3.IntegrityError, match="hypotheses_state_check"):
+                conn.execute(
+                    "INSERT INTO hypotheses (hypothesis_id, enterprise_id, "
+                    "case_id, statement, category, state) VALUES ('hyp_x', ?, "
+                    "'case_1', 's', 'code', 'captured')",
+                    (TestStandaloneTenancySeed.STANDALONE_ENTERPRISE_ID,),
+                )
+            conn.execute(
+                "INSERT INTO hypotheses (hypothesis_id, enterprise_id, case_id, "
+                "statement, category) VALUES ('hyp_default', ?, 'case_1', 's', "
+                "'code')",
+                (TestStandaloneTenancySeed.STANDALONE_ENTERPRISE_ID,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        assert self._hypotheses()["hyp_default"] == ("active", None)
+
+    def test_downgrade_restores_exactly_what_it_moved(
+        self, clean_database, database_url
+    ):
+        result = run_alembic(f"upgrade {CONVERSION_SOURCE_REF_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        self._seed()
+        before_progress = self._progress()
+        result = run_alembic(f"upgrade {PROBLEM_STATUS_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+
+        result = run_alembic(
+            f"downgrade {CONVERSION_SOURCE_REF_REVISION}", database_url
+        )
+        assert result.returncode == 0, result.stderr
+        assert get_current_revision(database_url) == CONVERSION_SOURCE_REF_REVISION
+        assert self._progress() == before_progress
+        assert self._hypotheses() == {
+            "hyp_queued": ("captured", None),
+            "hyp_active": ("active", None),
+        }
+        assert query_rows(TEST_DB, "SELECT hypothesis_id FROM hypothesis_evidence") == [
+            ("hyp_queued",)
+        ]
+
+    def test_the_rebuild_refuses_to_run_with_foreign_keys_on(self):
+        """With foreign keys enforced, dropping the old table would run the ON
+        DELETE actions of the rows that reference it. The guard reads the
+        pragma on the migration's own connection."""
+        import importlib.util
+
+        path = next(
+            (PROJECT_ROOT / "alembic" / "versions").glob(
+                f"*_{PROBLEM_STATUS_REVISION}_*.py"
+            )
+        )
+        spec = importlib.util.spec_from_file_location("rev_007", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        class _Bind:
+            def execute(self, _statement):
+                class _Result:
+                    @staticmethod
+                    def scalar():
+                        return 1
+
+                return _Result()
+
+        class _Context:
+            as_sql = False
+
+        class _Op:
+            @staticmethod
+            def get_context():
+                return _Context()
+
+            @staticmethod
+            def get_bind():
+                return _Bind()
+
+        module.op = _Op()
+        with pytest.raises(RuntimeError, match="foreign_keys=OFF"):
+            module._refuse_cascading_rebuild()
+
+    def test_the_postgresql_statements_turn_row_security_off_around_the_updates(
+        self,
+    ):
+        """Offline (``--sql``) needs no server: off, both UPDATEs, back to the
+        value before, then the constraint and default change in place."""
+        result = run_alembic(
+            f"upgrade {CONVERSION_SOURCE_REF_REVISION}:{PROBLEM_STATUS_REVISION} "
+            "--sql",
+            "postgresql://offline@localhost/offline",
+        )
+        assert result.returncode == 0, result.stderr
+        sql = result.stdout
+        off = sql.index("SET LOCAL row_security = off;")
+        progress = sql.index(
+            "UPDATE cases SET progress = (progress - 'symptom_verified')"
+        )
+        retire = sql.index("UPDATE hypotheses SET state = 'retired'")
+        restored = sql.index("SET LOCAL row_security TO DEFAULT;")
+        drop = sql.index(
+            "ALTER TABLE hypotheses DROP CONSTRAINT hypotheses_state_check;"
+        )
+        assert off < progress < retire < restored < drop, sql
+        assert "'captured'" not in sql[drop:], sql
 
 
 class TestRbacSeed:

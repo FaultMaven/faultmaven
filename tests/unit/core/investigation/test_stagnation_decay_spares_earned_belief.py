@@ -363,10 +363,9 @@ def test_an_ignored_prior_decays_by_one_factor_per_turn():
 
 
 def test_a_turn_that_restarts_the_stagnation_clock_does_not_decay():
-    """Activation (CAPTURED -> ACTIVE) and reversion (VALIDATED -> ACTIVE) stamp
-    both ``last_updated_turn`` and ``last_progress_at_turn`` to the current
-    turn without clearing the counter. That turn is a fresh start, not a
-    stagnant turn."""
+    """Reversion (VALIDATED -> ACTIVE) stamps both ``last_updated_turn`` and
+    ``last_progress_at_turn`` to the current turn without clearing the counter.
+    That turn is a fresh start, not a stagnant turn."""
     eng = _engine()
     h = _hyp(likelihood=0.7, progress_turn=9)
     h.iterations_without_progress = 2
@@ -541,19 +540,6 @@ def test_the_age_out_stands_down_while_requested_evidence_is_outstanding():
 # ---------------------------------------------------------------------------
 # A restarted clock restarts the counter
 # ---------------------------------------------------------------------------
-
-
-def test_activation_restarts_the_stagnation_counter():
-    h = _hyp(likelihood=0.4, progress_turn=2)
-    h.state = HypothesisState.CAPTURED
-    h.iterations_without_progress = 3
-    case = _case([h])
-    case.current_turn = 9
-
-    HypothesisManager.activate_queued_hypotheses(case)
-
-    assert h.state == HypothesisState.ACTIVE
-    assert h.iterations_without_progress == 0
 
 
 def test_a_reverted_hypothesis_is_not_retired_as_stalled_on_the_turn_it_reverts():
