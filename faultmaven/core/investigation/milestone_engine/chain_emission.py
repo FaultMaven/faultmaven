@@ -13,7 +13,6 @@ from faultmaven.core.investigation.causal_graph.pruning import (
     resolve_orphan_chains,
 )
 from faultmaven.core.investigation.lifecycle_metrics import (
-    cause_work_refused_unverified_total,
     hypothesis_root_adoption_refused_total,
 )
 from faultmaven.core.investigation.problem_status import cause_work_accepted
@@ -22,6 +21,7 @@ from faultmaven.modules.case.contracts import (
     NodeType,
 )
 
+from .cause_work import refuse_cause_work
 from .stage_gates import (
     _add_system_feedback,
 )
@@ -49,35 +49,31 @@ def _apply_chain_emission(
     reached ``D`` (still being expanded); the model permits ``root_node_id``
     set with an empty path.
 
-    New chain STRUCTURE — nodes, edges and deductive validations — is cause
-    work, accepted only on a verified problem (``cause_work_accepted``, read
-    at the status the turn ends with, so a turn that verifies the symptom can
-    emit its chain). Evidence links onto nodes that already stand follow the
-    rule for links onto standing hypotheses and still apply; a link naming a
-    refused same-turn node resolves to nothing and is skipped.
+    Chain STRUCTURE — new nodes, edges, deductive validations, and pointing a
+    hypothesis at a root (``root_node_ref``, which can re-root a standing
+    hypothesis and prune its old chain) — is cause work, accepted only on a
+    verified problem (``cause_work_accepted``, read at the status the turn ends
+    with, so a turn that verifies the symptom can emit its chain). Evidence
+    links onto nodes that already stand follow the rule for links onto
+    standing hypotheses and still apply; a link naming a refused same-turn
+    node resolves to nothing and is skipped.
     """
     nodes = list(getattr(updates, "causal_nodes_to_add", None) or [])
     edges = list(getattr(updates, "causal_edges_to_add", None) or [])
     deductive = list(getattr(updates, "deductive_validations", None) or [])
-    if (nodes or edges or deductive) and not cause_work_accepted(case):
-        cause_work_refused_unverified_total.labels(kind="chain").inc()
-        _add_system_feedback(
-            metadata,
-            "CAUSAL CHAIN NOT ACCEPTED: causal nodes, edges or deductive "
-            "validations arrived before the problem was verified and were not "
-            "recorded. Verify the symptom first (symptom_verified with cited "
-            "symptom evidence); the chain can be emitted in the same response "
-            "that verifies it.",
-        )
-        logger.info(
-            "Case %s: refused chain emission on an unverified problem "
-            "(%d nodes, %d edges, %d deductive validations)",
+    root_refs = dict(metadata.get("hyp_root_refs", {}))
+    if (nodes or edges or deductive or root_refs) and not cause_work_accepted(case):
+        refuse_cause_work(
             case.case_id,
-            len(nodes),
-            len(edges),
-            len(deductive),
+            metadata,
+            kind="chain",
+            what=(
+                f"a causal chain ({len(nodes)} nodes, {len(edges)} edges, "
+                f"{len(deductive)} deductive validations, {len(root_refs)} "
+                "hypothesis root refs)"
+            ),
         )
-        nodes, edges, deductive = [], [], []
+        nodes, edges, deductive, root_refs = [], [], [], {}
     created = ingest_emitted_chain(
         case,
         nodes,
@@ -166,7 +162,7 @@ def _apply_chain_emission(
     # handed over.
     abandoned: list[list] = []
     contested: list[tuple[str, str]] = []
-    for hyp_id, ref in metadata.get("hyp_root_refs", {}).items():
+    for hyp_id, ref in root_refs.items():
         root_id = _resolve_root(ref)
         hyp = case.hypotheses.get(hyp_id)
         if root_id is None or hyp is None:

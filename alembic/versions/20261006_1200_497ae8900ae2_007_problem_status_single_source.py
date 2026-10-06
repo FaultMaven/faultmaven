@@ -42,6 +42,19 @@ same choice and reasoning as revisions 003 and 006: the migrating role owns the
 tables and is exempt, and a role the policy would filter raises instead of
 silently updating one enterprise's rows.
 
+Rolling deploys
+---------------
+
+Run this release with no pod on the previous image serving turns after the
+revision has run (a Recreate rollout, or scale the old replicas down first).
+A pod on the previous image writes the old shape: it reads every migrated blob
+as unverified, queues hypotheses as ``captured``, and the narrowed CHECK
+refuses that write, so the turn fails to save. That is deliberate. Keeping
+``captured`` legal instead would let those rows reach pods on this image, which
+cannot load a hypothesis in a state their enum no longer has: a failed save on
+an old pod is retried on a new one, a row the new code cannot read breaks the
+case.
+
 What it cannot reach
 --------------------
 
@@ -72,10 +85,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 _log = logging.getLogger("alembic.runtime.migration")
 
-#: The reason a queued row is retired with; downgrade() reads it back.
+#: The reason a queued row is retired with; downgrade() reads it back. Users
+#: see it (the report's "Set aside:" line, the UI's retirement_reason), so it
+#: is written for them, not for the schema.
 RETIRED_FROM_QUEUE_REASON = (
-    "Formed before the symptom was verified and never activated "
-    "(the pre-verification queue was removed in revision 007)."
+    "Proposed before the problem was verified, and never pursued."
 )
 
 STATE_CHECK = "hypotheses_state_check"

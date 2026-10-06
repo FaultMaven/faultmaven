@@ -18,10 +18,7 @@ import pytest
 
 from faultmaven.core.investigation.causal_graph.ingestion import seed_problem_node
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
-from faultmaven.core.investigation.milestone_engine import (
-    chain_emission,
-    response_application,
-)
+from faultmaven.core.investigation.milestone_engine import cause_work
 from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.response_application import (
@@ -33,7 +30,9 @@ from faultmaven.core.investigation.schemas import (
     DeductiveValidationToAdd,
     EvidenceToAdd,
     EvidenceTrail,
+    HypothesisEvidenceLinkToAdd,
     HypothesisToAdd,
+    HypothesisUpdate,
     InvestigationResponse_Diagnosis,
     MilestoneJustifications,
     MilestoneUpdates,
@@ -176,12 +175,12 @@ def _counter(module):
 async def test_hypotheses_on_an_unverified_problem_are_refused_not_queued():
     eng, case = _engine(), _case(ProblemStatus.UNVERIFIED)
 
-    with _counter(response_application) as counter:
+    with _counter(cause_work) as counter:
         meta = await _apply(eng, case, _DSU(hypotheses_to_add=[_hypothesis()]))
 
     assert case.hypotheses == {}
     assert meta["hypotheses_generated"] == []
-    assert "HYPOTHESES NOT ACCEPTED" in meta["system_feedback"]
+    assert "CAUSE WORK NOT ACCEPTED" in meta["system_feedback"]
     counter.labels.assert_called_once_with(kind="hypothesis")
     counter.labels.return_value.inc.assert_called_once_with(1)
 
@@ -206,7 +205,7 @@ async def test_evidence_on_an_unverified_problem_is_kept():
 async def test_chain_structure_on_an_unverified_problem_is_refused():
     eng, case = _engine(), _case(ProblemStatus.UNVERIFIED)
 
-    with _counter(chain_emission) as counter:
+    with _counter(cause_work) as counter:
         meta = await _apply(
             eng,
             case,
@@ -219,7 +218,7 @@ async def test_chain_structure_on_an_unverified_problem_is_refused():
 
     assert [n.node_type for n in case.causal_nodes.values()] == [NodeType.PROBLEM]
     assert case.causal_edges == []
-    assert "CAUSAL CHAIN NOT ACCEPTED" in meta["system_feedback"]
+    assert "CAUSE WORK NOT ACCEPTED" in meta["system_feedback"]
     counter.labels.assert_called_once_with(kind="chain")
 
 
@@ -252,7 +251,7 @@ async def test_an_edge_between_standing_nodes_on_an_unverified_problem_is_refuse
     )
 
     assert case.causal_edges == []
-    assert "CAUSAL CHAIN NOT ACCEPTED" in meta["system_feedback"]
+    assert "CAUSE WORK NOT ACCEPTED" in meta["system_feedback"]
 
 
 async def test_a_deductive_validation_on_an_unverified_problem_is_refused():
@@ -273,13 +272,13 @@ async def test_a_deductive_validation_on_an_unverified_problem_is_refused():
     )
 
     assert "deductive_survivor_ids" not in meta
-    assert "CAUSAL CHAIN NOT ACCEPTED" in meta["system_feedback"]
+    assert "CAUSE WORK NOT ACCEPTED" in meta["system_feedback"]
 
 
 async def test_root_cause_claims_on_an_unverified_problem_are_refused():
     eng, case = _engine(), _case(ProblemStatus.UNVERIFIED)
 
-    with _counter(response_application) as counter:
+    with _counter(cause_work) as counter:
         meta = await _apply(
             eng,
             case,
@@ -405,3 +404,114 @@ async def test_one_turn_verifies_forms_grounds_and_identifies():
     assert hyp.root_node_id is not None
     assert case.progress.cause_state == CauseState.IDENTIFIED
     assert "NOT ACCEPTED" not in meta.get("system_feedback", "")
+
+
+# ---------------------------------------------------------------------------
+# Review round (#1869): what is and is not cause work, and refs across a
+# refusal
+# ---------------------------------------------------------------------------
+
+
+async def test_a_zero_likelihood_is_not_a_cause_claim():
+    """A provider that fills every optional field sends 0.0 with no cause in
+    mind; refusing it would count and report cause work nobody sent."""
+    eng, case = _engine(), _case(ProblemStatus.UNVERIFIED)
+
+    with _counter(cause_work) as counter:
+        meta = await _apply(
+            eng, case, _DSU(milestones=MilestoneUpdates(root_cause_likelihood=0.0))
+        )
+
+    counter.labels.assert_not_called()
+    assert "system_feedback" not in meta
+
+
+def _standing(case: Case, statement: str = _CAUSE) -> str:
+    """An ACTIVE hypothesis that outlived a retraction."""
+    h = HypothesisManager().create_hypothesis(
+        statement=statement,
+        category=HypothesisCategory.CODE,
+        initial_likelihood=0.4,
+        current_turn=2,
+    )
+    case.hypotheses[h.hypothesis_id] = h
+    return h.hypothesis_id
+
+
+async def test_a_restated_standing_hypothesis_keeps_its_link_through_a_refusal():
+    """After a retraction the problem is unverified but a hypothesis stands. A
+    restatement of it in hypotheses_to_add maps new_index_N onto it, as the
+    dedup would, so evidence linked through that ref still lands; a genuinely
+    new hypothesis in the batch is refused and its slot resolves to nothing."""
+    eng, case = _engine(), _case(ProblemStatus.UNVERIFIED)
+    standing = _standing(case)
+
+    meta = await _apply(
+        eng,
+        case,
+        _DSU(
+            evidence_to_add=[_row(EvidenceCategory.CAUSAL_EVIDENCE, "c1")],
+            hypotheses_to_add=[
+                _hypothesis(statement="the payment gateway rejects retries"),
+                _hypothesis(),  # restates the standing one
+            ],
+            hypothesis_evidence_links=[
+                HypothesisEvidenceLinkToAdd(
+                    hypothesis_id_ref=f"new_index_{i}",
+                    evidence_id_ref="new_index_0",
+                    stance=EvidenceStance.SUPPORTS,
+                    reasoning="heap grows with every order",
+                )
+                for i in (0, 1)
+            ],
+        ),
+    )
+
+    assert list(case.hypotheses) == [standing]
+    (link,) = case.hypotheses[standing].evidence_links
+    assert link.evidence_id == meta["evidence_added"][0]
+    assert "1 hypothesis(es)" in meta["system_feedback"]
+
+
+async def test_a_re_root_on_an_unverified_problem_is_refused():
+    """Pointing a standing hypothesis at a root moves the chain and prunes the
+    old one: chain structure, refused like new nodes."""
+    eng, case = _engine(), _case(ProblemStatus.UNVERIFIED)
+    root_id = _seed_root(case)
+    standing = _standing(case, "an unrelated earlier theory")
+
+    meta = await _apply(
+        eng,
+        case,
+        _DSU(
+            hypotheses_to_update=[
+                HypothesisUpdate(hypothesis_id=standing, root_node_ref=root_id)
+            ]
+        ),
+    )
+
+    assert case.hypotheses[standing].root_node_id is None
+    assert "hypothesis root refs" in meta["system_feedback"]
+
+
+async def test_everything_refused_in_a_turn_is_reported_in_one_note():
+    eng, case = _engine(), _case(ProblemStatus.UNVERIFIED)
+
+    with _counter(cause_work) as counter:
+        meta = await _apply(
+            eng,
+            case,
+            _DSU(
+                hypotheses_to_add=[_hypothesis()],
+                causal_nodes_to_add=[
+                    CausalNodeToAdd(statement=_CAUSE, node_type="root", produces="D")
+                ],
+                root_cause_conclusion=RootCauseConclusionUpdate(
+                    root_cause=_CAUSE, mechanism="heap exhaustion", likelihood=0.9
+                ),
+            ),
+        )
+
+    assert meta["system_feedback"].count("CAUSE WORK NOT ACCEPTED") == 1
+    kinds = sorted(c.kwargs["kind"] for c in counter.labels.call_args_list)
+    assert kinds == ["chain", "conclusion", "hypothesis"]

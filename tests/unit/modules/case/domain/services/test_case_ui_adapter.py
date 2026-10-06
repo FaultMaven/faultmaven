@@ -642,6 +642,22 @@ class TestTransformResolved:
 
         assert result.resolution_summary.total_duration_minutes == 135  # 2h15m
 
+    def test_a_hypothesis_set_aside_untested_is_not_counted_as_tested(self):
+        """Retired with no evidence and no chain: considered, never tested —
+        the rows migration 007 retired from the old queue among them."""
+        case = _make_resolved_case()
+        tested = _make_hypothesis(state=HypothesisState.REFUTED)
+        worked = _make_hypothesis(state=HypothesisState.ACTIVE)
+        set_aside = _make_hypothesis(
+            state=HypothesisState.RETIRED,
+            retirement_reason="Proposed before the problem was verified, and never pursued.",
+        )
+        case.hypotheses = {h.hypothesis_id: h for h in (tested, worked, set_aside)}
+
+        result = transform_case_for_ui(case)
+
+        assert result.resolution_summary.hypotheses_tested == 2
+
     def test_resolved_reports_available(self):
         case = _make_resolved_case()
 

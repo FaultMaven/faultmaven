@@ -9,10 +9,13 @@ from faultmaven.core.investigation.causal_graph.similarity import (
     find_duplicate_hypothesis,
 )
 from faultmaven.core.investigation.lifecycle_metrics import (
-    cause_work_refused_unverified_total,
     hypothesis_dedup_skipped_total,
     inquiry_classified_without_statement_total,
     inquiry_handshake_deferred_total,
+)
+from faultmaven.core.investigation.milestone_engine.cause_work import (
+    refuse_cause_work,
+    report_refused_cause_work,
 )
 from faultmaven.core.investigation.milestone_engine.chain_emission import (
     _apply_chain_emission,
@@ -45,7 +48,6 @@ from faultmaven.core.investigation.schemas import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CauseState,
     ConfidenceLevel,
     Evidence,
     InvestigationActionType,
@@ -94,16 +96,9 @@ from .terminal_proposals import (
 
 logger = logging.getLogger(__name__)
 
-_VALID_ROOT_CAUSE_METHODS = frozenset(
-    {
-        "direct_analysis",
-        "hypothesis_validation",
-        "single_shot_validation",
-        "correlation",
-        "user_provided",
-        "other",
-    }
-)
+#: What a refused hypothesis's ``new_index_N`` slot resolves to: no hypothesis,
+#: so a link or update naming it is skipped by its consumer's existence check.
+_REFUSED_HYPOTHESIS_SLOT = "refused_before_verification"
 
 
 class ResponseApplier:
@@ -547,37 +542,31 @@ class ResponseApplier:
         the turn ends with. A refused claim is not stored and the model is
         told why: the evidence behind it is already on the case, so nothing
         is lost by concluding again once the symptom is verified.
+
+        A likelihood of 0 is no claim: it is what a provider that fills every
+        optional field sends when the model has no cause in mind. The
+        IDENTIFIED floor for likelihood and method is the recompute's
+        (``cause_state``), not this step's.
         """
         rcc = getattr(updates, "root_cause_conclusion", None)
         m = getattr(updates, "milestones", None)
         likelihood = getattr(m, "root_cause_likelihood", None) if m else None
         method = getattr(m, "root_cause_method", None) if m else None
-        if not (rcc or likelihood is not None or method):
+        claimed = [
+            name
+            for name, present in (
+                ("a root_cause_conclusion", bool(rcc)),
+                ("a root_cause_likelihood", bool(likelihood)),
+                ("a root_cause_method", bool(method)),
+            )
+            if present
+        ]
+        if not claimed:
             return
 
         if not cause_work_accepted(case):
-            cause_work_refused_unverified_total.labels(kind="conclusion").inc()
-            refused = [
-                name
-                for name, present in (
-                    ("root_cause_conclusion", bool(rcc)),
-                    ("root_cause_likelihood", likelihood is not None),
-                    ("root_cause_method", bool(method)),
-                )
-                if present
-            ]
-            _add_system_feedback(
-                metadata,
-                f"CAUSE WORK NOT ACCEPTED: {', '.join(refused)} arrived before "
-                "the problem was verified, so it was not recorded. Verify the "
-                "symptom first (symptom_verified with cited symptom evidence); "
-                "a root cause can be concluded in the same response that "
-                "verifies it.",
-            )
-            logger.info(
-                "Case %s: refused cause claims %s on an unverified problem",
-                case.case_id,
-                refused,
+            refuse_cause_work(
+                case.case_id, metadata, kind="conclusion", what=", ".join(claimed)
             )
             return
 
@@ -596,25 +585,11 @@ class ResponseApplier:
                 # (link_llm_rcc_to_cause tier 1), not here.
                 names_root_node_id=getattr(rcc, "names_root_node_id", None),
             )
-        if likelihood is not None:
+        if likelihood:
             p.root_cause_likelihood = likelihood
         if method:
-            if method in _VALID_ROOT_CAUSE_METHODS:
-                p.root_cause_method = method
-            else:
-                logger.warning(
-                    f"LLM returned invalid root_cause_method '{method}', "
-                    f"mapping to 'other'"
-                )
-                p.root_cause_method = "other"
-
-        # Ensure consistency: if cause_state is IDENTIFIED, root_cause_method
-        # and root_cause_likelihood must also be set.
-        if m and p.cause_state == CauseState.IDENTIFIED:
-            if not p.root_cause_method:
-                p.root_cause_method = method or "direct_analysis"
-            if p.root_cause_likelihood == 0.0:
-                p.root_cause_likelihood = likelihood or 0.8
+            # The schema's Literal admits only valid methods.
+            p.root_cause_method = method
 
     async def _apply_investigation_updates(
         self,
@@ -892,24 +867,28 @@ class ResponseApplier:
         emit_order: list[str] = metadata.setdefault("hyp_emit_order", [])
         hypotheses_in = list(getattr(updates, "hypotheses_to_add", None) or [])
         if hypotheses_in and not cause_work_accepted(case):
-            refused_count = len(hypotheses_in)
-            cause_work_refused_unverified_total.labels(kind="hypothesis").inc(
-                refused_count
-            )
-            _add_system_feedback(
-                metadata,
-                f"HYPOTHESES NOT ACCEPTED: {refused_count} hypothesis(es) "
-                "arrived before the problem was verified and were not "
-                "recorded. Verify the symptom first (symptom_verified with "
-                "cited symptom evidence); hypotheses can be formed in the "
-                "same response that verifies it. Evidence you recorded is "
-                "kept and can be linked to them then.",
-            )
-            logger.info(
-                "Case %s: refused %d hypotheses on an unverified problem",
-                case.case_id,
-                refused_count,
-            )
+            # Refused, not queued. Positions are kept so a ``new_index_N`` ref
+            # this turn still means what the model meant: an item that restates
+            # a hypothesis already standing (a standing one survives a
+            # retraction) maps onto it, exactly as the dedup below would, and
+            # links onto it still apply; any other slot resolves to nothing,
+            # so a link naming it is skipped.
+            refused = 0
+            for h_item in hypotheses_in:
+                dup_id = find_duplicate_hypothesis(h_item.statement, case)
+                if dup_id is not None:
+                    emit_order.append(dup_id)
+                else:
+                    emit_order.append(_REFUSED_HYPOTHESIS_SLOT)
+                    refused += 1
+            if refused:
+                refuse_cause_work(
+                    case.case_id,
+                    metadata,
+                    kind="hypothesis",
+                    what=f"{refused} hypothesis(es)",
+                    count=refused,
+                )
             hypotheses_in = []
         if hypotheses_in:
             for h_item in hypotheses_in:
@@ -1221,6 +1200,8 @@ class ResponseApplier:
         # the LLM as a one-turn nudge (T2a) to re-root it or declare it
         # separate, rather than guessing.
         _nudge_ambiguous_orphan_chains(case, metadata)
+        # One note for everything refused this turn (cause_work.py).
+        report_refused_cause_work(metadata)
 
         # Deferred likelihood updates — applied AFTER both link passes (flat
         # step 4 AND chain emission above), so the B1 evidence-free cap judges

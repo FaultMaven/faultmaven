@@ -714,7 +714,8 @@ class TestProblemStatusRevision:
         hypotheses = self._hypotheses()
         assert hypotheses["hyp_active"] == ("active", None)
         state, reason = hypotheses["hyp_queued"]
-        assert state == "retired" and "revision 007" in reason
+        assert state == "retired"
+        assert reason == "Proposed before the problem was verified, and never pursued."
 
         # The rebuild ran with foreign keys off: the link survives.
         assert query_rows(TEST_DB, "SELECT hypothesis_id FROM hypothesis_evidence") == [
