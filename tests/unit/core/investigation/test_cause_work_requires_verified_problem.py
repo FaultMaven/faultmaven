@@ -16,6 +16,7 @@ from uuid import uuid4
 
 import pytest
 
+from faultmaven.core.investigation.causal_graph.ingestion import seed_problem_node
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.milestone_engine import (
     chain_emission,
@@ -27,7 +28,9 @@ from faultmaven.core.investigation.milestone_engine.response_application import 
     ResponseApplier,
 )
 from faultmaven.core.investigation.schemas import (
+    CausalEdgeToAdd,
     CausalNodeToAdd,
+    DeductiveValidationToAdd,
     EvidenceToAdd,
     EvidenceTrail,
     HypothesisToAdd,
@@ -41,6 +44,7 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
     CaseState,
+    CausalNode,
     CauseState,
     EvidenceCategory,
     EvidenceSourceType,
@@ -48,9 +52,11 @@ from faultmaven.modules.case.contracts import (
     HypothesisCategory,
     HypothesisState,
     InquiryData,
+    NodeState,
     NodeType,
     ProblemStatus,
     ProblemVerification,
+    ValidationMethod,
 )
 
 pytestmark = pytest.mark.unit
@@ -217,6 +223,59 @@ async def test_chain_structure_on_an_unverified_problem_is_refused():
     counter.labels.assert_called_once_with(kind="chain")
 
 
+def _seed_root(case: Case) -> str:
+    """A ROOT node and the PROBLEM node already on the graph, so a chain
+    emission can name them without adding nodes."""
+    seed_problem_node(case)
+    root = CausalNode(
+        node_id="cn_0000000000aa",
+        statement=_CAUSE,
+        node_type=NodeType.ROOT,
+        node_state=NodeState.CANDIDATE,
+        validation_method=ValidationMethod.NONE,
+        belief=0.5,
+        actionable=True,
+        generated_at_turn=1,
+    )
+    case.causal_nodes[root.node_id] = root
+    return root.node_id
+
+
+async def test_an_edge_between_standing_nodes_on_an_unverified_problem_is_refused():
+    eng, case = _engine(), _case(ProblemStatus.UNVERIFIED)
+    root_id = _seed_root(case)
+
+    meta = await _apply(
+        eng,
+        case,
+        _DSU(causal_edges_to_add=[CausalEdgeToAdd(cause=root_id, effect="D")]),
+    )
+
+    assert case.causal_edges == []
+    assert "CAUSAL CHAIN NOT ACCEPTED" in meta["system_feedback"]
+
+
+async def test_a_deductive_validation_on_an_unverified_problem_is_refused():
+    eng, case = _engine(), _case(ProblemStatus.UNVERIFIED)
+    root_id = _seed_root(case)
+
+    meta = await _apply(
+        eng,
+        case,
+        _DSU(
+            deductive_validations=[
+                DeductiveValidationToAdd(
+                    survivor_node_ref=root_id,
+                    exhaustive_rationale="every sibling in the differential refuted",
+                )
+            ]
+        ),
+    )
+
+    assert "deductive_survivor_ids" not in meta
+    assert "CAUSAL CHAIN NOT ACCEPTED" in meta["system_feedback"]
+
+
 async def test_root_cause_claims_on_an_unverified_problem_are_refused():
     eng, case = _engine(), _case(ProblemStatus.UNVERIFIED)
 
@@ -279,16 +338,23 @@ async def test_a_turn_that_verifies_the_symptom_forms_its_hypotheses():
 
 
 async def test_a_symptom_claim_reverted_at_2b_takes_the_turns_cause_work_with_it():
-    """No symptom evidence this turn: step 2b reverts the claim, so the gate
-    reads UNVERIFIED and the hypothesis is refused."""
+    """No symptom evidence this turn: step 2b reverts the claim, so every gate
+    reads UNVERIFIED — the hypothesis and the root-cause claims are refused."""
     eng, case = _engine(), _case(ProblemStatus.UNVERIFIED)
 
     meta = await _apply(
         eng,
         case,
         _DSU(
-            milestones=MilestoneUpdates(symptom_verified=True),
+            milestones=MilestoneUpdates(
+                symptom_verified=True,
+                root_cause_likelihood=0.9,
+                root_cause_method="direct_analysis",
+            ),
             hypotheses_to_add=[_hypothesis()],
+            root_cause_conclusion=RootCauseConclusionUpdate(
+                root_cause=_CAUSE, mechanism="heap exhaustion", likelihood=0.9
+            ),
         ),
         _Response("the user says checkout is down"),
     )
@@ -296,6 +362,10 @@ async def test_a_symptom_claim_reverted_at_2b_takes_the_turns_cause_work_with_it
     assert case.progress.problem_status == ProblemStatus.UNVERIFIED
     assert meta["milestones_completed"] == []
     assert case.hypotheses == {}
+    assert case.root_cause_conclusion is None
+    assert case.progress.root_cause_method is None
+    assert case.progress.root_cause_likelihood == 0.0
+    assert "CAUSE WORK NOT ACCEPTED" in meta["system_feedback"]
 
 
 async def test_one_turn_verifies_forms_grounds_and_identifies():

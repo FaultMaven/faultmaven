@@ -985,7 +985,7 @@ class InvestigationProgress(BaseModel):
     mitigation: MitigationRecord | None = None   # single forward-only insert (INV-24)
 
     # Assessment variables (engine-derived / recomputed each turn — never path-stripped)
-    symptom_verified: bool = False                     # Problem symptoms confirmed with evidence
+    problem_status: ProblemStatus = ProblemStatus.UNVERIFIED  # one writer: problem_status.py; symptom_verified is its derived view
     cause_state: CauseState = CauseState.UNKNOWN       # UNKNOWN | CANDIDATES | IDENTIFIED
     solution_state: SolutionState = SolutionState.UNKNOWN
     solution_feasible: SolutionFeasible = SolutionFeasible.NOW
