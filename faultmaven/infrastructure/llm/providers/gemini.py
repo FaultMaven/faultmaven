@@ -190,6 +190,13 @@ class GeminiProvider(BaseLLMProvider):
     _GEMINI_36_FUNCTION_RESPONSE_SURFACE_MIN = (3, 6)
     _GEMINI_37_API_SURFACE_MIN = (3, 7)
 
+    # Google's parameter-deprecation notice: custom ``temperature`` / ``topP`` /
+    # ``topK`` have had no effect on Gemini 3.x and upcoming models will return
+    # 400 INVALID_ARGUMENT, so they are omitted on every 3.x+ model — a wider
+    # gate than the 3.7 surface (which also changed thinking/candidate/prefill
+    # behaviour that 3.5/3.6 still accept in the classic shape).
+    _GEMINI_SAMPLING_PARAMS_REMOVED_MIN = (3, 0)
+
     @staticmethod
     def _gemini_version(model: str) -> Optional[tuple]:
         """(major, minor) from a gemini model id, or None if not parseable."""
@@ -211,6 +218,15 @@ class GeminiProvider(BaseLLMProvider):
         """True when *model* speaks the reduced 3.7+ API surface (see above)."""
         version = cls._gemini_version(model or "")
         return version is not None and version >= cls._GEMINI_37_API_SURFACE_MIN
+
+    @classmethod
+    def _omits_sampling_params(cls, model: Optional[str]) -> bool:
+        """True when *model* is Gemini 3.x+, where custom sampling params are
+        deprecated (ignored today, a 400 on upcoming models)."""
+        version = cls._gemini_version(model or "")
+        return (
+            version is not None and version >= cls._GEMINI_SAMPLING_PARAMS_REMOVED_MIN
+        )
 
     def _structured_thinking_config(
         self,
@@ -408,8 +424,8 @@ class GeminiProvider(BaseLLMProvider):
         if top_k is not None:
             dropped.append(f"top_k={top_k}")
         self.logger.info(
-            f"{model} uses the Gemini 3.7+ API surface, which removed the "
-            f"classic sampling parameters — omitting {', '.join(dropped)} from "
+            f"{model} is a Gemini 3.x+ model, where the classic sampling "
+            f"parameters are deprecated — omitting {', '.join(dropped)} from "
             f"this and all future requests to it (logged once per provider "
             f"instance)"
         )
@@ -464,13 +480,13 @@ class GeminiProvider(BaseLLMProvider):
 
         # Prepare generation config for Gemini API.
         #
-        # The 3.7+ surface removed the classic sampling parameters —
-        # ``temperature`` / ``topP`` / ``topK`` are not honoured there, so they
-        # are omitted entirely (per Google's 3.7 migration guidance: strip
-        # them, don't send-and-hope). Pre-3.7 models keep the exact
-        # construction below, field order included — requests to 3.5/3.6 must
-        # stay byte-for-byte what they were before the 3.7 surface existed.
-        if uses_37_surface:
+        # Sampling parameters are deprecated on Gemini 3.x —
+        # ``temperature`` / ``topP`` / ``topK`` have no effect (since 3.6) and
+        # upcoming models reject them with a 400, so they are omitted entirely
+        # on every 3.x+ model (per Google's parameter-deprecation notice).
+        # Pre-3.x models keep the exact construction below, field order
+        # included.
+        if self._omits_sampling_params(selected_model):
             generation_config = {"maxOutputTokens": max_tokens}
             self._note_sampling_params_dropped(
                 selected_model,
