@@ -34,9 +34,27 @@ that is true by construction.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List
 
-__all__ = ["kb_push_enabled", "visible_kb_context"]
+__all__ = [
+    "KB_PROMPT_MAX_ENTRIES",
+    "TURN_METADATA_KB_PROMPTED",
+    "kb_entries_rendered",
+    "kb_push_enabled",
+    "prompt_kb_entries",
+    "visible_kb_context",
+]
+
+#: How many pre-fetched entries a prompt renders.
+KB_PROMPT_MAX_ENTRIES = 5
+
+#: Engine turn-metadata key: the entries THIS turn's prompt rendered, as the
+#: prompt build reports them (``kb_entries_rendered``). The turn response's ``sources`` and the assistant row are
+#: built from it, never from ``case.kb_context`` after the turn: a pre-fetch
+#: that fires while the turn's response is applied (Gate 1, the root-cause
+#: edge) writes context the answer never saw, and only the NEXT prompt carries.
+TURN_METADATA_KB_PROMPTED = "kb_prompted"
 
 
 def kb_push_enabled() -> bool:
@@ -73,3 +91,32 @@ def visible_kb_context(case: Any) -> List[Dict[str, Any]]:
         return []
     entries = getattr(case, "kb_context", None) or []
     return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def prompt_kb_entries(case: Any) -> List[Dict[str, Any]]:
+    """The pre-fetched entries a prompt built from ``case`` now renders.
+
+    The ONE selection the prompt builder renders from; what survives the
+    section budget is then reported by :func:`kb_entries_rendered`. Copies, so
+    a report cannot be changed by a later write to ``case.kb_context``.
+    """
+    return [dict(entry) for entry in visible_kb_context(case)[:KB_PROMPT_MAX_ENTRIES]]
+
+
+#: A rendered entry's header in ``<knowledge_context>`` (``MATCH 1: <title>``).
+_MATCH_HEADER = re.compile(r"^MATCH (\d+):", re.MULTILINE)
+
+
+def kb_entries_rendered(
+    section: str, entries: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """The ``entries`` whose header survived in a rendered KB ``section``.
+
+    ``section`` is the allocated ``kb_results`` text — the KB block alone, after
+    the section budget has truncated it, never the whole prompt, so no other
+    section's text can read as a match. Under budget pressure the block keeps
+    its head, so a trailing entry can be cut whole; one whose header survived
+    was shown, if only in part.
+    """
+    shown = sorted({int(n) for n in _MATCH_HEADER.findall(section or "")})
+    return [dict(entries[n - 1]) for n in shown if 1 <= n <= len(entries)]

@@ -328,8 +328,15 @@ def get_prompt_for_case(
     entity_highlight_groups: Optional[Sequence[EntityHighlightGroup]] = None,
     tools_available: bool = False,
     target_tokens: Optional[int] = None,
+    kb_rendered: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Build the final prompt based on case state and stage.
+
+    ``kb_rendered``, when given, is refilled with the KB push entries the
+    returned prompt actually carries: those whose header survived the section
+    budget, and none when the template has no ``{kb_results}`` slot (INQUIRY,
+    terminal) or the minimal fallback replaced the assembled prompt. The engine
+    passes it so a turn's ``sources`` name only what the model was shown.
 
     Args:
         case: Current case
@@ -387,9 +394,17 @@ def get_prompt_for_case(
             processing_mode=processing_mode,
             entity_highlight_groups=entity_highlight_groups,
             tools_available=tools_available,
+            kb_rendered=kb_rendered,
         )
 
+    rendered: Dict[str, str] = {}
+
     def _render(ctx: dict) -> str:
+        prompt = _render_template(ctx)
+        rendered["prompt"] = prompt
+        return prompt
+
+    def _render_template(ctx: dict) -> str:
         """Format the full prompt from a prebuilt section ctx dict."""
         # Engine-resolved (not LLM-decidable): which page-capture guidance the
         # follow-up suggestions block renders. See _page_capture_hint.
@@ -404,6 +419,9 @@ def get_prompt_for_case(
         )
 
         if case.state == CaseState.INQUIRY:
+            # No ``{kb_results}`` slot: the KB block was built and not shown.
+            if kb_rendered is not None:
+                kb_rendered.clear()
             return INQUIRY_TEMPLATE.format(**ctx)
 
         elif case.state == CaseState.INVESTIGATING:
@@ -481,6 +499,8 @@ def get_prompt_for_case(
             summary_kind = (
                 "resolution" if case.state == CaseState.RESOLVED else "closure"
             )
+            if kb_rendered is not None:
+                kb_rendered.clear()
             return TERMINAL_TEMPLATE.format(
                 state_upper=case.state.value.upper(),
                 state_lower=case.state.value,
@@ -488,7 +508,7 @@ def get_prompt_for_case(
                 **ctx,
             )
 
-    return _budgeted_prompt(
+    prompt = _budgeted_prompt(
         case,
         user_message,
         _build_ctx,
@@ -497,6 +517,11 @@ def get_prompt_for_case(
         model_name,
         target_tokens=target_tokens,
     )
+    if kb_rendered is not None and prompt != rendered.get("prompt"):
+        # The overflow/starvation backstop returned the minimal fallback,
+        # which carries no KB context, in place of the assembled prompt.
+        kb_rendered.clear()
+    return prompt
 
 
 def _budgeted_prompt(

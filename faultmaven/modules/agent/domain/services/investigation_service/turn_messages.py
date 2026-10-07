@@ -16,6 +16,9 @@ from faultmaven.core.investigation.milestone_engine.terminal_turns import (
     terminal_card_action,
 )
 from faultmaven.models.api_models import IntentType
+from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
+    _record_turn_kb_sources,
+)
 from faultmaven.modules.agent.domain.services.orientation import OrientationKind
 from faultmaven.modules.case.contracts import (
     MessageRowKind,
@@ -119,6 +122,11 @@ async def _save_and_emit_turn(
     was_terminal,
 ):
     """Append the agent message, save the case, and emit the #1142 turn-telemetry row."""
+    # The KB context this turn's prompt carried rides on the row, so history
+    # shows it where the live turn did; the turn response reads the same entry.
+    # Before the append, so the comparison for ``new_this_turn`` sees only
+    # earlier rows.
+    _record_turn_kb_sources(turn_meta, updated_case)
     agent_message = append_message_row(
         updated_case,
         MessageRowKind.AGENT_ANSWER,

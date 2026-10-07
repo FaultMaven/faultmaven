@@ -1698,4 +1698,37 @@ asked to accept, and it belongs to a person.
 # client without it falls back to its generic "Closed" label. The revision card
 # needs no client change: it is a DECIDE pair carrying `confirmation` intents,
 # rendered like Gate 1's.
-API_CONTRACT_VERSION = "11.1.0"
+# 11.2.0 — MINOR. `TurnResponse.sources` is what the turn's prompt carried, and
+# history keeps it.
+#
+# `sources` was read from `case.kb_context` after the turn, but both pre-fetch
+# triggers (Gate 1, the root-cause edge) fire while the response is APPLIED,
+# after the answer was generated: the turn listed runbooks its answer never
+# saw. `sources` is now built from what the prompt build reports it rendered:
+# the entries whose header survived the KB section's budget, in the prompt the
+# model answered from (none for a template without the slot or the fallback). A Gate-1 fetch is listed on the next
+# turn, the first whose prompt carried it, and a turn that rendered no KB
+# context (greeting, out-of-band aside, deterministic branch) lists none.
+#
+# `Source` gains `new_this_turn`: true for an excerpt the previous turn's prompt
+# did not carry, decided against the previous assistant row's stored sources.
+# The context stands in every prompt until a pre-fetch replaces it, so
+# `sources` repeats turn to turn; faultmaven-copilot diffed turns to show it
+# once (`lib/state/turn-sources.ts`), reconstructing what the server knew.
+#
+# `Message` gains `sources`: the same list, persisted on the assistant row.
+# `GET /cases/{case_id}/messages` returned no sources before, so history showed
+# none of what the live turn did.
+#
+# `ProblemVerificationData.problem_status` is published as the `ProblemStatus`
+# enum (unverified | verified | revision_pending | invalidated) instead of a
+# plain string: the same four values, so a reader of the string survives.
+#
+# Clients: no client reads `problem_status`, `Message.sources` or
+# `new_this_turn` yet. A turn whose prompt carried no KB context now answers
+# `sources: []` while the context stands; faultmaven-copilot#299 made its turn
+# diff read an empty list as "nothing to record" rather than "context gone",
+# and ships before this deploys. Adopting this version replaces that diff with
+# `new_this_turn` and has its history mapper copy `Message.sources`.
+# faultmaven-dashboard and faultmaven-slack-agent only regenerate.
+API_CONTRACT_VERSION = "11.2.0"

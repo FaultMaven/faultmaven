@@ -9,7 +9,7 @@ the published attachment result and the reclassification metric's label.
 
 from typing import Any
 
-from faultmaven.core.investigation.kb_push import visible_kb_context
+from faultmaven.core.investigation.kb_push import TURN_METADATA_KB_PROMPTED
 from faultmaven.core.investigation.milestone_engine.progress import (
     record_promptless_turn,
     score_progress,
@@ -22,6 +22,7 @@ from faultmaven.infrastructure.observability.evidence_metrics import (
 from faultmaven.models.api import DataType, Source, SourceType
 from faultmaven.modules.case.contracts import (
     MESSAGE_METADATA_AGENT_SYNTHESIZED,
+    MESSAGE_METADATA_KB_SOURCES,
     Case,
     TurnOutcome,
 )
@@ -180,31 +181,26 @@ _DATA_TYPE_TO_SOURCE_TYPE: dict[DataType, EvidenceSourceType] = {
 }
 
 
-def _kb_context_sources(case: Any) -> list[Source]:
-    """Render the case's pre-fetched runbooks as citable ``Source`` entries.
+def _kb_sources(entries: list[dict]) -> list[Source]:
+    """Render pre-fetched runbook entries as citable ``Source`` entries.
 
-    ``Source`` already existed and was simply never constructed anywhere, which
-    is why the Copilot's citation components were unreachable code (fm#1361).
-    Its four FIELD NAMES match that client's ``Source`` interface — ``type``,
-    ``content``, ``confidence``, ``metadata`` — but the ``type`` VALUE domains
-    only overlap on ``knowledge_base``: the backend enum also admits
-    ``log_file``, ``web_search``, ``documentation``, ``previous_analysis`` and
-    ``user_provided``, none of which are members of the client's union. Only
-    ``knowledge_base`` is emitted here, so nothing is broken today, but the
-    published contract now licenses five values the one known client would
-    reject — see the 3.3.0 entry in ``api/contract_version.py``.
+    ``entries`` is what the prompt the model answered from carried, as the
+    prompt build reported it (``TURN_METADATA_KB_PROMPTED``: the entries
+    ``prompt_kb_entries`` selected, which applies the push gate of fm#1360,
+    whose header survived the section budget). Never
+    ``case.kb_context`` read after the turn: a pre-fetch fired while the
+    response is applied writes context the answer never saw, and citing a
+    runbook the model was not shown is worse than citing none.
 
-    Gated on the push (fm#1360): with ``KB_PREFETCH_ENABLED=false`` this
-    returns ``[]`` even for a case still carrying context persisted while the
-    push was on. Citing a runbook the model was never shown is a worse failure
-    than showing none — it tells the user, and anyone measuring retrieval, that
-    knowledge informed an answer it could not have informed.
+    ``Source`` was never constructed anywhere before fm#1361, which is why the
+    Copilot's citation components were unreachable. Only ``knowledge_base`` is
+    emitted here; the published enum admits five more values (see the 3.3.0
+    entry in ``api/contract_version.py``).
 
-    ``content`` carries the matched EXCERPT rather than the title: the card
-    shows a content preview and reads the title from ``metadata``, and a title
-    repeated in both places tells the reader nothing about why the runbook
-    matched. ``confidence`` is the retrieval score, on the same cosine scale
-    the pre-fetch floors with.
+    ``content`` carries the matched EXCERPT rather than the title: the client
+    shows a content preview and reads the title from ``metadata``.
+    ``confidence`` is the retrieval score, on the same cosine scale the
+    pre-fetch floors with.
 
     Defensive about entry shape because ``kb_context`` round-trips through a
     JSON blob: a row written by an older build is a plain dict of whatever it
@@ -212,7 +208,9 @@ def _kb_context_sources(case: Any) -> list[Source]:
     turn that otherwise succeeded.
     """
     sources: list[Source] = []
-    for entry in visible_kb_context(case):
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
         metadata = {
             "document_id": entry.get("parent_document_id"),
             "title": entry.get("title"),
@@ -231,6 +229,46 @@ def _kb_context_sources(case: Any) -> list[Source]:
             )
         )
     return sources
+
+
+def _source_key(source: dict) -> tuple[str, str]:
+    """One runbook excerpt: its document and the matched text."""
+    metadata = source.get("metadata") or {}
+    return (str(metadata.get("document_id") or ""), str(source.get("content") or ""))
+
+
+def _record_turn_kb_sources(turn_meta: dict, case: Any) -> None:
+    """Build this turn's ``sources`` from what its prompt rendered, for the row.
+
+    Takes the engine's raw report (``TURN_METADATA_KB_PROMPTED``) out of
+    ``turn_meta`` and writes the published form under
+    ``MESSAGE_METADATA_KB_SOURCES``, which the assistant row persists and the
+    turn response reads. A turn whose prompt carried no KB context (no engine
+    run, the push off, nothing fetched) records nothing.
+
+    ``new_this_turn`` is decided against the most recent EARLIER assistant row
+    that recorded sources, not against a turn number: the context stands in
+    every prompt until a pre-fetch replaces it, and a re-fetch can return the
+    same runbooks. Comparing persisted rows keeps the answer right across a
+    turn that failed before its row was written, a retried turn, and a
+    renumbered history, none of which a turn-number stamp survives. Call it
+    BEFORE the turn's own row is appended.
+    """
+    sources = _kb_sources(turn_meta.pop(TURN_METADATA_KB_PROMPTED, None) or [])
+    if not sources:
+        return
+    earlier: set[tuple[str, str]] = set()
+    for row in reversed(getattr(case, "messages", None) or []):
+        recorded = (row.get("metadata") or {}).get(MESSAGE_METADATA_KB_SOURCES)
+        if row.get("role") == "assistant" and recorded:
+            earlier = {_source_key(s) for s in recorded if isinstance(s, dict)}
+            break
+    published = []
+    for source in sources:
+        row_source = source.model_dump(mode="json")
+        source.new_this_turn = _source_key(row_source) not in earlier
+        published.append(source.model_dump(mode="json"))
+    turn_meta[MESSAGE_METADATA_KB_SOURCES] = published
 
 
 def _infer_source_type(data_type: DataType) -> EvidenceSourceType:

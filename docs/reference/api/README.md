@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 11.1.0
+**Version:** 11.2.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -6066,8 +6066,9 @@ Schema matches case-storage-design.md Section 4.7 (case_messages table).
 - `created_at` (string, required) — ISO 8601 datetime string (matches SQL schema)
 - `investigation_turn` (object, optional) — Which turn OF THE INVESTIGATION this row belongs to (#1387): the message clock at this row minus the out-of-band turns at or before it. `turn_number` is the message clock and advances on every exchange, asides included (small talk, trivia, questions about FaultMaven itself); this does not, so an aside carries the same value as the investigation turn before it. A client displaying "Turn N" against a conversation row should prefer this, and keep `turn_number` for anything that ADDRESSES a turn (anchors, `uploaded_at_turn` lookups) — those are message-clock references and re-basing them breaks jump-to-turn. On the newest row this equals `TurnResponse.investigation_turn`, which is the same quantity read at the case level. Null on a row that owns no turn — a `system` notice reporting a background job, stamped with whichever turn was open when the job finished — and on a server that predates the field.
 - `message_id` (string, required)
-- `metadata` (object, optional) — Sources, tools used, etc.
+- `metadata` (object, optional) — Tools used and other per-turn detail.
 - `role` (string, required)
+- `sources` (object, optional) — On an assistant row: the knowledge-base runbooks that turn's prompt carried, exactly as the live `TurnResponse.sources` returned them, `new_this_turn` included. Null on a row whose prompt carried none (and on every user or system row).
 - `token_count` (object, optional) — Number of tokens in content
 - `turn_number` (integer, required) — Turn number in conversation (user messages increment turn)
 
@@ -6237,6 +6238,19 @@ out of ``kubectl logs`` long before anyone asks.
 - `sso_jit_personal_tenant_enabled` (boolean, required) — SSO_JIT_PERSONAL_TENANT_ENABLED — whether an SSO identity with no IdP organization may provision a personal tenant on its first sign-in, i.e. whether self-service sign-up is open. Multi-tenant (Cloud) deployments only: a single-tenant deployment has one organization and never reaches the branch this gates.
 - `sso_jit_personal_tenant_max_per_hour` (integer, required) — SSO_JIT_PERSONAL_TENANT_MAX_PER_HOUR — the ceiling on NEW personal enterprises provisioned per rolling hour, deployment-wide. It bounds provisioning only; tenants that already exist sign in regardless.
 - `tenant_daily_turn_cap` (integer, required) — TENANT_DAILY_TURN_CAP — investigation turns an account in NO organization may take per UTC day before further turns are refused with 429. The deployment DEFAULT only: an organization is uncapped, a single-tenant deployment is never capped, and a per-organization override set with fm-set-turn-cap beats this value.
+
+---
+
+### ProblemStatus
+
+Where the confirmed problem statement stands against the evidence.
+
+The single source of truth for "is the problem verified":
+``InvestigationProgress.symptom_verified`` is derived from it and never
+stored. Every transition is written by
+``faultmaven.core.investigation.problem_status`` — nothing else assigns it.
+
+**Values:** `unverified`, `verified`, `revision_pending`, `invalidated`
 
 ---
 
@@ -6639,6 +6653,7 @@ Represents a single piece of citable evidence to build user trust.
 - `confidence` (object, optional)
 - `content` (string, required)
 - `metadata` (object, optional)
+- `new_this_turn` (object, optional) — For a knowledge-base source in a turn's `sources`: true when this runbook excerpt was not in the prompt of the case's previous turn that carried knowledge-base context. That context stands in every prompt from the turn it is fetched until the next fetch replaces it, so a client shows the list where something is new rather than under every answer. Null on any other source.
 - `type` (object, required)
 - `verification_reason` (object, optional)
 - `verification_status` (object, optional)
@@ -6808,7 +6823,7 @@ Response for POST /cases/{id}/turns.
 - `milestones_completed` (array, required)
 - `progress_made` (boolean, required)
 - `progress_transparency` (object, optional) — Progress transparency state. Present when investigation has stalled and agent is surfacing milestone dependencies.
-- `sources` (array, optional) — Knowledge the engine put in front of the model for this turn: the runbooks the KB pre-fetch admitted (the PUSH channel, governed by KB_PREFETCH_ENABLED). Each entry carries the matched excerpt as `content`, the retrieval score as `confidence`, and the runbook's `document_id`/`title` under `metadata` so a client can link to it. Empty when nothing was pre-fetched — including when the push is disabled. Runbooks the model fetched itself via the kb_qa tool are NOT represented: that tool returns a formatted answer string, so per-turn identity is not available at the tool boundary.
+- `sources` (array, optional) — Knowledge the engine put in front of the model for this turn: the runbooks the KB pre-fetch admitted (the PUSH channel, governed by KB_PREFETCH_ENABLED) that the prompt the model answered from actually carried, after the section budget. A pre-fetch that fires while the turn's response is applied first reaches the NEXT turn's prompt, and is listed there. The context stands in every prompt until a pre-fetch replaces it, so it repeats turn to turn; `new_this_turn` marks the excerpts the previous turn's prompt did not carry. Each entry carries the matched excerpt as `content`, the retrieval score as `confidence`, and the runbook's `document_id`/`title` under `metadata` so a client can link to it. Empty when nothing was pre-fetched — including when the push is disabled. Runbooks the model fetched itself via the kb_qa tool are NOT represented: that tool returns a formatted answer string, so per-turn identity is not available at the tool boundary.
 - `suggested_actions` (array, optional)
 - `turn_number` (integer, required)
 

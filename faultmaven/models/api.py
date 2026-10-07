@@ -119,6 +119,17 @@ class Source(BaseModel):
     verification_reason: Optional[str] = (
         None  # Tooltip text (e.g., "Reviewed by admin")
     )
+    new_this_turn: Optional[bool] = Field(
+        None,
+        description=(
+            "For a knowledge-base source in a turn's `sources`: true when this "
+            "runbook excerpt was not in the prompt of the case's previous turn "
+            "that carried knowledge-base context. That context stands in every "
+            "prompt from the turn it is fetched until the next fetch replaces "
+            "it, so a client shows the list where something is new rather than "
+            "under every answer. Null on any other source."
+        ),
+    )
 
 
 class PlanStep(BaseModel):
@@ -726,7 +737,16 @@ class Message(BaseModel):
     author_id: Optional[str] = Field(None, description="User who created the message")
     token_count: Optional[int] = Field(None, description="Number of tokens in content")
     metadata: Optional[Dict[str, Any]] = Field(
-        None, description="Sources, tools used, etc."
+        None, description="Tools used and other per-turn detail."
+    )
+    sources: Optional[List[Source]] = Field(
+        None,
+        description=(
+            "On an assistant row: the knowledge-base runbooks that turn's "
+            "prompt carried, exactly as the live `TurnResponse.sources` "
+            "returned them, `new_this_turn` included. Null on a row whose "
+            "prompt carried none (and on every user or system row)."
+        ),
     )
 
 

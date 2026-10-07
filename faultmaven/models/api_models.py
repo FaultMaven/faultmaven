@@ -1214,7 +1214,12 @@ class TurnResponse(BaseModel):
         default_factory=list,
         description="Knowledge the engine put in front of the model for this "
         "turn: the runbooks the KB pre-fetch admitted (the PUSH channel, "
-        "governed by KB_PREFETCH_ENABLED). Each entry carries the matched "
+        "governed by KB_PREFETCH_ENABLED) that the prompt the model answered "
+        "from actually carried, after the section budget. A pre-fetch that fires while the turn's "
+        "response is applied first reaches the NEXT turn's prompt, and is "
+        "listed there. The context stands in every prompt until a pre-fetch "
+        "replaces it, so it repeats turn to turn; `new_this_turn` marks the "
+        "excerpts the previous turn's prompt did not carry. Each entry carries the matched "
         "excerpt as `content`, the retrieval score as `confidence`, and the "
         "runbook's `document_id`/`title` under `metadata` so a client can link "
         "to it. Empty when nothing was pre-fetched — including when the push "
@@ -1248,7 +1253,12 @@ class CaseMessage(BaseModel):
     author_id: Optional[str] = Field(None, description="User who created the message")
     token_count: Optional[int] = Field(None, description="Number of tokens in content")
     metadata: Dict[str, Any] = Field(
-        default_factory=dict, description="Sources, tools used, etc."
+        default_factory=dict,
+        description=(
+            "Per-turn detail. On an assistant row it also holds the turn's KB "
+            "sources under `kb_sources`, which `GET .../messages` publishes as "
+            "the typed `Message.sources` instead."
+        ),
     )
 
     # Legacy/extension fields

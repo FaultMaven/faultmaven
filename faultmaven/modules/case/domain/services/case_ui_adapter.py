@@ -163,7 +163,7 @@ def _extract_problem_verification(case: Case) -> Optional[ProblemVerificationDat
         temporal_state=temporal_state,
         impact=impact,
         user_impact=user_impact,
-        problem_status=case.progress.problem_status.value if case.progress else None,
+        problem_status=case.progress.problem_status if case.progress else None,
         original_problem_statement=original,
         pending_revision=(
             pv.pending_revision.text if pv and pv.pending_revision else None

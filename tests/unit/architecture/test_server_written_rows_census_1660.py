@@ -209,6 +209,16 @@ OTHER_READERS: dict[tuple[str, str], tuple[int, str]] = {
         "a metric screen: equality with the confirming turn's own message "
         "marks a resubmission, which is not counted; nothing reaches a model",
     ),
+    # Contract 11.2.0: which KB excerpts are new this turn is decided against
+    # the previous assistant row's stored sources.
+    (
+        "faultmaven/modules/agent/domain/services/investigation_service/turn_bookkeeping.py",
+        "_record_turn_kb_sources",
+    ): (
+        1,
+        "reads only an earlier assistant row's stored KB sources (metadata), "
+        "never its content, to mark which excerpts are new; nothing reaches a model",
+    ),
 }
 
 
