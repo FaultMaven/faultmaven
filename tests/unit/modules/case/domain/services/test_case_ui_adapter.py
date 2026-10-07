@@ -906,3 +906,13 @@ class TestProblemVerificationReadsTheRecord:
         assert pv.severity is None
         assert pv.urgency_level is None
         assert pv.temporal_state is None
+
+
+@pytest.mark.unit
+def test_a_resolved_root_cause_summary_carries_no_made_up_severity():
+    """The adapter sent the literal "medium" for every resolved case; no
+    source records a cause's severity, so the field is gone (#1877)."""
+    case = _make_resolved_case()
+    case.problem_verification = None
+    result = transform_case_for_ui(case)
+    assert "severity" not in result.model_dump(mode="json")["root_cause"]

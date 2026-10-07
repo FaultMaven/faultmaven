@@ -7,7 +7,7 @@ Key Models:
 - Case: Root case entity with milestone-based progress tracking
 - CaseState: Lifecycle state (INQUIRY -> INVESTIGATING -> RESOLVED/CLOSED)
 - InvestigationProgress: 7 milestones tracking verification, diagnosis, and resolution
-- ProblemVerification: Consolidated symptom, scope, timeline, and changes data
+- ProblemVerification: The verified problem as Gate 1 recorded it: symptom, severity, urgency, temporal state
 - Evidence: Categorized evidence collection with hypothesis evaluation
 - Hypothesis: Optional systematic root cause exploration
 - Solution: Proposed and applied solutions with verification

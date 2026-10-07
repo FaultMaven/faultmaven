@@ -5146,19 +5146,12 @@
             "description": "Root cause identifier",
             "title": "Root Cause Id",
             "type": "string"
-          },
-          "severity": {
-            "description": "Severity: critical | high | medium | low",
-            "maxLength": 50,
-            "title": "Severity",
-            "type": "string"
           }
         },
         "required": [
           "description",
           "root_cause_id",
           "category",
-          "severity",
           "cause_assurance"
         ],
         "title": "RootCauseSummary",

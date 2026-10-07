@@ -232,10 +232,6 @@ class RootCauseSummary(BaseModel):
         max_length=100,
     )
 
-    severity: str = Field(
-        description="Severity: critical | high | medium | low", max_length=50
-    )
-
     cause_assurance: str = Field(
         description="Engine-derived assurance grade behind this cause "
         "(no_root | mechanistic | confirmed), recomputed from the causal graph. "

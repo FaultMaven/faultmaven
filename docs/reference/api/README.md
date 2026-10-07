@@ -6477,7 +6477,6 @@ Root cause information for RESOLVED phase.
 - `cause_overclaim` (boolean, optional) — True when the conclusion claims 'verified' certainty while the assurance grade is below 'confirmed' (conclusion_overclaims seam). The frontend should surface a caution affordance when set.
 - `description` (string, required) — What caused the problem
 - `root_cause_id` (string, required) — Root cause identifier
-- `severity` (string, required) — Severity: critical | high | medium | low
 
 ---
 

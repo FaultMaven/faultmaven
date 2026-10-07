@@ -948,9 +948,9 @@ class ProblemConfirmation(BaseModel):
     severity_guess: str = Field(
         description=(
             "Initial severity assessment: critical | high | medium | low | unknown. "
-            "NOTE: lowercase, 5 values. The downstream `ProblemVerification.severity` "
-            "field currently rejects 'unknown' and the impedance mismatch causes a 500 "
-            "on INQUIRY → INVESTIGATING transition when the LLM returns it."
+            "NOTE: lowercase, 5 values. At INQUIRY → INVESTIGATING, 'unknown' "
+            "maps to `ProblemVerification.severity = None` (not assessed); the "
+            "other four are stored upper-case."
         )
     )
     created_at: datetime = Field(

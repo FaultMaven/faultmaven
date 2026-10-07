@@ -1771,6 +1771,11 @@ asked to accept, and it belongs to a person.
 # problem confirmation (null when not assessed; urgency no longer stands in for
 # it), `temporal_state` as reported at Gate 1 (null when not reported).
 #
+# `RootCauseSummary.severity` (RESOLVED and CLOSED responses) is removed too: the
+# adapter sent the literal `medium` for every case, and neither the root-cause
+# conclusion nor its hypothesis records a severity to send instead. No client
+# reads it.
+#
 # Clients: regenerate only; a value that read as `medium` or `unknown` for a
 # case that carried no assessment now reads null.
 API_CONTRACT_VERSION = "12.0.0"

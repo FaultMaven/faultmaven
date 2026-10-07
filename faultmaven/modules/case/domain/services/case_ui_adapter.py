@@ -411,7 +411,6 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
     root_cause_desc = "Root cause identified"
     root_cause_id = "unknown"
     root_cause_category = "other"
-    root_cause_severity = "medium"
 
     if case.root_cause_conclusion:
         root_cause_desc = case.root_cause_conclusion.root_cause
@@ -469,7 +468,6 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
         description=root_cause_desc,
         root_cause_id=root_cause_id,
         category=root_cause_category,
-        severity=root_cause_severity,
         cause_assurance=cause_grade.value,
         cause_overclaim=cause_overclaim,
     )
