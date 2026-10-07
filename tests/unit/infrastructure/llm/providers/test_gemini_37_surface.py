@@ -152,9 +152,27 @@ class TestSamplingParams:
         assert body["generationConfig"]["stopSequences"] == ["END"]
 
     @pytest.mark.parametrize("model", ["gemini-3.5-flash", "gemini-3.6-flash"])
-    async def test_pre_37_request_unchanged(self, model, mock_aiohttp_session):
-        """3.5/3.6 accept the classic params (measured 2026-08-26) and must
-        keep receiving the exact pre-migration generationConfig."""
+    async def test_pre_37_3x_omits_sampling_params(self, model, mock_aiohttp_session):
+        """Sampling params are deprecated on all 3.x (no effect since 3.6;
+        upcoming models 400), so 3.5/3.6 omit them too."""
+        provider = GeminiProvider(_config(model))
+        body = await _sent_body(
+            mock_aiohttp_session,
+            provider,
+            max_tokens=500,
+            temperature=0.7,
+            top_p=0.9,
+            top_k=40,
+        )
+        gen = body["generationConfig"]
+        assert "temperature" not in gen
+        assert "topP" not in gen
+        assert "topK" not in gen
+        assert gen["maxOutputTokens"] == 500
+
+    @pytest.mark.parametrize("model", ["gemini-2.5-flash", "gemini-1.5-pro"])
+    async def test_pre_3x_request_unchanged(self, model, mock_aiohttp_session):
+        """Pre-3.x models keep the exact classic generationConfig."""
         provider = GeminiProvider(_config(model))
         body = await _sent_body(
             mock_aiohttp_session,
@@ -690,7 +708,7 @@ class TestGenerate37EndToEnd:
             tool_choice="auto",
         )
         gen = body["generationConfig"]
-        assert gen["temperature"] == 0.7
+        assert "temperature" not in gen  # sampling params dropped on all 3.x
         assert gen["thinkingConfig"] == {"thinkingLevel": "low"}
         assert "id" not in body["contents"][1]["parts"][0]["functionCall"]
         fn_turn = body["contents"][2]
