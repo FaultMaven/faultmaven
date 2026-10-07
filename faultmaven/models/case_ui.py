@@ -21,7 +21,10 @@ from faultmaven.models.api_models import (
 from faultmaven.modules.case.domain.models.conclusion import ConfidenceLevel
 from faultmaven.modules.case.domain.models.hypothesis import HypothesisState
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
-from faultmaven.modules.case.domain.models.problem import InvestigationStage
+from faultmaven.modules.case.domain.models.problem import (
+    InvestigationStage,
+    ProblemStatus,
+)
 from faultmaven.modules.case.domain.services.case_action_manager import (
     CaseActionManager,
 )
@@ -424,7 +427,7 @@ class ProblemVerificationData(BaseModel):
         default=None, description="Human-readable user impact summary", max_length=1000
     )
 
-    problem_status: Optional[str] = Field(
+    problem_status: Optional[ProblemStatus] = Field(
         default=None,
         description=(
             "Where the confirmed problem statement stands against the evidence: "

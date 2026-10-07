@@ -119,6 +119,18 @@ class Source(BaseModel):
     verification_reason: Optional[str] = (
         None  # Tooltip text (e.g., "Reviewed by admin")
     )
+    fetched_turn: Optional[int] = Field(
+        None,
+        description=(
+            "For a knowledge-base source: the turn (message clock, the "
+            "`turn_number` of `TurnResponse` and `Message`) on which the KB "
+            "pre-fetch put it into the case's context. That context stands in "
+            "every later prompt until a pre-fetch replaces it, so "
+            "`TurnResponse.sources` carries it on every turn; a source is NEW "
+            "on the turn whose `turn_number` equals this. Null on a source "
+            "fetched before the field existed."
+        ),
+    )
 
 
 class PlanStep(BaseModel):
@@ -726,7 +738,17 @@ class Message(BaseModel):
     author_id: Optional[str] = Field(None, description="User who created the message")
     token_count: Optional[int] = Field(None, description="Number of tokens in content")
     metadata: Optional[Dict[str, Any]] = Field(
-        None, description="Sources, tools used, etc."
+        None, description="Tools used and other per-turn detail."
+    )
+    sources: Optional[List[Source]] = Field(
+        None,
+        description=(
+            "On an assistant row: the knowledge-base runbooks the pre-fetch put "
+            "into the case's context ON THIS TURN, the same entries the live "
+            "`TurnResponse.sources` carried whose `fetched_turn` equals this "
+            "row's `turn_number`. Null on every other row, including later "
+            "turns that still had that context in their prompt."
+        ),
     )
 
 

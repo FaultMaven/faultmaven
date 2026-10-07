@@ -1698,4 +1698,28 @@ asked to accept, and it belongs to a person.
 # client without it falls back to its generic "Closed" label. The revision card
 # needs no client change: it is a DECIDE pair carrying `confirmation` intents,
 # rendered like Gate 1's.
-API_CONTRACT_VERSION = "11.1.0"
+# 11.2.0 — MINOR. Three additions, none of which an existing client reads.
+#
+# `Source` gains `fetched_turn`: for a knowledge-base source, the turn (message
+# clock) on which the KB pre-fetch put it into the case's context. That context
+# stands in every later prompt until a pre-fetch replaces it, so
+# `TurnResponse.sources` repeats it on every turn and a client could only tell
+# which turn it was NEW on by diffing turns — which faultmaven-copilot did
+# (`lib/state/turn-sources.ts`), reconstructing a fact the server held.
+#
+# `Message` gains `sources`: on an assistant row, the sources fetched on that
+# turn, persisted with the row. `GET /cases/{case_id}/messages` previously
+# returned no sources at all, so a conversation read back from history showed
+# none of the context the live turn did. The stored copy is lifted out of
+# `metadata` into this typed field rather than published twice.
+#
+# `ProblemVerificationData.problem_status` is published as the `ProblemStatus`
+# enum (unverified | verified | revision_pending | invalidated) instead of a
+# plain string — the same four values, so a reader of the string survives; a
+# generated client gains the union. No client branches on it yet.
+#
+# Clients: faultmaven-copilot replaces its turn diffing with
+# `fetched_turn == turn_number` and has its history mapper copy
+# `Message.sources`; faultmaven-dashboard and faultmaven-slack-agent only
+# regenerate.
+API_CONTRACT_VERSION = "11.2.0"

@@ -44,6 +44,7 @@ from faultmaven.models.interfaces import ISessionStore
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.auth.contracts import is_team_member
 from faultmaven.modules.case.contracts import (
+    MESSAGE_METADATA_KB_SOURCES,
     MessageRowKind,
     append_message_row,
     is_server_written_assistant_row,
@@ -1672,6 +1673,11 @@ class CaseService(ICaseService):
                         )
                     )
 
+                    # The KB context fetched on this turn is published typed,
+                    # as ``sources``, and not a second time inside ``metadata``.
+                    row_metadata = dict(case_msg.metadata)
+                    kb_sources = row_metadata.pop(MESSAGE_METADATA_KB_SOURCES, None)
+
                     api_message = Message(
                         message_id=case_msg.message_id,
                         turn_number=case_msg.turn_number,
@@ -1681,7 +1687,8 @@ class CaseService(ICaseService):
                         created_at=created_at_str,
                         author_id=case_msg.author_id,
                         token_count=case_msg.token_count,
-                        metadata=case_msg.metadata,
+                        metadata=row_metadata,
+                        sources=kb_sources or None,
                     )
                     messages.append(api_message)
 

@@ -296,6 +296,14 @@ consequence, published in API contract 3.3.0: `TurnResponse.sources` is empty fo
 turn in a deployment with the push disabled, and a client must read that as "no citation
 to show", never as a retrieval failure.
 
+**Which turn a source belongs to** (API contract 11.2.0). `case.kb_context` stands in
+every prompt from the turn a pre-fetch writes it until the next pre-fetch replaces it, so
+`TurnResponse.sources` carries the standing context on every turn. Each pre-fetched entry
+records the turn that fetched it, published as `Source.fetched_turn`; a source is new on
+the turn whose `turn_number` equals it. The turn's save persists the sources fetched on
+that turn with its assistant row, and `GET /cases/{case_id}/messages` returns them as the
+typed `Message.sources`, so history shows the context exactly where the live turn did.
+
 ### Design Principles
 
 Three principles govern KB retrieval. The retrieval-pipeline mechanics are canonical in [vector-retrieval-architecture.md](./vector-retrieval-architecture.md); KB-arch describes the storage-layer surface only.

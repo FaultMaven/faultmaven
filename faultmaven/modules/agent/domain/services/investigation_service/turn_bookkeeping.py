@@ -222,12 +222,19 @@ def _kb_context_sources(case: Any) -> list[Source]:
             "trigger": entry.get("trigger"),
         }
         score = entry.get("score")
+        fetched = entry.get("fetched_turn")
         sources.append(
             Source(
                 type=SourceType.KNOWLEDGE_BASE,
                 content=str(entry.get("summary") or entry.get("title") or ""),
                 confidence=float(score) if isinstance(score, (int, float)) else None,
                 metadata=metadata,
+                # ``bool`` is an ``int``; a row from an older build has no key.
+                fetched_turn=(
+                    fetched
+                    if isinstance(fetched, int) and not isinstance(fetched, bool)
+                    else None
+                ),
             )
         )
     return sources

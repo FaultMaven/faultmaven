@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 11.1.0
+**Version:** 11.2.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -6066,8 +6066,9 @@ Schema matches case-storage-design.md Section 4.7 (case_messages table).
 - `created_at` (string, required) — ISO 8601 datetime string (matches SQL schema)
 - `investigation_turn` (object, optional) — Which turn OF THE INVESTIGATION this row belongs to (#1387): the message clock at this row minus the out-of-band turns at or before it. `turn_number` is the message clock and advances on every exchange, asides included (small talk, trivia, questions about FaultMaven itself); this does not, so an aside carries the same value as the investigation turn before it. A client displaying "Turn N" against a conversation row should prefer this, and keep `turn_number` for anything that ADDRESSES a turn (anchors, `uploaded_at_turn` lookups) — those are message-clock references and re-basing them breaks jump-to-turn. On the newest row this equals `TurnResponse.investigation_turn`, which is the same quantity read at the case level. Null on a row that owns no turn — a `system` notice reporting a background job, stamped with whichever turn was open when the job finished — and on a server that predates the field.
 - `message_id` (string, required)
-- `metadata` (object, optional) — Sources, tools used, etc.
+- `metadata` (object, optional) — Tools used and other per-turn detail.
 - `role` (string, required)
+- `sources` (object, optional) — On an assistant row: the knowledge-base runbooks the pre-fetch put into the case's context ON THIS TURN, the same entries the live `TurnResponse.sources` carried whose `fetched_turn` equals this row's `turn_number`. Null on every other row, including later turns that still had that context in their prompt.
 - `token_count` (object, optional) — Number of tokens in content
 - `turn_number` (integer, required) — Turn number in conversation (user messages increment turn)
 
@@ -6237,6 +6238,19 @@ out of ``kubectl logs`` long before anyone asks.
 - `sso_jit_personal_tenant_enabled` (boolean, required) — SSO_JIT_PERSONAL_TENANT_ENABLED — whether an SSO identity with no IdP organization may provision a personal tenant on its first sign-in, i.e. whether self-service sign-up is open. Multi-tenant (Cloud) deployments only: a single-tenant deployment has one organization and never reaches the branch this gates.
 - `sso_jit_personal_tenant_max_per_hour` (integer, required) — SSO_JIT_PERSONAL_TENANT_MAX_PER_HOUR — the ceiling on NEW personal enterprises provisioned per rolling hour, deployment-wide. It bounds provisioning only; tenants that already exist sign in regardless.
 - `tenant_daily_turn_cap` (integer, required) — TENANT_DAILY_TURN_CAP — investigation turns an account in NO organization may take per UTC day before further turns are refused with 429. The deployment DEFAULT only: an organization is uncapped, a single-tenant deployment is never capped, and a per-organization override set with fm-set-turn-cap beats this value.
+
+---
+
+### ProblemStatus
+
+Where the confirmed problem statement stands against the evidence.
+
+The single source of truth for "is the problem verified":
+``InvestigationProgress.symptom_verified`` is derived from it and never
+stored. Every transition is written by
+``faultmaven.core.investigation.problem_status`` — nothing else assigns it.
+
+**Values:** `unverified`, `verified`, `revision_pending`, `invalidated`
 
 ---
 
@@ -6638,6 +6652,7 @@ Represents a single piece of citable evidence to build user trust.
 
 - `confidence` (object, optional)
 - `content` (string, required)
+- `fetched_turn` (object, optional) — For a knowledge-base source: the turn (message clock, the `turn_number` of `TurnResponse` and `Message`) on which the KB pre-fetch put it into the case's context. That context stands in every later prompt until a pre-fetch replaces it, so `TurnResponse.sources` carries it on every turn; a source is NEW on the turn whose `turn_number` equals this. Null on a source fetched before the field existed.
 - `metadata` (object, optional)
 - `type` (object, required)
 - `verification_reason` (object, optional)

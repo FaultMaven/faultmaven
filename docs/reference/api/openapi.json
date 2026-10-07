@@ -4129,7 +4129,7 @@
                 "type": "null"
               }
             ],
-            "description": "Sources, tools used, etc.",
+            "description": "Tools used and other per-turn detail.",
             "title": "Metadata"
           },
           "role": {
@@ -4140,6 +4140,21 @@
             ],
             "title": "Role",
             "type": "string"
+          },
+          "sources": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/Source"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "On an assistant row: the knowledge-base runbooks the pre-fetch put into the case's context ON THIS TURN, the same entries the live `TurnResponse.sources` carried whose `fetched_turn` equals this row's `turn_number`. Null on every other row, including later turns that still had that context in their prompt.",
+            "title": "Sources"
           },
           "token_count": {
             "anyOf": [
@@ -4504,6 +4519,17 @@
         "title": "PersonalTenantLimitsStatus",
         "type": "object"
       },
+      "ProblemStatus": {
+        "description": "Where the confirmed problem statement stands against the evidence.\n\nThe single source of truth for \"is the problem verified\":\n``InvestigationProgress.symptom_verified`` is derived from it and never\nstored. Every transition is written by\n``faultmaven.core.investigation.problem_status`` \u2014 nothing else assigns it.",
+        "enum": [
+          "unverified",
+          "verified",
+          "revision_pending",
+          "invalidated"
+        ],
+        "title": "ProblemStatus",
+        "type": "string"
+      },
       "ProblemVerificationData": {
         "description": "Problem verification details for INVESTIGATING phase.",
         "properties": {
@@ -4557,14 +4583,13 @@
           "problem_status": {
             "anyOf": [
               {
-                "type": "string"
+                "$ref": "#/components/schemas/ProblemStatus"
               },
               {
                 "type": "null"
               }
             ],
-            "description": "Where the confirmed problem statement stands against the evidence: unverified | verified | revision_pending (a revised statement awaits the user's confirmation) | invalidated (the reported problem was not present: a false alarm)",
-            "title": "Problem Status"
+            "description": "Where the confirmed problem statement stands against the evidence: unverified | verified | revision_pending (a revised statement awaits the user's confirmation) | invalidated (the reported problem was not present: a false alarm)"
           },
           "severity": {
             "anyOf": [
@@ -5764,6 +5789,18 @@
             "title": "Content",
             "type": "string"
           },
+          "fetched_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For a knowledge-base source: the turn (message clock, the `turn_number` of `TurnResponse` and `Message`) on which the KB pre-fetch put it into the case's context. That context stands in every later prompt until a pre-fetch replaces it, so `TurnResponse.sources` carries it on every turn; a source is NEW on the turn whose `turn_number` equals this. Null on a source fetched before the field existed.",
+            "title": "Fetched Turn"
+          },
           "metadata": {
             "anyOf": [
               {
@@ -6906,7 +6943,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "11.1.0"
+    "version": "11.2.0"
   },
   "openapi": "3.1.0",
   "paths": {

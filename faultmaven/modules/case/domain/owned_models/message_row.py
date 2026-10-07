@@ -74,6 +74,17 @@ MESSAGE_METADATA_USER_EMPTY = "user_message_empty"
 #: :func:`is_server_written_assistant_row`.
 MESSAGE_METADATA_AGENT_SYNTHESIZED = "agent_response_synthesized"
 
+#: On an ASSISTANT row: the KB pre-fetch hits that entered the case's context
+#: ON THIS TURN, as published ``Source`` dicts. Absent on every other row.
+#:
+#: The turn response carries the case's whole standing context on every turn,
+#: because it is in every turn's prompt; this records only the turn the
+#: context was fetched, which is where a client shows it. ``GET .../messages``
+#: lifts it out of ``metadata`` into the typed ``Message.sources``, so a
+#: conversation read back from history renders it exactly as the live turn
+#: did. Written by the turn's save (``_save_and_emit_turn``).
+MESSAGE_METADATA_KB_SOURCES = "kb_sources"
+
 
 # ============================================================
 # Markers
