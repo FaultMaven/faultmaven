@@ -17,11 +17,10 @@ from faultmaven.core.investigation.milestone_engine.terminal_turns import (
 )
 from faultmaven.models.api_models import IntentType
 from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
-    _kb_context_sources,
+    _record_turn_kb_sources,
 )
 from faultmaven.modules.agent.domain.services.orientation import OrientationKind
 from faultmaven.modules.case.contracts import (
-    MESSAGE_METADATA_KB_SOURCES,
     MessageRowKind,
     append_message_row,
 )
@@ -123,16 +122,11 @@ async def _save_and_emit_turn(
     was_terminal,
 ):
     """Append the agent message, save the case, and emit the #1142 turn-telemetry row."""
-    # The KB context fetched ON THIS TURN rides on the row, so history shows it
-    # where the live turn did. Not the whole standing context: that is resent on
-    # every turn, and storing it per row would repeat it under every answer.
-    fetched_now = [
-        source.model_dump(mode="json")
-        for source in _kb_context_sources(updated_case)
-        if source.fetched_turn == updated_case.current_turn
-    ]
-    if fetched_now:
-        turn_meta[MESSAGE_METADATA_KB_SOURCES] = fetched_now
+    # The KB context this turn's prompt carried rides on the row, so history
+    # shows it where the live turn did; the turn response reads the same entry.
+    # Before the append, so the comparison for ``new_this_turn`` sees only
+    # earlier rows.
+    _record_turn_kb_sources(turn_meta, updated_case)
     agent_message = append_message_row(
         updated_case,
         MessageRowKind.AGENT_ANSWER,

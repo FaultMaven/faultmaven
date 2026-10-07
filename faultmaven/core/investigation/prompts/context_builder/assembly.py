@@ -4,7 +4,10 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from faultmaven.core.investigation.kb_push import visible_kb_context
+from faultmaven.core.investigation.kb_push import (
+    KB_PROMPT_MAX_ENTRIES,
+    prompt_kb_entries,
+)
 from faultmaven.core.investigation.prompts.fence import (
     PromptFence,
     render_fenced,
@@ -802,12 +805,13 @@ def build_investigation_context(
     # below is the pre-fetch and nothing else — but scoping the gate to the
     # field it names keeps that true if a caller ever starts passing results.
     #
-    # Read through ``visible_kb_context`` rather than off the case: the same
-    # gate has to hold for the turn response's ``sources`` and the ``case_turn``
-    # telemetry, and three copies of one predicate is how two of them ended up
-    # without it.
+    # Read through ``prompt_kb_entries`` (which applies ``visible_kb_context``)
+    # rather than off the case: the engine captures this same selection before
+    # generation as the turn's ``sources``, so what a turn reports having shown
+    # the model is what this block renders. Three copies of one predicate is how
+    # two of them ended up without the gate.
     all_kb_results = list(kb_results or [])
-    all_kb_results.extend(visible_kb_context(case))
+    all_kb_results.extend(prompt_kb_entries(case))
 
     kb_str = ""
     if all_kb_results:
@@ -817,7 +821,7 @@ def build_investigation_context(
             "These are suggestions — do not force these solutions if the evidence "
             "points to a different root cause.\n\n"
         )
-        for i, res in enumerate(all_kb_results[:5]):  # Top 5
+        for i, res in enumerate(all_kb_results[:KB_PROMPT_MAX_ENTRIES]):
             summary = res.get("summary", "")
             solution = res.get("solution", "")
             title = res.get("title", "")

@@ -119,16 +119,15 @@ class Source(BaseModel):
     verification_reason: Optional[str] = (
         None  # Tooltip text (e.g., "Reviewed by admin")
     )
-    fetched_turn: Optional[int] = Field(
+    new_this_turn: Optional[bool] = Field(
         None,
         description=(
-            "For a knowledge-base source: the turn (message clock, the "
-            "`turn_number` of `TurnResponse` and `Message`) on which the KB "
-            "pre-fetch put it into the case's context. That context stands in "
-            "every later prompt until a pre-fetch replaces it, so "
-            "`TurnResponse.sources` carries it on every turn; a source is NEW "
-            "on the turn whose `turn_number` equals this. Null on a source "
-            "fetched before the field existed."
+            "For a knowledge-base source in a turn's `sources`: true when this "
+            "runbook excerpt was not in the prompt of the case's previous turn "
+            "that carried knowledge-base context. That context stands in every "
+            "prompt from the turn it is fetched until the next fetch replaces "
+            "it, so a client shows the list where something is new rather than "
+            "under every answer. Null on any other source."
         ),
     )
 
@@ -743,11 +742,10 @@ class Message(BaseModel):
     sources: Optional[List[Source]] = Field(
         None,
         description=(
-            "On an assistant row: the knowledge-base runbooks the pre-fetch put "
-            "into the case's context ON THIS TURN, the same entries the live "
-            "`TurnResponse.sources` carried whose `fetched_turn` equals this "
-            "row's `turn_number`. Null on every other row, including later "
-            "turns that still had that context in their prompt."
+            "On an assistant row: the knowledge-base runbooks that turn's "
+            "prompt carried, exactly as the live `TurnResponse.sources` "
+            "returned them, `new_this_turn` included. Null on a row whose "
+            "prompt carried none (and on every user or system row)."
         ),
     )
 

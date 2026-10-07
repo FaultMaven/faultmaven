@@ -4153,7 +4153,7 @@
                 "type": "null"
               }
             ],
-            "description": "On an assistant row: the knowledge-base runbooks the pre-fetch put into the case's context ON THIS TURN, the same entries the live `TurnResponse.sources` carried whose `fetched_turn` equals this row's `turn_number`. Null on every other row, including later turns that still had that context in their prompt.",
+            "description": "On an assistant row: the knowledge-base runbooks that turn's prompt carried, exactly as the live `TurnResponse.sources` returned them, `new_this_turn` included. Null on a row whose prompt carried none (and on every user or system row).",
             "title": "Sources"
           },
           "token_count": {
@@ -5789,18 +5789,6 @@
             "title": "Content",
             "type": "string"
           },
-          "fetched_turn": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "For a knowledge-base source: the turn (message clock, the `turn_number` of `TurnResponse` and `Message`) on which the KB pre-fetch put it into the case's context. That context stands in every later prompt until a pre-fetch replaces it, so `TurnResponse.sources` carries it on every turn; a source is NEW on the turn whose `turn_number` equals this. Null on a source fetched before the field existed.",
-            "title": "Fetched Turn"
-          },
           "metadata": {
             "anyOf": [
               {
@@ -5812,6 +5800,18 @@
               }
             ],
             "title": "Metadata"
+          },
+          "new_this_turn": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For a knowledge-base source in a turn's `sources`: true when this runbook excerpt was not in the prompt of the case's previous turn that carried knowledge-base context. That context stands in every prompt from the turn it is fetched until the next fetch replaces it, so a client shows the list where something is new rather than under every answer. Null on any other source.",
+            "title": "New This Turn"
           },
           "type": {
             "$ref": "#/components/schemas/SourceType"
@@ -6317,7 +6317,7 @@
             "description": "Progress transparency state. Present when investigation has stalled and agent is surfacing milestone dependencies."
           },
           "sources": {
-            "description": "Knowledge the engine put in front of the model for this turn: the runbooks the KB pre-fetch admitted (the PUSH channel, governed by KB_PREFETCH_ENABLED). Each entry carries the matched excerpt as `content`, the retrieval score as `confidence`, and the runbook's `document_id`/`title` under `metadata` so a client can link to it. Empty when nothing was pre-fetched \u2014 including when the push is disabled. Runbooks the model fetched itself via the kb_qa tool are NOT represented: that tool returns a formatted answer string, so per-turn identity is not available at the tool boundary.",
+            "description": "Knowledge the engine put in front of the model for this turn: the runbooks the KB pre-fetch admitted (the PUSH channel, governed by KB_PREFETCH_ENABLED) that this turn's prompt carried, captured before generation. A pre-fetch that fires while the turn's response is applied first reaches the NEXT turn's prompt, and is listed there. The context stands in every prompt until a pre-fetch replaces it, so it repeats turn to turn; `new_this_turn` marks the excerpts the previous turn's prompt did not carry. Each entry carries the matched excerpt as `content`, the retrieval score as `confidence`, and the runbook's `document_id`/`title` under `metadata` so a client can link to it. Empty when nothing was pre-fetched \u2014 including when the push is disabled. Runbooks the model fetched itself via the kb_qa tool are NOT represented: that tool returns a formatted answer string, so per-turn identity is not available at the tool boundary.",
             "items": {
               "$ref": "#/components/schemas/Source"
             },

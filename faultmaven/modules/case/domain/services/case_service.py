@@ -20,6 +20,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
+from pydantic import ValidationError
+
 from faultmaven.config.tenant_context import (
     get_current_billing_organization_id,
     get_current_enterprise_id,
@@ -31,6 +33,7 @@ from faultmaven.exceptions import (
     ValidationException,
 )
 from faultmaven.infrastructure.observability.tracing import trace
+from faultmaven.models.api import Source
 from faultmaven.models.api_models import (
     CaseCreateRequest,
     CaseListFilter,
@@ -90,6 +93,26 @@ def _case_messages_from(case: Case, rows: List[Dict[str, Any]]) -> List[CaseMess
         )
         for msg_dict in rows
     ]
+
+
+def _published_sources(stored: Any, *, message_id: str) -> Optional[List[Source]]:
+    """The row's stored KB sources as ``Source`` models, skipping any that fail.
+
+    Validated one at a time OUTSIDE the message's own parse: a stored entry
+    that no longer fits ``Source`` (a later schema change, a hand-repaired
+    blob) loses that citation, never the answer it was attached to.
+    """
+    if not isinstance(stored, list):
+        return None
+    sources: List[Source] = []
+    for entry in stored:
+        try:
+            sources.append(Source.model_validate(entry))
+        except ValidationError:
+            logger.warning(
+                "Dropped an unreadable KB source from message %s", message_id
+            )
+    return sources or None
 
 
 class CaseService(ICaseService):
@@ -1673,10 +1696,14 @@ class CaseService(ICaseService):
                         )
                     )
 
-                    # The KB context fetched on this turn is published typed,
-                    # as ``sources``, and not a second time inside ``metadata``.
+                    # The KB context this turn's prompt carried is published
+                    # typed, as ``sources``, and not a second time inside
+                    # ``metadata``.
                     row_metadata = dict(case_msg.metadata)
-                    kb_sources = row_metadata.pop(MESSAGE_METADATA_KB_SOURCES, None)
+                    kb_sources = _published_sources(
+                        row_metadata.pop(MESSAGE_METADATA_KB_SOURCES, None),
+                        message_id=case_msg.message_id,
+                    )
 
                     api_message = Message(
                         message_id=case_msg.message_id,
@@ -1688,7 +1715,7 @@ class CaseService(ICaseService):
                         author_id=case_msg.author_id,
                         token_count=case_msg.token_count,
                         metadata=row_metadata,
-                        sources=kb_sources or None,
+                        sources=kb_sources,
                     )
                     messages.append(api_message)
 

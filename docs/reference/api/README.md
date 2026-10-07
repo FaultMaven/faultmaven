@@ -6068,7 +6068,7 @@ Schema matches case-storage-design.md Section 4.7 (case_messages table).
 - `message_id` (string, required)
 - `metadata` (object, optional) — Tools used and other per-turn detail.
 - `role` (string, required)
-- `sources` (object, optional) — On an assistant row: the knowledge-base runbooks the pre-fetch put into the case's context ON THIS TURN, the same entries the live `TurnResponse.sources` carried whose `fetched_turn` equals this row's `turn_number`. Null on every other row, including later turns that still had that context in their prompt.
+- `sources` (object, optional) — On an assistant row: the knowledge-base runbooks that turn's prompt carried, exactly as the live `TurnResponse.sources` returned them, `new_this_turn` included. Null on a row whose prompt carried none (and on every user or system row).
 - `token_count` (object, optional) — Number of tokens in content
 - `turn_number` (integer, required) — Turn number in conversation (user messages increment turn)
 
@@ -6652,8 +6652,8 @@ Represents a single piece of citable evidence to build user trust.
 
 - `confidence` (object, optional)
 - `content` (string, required)
-- `fetched_turn` (object, optional) — For a knowledge-base source: the turn (message clock, the `turn_number` of `TurnResponse` and `Message`) on which the KB pre-fetch put it into the case's context. That context stands in every later prompt until a pre-fetch replaces it, so `TurnResponse.sources` carries it on every turn; a source is NEW on the turn whose `turn_number` equals this. Null on a source fetched before the field existed.
 - `metadata` (object, optional)
+- `new_this_turn` (object, optional) — For a knowledge-base source in a turn's `sources`: true when this runbook excerpt was not in the prompt of the case's previous turn that carried knowledge-base context. That context stands in every prompt from the turn it is fetched until the next fetch replaces it, so a client shows the list where something is new rather than under every answer. Null on any other source.
 - `type` (object, required)
 - `verification_reason` (object, optional)
 - `verification_status` (object, optional)
@@ -6823,7 +6823,7 @@ Response for POST /cases/{id}/turns.
 - `milestones_completed` (array, required)
 - `progress_made` (boolean, required)
 - `progress_transparency` (object, optional) — Progress transparency state. Present when investigation has stalled and agent is surfacing milestone dependencies.
-- `sources` (array, optional) — Knowledge the engine put in front of the model for this turn: the runbooks the KB pre-fetch admitted (the PUSH channel, governed by KB_PREFETCH_ENABLED). Each entry carries the matched excerpt as `content`, the retrieval score as `confidence`, and the runbook's `document_id`/`title` under `metadata` so a client can link to it. Empty when nothing was pre-fetched — including when the push is disabled. Runbooks the model fetched itself via the kb_qa tool are NOT represented: that tool returns a formatted answer string, so per-turn identity is not available at the tool boundary.
+- `sources` (array, optional) — Knowledge the engine put in front of the model for this turn: the runbooks the KB pre-fetch admitted (the PUSH channel, governed by KB_PREFETCH_ENABLED) that this turn's prompt carried, captured before generation. A pre-fetch that fires while the turn's response is applied first reaches the NEXT turn's prompt, and is listed there. The context stands in every prompt until a pre-fetch replaces it, so it repeats turn to turn; `new_this_turn` marks the excerpts the previous turn's prompt did not carry. Each entry carries the matched excerpt as `content`, the retrieval score as `confidence`, and the runbook's `document_id`/`title` under `metadata` so a client can link to it. Empty when nothing was pre-fetched — including when the push is disabled. Runbooks the model fetched itself via the kb_qa tool are NOT represented: that tool returns a formatted answer string, so per-turn identity is not available at the tool boundary.
 - `suggested_actions` (array, optional)
 - `turn_number` (integer, required)
 

@@ -36,7 +36,23 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-__all__ = ["kb_push_enabled", "visible_kb_context"]
+__all__ = [
+    "KB_PROMPT_MAX_ENTRIES",
+    "TURN_METADATA_KB_PROMPTED",
+    "kb_push_enabled",
+    "prompt_kb_entries",
+    "visible_kb_context",
+]
+
+#: How many pre-fetched entries a prompt renders.
+KB_PROMPT_MAX_ENTRIES = 5
+
+#: Engine turn-metadata key: the entries THIS turn's prompt rendered, captured
+#: before generation. The turn response's ``sources`` and the assistant row are
+#: built from it, never from ``case.kb_context`` after the turn: a pre-fetch
+#: that fires while the turn's response is applied (Gate 1, the root-cause
+#: edge) writes context the answer never saw, and only the NEXT prompt carries.
+TURN_METADATA_KB_PROMPTED = "kb_prompted"
 
 
 def kb_push_enabled() -> bool:
@@ -73,3 +89,14 @@ def visible_kb_context(case: Any) -> List[Dict[str, Any]]:
         return []
     entries = getattr(case, "kb_context", None) or []
     return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def prompt_kb_entries(case: Any) -> List[Dict[str, Any]]:
+    """The pre-fetched entries a prompt built from ``case`` now renders.
+
+    The ONE selection both the prompt builder and the engine's pre-generation
+    capture use, so what a turn reports having shown the model is, by
+    construction, what its prompt carried. Copies, so the capture cannot be
+    changed by a later write to ``case.kb_context``.
+    """
+    return [dict(entry) for entry in visible_kb_context(case)[:KB_PROMPT_MAX_ENTRIES]]

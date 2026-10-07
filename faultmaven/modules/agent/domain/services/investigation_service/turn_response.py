@@ -9,6 +9,7 @@ from typing import (
 )
 
 from faultmaven.core.investigation.turn_pipeline import submitted_name
+from faultmaven.models.api import Source
 from faultmaven.models.api_models import (
     AttachmentResult,
     ProgressTransparencyInfo,
@@ -16,10 +17,10 @@ from faultmaven.models.api_models import (
     TurnResponse,
 )
 from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
-    _kb_context_sources,
     _published_source_type,
 )
 from faultmaven.modules.case.contracts import (
+    MESSAGE_METADATA_KB_SOURCES,
     Case,
     VerificationStatus,
 )
@@ -78,16 +79,16 @@ def _build_turn_response(
             updated_case.root_cause_conclusion, _grade
         )
 
-    # Which runbooks informed this turn (fm#1361). The citation
-    # components in the Copilot read ``item.sources`` and have been
-    # unreachable code because nothing ever assigned it: the backend
-    # held the identity on ``case.kb_context`` and dropped it on the
-    # way out.
-    #
-    # Read from ``updated_case``, not the pre-turn case: both pre-fetch
-    # triggers fire during response application, so this turn's hits
-    # exist only on the post-turn object.
-    turn_sources = _kb_context_sources(updated_case)
+    # Which runbooks this turn's prompt carried (fm#1361), as the save
+    # recorded them on the assistant row (``_record_turn_kb_sources``) — one
+    # list, so the live response and history cannot disagree. Not
+    # ``updated_case.kb_context``: both pre-fetch triggers fire during
+    # response application, AFTER the answer was generated, so their hits
+    # are first in front of the model on the next turn.
+    turn_sources = [
+        Source.model_validate(source)
+        for source in turn_meta.get(MESSAGE_METADATA_KB_SOURCES) or []
+    ]
 
     response = TurnResponse(
         agent_response=agent_response_text,

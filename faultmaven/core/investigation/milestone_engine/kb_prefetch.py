@@ -282,11 +282,6 @@ class KbPrefetcher:
                         "type": getattr(r, "document_type", "runbook"),
                         "parent_document_id": getattr(r, "parent_document_id", None),
                         "trigger": trigger,
-                        # The turn this context was fetched on. It stands in
-                        # every later prompt until a pre-fetch replaces it, and
-                        # the turn response resends it each turn; this is what
-                        # tells a client which turn it is NEW on.
-                        "fetched_turn": case.current_turn,
                     }
                     for r in _admit_diverse(relevant)
                 ]

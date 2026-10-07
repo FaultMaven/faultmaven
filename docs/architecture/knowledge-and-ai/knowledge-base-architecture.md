@@ -296,13 +296,18 @@ consequence, published in API contract 3.3.0: `TurnResponse.sources` is empty fo
 turn in a deployment with the push disabled, and a client must read that as "no citation
 to show", never as a retrieval failure.
 
-**Which turn a source belongs to** (API contract 11.2.0). `case.kb_context` stands in
-every prompt from the turn a pre-fetch writes it until the next pre-fetch replaces it, so
-`TurnResponse.sources` carries the standing context on every turn. Each pre-fetched entry
-records the turn that fetched it, published as `Source.fetched_turn`; a source is new on
-the turn whose `turn_number` equals it. The turn's save persists the sources fetched on
-that turn with its assistant row, and `GET /cases/{case_id}/messages` returns them as the
-typed `Message.sources`, so history shows the context exactly where the live turn did.
+**Which turn a source belongs to** (API contract 11.2.0). Both pre-fetch triggers fire
+while a turn's response is applied, after its answer was generated, so the hits first
+reach the NEXT turn's prompt. A turn's `sources` is therefore what its own prompt
+carried: the engine captures the rendered entries before generation
+(`prompt_kb_entries`, the same selection the prompt builder renders), never
+`case.kb_context` read afterwards. The context stands in every prompt until a pre-fetch
+replaces it, so `sources` repeats turn to turn; `Source.new_this_turn` marks the excerpts
+the previous turn's prompt did not carry, decided against the previous assistant row's
+stored sources rather than a turn number, so a failed or retried turn cannot mislabel
+it. The list is persisted with the assistant row, and `GET /cases/{case_id}/messages`
+returns it as the typed `Message.sources`, so history shows it exactly where the live
+turn did.
 
 ### Design Principles
 

@@ -471,8 +471,9 @@ class TestTheOffStateIsCoherentAcrossEveryConsumer:
     """
 
     def test_no_consumer_sees_a_runbook_when_the_push_is_off(self, push):
+        from faultmaven.core.investigation.kb_push import prompt_kb_entries
         from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
-            _kb_context_sources,
+            _kb_sources,
         )
 
         push(False)
@@ -485,15 +486,16 @@ class TestTheOffStateIsCoherentAcrossEveryConsumer:
         assert "the volume filled again" in prompt, "positive control"
         assert "<knowledge_context>" not in prompt
         assert RUNBOOK_ID not in prompt
-        assert _kb_context_sources(case) == []
+        assert _kb_sources(prompt_kb_entries(case)) == []
         assert event["kb_prefetch_hits"] == 0
         assert event["kb_runbook_ids"] == []
 
     def test_every_consumer_sees_the_runbooks_when_the_push_is_on(self, push):
         """The converse, so the test above cannot pass by everything being
         permanently empty."""
+        from faultmaven.core.investigation.kb_push import prompt_kb_entries
         from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
-            _kb_context_sources,
+            _kb_sources,
         )
 
         push(True)
@@ -505,7 +507,7 @@ class TestTheOffStateIsCoherentAcrossEveryConsumer:
 
         assert "<knowledge_context>" in prompt
         assert RUNBOOK_TITLE in prompt
-        assert len(_kb_context_sources(case)) == 2
+        assert len(_kb_sources(prompt_kb_entries(case))) == 2
         assert event["kb_prefetch_hits"] == 2
 
     def test_the_shared_helper_is_what_every_consumer_reads(self, push):
@@ -517,25 +519,25 @@ class TestTheOffStateIsCoherentAcrossEveryConsumer:
         """
         import inspect
 
-        from faultmaven.core.investigation import case_telemetry
+        # Contract 11.2.0: the turn response's ``sources`` are built from what
+        # the prompt rendered, which the engine captures before generation
+        # through ``prompt_kb_entries`` — the same selection the prompt builder
+        # renders, and the one that applies the gate. Telemetry reads the gate
+        # directly.
+        from faultmaven.core.investigation import case_telemetry, kb_push
+        from faultmaven.core.investigation.milestone_engine import engine
         from faultmaven.core.investigation.prompts.context_builder import assembly
-        from faultmaven.modules.agent.domain.services.investigation_service import (
-            turn_bookkeeping,
-        )
 
-        # #1707 wave 3: ``_kb_context_sources`` is, and always was, defined in
-        # ``turn_bookkeeping`` (wave 2). service.py used to re-import it for
-        # its own call inside ``_build_turn_response``; that call moved out to
-        # ``turn_response`` in step B, so service.py no longer binds the name.
-        for module, func in (
-            (assembly, "build_investigation_context"),
-            (case_telemetry, "_kb_retrieval"),
-            (turn_bookkeeping, "_kb_context_sources"),
+        for module, func, reader in (
+            (assembly, "build_investigation_context", "prompt_kb_entries("),
+            (engine.MilestoneEngine, "_process_turn_impl", "prompt_kb_entries("),
+            (kb_push, "prompt_kb_entries", "visible_kb_context("),
+            (case_telemetry, "_kb_retrieval", "visible_kb_context("),
         ):
             src = inspect.getsource(getattr(module, func))
-            assert "visible_kb_context(" in src, (
-                f"{module.__name__}.{func} does not read the push through the "
-                "shared gate"
+            assert reader in src, (
+                f"{getattr(module, '__name__', module)}.{func} does not read the "
+                "push through the shared gate"
             )
 
 
@@ -544,11 +546,12 @@ class TestTheTurnResponseCitesItsSources:
     the backend never emitted, so they were unreachable code."""
 
     def test_sources_are_built_from_the_pre_fetched_runbooks(self):
+        from faultmaven.core.investigation.kb_push import prompt_kb_entries
         from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
-            _kb_context_sources,
+            _kb_sources,
         )
 
-        sources = _kb_context_sources(_case(TWO_HITS))
+        sources = _kb_sources(prompt_kb_entries(_case(TWO_HITS)))
         assert [s.metadata["document_id"] for s in sources] == [
             RUNBOOK_ID,
             "rb_kafka_lag",
@@ -559,11 +562,12 @@ class TestTheTurnResponseCitesItsSources:
         assert sources[0].metadata["trigger"] == "symptom"
 
     def test_no_pre_fetch_means_no_sources(self):
+        from faultmaven.core.investigation.kb_push import prompt_kb_entries
         from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
-            _kb_context_sources,
+            _kb_sources,
         )
 
-        assert _kb_context_sources(_case(None)) == []
+        assert _kb_sources(prompt_kb_entries(_case(None))) == []
 
     def test_the_serialized_shape_is_the_one_the_frontend_reads(self):
         """Asserted through ``model_dump``, which is what crosses the wire.
@@ -574,9 +578,10 @@ class TestTheTurnResponseCitesItsSources:
         specifically, so the enum's WIRE VALUE is part of the contract and not
         an internal name.
         """
+        from faultmaven.core.investigation.kb_push import prompt_kb_entries
         from faultmaven.models.api_models import TurnResponse
         from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
-            _kb_context_sources,
+            _kb_sources,
         )
         from faultmaven.modules.case.domain.models.lifecycle import CaseState
 
@@ -586,7 +591,7 @@ class TestTheTurnResponseCitesItsSources:
             milestones_completed=[],
             case_state=CaseState.INVESTIGATING,
             progress_made=True,
-            sources=_kb_context_sources(_case(TWO_HITS)),
+            sources=_kb_sources(prompt_kb_entries(_case(TWO_HITS))),
         )
         wire = response.model_dump(mode="json")
         assert wire["sources"][0]["type"] == "knowledge_base"
@@ -602,21 +607,23 @@ class TestTheTurnResponseCitesItsSources:
         The case carries context persisted while the push was ON — the state
         the pre-fetch's edge-triggered clearing branch never reaches.
         """
+        from faultmaven.core.investigation.kb_push import prompt_kb_entries
         from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
-            _kb_context_sources,
+            _kb_sources,
         )
 
         push(False)
-        assert _kb_context_sources(_case(TWO_HITS)) == []
+        assert _kb_sources(prompt_kb_entries(_case(TWO_HITS))) == []
 
     def test_sources_are_cited_when_the_push_is_on(self, push):
         """Positive control: the gate is not a permanent empty list."""
+        from faultmaven.core.investigation.kb_push import prompt_kb_entries
         from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
-            _kb_context_sources,
+            _kb_sources,
         )
 
         push(True)
-        assert len(_kb_context_sources(_case(TWO_HITS))) == 2
+        assert len(_kb_sources(prompt_kb_entries(_case(TWO_HITS)))) == 2
 
     def test_the_field_defaults_to_empty_rather_than_missing(self):
         """Every existing caller builds a ``TurnResponse`` without it."""

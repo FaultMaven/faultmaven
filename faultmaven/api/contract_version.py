@@ -1698,28 +1698,35 @@ asked to accept, and it belongs to a person.
 # client without it falls back to its generic "Closed" label. The revision card
 # needs no client change: it is a DECIDE pair carrying `confirmation` intents,
 # rendered like Gate 1's.
-# 11.2.0 — MINOR. Three additions, none of which an existing client reads.
+# 11.2.0 — MINOR. `TurnResponse.sources` is what the turn's prompt carried, and
+# history keeps it.
 #
-# `Source` gains `fetched_turn`: for a knowledge-base source, the turn (message
-# clock) on which the KB pre-fetch put it into the case's context. That context
-# stands in every later prompt until a pre-fetch replaces it, so
-# `TurnResponse.sources` repeats it on every turn and a client could only tell
-# which turn it was NEW on by diffing turns — which faultmaven-copilot did
-# (`lib/state/turn-sources.ts`), reconstructing a fact the server held.
+# `sources` was read from `case.kb_context` after the turn, but both pre-fetch
+# triggers (Gate 1, the root-cause edge) fire while the response is APPLIED,
+# after the answer was generated: the turn listed runbooks its answer never
+# saw. The engine now captures the prompt's KB entries before generation and
+# `sources` is built from that capture. A Gate-1 fetch is listed on the next
+# turn, the first whose prompt carried it, and a turn that rendered no KB
+# context (greeting, out-of-band aside, deterministic branch) lists none.
 #
-# `Message` gains `sources`: on an assistant row, the sources fetched on that
-# turn, persisted with the row. `GET /cases/{case_id}/messages` previously
-# returned no sources at all, so a conversation read back from history showed
-# none of the context the live turn did. The stored copy is lifted out of
-# `metadata` into this typed field rather than published twice.
+# `Source` gains `new_this_turn`: true for an excerpt the previous turn's prompt
+# did not carry, decided against the previous assistant row's stored sources.
+# The context stands in every prompt until a pre-fetch replaces it, so
+# `sources` repeats turn to turn; faultmaven-copilot diffed turns to show it
+# once (`lib/state/turn-sources.ts`), reconstructing what the server knew.
+#
+# `Message` gains `sources`: the same list, persisted on the assistant row.
+# `GET /cases/{case_id}/messages` returned no sources before, so history showed
+# none of what the live turn did.
 #
 # `ProblemVerificationData.problem_status` is published as the `ProblemStatus`
 # enum (unverified | verified | revision_pending | invalidated) instead of a
-# plain string — the same four values, so a reader of the string survives; a
-# generated client gains the union. No client branches on it yet.
+# plain string: the same four values, so a reader of the string survives.
 #
-# Clients: faultmaven-copilot replaces its turn diffing with
-# `fetched_turn == turn_number` and has its history mapper copy
-# `Message.sources`; faultmaven-dashboard and faultmaven-slack-agent only
-# regenerate.
+# Clients: no client reads `problem_status`, `Message.sources` or
+# `new_this_turn` yet. faultmaven-copilot at 11.1.0 keeps working, but its
+# turn diff reads the now-empty `sources` of an aside as "context gone" and
+# shows the list again on the next turn; adopting this version replaces that
+# diff with `new_this_turn` and has its history mapper copy `Message.sources`.
+# faultmaven-dashboard and faultmaven-slack-agent only regenerate.
 API_CONTRACT_VERSION = "11.2.0"
