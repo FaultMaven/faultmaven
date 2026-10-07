@@ -1042,10 +1042,11 @@ waits is refused.
 Every change is recorded in `problem_verification.statement_history`, opening
 with the statement Gate 1 confirmed; the resolution and closure summaries show
 "Originally reported as" when the statement was revised. The case read
-carries the same `problem_verification` in every state from INVESTIGATING on
-(contract 11.3.0), so a resolved or closed case's header still says where its
-statement stood: struck through with the finding on a false alarm, with
-"Originally reported as" after a revision.
+(`GET /cases/{id}/ui`) carries the same `problem_verification` in every state
+from INVESTIGATING on (contract 11.3.0), so a resolved or closed case still
+says where its statement stood: `invalidated` with the finding on a false
+alarm, and `original_problem_statement` once a revision or an edit changed
+it. A case closed from INQUIRY confirmed no statement and carries none.
 
 ### 1.5 Manual Case Action Requests
 

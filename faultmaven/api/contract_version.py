@@ -1739,11 +1739,13 @@ asked to accept, and it belongs to a person.
 # carries `original_problem_statement` when a revision or an edit changed the
 # statement. `problem_status` is the status the case ended with, not implied by
 # the state: resolving does not require `verified`, and a row saved before
-# 11.1.0 reads `unverified`, which both clients render as before. Before this, the header stated a false
-# alarm's problem as fact for the rest of the case's life.
+# 11.1.0 reads `unverified`. A case closed from INQUIRY confirmed no statement
+# and carries null. Before this, the header stated a false alarm's problem as
+# fact for the rest of the case's life.
 #
 # Clients: faultmaven-copilot (`CaseDetails.tsx`) and faultmaven-dashboard
-# (`IssueTab.tsx`) read the field for terminal states too; both already render
-# every status, and `unverified` or an absent field renders as before.
-# faultmaven-slack-agent only regenerates.
+# (`IssueTab.tsx`) render every status already, but read the field on
+# INVESTIGATING only; adopting this version reads it for terminal states too.
+# `unverified` or an absent field renders as before. faultmaven-slack-agent
+# only regenerates.
 API_CONTRACT_VERSION = "11.3.0"

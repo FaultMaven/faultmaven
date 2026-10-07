@@ -1406,6 +1406,22 @@ class TestTerminalCaseRead:
         assert pv.invalidation_finding is None
         assert pv.original_problem_statement is None
 
+    def test_a_case_closed_from_inquiry_carries_none(self):
+        # Gate 1 never ran: no statement was confirmed, so none is judged.
+        case = Case(
+            case_id="case_0000000000bb",
+            user_id="u",
+            enterprise_id="e",
+            title="t",
+            description="maybe the checkout database is slow",
+        )
+        assert execute_user_closure(case, "u") == "inquiry_only"
+
+        result = transform_case_for_ui(case)
+
+        assert result.state == CaseState.CLOSED
+        assert result.problem_verification is None
+
 
 def test_a_node_is_retexted_in_place_so_chains_keep_their_anchor():
     case = _case(ProblemStatus.VERIFIED)

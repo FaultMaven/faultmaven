@@ -737,7 +737,8 @@ class CaseUIResponse_Resolved(BaseModel):
             "INVESTIGATING response: a case closed as `closed_false_alarm` "
             "carries `invalidated` with its `invalidation_finding`, and a "
             "statement a revision or an edit changed carries "
-            "`original_problem_statement`."
+            "`original_problem_statement`. Null for a case closed from "
+            "INQUIRY, which confirmed no statement."
         ),
     )
 
