@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -304,89 +304,6 @@ class InquiryData(BaseModel):
         return self
 
 
-class Change(BaseModel):
-    """
-    Recent change that may be relevant to the problem.
-    """
-
-    description: str = Field(description="What changed", min_length=1, max_length=500)
-
-    occurred_at: datetime = Field(description="When the change occurred")
-
-    change_type: str = Field(
-        description="Type of change: deployment | config | scaling | code | infrastructure | data | other",
-        max_length=50,
-    )
-
-    changed_by: Optional[str] = Field(
-        default=None,
-        description="Who made the change (user, system, team)",
-        max_length=200,
-    )
-
-    details: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="Additional structured details (version numbers, config values, etc.)",
-    )
-
-    @field_validator("change_type")
-    @classmethod
-    def valid_change_type(cls, v):
-        """Validate change type"""
-        allowed = [
-            "deployment",
-            "config",
-            "scaling",
-            "code",
-            "infrastructure",
-            "data",
-            "other",
-        ]
-        if v not in allowed:
-            raise ValueError(f"change_type must be one of: {allowed}")
-        return v
-
-
-class Correlation(BaseModel):
-    """
-    Correlation between a change and the symptom.
-    """
-
-    change_description: str = Field(
-        description="Description of the change", max_length=500
-    )
-
-    timing_description: str = Field(
-        description="Temporal relationship: '2 minutes before', 'immediately after', 'coincides with', etc.",
-        max_length=200,
-    )
-
-    confidence: float = Field(
-        ge=0.0,
-        le=1.0,
-        description="Confidence in this correlation (0.0 = weak, 1.0 = strong)",
-    )
-
-    correlation_type: str = Field(
-        description="Type: temporal | causal | coincidental | other", max_length=50
-    )
-
-    evidence: Optional[str] = Field(
-        default=None,
-        description="Evidence supporting this correlation",
-        max_length=1000,
-    )
-
-    @field_validator("correlation_type")
-    @classmethod
-    def valid_correlation_type(cls, v):
-        """Validate correlation type"""
-        allowed = ["temporal", "causal", "coincidental", "other"]
-        if v not in allowed:
-            raise ValueError(f"correlation_type must be one of: {allowed}")
-        return v
-
-
 class ProblemStatus(str, Enum):
     """Where the confirmed problem statement stands against the evidence.
 
@@ -490,14 +407,13 @@ class ProblemInvalidation(BaseModel):
 
 class ProblemVerification(BaseModel):
     """
-    Consolidated problem verification data.
+    The verified problem, as the investigation opened it (Gate 1) and as its
+    statement has stood since.
 
-    Contains all data gathered during verification phase:
-    - Symptom details
-    - Scope assessment
-    - Timeline
-    - Recent changes
-    - Correlations
+    Every value here is read from what the case itself recorded. A field the
+    record has no value for is ``None``, never a default that looks like an
+    assessment: ``severity`` is null until Gate 1 took one from the user's
+    problem confirmation, and urgency never stands in for it.
     """
 
     # ============================================================
@@ -509,11 +425,6 @@ class ProblemVerification(BaseModel):
         max_length=1000,
     )
 
-    symptom_indicators: List[str] = Field(
-        default_factory=list,
-        description="Specific metrics/observations confirming symptom (e.g., 'Error rate: 15%', 'P99 latency: 5s')",
-    )
-
     # ============================================================
     # Scope
     # ============================================================
@@ -521,66 +432,21 @@ class ProblemVerification(BaseModel):
         default_factory=list, description="Services/components affected"
     )
 
-    affected_users: Optional[str] = Field(
+    severity: Optional[str] = Field(
         default=None,
-        description="User impact description: 'all users' | '10% of users' | 'premium tier' | etc.",
-        max_length=200,
-    )
-
-    affected_regions: List[str] = Field(
-        default_factory=list, description="Geographic regions affected"
-    )
-
-    severity: str = Field(
-        description="Assessed severity: CRITICAL | HIGH | MEDIUM | LOW", max_length=50
-    )
-
-    user_impact: Optional[str] = Field(
-        default=None, description="Description of user-facing impact", max_length=1000
+        description=(
+            "Severity the user's problem confirmation gave: CRITICAL | HIGH | "
+            "MEDIUM | LOW. None when it was not assessed — urgency is a "
+            "different axis and never substitutes for it."
+        ),
+        max_length=50,
     )
 
     # ============================================================
     # Timeline
     # ============================================================
-    started_at: Optional[datetime] = Field(
-        default=None, description="When problem began (best estimate)"
-    )
-
-    noticed_at: Optional[datetime] = Field(
-        default=None, description="When problem was noticed/reported"
-    )
-
-    resolved_naturally_at: Optional[datetime] = Field(
-        default=None, description="If problem resolved on its own, when?"
-    )
-
-    duration: Optional[timedelta] = Field(
-        default=None, description="How long problem lasted (for historical problems)"
-    )
-
     temporal_state: Optional[TemporalState] = Field(
-        default=None, description="ONGOING | HISTORICAL"
-    )
-
-    # ============================================================
-    # Changes
-    # ============================================================
-    recent_changes: List[Change] = Field(
-        default_factory=list,
-        description="Recent changes that may be relevant (deployments, configs, etc.)",
-    )
-
-    correlations: List[Correlation] = Field(
-        default_factory=list,
-        description="Identified correlations between changes and symptom",
-        max_length=10,  # Limit to top 10 (V2 spelling of the deprecated max_items)
-    )
-
-    correlation_confidence: float = Field(
-        default=0.0,
-        ge=0.0,
-        le=1.0,
-        description="Confidence in change-symptom correlation (0.0 = no correlation, 1.0 = certain)",
+        default=None, description="ONGOING | HISTORICAL, as reported at Gate 1"
     )
 
     # ============================================================
@@ -588,11 +454,7 @@ class ProblemVerification(BaseModel):
     # ============================================================
     urgency_level: UrgencyLevel = Field(
         default=UrgencyLevel.UNKNOWN,
-        description="Urgency classification for path routing",
-    )
-
-    urgency_factors: List[str] = Field(
-        default_factory=list, description="Factors contributing to urgency assessment"
+        description="Business-impact urgency, from the preliminary urgency at Gate 1",
     )
 
     # ============================================================
@@ -649,20 +511,6 @@ class ProblemVerification(BaseModel):
     )
 
     # ============================================================
-    # Metadata
-    # ============================================================
-    verified_at: Optional[datetime] = Field(
-        default=None, description="When verification was completed"
-    )
-
-    verification_confidence: float = Field(
-        default=0.0,
-        ge=0.0,
-        le=1.0,
-        description="Overall confidence in verification accuracy",
-    )
-
-    # ============================================================
     # Computed Properties
     # ============================================================
     def original_statement(self, current: str) -> Optional[str]:
@@ -681,49 +529,16 @@ class ProblemVerification(BaseModel):
             return None
         return original
 
-    @property
-    def is_complete(self) -> bool:
-        """Check if verification has all required data"""
-        return (
-            bool(self.symptom_statement)
-            and bool(self.severity)
-            and self.temporal_state is not None
-            and self.urgency_level != UrgencyLevel.UNKNOWN
-        )
-
-    @property
-    def time_to_detection(self) -> Optional[timedelta]:
-        """Time between problem start and detection"""
-        if self.started_at and self.noticed_at:
-            return self.noticed_at - self.started_at
-        return None
-
     # ============================================================
     # Validation
     # ============================================================
     @field_validator("severity")
     @classmethod
     def valid_severity(cls, v):
-        """Validate severity"""
+        """Validate severity (None means not assessed)"""
+        if v is None:
+            return None
         allowed = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
         if v.upper() not in allowed:
             raise ValueError(f"severity must be one of: {allowed}")
         return v.upper()
-
-    @model_validator(mode="after")
-    def timeline_consistency(self):
-        """Ensure timeline fields are consistent"""
-        started = self.started_at
-        noticed = self.noticed_at
-        resolved = self.resolved_naturally_at
-
-        if started and noticed and started > noticed:
-            raise ValueError("started_at cannot be after noticed_at")
-
-        if started and resolved and started > resolved:
-            raise ValueError("started_at cannot be after resolved_naturally_at")
-
-        if noticed and resolved and noticed > resolved:
-            raise ValueError("noticed_at cannot be after resolved_naturally_at")
-
-        return self

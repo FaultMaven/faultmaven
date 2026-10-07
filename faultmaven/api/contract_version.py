@@ -1748,4 +1748,34 @@ asked to accept, and it belongs to a person.
 # INVESTIGATING only; adopting this version reads it for terminal states too.
 # `unverified` or an absent field renders as before. faultmaven-slack-agent
 # only regenerates.
-API_CONTRACT_VERSION = "11.3.0"
+# 12.0.0 — MAJOR. `ProblemVerificationData` (INVESTIGATING and terminal cases)
+# publishes only what the case's own record holds. `impact` and `user_impact`
+# are removed, along with the `ImpactData` schema; `temporal_state` changes type
+# from the `TemporalStateData` object to the string `ongoing` | `historical`,
+# and `TemporalStateData` is removed. `urgency_level` and `severity` keep their
+# type and now describe the record's value, lowercase, null when not assessed.
+#
+# MAJOR: published fields were removed and one changed shape, which this file
+# names as MAJOR outright. The measured impact is nil: no client reads
+# `impact`, `user_impact` or `temporal_state` at runtime, so adopting this
+# version is a regenerate.
+#
+# Why they went: the adapter did not read them, it made them up. `impact` and
+# `user_impact` came from a substring match on the description ("api" in
+# "rapid" listed `api` as an affected service) and `temporal_state` was built
+# from evidence upload times with a literal `ongoing`. `urgency_level` was the
+# literal `unknown` and `severity` defaulted to `medium`. The record has no
+# writer for any scope or timeline fact beyond Gate 1's urgency and temporal
+# state. What the response now says is what Gate 1 recorded: `urgency_level`
+# from the preliminary urgency (null when unknown), `severity` from the user's
+# problem confirmation (null when not assessed; urgency no longer stands in for
+# it), `temporal_state` as reported at Gate 1 (null when not reported).
+#
+# `RootCauseSummary.severity` (RESOLVED and CLOSED responses) is removed too: the
+# adapter sent the literal `medium` for every case, and neither the root-cause
+# conclusion nor its hypothesis records a severity to send instead. No client
+# reads it.
+#
+# Clients: regenerate only; a value that read as `medium` or `unknown` for a
+# case that carried no assessment now reads null.
+API_CONTRACT_VERSION = "12.0.0"

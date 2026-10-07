@@ -635,7 +635,7 @@ FAILURE MODE: {failure_mode.title}
 DOMAIN: {failure_mode.domain}
 SERVICE: {failure_mode.service}
 SYMPTOM_CLASS: {failure_mode.symptom_class}
-SEVERITY: {failure_mode.severity}
+SEVERITY: {failure_mode.severity or '(not assessed — choose one of critical, high, medium, low from the source material)'}
 SCOPE: {scope}
 SOURCE FILENAME: {original_filename}
 TODAY: {iso_date}
@@ -1000,7 +1000,7 @@ class FailureModeAnalysis(BaseModel):
     domain: str
     service: str
     symptom_class: List[str]
-    severity: str
+    severity: Optional[str]  # None: the source carried no severity (case-sourced conversions)
     symptoms_summary: str
     resolution_summary: str
 

@@ -31,7 +31,6 @@ from faultmaven.models.case_ui import (
     CaseUIResponse_Resolved,
     EvidenceSummary,
     HypothesisSummary,
-    ImpactData,
     InquiryQuestion,
     InquiryRequestSummary,
     InquiryResponseData,
@@ -42,7 +41,6 @@ from faultmaven.models.case_ui import (
     RootCauseSummary,
     SolutionSummary,
     SolutionVerificationData,
-    TemporalStateData,
     WorkingConclusionSummary,
 )
 from faultmaven.modules.case.contracts import (
@@ -51,6 +49,7 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     HypothesisState,
     InquiryData,
+    UrgencyLevel,
 )
 from faultmaven.modules.case.domain.services.case_action_manager import (
     CaseActionManager,
@@ -88,81 +87,23 @@ def transform_case_for_ui(case: Case) -> CaseUIResponse:
 
 
 def _extract_problem_verification(case: Case) -> Optional[ProblemVerificationData]:
-    """Extract problem verification data from case state."""
+    """Read problem verification from the case's own record.
 
-    # Get urgency and severity
-    urgency_level = "unknown"
-    severity = None
-
-    if case.inquiry and case.inquiry.problem_confirmation:
-        severity = case.inquiry.problem_confirmation.severity_guess or "medium"
-
-    # Extract temporal state from evidence timeline
-    temporal_state = None
-    if case.evidence:
-        timestamps = [
-            e.collected_at
-            for e in case.evidence
-            if hasattr(e, "collected_at") and e.collected_at
-        ]
-        if timestamps:
-            sorted_times = sorted(timestamps)
-            temporal_state = TemporalStateData(
-                started_at=sorted_times[0],
-                last_occurrence_at=sorted_times[-1] if len(sorted_times) > 1 else None,
-                state="ongoing",  # Could be determined from evidence recency
-            )
-
-    # Extract impact from case description (simple keyword extraction)
-    impact = None
-    affected_services = []
-    affected_users = None
-    affected_regions = []
-
-    if case.description:
-        # Simple keyword extraction for services
-        common_services = [
-            "api",
-            "service",
-            "database",
-            "db",
-            "cache",
-            "auth",
-            "payment",
-            "checkout",
-        ]
-        text_lower = case.description.lower()
-
-        for service in common_services:
-            if service in text_lower:
-                affected_services.append(service)
-
-        # Check for user impact indicators
-        if any(word in text_lower for word in ["users", "customers", "all"]):
-            affected_users = "Multiple users affected"
-
-    if affected_services or affected_users:
-        impact = ImpactData(
-            affected_services=affected_services if affected_services else None,
-            affected_users=affected_users,
-            affected_regions=affected_regions if affected_regions else None,
-        )
-
-    # User impact summary
-    user_impact = None
-    if impact and affected_services:
-        user_impact = f"{len(affected_services)} service(s) affected"
-        if affected_users:
-            user_impact += f" - {affected_users}"
+    Every value comes from ``case.problem_verification``; where the record
+    holds none the response carries null, never a default or an inference.
+    """
 
     pv = case.problem_verification
     original = pv.original_statement(case.description or "") if pv else None
+    urgency_level = (
+        pv.urgency_level.value
+        if pv and pv.urgency_level != UrgencyLevel.UNKNOWN
+        else None
+    )
     return ProblemVerificationData(
         urgency_level=urgency_level,
-        severity=severity,
-        temporal_state=temporal_state,
-        impact=impact,
-        user_impact=user_impact,
+        severity=pv.severity.lower() if pv and pv.severity else None,
+        temporal_state=pv.temporal_state.value if pv and pv.temporal_state else None,
         problem_status=case.progress.problem_status if case.progress else None,
         original_problem_statement=original,
         pending_revision=(
@@ -470,7 +411,6 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
     root_cause_desc = "Root cause identified"
     root_cause_id = "unknown"
     root_cause_category = "other"
-    root_cause_severity = "medium"
 
     if case.root_cause_conclusion:
         root_cause_desc = case.root_cause_conclusion.root_cause
@@ -528,7 +468,6 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
         description=root_cause_desc,
         root_cause_id=root_cause_id,
         category=root_cause_category,
-        severity=root_cause_severity,
         cause_assurance=cause_grade.value,
         cause_overclaim=cause_overclaim,
     )

@@ -793,7 +793,7 @@ class ConversionService:
                 f"DOMAIN: {failure_mode.domain}\n"
                 f"SERVICE: {failure_mode.service}\n"
                 f"SYMPTOM_CLASS: {', '.join(failure_mode.symptom_class) or '(none supplied — classify from the controlled vocabulary in rule 9)'}\n"
-                f"SEVERITY: {failure_mode.severity}\n"
+                f"SEVERITY: {failure_mode.severity or '(not assessed — choose one of critical, high, medium, low from the source material)'}\n"
                 f"SCOPE: {scope}\n"
                 f"SOURCE FILENAME: {filename}\n"
                 f"TODAY: {today_iso}\n\n"

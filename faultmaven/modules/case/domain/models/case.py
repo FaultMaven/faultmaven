@@ -1158,11 +1158,8 @@ class Case(BaseModel):
     #               No live API surface serialises the domain `Case`; the only
     #               consumer is the checkpoint hash, which is never compared
     #               against a stored value.
-    #   timedelta — dead. Config does not propagate to nested models in V2 and
-    #               `Case` has no timedelta field of its own, so the only field
-    #               it could have reached (`ProblemVerification.duration`)
-    #               already serialised as ISO-8601 `PT1H`, never as seconds.
-    #               Confirmed unchanged before and after.
+    #   timedelta — dead. Config does not propagate to nested models in V2, and
+    #               no model reachable from `Case` carries a timedelta field.
     model_config = ConfigDict(
         validate_assignment=True,  # Validate on field assignment
         use_enum_values=False,  # Keep enum instances
