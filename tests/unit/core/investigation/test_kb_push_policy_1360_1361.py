@@ -519,18 +519,22 @@ class TestTheOffStateIsCoherentAcrossEveryConsumer:
         """
         import inspect
 
-        # Contract 11.2.0: the turn response's ``sources`` are built from what
-        # the prompt rendered, which the engine captures before generation
-        # through ``prompt_kb_entries`` — the same selection the prompt builder
-        # renders, and the one that applies the gate. Telemetry reads the gate
-        # directly.
+        # Contract 11.2.0: the prompt builder selects through
+        # ``prompt_kb_entries`` (which applies the gate) and reports what
+        # survived into the prompt; the engine passes that report on as the
+        # turn's ``sources``, so it never reads the field itself. Telemetry
+        # reads the gate directly.
         from faultmaven.core.investigation import case_telemetry, kb_push
         from faultmaven.core.investigation.milestone_engine import engine
         from faultmaven.core.investigation.prompts.context_builder import assembly
 
+        engine_src = inspect.getsource(engine.MilestoneEngine._process_turn_impl)
+        assert "kb_rendered=metadata[TURN_METADATA_KB_PROMPTED]" in engine_src
+        assert "visible_kb_context(" not in engine_src
+        assert "prompt_kb_entries(" not in engine_src
+
         for module, func, reader in (
             (assembly, "build_investigation_context", "prompt_kb_entries("),
-            (engine.MilestoneEngine, "_process_turn_impl", "prompt_kb_entries("),
             (kb_push, "prompt_kb_entries", "visible_kb_context("),
             (case_telemetry, "_kb_retrieval", "visible_kb_context("),
         ):

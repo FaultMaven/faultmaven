@@ -6,6 +6,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from faultmaven.core.investigation.kb_push import (
     KB_PROMPT_MAX_ENTRIES,
+    kb_entries_rendered,
     prompt_kb_entries,
 )
 from faultmaven.core.investigation.prompts.fence import (
@@ -473,9 +474,15 @@ def build_investigation_context(
     processing_mode: Optional[str] = None,
     entity_highlight_groups: Optional[Sequence["EntityHighlightGroup"]] = None,
     tools_available: bool = False,
+    kb_rendered: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, str]:
     """
     Gather and format context elements within token budget.
+
+    ``kb_rendered``, when given, is refilled with the KB entries whose header
+    survived the section budget in the returned ``kb_results`` text — what the
+    turn's ``sources`` report. The template decides whether the slot is used;
+    ``get_prompt_for_case`` clears the list when it is not.
 
     **One fence token per assembly (#1228, widened in #1256).**
     ``<problem_context>``, ``<entity_highlights>``, ``<evidence_collected>``,
@@ -806,10 +813,9 @@ def build_investigation_context(
     # field it names keeps that true if a caller ever starts passing results.
     #
     # Read through ``prompt_kb_entries`` (which applies ``visible_kb_context``)
-    # rather than off the case: the engine captures this same selection before
-    # generation as the turn's ``sources``, so what a turn reports having shown
-    # the model is what this block renders. Three copies of one predicate is how
-    # two of them ended up without the gate.
+    # rather than off the case; what survives the section budget is reported
+    # through ``kb_rendered`` below and becomes the turn's ``sources``. Three
+    # copies of one predicate is how two of them ended up without the gate.
     all_kb_results = list(kb_results or [])
     all_kb_results.extend(prompt_kb_entries(case))
 
@@ -835,8 +841,9 @@ def build_investigation_context(
             trigger_label = f" [matched on {trigger}]" if trigger else ""
             if len(solution) > KB_MAX_SOLUTION_CHARS:
                 solution = solution[:KB_MAX_SOLUTION_CHARS] + "... [truncated]"
-            if title:
-                kb_str += f"MATCH {i + 1}: {title}{trigger_label}\n"
+            # Every entry gets its header: it is how the turn's ``sources``
+            # learn which entries survived the section budget.
+            kb_str += f"MATCH {i + 1}: {title or 'Untitled runbook'}{trigger_label}\n"
             if summary:
                 kb_str += f"  {summary}\n"
             if solution:
@@ -994,4 +1001,8 @@ def build_investigation_context(
         entity_highlights_str=entity_highlights_str,
         candidate_solutions_str=candidate_solutions_str,
     )
+    if kb_rendered is not None:
+        kb_rendered[:] = kb_entries_rendered(
+            ctx.get("kb_results", ""), all_kb_results[:KB_PROMPT_MAX_ENTRIES]
+        )
     return ctx

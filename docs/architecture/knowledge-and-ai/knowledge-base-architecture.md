@@ -299,9 +299,10 @@ to show", never as a retrieval failure.
 **Which turn a source belongs to** (API contract 11.2.0). Both pre-fetch triggers fire
 while a turn's response is applied, after its answer was generated, so the hits first
 reach the NEXT turn's prompt. A turn's `sources` is therefore what its own prompt
-carried: the engine captures the rendered entries before generation
-(`prompt_kb_entries`, the same selection the prompt builder renders), never
-`case.kb_context` read afterwards. The context stands in every prompt until a pre-fetch
+carried: the prompt build reports the entries whose header survived the section budget
+in the prompt the model answered from (none for a template without the KB slot or the
+minimal fallback), and the engine passes that report on, never `case.kb_context` read
+afterwards. The context stands in every prompt until a pre-fetch
 replaces it, so `sources` repeats turn to turn; `Source.new_this_turn` marks the excerpts
 the previous turn's prompt did not carry, decided against the previous assistant row's
 stored sources rather than a turn number, so a failed or retried turn cannot mislabel

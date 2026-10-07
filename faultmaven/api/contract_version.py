@@ -1704,8 +1704,9 @@ asked to accept, and it belongs to a person.
 # `sources` was read from `case.kb_context` after the turn, but both pre-fetch
 # triggers (Gate 1, the root-cause edge) fire while the response is APPLIED,
 # after the answer was generated: the turn listed runbooks its answer never
-# saw. The engine now captures the prompt's KB entries before generation and
-# `sources` is built from that capture. A Gate-1 fetch is listed on the next
+# saw. `sources` is now built from what the prompt build reports it rendered:
+# the entries whose header survived the KB section's budget, in the prompt the
+# model answered from (none for a template without the slot or the fallback). A Gate-1 fetch is listed on the next
 # turn, the first whose prompt carried it, and a turn that rendered no KB
 # context (greeting, out-of-band aside, deterministic branch) lists none.
 #

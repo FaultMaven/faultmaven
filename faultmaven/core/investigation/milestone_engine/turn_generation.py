@@ -39,8 +39,13 @@ async def _generate_turn_response(
     intent_data,
     user_id,
     user_message,
+    kb_rendered=None,
 ):
-    """Load the redaction context and generate the LLM (or single-shot) response for this turn."""
+    """Load the redaction context and generate the LLM (or single-shot) response for this turn.
+
+    ``kb_rendered`` is refilled by every prompt build with the KB entries that
+    prompt carries; the last build is the prompt the model answered from.
+    """
     from faultmaven.config.settings import get_settings
     from faultmaven.infrastructure.security.case_redaction import (
         CaseRedactionContext,
@@ -135,6 +140,7 @@ async def _generate_turn_response(
             entity_highlight_groups=entity_highlight_groups,
             tools_available=tools_available,
             target_tokens=target_tokens,
+            kb_rendered=kb_rendered,
         )
 
     def _build_tool_loop_base(

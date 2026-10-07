@@ -184,9 +184,10 @@ _DATA_TYPE_TO_SOURCE_TYPE: dict[DataType, EvidenceSourceType] = {
 def _kb_sources(entries: list[dict]) -> list[Source]:
     """Render pre-fetched runbook entries as citable ``Source`` entries.
 
-    ``entries`` is what a turn's prompt rendered, captured by the engine before
-    generation (``TURN_METADATA_KB_PROMPTED``, selected by
-    ``prompt_kb_entries``, which applies the push gate of fm#1360). Never
+    ``entries`` is what the prompt the model answered from carried, as the
+    prompt build reported it (``TURN_METADATA_KB_PROMPTED``: the entries
+    ``prompt_kb_entries`` selected, which applies the push gate of fm#1360,
+    whose header survived the section budget). Never
     ``case.kb_context`` read after the turn: a pre-fetch fired while the
     response is applied writes context the answer never saw, and citing a
     runbook the model was not shown is worse than citing none.
@@ -239,7 +240,7 @@ def _source_key(source: dict) -> tuple[str, str]:
 def _record_turn_kb_sources(turn_meta: dict, case: Any) -> None:
     """Build this turn's ``sources`` from what its prompt rendered, for the row.
 
-    Takes the engine's raw capture (``TURN_METADATA_KB_PROMPTED``) out of
+    Takes the engine's raw report (``TURN_METADATA_KB_PROMPTED``) out of
     ``turn_meta`` and writes the published form under
     ``MESSAGE_METADATA_KB_SOURCES``, which the assistant row persists and the
     turn response reads. A turn whose prompt carried no KB context (no engine

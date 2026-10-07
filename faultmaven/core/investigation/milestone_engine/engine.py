@@ -11,10 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
-from faultmaven.core.investigation.kb_push import (
-    TURN_METADATA_KB_PROMPTED,
-    prompt_kb_entries,
-)
+from faultmaven.core.investigation.kb_push import TURN_METADATA_KB_PROMPTED
 from faultmaven.core.investigation.lifecycle_metrics import (
     inquiry_handshake_deferred_total,
 )
@@ -1194,13 +1191,14 @@ class MilestoneEngine:
             # load() provides cross-turn numbering consistency (same IP
             # keeps the same placeholder across turns) but is not required
             # for correctness.
-            # What this turn's prompt renders from the KB push, captured
-            # before generation: the turn's ``sources`` are built from it. A
-            # pre-fetch fired while the response is applied below (Gate 1, the
-            # root-cause edge) changes ``case.kb_context`` AFTER the answer was
-            # written, so reading it afterwards would cite runbooks the answer
-            # never saw.
-            metadata[TURN_METADATA_KB_PROMPTED] = prompt_kb_entries(case)
+            # What this turn's prompt carried from the KB push, as the prompt
+            # build reports it: the entries that survived the section budget in
+            # the prompt the model answered from (none for a template without
+            # the slot or the minimal fallback). The turn's ``sources`` are
+            # built from it. ``case.kb_context`` read afterwards would also
+            # hold what a pre-fetch fired during application below (Gate 1,
+            # the root-cause edge) wrote AFTER the answer.
+            metadata[TURN_METADATA_KB_PROMPTED] = []
             redaction_ctx, response_obj = await _generate_turn_response(
                 self.deps.investigation_tools,
                 self.deps.llm_provider,
@@ -1212,6 +1210,7 @@ class MilestoneEngine:
                 intent_data=intent_data,
                 user_id=user_id,
                 user_message=user_message,
+                kb_rendered=metadata[TURN_METADATA_KB_PROMPTED],
             )
 
             # 4. Apply state from the final accepted response (exactly once)

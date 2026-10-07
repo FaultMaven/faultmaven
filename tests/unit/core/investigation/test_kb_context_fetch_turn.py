@@ -382,3 +382,108 @@ class TestProblemStatusIsAnEnum:
             "revision_pending",
             "invalidated",
         }
+
+
+# ---------------------------------------------------------------------------
+# What the prompt actually carried
+# ---------------------------------------------------------------------------
+
+
+def _long_entry(doc: str) -> dict:
+    return {**_entry(doc, "x " * 400), "solution": "y " * 400}
+
+
+class TestThePromptReportsWhatItCarried:
+    def test_headers_in_the_section_name_the_entries(self):
+        from faultmaven.core.investigation.kb_push import kb_entries_rendered
+
+        entries = [_entry("rb_a"), _entry("rb_b"), _entry("rb_c")]
+        section = "<knowledge_context>\nMATCH 1: A\n  ...\nMATCH 2: B\n  [...]"
+        assert [
+            e["parent_document_id"] for e in kb_entries_rendered(section, entries)
+        ] == [
+            "rb_a",
+            "rb_b",
+        ]
+        assert kb_entries_rendered("", entries) == []
+        assert kb_entries_rendered("MATCH 9: out of range", entries) == []
+
+    def test_an_untruncated_section_reports_every_entry(self):
+        from faultmaven.core.investigation.prompts.context_builder.assembly import (
+            build_investigation_context,
+        )
+
+        rendered: list = []
+        build_investigation_context(
+            _investigating_case([_entry(f"rb{i}") for i in range(3)]),
+            "still full",
+            kb_rendered=rendered,
+        )
+        assert [e["parent_document_id"] for e in rendered] == ["rb0", "rb1", "rb2"]
+
+    def test_a_section_cut_by_the_budget_reports_only_what_survived(self):
+        from faultmaven.core.investigation.prompts.context_builder.assembly import (
+            build_investigation_context,
+        )
+
+        rendered: list = []
+        ctx = build_investigation_context(
+            _investigating_case([_long_entry(f"rb{i}") for i in range(5)]),
+            "still full",
+            max_tokens=1000,
+            kb_rendered=rendered,
+        )
+
+        shown = [e["parent_document_id"] for e in rendered]
+        assert 0 < len(shown) < 5, "the budget must cut the section for this test"
+        assert shown == [f"rb{i}" for i in range(len(shown))], "the head survives"
+        assert "Runbook rb4" not in ctx["kb_results"]
+
+    def test_the_minimal_fallback_carries_none(self):
+        from faultmaven.core.investigation.prompts.templates.assembly import (
+            get_prompt_for_case,
+        )
+
+        rendered: list = [{"stale": True}]
+        prompt = get_prompt_for_case(
+            _investigating_case([_entry("rb_a")]),
+            "still full",
+            provider_name="openai",
+            model_name="gpt-4o",
+            target_tokens=500,
+            kb_rendered=rendered,
+        )
+        assert "<knowledge_context>" not in prompt, "starved into the fallback"
+        assert rendered == []
+
+    def test_a_template_without_the_slot_carries_none(self):
+        from faultmaven.core.investigation.prompts.templates.assembly import (
+            get_prompt_for_case,
+        )
+
+        rendered: list = []
+        prompt = get_prompt_for_case(
+            _case(kb_context=[_entry("rb_a")]),  # INQUIRY: no {kb_results} slot
+            "what now?",
+            provider_name="openai",
+            model_name="gpt-4o",
+            kb_rendered=rendered,
+        )
+        assert "<knowledge_context>" not in prompt
+        assert rendered == []
+
+    def test_the_assembled_prompt_reports_its_entries(self):
+        from faultmaven.core.investigation.prompts.templates.assembly import (
+            get_prompt_for_case,
+        )
+
+        rendered: list = []
+        prompt = get_prompt_for_case(
+            _investigating_case([_entry("rb_a"), _entry("rb_b")]),
+            "still full",
+            provider_name="openai",
+            model_name="gpt-4o",
+            kb_rendered=rendered,
+        )
+        assert "<knowledge_context>" in prompt
+        assert [e["parent_document_id"] for e in rendered] == ["rb_a", "rb_b"]

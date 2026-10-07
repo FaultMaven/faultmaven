@@ -1214,8 +1214,8 @@ class TurnResponse(BaseModel):
         default_factory=list,
         description="Knowledge the engine put in front of the model for this "
         "turn: the runbooks the KB pre-fetch admitted (the PUSH channel, "
-        "governed by KB_PREFETCH_ENABLED) that this turn's prompt carried, "
-        "captured before generation. A pre-fetch that fires while the turn's "
+        "governed by KB_PREFETCH_ENABLED) that the prompt the model answered "
+        "from actually carried, after the section budget. A pre-fetch that fires while the turn's "
         "response is applied first reaches the NEXT turn's prompt, and is "
         "listed there. The context stands in every prompt until a pre-fetch "
         "replaces it, so it repeats turn to turn; `new_this_turn` marks the "

@@ -603,8 +603,8 @@ async def _compose_turn_reply(
             # calibration eval / Phase-3 persistence read it). Absent
             # (None) on turns the handoff did not fire.
             "verification_status": metadata.get("verification_status"),
-            # The KB entries this turn's prompt rendered, captured before
-            # generation (``TURN_METADATA_KB_PROMPTED``). Named here because
+            # The KB entries this turn's prompt carried, as the prompt build
+            # reported them (``TURN_METADATA_KB_PROMPTED``). Named here because
             # this return forwards a fixed key list; the service builds the
             # turn's ``sources`` from it and drops the raw entries.
             TURN_METADATA_KB_PROMPTED: metadata.get(TURN_METADATA_KB_PROMPTED, []),
