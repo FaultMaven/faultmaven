@@ -401,7 +401,7 @@ class ImpactData(BaseModel):
 
 
 class ProblemVerificationData(BaseModel):
-    """Problem verification details for INVESTIGATING phase."""
+    """Problem verification details for INVESTIGATING and terminal cases."""
 
     urgency_level: Optional[str] = Field(
         default=None,
@@ -728,6 +728,18 @@ class CaseUIResponse_Resolved(BaseModel):
     reports_available: List[ReportAvailability] = Field(
         default_factory=list,
         description="Available reports (incident report, post-mortem, runbook)",
+    )
+
+    problem_verification: Optional[ProblemVerificationData] = Field(
+        default=None,
+        description=(
+            "Where the problem statement stood when the case ended, as on the "
+            "INVESTIGATING response: a case closed as `closed_false_alarm` "
+            "carries `invalidated` with its `invalidation_finding`, and a "
+            "statement a revision or an edit changed carries "
+            "`original_problem_statement`. Null for a case closed from "
+            "INQUIRY, which confirmed no statement."
+        ),
     )
 
 

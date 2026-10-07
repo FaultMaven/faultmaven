@@ -880,6 +880,92 @@ class TestCloseCase:
 # ============================================================
 
 
+class TestGetCaseUITerminalVerification:
+    """GET /api/v1/cases/{case_id}/ui on a terminal case carries where its
+    problem statement stood (#1874, contract 11.3.0): through the route's
+    response model and the discriminated union, not just the adapter."""
+
+    @staticmethod
+    def _investigating_case(statement: str) -> Case:
+        from faultmaven.core.investigation.problem_status import (
+            record_confirmed_statement,
+        )
+        from faultmaven.modules.case.contracts import (
+            InquiryData,
+            ProblemVerification,
+        )
+
+        case = Case(
+            case_id="case_0000000000cc",
+            user_id="user_789",
+            enterprise_id="ent_456",
+            title="Checkout alert",
+            description=statement,
+            state=CaseState.INVESTIGATING,
+            inquiry=InquiryData(
+                proposed_problem_statement=statement,
+                problem_statement_confirmed=True,
+                problem_statement_confirmed_at=datetime.now(timezone.utc),
+            ),
+            problem_verification=ProblemVerification(
+                symptom_statement=statement, severity=CaseSeverity.HIGH
+            ),
+        )
+        record_confirmed_statement(case)
+        return case
+
+    async def test_a_closed_false_alarm_serves_its_finding(
+        self, client, mock_case_service, headers
+    ):
+        from faultmaven.core.investigation.problem_status import invalidate_problem
+        from faultmaven.core.investigation.terminal_transitions import (
+            execute_user_closure,
+        )
+
+        case = self._investigating_case("The checkout database is slow")
+        invalidate_problem(case, evidence_ids=[], basis="latency stayed under 20ms")
+        execute_user_closure(case, "user_789")
+        mock_case_service.get_case.return_value = case
+
+        response = await client.get(
+            "/api/v1/cases/case_0000000000cc/ui", headers=headers
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["state"] == "closed"
+        assert data["problem_statement"] == "The checkout database is slow"
+        assert data["problem_verification"]["problem_status"] == "invalidated"
+        assert (
+            data["problem_verification"]["invalidation_finding"]
+            == "latency stayed under 20ms"
+        )
+
+    async def test_a_case_closed_from_inquiry_serves_none(
+        self, client, mock_case_service, headers
+    ):
+        from faultmaven.core.investigation.terminal_transitions import (
+            execute_user_closure,
+        )
+
+        case = Case(
+            case_id="case_0000000000cc",
+            user_id="user_789",
+            enterprise_id="ent_456",
+            title="Maybe slow",
+            description="maybe the checkout database is slow",
+        )
+        execute_user_closure(case, "user_789")
+        mock_case_service.get_case.return_value = case
+
+        response = await client.get(
+            "/api/v1/cases/case_0000000000cc/ui", headers=headers
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["problem_verification"] is None
+
+
 class TestCaseHealth:
     """Tests for GET /api/v1/cases/health endpoint."""
 

@@ -651,6 +651,13 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
         verification_status=verification_status,
         resolution_summary=resolution_summary,
         reports_available=reports_available,
+        # Gate 1 creates the verification record: a case closed from INQUIRY
+        # never confirmed a statement, so there is nothing to judge.
+        problem_verification=(
+            _extract_problem_verification(case)
+            if case.problem_verification is not None
+            else None
+        ),
         valid_next_states=[
             status.value
             for status in CaseActionManager.get_allowed_transitions(case.state)

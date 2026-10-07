@@ -2316,6 +2316,17 @@
             "description": "Confirmed problem statement carried over from INQUIRY (sourced from case.description).",
             "title": "Problem Statement"
           },
+          "problem_verification": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProblemVerificationData"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the problem statement stood when the case ended, as on the INVESTIGATING response: a case closed as `closed_false_alarm` carries `invalidated` with its `invalidation_finding`, and a statement a revision or an edit changed carries `original_problem_statement`. Null for a case closed from INQUIRY, which confirmed no statement."
+          },
           "reports_available": {
             "description": "Available reports (incident report, post-mortem, runbook)",
             "items": {
@@ -4531,7 +4542,7 @@
         "type": "string"
       },
       "ProblemVerificationData": {
-        "description": "Problem verification details for INVESTIGATING phase.",
+        "description": "Problem verification details for INVESTIGATING and terminal cases.",
         "properties": {
           "impact": {
             "anyOf": [
@@ -6943,7 +6954,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "11.2.0"
+    "version": "11.3.0"
   },
   "openapi": "3.1.0",
   "paths": {

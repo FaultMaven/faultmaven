@@ -1731,4 +1731,21 @@ asked to accept, and it belongs to a person.
 # and ships before this deploys. Adopting this version replaces that diff with
 # `new_this_turn` and has its history mapper copy `Message.sources`.
 # faultmaven-dashboard and faultmaven-slack-agent only regenerate.
-API_CONTRACT_VERSION = "11.2.0"
+# 11.3.0 — MINOR. `CaseUIResponse_Resolved` (served for RESOLVED and CLOSED
+# cases) gains `problem_verification`, the same `ProblemVerificationData` the
+# INVESTIGATING response carries, so a terminal case's header can say where its
+# problem statement stood when it ended: a case closed as `closed_false_alarm`
+# carries `invalidated` with its `invalidation_finding`, and either state
+# carries `original_problem_statement` when a revision or an edit changed the
+# statement. `problem_status` is the status the case ended with, not implied by
+# the state: resolving does not require `verified`, and a row saved before
+# 11.1.0 reads `unverified`. A case closed from INQUIRY confirmed no statement
+# and carries null. Before this, the header stated a false alarm's problem as
+# fact for the rest of the case's life.
+#
+# Clients: faultmaven-copilot (`CaseDetails.tsx`) and faultmaven-dashboard
+# (`IssueTab.tsx`) render every status already, but read the field on
+# INVESTIGATING only; adopting this version reads it for terminal states too.
+# `unverified` or an absent field renders as before. faultmaven-slack-agent
+# only regenerates.
+API_CONTRACT_VERSION = "11.3.0"

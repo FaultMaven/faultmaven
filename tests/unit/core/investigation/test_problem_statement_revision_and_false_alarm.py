@@ -55,6 +55,7 @@ from faultmaven.core.investigation.schemas import (
     ProposedTransition,
 )
 from faultmaven.core.investigation.terminal_transitions import (
+    _execute_resolved_transition,
     assess_closure_readiness,
     assess_resolution_readiness,
     derive_closure_reason,
@@ -64,6 +65,7 @@ from faultmaven.core.investigation.terminal_transitions import (
 from faultmaven.core.investigation.verification_status import (
     assess_verification_status,
 )
+from faultmaven.models.case_ui import CaseUIResponse_Resolved
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
@@ -93,6 +95,7 @@ from faultmaven.modules.case.contracts import (
 )
 from faultmaven.modules.case.domain.services.case_ui_adapter import (
     _extract_problem_verification,
+    transform_case_for_ui,
 )
 from faultmaven.modules.report.domain.services.report_generation_service import (
     ReportGenerationService,
@@ -1339,6 +1342,85 @@ class TestClosure:
         data = _extract_problem_verification(case)
         assert data.original_problem_statement == STATEMENT
         assert data.pending_revision is None
+
+
+class TestTerminalCaseRead:
+    """#1874 (contract 11.3.0): a resolved or closed case's read still says
+    where its problem statement stood, so the header stops stating a false
+    alarm's problem as fact once the case ends."""
+
+    def test_a_closed_false_alarm_carries_the_finding(self):
+        case = _case()
+        absent = _with(case, _evidence(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, "a"))
+        invalidate_problem(case, evidence_ids=absent, basis="the alert misfired")
+        assert execute_user_closure(case, "u") == FALSE_ALARM_CLOSURE_REASON
+
+        result = transform_case_for_ui(case)
+
+        assert isinstance(result, CaseUIResponse_Resolved)
+        assert result.state == CaseState.CLOSED
+        assert result.problem_statement == STATEMENT
+        pv = result.model_dump(mode="json")["problem_verification"]
+        assert pv["problem_status"] == "invalidated"
+        assert pv["invalidation_finding"] == "the alert misfired"
+        assert pv["original_problem_statement"] is None
+        assert pv["pending_revision"] is None
+
+    def test_a_resolved_revised_case_says_what_was_originally_reported(self):
+        case = _case(ProblemStatus.VERIFIED)
+        _propose(case)
+        commit_revision(case)
+        _execute_resolved_transition(case, "u")
+
+        result = transform_case_for_ui(case)
+
+        assert result.state == CaseState.RESOLVED
+        assert result.problem_statement == REVISED
+        pv = result.problem_verification
+        assert pv.problem_status == ProblemStatus.VERIFIED
+        assert pv.original_problem_statement == STATEMENT
+        assert pv.invalidation_finding is None
+
+    def test_a_close_cancels_a_pending_revision_rather_than_carrying_it(self):
+        # No one can confirm a revision on a closed case: the user's close
+        # cancels it, so the terminal read never offers one.
+        case = _case(ProblemStatus.VERIFIED)
+        _propose(case)
+        execute_user_closure(case, "u")
+
+        pv = transform_case_for_ui(case).problem_verification
+
+        assert pv.problem_status == ProblemStatus.VERIFIED
+        assert pv.pending_revision is None
+        assert pv.original_problem_statement is None
+
+    def test_a_case_closed_unverified_carries_no_status_a_client_renders(self):
+        # Closed without the evidence ever bearing on the statement: the
+        # status is `unverified`, which both clients render as before.
+        case = _case()
+        execute_user_closure(case, "u")
+
+        pv = transform_case_for_ui(case).problem_verification
+
+        assert pv.problem_status == ProblemStatus.UNVERIFIED
+        assert pv.invalidation_finding is None
+        assert pv.original_problem_statement is None
+
+    def test_a_case_closed_from_inquiry_carries_none(self):
+        # Gate 1 never ran: no statement was confirmed, so none is judged.
+        case = Case(
+            case_id="case_0000000000bb",
+            user_id="u",
+            enterprise_id="e",
+            title="t",
+            description="maybe the checkout database is slow",
+        )
+        assert execute_user_closure(case, "u") == "inquiry_only"
+
+        result = transform_case_for_ui(case)
+
+        assert result.state == CaseState.CLOSED
+        assert result.problem_verification is None
 
 
 def test_a_node_is_retexted_in_place_so_chains_keep_their_anchor():
