@@ -25,9 +25,11 @@ Engine-side behaviour lives in
 """
 
 import copy
+import hashlib
 import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import Optional
 from unittest.mock import AsyncMock
 
 import pytest
@@ -59,7 +61,7 @@ pytestmark = pytest.mark.unit
 _SERVICE_LOGGER = "faultmaven.modules.agent.domain.services.investigation_service"
 
 CONTENT = b"2026-08-28T10:00:00Z ERROR pod restart loop\n"
-CONTENT_HASH = "a" * 64
+CONTENT_HASH = hashlib.sha256(CONTENT).hexdigest()
 EXISTING_FILE_ID = "file_eeeeeeeeeeee"
 EXISTING_TURN = 2
 
@@ -68,19 +70,28 @@ class _PreprocessingDouble:
     """Returns a real result object, not a Mock: the row is built by assigning
     these values onto a Pydantic ``UploadedFile``.
 
-    ``content_hash=""`` models an extractor that produced no hash — the input
-    to one of the two paths on which dedup cannot run at all.
+    By default the hash is the real hash of the content, as the extractor's is,
+    so different bytes are different files — the service's dedup also reads the
+    case's own rows (#1878), and one hash for every input would make every
+    second attachment a duplicate. ``content_hash=""`` models an extractor that
+    produced no hash — the input to one of the two paths on which dedup cannot
+    run at all.
     """
 
-    def __init__(self, content_hash: str = CONTENT_HASH):
+    def __init__(self, content_hash: Optional[str] = None):
         self.content_hash = content_hash
 
     async def classify_and_extract(self, content, filename, source_metadata=None):
+        content_hash = (
+            self.content_hash
+            if self.content_hash is not None
+            else hashlib.sha256(content.encode("utf-8")).hexdigest()
+        )
         return SimpleNamespace(
             summary="Pod restart loop.",
             structural_index="ERROR x 42 between 10:00 and 10:05",
             detailed_data_type=DataType.LOGS_AND_ERRORS,
-            content_hash=self.content_hash,
+            content_hash=content_hash,
             coverage_start_ts=None,
             coverage_end_ts=None,
             coverage_source=None,
@@ -296,12 +307,14 @@ class TestWhenDedupCouldNotRun:
     """``duplicate_of is None`` has two causes, and only one of them is
     "novel". These drive the other one.
 
-    Each test re-submits content the case ALREADY HOLDS — the row is seeded on
-    the aggregate — so "novel" is demonstrably the wrong answer, not merely an
-    unproven one. Reporting True here arms #1136's progress arm and resets
-    ``turns_without_progress`` on a turn that brought nothing: #1210 inverted,
-    and in the aggressive direction. Undetermined is the honest answer, and the
-    engine scores it conservatively.
+    The no-hash tests re-submit content the case ALREADY HOLDS — the row is
+    seeded on the aggregate — so "novel" is demonstrably the wrong answer, not
+    merely an unproven one. Reporting True there arms #1136's progress arm and
+    resets ``turns_without_progress`` on a turn that brought nothing: #1210
+    inverted, and in the aggressive direction. Undetermined is the honest
+    answer, and the engine scores it conservatively. The lookup tests cannot
+    seed the aggregate, because since #1878 the case's own rows answer first;
+    see Path 2.
     """
 
     @pytest.fixture
@@ -337,7 +350,7 @@ class TestWhenDedupCouldNotRun:
         ), "a permanently skipped dedup lookup must not be silent"
 
     async def test_a_lookup_raising_from_inside_is_undetermined_not_novel(
-        self, service, repo, case_already_holding_it, sample_user_id, seen
+        self, service, repo, sample_case, sample_user_id, seen
     ):
         """Path 2: a REAL repository raising AttributeError from inside its own
         method body — not a double missing the attribute.
@@ -345,6 +358,11 @@ class TestWhenDedupCouldNotRun:
         The service catches AttributeError to tolerate minimal test doubles,
         and that same catch swallows a genuine bug inside an implementation.
         Either way dedup did not run, so the answer is undetermined.
+
+        The aggregate does NOT hold the row here: since #1878 the case's own
+        rows are read first and would answer a re-submission without the
+        lookup (``test_the_cases_own_rows_answer_before_the_lookup``). This is
+        the turn on which the database was the only source left to ask.
         """
 
         async def broken_lookup(case_id, content_hash):
@@ -353,9 +371,27 @@ class TestWhenDedupCouldNotRun:
 
         repo.find_uploaded_file_by_content_hash = broken_lookup
 
-        await _run(service, repo, case_already_holding_it, sample_user_id)
+        await _run(service, repo, sample_case, sample_user_id)
 
         assert seen["attachments"][0]["is_novel"] is None
+
+    async def test_the_cases_own_rows_answer_before_the_lookup(
+        self, service, repo, case_already_holding_it, sample_user_id, seen
+    ):
+        """#1878: a re-submission of content the loaded case holds is a
+        duplicate whatever the lookup would have said — the database only
+        ever holds rows of committed turns, and the case was loaded with
+        them."""
+        repo.find_uploaded_file_by_content_hash = AsyncMock(
+            side_effect=AttributeError("never consulted")
+        )
+
+        response = await _run(service, repo, case_already_holding_it, sample_user_id)
+
+        repo.find_uploaded_file_by_content_hash.assert_not_awaited()
+        assert seen["attachments"][0]["is_novel"] is False
+        assert response.attachments_processed[0].duplicate_of == EXISTING_FILE_ID
+        assert response.attachments_processed[0].duplicate_turn == EXISTING_TURN
 
     async def test_a_repository_without_the_lookup_is_undetermined_not_novel(
         self,
@@ -368,14 +404,14 @@ class TestWhenDedupCouldNotRun:
         """Path 2b: the bare double, which has no such attribute at all.
 
         Uses ``mock_case_repository`` directly rather than the ``repo`` fixture
-        — installing the lookup is exactly what this test must not do.
+        — installing the lookup is exactly what this test must not do. The
+        aggregate does not hold the row, for the reason given on Path 2.
         """
         svc = InvestigationService(
             milestone_engine=mock_milestone_engine,
             case_repository=mock_case_repository,
         )
         svc.preprocessing_service = _PreprocessingDouble()
-        sample_case.uploaded_files = [_existing_row()]
 
         await _run(svc, mock_case_repository, sample_case, sample_user_id)
 

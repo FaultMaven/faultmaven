@@ -381,20 +381,6 @@ class SessionlessCaseRepository(CaseRepository):
             repo = get_repository_for_session(session)
             return await repo.delete_uploaded_file(case_id, file_id)
 
-    async def add_uploaded_file(
-        self,
-        case_id: str,
-        uploaded_file: "UploadedFile",
-        enterprise_id: str,
-        organization_id: Optional[str] = None,
-    ) -> None:
-        """Scoped commit of one uploaded_file row, outside the aggregate save."""
-        async with get_db_session() as session:
-            repo = get_repository_for_session(session)
-            return await repo.add_uploaded_file(
-                case_id, uploaded_file, enterprise_id, organization_id
-            )
-
     async def get_analytics(self, case_id: str) -> dict[str, Any]:
         """Compute analytics for a case."""
         async with get_db_session() as session:

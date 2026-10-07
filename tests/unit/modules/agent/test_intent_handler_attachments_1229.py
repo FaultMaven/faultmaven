@@ -4,9 +4,9 @@ that nothing was attached.
 ``_handle_status_transition``, ``_handle_confirmation`` and
 ``_handle_hypothesis_action`` delegate to the very same ``engine.process_turn``
 the CONVERSATION route uses, but each passed a literal ``attachments=None``.
-By then ``_preprocess_attachment`` has already run and committed an
+By then ``_preprocess_attachment`` has already run and recorded an
 ``UploadedFile`` row for every attachment on the turn — so an upload riding a
-Copilot suggestion-chip intent was persisted, dedup-classified, and then the
+Copilot suggestion-chip intent was recorded, dedup-classified, and then the
 engine was told nothing arrived. Independent of any gate-semantics question,
 that is the engine being lied to.
 

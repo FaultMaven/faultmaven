@@ -1378,43 +1378,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 f"Failed to delete uploaded_file {file_id} on case {case_id}: {e}"
             ) from e
 
-    async def add_uploaded_file(
-        self,
-        case_id: str,
-        uploaded_file: UploadedFile,
-        enterprise_id: str,
-        organization_id: Optional[str],
-    ) -> None:
-        """Commit ONE uploaded_file row on its own, outside the aggregate save.
-
-        Delegates to the same `_upsert_uploaded_files` the aggregate save uses,
-        so the row shape stays in one place; this only narrows the set to one
-        file and commits it.
-
-        Scoped rather than `save(case)` because the aggregate save commits the
-        whole case, which mid-turn would make the half-built turn durable. That
-        upsert is purely additive, so the later aggregate save re-upserts this
-        row rather than removing it. `enterprise_id` carries the tenant for
-        the RLS-scoped write (the engine's per-transaction begin listener
-        applies the scope, as for every other sessionless method).
-        """
-        try:
-            await _upsert_uploaded_files(
-                self._is_pg,
-                self.db,
-                case_id,
-                [uploaded_file],
-                enterprise_id,
-                organization_id,
-            )
-            await self.db.commit()
-        except Exception as e:
-            await self.db.rollback()
-            raise RepositoryException(
-                f"Failed to add uploaded_file "
-                f"{getattr(uploaded_file, 'file_id', '?')} on case {case_id}: {e}"
-            ) from e
-
     async def get_analytics(self, case_id: str) -> Dict[str, Any]:
         """
         Compute analytics for case from normalized tables.

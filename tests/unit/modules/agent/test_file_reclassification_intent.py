@@ -1055,7 +1055,7 @@ class TestRecoveryLoopSurvivesAnIgnoredQuestion:
 
     @pytest.mark.asyncio
     async def test_two_single_failure_turns_do_not_mint_the_same_wording_twice(
-        self, wired
+        self, wired, preprocessing_service
     ):
         """The emitter's disambiguation premise was "more than one attachment
         failed THIS TURN". Once a question outlives its turn that is the
@@ -1072,6 +1072,12 @@ class TestRecoveryLoopSurvivesAnIgnoredQuestion:
         service, repo, case = wired
 
         await self._upload_that_fails(service, case)
+        # Different bytes, so a different hash. The fixture's one hash for
+        # every upload would make the second file a duplicate of the first now
+        # that dedup also reads the case's own rows (#1878).
+        preprocessing_service.classify_and_extract.return_value = (
+            self._failed_classification("e" * 64)
+        )
         await service.process_turn(
             case_id=case.case_id,
             user_id="user_owner",
