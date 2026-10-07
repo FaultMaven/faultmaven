@@ -142,3 +142,17 @@ class TestRelaySynthesisPrompt:
         system_prompt = UnifiedKBConfig().system_prompt.lower()
         assert "step-by-step" in system_prompt
         assert "concise" not in system_prompt
+
+
+class TestDeriveKbContextMetadataFromTheRealRecord:
+    """The reader is wired to the model, not only to a duck-typed stand-in."""
+
+    def test_a_real_problem_verification_supplies_the_service(self):
+        from faultmaven.modules.case.domain.models.problem import ProblemVerification
+
+        case = SimpleNamespace(
+            problem_verification=ProblemVerification(
+                symptom_statement="checkout 500s", affected_services=["checkout"]
+            )
+        )
+        assert derive_kb_context_metadata(case) == {"service": "checkout"}

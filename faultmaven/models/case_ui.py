@@ -364,67 +364,35 @@ class InquiryResponseData(BaseModel):
 # the case shape (direct vs stabilized) is derived retrospectively.
 
 
-class TemporalStateData(BaseModel):
-    """Temporal information about problem occurrence."""
-
-    started_at: Optional[datetime] = Field(
-        default=None, description="When the problem started"
-    )
-
-    last_occurrence_at: Optional[datetime] = Field(
-        default=None, description="Most recent occurrence of the problem"
-    )
-
-    state: Optional[str] = Field(
-        default=None,
-        description="Temporal state: ongoing | historical | intermittent",
-        max_length=50,
-    )
-
-
-class ImpactData(BaseModel):
-    """Impact assessment for problem scope."""
-
-    affected_services: Optional[List[str]] = Field(
-        default=None, description="List of affected services"
-    )
-
-    affected_users: Optional[str] = Field(
-        default=None,
-        description="User impact description (e.g., 'All users in US region')",
-        max_length=500,
-    )
-
-    affected_regions: Optional[List[str]] = Field(
-        default=None, description="List of affected geographical regions"
-    )
-
-
 class ProblemVerificationData(BaseModel):
     """Problem verification details for INVESTIGATING and terminal cases."""
 
     urgency_level: Optional[str] = Field(
         default=None,
-        description="Urgency: critical | high | medium | low | unknown",
+        description=(
+            "Business-impact urgency the investigation opened with, as the case "
+            "record holds it: critical | high | medium | low; null when not "
+            "assessed."
+        ),
         max_length=50,
     )
 
     severity: Optional[str] = Field(
         default=None,
-        description="Severity: critical | high | medium | low",
+        description=(
+            "Severity the user's problem confirmation gave, as the case record "
+            "holds it: critical | high | medium | low; null when not assessed. "
+            "Urgency never substitutes for it."
+        ),
         max_length=50,
     )
 
-    temporal_state: Optional[TemporalStateData] = Field(
-        default=None, description="When the problem occurred and its temporal pattern"
-    )
-
-    impact: Optional[ImpactData] = Field(
-        default=None, description="Scope of impact (services, users, regions)"
-    )
-
-    user_impact: Optional[str] = Field(
-        default=None, description="Human-readable user impact summary", max_length=1000
+    temporal_state: Optional[Literal["ongoing", "historical"]] = Field(
+        default=None,
+        description=(
+            "Whether the problem was ongoing or historical, as reported when "
+            "the investigation opened (Gate 1); null when not reported."
+        ),
     )
 
     problem_status: Optional[ProblemStatus] = Field(

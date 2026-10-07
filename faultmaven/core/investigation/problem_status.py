@@ -383,9 +383,7 @@ def edit_statement(case: Case, text: str) -> None:
     if case.problem_verification is None:
         # The Gate-1 transition always creates the record; a case without one
         # is malformed, and the edit gives it the record it should have had.
-        case.problem_verification = ProblemVerification(
-            symptom_statement=text, severity="MEDIUM"
-        )
+        case.problem_verification = ProblemVerification(symptom_statement=text)
     _write_statement(case, text)
     case.problem_verification.statement_history.append(
         ProblemStatementRecord(

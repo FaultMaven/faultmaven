@@ -3050,56 +3050,6 @@
         "title": "HypothesisSummary",
         "type": "object"
       },
-      "ImpactData": {
-        "description": "Impact assessment for problem scope.",
-        "properties": {
-          "affected_regions": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "List of affected geographical regions",
-            "title": "Affected Regions"
-          },
-          "affected_services": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "List of affected services",
-            "title": "Affected Services"
-          },
-          "affected_users": {
-            "anyOf": [
-              {
-                "maxLength": 500,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "User impact description (e.g., 'All users in US region')",
-            "title": "Affected Users"
-          }
-        },
-        "title": "ImpactData",
-        "type": "object"
-      },
       "InquiryResponseData": {
         "description": "Nested inquiry data for INQUIRY phase response.",
         "properties": {
@@ -4544,17 +4494,6 @@
       "ProblemVerificationData": {
         "description": "Problem verification details for INVESTIGATING and terminal cases.",
         "properties": {
-          "impact": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ImpactData"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Scope of impact (services, users, regions)"
-          },
           "invalidation_finding": {
             "anyOf": [
               {
@@ -4612,19 +4551,24 @@
                 "type": "null"
               }
             ],
-            "description": "Severity: critical | high | medium | low",
+            "description": "Severity the user's problem confirmation gave, as the case record holds it: critical | high | medium | low; null when not assessed. Urgency never substitutes for it.",
             "title": "Severity"
           },
           "temporal_state": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/TemporalStateData"
+                "enum": [
+                  "ongoing",
+                  "historical"
+                ],
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "description": "When the problem occurred and its temporal pattern"
+            "description": "Whether the problem was ongoing or historical, as reported when the investigation opened (Gate 1); null when not reported.",
+            "title": "Temporal State"
           },
           "urgency_level": {
             "anyOf": [
@@ -4636,21 +4580,8 @@
                 "type": "null"
               }
             ],
-            "description": "Urgency: critical | high | medium | low | unknown",
+            "description": "Business-impact urgency the investigation opened with, as the case record holds it: critical | high | medium | low; null when not assessed.",
             "title": "Urgency Level"
-          },
-          "user_impact": {
-            "anyOf": [
-              {
-                "maxLength": 1000,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Human-readable user impact summary",
-            "title": "User Impact"
           }
         },
         "title": "ProblemVerificationData",
@@ -6088,52 +6019,6 @@
         "title": "TeamResponse",
         "type": "object"
       },
-      "TemporalStateData": {
-        "description": "Temporal information about problem occurrence.",
-        "properties": {
-          "last_occurrence_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Most recent occurrence of the problem",
-            "title": "Last Occurrence At"
-          },
-          "started_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "When the problem started",
-            "title": "Started At"
-          },
-          "state": {
-            "anyOf": [
-              {
-                "maxLength": 50,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Temporal state: ongoing | historical | intermittent",
-            "title": "State"
-          }
-        },
-        "title": "TemporalStateData",
-        "type": "object"
-      },
       "TitleResponse": {
         "description": "Simplified title response schema per API spec.",
         "properties": {
@@ -6954,7 +6839,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "11.3.0"
+    "version": "12.0.0"
   },
   "openapi": "3.1.0",
   "paths": {

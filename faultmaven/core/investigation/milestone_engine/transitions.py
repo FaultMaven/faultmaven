@@ -91,10 +91,12 @@ class TransitionManager:
         # Initialize investigation progress
         case.progress = InvestigationProgress()
 
-        # Initialize problem verification with confirmed statement
+        # Initialize problem verification with confirmed statement. Severity is
+        # the user's own assessment from the problem confirmation or it is
+        # absent: urgency is a different axis (business impact) and never
+        # stands in for it.
         verification_kwargs = {
             "symptom_statement": case.description or "Unspecified issue",
-            "severity": "MEDIUM",  # Default when unknown (valid value: CRITICAL|HIGH|MEDIUM|LOW)
         }
 
         # Hydrate from problem confirmation if available
@@ -102,8 +104,8 @@ class TransitionManager:
             pc = case.inquiry.problem_confirmation
             if pc.severity_guess.upper() in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
                 verification_kwargs["severity"] = pc.severity_guess.upper()
-            # else: keep default "MEDIUM" — severity_guess="unknown" is valid
-            # for ProblemConfirmation but not for ProblemVerification
+            # else: severity_guess="unknown" is valid for ProblemConfirmation
+            # and means not assessed; the record keeps severity None.
 
         # Hydrate from preliminary urgency if available
         if case.inquiry.preliminary_urgency:
@@ -112,18 +114,7 @@ class TransitionManager:
                 verification_kwargs["urgency_level"] = (
                     pu.level.lower()
                 )  # Convert to lowercase for enum
-                # If severity still at default (MEDIUM), use urgency level as severity (keep uppercase for severity)
-                if (
-                    verification_kwargs["severity"] == "MEDIUM"
-                    and pu.level != UrgencyLevel.UNKNOWN
-                ):
-                    verification_kwargs["severity"] = (
-                        pu.level.value.upper()
-                    )  # Convert urgency level to uppercase for severity field
-            # Bug fix: Transfer temporal_state from preliminary urgency
-            # Without this, path selection receives Temporal:None and the
-            # router falls back to the ROOT_CAUSE default (auto_selected=False)
-            # rather than matching a definitive matrix row.
+            # Temporal state as reported with the preliminary urgency.
             if pu.is_ongoing:
                 verification_kwargs["temporal_state"] = TemporalState.ONGOING
             else:
@@ -134,8 +125,8 @@ class TransitionManager:
         record_confirmed_statement(case)
 
         # The INQUIRY → INVESTIGATING transition carries Gate 1
-        # (problem-statement confirmation) only. There is no path fork
-        # (redesign R5) — the investigation proceeds opportunistically.
+        # (problem-statement confirmation) only; the investigation proceeds
+        # opportunistically.
         logger.info(f"Case {case.case_id}: transitioning to INVESTIGATING")
 
         # Post-010: no retroactive milestone attribution at INQUIRY→

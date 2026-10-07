@@ -1426,7 +1426,7 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
     """
     coverage = {}
 
-    # Problem Definition ← problem_verification.symptom_statement + symptom_indicators
+    # Problem Definition ← problem_verification.symptom_statement
     has_problem_def = has_problem_definition(case)
     coverage["problem_definition"] = has_problem_def
 

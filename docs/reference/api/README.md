@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 11.3.0
+**Version:** 12.0.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -5750,18 +5750,6 @@ Summary of a hypothesis for INVESTIGATING phase UI.
 
 ---
 
-### ImpactData
-
-Impact assessment for problem scope.
-
-**Properties:**
-
-- `affected_regions` (object, optional) — List of affected geographical regions
-- `affected_services` (object, optional) — List of affected services
-- `affected_users` (object, optional) — User impact description (e.g., 'All users in US region')
-
----
-
 ### InquiryResponseData
 
 Nested inquiry data for INQUIRY phase response.
@@ -6261,15 +6249,13 @@ Problem verification details for INVESTIGATING and terminal cases.
 
 **Properties:**
 
-- `impact` (object, optional) — Scope of impact (services, users, regions)
 - `invalidation_finding` (object, optional) — What showed the reported problem was not present (false alarm).
 - `original_problem_statement` (object, optional) — The statement the investigation opened on, when the evidence has since revised it; null when it was never revised.
 - `pending_revision` (object, optional) — The revised statement awaiting the user's confirmation.
 - `problem_status` (object, optional) — Where the confirmed problem statement stands against the evidence: unverified | verified | revision_pending (a revised statement awaits the user's confirmation) | invalidated (the reported problem was not present: a false alarm)
-- `severity` (object, optional) — Severity: critical | high | medium | low
-- `temporal_state` (object, optional) — When the problem occurred and its temporal pattern
-- `urgency_level` (object, optional) — Urgency: critical | high | medium | low | unknown
-- `user_impact` (object, optional) — Human-readable user impact summary
+- `severity` (object, optional) — Severity the user's problem confirmation gave, as the case record holds it: critical | high | medium | low; null when not assessed. Urgency never substitutes for it.
+- `temporal_state` (object, optional) — Whether the problem was ongoing or historical, as reported when the investigation opened (Gate 1); null when not reported.
+- `urgency_level` (object, optional) — Business-impact urgency the investigation opened with, as the case record holds it: critical | high | medium | low; null when not assessed.
 
 ---
 
@@ -6738,18 +6724,6 @@ A team the caller belongs to.
 - `enterprise_id` (string, required)
 - `name` (string, required)
 - `team_id` (string, required)
-
----
-
-### TemporalStateData
-
-Temporal information about problem occurrence.
-
-**Properties:**
-
-- `last_occurrence_at` (object, optional) — Most recent occurrence of the problem
-- `started_at` (object, optional) — When the problem started
-- `state` (object, optional) — Temporal state: ongoing | historical | intermittent
 
 ---
 

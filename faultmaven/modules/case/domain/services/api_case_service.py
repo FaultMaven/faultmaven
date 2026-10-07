@@ -519,6 +519,7 @@ class APICaseService(BaseService):
                     for c in cases
                     if hasattr(c, "problem_verification")
                     and c.problem_verification
+                    and c.problem_verification.severity
                     and c.problem_verification.severity.lower() == severity.value
                 ]
 
@@ -790,7 +791,11 @@ class APICaseService(BaseService):
                 by_status[status_key] = by_status.get(status_key, 0) + 1
 
                 # Count by severity (from problem_verification if available)
-                if hasattr(case, "problem_verification") and case.problem_verification:
+                if (
+                    hasattr(case, "problem_verification")
+                    and case.problem_verification
+                    and case.problem_verification.severity
+                ):
                     severity_key = case.problem_verification.severity.lower()
                     by_severity[severity_key] = by_severity.get(severity_key, 0) + 1
 
