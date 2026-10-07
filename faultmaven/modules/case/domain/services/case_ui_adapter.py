@@ -651,6 +651,7 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
         verification_status=verification_status,
         resolution_summary=resolution_summary,
         reports_available=reports_available,
+        problem_verification=_extract_problem_verification(case),
         valid_next_states=[
             status.value
             for status in CaseActionManager.get_allowed_transitions(case.state)

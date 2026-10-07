@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 11.2.0
+**Version:** 11.3.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -5554,6 +5554,7 @@ Investigation complete, case closed with solution.
 Different from ``valid_next_states`` — that field is which actions the user may SELECT, this field is what the case CONTENT supports. The two no longer overlap on the resolve side: ``resolved`` here is the engine's own readiness verdict, which decides whether the agent offers the resolution handshake, not whether a control is rendered.
 - `investigation_turn` (object, optional) — How many of this case's turns so far were investigation work (#1329/#1387) — the same quantity `TurnResponse.investigation_turn` reports, carried on the case read so a header or a resolution summary can show it without having just submitted a turn. Excludes out-of-band turns (small talk, trivia, questions about FaultMaven itself), which are answered outside the investigation: an aside advances `current_turn` and leaves this alone. Null when the server predates the field.
 - `problem_statement` (object, optional) — Confirmed problem statement carried over from INQUIRY (sourced from case.description).
+- `problem_verification` (object, optional) — Where the problem statement stood when the case ended, as on the INVESTIGATING response: a case closed as `closed_false_alarm` carries `invalidated` with its `invalidation_finding`, and a statement a revision or an edit changed carries `original_problem_statement`.
 - `reports_available` (array, optional) — Available reports (incident report, post-mortem, runbook)
 - `resolution_summary` (object, required) — Overall resolution metrics and insights
 - `resolved_at` (string, required) — When case was resolved
@@ -6256,7 +6257,7 @@ stored. Every transition is written by
 
 ### ProblemVerificationData
 
-Problem verification details for INVESTIGATING phase.
+Problem verification details for INVESTIGATING and terminal cases.
 
 **Properties:**
 
