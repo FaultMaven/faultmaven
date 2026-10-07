@@ -1735,9 +1735,11 @@ asked to accept, and it belongs to a person.
 # cases) gains `problem_verification`, the same `ProblemVerificationData` the
 # INVESTIGATING response carries, so a terminal case's header can say where its
 # problem statement stood when it ended: a case closed as `closed_false_alarm`
-# carries `invalidated` with its `invalidation_finding`, a resolved one
-# `verified`, and either carries `original_problem_statement` when a revision
-# or an edit changed the statement. Before this, the header stated a false
+# carries `invalidated` with its `invalidation_finding`, and either state
+# carries `original_problem_statement` when a revision or an edit changed the
+# statement. `problem_status` is the status the case ended with, not implied by
+# the state: resolving does not require `verified`, and a row saved before
+# 11.1.0 reads `unverified`, which both clients render as before. Before this, the header stated a false
 # alarm's problem as fact for the rest of the case's life.
 #
 # Clients: faultmaven-copilot (`CaseDetails.tsx`) and faultmaven-dashboard
