@@ -1725,9 +1725,10 @@ asked to accept, and it belongs to a person.
 # plain string: the same four values, so a reader of the string survives.
 #
 # Clients: no client reads `problem_status`, `Message.sources` or
-# `new_this_turn` yet. faultmaven-copilot at 11.1.0 keeps working, but its
-# turn diff reads the now-empty `sources` of an aside as "context gone" and
-# shows the list again on the next turn; adopting this version replaces that
-# diff with `new_this_turn` and has its history mapper copy `Message.sources`.
+# `new_this_turn` yet. A turn whose prompt carried no KB context now answers
+# `sources: []` while the context stands; faultmaven-copilot#299 made its turn
+# diff read an empty list as "nothing to record" rather than "context gone",
+# and ships before this deploys. Adopting this version replaces that diff with
+# `new_this_turn` and has its history mapper copy `Message.sources`.
 # faultmaven-dashboard and faultmaven-slack-agent only regenerate.
 API_CONTRACT_VERSION = "11.2.0"
