@@ -44,6 +44,7 @@ from faultmaven.core.investigation.problem_status import (
     invalidate_problem,
     invalidation_refusal,
     is_engine_false_alarm_close,
+    is_false_alarm_close,
     propose_revision,
     revision_refusal,
     stage_cause_work,
@@ -658,7 +659,7 @@ class ResponseApplier:
             if (vu.withdrawal_basis or "").strip() and withdraw_invalidation(
                 case, basis=vu.withdrawal_basis
             ):
-                self._withdraw_engine_false_alarm_close(case, metadata)
+                self._withdraw_false_alarm_close(case, metadata)
                 metadata["problem_status_changed"] = True
             else:
                 _add_system_feedback(
@@ -737,7 +738,7 @@ class ResponseApplier:
                 )
                 return
             if pending:
-                self._withdraw_engine_false_alarm_close(case, metadata)
+                self._withdraw_false_alarm_close(case, metadata)
             if "symptom_verified" in metadata["milestones_completed"]:
                 # The cited claim verified the revised problem, so it is
                 # granted on confirmation. A runbook fix the user confirmed
@@ -755,14 +756,13 @@ class ResponseApplier:
             metadata["revision_proposed_this_turn"] = True
 
     @staticmethod
-    def _withdraw_engine_false_alarm_close(
-        case: Case, metadata: dict[str, Any]
-    ) -> None:
-        """Take back the engine's own false-alarm close offer: the finding it
-        rested on no longer stands. The offer is withdrawn, not declined —
-        nothing is recorded against it."""
+    def _withdraw_false_alarm_close(case: Case, metadata: dict[str, Any]) -> None:
+        """Take back a pending false-alarm close, whoever proposed it: the
+        finding it rested on no longer stands. The offer is withdrawn, not
+        declined — nothing is recorded against it (the engine's disposition is
+        noted only when the engine made the offer)."""
         pending = case.pending_transition
-        if pending and is_engine_false_alarm_close(pending):
+        if pending and is_false_alarm_close(pending):
             _note_engine_disposition_withdrawn(case, metadata)
             cancel_pending_transition(case)
 

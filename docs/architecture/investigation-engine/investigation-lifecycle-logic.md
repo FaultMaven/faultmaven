@@ -1023,7 +1023,9 @@ housekeeping, repair patterns and the stall counter pause. Two exits: new
 evidence of a different problem (a revision, which withdraws the engine's close
 offer), or the user disputing the finding (`invalidation_withdrawn`, back to
 where the problem stood before the finding — `verified` if it was, since nothing
-refuted that verification).
+refuted that verification). The dispute, like an edit, takes back a pending
+false-alarm close whoever proposed it, the engine or the model; a revision is the
+exit limited to the engine's own close.
 
 A `causal_absence` row is judged against the turn's own verification, after the
 step-2b review and again after step 2c: on a problem not verified by then it is
@@ -1035,7 +1037,7 @@ and supersedes the open symptom needs. An edit is the user's word, not
 evidence: it never verifies, and a verified problem stays verified (the user
 sharpened wording the evidence already showed). On a false alarm the finding
 was about the old wording, so the edit clears it, returns the problem to
-`unverified` and withdraws the engine's close offer. An empty edit, one longer
+`unverified` and withdraws any pending false-alarm close, whoever proposed it. An empty edit, one longer
 than the PROBLEM node holds (500 characters), or one made while a revision
 waits is refused.
 
