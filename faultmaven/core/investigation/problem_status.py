@@ -378,7 +378,7 @@ def edit_statement(case: Case, text: str) -> None:
     unverified. The open symptom needs asked for evidence of the old wording
     and are superseded. A false-alarm finding was a finding about the old
     statement: it is cleared, the problem is unverified against the new one,
-    and the engine's offer to close on that finding is withdrawn."""
+    and the offer to close on that finding is withdrawn, whoever made it."""
     text = text.strip()
     if case.problem_verification is None:
         # The Gate-1 transition always creates the record; a case without one
@@ -398,7 +398,7 @@ def edit_statement(case: Case, text: str) -> None:
     if case.progress.problem_status == ProblemStatus.INVALIDATED:
         case.problem_verification.invalidation = None
         _move(case, ProblemStatus.UNVERIFIED, via="statement_edited")
-        if is_engine_false_alarm_close(case.pending_transition):
+        if is_false_alarm_close(case.pending_transition):
             case.pending_transition = None
 
 
@@ -414,16 +414,23 @@ def record_confirmed_statement(case: Case) -> None:
     )
 
 
-def is_engine_false_alarm_close(pending: dict | None) -> bool:
-    """Whether ``pending`` is the engine's own false-alarm close offer — the one
-    offer a revision, a withdrawal or an edit may take back without the user
-    answering it, because the finding it rested on no longer stands."""
+def is_false_alarm_close(pending: dict | None) -> bool:
+    """Whether ``pending`` is a close resting on the false-alarm finding,
+    whoever proposed it (the engine or the model). Such a close never outlives
+    the finding: a withdrawal or an edit takes it back without the user
+    answering it."""
     return bool(
         pending
         and pending.get("to_state") == "closed"
         and pending.get("closure_reason") == FALSE_ALARM_CLOSURE_REASON
-        and "justifying_signature" in pending
     )
+
+
+def is_engine_false_alarm_close(pending: dict | None) -> bool:
+    """Whether ``pending`` is the engine's own false-alarm close offer (it
+    carries the ``justifying_signature`` a decline is recorded against) — the
+    one pending transition a revision may take back and coexist with."""
+    return is_false_alarm_close(pending) and "justifying_signature" in (pending or {})
 
 
 def _write_statement(case: Case, text: str) -> None:

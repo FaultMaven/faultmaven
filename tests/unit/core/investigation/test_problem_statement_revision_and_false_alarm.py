@@ -58,9 +58,11 @@ from faultmaven.core.investigation.terminal_transitions import (
     _execute_resolved_transition,
     assess_closure_readiness,
     assess_resolution_readiness,
+    confirm_pending_transition,
     derive_closure_reason,
     derive_disposition_eligibility,
     execute_user_closure,
+    propose_transition,
 )
 from faultmaven.core.investigation.verification_status import (
     assess_verification_status,
@@ -1443,3 +1445,105 @@ def test_a_node_is_retexted_in_place_so_chains_keep_their_anchor():
     commit_revision(case)
     assert problem.node_id in case.causal_nodes
     assert case.causal_nodes[problem.node_id].statement == REVISED
+
+
+# ---------------------------------------------------------------------------
+# A false-alarm close never outlives its finding, whoever proposed it (#1876)
+# ---------------------------------------------------------------------------
+
+_ENGINE_WITHDRAWN_KEY = "engine_disposition_withdrawn_this_turn"
+
+
+def _false_alarm_case(*, model_close: bool) -> Case:
+    """INVALIDATED, with the close either the model's (no signature) or the
+    engine's (signed, as ``_maybe_propose_false_alarm_close`` writes it)."""
+    case = _case()
+    absent = _with(case, _evidence(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, "a"))
+    invalidate_problem(case, evidence_ids=absent, basis="the alert misfired")
+    propose_transition(case, to_state="closed", summary="close?")
+    if not model_close:
+        case.pending_transition["justifying_signature"] = "sig"
+    assert case.pending_transition["closure_reason"] == FALSE_ALARM_CLOSURE_REASON
+    return case
+
+
+def _withdraw_update() -> _DSU:
+    return _DSU(
+        verification_updates=ProblemVerificationUpdate(
+            invalidation_withdrawn=True,
+            withdrawal_basis="the user has customer tickets from that hour",
+        )
+    )
+
+
+class TestFalseAlarmCloseFollowsItsFinding:
+    async def test_a_withdrawal_takes_back_the_models_close(self):
+        engine, case = _engine(), _false_alarm_case(model_close=True)
+        await _apply(engine, case, _withdraw_update())
+        assert case.pending_transition is None
+        assert case.progress.problem_status == ProblemStatus.UNVERIFIED
+        assert confirm_pending_transition(case, "u") is False
+        assert case.state == CaseState.INVESTIGATING
+        result = await engine.process_turn(case=case, user_message="yes")
+        assert result["case_updated"].state == CaseState.INVESTIGATING
+
+    async def test_an_edit_takes_back_the_models_close(self):
+        case = _false_alarm_case(model_close=True)
+        edit_statement(case, "The checkout page returns 502 at peak")
+        assert case.pending_transition is None
+        assert case.progress.problem_status == ProblemStatus.UNVERIFIED
+
+    async def test_a_withdrawal_still_notes_the_engines_own_disposition(self):
+        engine, case = _engine(), _false_alarm_case(model_close=False)
+        meta = await _apply(engine, case, _withdraw_update())
+        assert case.pending_transition is None
+        assert meta[_ENGINE_WITHDRAWN_KEY] is True
+
+    async def test_a_withdrawn_models_close_records_no_engine_disposition(self):
+        engine, case = _engine(), _false_alarm_case(model_close=True)
+        meta = await _apply(engine, case, _withdraw_update())
+        assert case.pending_transition is None
+        assert _ENGINE_WITHDRAWN_KEY not in meta
+
+    def test_an_edit_leaves_a_close_that_is_not_a_false_alarm(self):
+        case = _case(ProblemStatus.VERIFIED)
+        propose_transition(case, to_state="closed", summary="close?")
+        case.pending_transition["closure_reason"] = "closed_insufficient_evidence"
+        before = dict(case.pending_transition)
+        edit_statement(case, "The checkout page returns 502 at peak")
+        assert case.pending_transition == before
+        assert case.progress.problem_status == ProblemStatus.VERIFIED
+
+    async def test_a_revision_still_cannot_cut_in_on_the_models_false_alarm_close(
+        self,
+    ):
+        """The revision gate keys on who proposed the close: unchanged."""
+        engine, case = _engine(), _false_alarm_case(model_close=True)
+        meta = await _apply(
+            engine,
+            case,
+            _DSU(
+                evidence_to_add=[_row(EvidenceCategory.SYMPTOM_EVIDENCE, "s1")],
+                verification_updates=_revision_update("new_index_0"),
+            ),
+        )
+        assert case.pending_transition is not None
+        assert case.progress.problem_status == ProblemStatus.INVALIDATED
+        assert "awaiting the user's answer" in meta["system_feedback"]
+        # The engine's own close is still withdrawn by a revision:
+        # TestApplyStep.test_a_revision_from_a_false_alarm_withdraws_the_engine_close
+
+    async def test_dispute_then_yes_never_closes_on_a_withdrawn_finding(self):
+        """The issue's repro: invalidate, the model proposes the close, the
+        user disputes the finding, then answers yes."""
+        engine, case = _engine(), _false_alarm_case(model_close=True)
+        await _apply(engine, case, _withdraw_update())
+        case.current_turn += 1
+        result = await engine.process_turn(case=case, user_message="yes")
+        updated = result["case_updated"]
+        assert updated.state != CaseState.CLOSED
+        reason = (updated.pending_transition or {}).get("closure_reason")
+        assert not (
+            reason == FALSE_ALARM_CLOSURE_REASON
+            and updated.progress.problem_status != ProblemStatus.INVALIDATED
+        )
