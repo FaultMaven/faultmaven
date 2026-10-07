@@ -58,9 +58,11 @@ Every file stored via `FileStorageService.store_file()` gets a companion
 the turn that carried the upload, from
 `investigation_service.attachments._mark_turn_uploads_linked` (#1878). Before
 #1878 it ran at intake, ahead of any committed row, so a turn that failed left
-a blob marked linked with nothing referencing it. Now a failed turn commits no
-row and leaves the sidecar `linked: false`, and both signals agree: the blob is
-an ordinary orphan this sweep reclaims at TTL.
+a blob marked linked with nothing referencing it. Now a turn that fails before
+its first commit writes no row and leaves the sidecar `linked: false`, and both
+signals agree: the blob is an ordinary orphan this sweep reclaims at TTL. A turn
+that fails after the engine's Step-7 save (#1882) leaves its row committed and
+the sidecar `linked: false`; the database reference keeps that blob.
 
 ## Fail-closed postures
 

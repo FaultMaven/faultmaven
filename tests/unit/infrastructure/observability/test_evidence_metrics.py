@@ -124,13 +124,6 @@ def _make_existing_uploaded_file(content_hash: str) -> UploadedFile:
     )
 
 
-class _DedupCapableRepo(MockCaseRepository):
-    def __init__(self):
-        super().__init__()
-        # Post-010: dedup retargeted from Evidence to UploadedFile.
-        self.find_uploaded_file_by_content_hash = AsyncMock(return_value=None)
-
-
 class TestDedupHitCounterEmission:
     """`evidence_dedup_hits_total` ticks exactly when the dedup path fires."""
 
@@ -154,9 +147,9 @@ class TestDedupHitCounterEmission:
 
     @pytest.mark.asyncio
     async def test_counter_increments_on_dedup_hit(self):
-        repo = _DedupCapableRepo()
+        # Dedup reads the case's own rows (#1878): the case holds the file.
+        repo = MockCaseRepository()
         existing = _make_existing_uploaded_file(content_hash="hash_xyz")
-        repo.find_uploaded_file_by_content_hash.return_value = existing
         case = create_sample_case()
         case.user_id = "user_owner"
         case.uploaded_files.append(existing)
@@ -186,10 +179,7 @@ class TestDedupHitCounterEmission:
 
     @pytest.mark.asyncio
     async def test_counter_does_not_increment_on_new_upload(self):
-        repo = _DedupCapableRepo()
-        repo.find_uploaded_file_by_content_hash.return_value = (
-            None  # no match → new evidence
-        )
+        repo = MockCaseRepository()  # the case holds no file → a new upload
         case = create_sample_case()
         case.user_id = "user_owner"
         await repo.save(case)

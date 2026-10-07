@@ -395,34 +395,6 @@ class CaseRepository(ABC):
         pass
 
     @abstractmethod
-    async def find_uploaded_file_by_content_hash(
-        self, case_id: str, content_hash: str
-    ) -> Optional[UploadedFile]:
-        """
-        Return the oldest UploadedFile in this case whose content_hash matches.
-
-        Post-010 strict evidence model: file uploads create only an
-        UploadedFile row (no auto-Evidence at intake), so dedup is a
-        file-level concern. An attachment whose SHA-256 content hash
-        already exists on the same case returns the existing
-        UploadedFile instead of creating a new row.
-
-        Args:
-            case_id: Case to search within (scope is per-case, not global).
-            content_hash: SHA-256 hex of UTF-8 text (as produced by
-                PreprocessingService.classify_and_extract).
-
-        Returns:
-            The oldest matching UploadedFile (by upload timestamp) if
-            found, None otherwise. NULL content_hash rows are never
-            matched.
-
-        Raises:
-            RepositoryException: If lookup fails
-        """
-        pass
-
-    @abstractmethod
     async def upsert_case_entities(
         self,
         case_id: str,
@@ -1192,24 +1164,6 @@ class InMemoryCaseRepository(CaseRepository):
             del self._cases[case_id]
             return True
         return False
-
-    async def find_uploaded_file_by_content_hash(
-        self, case_id: str, content_hash: str
-    ) -> Optional[UploadedFile]:
-        """Find oldest UploadedFile in a case whose ``content_hash``
-        matches. Post-010: dedup is a file-level concern (no Evidence
-        rows at intake).
-        """
-        if not content_hash:
-            return None
-        case = self._cases.get(case_id)
-        if case is None:
-            return None
-        matches = [uf for uf in case.uploaded_files if uf.content_hash == content_hash]
-        if not matches:
-            return None
-        matches.sort(key=lambda uf: getattr(uf, "uploaded_at_turn", 0) or 0)
-        return matches[0]
 
     async def list_evidence_by_time_window(
         self,

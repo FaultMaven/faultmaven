@@ -1027,8 +1027,9 @@ class TestUploadRowsRideTheAggregateSave:
     async def test_row_is_committed_by_the_aggregate_save(
         self, sqlite_session, sqlite_engine
     ):
-        """Appended in memory, committed by ``save(case)``, visible to another
-        session — and findable by the dedup lookup a later turn runs."""
+        """Appended in memory, committed by ``save(case)``, and loaded back —
+        with its hash — by another session, which is what a later turn's dedup
+        reads."""
         from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
             SQLiteCaseRepository,
         )
@@ -1043,11 +1044,7 @@ class TestUploadRowsRideTheAggregateSave:
         await repo.save(case)
 
         async with self._fresh_session(sqlite_engine) as other:
-            other_repo = SQLiteCaseRepository(other)
-            reloaded = await other_repo.get(case_id)
-            found = await other_repo.find_uploaded_file_by_content_hash(
-                case_id, "a" * 64
-            )
+            reloaded = await SQLiteCaseRepository(other).get(case_id)
 
         assert reloaded is not None
         assert [f.file_id for f in reloaded.uploaded_files] == [
@@ -1055,7 +1052,7 @@ class TestUploadRowsRideTheAggregateSave:
         ], "the row was not COMMITTED — a separate session cannot see it"
         assert reloaded.uploaded_files[0].storage_ref == "local://test/app.log"
         assert reloaded.uploaded_files[0].summary == "burst"
-        assert found is not None and found.file_id == file_id
+        assert reloaded.uploaded_files[0].content_hash == "a" * 64
 
     async def test_a_conflicting_save_commits_neither_the_turn_nor_the_row(
         self, sqlite_session, sqlite_engine

@@ -54,9 +54,10 @@ never linked to an Evidence row.
     summary: "Orphan file rate high — {{ $value }} orphans in the last hour"
     description: |
       More than 10 files were found orphaned (past TTL with linked=False).
-      A turn that fails after storing its upload commits no uploaded_files
-      row (#1878), so each failed upload turn leaves one such orphan by
-      design; a high rate tracks failed upload turns. Check the API's turn
+      A turn that fails after storing its upload but before its first
+      commit writes no uploaded_files row (#1878), so each such failed
+      upload turn leaves one orphan by design; a high rate tracks failed
+      upload turns. Check the API's turn
       error rate first, then `faultmaven/modules/agent/domain/services/
       investigation_service/attachments.py::_preprocess_attachment` for
       errors after `store_file`.

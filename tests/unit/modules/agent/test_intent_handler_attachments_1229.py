@@ -79,12 +79,9 @@ class _PreprocessingDouble:
 
 @pytest.fixture
 def repo(mock_case_repository):
-    """The dedup lookup must actually RUN, or every upload reaches the engine
-    with ``is_novel=None`` (undetermined) and the novelty half of these
-    assertions would be vacuous."""
-    mock_case_repository.find_uploaded_file_by_content_hash = AsyncMock(
-        return_value=None
-    )
+    """Dedup reads the case's own rows (#1878), so it runs whenever the
+    extraction carries a content hash, and the novelty half of these
+    assertions is not vacuous."""
     return mock_case_repository
 
 

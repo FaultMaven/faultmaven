@@ -3,8 +3,10 @@
 The invariant (owner ruling): a row exists only inside the commit that creates
 the turn that carried it. So a file is listed, searchable (every file tool
 resolves through ``case.uploaded_files``) and attributed to a committed turn
-together, or none of these. A failed turn leaves no row, and its retry is a
-fresh upload, never reported as a duplicate of its own failed attempt.
+together, or none of these. A turn that fails before its first commit leaves
+no row, and its retry is a fresh upload, never reported as a duplicate of its
+own failed attempt. (A failure after the engine's Step-7 save leaves a half turn
+whose row is committed — #1882, not pinned here.)
 
 Driven through ``InvestigationService.process_turn`` on the REAL
 ``SQLiteCaseRepository`` over a file database, and read back through a separate
@@ -47,6 +49,7 @@ from faultmaven.modules.agent.domain.services.investigation_service.service impo
 from faultmaven.modules.agent.jobs.storage_cleanup import cleanup_orphaned_files
 from faultmaven.modules.case.api.routes.evidence import list_uploaded_files
 from faultmaven.modules.case.contracts import Case, CaseState
+from faultmaven.modules.case.domain.models.evidence import UploadedFile
 from faultmaven.modules.case.domain.models.problem import ProblemVerification
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.exceptions import StaleCaseException
@@ -168,13 +171,16 @@ class _Engine:
         }
 
 
-def _preprocessing():
+def _preprocessing(*, hashed: bool = True):
     """Extraction whose content hash is the real hash of the bytes, so dedup
-    tells different files apart and matches identical ones."""
+    tells different files apart and matches identical ones. ``hashed=False``
+    models an extractor that produced no hash."""
 
     async def _classify(content, filename=None, source_metadata=None):
         result = make_preprocessing_result()
-        result.content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        result.content_hash = (
+            hashlib.sha256(content.encode("utf-8")).hexdigest() if hashed else ""
+        )
         return result
 
     service = MagicMock()
@@ -208,6 +214,7 @@ class _World:
         before_commit=None,
         intent: Optional[QueryIntent] = None,
         engine_factory=None,
+        hashed: bool = True,
     ):
         """One request: a fresh session and repository, as the route has."""
         storage = storage if storage is not None else _Storage(self.calls)
@@ -221,7 +228,7 @@ class _World:
             service = InvestigationService(
                 milestone_engine=engine,
                 case_repository=repository,
-                preprocessing_service=_preprocessing(),
+                preprocessing_service=_preprocessing(hashed=hashed),
                 file_storage_service=storage,
             )
             response = await service.process_turn(
@@ -369,7 +376,12 @@ class TestAFailedUploadTurnLeavesNoRow:
         [listed] = await world.listed()
         assert listed.uploaded_at_turn == 7
 
-    async def test_8_an_occ_conflict_at_the_commit_leaves_no_row(self, sessions):
+    async def test_8_an_occ_conflict_at_the_engines_step7_save_leaves_no_row(
+        self, sessions
+    ):
+        """The conflict lands on the turn's FIRST commit, the engine's Step 7.
+        A conflict at the service's later final save is the #1882 half turn,
+        where the row is already committed."""
         world = await _world(sessions, current_turn=2)
 
         async def _a_concurrent_writer_wins(case):
@@ -498,6 +510,57 @@ class TestASuccessfulUploadTurn:
         assert len(storage.stored) == 2
         assert all(r.duplicate_of is None for r in response.attachments_processed)
         assert len((await world.committed()).uploaded_files) == 2
+        assert storage.marked() == storage.stored, "every new blob is marked"
+
+    async def test_unhashed_attachments_are_never_matched_to_each_other(self, sessions):
+        """No content hash means dedup cannot run — not that every unhashed
+        file is the same file. Two different attachments both without a hash
+        are both stored, and neither is reported as the other's duplicate."""
+        world = await _world(sessions, current_turn=1)
+
+        response, engine, storage = await world.turn(
+            "two logs",
+            [_attachment(), _attachment(OTHER_LOG, filename="pool.log")],
+            hashed=False,
+        )
+
+        assert len(storage.stored) == 2
+        assert all(r.duplicate_of is None for r in response.attachments_processed)
+        assert [a["is_novel"] for a in engine.attachments[0]] == [None, None]
+        assert len((await world.committed()).uploaded_files) == 2
+
+    async def test_a_reupload_names_the_lowest_turn_of_two_matching_rows(
+        self, sessions
+    ):
+        """Two committed rows can share a hash (rows written before
+        same-submission dedup existed). A re-upload names the ORIGINAL — the
+        lowest turn — whatever order the loader returns the rows in. The
+        later row is first in the list here, so "first match" is wrong too."""
+        case = create_sample_case(current_turn=6)
+        digest = hashlib.sha256(LOG).hexdigest()
+        later, original = (
+            UploadedFile(
+                file_id=file_id,
+                filename="app.log",
+                size_bytes=len(LOG),
+                content_type="text/plain",
+                content_hash=digest,
+                storage_ref=f"blob/{file_id}",
+                upload_source="file_upload",
+                uploaded_at_turn=turn,
+                uploaded_at=datetime.now(UTC),
+                uploaded_by=case.user_id,
+            )
+            for file_id, turn in (("file_bbbbbbbb0005", 5), ("file_aaaaaaaa0002", 2))
+        )
+        case.uploaded_files = [later, original]
+        world = await _world(sessions, case=case)
+
+        response, _, storage = await world.turn("sending it again", [_attachment()])
+
+        [again] = response.attachments_processed
+        assert (again.duplicate_of, again.duplicate_turn) == ("file_aaaaaaaa0002", 2)
+        assert storage.stored == []
 
 
 # ---------------------------------------------------------------------------

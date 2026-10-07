@@ -333,12 +333,12 @@ class InvestigationService:
             # submitted. ``_preprocess_attachment`` appends each new row to
             # ``case.uploaded_files`` IN MEMORY and commits nothing: the row
             # becomes durable in the same commit as this turn (#1878), so a
-            # turn that fails anywhere below leaves no row behind.
+            # turn that fails before its first commit leaves no row behind.
+            # (A failure after the engine's Step-7 save is #1882's half turn.)
             classification, preprocess_results, query, uploaded_files_this_turn = (
                 await _preprocess_turn_uploads(
                     self.file_storage_service,
                     self.preprocessing_service,
-                    self.repository,
                     case=case,
                     case_id=case_id,
                     classification=classification,
