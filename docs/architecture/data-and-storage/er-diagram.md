@@ -1,12 +1,12 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-10-08 06:45 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-10-08 12:11 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
 ## Summary
 
-**43 tables** in the schema.
+**44 tables** in the schema.
 
 | Table | Columns | Primary Key | Foreign Keys |
 |-------|---------|-------------|--------------|
@@ -49,6 +49,7 @@
 | `team_members` | 4 | `user_id, team_id` | teams, users |
 | `teams` | 7 | `team_id` | enterprises |
 | `token_revocations` | 5 | `scope, subject` | — |
+| `turn_receipts` | 8 | `enterprise_id, case_id, author_id, idempotency_key` | cases, enterprises |
 | `turn_usage` | 5 | `enterprise_id, billing_subject_kind, billing_subject_id, usage_date` | enterprises |
 | `uploaded_files` | 20 | `file_id` | cases, enterprises, organizations, users |
 | `user_audit_log` | 14 | `audit_id` | enterprises, organizations, users |
@@ -655,6 +656,16 @@ erDiagram
         DATETIME expires_at
         DATETIME created_at
     }
+    turn_receipts {
+        VARCHAR enterprise_id PK
+        VARCHAR case_id PK
+        VARCHAR author_id PK
+        VARCHAR idempotency_key PK
+        VARCHAR request_fingerprint
+        INTEGER turn_number
+        JSON response
+        DATETIME created_at
+    }
     turn_usage {
         VARCHAR enterprise_id PK
         VARCHAR billing_subject_kind PK
@@ -739,6 +750,7 @@ erDiagram
     cases ||--o{ llm_turn_spend : ""
     cases ||--o{ reports : ""
     cases ||--o{ solutions : ""
+    cases ||--o{ turn_receipts : ""
     cases ||--o{ uploaded_files : ""
     causal_nodes ||--o{ causal_edges : ""
     causal_nodes ||--o{ causal_node_evidence : ""
@@ -774,6 +786,7 @@ erDiagram
     enterprises ||--o{ sso_personal_enterprises : ""
     enterprises ||--o{ team_invitations : ""
     enterprises ||--o{ teams : ""
+    enterprises ||--o{ turn_receipts : ""
     enterprises ||--o{ turn_usage : ""
     enterprises ||--o{ uploaded_files : ""
     enterprises ||--o{ user_audit_log : ""

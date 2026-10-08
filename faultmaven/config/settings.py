@@ -32,6 +32,8 @@ from typing import (
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, EnvSettingsSource
 
+from faultmaven.config.idempotency_key import IDEMPOTENCY_REPLAYED_HEADER
+
 # =============================================================================
 # ENVIRONMENT AND LOGGING ENUMS
 # =============================================================================
@@ -1587,6 +1589,11 @@ class SecuritySettings(BaseSettings):
             # withholding it would leave the one client that must branch on it
             # unable to read it.
             "x-error-code",
+            # Whether a 200 is a replay of a turn that already committed
+            # under its Idempotency-Key, or a new execution (#1888). The
+            # Copilot and Dashboard are the browser clients that retry turns
+            # with a key.
+            IDEMPOTENCY_REPLAYED_HEADER,
         ],
     )
 

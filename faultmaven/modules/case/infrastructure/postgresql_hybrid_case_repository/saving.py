@@ -1168,3 +1168,45 @@ async def _insert_report(is_pg, db, report: CaseReport) -> None:
             "generated_by": getattr(report, "generated_by", None),
         },
     )
+
+
+async def _insert_turn_receipt(is_pg, db, case: Case, receipt) -> None:
+    """Write a keyed turn's receipt on ``db``, without committing (#1888).
+
+    Called by ``save(case, receipt=...)`` inside the case's transaction, after
+    the case row, so the receipt commits with its turn or not at all, under the
+    tenant the transaction's BEGIN bound (the case's own: the RLS policy checks
+    the INSERT against it). A plain INSERT, never an upsert: a second receipt
+    under one key means a second turn tried to commit for a key that already
+    has one, and that turn must fail with its whole transaction rather than
+    overwrite the answer the first one's retries are owed.
+
+    ``response`` goes in as text cast to ``json`` (not ``jsonb``, which
+    reorders object keys), in the order ``TurnResponse`` dumped it, so a replay
+    is the bytes the client was sent. ``created_at`` is bound as a ``datetime``:
+    asyncpg encodes a ``timestamptz`` bind before the cast applies, so a string
+    would raise (see ``_as_datetime``).
+    """
+    await db.execute(
+        text(f"""
+            INSERT INTO turn_receipts (
+                enterprise_id, case_id, author_id, idempotency_key,
+                request_fingerprint, turn_number, response, created_at
+            ) VALUES (
+                :enterprise_id, :case_id, :author_id, :idempotency_key,
+                :request_fingerprint, :turn_number,
+                {_cast(is_pg, "response", "JSON")},
+                {_cast(is_pg, "created_at", "TIMESTAMPTZ")}
+            )
+        """),
+        {
+            "enterprise_id": case.enterprise_id,
+            "case_id": receipt.case_id,
+            "author_id": receipt.author_id,
+            "idempotency_key": receipt.idempotency_key,
+            "request_fingerprint": receipt.request_fingerprint,
+            "turn_number": receipt.turn_number,
+            "response": json.dumps(receipt.response),
+            "created_at": receipt.created_at,
+        },
+    )

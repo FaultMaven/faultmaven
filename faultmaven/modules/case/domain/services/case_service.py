@@ -49,6 +49,7 @@ from faultmaven.modules.auth.contracts import is_team_member
 from faultmaven.modules.case.contracts import (
     MESSAGE_METADATA_KB_SOURCES,
     MessageRowKind,
+    TurnReceipt,
     append_message_row,
     is_server_written_assistant_row,
     is_server_written_user_row,
@@ -324,6 +325,29 @@ class CaseService(ICaseService):
         except Exception as e:
             logger.error(f"Failed to create case: {e}")
             raise ServiceException(f"Case creation failed: {str(e)}") from e
+
+    @trace("case_service_get_turn_receipt")
+    async def get_turn_receipt(
+        self,
+        *,
+        enterprise_id: str,
+        case_id: str,
+        author_id: str,
+        idempotency_key: str,
+    ) -> Optional[TurnReceipt]:
+        """The receipt a committed keyed turn left, or ``None`` (#1888).
+
+        No access check, by construction rather than by omission: the receipt
+        is keyed on ``author_id``, which the turn route passes as the
+        authenticated caller, so nobody can read back a receipt that is not
+        their own. The route asks only after its own case lookup.
+        """
+        return await self.repository.get_turn_receipt(
+            enterprise_id=enterprise_id,
+            case_id=case_id,
+            author_id=author_id,
+            idempotency_key=idempotency_key,
+        )
 
     @trace("case_service_get_case")
     async def get_case(

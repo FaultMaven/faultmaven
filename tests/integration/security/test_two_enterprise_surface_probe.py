@@ -252,6 +252,8 @@ pytestmark = [
 #: row the wall exists to keep on one side of it.
 #: ``llm_usage_daily`` and ``llm_turn_spend`` join it with revision 002 (#640):
 #: the LLM usage ledger is per-enterprise spend, enrolled by its own revision.
+#: ``turn_receipts`` joins it with revision 010 (#1888): a committed turn's
+#: request identity and the response its author was sent.
 ENTERPRISE_SCOPED_TABLES = frozenset(
     {
         "case_actions",
@@ -282,6 +284,7 @@ ENTERPRISE_SCOPED_TABLES = frozenset(
         "team_invitations",
         "team_members",
         "teams",
+        "turn_receipts",
         "turn_usage",
         "uploaded_files",
         "user_audit_log",

@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import ParticipantRole
+from faultmaven.modules.case.domain.owned_models.turn_receipt import TurnReceipt
 
 from .api import CaseMessagesResponse
 from .api_models import (
@@ -287,6 +288,22 @@ class ICaseService(ABC):
 
         Returns:
             Case object if found and accessible, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_turn_receipt(
+        self,
+        *,
+        enterprise_id: str,
+        case_id: str,
+        author_id: str,
+        idempotency_key: str,
+    ) -> Optional[TurnReceipt]:
+        """The receipt a committed keyed turn left, or ``None`` (#1888).
+
+        ``author_id`` is the caller: a principal reads back only its own
+        receipts, so the lookup needs no access check of its own.
         """
         pass
 

@@ -1162,7 +1162,7 @@ class _SnapshotStore:
     async def get(self, case_id):
         return self._row.model_copy(deep=True)
 
-    async def save(self, case, *, reports=()):
+    async def save(self, case, *, reports=(), receipt=None):
         self._row = case.model_copy(deep=True)
         return case
 

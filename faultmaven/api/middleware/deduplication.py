@@ -195,9 +195,13 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         first. A client resending with a stable ``Idempotency-Key`` expects the
         cached replay; a 409 from here would pre-empt it. That is safe today
         only because both paths the copilot sends a key on are exempt below:
-        ``POST /api/v1/cases`` explicitly, and the turn POST as multipart.
-        ``test_idempotency_bearing_paths_are_skipped`` pins it. Removing either
-        exemption means reordering the two middlewares, not just editing here.
+        ``POST /api/v1/cases`` explicitly, and the turn POST by its route
+        declaration (#1888: its replay is the turn receipt's, and the
+        declaration's ``never_replayed`` implies ``never_collapsed``; it was
+        already skipped as multipart, and the Slack agent's urlencoded turns
+        carry no session id, so no hash). ``test_idempotency_bearing_paths_are_skipped``
+        pins it. Removing either exemption means reordering the two
+        middlewares, not just editing here.
 
         A composed route reaches the same guarantee by declaring it: fm#1303
         added the ``route_policy`` read below, and ``declare_credential_mint``
@@ -240,11 +244,16 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         # method test the exemption is keyed on path alone, so declaring the
         # composed Slack bind (POST) would also strip duplicate protection from
         # a co-located unbind (DELETE on the same path) that nobody declared.
-        if (
-            request.method == "POST"
-            and policy_for(request).get(normalized, _NO_POLICY).never_collapsed
-        ):
-            return True
+        #
+        # Both tiers: the exact path, and every route template the path
+        # matches (#1888: the turn route is declared by its template).
+        if request.method == "POST":
+            policy = policy_for(request)
+            if (
+                policy.get(normalized, _NO_POLICY).never_collapsed
+                or policy.templated(normalized).never_collapsed
+            ):
+                return True
 
         content_type = request.headers.get("content-type", "")
         if "multipart/form-data" in content_type:

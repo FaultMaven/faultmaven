@@ -111,7 +111,7 @@ class TestTurnCommitPlan:
 
         await commit_turn_plan(repo, case, plan)
 
-        repo.save.assert_awaited_once_with(case, reports=(report,))
+        repo.save.assert_awaited_once_with(case, reports=(report,), receipt=None)
 
     @pytest.mark.asyncio
     async def test_settling_twice_never_raises(self):
