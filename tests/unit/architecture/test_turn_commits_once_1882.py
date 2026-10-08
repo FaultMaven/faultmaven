@@ -19,6 +19,9 @@ The documented exceptions, and why each is not a turn write:
   of evidence that is already committed (Chroma plus a scoped
   ``update_evidence_vectorized``), whose truth does not depend on the turn.
 
+In the service, background work is the shielded settlement itself and the
+post-commit task it spawns after the commit (the upload links, best effort).
+
 Read by AST, not by substring, so a comment or a docstring naming a call is not
 mistaken for one, and a call written across lines is not missed.
 """
@@ -164,6 +167,43 @@ class TestTheEngineCommitsNothing:
             "faultmaven/modules/agent/domain/services/investigation_service/"
             "turn_settlement.py"
         }, callers
+
+
+class TestTheServiceSpawnsOnlyAfterTheCommit:
+    def test_background_work_in_the_service_is_the_settlement_and_post_commit(
+        self,
+    ):
+        """The service spawns two things: the shielded settlement itself, and
+        the post-commit work (the upload links) it hands off the response
+        path. Nothing else runs in the background of a turn."""
+        found = sorted(
+            (path.name, func)
+            for path in SERVICE_DIR.glob("*.py")
+            for call, func in _calls(path)
+            if _callee(call) in SPAWNS
+        )
+        assert found == [
+            ("turn_settlement.py", "_spawn_post_commit"),
+            ("turn_settlement.py", "run_settlement_shielded"),
+        ], found
+
+    def test_post_commit_work_is_spawned_only_after_the_commit(self):
+        tree = ast.parse((SERVICE_DIR / "turn_settlement.py").read_text())
+        settle = next(
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.AsyncFunctionDef) and n.name == "settle_turn"
+        )
+        lines = {
+            _callee(c): c.lineno for c in ast.walk(settle) if isinstance(c, ast.Call)
+        }
+        assert lines["commit_turn_plan"] < lines["_spawn_post_commit"]
+        spawners = {
+            func
+            for call, func in _calls(SERVICE_DIR / "turn_settlement.py")
+            if _callee(call) == "_spawn_post_commit"
+        }
+        assert spawners == {"settle_turn"}, spawners
 
 
 class TestTheRouteBoundsOnlyThePreparation:

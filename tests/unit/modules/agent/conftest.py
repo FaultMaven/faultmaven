@@ -402,3 +402,17 @@ def make_preprocessing_result(
         coverage_end_ts=coverage_end_ts,
         coverage_source=coverage_source,
     )
+
+
+async def drain_post_commit() -> None:
+    """Wait for the work a committed turn spawned off its response path (#1882):
+    the upload links. A test that reads what ``mark_linked`` did awaits this
+    after the turn, as a client never has to."""
+    import asyncio
+
+    from faultmaven.modules.agent.domain.services.investigation_service import (
+        turn_settlement,
+    )
+
+    while turn_settlement._POST_COMMIT_TASKS:
+        await asyncio.gather(*list(turn_settlement._POST_COMMIT_TASKS))

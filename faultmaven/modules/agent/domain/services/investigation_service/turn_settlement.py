@@ -94,18 +94,22 @@ async def settle_turn(
 
     Run under ``asyncio.shield`` by ``InvestigationService.commit_turn``, so it
     runs to completion even if its caller is cancelled: the commit is never
-    abandoned half-way, the gates of a turn that committed are released, and
-    its uploads are marked linked. Under this stack a client disconnect does
+    abandoned half-way, and the gates of a turn that committed are released.
+    Under this stack a client disconnect does
     NOT cancel the request handler (uvicorn + Starlette with
     ``BaseHTTPMiddleware``, probed on #1882), and no ``wait_for`` covers the
     commit, so the shield is belt and braces rather than the mechanism.
 
     Post-commit steps, in order, none of which can turn the committed turn into
-    an error:
+    an error, and none of which the response waits on beyond its own CPU:
 
     1. the plan's gates are released (inside ``commit_turn_plan``);
-    2. the turn's upload blobs are marked linked, each call bounded by its own
-       timeout (``_mark_turn_uploads_linked``);
+    2. the turn's upload blobs are marked linked — in a BACKGROUND task
+       (``_spawn_post_commit``), each call bounded by its own timeout
+       (``_mark_turn_uploads_linked``). It is best effort by design (the orphan
+       sweep keeps every blob a row references, #1232), so the response does
+       not wait for a storage backend: what follows the commit on the response
+       path stays bounded by CPU, not I/O;
     3. the #1748 counters and the #1142 turn row.
     """
     try:
@@ -118,8 +122,16 @@ async def settle_turn(
 
     # (2) The turn is committed, and with it every upload row it carried
     # (#1878): only now may their blobs be marked linked. Best-effort and
-    # never fatal; see ``_mark_turn_uploads_linked``.
-    await _mark_turn_uploads_linked(file_storage_service, prepared.preprocess_results)
+    # never fatal (``_mark_turn_uploads_linked`` counts every failure), and run
+    # off the response path: a sequential per-blob timeout here would add
+    # seconds to a 2xx for a step whose failure the sweep already tolerates.
+    if any(result.newly_stored_ref for result in prepared.preprocess_results):
+        _spawn_post_commit(
+            _mark_turn_uploads_linked(
+                file_storage_service, prepared.preprocess_results
+            ),
+            what=f"mark_linked for case {prepared.case.case_id}",
+        )
 
     # (3) Never raises by contract (both halves catch); guarded anyway, because
     # an exception here would surface as an error for a turn that committed.
@@ -131,6 +143,32 @@ async def settle_turn(
             prepared.case.case_id,
             exc_info=True,
         )
+
+
+#: Post-commit background work in flight (#1882): the upload links. Held so the
+#: event loop's weak reference cannot drop a task before it ran; each removes
+#: itself when done.
+_POST_COMMIT_TASKS: set["asyncio.Task[None]"] = set()
+
+
+def _spawn_post_commit(coro, *, what: str) -> None:
+    """Run ``coro`` after the turn's commit, off the response path.
+
+    Only ever called once the commit has returned, so it can never act for a
+    turn that did not commit. A failure is logged here and never reaches the
+    request: the work spawned here is best effort by contract.
+    """
+    task = asyncio.ensure_future(coro)
+    _POST_COMMIT_TASKS.add(task)
+
+    def _done(finished: "asyncio.Task[None]") -> None:
+        _POST_COMMIT_TASKS.discard(finished)
+        if not finished.cancelled() and finished.exception() is not None:
+            logger.warning(
+                "Post-commit step failed (%s): %r", what, finished.exception()
+            )
+
+    task.add_done_callback(_done)
 
 
 #: Settlements in flight. The event loop holds only a weak reference to a task;

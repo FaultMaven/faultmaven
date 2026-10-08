@@ -650,10 +650,11 @@ async def _preprocess_attachment(
 
 
 #: The most one ``mark_linked`` call may take after a turn has committed
-#: (#1882). The turn's 2xx waits on it, and no deadline covers the
-#: post-commit steps, so a storage backend that hangs must not hold the
-#: response: a call cut short here is counted ``timed_out`` and left to the
-#: orphan sweep, exactly as a call that failed.
+#: (#1882). The calls run in a background task the turn's response does not
+#: wait for (``turn_settlement._spawn_post_commit``); the timeout bounds that
+#: task, so a storage backend that hangs cannot pile up work: a call cut short
+#: is counted ``timed_out`` and left to the orphan sweep, exactly as a call
+#: that failed.
 MARK_LINKED_TIMEOUT_SECONDS = 5.0
 
 
@@ -662,7 +663,8 @@ async def _mark_turn_uploads_linked(
 ) -> None:
     """Flip the sidecar of every blob this turn stored, AFTER its commit.
 
-    Called once the turn's one commit has returned, with the turn's own
+    Run in a background task spawned once the turn's one commit has returned
+    (``turn_settlement._spawn_post_commit``), with the turn's own
     ``preprocess_results`` — the explicit record of which attachments were
     stored this turn (``newly_stored_ref``); a duplicate stored nothing and is
     skipped. Before #1878 this ran at intake, so a turn that failed left a blob

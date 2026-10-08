@@ -12,7 +12,8 @@ commit mid-turn (the engine's Step-7 save, the deterministic branches' saves,
 the checkpoint writes, the report rows) now adds to the turn's plan, and the
 engine returns the plan in its result as ``commit_plan``.
 ``InvestigationService`` commits it once, with ``commit_turn_plan``, inside the
-shielded settlement coroutine that owns it (``_commit_and_settle``). An
+shielded settlement coroutine that owns it
+(``investigation_service.turn_settlement.settle_turn``). An
 engine-only test commits the same way, through the same function.
 """
 

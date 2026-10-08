@@ -59,7 +59,7 @@ from faultmaven.modules.evidence.domain.services.file_storage_service import (
     FileStorageService,
 )
 
-from .conftest import create_sample_case, make_preprocessing_result
+from .conftest import create_sample_case, drain_post_commit, make_preprocessing_result
 
 pytestmark = pytest.mark.unit
 
@@ -237,6 +237,8 @@ class _World:
                     query=query, attachments=attachments or [], intent=intent
                 ),
             )
+            # mark_linked runs after the commit, off the response path (#1882).
+            await drain_post_commit()
         return response, engine, storage
 
     async def committed(self) -> Case:

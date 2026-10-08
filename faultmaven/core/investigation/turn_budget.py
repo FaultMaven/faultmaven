@@ -90,9 +90,11 @@ TURN_BUDGET_RESERVE_SECONDS = 1.0
 # (#1882). The route's ``wait_for`` bounds only the preparation, and
 # ``commit_turn`` checks what is left before it starts: with less than this,
 # the turn answers the same 504 + ``Retry-After`` a timeout does, with nothing
-# committed. Started, the commit runs to completion whatever the clock says,
-# so the client's own timeout must exceed ``AGENT_REQUEST_TIMEOUT`` plus this
-# plus its network margin.
+# committed. Started, the commit runs to completion whatever the clock says.
+# After it the response still awaits the route's auto-title (bounded by
+# ``AUTO_TITLE_TIMEOUT_SECONDS``, only while the case carries its placeholder
+# title), so a client's own timeout must exceed ``AGENT_REQUEST_TIMEOUT`` +
+# this + that + its network margin (``.claude/rules/llm-providers.md``).
 #
 # Paid for by the LLM steps, not by the commit: ``spendable_turn_budget`` and
 # ``backstop_turn_budget`` both subtract it, so a ladder that runs the budget

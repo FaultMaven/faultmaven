@@ -228,8 +228,15 @@ the same 504 + `Retry-After` when it is not, with nothing committed; once
 started, the commit runs to its end. The reserve (3.5 s) is sized from the
 measured p99 of the commit on SQLite and PostgreSQL times a safety factor of
 10, and **the LLM steps pay for it**: `spendable_turn_budget` and
-`backstop_turn_budget` both subtract it. So a client's own timeout must exceed
-`AGENT_REQUEST_TIMEOUT` plus the reserve plus its network margin. The ladder
+`backstop_turn_budget` both subtract it. After the commit the response path
+holds only CPU-bound steps and the route's auto-title, which stays awaited (it
+must land before the client can send the next turn, whose full-row save would
+otherwise write the placeholder back) and is bounded by
+`AUTO_TITLE_TIMEOUT_SECONDS` (15 s, and only while the case still carries its
+placeholder title); the upload links (`mark_linked`) run in a background task
+the response does not wait for. So a client's own timeout must exceed
+`AGENT_REQUEST_TIMEOUT` + the commit reserve + 15 s + its network margin —
+about `AGENT_REQUEST_TIMEOUT` + 18.5 s + margin. The ladder
 inside the preparation (`LLMErrorHandler.with_retry`, `max_retries=3`)
 costs `3T + 14s` against a hung provider, where `T` is the resolved per-call
 ceiling — `max(LLM_REQUEST_TIMEOUT, LLM_PROVIDER_TIMEOUT_OVERRIDES[provider])`,

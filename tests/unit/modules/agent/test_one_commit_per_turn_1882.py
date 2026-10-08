@@ -52,6 +52,9 @@ from faultmaven.models.api_models import QueryIntent, TurnResponse
 from faultmaven.modules.agent.domain.services.investigation_service import (
     attachments as attachments_module,
 )
+from faultmaven.modules.agent.domain.services.investigation_service import (
+    turn_settlement,
+)
 from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
 )
@@ -404,6 +407,66 @@ class TestAFailedCommitLeavesNothing:
 
 
 # ---------------------------------------------------------------------------
+# The regenerate card counts the row this turn holds uncommitted
+# ---------------------------------------------------------------------------
+
+REGENERATE_RESOLUTION = "Regenerate the resolution summary report for this case"
+REGEN_CARD = "Regenerate resolution summary"
+
+
+def _labels(response: TurnResponse) -> list[str]:
+    return [action.label for action in response.suggested_actions or []]
+
+
+class TestTheRegenerateCardCountsTheTurnsOwnRow:
+    """A turn's report row commits with the turn, so when the reply is
+    composed the row is not in the table yet. "Regenerations left" must count
+    it (``pending``), or the reply offers a regeneration the cap has already
+    spent. ``MAX_REGENERATIONS`` is 2 versions."""
+
+    async def test_the_turn_that_renders_the_last_version_offers_no_regen_card(
+        self, sessions
+    ):
+        case = _pending_resolve_case()
+        await _seed(sessions, case)
+        await _turn(sessions, "Yes, resolve it.", intent=_confirm_click(case))
+
+        response, _ = await _turn(sessions, REGENERATE_RESOLUTION)
+
+        got = await _committed(sessions)
+        assert sorted(r[1] for r in got["reports"]) == [1, 2], "v2 was rendered"
+        assert REGEN_CARD not in _labels(response)
+
+    async def test_with_a_version_left_the_regen_card_is_offered(
+        self, sessions, monkeypatch
+    ):
+        """Control: the card is live, and hidden above only because the cap
+        is spent."""
+        monkeypatch.setattr(ReportGenerationService, "MAX_REGENERATIONS", 3)
+        case = _pending_resolve_case()
+        await _seed(sessions, case)
+        await _turn(sessions, "Yes, resolve it.", intent=_confirm_click(case))
+
+        response, _ = await _turn(sessions, REGENERATE_RESOLUTION)
+
+        assert REGEN_CARD in _labels(response)
+
+    async def test_the_confirm_ack_turn_offers_no_regen_card(self, sessions):
+        """The ack turn renders v1 into its plan. Its reply carries no regen
+        card: the summary is rendered inline above it (INV-13's success path),
+        so the count cannot make it offer one either way."""
+        case = _pending_resolve_case()
+        await _seed(sessions, case)
+
+        response, _ = await _turn(
+            sessions, "Yes, resolve it.", intent=_confirm_click(case)
+        )
+
+        assert [r[1] for r in (await _committed(sessions))["reports"]] == [1]
+        assert REGEN_CARD not in _labels(response)
+
+
+# ---------------------------------------------------------------------------
 # The deadline: the route bounds the preparation, never the commit
 # ---------------------------------------------------------------------------
 
@@ -638,22 +701,20 @@ class _HangingStorage:
 
 
 class TestAHungPostCommitStep:
-    async def test_a_hung_mark_linked_still_answers_2xx(self, sessions, monkeypatch):
-        """``mark_linked`` runs after the commit with its own timeout: a
-        storage backend that hangs costs the response that timeout, never the
-        turn."""
+    """``mark_linked`` is best effort (the orphan sweep keeps every blob a row
+    references, #1232), so it runs after the commit in a background task the
+    response never waits for, each call bounded by its own timeout."""
+
+    @staticmethod
+    async def _upload_turn(sessions, storage):
         from faultmaven.core.investigation.schemas import Attachment
 
         from .conftest import make_preprocessing_result
 
-        monkeypatch.setattr(attachments_module, "MARK_LINKED_TIMEOUT_SECONDS", 0.05)
-        await _seed(sessions, _investigating_case())
-        storage = _HangingStorage()
         preprocessing = MagicMock()
         preprocessing.classify_and_extract = AsyncMock(
             return_value=make_preprocessing_result()
         )
-
         async with sessions() as session:
             repository = _Repository(session, sessions)
             service = InvestigationService(
@@ -662,7 +723,9 @@ class TestAHungPostCommitStep:
                 preprocessing_service=preprocessing,
                 file_storage_service=storage,
             )
-            response = await asyncio.wait_for(
+            # Bounded far below the link timeout below: a response that waited
+            # on the hung link would never arrive inside it.
+            return await asyncio.wait_for(
                 service.process_turn(
                     case_id=CASE_ID,
                     user_id=USER_ID,
@@ -680,7 +743,40 @@ class TestAHungPostCommitStep:
                 timeout=10,
             )
 
+    async def test_a_hung_mark_linked_does_not_hold_the_response(
+        self, sessions, monkeypatch
+    ):
+        monkeypatch.setattr(attachments_module, "MARK_LINKED_TIMEOUT_SECONDS", 3600)
+        await _seed(sessions, _investigating_case())
+        storage = _HangingStorage()
+
+        response = await self._upload_turn(sessions, storage)
+
         assert isinstance(response, TurnResponse)
         assert storage.stored, "positive control: a blob was stored"
         [row] = (await _committed(sessions))["case"].uploaded_files
         assert row.uploaded_at_turn == 5
+        pending = list(turn_settlement._POST_COMMIT_TASKS)
+        assert pending, "positive control: the link is still waiting on storage"
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+    async def test_the_background_link_is_bounded_and_counted(
+        self, sessions, monkeypatch
+    ):
+        from unittest.mock import patch
+
+        from .conftest import drain_post_commit
+
+        monkeypatch.setattr(attachments_module, "MARK_LINKED_TIMEOUT_SECONDS", 0.05)
+        await _seed(sessions, _investigating_case())
+
+        with patch(
+            "faultmaven.modules.agent.domain.services.investigation_service"
+            ".turn_bookkeeping.EVIDENCE_MARK_LINKED_FAILURES_TOTAL"
+        ) as counter:
+            await self._upload_turn(sessions, _HangingStorage())
+            await drain_post_commit()
+
+        counter.labels.assert_called_once_with(outcome="timed_out")

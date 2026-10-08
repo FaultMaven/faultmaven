@@ -40,6 +40,7 @@ from .conftest import (
     MockCaseRepository,
     MockMilestoneEngine,
     create_sample_case,
+    drain_post_commit,
     make_preprocessing_result,
     mock_case_repository,
     mock_milestone_engine,
@@ -236,6 +237,8 @@ class TestMarkLinkedFailureIsCounted:
                 ],
             ),
         )
+        # mark_linked runs after the commit, off the response path (#1882).
+        await drain_post_commit()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
