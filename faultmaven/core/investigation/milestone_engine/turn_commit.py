@@ -85,7 +85,17 @@ async def commit_turn_plan(
 ) -> Case:
     """Commit ``case`` with the plan's rows in one transaction, then settle the
     gates: released on success, cancelled on any failure (cancellation
-    included), which is then re-raised."""
+    included), which is then re-raised.
+
+    ‼ Call it only from inside the shielded settlement coroutine that owns the
+    plan (#1882 design v2, R1/R2), never directly under a deadline or a
+    cancellable request task. It cancels the gates on ANY ``BaseException``,
+    and a cancellation can land inside ``db.commit()``, where the commit may
+    already have reached the database: run unshielded, a cancel there would
+    cancel the gates (and so the work waiting on them) of a turn that did
+    commit. Shielded, no outside cancel reaches it, and every exception it
+    sees is one the commit really raised.
+    """
     try:
         saved = await repository.save(
             case, reports=tuple(plan.reports), checkpoints=tuple(plan.checkpoints)

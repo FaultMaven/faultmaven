@@ -23,7 +23,7 @@ Run locally:
 from __future__ import annotations
 
 import os
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -45,9 +45,15 @@ from faultmaven.modules.case.domain.owned_models.report import (
     ReportType,
 )
 from faultmaven.modules.case.exceptions import StaleCaseException
+from faultmaven.modules.case.infrastructure import (
+    sessionless_case_repository as sessionless_module,
+)
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
     PostgreSQLHybridCaseRepository,
     RepositoryException,
+)
+from faultmaven.modules.case.infrastructure.sessionless_case_repository import (
+    SessionlessCaseRepository,
 )
 from tests.utils import seed_enterprises
 
@@ -141,6 +147,32 @@ async def tenant_sessions(superuser_engine):
     await engine.dispose()
     async with superuser_engine.begin() as conn:
         await conn.exec_driver_sql(_DROP_ROLE_SQL)
+
+
+@pytest.fixture
+def sessionless(tenant_sessions, monkeypatch):
+    """The production wrapper over the tenant-bound limited role.
+
+    ``get_db_session`` is replaced by one with the production context
+    manager's shape (commit on exit, rollback on an exception, close); the
+    dialect is detected from the session, so the wrapper picks the PostgreSQL
+    repository exactly as it does in production.
+    """
+
+    @asynccontextmanager
+    async def _get_db_session():
+        session = tenant_sessions()
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+
+    monkeypatch.setattr(sessionless_module, "get_db_session", _get_db_session)
+    return SessionlessCaseRepository()
 
 
 @contextmanager
@@ -388,3 +420,71 @@ async def test_a_captured_checkpoint_fits_its_column(
     assert created is not None
     got = await _committed(superuser_engine, case.case_id)
     assert got["checkpoints"] == {created.checkpoint_id: ent_a}
+
+
+@pytest.mark.asyncio
+async def test_through_the_sessionless_wrapper_rows_commit_with_the_case(
+    superuser_engine, enterprises, sessionless
+):
+    ent_a, _ = enterprises
+    case = _case(ent_a)
+    report, checkpoint = _report(case), _checkpoint(case)
+    with tenant(ent_a):
+        await sessionless.save(case, reports=[report], checkpoints=[checkpoint])
+
+    got = await _committed(superuser_engine, case.case_id)
+    assert got["version"] == 1
+    assert got["reports"] == {report.report_id: ent_a}
+    assert got["checkpoints"] == {checkpoint.checkpoint_id: ent_a}
+
+
+@pytest.mark.asyncio
+async def test_through_the_sessionless_wrapper_a_refused_row_commits_nothing(
+    superuser_engine, enterprises, sessionless
+):
+    ent_a, _ = enterprises
+    case = _case(ent_a)
+    with tenant(ent_a):
+        await sessionless.save(case)
+        case.title = "Retitled by the failing turn"
+        with pytest.raises(RepositoryException):
+            await sessionless.save(
+                case,
+                reports=[_report(case, ReportType.RUNBOOK)],
+                checkpoints=[_checkpoint(case)],
+            )
+
+    got = await _committed(superuser_engine, case.case_id)
+    assert got["version"] == 1
+    assert got["title"] == "Turn commit case"
+    assert got["reports"] == {} and got["checkpoints"] == {}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_save_leaves_the_object_as_it_was(
+    superuser_engine, enterprises, tenant_sessions
+):
+    """The rolled-back save puts back ``version`` and ``updated_at``, so the
+    same object re-saves instead of raising a stale 409 over a version the
+    database never took."""
+    ent_a, _ = enterprises
+    case = _case(ent_a)
+    with tenant(ent_a):
+        async with tenant_sessions() as session:
+            await PostgreSQLHybridCaseRepository(session).save(case)
+        version, updated_at = case.version, case.updated_at
+
+        case.title = "Retitled by the failing turn"
+        async with tenant_sessions() as session:
+            with pytest.raises(RepositoryException):
+                await PostgreSQLHybridCaseRepository(session).save(
+                    case, reports=[_report(case, ReportType.RUNBOOK)]
+                )
+        assert (case.version, case.updated_at) == (version, updated_at)
+
+        async with tenant_sessions() as session:
+            await PostgreSQLHybridCaseRepository(session).save(case)
+
+    got = await _committed(superuser_engine, case.case_id)
+    assert got["version"] == 2
+    assert got["title"] == "Retitled by the failing turn"

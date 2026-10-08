@@ -195,6 +195,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             RepositoryException: If save fails
         """
         self.check_turn_rows(case, reports, checkpoints)
+        # Restored if the save does not commit: see SAVE_STAMPED_FIELDS.
+        stamps = self.save_stamps(case)
         try:
             # Self-heal any turn-sequence anomaly into consecutive history
             # (with SKIPPED placeholders) before persisting, so a transient gap
@@ -322,9 +324,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             # OCC mismatch — propagate unwrapped so callers can retry or
             # surface 409 without unwrapping a generic RepositoryException.
             await self.db.rollback()
+            self.restore_save_stamps(case, stamps)
             raise
         except Exception as e:
             await self.db.rollback()
+            self.restore_save_stamps(case, stamps)
             raise RepositoryException(f"Failed to save case {case.case_id}: {e}") from e
 
     async def get(self, case_id: str) -> Optional[Case]:

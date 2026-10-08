@@ -1077,7 +1077,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from asyncio import TimeoutError
 
 class PostgreSQLHybridCaseRepository(CaseRepository):
-    async def save(self, case: Case) -> Case:
+    async def save(self, case: Case, *, reports=(), checkpoints=()) -> Case:
         try:
             # Attempt save
             result = await self.db.execute(insert_query, case.dict())
@@ -1192,9 +1192,9 @@ async def save_case_with_retry(repo: CaseRepository, case: Case) -> Case:
 import logging
 logger = logging.getLogger(__name__)
 
-async def save(self, case: Case) -> Case:
+async def save(self, case: Case, *, reports=(), checkpoints=()) -> Case:
     try:
-        result = await self._execute_save(case)
+        result = await self._execute_save(case, reports, checkpoints)
         logger.debug(f"Saved case {case.case_id}")
         return result
     except IntegrityError as e:

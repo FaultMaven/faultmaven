@@ -142,7 +142,9 @@ FaultMaven's case data has predictable access patterns:
 ```python
 # Abstract interface
 class CaseRepository(ABC):
-    async def save(self, case: Case) -> Case
+    # reports/checkpoints are inserted in the case's own transaction, after
+    # the case and before the commit: all of it commits or none does (#1882)
+    async def save(self, case: Case, *, reports=(), checkpoints=()) -> Case
     async def get(self, case_id: str) -> Optional[Case]
     async def list(...) -> tuple[List[Case], int]
     async def delete(self, case_id: str) -> bool
@@ -159,7 +161,7 @@ class InMemoryCaseRepository(CaseRepository):
     def __init__(self):
         self._cases: Dict[str, Case] = {}
 
-    async def save(self, case: Case) -> Case:
+    async def save(self, case: Case, *, reports=(), checkpoints=()) -> Case:
         self._cases[case.case_id] = case
         return case
 ```
@@ -183,7 +185,7 @@ class SQLiteCaseRepository(CaseRepository):
     def __init__(self, db_session):
         self.db = db_session
 
-    async def save(self, case: Case) -> Case:
+    async def save(self, case: Case, *, reports=(), checkpoints=()) -> Case:
         # Uses SQLite-compatible SQL:
         # - No ::jsonb type casts
         # - No jsonb_build_object()
@@ -225,7 +227,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     def __init__(self, db_session):
         self.db = db_session
 
-    async def save(self, case: Case) -> Case:
+    async def save(self, case: Case, *, reports=(), checkpoints=()) -> Case:
         # Uses PostgreSQL-optimized SQL:
         # - ::jsonb type casts for performance
         # - jsonb_build_object() for efficiency

@@ -11,6 +11,7 @@ The PostgreSQL twin, with the RLS tenant check, is
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -28,11 +29,17 @@ from faultmaven.modules.case.domain.owned_models.report import (
     ReportType,
 )
 from faultmaven.modules.case.exceptions import StaleCaseException
+from faultmaven.modules.case.infrastructure import (
+    sessionless_case_repository as sessionless_module,
+)
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
 )
 from faultmaven.modules.case.infrastructure.case_repository import (
     RepositoryException as InMemoryRepositoryException,
+)
+from faultmaven.modules.case.infrastructure.sessionless_case_repository import (
+    SessionlessCaseRepository,
 )
 from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     RepositoryException,
@@ -77,6 +84,31 @@ def sessions(engine):
 async def repo(sessions):
     async with sessions() as session:
         yield SQLiteCaseRepository(session)
+
+
+@pytest.fixture
+def sessionless(sessions, monkeypatch):
+    """The production wrapper, over this test's database.
+
+    ``get_db_session`` is replaced by one with the production context
+    manager's shape (commit on exit, rollback on an exception, close), so what
+    is under test is the wrapper's own forwarding, one session per call.
+    """
+
+    @asynccontextmanager
+    async def _get_db_session():
+        session = sessions()
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+
+    monkeypatch.setattr(sessionless_module, "get_db_session", _get_db_session)
+    return SessionlessCaseRepository()
 
 
 async def _committed(sessions, case_id: str) -> dict:
@@ -311,3 +343,90 @@ class TestInMemoryParity:
         assert await repo.get_report(report.report_id) is None
         with pytest.raises(InMemoryRepositoryException):
             await repo.create_checkpoint(_checkpoint(case))
+
+
+class TestThroughTheSessionlessWrapper:
+    """``SessionlessCaseRepository`` is what the container wires
+    (``container/providers/infrastructure.py``): it must forward the rows."""
+
+    @pytest.mark.asyncio
+    async def test_rows_commit_with_the_case(self, sessionless, sessions):
+        case = _case()
+        report, checkpoint = _report(case), _checkpoint(case)
+
+        await sessionless.save(case, reports=[report], checkpoints=[checkpoint])
+
+        got = await _committed(sessions, case.case_id)
+        assert got["version"] == 1
+        assert got["reports"] == {report.report_id: ENTERPRISE}
+        assert got["checkpoints"] == {checkpoint.checkpoint_id: ENTERPRISE}
+
+    @pytest.mark.asyncio
+    async def test_a_refused_row_commits_nothing(self, sessionless, sessions):
+        case = _case()
+        await sessionless.save(case)
+
+        case.title = "Retitled by the failing turn"
+        with pytest.raises(RepositoryException):
+            await sessionless.save(
+                case,
+                reports=[_report(case, ReportType.RUNBOOK)],
+                checkpoints=[_checkpoint(case)],
+            )
+
+        got = await _committed(sessions, case.case_id)
+        assert got["version"] == 1
+        assert got["title"] == "Turn commit case"
+        assert got["reports"] == {} and got["checkpoints"] == {}
+
+
+class TestAFailedSaveLeavesTheObjectAsItWas:
+    """A save that does not commit puts back what it stamped on the object
+    (``version``, ``updated_at``, ``disposition_eligibility``), so the same
+    object saves on the next attempt instead of being refused as stale over a
+    version the database never took."""
+
+    @pytest.mark.asyncio
+    async def test_a_refused_row_then_a_resave_succeeds(self, repo, sessions):
+        case = _case()
+        await repo.save(case)
+        version, updated_at = case.version, case.updated_at
+
+        case.title = "Retitled by the failing turn"
+        with pytest.raises(RepositoryException):
+            await repo.save(case, reports=[_report(case, ReportType.RUNBOOK)])
+
+        assert (case.version, case.updated_at) == (version, updated_at)
+        await repo.save(case)
+        got = await _committed(sessions, case.case_id)
+        assert got["version"] == 2
+        assert got["title"] == "Retitled by the failing turn"
+
+    @pytest.mark.asyncio
+    async def test_a_stale_save_leaves_version_and_clock_alone(self, repo, sessions):
+        case = _case()
+        await repo.save(case)
+        async with sessions() as other:
+            winner = await SQLiteCaseRepository(other).get(case.case_id)
+            await SQLiteCaseRepository(other).save(winner)
+        version, updated_at = case.version, case.updated_at
+
+        with pytest.raises(StaleCaseException):
+            await repo.save(case)
+
+        assert (case.version, case.updated_at) == (version, updated_at)
+
+    @pytest.mark.asyncio
+    async def test_in_memory_matches(self):
+        repo = InMemoryCaseRepository()
+        case = _case()
+        first = _checkpoint(case)
+        await repo.save(case, checkpoints=[first])
+        version, updated_at = case.version, case.updated_at
+
+        with pytest.raises(InMemoryRepositoryException):
+            await repo.save(case, checkpoints=[_checkpoint(case)])
+
+        assert (case.version, case.updated_at) == (version, updated_at)
+        await repo.save(case)
+        assert case.version == version + 1

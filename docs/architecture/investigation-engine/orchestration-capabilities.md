@@ -19,22 +19,26 @@ transitions only, and it has no online reader (see §2).
 
 ### 1.2 Trigger Sites
 
-Checkpoints fire at three sites — one in `milestone_engine/engine.py`, two in the
-`TransitionManager` collaborator (`milestone_engine/transitions.py`) — and all with
-trigger `pre_case_action`. Every site is guarded by `if self.deps.checkpoint_service:`
-so the engine degrades safely when the service is not wired.
+Checkpoints fire at four sites — the button-confirm path in
+`milestone_engine/transition_turns.py`, two in the `TransitionManager` collaborator
+(`milestone_engine/transitions.py`) and the statement-revision confirm in
+`milestone_engine/statement_revision.py` — and all with trigger `pre_case_action`.
+Every site is guarded by a `checkpoint_service` presence check, so the engine
+degrades safely when the service is not wired. No two of them can fire in one turn,
+and their targets differ, so their checkpoint ids do too.
 
 | Site | When | Metadata captured |
 |---|---|---|
 | [`milestone_engine/transition_turns.py`](../../../faultmaven/core/investigation/milestone_engine/transition_turns.py) `_confirm_pending_transition` | Confirmed case-state transition via the `pending_transition` path | `from_state`, `to_state` |
 | [`milestone_engine/transitions.py`](../../../faultmaven/core/investigation/milestone_engine/transitions.py) `TransitionManager._transition_to_investigating` | Just before INQUIRY → INVESTIGATING (Gap #6) | `from_state`, `to_state="investigating"` |
 | [`milestone_engine/transitions.py`](../../../faultmaven/core/investigation/milestone_engine/transitions.py) `TransitionManager.check_automatic_transitions` | Just before a user-confirmed terminal transition (Gap #6) | `from_state`, `to_state` |
+| [`milestone_engine/statement_revision.py`](../../../faultmaven/core/investigation/milestone_engine/statement_revision.py) `confirm_revision` | Just before a revised problem statement the user re-confirmed is committed | `action="problem_statement_revised"` |
 
 These snapshots make every state change reversible at the data layer — the prior
 state is still on disk, recoverable by an operator reading `case_checkpoints`.
 That is the whole of what checkpoints promise.
 
-**There is no per-turn checkpoint, by decision.** A fourth site took a
+**There is no per-turn checkpoint, by decision.** A further site took a
 `turn_complete` snapshot at the end of every successful turn. It lived in
 `AgentOrchestrationService` — on the `/sessions/execute` surface no frontend
 called — and was deleted with it in #982; it was never on the `/turns` path, so

@@ -2,8 +2,8 @@
 
 A turn will carry its terminal summary to the turn's own commit, so it needs
 the render without the ``add_report``. Rows it holds but has not committed
-(``pending``) count against the regeneration cap and towards the next version
-exactly as committed rows do — otherwise a turn holding one uncommitted
+(``pending``, per type) count against that type's regeneration cap and
+towards its next version exactly as committed rows do — otherwise a turn holding one uncommitted
 regeneration could render a third version past ``MAX_REGENERATIONS``.
 """
 
@@ -14,7 +14,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from faultmaven.exceptions import ValidationException
+from faultmaven.exceptions import (
+    QUOTA_EXHAUSTED,
+    LLMException,
+    ServiceException,
+    ValidationException,
+)
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.problem import InquiryData
@@ -73,7 +78,9 @@ async def test_render_writes_nothing_and_takes_no_lock(service, repo):
 
 @pytest.mark.asyncio
 async def test_pending_counts_towards_the_version(service):
-    reports = await service.render_reports(_closed_case(), [CLOSURE], pending=1)
+    reports = await service.render_reports(
+        _closed_case(), [CLOSURE], pending={CLOSURE: 1}
+    )
     assert reports[0].version == 2
 
 
@@ -85,7 +92,7 @@ async def test_pending_counts_against_the_cap(service, repo):
 
     # One committed + one the caller holds uncommitted = the cap.
     with pytest.raises(ValidationException) as exc:
-        await service.render_reports(case, [CLOSURE], pending=MAX - 1)
+        await service.render_reports(case, [CLOSURE], pending={CLOSURE: MAX - 1})
     assert str(exc.value) == "regeneration_limit_exceeded"
 
     # Control: with nothing held, the same case still has a slot.
@@ -131,3 +138,69 @@ async def test_generate_is_render_plus_a_write_up_to_the_cap(repo):
         await service.generate_reports(case, [CLOSURE])
     assert str(exc.value) == "regeneration_limit_exceeded"
     assert await repo.count_reports(case.case_id, CLOSURE) == 2
+
+
+@pytest.mark.asyncio
+async def test_pending_of_another_type_counts_for_nothing(service):
+    """``pending`` is per type: rows held of one type neither cap nor
+    re-version another."""
+    (report,) = await service.render_reports(
+        _closed_case(), [CLOSURE], pending={ReportType.RESOLUTION_SUMMARY: MAX}
+    )
+    assert report.version == 1
+
+
+class TestGenerateIsOneTypeAtATime:
+    """``generate_reports`` renders and writes each type before the next: the
+    order base had, which ``render_reports``'s batch shape must not leak into."""
+
+    @pytest.mark.asyncio
+    async def test_a_billing_abort_on_the_second_type_keeps_the_first(self, repo):
+        service = ReportGenerationService(case_repository=repo)
+        case = _closed_case()
+        render = service._generate_single_report
+        calls = []
+
+        async def first_renders_second_is_out_of_credits(case_, report_type, **kw):
+            calls.append(report_type)
+            if len(calls) == 2:
+                raise LLMException(
+                    "You exceeded your current quota, please check your plan "
+                    "and billing details",
+                    status_code=429,
+                )
+            return await render(case_, report_type, **kw)
+
+        service._generate_single_report = first_renders_second_is_out_of_credits
+
+        with pytest.raises(ServiceException) as exc:
+            await service.generate_reports(
+                case, [CLOSURE, ReportType.RESOLUTION_SUMMARY]
+            )
+
+        assert (exc.value.details or {}).get("error_code") == QUOTA_EXHAUSTED
+        assert await repo.count_reports(case.case_id, CLOSURE) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_failed_write_leaves_no_version_gap(self, repo):
+        """The second render of a type reads the count the failed first write
+        did not raise, so the row that lands is version 1, not 2."""
+        service = ReportGenerationService(case_repository=repo)
+        case = _closed_case()
+        store = repo.add_report
+        attempts = []
+
+        async def fail_once_then_store(report):
+            attempts.append(report.version)
+            if len(attempts) == 1:
+                raise RuntimeError("db hiccup")
+            return await store(report)
+
+        repo.add_report = fail_once_then_store
+
+        response = await service.generate_reports(case, [CLOSURE, CLOSURE])
+
+        assert attempts == [1, 1]
+        assert [r.version for r in response.reports] == [1]
+        stored = await repo.get_reports(case.case_id, CLOSURE, include_history=True)
+        assert [r.version for r in stored] == [1]

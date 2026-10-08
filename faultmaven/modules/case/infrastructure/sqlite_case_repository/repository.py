@@ -159,6 +159,8 @@ class SQLiteCaseRepository(CaseRepository):
         case or not at all (#1882).
         """
         self.check_turn_rows(case, reports, checkpoints)
+        # Restored if the save does not commit: see SAVE_STAMPED_FIELDS.
+        stamps = self.save_stamps(case)
         # Self-heal any turn-sequence anomaly into consecutive history (with
         # SKIPPED placeholders) BEFORE persisting, so a transient gap can never
         # wedge the case. No-op on healthy cases.
@@ -262,9 +264,11 @@ class SQLiteCaseRepository(CaseRepository):
             # Propagate unwrapped so callers can retry or surface 409
             # without unwrapping a generic RepositoryException.
             await self.db.rollback()
+            self.restore_save_stamps(case, stamps)
             raise
         except Exception as e:
             await self.db.rollback()
+            self.restore_save_stamps(case, stamps)
             raise RepositoryException(f"Failed to save case {case.case_id}: {e}") from e
 
     async def get(self, case_id: str) -> Case | None:

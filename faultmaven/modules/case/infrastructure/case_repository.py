@@ -222,6 +222,26 @@ class CaseRepository(ABC):
 
         return msg
 
+    #: The fields ``save`` stamps on the case object before it commits. A save
+    #: that fails puts them back (``restore_save_stamps``), so the object is
+    #: what it was before the call and a re-save of it is not refused as stale
+    #: over a version the database never took. Left as stamped, on purpose:
+    #: the message rows ``normalise_message_row`` completes (ids and
+    #: timestamps a re-save reuses, see ``ICaseRepository.save``) and the
+    #: turn-sequence repair ``reconcile_turn_sequence`` makes, both idempotent.
+    SAVE_STAMPED_FIELDS = ("version", "updated_at", "disposition_eligibility")
+
+    @classmethod
+    def save_stamps(cls, case: Case) -> Dict[str, Any]:
+        """The values ``save`` is about to overwrite on ``case``."""
+        return {name: getattr(case, name) for name in cls.SAVE_STAMPED_FIELDS}
+
+    @staticmethod
+    def restore_save_stamps(case: Case, stamps: Dict[str, Any]) -> None:
+        """Put back what ``save_stamps`` read: the save did not commit."""
+        for name, value in stamps.items():
+            object.__setattr__(case, name, value)
+
     @staticmethod
     def check_turn_rows(
         case: Case,
@@ -1021,6 +1041,7 @@ class InMemoryCaseRepository(CaseRepository):
         runs before anything is stored (#1882).
         """
         self.check_turn_rows(case, reports, checkpoints)
+        stamps = self.save_stamps(case)
         from faultmaven.core.investigation.terminal_transitions import (
             derive_disposition_eligibility,
         )
@@ -1048,22 +1069,22 @@ class InMemoryCaseRepository(CaseRepository):
         # eligibility-maintenance invariant.
         case.disposition_eligibility = derive_disposition_eligibility(case)
 
-        # The primary key the SQL tables enforce, enforced before the version
-        # is touched or anything is stored: a refused save stores nothing.
-        self._refuse_taken_checkpoint_ids(checkpoints)
-
         existing = self._cases.get(case.case_id)
-        if existing is None:
-            # New case
-            case.version = 1
-        else:
-            if existing.version != case.version:
+        try:
+            # The primary key the SQL tables enforce, enforced before the
+            # version is touched or anything is stored: a refused save stores
+            # nothing.
+            self._refuse_taken_checkpoint_ids(checkpoints)
+            if existing is not None and existing.version != case.version:
                 raise StaleCaseException(
                     case_id=case.case_id,
                     expected_version=case.version,
                     actual_version=existing.version,
                 )
-            case.version = case.version + 1
+        except Exception:
+            self.restore_save_stamps(case, stamps)
+            raise
+        case.version = 1 if existing is None else case.version + 1
 
         self._cases[case.case_id] = case
         for report in reports:
