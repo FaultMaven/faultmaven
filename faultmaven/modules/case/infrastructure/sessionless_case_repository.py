@@ -148,18 +148,6 @@ class SessionlessCaseRepository(CaseRepository):
             repo = get_repository_for_session(session)
             return await repo.delete(case_id)
 
-    async def find_uploaded_file_by_content_hash(
-        self, case_id: str, content_hash: str
-    ) -> UploadedFile | None:
-        """Find oldest UploadedFile in a case whose content_hash matches.
-
-        Post-010: dedup is a file-level concern (uploads no longer
-        create an Evidence row at intake).
-        """
-        async with get_db_session() as session:
-            repo = get_repository_for_session(session)
-            return await repo.find_uploaded_file_by_content_hash(case_id, content_hash)
-
     async def list_evidence_by_time_window(
         self,
         case_id: str,
@@ -380,20 +368,6 @@ class SessionlessCaseRepository(CaseRepository):
         async with get_db_session() as session:
             repo = get_repository_for_session(session)
             return await repo.delete_uploaded_file(case_id, file_id)
-
-    async def add_uploaded_file(
-        self,
-        case_id: str,
-        uploaded_file: "UploadedFile",
-        enterprise_id: str,
-        organization_id: Optional[str] = None,
-    ) -> None:
-        """Scoped commit of one uploaded_file row, outside the aggregate save."""
-        async with get_db_session() as session:
-            repo = get_repository_for_session(session)
-            return await repo.add_uploaded_file(
-                case_id, uploaded_file, enterprise_id, organization_id
-            )
 
     async def get_analytics(self, case_id: str) -> dict[str, Any]:
         """Compute analytics for a case."""

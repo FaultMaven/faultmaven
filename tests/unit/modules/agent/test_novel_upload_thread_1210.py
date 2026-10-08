@@ -11,10 +11,12 @@ False on every turn and #1136's upload progress arm never armed.
 ``_PreprocessedAttachment`` holds the answer, computed where it is still
 knowable: the content-hash short-circuit sets ``duplicate_of`` when it returns
 an EXISTING row instead of creating one, and ``dedup_ran`` records whether that
-lookup executed at all. The flag is therefore TRI-STATE — True / False /
+check ran at all. Since #1878 the check reads the loaded case's own rows — the
+case is loaded with every committed row — so it runs whenever the attachment
+has a content hash. The flag is therefore TRI-STATE — True / False /
 undetermined — because ``duplicate_of is None`` alone conflates "ran and found
-nothing" with "never ran", and reporting the latter as novel arms the stall net
-on a byte-identical re-submission.
+nothing" with "never ran" (no hash), and reporting the latter as novel arms the
+stall net on a byte-identical re-submission.
 
 These drive the real ``InvestigationService.process_turn`` and pin that the flag
 reaching the engine agrees with it — and that the ordering which broke the
@@ -25,9 +27,11 @@ Engine-side behaviour lives in
 """
 
 import copy
+import hashlib
 import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import Optional
 from unittest.mock import AsyncMock
 
 import pytest
@@ -59,7 +63,7 @@ pytestmark = pytest.mark.unit
 _SERVICE_LOGGER = "faultmaven.modules.agent.domain.services.investigation_service"
 
 CONTENT = b"2026-08-28T10:00:00Z ERROR pod restart loop\n"
-CONTENT_HASH = "a" * 64
+CONTENT_HASH = hashlib.sha256(CONTENT).hexdigest()
 EXISTING_FILE_ID = "file_eeeeeeeeeeee"
 EXISTING_TURN = 2
 
@@ -68,19 +72,28 @@ class _PreprocessingDouble:
     """Returns a real result object, not a Mock: the row is built by assigning
     these values onto a Pydantic ``UploadedFile``.
 
-    ``content_hash=""`` models an extractor that produced no hash — the input
-    to one of the two paths on which dedup cannot run at all.
+    By default the hash is the real hash of the content, as the extractor's is,
+    so different bytes are different files — the service's dedup also reads the
+    case's own rows (#1878), and one hash for every input would make every
+    second attachment a duplicate. ``content_hash=""`` models an extractor that
+    produced no hash — the input to one of the two paths on which dedup cannot
+    run at all.
     """
 
-    def __init__(self, content_hash: str = CONTENT_HASH):
+    def __init__(self, content_hash: Optional[str] = None):
         self.content_hash = content_hash
 
     async def classify_and_extract(self, content, filename, source_metadata=None):
+        content_hash = (
+            self.content_hash
+            if self.content_hash is not None
+            else hashlib.sha256(content.encode("utf-8")).hexdigest()
+        )
         return SimpleNamespace(
             summary="Pod restart loop.",
             structural_index="ERROR x 42 between 10:00 and 10:05",
             detailed_data_type=DataType.LOGS_AND_ERRORS,
-            content_hash=self.content_hash,
+            content_hash=content_hash,
             coverage_start_ts=None,
             coverage_end_ts=None,
             coverage_source=None,
@@ -108,17 +121,9 @@ def _existing_row() -> UploadedFile:
 
 @pytest.fixture
 def repo(mock_case_repository):
-    """The shared double, with a WORKING dedup lookup that finds nothing.
-
-    A real repository implements ``find_uploaded_file_by_content_hash``; the
-    bare double does not, and the service treats a missing lookup as "novelty
-    undetermined" — correctly, but that is the *other* scenario. Every test
-    below that means "a fresh upload" needs the lookup to have actually run,
-    so it is installed here rather than per-test.
-    """
-    mock_case_repository.find_uploaded_file_by_content_hash = AsyncMock(
-        return_value=None
-    )
+    """The shared double. Dedup needs nothing from it: it reads the case's own
+    ``uploaded_files`` (#1878), so a case seeded with a row is a case that
+    already holds that file."""
     return mock_case_repository
 
 
@@ -223,38 +228,39 @@ class TestAFreshUpload:
 
 class TestAByteIdenticalResubmission:
     @pytest.fixture
-    def repo_with_the_file(self, repo):
-        """Depends on ``repo`` rather than the raw double so this override
-        lands AFTER the working-lookup install, whatever order a test lists
-        its fixtures in."""
-        repo.find_uploaded_file_by_content_hash = AsyncMock(
-            return_value=_existing_row()
-        )
-        return repo
+    def case_with_the_file(self, sample_case):
+        """The case as loaded: it already holds the row an earlier turn
+        committed."""
+        sample_case.uploaded_files = [_existing_row()]
+        return sample_case
 
     async def test_it_reaches_the_engine_marked_not_novel(
-        self, service, repo_with_the_file, sample_case, sample_user_id, seen
+        self, service, repo, case_with_the_file, sample_user_id, seen
     ):
-        await _run(service, repo_with_the_file, sample_case, sample_user_id)
+        await _run(service, repo, case_with_the_file, sample_user_id)
 
         assert seen["attachments"][0]["is_novel"] is False
         assert seen["attachments"][0]["file_id"] == EXISTING_FILE_ID
 
-    async def test_the_dedup_lookup_is_the_one_that_decided_it(
-        self, service, repo_with_the_file, sample_case, sample_user_id, seen
+    async def test_the_content_hash_is_what_decided_it(
+        self, service, repo, sample_case, sample_user_id, seen
     ):
-        """Pins the call the flag is derived from, so a renamed or re-signed
-        lookup fails here rather than silently reporting everything novel."""
-        await _run(service, repo_with_the_file, sample_case, sample_user_id)
+        """The control: the same case holding a row of DIFFERENT content does
+        not match, so the match above is the hash and not the mere presence
+        of a row."""
+        sample_case.uploaded_files = [
+            _existing_row().model_copy(update={"content_hash": "f" * 64})
+        ]
 
-        repo_with_the_file.find_uploaded_file_by_content_hash.assert_awaited_once_with(
-            sample_case.case_id, CONTENT_HASH
-        )
+        await _run(service, repo, sample_case, sample_user_id)
+
+        assert seen["attachments"][0]["is_novel"] is True
+        assert seen["attachments"][0]["file_id"] != EXISTING_FILE_ID
 
     async def test_the_response_calls_it_a_duplicate(
-        self, service, repo_with_the_file, sample_case, sample_user_id, seen
+        self, service, repo, case_with_the_file, sample_user_id, seen
     ):
-        response = await _run(service, repo_with_the_file, sample_case, sample_user_id)
+        response = await _run(service, repo, case_with_the_file, sample_user_id)
 
         assert response.attachments_processed[0].processing_status == "duplicate"
         assert response.attachments_processed[0].duplicate_of == EXISTING_FILE_ID
@@ -294,14 +300,19 @@ class TestTheEngineIsToldAboutEveryAttachment:
 
 class TestWhenDedupCouldNotRun:
     """``duplicate_of is None`` has two causes, and only one of them is
-    "novel". These drive the other one.
+    "novel". These drive the other one: an attachment with no content hash,
+    the one input the check cannot run on.
 
-    Each test re-submits content the case ALREADY HOLDS — the row is seeded on
-    the aggregate — so "novel" is demonstrably the wrong answer, not merely an
+    Each re-submits content the case ALREADY HOLDS — the row is seeded on the
+    aggregate — so "novel" is demonstrably the wrong answer, not merely an
     unproven one. Reporting True here arms #1136's progress arm and resets
     ``turns_without_progress`` on a turn that brought nothing: #1210 inverted,
     and in the aggressive direction. Undetermined is the honest answer, and the
     engine scores it conservatively.
+
+    A database lookup used to be a second way not to run (missing on a double,
+    or raising). #1878 removed it: the loaded case holds every committed row,
+    so a miss there is a definite "novel" (``test_a_miss_in_the_cases_rows_is_novel``).
     """
 
     @pytest.fixture
@@ -313,14 +324,14 @@ class TestWhenDedupCouldNotRun:
     async def test_no_content_hash_is_undetermined_not_novel(
         self, service, repo, case_already_holding_it, sample_user_id, seen
     ):
-        """Path 1: the extractor produced no hash, so the lookup is skipped
-        outright and never consulted."""
+        """The extractor produced no hash, so the check cannot run — even
+        though the case holds the bytes."""
         service.preprocessing_service = _PreprocessingDouble(content_hash="")
 
-        await _run(service, repo, case_already_holding_it, sample_user_id)
+        response = await _run(service, repo, case_already_holding_it, sample_user_id)
 
-        repo.find_uploaded_file_by_content_hash.assert_not_awaited()
         assert seen["attachments"][0]["is_novel"] is None
+        assert response.attachments_processed[0].duplicate_of is None
 
     async def test_no_content_hash_is_logged(
         self, service, repo, case_already_holding_it, sample_user_id, seen, caplog
@@ -336,28 +347,7 @@ class TestWhenDedupCouldNotRun:
             if r.levelno >= logging.WARNING
         ), "a permanently skipped dedup lookup must not be silent"
 
-    async def test_a_lookup_raising_from_inside_is_undetermined_not_novel(
-        self, service, repo, case_already_holding_it, sample_user_id, seen
-    ):
-        """Path 2: a REAL repository raising AttributeError from inside its own
-        method body — not a double missing the attribute.
-
-        The service catches AttributeError to tolerate minimal test doubles,
-        and that same catch swallows a genuine bug inside an implementation.
-        Either way dedup did not run, so the answer is undetermined.
-        """
-
-        async def broken_lookup(case_id, content_hash):
-            row = None
-            return row.file_id  # AttributeError, raised INSIDE the method
-
-        repo.find_uploaded_file_by_content_hash = broken_lookup
-
-        await _run(service, repo, case_already_holding_it, sample_user_id)
-
-        assert seen["attachments"][0]["is_novel"] is None
-
-    async def test_a_repository_without_the_lookup_is_undetermined_not_novel(
+    async def test_a_miss_in_the_cases_rows_is_novel(
         self,
         mock_milestone_engine,
         mock_case_repository,
@@ -365,21 +355,19 @@ class TestWhenDedupCouldNotRun:
         sample_user_id,
         seen,
     ):
-        """Path 2b: the bare double, which has no such attribute at all.
-
-        Uses ``mock_case_repository`` directly rather than the ``repo`` fixture
-        — installing the lookup is exactly what this test must not do.
-        """
+        """The contrast, on the bare repository double (#1878): with a content
+        hash the check always runs, over the case's own rows, and a miss there
+        is novel — not undetermined. The double needs no lookup method; there
+        is none to call."""
         svc = InvestigationService(
             milestone_engine=mock_milestone_engine,
             case_repository=mock_case_repository,
         )
         svc.preprocessing_service = _PreprocessingDouble()
-        sample_case.uploaded_files = [_existing_row()]
 
         await _run(svc, mock_case_repository, sample_case, sample_user_id)
 
-        assert seen["attachments"][0]["is_novel"] is None
+        assert seen["attachments"][0]["is_novel"] is True
 
     async def test_the_engine_scores_an_undetermined_turn_as_no_progress(
         self, service, repo, case_already_holding_it, sample_user_id, seen

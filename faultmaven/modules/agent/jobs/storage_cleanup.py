@@ -13,9 +13,9 @@ once at upload and never revisited.
 
 Before this job cross-checked the database (issue #1232) it decided purely from
 that cache, and the cache is wrong in one direction that matters: `mark_linked`
-is best-effort in `InvestigationService._preprocess_attachment`, so a transient
-storage failure at exactly that step leaves `linked: false` beside a file the
-case genuinely references. At TTL the sweep deleted it — irreversible loss of
+is best-effort (`investigation_service.attachments._mark_turn_uploads_linked`),
+so a transient storage failure at exactly that step leaves `linked: false`
+beside a file the case genuinely references. At TTL the sweep deleted it — irreversible loss of
 user-uploaded evidence, detectable only by a user reporting a missing upload.
 
 So the sweep now asks the authority first: **anything named by an
@@ -53,9 +53,16 @@ Every file stored via `FileStorageService.store_file()` gets a companion
         "schema_version": 1
     }
 
-`FileStorageService.mark_linked()` flips `linked=true` once an Evidence row
-is created referencing the file (called from
-`InvestigationService._preprocess_attachment`).
+`FileStorageService.mark_linked()` flips `linked=true` once the
+`uploaded_files` row referencing the file is committed — after the commit of
+the turn that carried the upload, from
+`investigation_service.attachments._mark_turn_uploads_linked` (#1878). Before
+#1878 it ran at intake, ahead of any committed row, so a turn that failed left
+a blob marked linked with nothing referencing it. Now a turn that fails before
+its first commit writes no row and leaves the sidecar `linked: false`, and both
+signals agree: the blob is an ordinary orphan this sweep reclaims at TTL. A turn
+that fails after the engine's Step-7 save (#1882) leaves its row committed and
+the sidecar `linked: false`; the database reference keeps that blob.
 
 ## Fail-closed postures
 

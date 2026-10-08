@@ -727,63 +727,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             await self.db.rollback()
             raise RepositoryException(f"Failed to delete case {case_id}: {e}") from e
 
-    async def find_uploaded_file_by_content_hash(
-        self, case_id: str, content_hash: str
-    ) -> Optional[UploadedFile]:
-        """Find oldest UploadedFile in a case whose ``content_hash`` matches.
-
-        Dedup is a file-level concern: file uploads create only an
-        UploadedFile row at intake (no Evidence row), so deduplication
-        keys off ``uploaded_files.content_hash``. The hydrated
-        UploadedFile carries the preprocessing artifacts (summary,
-        structural_index, data_type, coverage timestamps).
-        """
-        if not content_hash:
-            return None
-        try:
-            query = text("""
-                SELECT
-                    file_id, organization_id, case_id, uploaded_by,
-                    filename, size_bytes, content_type, content_hash,
-                    storage_ref, upload_source, uploaded_at_turn,
-                    metadata, uploaded_at,
-                    summary, structural_index, data_type,
-                    coverage_start_ts, coverage_end_ts, coverage_source
-                FROM uploaded_files
-                WHERE case_id = :case_id
-                  AND content_hash = :content_hash
-                ORDER BY uploaded_at ASC
-                LIMIT 1
-            """)
-            result = await self.db.execute(
-                query, {"case_id": case_id, "content_hash": content_hash}
-            )
-            row = result.fetchone()
-            if row is None:
-                return None
-            return UploadedFile(
-                file_id=row[0],
-                uploaded_by=row[3],
-                filename=row[4],
-                size_bytes=row[5],
-                content_type=row[6],
-                content_hash=row[7],
-                storage_ref=row[8],
-                upload_source=row[9],
-                uploaded_at_turn=row[10],
-                uploaded_at=row[12],
-                summary=row[13],
-                structural_index=row[14],
-                data_type=row[15],
-                coverage_start_ts=row[16],
-                coverage_end_ts=row[17],
-                coverage_source=row[18],
-            )
-        except Exception as e:
-            raise RepositoryException(
-                f"Failed to find uploaded_file by content_hash for case {case_id}: {e}"
-            ) from e
-
     async def list_evidence_by_time_window(
         self,
         case_id: str,
@@ -1376,43 +1319,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             await self.db.rollback()
             raise RepositoryException(
                 f"Failed to delete uploaded_file {file_id} on case {case_id}: {e}"
-            ) from e
-
-    async def add_uploaded_file(
-        self,
-        case_id: str,
-        uploaded_file: UploadedFile,
-        enterprise_id: str,
-        organization_id: Optional[str],
-    ) -> None:
-        """Commit ONE uploaded_file row on its own, outside the aggregate save.
-
-        Delegates to the same `_upsert_uploaded_files` the aggregate save uses,
-        so the row shape stays in one place; this only narrows the set to one
-        file and commits it.
-
-        Scoped rather than `save(case)` because the aggregate save commits the
-        whole case, which mid-turn would make the half-built turn durable. That
-        upsert is purely additive, so the later aggregate save re-upserts this
-        row rather than removing it. `enterprise_id` carries the tenant for
-        the RLS-scoped write (the engine's per-transaction begin listener
-        applies the scope, as for every other sessionless method).
-        """
-        try:
-            await _upsert_uploaded_files(
-                self._is_pg,
-                self.db,
-                case_id,
-                [uploaded_file],
-                enterprise_id,
-                organization_id,
-            )
-            await self.db.commit()
-        except Exception as e:
-            await self.db.rollback()
-            raise RepositoryException(
-                f"Failed to add uploaded_file "
-                f"{getattr(uploaded_file, 'file_id', '?')} on case {case_id}: {e}"
             ) from e
 
     async def get_analytics(self, case_id: str) -> Dict[str, Any]:
