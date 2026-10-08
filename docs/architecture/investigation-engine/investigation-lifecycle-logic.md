@@ -371,8 +371,11 @@ signature stands, a model `closed` proposal that the closure check keeps at
 CLOSED is refused (one it pivots to RESOLVED on a resolvable case is not), with
 feedback saying the model may propose it only when the user directs it, and a
 **Close with the solution documented** card appended to the turn's follow-ups.
-The model's re-proposal of a declined RESOLVE is not refused this way: RESOLVED
-is not user-selectable, so a refusal would leave no card to offer. (A
+The model's re-proposal of a declined RESOLVE is not refused this way (#1895). A
+resolution is earned, not requested: after a decline the offer is due back when
+the state that earned it moves, and the signature does not yet see the move a
+user most often brings (a fresh confirmation that the fix held), so refusing the
+model on it could withhold an offer the case has re-earned. (A
 false-alarm close is not in this signature space at all; its decline is
 recorded on the finding, §1.4.1.)
 
@@ -730,13 +733,13 @@ LEGAL_TRANSITIONS = {
 ```python
 USER_SELECTABLE_ACTIONS = {
     CaseState.INQUIRY: (CaseState.CLOSED,),
-    CaseState.INVESTIGATING: (CaseState.RESOLVED, CaseState.CLOSED),
+    CaseState.INVESTIGATING: (CaseState.CLOSED,),
     CaseState.RESOLVED: (),
     CaseState.CLOSED: (),
 }
 ```
 
-They differ on exactly one edge. **INQUIRY → INVESTIGATING is legal but not selectable**: it is earned by a problem statement the user has confirmed — which Gate 1 performs and the DB CHECK `cases_description_required_for_investigation` makes structural — so a menu cannot honour it on demand. Requesting it is refused with a 422. Every entry that remains in the menu is a *disposition*: a user decision carrying information the engine cannot derive.
+They differ on two edges, and both are earned rather than picked. **INQUIRY → INVESTIGATING** is earned by a problem statement the user has confirmed — which Gate 1 performs and the DB CHECK `cases_description_required_for_investigation` makes structural — so a menu cannot honour it on demand. Requesting it is refused with a 422. **INVESTIGATING → RESOLVED** is earned by the readiness bar (a qualifying `causal_absence_evidence` row); the engine or the model offers it and the user confirms the offer (INV-43, and *Why RESOLVED left the status menu* above). Every entry that remains in the menu is a *disposition*: a user decision carrying information the engine cannot derive.
 
 Both are frozen (`MappingProxyType` over tuples) so an importer cannot widen the gate at runtime. See the INV-04 notes in [investigation-invariants.md](./investigation-invariants.md) for the consolidation history.
 

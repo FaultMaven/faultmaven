@@ -62,8 +62,11 @@ def declined_close_reask(
       derives the same ``solution_deferred`` reason from the same state, so it
       is the question the user just answered.
 
-    The RESOLVE side is not read here: RESOLVED is not user-selectable, so a
-    refused re-proposal would leave every client with no card to offer.
+    The RESOLVE side is not read here (#1895). A resolution is earned, not
+    requested: after a decline the offer is due back when the state that earned
+    it moves, and the signature does not yet see the move a user most often
+    brings (a fresh confirmation that the fix held), so refusing the model on
+    it could withhold an offer the case has re-earned.
     """
     declined_at = false_alarm_close_declined_at(case)
     if declined_at is not None:
