@@ -17,7 +17,10 @@ class CaseCheckpoint(BaseModel):
 
     checkpoint_id: str = Field(
         ...,
-        description="Unique identifier for the checkpoint. Format: {case_id}:turn:{turn_number}",
+        description=(
+            "Unique identifier for the checkpoint: a UUIDv5 of (case_id, turn, "
+            "trigger, target), see checkpoint_service.checkpoint_id_for"
+        ),
     )
     case_id: str = Field(..., description="ID of the case being checkpointed")
     turn_number: int = Field(..., description="Turn number this checkpoint represents")

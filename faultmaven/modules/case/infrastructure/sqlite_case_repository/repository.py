@@ -26,7 +26,7 @@ import builtins
 import json
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Set
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -69,6 +69,8 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository.rows import (
 )
 from faultmaven.modules.case.infrastructure.sqlite_case_repository.saving import (
     _append_case_actions,
+    _insert_checkpoint,
+    _insert_report,
     _reconcile_causal_graph,
     _upsert_case_record,
     _upsert_causal_edges,
@@ -136,7 +138,13 @@ class SQLiteCaseRepository(CaseRepository):
     # Core CRUD Operations
     # ========================================================================
 
-    async def save(self, case: Case) -> Case:
+    async def save(
+        self,
+        case: Case,
+        *,
+        reports: Sequence[CaseReport] = (),
+        checkpoints: Sequence[CaseCheckpoint] = (),
+    ) -> Case:
         """Save case using hybrid schema with transactions.
 
         Optimistic concurrency control is enforced inside
@@ -145,7 +153,14 @@ class SQLiteCaseRepository(CaseRepository):
         mismatch. On success the same `case` instance is mutated with
         the new version and returned — callers can use either the
         return value or the passed-in object.
+
+        ``reports`` and ``checkpoints`` are written in the same transaction,
+        after the case rows and before the commit, so they commit with the
+        case or not at all (#1882).
         """
+        self.check_turn_rows(case, reports, checkpoints)
+        # Restored if the save does not commit: see SAVE_STAMPED_FIELDS.
+        stamps = self.save_stamps(case)
         # Self-heal any turn-sequence anomaly into consecutive history (with
         # SKIPPED placeholders) BEFORE persisting, so a transient gap can never
         # wedge the case. No-op on healthy cases.
@@ -235,6 +250,13 @@ class SQLiteCaseRepository(CaseRepository):
                     organization_id,
                 )
 
+            # After the case row (their enterprise is read from it) and before
+            # the commit (they commit with it or not at all).
+            for report in reports:
+                await _insert_report(self.db, report)
+            for checkpoint in checkpoints:
+                await _insert_checkpoint(self.db, checkpoint)
+
             await self.db.commit()
             return case
 
@@ -242,9 +264,11 @@ class SQLiteCaseRepository(CaseRepository):
             # Propagate unwrapped so callers can retry or surface 409
             # without unwrapping a generic RepositoryException.
             await self.db.rollback()
+            self.restore_save_stamps(case, stamps)
             raise
         except Exception as e:
             await self.db.rollback()
+            self.restore_save_stamps(case, stamps)
             raise RepositoryException(f"Failed to save case {case.case_id}: {e}") from e
 
     async def get(self, case_id: str) -> Case | None:
@@ -927,36 +951,9 @@ class SQLiteCaseRepository(CaseRepository):
     # ========================================================================
 
     async def create_checkpoint(self, checkpoint: CaseCheckpoint) -> CaseCheckpoint:
-        """Create a new case checkpoint (SQLite-compatible)."""
+        """Create a new case checkpoint in its own transaction (SQLite-compatible)."""
         try:
-            query = text(f"""
-                INSERT INTO case_checkpoints (
-                    checkpoint_id, case_id, enterprise_id, organization_id, turn_number, case_snapshot,
-                    snapshot_hash, trigger, created_at, metadata
-                ) VALUES (
-                    :checkpoint_id, :case_id,
-                    (SELECT enterprise_id FROM cases WHERE case_id = :case_id),
-                    (SELECT organization_id FROM cases WHERE case_id = :case_id),
-                    :turn_number, :case_snapshot,
-                    :snapshot_hash, :trigger, :created_at, :metadata
-                )
-            """)
-
-            await self.db.execute(
-                query,
-                {
-                    "checkpoint_id": checkpoint.checkpoint_id,
-                    "case_id": checkpoint.case_id,
-                    "turn_number": checkpoint.turn_number,
-                    "case_snapshot": json.dumps(
-                        to_json_compatible(checkpoint.case_snapshot)
-                    ),
-                    "snapshot_hash": checkpoint.snapshot_hash,
-                    "trigger": checkpoint.trigger,
-                    "created_at": checkpoint.created_at,
-                    "metadata": json.dumps(to_json_compatible(checkpoint.metadata)),
-                },
-            )
+            await _insert_checkpoint(self.db, checkpoint)
             await self.db.commit()
             return checkpoint
 
@@ -1332,95 +1329,8 @@ class SQLiteCaseRepository(CaseRepository):
     # ========================================================================
 
     async def add_report(self, report: "CaseReport") -> "CaseReport":
-        """Add report to reports table (SQLite-compatible)."""
-
-        if report.is_current:
-            unmark_query = text("""
-                UPDATE reports
-                SET is_current = 0, updated_at = datetime('now')
-                WHERE case_id = :case_id
-                  AND report_type = :report_type
-                  AND is_current = 1
-            """)
-            await self.db.execute(
-                unmark_query,
-                {"case_id": report.case_id, "report_type": report.report_type.value},
-            )
-
-        metadata_json = (
-            json.dumps(report.metadata.model_dump()) if report.metadata else "{}"
-        )
-
-        # ``enterprise_id`` is NOT NULL FK CASCADE on reports (organization_id
-        # beside it is nullable billing attribution); derive both
-        # it from the parent case via subquery so callers don't have to
-        # thread it through.
-        insert_query = text("""
-            INSERT INTO reports (
-                report_id, case_id, enterprise_id, organization_id, report_type, version, is_current,
-                linked_to_closure, title, content, format,
-                generation_status, generation_time_ms, metadata,
-                generated_at, updated_at, generated_by
-            ) VALUES (
-                :report_id, :case_id,
-                (SELECT enterprise_id FROM cases WHERE case_id = :case_id),
-                (SELECT organization_id FROM cases WHERE case_id = :case_id),
-                :report_type, :version, :is_current,
-                :linked_to_closure, :title, :content, :format,
-                :generation_status, :generation_time_ms, :metadata,
-                :generated_at, :updated_at, :generated_by
-            )
-            ON CONFLICT (report_id) DO UPDATE SET
-                version = EXCLUDED.version,
-                is_current = EXCLUDED.is_current,
-                linked_to_closure = EXCLUDED.linked_to_closure,
-                title = EXCLUDED.title,
-                content = EXCLUDED.content,
-                format = EXCLUDED.format,
-                generation_status = EXCLUDED.generation_status,
-                generation_time_ms = EXCLUDED.generation_time_ms,
-                metadata = EXCLUDED.metadata,
-                updated_at = EXCLUDED.updated_at,
-                generated_by = EXCLUDED.generated_by
-        """)
-
-        now = datetime.now(UTC)
-        generated_at = (
-            datetime.fromisoformat(report.generated_at.replace("Z", "+00:00"))
-            if isinstance(report.generated_at, str)
-            else now
-        )
-        updated_at = (
-            datetime.fromisoformat(report.updated_at.replace("Z", "+00:00"))
-            if report.updated_at and isinstance(report.updated_at, str)
-            else generated_at
-        )
-
-        await self.db.execute(
-            insert_query,
-            {
-                "report_id": report.report_id,
-                "case_id": report.case_id,
-                "report_type": report.report_type.value,
-                "version": report.version,
-                "is_current": 1 if report.is_current else 0,
-                "linked_to_closure": 1 if report.linked_to_closure else 0,
-                "title": report.title,
-                "content": report.content,
-                "format": report.format,
-                "generation_status": report.generation_status.value,
-                "generation_time_ms": report.generation_time_ms,
-                "metadata": metadata_json,
-                "generated_at": generated_at.isoformat(),
-                "updated_at": updated_at.isoformat(),
-                # Auto-generated terminal summaries have no human author,
-                # so generated_by is NULL. Explicit user_id can be threaded
-                # through later via an add_report() signature change when
-                # API routes start carrying it.
-                "generated_by": getattr(report, "generated_by", None),
-            },
-        )
-
+        """Add report to reports table in its own transaction (SQLite-compatible)."""
+        await _insert_report(self.db, report)
         await self.db.commit()
         return report
 

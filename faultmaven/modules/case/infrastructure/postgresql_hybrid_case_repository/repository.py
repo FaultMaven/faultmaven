@@ -20,7 +20,7 @@ Architecture:
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Sequence, Set
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,6 +59,9 @@ from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.ro
 )
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.saving import (
     _append_case_actions,
+    _insert_checkpoint,
+    _insert_report,
+    _org_lookup_case_id,
     _reconcile_causal_graph,
     _upsert_case_record,
     _upsert_causal_edges,
@@ -151,29 +154,21 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             return False
 
     def _org_lookup_case_id(self) -> str:
-        """``:case_id`` cast to VARCHAR, for the tenancy-derivation subqueries.
-
-        Several INSERTs derive ``enterprise_id`` and ``organization_id`` via
-        ``(SELECT ... FROM cases WHERE case_id = :case_id)`` while
-        ALSO binding ``:case_id`` as a column value in the same statement.
-        SQLAlchemy collapses both occurrences to a single asyncpg ``$N``; with
-        both bare, asyncpg cannot deduce one consistent type and raises
-        ``AmbiguousParameterError`` ("inconsistent types deduced for parameter
-        $N") — which broke every such write on real PostgreSQL.
-
-        Casting the subquery occurrence to VARCHAR gives ``$N`` an explicit
-        type, leaving the column-value occurrence as the sole inference source.
-        The cast is load-bearing, NOT cosmetic: do not simplify it back to a
-        bare ``:case_id``. Covered by
-        ``tests/integration/test_postgresql_repository_roundtrip.py``.
-        """
-        return _cast(self._is_pg, "case_id", "VARCHAR")
+        """``:case_id`` cast to VARCHAR, for the tenancy-derivation subqueries
+        (see ``saving._org_lookup_case_id`` for why the cast is load-bearing)."""
+        return _org_lookup_case_id(self._is_pg)
 
     # ========================================================================
     # Core CRUD Operations
     # ========================================================================
 
-    async def save(self, case: Case) -> Case:
+    async def save(
+        self,
+        case: Case,
+        *,
+        reports: Sequence[CaseReport] = (),
+        checkpoints: Sequence[CaseCheckpoint] = (),
+    ) -> Case:
         """
         Save case using hybrid schema with transactions.
 
@@ -181,16 +176,27 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         1. Upsert cases table (main record + JSONB)
         2. Upsert normalized tables (evidence, hypotheses, solutions)
         3. Append-only tables (messages, case_actions)
+        4. Insert the turn's reports and checkpoints (#1882)
+
+        One transaction: the RLS tenant is bound once, at its BEGIN, by the
+        engine's ``begin`` listener, so step 4's rows are written under the same
+        enterprise as the case and commit with it or not at all.
 
         Args:
             case: Case domain object
+            reports: Report rows to commit with the case
+            checkpoints: Checkpoint rows to commit with the case
 
         Returns:
             Saved case with updated timestamps
 
         Raises:
+            StaleCaseException: The case changed since it was read
             RepositoryException: If save fails
         """
+        self.check_turn_rows(case, reports, checkpoints)
+        # Restored if the save does not commit: see SAVE_STAMPED_FIELDS.
+        stamps = self.save_stamps(case)
         try:
             # Self-heal any turn-sequence anomaly into consecutive history
             # (with SKIPPED placeholders) before persisting, so a transient gap
@@ -304,6 +310,13 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     organization_id,
                 )
 
+            # After the case row (their enterprise is read from it) and before
+            # the commit (they commit with it or not at all).
+            for report in reports:
+                await _insert_report(self._is_pg, self.db, report)
+            for checkpoint in checkpoints:
+                await _insert_checkpoint(self._is_pg, self.db, checkpoint)
+
             await self.db.commit()
             return case
 
@@ -311,9 +324,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             # OCC mismatch — propagate unwrapped so callers can retry or
             # surface 409 without unwrapping a generic RepositoryException.
             await self.db.rollback()
+            self.restore_save_stamps(case, stamps)
             raise
         except Exception as e:
             await self.db.rollback()
+            self.restore_save_stamps(case, stamps)
             raise RepositoryException(f"Failed to save case {case.case_id}: {e}") from e
 
     async def get(self, case_id: str) -> Optional[Case]:
@@ -1433,106 +1448,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     # ========================================================================
 
     async def add_report(self, report: "CaseReport") -> "CaseReport":
-        """Add report to PostgreSQL reports table."""
-        from datetime import timezone
-
-        # If this is marked as current, unmark other reports of the same type for this case
-        if report.is_current:
-            unmark_query = text("""
-                UPDATE reports
-                SET is_current = FALSE, updated_at = NOW()
-                WHERE case_id = :case_id
-                  AND report_type = :report_type
-                  AND is_current = TRUE
-            """)
-            await self.db.execute(
-                unmark_query,
-                {"case_id": report.case_id, "report_type": report.report_type.value},
-            )
-
-        # Insert report
-        metadata_json = (
-            json.dumps(report.metadata.model_dump(mode="json"))
-            if report.metadata
-            else "{}"
-        )
-
-        # ``enterprise_id`` is NOT NULL FK CASCADE on reports, and
-        # ``organization_id`` beside it is nullable billing attribution; both are
-        # derived from the parent case via subquery so callers don't have to
-        # thread them through. ``report_type`` CHECK allows only
-        # ('resolution_summary', 'closure_summary').
-        insert_query = text(f"""
-            INSERT INTO reports (
-                report_id, case_id, enterprise_id, organization_id, report_type, version, is_current,
-                linked_to_closure, title, content, format,
-                generation_status, generation_time_ms, metadata,
-                generated_at, updated_at, generated_by
-            ) VALUES (
-                :report_id, :case_id,
-                (SELECT enterprise_id FROM cases
-                 WHERE case_id = {self._org_lookup_case_id()}),
-                (SELECT organization_id FROM cases
-                 WHERE case_id = {self._org_lookup_case_id()}),
-                :report_type, :version, :is_current,
-                :linked_to_closure, :title, :content, :format,
-                :generation_status, :generation_time_ms, {_cast(self._is_pg, 'metadata')},
-                {_cast(self._is_pg, 'generated_at', 'TIMESTAMPTZ')}, {_cast(self._is_pg, 'updated_at', 'TIMESTAMPTZ')}, :generated_by
-            )
-            ON CONFLICT (report_id) DO UPDATE SET
-                version = EXCLUDED.version,
-                is_current = EXCLUDED.is_current,
-                linked_to_closure = EXCLUDED.linked_to_closure,
-                title = EXCLUDED.title,
-                content = EXCLUDED.content,
-                format = EXCLUDED.format,
-                generation_status = EXCLUDED.generation_status,
-                generation_time_ms = EXCLUDED.generation_time_ms,
-                metadata = EXCLUDED.metadata,
-                updated_at = EXCLUDED.updated_at,
-                generated_by = EXCLUDED.generated_by
-        """)
-
-        now = datetime.now(timezone.utc)
-        generated_at = (
-            datetime.fromisoformat(report.generated_at.replace("Z", "+00:00"))
-            if isinstance(report.generated_at, str)
-            else now
-        )
-        # Use report.updated_at if set, otherwise use generated_at (for new reports)
-        if report.updated_at:
-            updated_at = (
-                datetime.fromisoformat(report.updated_at.replace("Z", "+00:00"))
-                if isinstance(report.updated_at, str)
-                else now
-            )
-        else:
-            updated_at = generated_at  # New reports: updated_at same as generated_at (None -> use generated_at)
-
-        await self.db.execute(
-            insert_query,
-            {
-                "report_id": report.report_id,
-                "case_id": report.case_id,
-                "report_type": report.report_type.value,
-                "version": report.version,
-                "is_current": report.is_current,
-                "linked_to_closure": report.linked_to_closure,
-                "title": report.title,
-                "content": report.content,
-                "format": report.format,
-                "generation_status": report.generation_status.value,
-                "generation_time_ms": report.generation_time_ms,
-                "metadata": metadata_json,
-                "generated_at": generated_at,
-                "updated_at": updated_at,
-                # Auto-generated terminal summaries have no human author,
-                # so generated_by is NULL. Explicit user_id threading via
-                # API routes deferred.
-                "generated_by": getattr(report, "generated_by", None),
-            },
-        )
-
+        """Add report to PostgreSQL reports table in its own transaction."""
+        await _insert_report(self._is_pg, self.db, report)
         await self.db.commit()
         return report
 
@@ -1705,40 +1622,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     # ============================================================
 
     async def create_checkpoint(self, checkpoint: CaseCheckpoint) -> CaseCheckpoint:
-        """Create a new case checkpoint (PostgreSQL)."""
-        from faultmaven.utils.serialization import to_json_compatible
-
+        """Create a new case checkpoint in its own transaction (PostgreSQL)."""
         try:
-            query = text(f"""
-                INSERT INTO case_checkpoints (
-                    checkpoint_id, case_id, enterprise_id, organization_id, turn_number, case_snapshot,
-                    snapshot_hash, trigger, created_at, metadata
-                ) VALUES (
-                    :checkpoint_id, :case_id,
-                    (SELECT enterprise_id FROM cases
-                     WHERE case_id = {self._org_lookup_case_id()}),
-                    (SELECT organization_id FROM cases
-                     WHERE case_id = {self._org_lookup_case_id()}),
-                    :turn_number, {_cast(self._is_pg, 'case_snapshot')},
-                    :snapshot_hash, :trigger, {_cast(self._is_pg, 'created_at', 'TIMESTAMPTZ')}, {_cast(self._is_pg, 'metadata')}
-                )
-            """)
-
-            await self.db.execute(
-                query,
-                {
-                    "checkpoint_id": checkpoint.checkpoint_id,
-                    "case_id": checkpoint.case_id,
-                    "turn_number": checkpoint.turn_number,
-                    "case_snapshot": json.dumps(
-                        to_json_compatible(checkpoint.case_snapshot)
-                    ),
-                    "snapshot_hash": checkpoint.snapshot_hash,
-                    "trigger": checkpoint.trigger,
-                    "created_at": checkpoint.created_at,
-                    "metadata": json.dumps(to_json_compatible(checkpoint.metadata)),
-                },
-            )
+            await _insert_checkpoint(self._is_pg, self.db, checkpoint)
             await self.db.commit()
             return checkpoint
 

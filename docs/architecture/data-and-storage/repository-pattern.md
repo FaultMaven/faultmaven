@@ -389,7 +389,13 @@ class CaseRepository(ABC):
 
     # Core CRUD (5 methods)
     @abstractmethod
-    async def save(self, case: Case) -> Case:
+    async def save(
+        self,
+        case: Case,
+        *,
+        reports: Sequence[CaseReport] = (),
+        checkpoints: Sequence[CaseCheckpoint] = (),
+    ) -> Case:
         """Save or update a case. Returns the saved case.
 
         Semantics: purely additive for all owned sub-collections
@@ -397,6 +403,10 @@ class CaseRepository(ABC):
         Rows absent from the in-memory case are NOT removed — see
         §4.1.1. Use the explicit scoped `delete_*` methods for
         intentional removal.
+
+        `reports` and `checkpoints` are inserted in the same
+        transaction, after the case and before the commit: all of it
+        commits or none does (#1882). A taken checkpoint id raises.
         """
         ...
 
@@ -1067,7 +1077,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from asyncio import TimeoutError
 
 class PostgreSQLHybridCaseRepository(CaseRepository):
-    async def save(self, case: Case) -> Case:
+    async def save(self, case: Case, *, reports=(), checkpoints=()) -> Case:
         try:
             # Attempt save
             result = await self.db.execute(insert_query, case.dict())
@@ -1182,9 +1192,9 @@ async def save_case_with_retry(repo: CaseRepository, case: Case) -> Case:
 import logging
 logger = logging.getLogger(__name__)
 
-async def save(self, case: Case) -> Case:
+async def save(self, case: Case, *, reports=(), checkpoints=()) -> Case:
     try:
-        result = await self._execute_save(case)
+        result = await self._execute_save(case, reports, checkpoints)
         logger.debug(f"Saved case {case.case_id}")
         return result
     except IntegrityError as e:

@@ -13,28 +13,32 @@ transitions only, and it has no online reader (see §2).
 
 ### 1.1 Mechanism
 
-- **Construction & persistence**: [`checkpoint_service.py:57`](../../../faultmaven/core/investigation/checkpoint_service.py) builds a `CaseCheckpoint` from `case.model_dump()`, computes a SHA-256 hash of the JSON snapshot, and persists via `case_repo.create_checkpoint(...)`.
+- **Construction & persistence**: [`CheckpointService.capture`](../../../faultmaven/core/investigation/checkpoint_service.py) builds a `CaseCheckpoint` from `case.model_dump()` and computes a SHA-256 hash of the JSON snapshot, touching no storage. `create_checkpoint` is `capture` plus a write of its own (`case_repo.create_checkpoint(...)`); a turn can instead carry the captured row to its own commit, `ICaseRepository.save(case, checkpoints=[...])`, which writes it in the case's transaction (#1882).
 - **Storage**: `CaseCheckpoint` rows live in `case_checkpoints`. PostgreSQL uses `JSONB` for efficient querying; SQLite (dev) uses `Text` for compatibility.
-- **Immutability**: Checkpoints are append-only. The checkpoint_id is `{case_id}:turn:{current_turn}:{trigger}`, so a given `(case, turn, trigger)` tuple is unique.
+- **Immutability**: Checkpoints are append-only. The checkpoint_id is a UUIDv5 of `(case_id, current_turn, trigger, target)`, where the target is the metadata's `to_state`, or its `action` for a site that names no state (`checkpoint_id_for`). Two sites in one turn therefore never share an id, while one site firing twice for the same transition does, and the second INSERT fails on the primary key rather than being skipped. A UUID because the column is `VARCHAR(36)`: the readable `{case_id}:turn:{n}:{trigger}` it replaced was 40+ characters, and PostgreSQL refused every one of them.
 
 ### 1.2 Trigger Sites
 
-Checkpoints fire at three sites — one in `milestone_engine/engine.py`, two in the
-`TransitionManager` collaborator (`milestone_engine/transitions.py`) — and all with
-trigger `pre_case_action`. Every site is guarded by `if self.deps.checkpoint_service:`
-so the engine degrades safely when the service is not wired.
+Checkpoints fire at four sites — the button-confirm path in
+`milestone_engine/transition_turns.py`, two in the `TransitionManager` collaborator
+(`milestone_engine/transitions.py`) and the statement-revision confirm in
+`milestone_engine/statement_revision.py` — and all with trigger `pre_case_action`.
+Every site is guarded by a `checkpoint_service` presence check, so the engine
+degrades safely when the service is not wired. No two of them can fire in one turn,
+and their targets differ, so their checkpoint ids do too.
 
 | Site | When | Metadata captured |
 |---|---|---|
 | [`milestone_engine/transition_turns.py`](../../../faultmaven/core/investigation/milestone_engine/transition_turns.py) `_confirm_pending_transition` | Confirmed case-state transition via the `pending_transition` path | `from_state`, `to_state` |
 | [`milestone_engine/transitions.py`](../../../faultmaven/core/investigation/milestone_engine/transitions.py) `TransitionManager._transition_to_investigating` | Just before INQUIRY → INVESTIGATING (Gap #6) | `from_state`, `to_state="investigating"` |
 | [`milestone_engine/transitions.py`](../../../faultmaven/core/investigation/milestone_engine/transitions.py) `TransitionManager.check_automatic_transitions` | Just before a user-confirmed terminal transition (Gap #6) | `from_state`, `to_state` |
+| [`milestone_engine/statement_revision.py`](../../../faultmaven/core/investigation/milestone_engine/statement_revision.py) `confirm_revision` | Just before a revised problem statement the user re-confirmed is committed | `action="problem_statement_revised"` |
 
 These snapshots make every state change reversible at the data layer — the prior
 state is still on disk, recoverable by an operator reading `case_checkpoints`.
 That is the whole of what checkpoints promise.
 
-**There is no per-turn checkpoint, by decision.** A fourth site took a
+**There is no per-turn checkpoint, by decision.** A further site took a
 `turn_complete` snapshot at the end of every successful turn. It lived in
 `AgentOrchestrationService` — on the `/sessions/execute` surface no frontend
 called — and was deleted with it in #982; it was never on the `/turns` path, so

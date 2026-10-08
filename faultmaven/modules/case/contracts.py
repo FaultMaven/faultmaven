@@ -17,7 +17,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Set, Tuple
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Optional,
+    Protocol,
+    Sequence,
+    Set,
+    Tuple,
+)
 from uuid import UUID
 
 # ============================================================
@@ -98,8 +108,22 @@ class ICaseRepository(Protocol):
     - PostgreSQLHybridCaseRepository
     """
 
-    async def save(self, case: "Case") -> "Case":
+    async def save(
+        self,
+        case: "Case",
+        *,
+        reports: Sequence[CaseReport] = (),
+        checkpoints: Sequence[CaseCheckpoint] = (),
+    ) -> "Case":
         """Save case to persistence layer.
+
+        ``reports`` and ``checkpoints`` are written in the SAME transaction as
+        the case, after it and before the commit: all of them commit, or none
+        does (#1882). A ``StaleCaseException`` writes nothing, and a checkpoint
+        id already stored raises rather than being skipped. Under PostgreSQL
+        RLS the rows are written under the tenant the transaction's BEGIN
+        bound, the case's own. Every row must name ``case`` (``ValueError``
+        otherwise).
 
         MUTATES ``case.messages``: a row missing ``message_id`` or
         ``created_at`` is completed in place, so the in-memory list carries

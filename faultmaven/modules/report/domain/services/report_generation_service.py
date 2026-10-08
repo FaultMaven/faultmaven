@@ -13,7 +13,7 @@ Architecture Reference: docs/architecture/investigation-engine/investigation-lif
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from faultmaven.exceptions import (
     QUOTA_EXHAUSTED,
@@ -108,6 +108,10 @@ class ReportGenerationService:
         """
         Generate requested reports for a case with concurrency control.
 
+        ``render_reports`` plus a commit of each row of its own
+        (``add_report``). A turn renders with ``render_reports`` instead and
+        carries the rows to its own commit (#1882).
+
         Args:
             case: Case object with investigation context
             report_types: List of report types to generate
@@ -121,6 +125,77 @@ class ReportGenerationService:
                 exceeded
             LockAcquisitionError: If cannot acquire lock (another generation in progress)
         """
+        await self._admit_report_request(case, report_types)
+
+        logger.info(
+            f"Generating {len(report_types)} reports for case",
+            extra={"case_id": case.case_id, "types": [t.value for t in report_types]},
+        )
+
+        # Acquire lock if lock_manager available (prevents concurrent report generation)
+        if self.lock_manager:
+            async with self.lock_manager.lock(case.case_id, wait_timeout=30):
+                logger.debug(f"Acquired report generation lock for case {case.case_id}")
+                return await self._generate_reports_locked(case, report_types)
+        else:
+            # No lock manager - proceed without concurrency protection
+            logger.warning(
+                "No lock manager available - proceeding without concurrency protection"
+            )
+            return await self._generate_reports_locked(case, report_types)
+
+    async def render_reports(
+        self,
+        case: Case,
+        report_types: List[ReportType],
+        *,
+        pending: Optional[Mapping[ReportType, int]] = None,
+    ) -> List[CaseReport]:
+        """Render the requested reports without writing or locking anything.
+
+        The same admission as ``generate_reports`` (type screen, case state,
+        regeneration cap) and the same render, for a caller that commits the
+        rows itself: a turn hands them to ``ICaseRepository.save(case,
+        reports=...)`` so they commit with the case or not at all (#1882).
+
+        Args:
+            case: Case object with investigation context
+            report_types: The report types to render
+            pending: Per type, the rows the caller holds and has not yet
+                committed (a type it does not name holds none). They count
+                against that type's regeneration cap and towards its next
+                version, as committed rows do.
+
+        Returns:
+            The rendered reports, one per type that rendered.
+
+        Raises:
+            ValidationException: As ``generate_reports``, and
+                ``report_generation_failed`` when no type rendered
+            ServiceException: The AI provider is out of quota or credits
+        """
+        await self._admit_report_request(case, report_types, pending=pending)
+        reports = await self._render_admitted(case, report_types, pending=pending)
+        if not reports:
+            raise ValidationException(
+                "report_generation_failed", "Failed to generate any reports"
+            )
+        return reports
+
+    async def _admit_report_request(
+        self,
+        case: Case,
+        report_types: List[ReportType],
+        *,
+        pending: Optional[Mapping[ReportType, int]] = None,
+    ) -> None:
+        """Refuse a request no report can come of: an unsupported type, a case
+        in the wrong state, or a type at its regeneration cap.
+
+        ``pending`` counts, per type, rows the caller holds uncommitted (see
+        ``render_reports``).
+        """
+        pending = pending or {}
         # Refuse a type the ``reports`` table cannot hold, before anything else
         # and by name. ``ReportType`` is deliberately wider than
         # ``reports_type_check`` (see PERSISTED_REPORT_TYPES), so
@@ -145,38 +220,80 @@ class ReportGenerationService:
         self._validate_case_for_report_generation(case)
 
         # Cap check is now per-report-type and derived from the persisted
-        # row count (every regen writes a new row). The previous
-        # ``case.report_generation_count`` field never existed on the Case
-        # model, so the cap was silently never enforced. See
-        # ICaseRepository.count_reports.
+        # row count (every regen writes a new row), plus the rows the caller
+        # holds uncommitted. The previous ``case.report_generation_count``
+        # field never existed on the Case model, so the cap was silently never
+        # enforced. See ICaseRepository.count_reports.
         if self.case_repository:
             for report_type in report_types:
                 count = await self.case_repository.count_reports(
                     case.case_id, report_type
                 )
-                if count >= self.MAX_REGENERATIONS:
+                if count + pending.get(report_type, 0) >= self.MAX_REGENERATIONS:
                     raise ValidationException(
                         "regeneration_limit_exceeded",
                         f"Maximum {self.MAX_REGENERATIONS} versions of "
                         f"{report_type.value} reached for this case",
                     )
 
-        logger.info(
-            f"Generating {len(report_types)} reports for case",
-            extra={"case_id": case.case_id, "types": [t.value for t in report_types]},
-        )
+    async def _render_admitted(
+        self,
+        case: Case,
+        report_types: List[ReportType],
+        *,
+        pending: Optional[Mapping[ReportType, int]] = None,
+    ) -> List[CaseReport]:
+        """Render each admitted type; a type that fails is logged and skipped.
 
-        # Acquire lock if lock_manager available (prevents concurrent report generation)
-        if self.lock_manager:
-            async with self.lock_manager.lock(case.case_id, wait_timeout=30):
-                logger.debug(f"Acquired report generation lock for case {case.case_id}")
-                return await self._generate_reports_locked(case, report_types)
-        else:
-            # No lock manager - proceed without concurrency protection
-            logger.warning(
-                "No lock manager available - proceeding without concurrency protection"
+        A billing/quota error aborts instead (see ``_skip_failed_report``).
+        Each render's version counts the rows of its type the caller holds
+        (``pending``) and the same-type rows rendered earlier in this call.
+        """
+        pending = pending or {}
+        reports: List[CaseReport] = []
+        for report_type in report_types:
+            start_time = time.time()
+            earlier = sum(1 for r in reports if r.report_type == report_type)
+            try:
+                report = await self._generate_single_report(
+                    case, report_type, pending=pending.get(report_type, 0) + earlier
+                )
+            except Exception as e:
+                self._skip_failed_report(e, case, report_type)
+                continue
+            reports.append(report)
+            generation_time = int((time.time() - start_time) * 1000)
+            logger.info(
+                f"Report generated successfully",
+                extra={
+                    "case_id": case.case_id,
+                    "report_type": report_type.value,
+                    "generation_time_ms": generation_time,
+                },
             )
-            return await self._generate_reports_locked(case, report_types)
+        return reports
+
+    @staticmethod
+    def _skip_failed_report(
+        error: Exception, case: Case, report_type: ReportType
+    ) -> None:
+        """Log one type's failure so the caller can continue with the others.
+
+        Billing/quota exhaustion is permanent and affects every report type —
+        it is not swallowed-and-continued (the next type would hit the same
+        out-of-credits provider). It aborts as a ServiceException the route
+        maps to 402 instead of a misleading "no reports generated".
+        """
+        if is_billing_error(error):
+            raise ServiceException(
+                "Report generation failed: AI provider is out of " "quota or credits",
+                details={"error_code": QUOTA_EXHAUSTED},
+            ) from error
+        logger.error(
+            f"Failed to generate {report_type.value} report: {error}",
+            extra={"case_id": case.case_id},
+            exc_info=True,
+        )
 
     async def _generate_reports_locked(
         self, case: Case, report_types: List[ReportType]
@@ -191,7 +308,13 @@ class ReportGenerationService:
         Returns:
             ReportGenerationResponse with generated reports
         """
-        # Generate each report
+        # One type at a time: render, then persist, before the next type is
+        # rendered. The order is load-bearing: a later type's failure (a
+        # billing abort included) leaves the earlier types stored, and a
+        # failed write leaves no gap, because the next render of that type
+        # reads the count that write did not raise. ``render_reports`` is the
+        # batch, write-nothing variant for a caller that commits the rows
+        # itself.
         reports = []
         for report_type in report_types:
             start_time = time.time()
@@ -220,22 +343,9 @@ class ReportGenerationService:
                 )
 
             except Exception as e:
-                # Billing/quota exhaustion is permanent and affects every report
-                # type — don't swallow-and-continue (the next type would hit the
-                # same out-of-credits provider). Abort and propagate so the route
-                # maps it to 402 instead of a misleading "no reports generated".
-                if is_billing_error(e):
-                    raise ServiceException(
-                        "Report generation failed: AI provider is out of "
-                        "quota or credits",
-                        details={"error_code": QUOTA_EXHAUSTED},
-                    ) from e
-                logger.error(
-                    f"Failed to generate {report_type.value} report: {e}",
-                    extra={"case_id": case.case_id},
-                    exc_info=True,
-                )
-                # Continue with other reports even if one fails
+                # Continue with other reports even if one fails; billing
+                # aborts (see ``_skip_failed_report``).
+                self._skip_failed_report(e, case, report_type)
                 continue
 
         if not reports:
@@ -265,7 +375,7 @@ class ReportGenerationService:
         )
 
     async def _generate_single_report(
-        self, case: Case, report_type: ReportType
+        self, case: Case, report_type: ReportType, *, pending: int = 0
     ) -> CaseReport:
         """Generate a single report by routing to the type-specific generator.
 
@@ -305,16 +415,17 @@ class ReportGenerationService:
 
         generation_time_ms = int((time.time() - start_time) * 1000)
 
-        # Version = (existing-row count for this type) + 1. Each
-        # regeneration writes a new row, so this naturally increments
-        # 1 → 2 → 3 → ... up to MAX_REGENERATIONS. Falls back to 1 when
-        # the repo is unavailable (test paths).
-        version = 1
+        # Version = (existing-row count for this type) + the rows of this type
+        # rendered but not yet committed (``pending``) + 1. Each regeneration
+        # writes a new row, so this naturally increments 1 → 2 → 3 → ... up to
+        # MAX_REGENERATIONS. Without a repo (test paths) only ``pending``
+        # counts.
+        version = pending + 1
         if self.case_repository:
             existing_count = await self.case_repository.count_reports(
                 case.case_id, report_type
             )
-            version = existing_count + 1
+            version = existing_count + pending + 1
 
         now = datetime.now(timezone.utc)
         generated_at_str = to_json_compatible(now)

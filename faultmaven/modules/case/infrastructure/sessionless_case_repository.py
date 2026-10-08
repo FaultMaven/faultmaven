@@ -24,7 +24,7 @@ Deployment Agnostic (Principle 1):
 import builtins
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, Sequence
 
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.modules.case.contracts import (
@@ -106,11 +106,22 @@ class SessionlessCaseRepository(CaseRepository):
         """Initialize sessionless repository (no dependencies)."""
         pass
 
-    async def save(self, case: Case) -> Case:
-        """Save case with new session per operation."""
+    async def save(
+        self,
+        case: Case,
+        *,
+        reports: Sequence["CaseReport"] = (),
+        checkpoints: Sequence[CaseCheckpoint] = (),
+    ) -> Case:
+        """Save case with new session per operation.
+
+        One session, so one transaction: the case, ``reports`` and
+        ``checkpoints`` commit together or not at all (#1882), under the
+        tenant the session's BEGIN bound.
+        """
         async with get_db_session() as session:
             repo = get_repository_for_session(session)
-            return await repo.save(case)
+            return await repo.save(case, reports=reports, checkpoints=checkpoints)
 
     async def get(self, case_id: str) -> Case | None:
         """Get case with new session per operation."""
