@@ -5,7 +5,9 @@ the facts a pre-transition snapshot would hold are kept where they are read:
 ``case_actions``, ``statement_history`` and ``turn_history``. Revision 009 drops
 the table. This pins that no code path in ``faultmaven/`` can bring the
 component back by halves: no name, attribute, parameter, import or string that
-says "checkpoint".
+names one of the retired symbols (``RETIRED``). The match is on those names, not
+on the word "checkpoint": SQLite's ``wal_checkpoint`` or a PostgreSQL log line
+about checkpoints are other things entirely and must stay writable.
 
 Read by AST, so comments (history notes, and the unrelated "M3 checkpoint" of
 the hypothesis methodology) are not symbols. The alembic history is outside the
@@ -15,6 +17,7 @@ scanned tree: the baseline creates the table and 009 drops it, as history must.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -23,6 +26,13 @@ pytestmark = pytest.mark.unit
 
 ROOT = Path(__file__).resolve().parents[3]
 SOURCE = ROOT / "faultmaven"
+
+#: The retired component's names, as they would reappear in code or SQL.
+RETIRED = re.compile(
+    r"case_?checkpoint|checkpoint_?service|(add|create|get)_checkpoint"
+    r"|checkpoint_id|pre_case_action",
+    re.IGNORECASE,
+)
 
 
 def _symbols(tree: ast.AST):
@@ -64,7 +74,7 @@ def test_no_checkpoint_symbol_remains_in_faultmaven():
             if isinstance(body, list) and body and _is_docstring(body[0]):
                 body.pop(0)
         for lineno, text in _symbols(tree):
-            if "checkpoint" in text.lower():
+            if RETIRED.search(text):
                 found.append(f"{path.relative_to(ROOT)}:{lineno}: {text[:80]!r}")
     assert found == [], "case checkpoints are retired (#1882):\n" + "\n".join(found)
 
@@ -76,5 +86,16 @@ def test_the_scan_sees_a_planted_symbol(tmp_path):
         "def f(checkpoint_id):\n"
         "    return 'case_checkpoints'\n"
     )
-    texts = [text for _, text in _symbols(tree) if "checkpoint" in text.lower()]
+    texts = [text for _, text in _symbols(tree) if RETIRED.search(text)]
     assert len(texts) >= 4, texts
+
+
+def test_other_meanings_of_checkpoint_are_not_flagged():
+    """Negative control: a WAL checkpoint or a PostgreSQL log line is not the
+    retired component."""
+    tree = ast.parse(
+        "conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')\n"
+        "PATTERN = 'checkpoints are occurring too frequently'\n"
+        "def flush(checkpoint_completion_target): ...\n"
+    )
+    assert [text for _, text in _symbols(tree) if RETIRED.search(text)] == []

@@ -35,9 +35,6 @@ from faultmaven.modules.case.infrastructure import (
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
 )
-from faultmaven.modules.case.infrastructure.case_repository import (
-    RepositoryException as InMemoryRepositoryException,
-)
 from faultmaven.modules.case.infrastructure.sessionless_case_repository import (
     SessionlessCaseRepository,
 )

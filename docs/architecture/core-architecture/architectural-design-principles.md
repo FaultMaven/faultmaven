@@ -306,7 +306,7 @@ For complete recommendations, examples, and edge case handling, see [Module Orga
 
 ### Table Naming Convention
 
-Tables are named after the business entity they store. Module-name prefixes are **not** required — the live schema uses unprefixed names for the primary entity of a module (`users`, `cases`, `evidence`, `reports`, `knowledge_items`) and semantic prefixes only to disambiguate sub-entities or related collections (`case_messages`, `case_actions`, `case_checkpoints`, `knowledge_suggestions`, `oauth_authorization_codes`).
+Tables are named after the business entity they store. Module-name prefixes are **not** required — the live schema uses unprefixed names for the primary entity of a module (`users`, `cases`, `evidence`, `reports`, `knowledge_items`) and semantic prefixes only to disambiguate sub-entities or related collections (`case_messages`, `case_actions`, `case_entities`, `knowledge_suggestions`, `oauth_authorization_codes`).
 
 ```sql
 -- Auth module (user domain)
