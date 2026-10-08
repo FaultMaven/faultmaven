@@ -371,8 +371,11 @@ signature stands, a model `closed` proposal that the closure check keeps at
 CLOSED is refused (one it pivots to RESOLVED on a resolvable case is not), with
 feedback saying the model may propose it only when the user directs it, and a
 **Close with the solution documented** card appended to the turn's follow-ups.
-The model's re-proposal of a declined RESOLVE is not refused this way: RESOLVED
-is not user-selectable, so a refusal would leave no card to offer. (A
+The model's re-proposal of a declined RESOLVE is not refused this way (#1895). A
+resolution is earned, not requested: after a decline the offer is due back when
+the state that earned it moves, and the signature does not yet see the move a
+user most often brings (a fresh confirmation that the fix held), so refusing the
+model on it could withhold an offer the case has re-earned. (A
 false-alarm close is not in this signature space at all; its decline is
 recorded on the finding, §1.4.1.)
 
@@ -442,7 +445,7 @@ don't need readiness checks, but `assess_closure_readiness(case)` produces a
 meaningful investigation summary for the confirmation prompt. This gives the user a
 chance to see what was accomplished before committing to an irreversible action.
 
-**SUGGEST_CLOSE pivot for RESOLVED:** When resolution readiness returns `SUGGEST_CLOSE` (no root cause, no solution, no evidence), both the UI-dropdown path and the LLM-emit path immediately pivot the pending proposal to CLOSED and present the close confirmation pair. The user sees the close prompt rather than a resolve prompt.
+**SUGGEST_CLOSE pivot for RESOLVED:** When resolution readiness returns `SUGGEST_CLOSE` (no root cause, no solution, no evidence), the LLM-emit path (the one way a RESOLVED proposal reaches the state machine besides the engine's own READY offer, INV-43) immediately pivots the pending proposal to CLOSED and present the close confirmation pair. The user sees the close prompt rather than a resolve prompt.
 
 **SUGGEST_RESOLVE pivot for CLOSED (symmetric):** When closure readiness returns `SUGGEST_RESOLVE` (case has a qualifying `causal_absence` — the root cause is confirmed eliminated), both the UI-dropdown path and the LLM-emit path pivot the pending proposal to RESOLVED and present the resolve confirmation pair. Closing a resolution-grade case would discard the resolution attribution; the pivot reconciles loose user terminology ("close" vs "resolve") against actual case content. This is the close-side counterpart of the RESOLVED → SUGGEST_CLOSE pivot above — together they form a symmetric strategy: a thin case requested as resolved pivots to close; a rich case requested as closed pivots to resolve.
 
@@ -708,7 +711,7 @@ propose_transition(
 
 There are **two** graphs, answering different questions. They are not copies of each other and must not be pinned equal.
 
-**`LEGAL_TRANSITIONS`** (`models.py`) — every edge the state machine permits. `is_valid_action()` reads it directly, as the Pydantic model_validator on every `CaseAction` instantiation, and the INV-22 guard validates LLM-emitted `proposed_transition` targets against it.
+**`LEGAL_TRANSITIONS`** (`modules/case/domain/models/lifecycle.py`) — every edge the state machine permits. `is_valid_action()` reads it directly, as the Pydantic model_validator on every `CaseAction` instantiation, and the INV-22 guard validates LLM-emitted `proposed_transition` targets against it.
 
 ```python
 LEGAL_TRANSITIONS = {
@@ -730,13 +733,13 @@ LEGAL_TRANSITIONS = {
 ```python
 USER_SELECTABLE_ACTIONS = {
     CaseState.INQUIRY: (CaseState.CLOSED,),
-    CaseState.INVESTIGATING: (CaseState.RESOLVED, CaseState.CLOSED),
+    CaseState.INVESTIGATING: (CaseState.CLOSED,),
     CaseState.RESOLVED: (),
     CaseState.CLOSED: (),
 }
 ```
 
-They differ on exactly one edge. **INQUIRY → INVESTIGATING is legal but not selectable**: it is earned by a problem statement the user has confirmed — which Gate 1 performs and the DB CHECK `cases_description_required_for_investigation` makes structural — so a menu cannot honour it on demand. Requesting it is refused with a 422. Every entry that remains in the menu is a *disposition*: a user decision carrying information the engine cannot derive.
+They differ on two edges, and both are earned rather than picked. **INQUIRY → INVESTIGATING** is earned by a problem statement the user has confirmed — which Gate 1 performs and the DB CHECK `cases_description_required_for_investigation` makes structural — so a menu cannot honour it on demand. Requesting it is refused with a 422. **INVESTIGATING → RESOLVED** is earned by the readiness bar (a qualifying `causal_absence_evidence` row); the engine or the model offers it and the user confirms the offer (INV-43, and *Why RESOLVED left the status menu* above). Every entry that remains in the menu is a *disposition*: a user decision carrying information the engine cannot derive.
 
 Both are frozen (`MappingProxyType` over tuples) so an importer cannot widen the gate at runtime. See the INV-04 notes in [investigation-invariants.md](./investigation-invariants.md) for the consolidation history.
 
@@ -1104,7 +1107,7 @@ it. A case closed from INQUIRY confirmed no statement and carries none.
 | Current Status | Dropdown Options |
 |---------------|------------------|
 | INQUIRY       | Closed |
-| INVESTIGATING | Resolved, Closed |
+| INVESTIGATING | Closed |
 | RESOLVED      | *(disabled - disposition)* |
 | CLOSED        | *(disabled - disposition)* |
 
@@ -1142,8 +1145,8 @@ Body (multipart/form-data):
   query: ""                          // empty — intent is in the structured fields
   intent_type: "status_transition"
   intent_data: '{
-    "from_status": "inquiry",
-    "to_status": "investigating",
+    "from_state": "investigating",
+    "to_state": "closed",
     "user_confirmed": true
   }'
 ```
@@ -1189,18 +1192,19 @@ them ask: by saying so, or by the agent proposing one. Gate 1 performs the edge.
 directly, returns a closure-readiness summary plus the canonical Yes/No confirmation
 pair. The transition fires only when the user confirms on the next turn.
 
-**→ RESOLVED (from INVESTIGATING)**: branches three ways based on
-`assess_resolution_readiness(case)`:
+**→ RESOLVED (from INVESTIGATING)**: **refused**, like INVESTIGATING above and for
+the same kind of reason: RESOLVED is earned, not picked. The readiness bar (a
+qualifying `causal_absence_evidence` row) earns it, the engine or the model offers it
+(INV-43), and the user confirms that offer. `earned_edge_refusal`, derived from
+`USER_SELECTABLE_ACTIONS`, refuses the pick with a 422 at the service boundary and
+again in the engine before any state is touched; see *Why RESOLVED left the status
+menu*. (This branch used to run the three-way READY / SUGGEST_CLOSE / NEEDS_INFO
+readiness check on the pick; the same readiness check now decides whether the offer
+is made.)
 
-| Verdict | Engine action |
-|---|---|
-| `READY` (root cause + actionable solution captured) | `propose_transition("resolved")`; returns Yes/No confirmation pair. User confirms on next turn. |
-| `SUGGEST_CLOSE` (case is thin — no root cause / solution) | Pivots to `propose_transition("closed")`. The dropdown said *"mark resolved"* but the engine recognizes the case has nothing to mark as resolved; the user is offered close instead, with a readiness-message explaining why. |
-| `NEEDS_INFO` (partial state — some criteria met, some not) | `propose_transition("resolved")` with `needs_info=True` flag set on the pending transition. The agent asks the user for the missing piece (root cause OR solution detail). The next turn re-evaluates readiness once the user replies. |
-
-Whichever branch fires, the case stays in INVESTIGATING this turn and the transition
-proposal is held pending. The user has the next-turn confirmation step to accept,
-decline, or refine.
+Either accepted branch leaves the case in INVESTIGATING this turn with the proposal
+held pending. The user has the next-turn confirmation step to accept, decline, or
+refine.
 
 ---
 
@@ -1350,7 +1354,7 @@ Before presenting the confirmation, the system runs `assess_resolution_readiness
 
 - **READY** — Root cause and solution present. System shows what's on record and asks user to confirm.
 - **NEEDS_INFO** — Partially ready (e.g., root cause but no solution). System asks user to provide the missing piece.
-- **SUGGEST_CLOSE** — No root cause, no solution, no evidence. Both the UI-dropdown branch and the LLM-emit branch pivot the pending proposal to CLOSED and emit the close confirmation pair. If the issue was actually fixed, the user can provide root cause and solution to reopen the resolve path.
+- **SUGGEST_CLOSE** — No root cause, no solution, no evidence. The LLM-emit branch pivots the pending proposal to CLOSED and emit the close confirmation pair. If the issue was actually fixed, the user can provide root cause and solution to reopen the resolve path.
 
 ```python
 readiness = assess_resolution_readiness(case)
