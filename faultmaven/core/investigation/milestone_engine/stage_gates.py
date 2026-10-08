@@ -649,13 +649,30 @@ def _apply_stage_gate_side_effects(
         rca_infeasible = case.problem_verification and getattr(
             case.problem_verification, "rca_infeasible", False
         )
+        from faultmaven.core.investigation.terminal_transitions import (
+            ClosureReadiness,
+            closure_verdict,
+            propose_transition,
+        )
+
         # Don't clobber an in-flight disposition handshake, and never on a
         # terminal case (symmetric with _maybe_propose_deferred_close).
+        #
+        # Nor on a case whose cause is confirmed eliminated: closure readiness
+        # reads SUGGEST_RESOLVE there, and every engine opener reads it before
+        # choosing its target (#1885 review) — the deferred proposer pivots on
+        # it, the LLM path pivots on it, and the confirm-time guard pivots a
+        # pending close on it (INV-37). This one stands down instead of
+        # pivoting: the resolve offer that case warrants is the resolution
+        # backstop's (INV-43, step 4c), or the model's own RESOLVED, which
+        # reads READY on the same bar. A "stabilized" close beside a confirmed
+        # elimination would be offered on a premise the case contradicts.
         if (
             rca_infeasible
             and not getattr(case, "pending_transition", None)
             and not case.is_terminal
             and not problem_on_hold(case)
+            and closure_verdict(case) != ClosureReadiness.SUGGEST_RESOLVE
         ):
             # The generic fallback is fine for the user-facing sentence but is
             # NOT a rationale: derive_closure_reason's guard requires a real one
@@ -673,10 +690,6 @@ def _apply_stage_gate_side_effects(
                 "The mitigation is verified and stable. "
                 f"Since {rationale}, shall we close this case as stabilized?"
             )
-            from faultmaven.core.investigation.terminal_transitions import (
-                propose_transition,
-            )
-
             propose_transition(
                 case=case,
                 to_state="closed",

@@ -467,16 +467,32 @@ class TransitionManager:
             # model used to re-arm to RESOLVED every turn: Run 36,
             # case_95d86b7daf8c) is one instance of it rather than its own
             # guard.
+            #
+            # The ``pending_transition`` conjunct is defensive: every writer of
+            # the flag leaves its offer standing, so today the flag alone would
+            # do. It keeps a flag that outlived its offer (an offer withdrawn
+            # later in the same turn) from silently swallowing the model's
+            # proposal with nothing in front of the user.
             if (
                 proposed
                 and metadata.get("transition_proposed_this_turn")
                 and getattr(case, "pending_transition", None)
             ):
+                engine_to = case.pending_transition.get("to_state")
                 logger.info(
-                    f"Case {case.case_id}: the engine opened a "
-                    f"{case.pending_transition.get('to_state')!r} handshake this "
-                    f"turn — ignoring same-turn LLM proposed_transition="
-                    f"{getattr(proposed, 'to_state', None)!r}."
+                    f"Case {case.case_id}: the engine opened a {engine_to!r} "
+                    f"handshake this turn — ignoring same-turn LLM "
+                    f"proposed_transition={getattr(proposed, 'to_state', None)!r}."
+                )
+                # Read by the turn's ``transition_compliance`` line: the
+                # model's proposal was dropped, not pivoted.
+                metadata["transition_superseded_by_engine"] = True
+                _add_system_feedback(
+                    metadata,
+                    "TRANSITION NOT PROPOSED: the engine already offered the "
+                    f"user a {engine_to!r} transition this turn, and that offer "
+                    "is what they will answer. Do not re-propose a transition "
+                    "until they have answered it.",
                 )
                 proposed = None
 

@@ -14,11 +14,12 @@ turn. No live LLM: the engine's generator is stubbed.
 
 import hashlib
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from faultmaven.core.investigation.causal_graph.ingestion import seed_problem_node
+from faultmaven.core.investigation.milestone_engine import turn_completion
 from faultmaven.core.investigation.milestone_engine.affordances import (
     engine_owned_affordances,
 )
@@ -1629,6 +1630,25 @@ class TestTheEnginesFalseAlarmOfferStands:
         }
         assert keys == {pending["proposed_at"]}
         assert "false alarm" in result["agent_response"]
+
+    async def test_the_dropped_proposal_is_reported_superseded_not_pivoted(self):
+        engine, case = _engine(), _case()
+        _respond(engine, _finding(model_proposes="resolved"))
+        with patch.object(turn_completion.logger, "info") as info:
+            result = await engine.process_turn(
+                case=case, user_message="the gateway log shows no errors at 14:00"
+            )
+        (extra,) = [
+            c.kwargs["extra"]
+            for c in info.call_args_list
+            if c.args == ("transition_compliance",)
+        ]
+        assert extra["llm_proposed_to_status"] == "resolved"
+        assert extra["engine_effective_to_status"] == "closed"
+        assert extra["transition_superseded_by_engine"] is True
+        assert extra["transition_pivoted"] is False
+        feedback = result["case_updated"].turn_history[-1].system_feedback or ""
+        assert "TRANSITION NOT PROPOSED" in feedback
 
     async def test_a_bare_no_then_records_the_decline(self):
         engine, case, _ = await _finding_turn(model_proposes="closed")

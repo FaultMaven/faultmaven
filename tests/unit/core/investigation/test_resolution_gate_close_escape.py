@@ -14,11 +14,17 @@ so it can't clobber the escape.
 """
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.core.investigation.milestone_engine import turn_completion
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.schemas import (
+    EvidenceToAdd,
+    InvestigationResponse_Diagnosis,
+    ProposedTransition,
+)
 from faultmaven.modules.case.contracts import ProblemStatus
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.conclusion import (
@@ -213,3 +219,79 @@ async def test_readiness_verdict_recorded_on_needs_info_recheck():
 
     assert metadata.get("resolution_readiness_verdict") == "needs_info"
     assert metadata.get("resolution_readiness_missing")
+
+
+@pytest.mark.asyncio
+async def test_the_flag_alone_with_nothing_pending_supersedes_nothing():
+    """The same-turn rule needs an offer STANDING, not just the flag (#1885):
+    a flag with nothing pending lets the model's proposal land."""
+    engine = _engine()
+    case = _needs_info_case()
+    metadata = _llm_proposes_resolved()
+    metadata["transition_proposed_this_turn"] = True
+
+    await engine.transitions.check_automatic_transitions(
+        case=case, metadata=metadata, user_message="mark resolved"
+    )
+
+    assert case.pending_transition["to_state"] == "resolved"
+    assert not metadata.get("transition_superseded_by_engine")
+
+
+def _compliance(info) -> dict:
+    (extra,) = [
+        c.kwargs["extra"]
+        for c in info.call_args_list
+        if c.args == ("transition_compliance",)
+    ]
+    return extra
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model_proposes", ["resolved", "closed"])
+async def test_steps_zero_ready_reproposal_stands_on_a_real_turn(model_proposes):
+    """Step 0's needs_info -> READY re-proposal is an engine offer like any
+    other: the model's same-turn proposal is dropped (and said to be), not
+    pivoted. Real ``process_turn``, stubbed generator."""
+    engine = _engine()
+    engine.kb_prefetcher.prefetch_kb_context = AsyncMock(return_value=None)
+    case = _needs_info_case()
+    case.current_turn = 3
+    case.pending_transition = {
+        "to_state": "resolved",
+        "summary": "Before I can mark this as resolved, I need a bit more detail…",
+        "evidence_ids": [],
+        "proposed_at": datetime.now(timezone.utc).isoformat(),
+        "needs_info": True,
+    }
+    engine.generator.generate_structured_output = AsyncMock(
+        return_value=InvestigationResponse_Diagnosis(
+            agent_response="Good, the index removed the full scans.",
+            state_updates={
+                "evidence_to_add": [
+                    EvidenceToAdd(
+                        summary="p99 back to 40ms since the index was created",
+                        extract="events-* p99: 40ms after CREATE INDEX at 10:02",
+                        category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+                        source_type=EvidenceSourceType.USER_DESCRIPTION,
+                    )
+                ],
+                "proposed_transition": ProposedTransition(to_state=model_proposes),
+            },
+        )
+    )
+
+    with patch.object(turn_completion.logger, "info") as info:
+        result = await engine.process_turn(
+            case=case,
+            user_message="We created the index and p99 is back to 40ms",
+        )
+
+    pending = result["case_updated"].pending_transition
+    assert pending["to_state"] == "resolved"
+    assert not pending.get("needs_info")
+    extra = _compliance(info)
+    assert extra["transition_superseded_by_engine"] is True
+    assert extra["transition_pivoted"] is False
+    feedback = result["case_updated"].turn_history[-1].system_feedback or ""
+    assert "the engine already offered the user a 'resolved' transition" in feedback

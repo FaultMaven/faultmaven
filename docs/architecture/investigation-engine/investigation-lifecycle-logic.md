@@ -1030,8 +1030,11 @@ close from the status menu (`_close_on_explicit_intent`, which derives
 revision is the exit limited to the engine's own close. On the turn the finding
 is made, the engine's signed offer is the one the user answers even when the
 model proposed a transition beside it (INV-43's same-turn rule, #1885): replaced
-by the model's, it lost the signature, so a decline recorded nothing and a
-revision read it as someone else's pending transition.
+by the model's, it lost the signature, so a decline recorded nothing. (On a chat
+turn section 0b withdraws a pending close before the model is called, so the
+revision gate's refusal of an unsigned close is reached only where the apply
+step meets the close still standing; it is the backstop there, not a chat-path
+refusal.)
 
 A `causal_absence` row is judged against the turn's own verification, after the
 step-2b review and again after step 2c: on a problem not verified by then it is
@@ -1754,6 +1757,8 @@ The signal's effect is narrow and specific — when a mitigation has been verifi
 | --- | --- |
 | `False` (default) | Agent pushes toward RCA: *"The mitigation is working. Now let's investigate the root cause to prevent recurrence."* |
 | `True` | Agent proposes closure: *"The mitigation is verified. Since [rationale], shall we close this case?"* Uses User-Agent Handshake — user must confirm. |
+
+The close is not offered on a case whose cause is confirmed eliminated (closure readiness SUGGEST_RESOLVE, a qualifying `causal_absence` row): there the resolve offer is the one the case warrants, made by the resolution backstop (INV-43) or by the model's own RESOLVED proposal. Every engine opener reads closure readiness before choosing its target (#1885).
 
 If `rca_infeasible=True` but the user says "actually, let's dig deeper" — the agent proceeds with RCA. The signal is advisory, not binding.
 
