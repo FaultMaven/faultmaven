@@ -69,9 +69,6 @@ class _PreprocessingDouble:
 
 @pytest.fixture
 def repo(mock_case_repository):
-    mock_case_repository.find_uploaded_file_by_content_hash = AsyncMock(
-        return_value=None
-    )
     return mock_case_repository
 
 

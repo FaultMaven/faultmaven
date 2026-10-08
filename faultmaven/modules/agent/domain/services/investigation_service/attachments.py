@@ -186,9 +186,9 @@ def _engine_attachment_metadata(result: "_PreprocessedAttachment") -> dict:
 
     - ``False`` — the content-hash dedup short-circuit fired, so the case
       demonstrably already held these bytes.
-    - ``True`` — the lookup ran and found nothing.
-    - ``None`` — *undetermined*: the lookup never ran (no content_hash, or it
-      raised), so nothing here knows. Reading that as ``True`` would report a
+    - ``True`` — the check ran over the case's rows and found nothing.
+    - ``None`` — *undetermined*: the check could not run because the
+      attachment has no content_hash, so nothing here knows. Reading that as ``True`` would report a
       brand-new file for a byte-identical re-submission and arm #1136's
       progress arm on it — #1210 inverted, in the aggressive direction. The
       engine treats ``None`` conservatively and says so in the log.
@@ -238,8 +238,8 @@ class _PreprocessedAttachment:
     """Internal result of `_preprocess_attachment`.
 
     Post-010 strict evidence model: file uploads no longer create an
-    Evidence row at intake. This carries the UploadedFile that was
-    persisted (with preprocessing artifacts: summary, structural_index,
+    Evidence row at intake. This carries the UploadedFile the attachment
+    resolved to (with preprocessing artifacts: summary, structural_index,
     data_type, coverage timestamps) plus dedup signals the caller
     needs to populate ``AttachmentResult.duplicate_of``.
 
@@ -251,11 +251,16 @@ class _PreprocessedAttachment:
     uploaded_file: UploadedFile
     duplicate_of: Optional[str] = None
     duplicate_turn: Optional[int] = None
-    # Did the content-hash lookup actually execute and return an answer?
+    # The storage key this attachment's bytes were written under THIS turn —
+    # None on a duplicate (nothing was stored) and when no storage service
+    # ran. It is how the turn knows which sidecars to flip with
+    # ``_mark_turn_uploads_linked`` once its commit has landed (#1878); the
+    # row's own ``storage_ref`` cannot tell a fresh store from a reused one.
+    newly_stored_ref: Optional[str] = None
+    # Did the content-hash check actually run?
     #
     # ``duplicate_of is None`` alone does NOT mean "novel" — it also covers
-    # every case where dedup never ran (no content_hash to match on, or the
-    # lookup raised). Reading absence as novelty reports a confident True for a
+    # an attachment dedup could not check (no content_hash to match on). Reading absence as novelty reports a confident True for a
     # byte-identical re-submission, which ARMS #1136's progress arm and resets
     # ``turns_without_progress`` — the inverse of #1210, in the aggressive
     # direction. Defaults False so any construction site that does not
@@ -337,7 +342,6 @@ def _turn_delivers_evidence_bearing_attachment(
 async def _preprocess_attachment(
     file_storage_service,
     preprocessing_service,
-    repository,
     case: "Case",
     attachment: Attachment,
     user_id: str,
@@ -355,13 +359,23 @@ async def _preprocess_attachment(
             (triage or directed_analysis)
 
     Returns:
-        ``_PreprocessedAttachment`` wrapping the persisted
-        ``UploadedFile`` plus optional dedup metadata. Post-010
+        ``_PreprocessedAttachment`` wrapping the ``UploadedFile`` this
+        attachment resolved to plus optional dedup metadata. Post-010
         strict evidence model: NO Evidence row is created at this
         intake step. On content-hash duplicate within the same
         case, the returned UploadedFile is the existing row and
         ``duplicate_of`` / ``duplicate_turn`` are populated; no
         new UploadedFile is created and no raw file is re-stored.
+
+        Nothing is committed here (#1878). A new row is appended to
+        ``case.uploaded_files`` in memory, stamped with ``turn_number``,
+        and becomes durable only in the commit that creates that turn —
+        so a turn that fails before its first commit leaves no row, and
+        the file is listed, searchable and turn-attributed together or
+        not at all. (A failure after the engine's Step-7 save is the
+        #1882 half turn; see the note above the return.) The sidecar is
+        flipped to linked only after the turn's final save
+        (``_mark_turn_uploads_linked``).
 
     Raises:
         ServiceException: If preprocessing or storage fails
@@ -420,15 +434,41 @@ async def _preprocess_attachment(
     # UploadedFile instead of creating a new one. No raw file
     # re-storage either — storage already has the bytes.
     #
-    # ``dedup_ran`` records whether the lookup actually produced an answer.
-    # It is what separates "ran and found nothing" (novel) from "never ran"
-    # (undetermined) downstream; without it both look like
+    # The lookup is the case's own ``uploaded_files`` and nothing else
+    # (#1878). Every committed row reaches the database through the
+    # OCC-versioned aggregate ``save()``, and the case is loaded with all of
+    # them (neither backend's loader limits the list), so the loaded case
+    # holds every row this turn can commit beside. A database row the case
+    # does not hold could only be a concurrent turn's commit after this load,
+    # and then this turn's own save fails with a version conflict anyway. An
+    # earlier attachment of THIS submission is on the list too — appended
+    # below — so two identical attachments in one turn are stored once.
+    #
+    # The earliest match wins: the lowest ``uploaded_at_turn``. (The loaders
+    # do not order ``uploaded_files``, so list position means nothing; the
+    # turn is what names the original. Keyed on the turn rather than
+    # ``uploaded_at`` also because a loaded row and one built this turn need
+    # not agree on timezone-awareness, and comparing them would raise.) A
+    # same-submission hit carries this turn's number, which is what
+    # ``duplicate_turn`` then reports — the turn the original commits with.
+    #
+    # ``dedup_ran`` separates "checked and found nothing" (novel) from "could
+    # not check" (undetermined); without it both look like
     # ``duplicate_of is None`` and a re-submission is reported as new data
-    # (#1210 round 2). Both skip paths log, because a permanently skipped
-    # lookup means per-case dedup is not working at all.
+    # (#1210 round 2). The one way it cannot run is an attachment with no
+    # content hash, and that path logs, because a permanently skipped check
+    # means per-case dedup is not working at all.
     existing_file = None
-    dedup_ran = False
-    if not preprocessing_result.content_hash:
+    dedup_ran = bool(preprocessing_result.content_hash)
+    if dedup_ran:
+        in_case_matches = [
+            f
+            for f in case.uploaded_files
+            if f.content_hash == preprocessing_result.content_hash
+        ]
+        if in_case_matches:
+            existing_file = min(in_case_matches, key=lambda f: f.uploaded_at_turn)
+    else:
         logger.warning(
             "No content_hash for '%s' on case %s — per-case dedup could not "
             "run and novelty is UNDETERMINED for this attachment; the turn "
@@ -437,30 +477,6 @@ async def _preprocess_attachment(
             attachment.filename,
             case.case_id,
         )
-    else:
-        try:
-            existing_file = await repository.find_uploaded_file_by_content_hash(
-                case.case_id, preprocessing_result.content_hash
-            )
-            dedup_ran = True
-        except AttributeError as e:
-            # Two very different things land here: a repository that does
-            # not implement the lookup at all (test doubles), and a real
-            # implementation raising AttributeError from inside its own
-            # body. Neither can be told apart from the outside, and in both
-            # the answer is the same — dedup did not run — so this stays a
-            # degradation rather than a failure. It is no longer SILENT:
-            # swallowing it and reporting the attachment novel is how a
-            # broken repository would quietly re-arm the stall net.
-            logger.warning(
-                "Per-case dedup lookup unavailable on %s for case %s (%s) — "
-                "novelty is UNDETERMINED for '%s'; the turn is scored "
-                "conservatively and duplicate uploads will not be detected.",
-                type(repository).__name__,
-                case.case_id,
-                e,
-                attachment.filename,
-            )
     if existing_file is not None:
         logger.info(
             "Duplicate upload detected: file '%s' matches %s (turn %s) "
@@ -516,61 +532,10 @@ async def _preprocess_attachment(
         upload_source=upload_source,
         storage_ref=storage_ref,
     )
+    # In memory only. The end-of-turn aggregate ``save(case)`` writes this
+    # row in the same transaction as the turn's ``current_turn`` and user
+    # message (#1878); see the note above the return below.
     case.uploaded_files.append(uploaded_file)
-
-    # Best-effort sidecar "linked" flag for orphan cleanup. Skipped
-    # when storage_ref is None (no storage service or store_file
-    # returned nothing); storage services without mark_linked (test
-    # doubles, minimal stubs) are handled gracefully.
-    #
-    # Failing here USED to put the file at risk of reclamation: the row
-    # exists and the case references it, but the sidecar still says
-    # linked=False, and the nightly sweep decided from the sidecar alone.
-    # Since #1232 the sweep cross-checks uploaded_files.storage_ref, so a
-    # stale flag is now HARMLESS, and self-healing rather than merely
-    # tolerated: the object is protected exactly while its row exists, and
-    # once the case is deleted the row goes with it (uploaded_files.case_id
-    # is ON DELETE CASCADE, enforced on both backends — SQLite runs with
-    # PRAGMA foreign_keys=ON), leaving an ordinary unreferenced orphan the
-    # sweep reclaims normally. Nothing leaks and nothing is lost.
-    #
-    # Still worth counting. The consequence is gone; the CAUSE is not — a
-    # failure here means the storage backend erred on a small write, which
-    # is worth surfacing on its own. And the count is the input to deciding
-    # whether retrying this call is ever justified (issue #1232 direction 3,
-    # deliberately not taken: it would add latency to the user-facing turn
-    # path to narrow a window that no longer leads anywhere). The warning
-    # alone was discoverable only by grep. This counter is emitted from the
-    # API process, which Prometheus scrapes — unlike the sweep's own
-    # counters, which die with the CronJob pod.
-    mark_linked = (
-        getattr(file_storage_service, "mark_linked", None)
-        if file_storage_service
-        else None
-    )
-    if mark_linked is not None and storage_ref:
-        try:
-            # Check the result, don't just call it: mark_linked reports
-            # failure by returning False rather than raising, so without
-            # this neither the warning nor the counter below could fire and
-            # the drift would be entirely invisible.
-            if not await mark_linked(storage_ref):
-                _record_mark_linked_failure("returned_false")
-                logger.warning(
-                    "mark_linked returned False for %s (non-fatal; the "
-                    "orphan sweep asks the database, so the file is safe "
-                    "— but a sidecar write just failed)",
-                    storage_ref,
-                )
-        except Exception as e:
-            _record_mark_linked_failure("raised")
-            logger.warning(
-                "mark_linked failed for %s (non-fatal; the orphan sweep "
-                "asks the database, so the file is safe — but a sidecar "
-                "write just failed): %s",
-                storage_ref,
-                e,
-            )
 
     # Post-010 strict evidence model: write preprocessing artifacts
     # to the UploadedFile row where they semantically belong (they
@@ -650,67 +615,40 @@ async def _preprocess_attachment(
             preprocessing_result.extraction_metadata.get("suggested_types") or []
         )
 
-    # Commit the row NOW, on its own, rather than letting it ride along on
-    # the end-of-turn ``save(case)``.
+    # No commit here (#1878). The row rides the end-of-turn aggregate
+    # ``save(case)`` — the same transaction that writes the turn's
+    # ``current_turn`` and user message — so it exists only once the turn that
+    # carried it exists. Every file-reading tool (``search_file``,
+    # ``read_file``, ``deep_analysis``, ``vectorize_file``) and the file list
+    # resolve through ``case.uploaded_files``, so a file is listed, searchable
+    # and attributed to a committed turn together, or none of these. A turn
+    # that fails before its first commit (the LLM call, a version conflict at
+    # the engine's Step-7 save) leaves no row: the user is told the turn failed
+    # and sends the file again, and that retry is a fresh upload rather than a
+    # "duplicate" of its own failed attempt.
     #
-    # An upload is a user-initiated fact: the bytes are already in storage
-    # (``store_file`` above), and whether this turn's LLM later succeeds has
-    # no bearing on whether the user uploaded the file. When the row waited
-    # for the aggregate save, a turn that raised left the bytes stored with
-    # nothing referencing them — and ``mark_linked`` had already exempted
-    # them from TTL reclaim, so the orphan was permanent rather than
-    # self-clearing. The retry then stored a second copy, because
-    # ``find_uploaded_file_by_content_hash`` cannot dedup against a row that
-    # was never written.
+    # A scoped commit used to live here (#1013): ``mark_linked`` ran at intake,
+    # BEFORE any row existed, so a failed turn left stored bytes exempt from
+    # TTL reclaim and referenced by nothing — a permanent orphan — unless the
+    # row was committed immediately. It also stamped the row with a turn number
+    # the case never committed, which the next committed turn then reused
+    # (#1878). ``mark_linked`` now runs after the turn's commit
+    # (``_mark_turn_uploads_linked``), and the orphan sweep deletes a blob only
+    # when it has no ``uploaded_files`` row AND its sidecar still says
+    # ``linked: false`` past the TTL (#1232). So the bytes a failed turn stored
+    # are an ordinary orphan the sweep reclaims, and no early commit is needed
+    # to keep anything safe.
     #
-    # Committed here, at the end, so the row carries its preprocessing
-    # artifacts and seeded coverage rather than a bare stub. Scoped rather
-    # than ``save(case)`` because the aggregate save commits the whole case,
-    # and mid-turn that would make the half-built turn durable — the very
-    # thing deferring the save exists to avoid. The underlying
-    # ``_upsert_uploaded_files`` is purely additive, so the end-of-turn
-    # aggregate save re-upserts this row rather than removing it.
-    add_uploaded_file = getattr(repository, "add_uploaded_file", None)
-    if add_uploaded_file is not None:
-        try:
-            await add_uploaded_file(
-                case.case_id,
-                uploaded_file,
-                case.enterprise_id,
-                case.organization_id,
-            )
-        except Exception as e:
-            # Degrade to the previous behaviour (the row rides the
-            # end-of-turn save) rather than failing the upload outright —
-            # but say so. Silence here would turn a durability regression
-            # into an invisible one.
-            logger.warning(
-                "Scoped commit of uploaded_file %s on case %s failed: %s. "
-                "The row now depends on the end-of-turn save; if this turn "
-                "fails, the stored bytes are orphaned.",
-                uploaded_file.file_id,
-                case.case_id,
-                e,
-            )
-    else:
-        # WARNING, not DEBUG. `add_uploaded_file` is an @abstractmethod on
-        # CaseRepository and a member of the ICaseRepository Protocol, so in
-        # production this branch is unreachable — reaching it means either a
-        # test double or that the contract method was renamed without
-        # updating this call site. Both revert every upload to the orphaning
-        # behaviour this code exists to prevent, which is not a debug-level
-        # event. (`test_service_calls_the_contract_method_name` pins the
-        # name against a silent rename.)
-        logger.warning(
-            "Repository %s has no add_uploaded_file — uploads fall back to "
-            "the end-of-turn save and are orphaned if the turn fails. "
-            "uploaded_file=%s",
-            type(repository).__name__,
-            uploaded_file.file_id,
-        )
-
+    # What remains: on an engine-routed turn the engine commits the aggregate
+    # at its Step 7, before the service's final save, so a failure between the
+    # two — a version conflict at the final save included — leaves a half turn
+    # whose row IS committed and whose sidecar is never flipped (#1882). The
+    # row is then attributed to a turn that did commit its user message, which
+    # is the invariant here, and a retry of that turn is reported as its
+    # duplicate; the half turn itself is #1882's to close.
     return _PreprocessedAttachment(
         uploaded_file=uploaded_file,
+        newly_stored_ref=storage_ref,
         dedup_ran=dedup_ran,
         classification_failed=is_classification_failed,
         suggested_types=suggested_types,
@@ -718,10 +656,65 @@ async def _preprocess_attachment(
     )
 
 
+async def _mark_turn_uploads_linked(
+    file_storage_service, preprocess_results: List[_PreprocessedAttachment]
+) -> None:
+    """Flip the sidecar of every blob this turn stored, AFTER its commit.
+
+    Called once the turn's final save has returned, with the turn's own
+    ``preprocess_results`` — the explicit record of which attachments were
+    stored this turn (``newly_stored_ref``); a duplicate stored nothing and is
+    skipped. Before #1878 this ran at intake, so a turn that failed left a blob
+    marked linked with no row behind it.
+
+    Best-effort and never fatal: the turn is already committed. A failure
+    leaves ``linked: false`` beside a live row, which the orphan sweep ignores
+    because it asks the database first (#1232) — so nothing is lost. It is
+    still counted, because the CAUSE is a storage backend erring on a small
+    write, and that is worth surfacing on its own. The counter is emitted from
+    the API process, which Prometheus scrapes — unlike the sweep's own
+    counters, which die with the CronJob pod. Retrying the call (#1232
+    direction 3) was deliberately not taken: it would add latency to the
+    user-facing turn path to narrow a window that leads nowhere.
+    """
+    mark_linked = (
+        getattr(file_storage_service, "mark_linked", None)
+        if file_storage_service
+        else None
+    )
+    if mark_linked is None:
+        return
+    for result in preprocess_results:
+        storage_ref = result.newly_stored_ref
+        if not storage_ref:
+            continue
+        try:
+            # Check the result, don't just call it: mark_linked reports
+            # failure by returning False rather than raising, so without
+            # this neither the warning nor the counter below could fire and
+            # the drift would be entirely invisible.
+            if not await mark_linked(storage_ref):
+                _record_mark_linked_failure("returned_false")
+                logger.warning(
+                    "mark_linked returned False for %s (non-fatal; the "
+                    "orphan sweep asks the database, so the file is safe "
+                    "— but a sidecar write just failed)",
+                    storage_ref,
+                )
+        except Exception as e:
+            _record_mark_linked_failure("raised")
+            logger.warning(
+                "mark_linked failed for %s (non-fatal; the orphan sweep "
+                "asks the database, so the file is safe — but a sidecar "
+                "write just failed): %s",
+                storage_ref,
+                e,
+            )
+
+
 async def _preprocess_turn_uploads(
     file_storage_service,
     preprocessing_service,
-    repository,
     *,
     case,
     case_id,
@@ -739,7 +732,6 @@ async def _preprocess_turn_uploads(
             result = await _preprocess_attachment(
                 file_storage_service,
                 preprocessing_service,
-                repository,
                 case,
                 attachment,
                 user_id,

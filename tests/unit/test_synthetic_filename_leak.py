@@ -831,7 +831,7 @@ async def test_uploaded_at_turn_is_immutable_across_a_deduped_reupload():
 
     Previously an ``xfail(strict=True)`` against #1207, on the reasoning that it
     would xpass the moment that issue was fixed. It would not have. It drove
-    ``add_uploaded_file`` twice by hand, so it measured the REPOSITORY's
+    the repository's single-row upload write twice by hand, so it measured the REPOSITORY's
     ``ON CONFLICT`` column list and nothing else -- and #1207 was fixed in the
     ENGINE, by not appending the duplicate row that the second call stood in
     for. The marker would have survived its own fix, still announcing a live
