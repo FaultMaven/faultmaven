@@ -35,7 +35,6 @@ from faultmaven.modules.case.domain.models.evidence import (
 from faultmaven.modules.case.domain.models.lifecycle import (
     CaseState,
 )
-from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
 
 # Case-owned models (per module-organization-design.md)
 from faultmaven.modules.case.domain.owned_models.report import CaseReport, ReportType
@@ -53,14 +52,11 @@ from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.lo
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.rows import (
     _as_datetime,
     _cast,
-    _row_to_case_checkpoint,
     _row_to_evidence,
     _row_to_report,
 )
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.saving import (
     _append_case_actions,
-    _delete_uncommitted_checkpoints,
-    _insert_checkpoint,
     _insert_report,
     _org_lookup_case_id,
     _reconcile_causal_graph,
@@ -168,17 +164,15 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         case: Case,
         *,
         reports: Sequence[CaseReport] = (),
-        checkpoints: Sequence[CaseCheckpoint] = (),
     ) -> Case:
         """
         Save case using hybrid schema with transactions.
 
         Strategy:
-        0. Delete checkpoint rows from turns that never committed (#1882)
         1. Upsert cases table (main record + JSONB)
         2. Upsert normalized tables (evidence, hypotheses, solutions)
         3. Append-only tables (messages, case_actions)
-        4. Insert the turn's reports and checkpoints (#1882)
+        4. Insert the turn's reports (#1882)
 
         One transaction: the RLS tenant is bound once, at its BEGIN, by the
         engine's ``begin`` listener, so step 4's rows are written under the same
@@ -187,7 +181,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         Args:
             case: Case domain object
             reports: Report rows to commit with the case
-            checkpoints: Checkpoint rows to commit with the case
 
         Returns:
             Saved case with updated timestamps
@@ -196,7 +189,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             StaleCaseException: The case changed since it was read
             RepositoryException: If save fails
         """
-        self.check_turn_rows(case, reports, checkpoints)
+        self.check_turn_rows(case, reports)
         # Restored if the save does not commit: see SAVE_STAMPED_FIELDS.
         stamps = self.save_stamps(case)
         try:
@@ -225,8 +218,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             enterprise_id = case.enterprise_id
             organization_id = case.organization_id
 
-            # Before the case row: it reads the committed turn (#1882).
-            await _delete_uncommitted_checkpoints(self.db, case.case_id)
             await _upsert_case_record(self._is_pg, self.db, case)
             # Post-010: evidence.source_file_id is a real FK to
             # uploaded_files.file_id, so files must exist before any
@@ -318,8 +309,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             # the commit (they commit with it or not at all).
             for report in reports:
                 await _insert_report(self._is_pg, self.db, report)
-            for checkpoint in checkpoints:
-                await _insert_checkpoint(self._is_pg, self.db, checkpoint)
 
             await self.db.commit()
             return case
@@ -1624,63 +1613,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     # Agent Execution & Tool Call Persistence (PostgreSQL)
     # Schema reference: docs/architecture/data-and-storage/schemas/case-schema.md §4.11
     # ============================================================
-
-    async def create_checkpoint(self, checkpoint: CaseCheckpoint) -> CaseCheckpoint:
-        """Create a new case checkpoint in its own transaction (PostgreSQL)."""
-        try:
-            await _insert_checkpoint(self._is_pg, self.db, checkpoint)
-            await self.db.commit()
-            return checkpoint
-
-        except Exception as e:
-            await self.db.rollback()
-            raise RepositoryException(
-                f"Failed to create checkpoint for case {checkpoint.case_id}: {e}"
-            ) from e
-
-    async def get_checkpoint(self, checkpoint_id: str) -> Optional[CaseCheckpoint]:
-        """Get a checkpoint by ID (PostgreSQL)."""
-        try:
-            query = text("""
-                SELECT checkpoint_id, case_id, turn_number, case_snapshot,
-                       snapshot_hash, trigger, created_at, metadata
-                FROM case_checkpoints
-                WHERE checkpoint_id = :checkpoint_id
-            """)
-
-            result = await self.db.execute(query, {"checkpoint_id": checkpoint_id})
-            row = result.fetchone()
-
-            if not row:
-                return None
-
-            return _row_to_case_checkpoint(row)
-
-        except Exception as e:
-            raise RepositoryException(
-                f"Failed to get checkpoint {checkpoint_id}: {e}"
-            ) from e
-
-    async def get_checkpoints(self, case_id: str) -> List[CaseCheckpoint]:
-        """Get all checkpoints for a case (PostgreSQL)."""
-        try:
-            query = text("""
-                SELECT checkpoint_id, case_id, turn_number, case_snapshot,
-                       snapshot_hash, trigger, created_at, metadata
-                FROM case_checkpoints
-                WHERE case_id = :case_id
-                ORDER BY turn_number ASC
-            """)
-
-            result = await self.db.execute(query, {"case_id": case_id})
-            rows = result.fetchall()
-
-            return [_row_to_case_checkpoint(row) for row in rows]
-
-        except Exception as e:
-            raise RepositoryException(
-                f"Failed to get checkpoints for case {case_id}: {e}"
-            ) from e
 
 
 class RepositoryException(Exception):

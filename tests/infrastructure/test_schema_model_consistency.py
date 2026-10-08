@@ -40,7 +40,6 @@ from sqlalchemy import Column, create_engine, inspect
 from faultmaven.infrastructure.persistence.models import (
     Base,
     CaseActionModel,
-    CaseCheckpointModel,
     CaseMessageModel,
     CaseModel,
     CaseTagModel,
@@ -316,7 +315,6 @@ class TestSchemaModelConsistency:
             ("case_actions", CaseActionModel),
             ("case_tags", CaseTagModel),
             ("investigation_sessions", InvestigationSessionModel),
-            ("case_checkpoints", CaseCheckpointModel),
             ("knowledge_items", KnowledgeItemModel),
             ("knowledge_suggestions", KnowledgeSuggestionModel),
         ],

@@ -14,7 +14,7 @@ clock, #1579).
 The case grows one turn at a time, shaped as real turns are: a user message and
 an agent reply of a realistic size, the turn record, an uploaded file and an
 evidence row and a hypothesis every few turns, and on the last turn a terminal
-close with its checkpoint and summary report, so the commit carries every kind
+close with its summary report, so the commit carries every kind
 of row it ever carries. Each turn is committed through ``commit_turn_plan``,
 the function the service's settlement calls.
 """
@@ -26,7 +26,6 @@ from datetime import datetime, timezone
 from typing import List
 from uuid import uuid4
 
-from faultmaven.core.investigation.checkpoint_service import CheckpointService
 from faultmaven.core.investigation.milestone_engine.turn_commit import (
     TurnCommitPlan,
     commit_turn_plan,
@@ -145,13 +144,6 @@ def _grow_one_turn(case: Case, turn: int, *, terminal: bool) -> TurnCommitPlan:
         )
         case.hypotheses[hypothesis.hypothesis_id] = hypothesis
     if terminal:
-        plan.add_checkpoint(
-            CheckpointService.capture(
-                case,
-                trigger="pre_case_action",
-                metadata={"from_state": case.state.value, "to_state": "closed"},
-            )
-        )
         propose_transition(case, to_state="closed", summary="Close it?")
         assert confirm_pending_transition(case, "user_latency")
         plan.add_reports(

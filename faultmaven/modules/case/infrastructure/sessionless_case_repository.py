@@ -29,7 +29,6 @@ from typing import TYPE_CHECKING, Any, Optional, Sequence
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseCheckpoint,
     CaseEntity,
     CaseState,
     EntityType,
@@ -111,17 +110,16 @@ class SessionlessCaseRepository(CaseRepository):
         case: Case,
         *,
         reports: Sequence["CaseReport"] = (),
-        checkpoints: Sequence[CaseCheckpoint] = (),
     ) -> Case:
         """Save case with new session per operation.
 
-        One session, so one transaction: the case, ``reports`` and
-        ``checkpoints`` commit together or not at all (#1882), under the
-        tenant the session's BEGIN bound.
+        One session, so one transaction: the case and ``reports`` commit
+        together or not at all (#1882), under the tenant the session's BEGIN
+        bound.
         """
         async with get_db_session() as session:
             repo = get_repository_for_session(session)
-            return await repo.save(case, reports=reports, checkpoints=checkpoints)
+            return await repo.save(case, reports=reports)
 
     async def get(self, case_id: str) -> Case | None:
         """Get case with new session per operation."""
@@ -458,21 +456,3 @@ class SessionlessCaseRepository(CaseRepository):
     # ============================================================
     # Agent Execution Operations (migrated from Agent module)
     # ============================================================
-
-    async def create_checkpoint(self, checkpoint: "CaseCheckpoint") -> "CaseCheckpoint":
-        """Create a new case checkpoint."""
-        async with get_db_session() as session:
-            repo = get_repository_for_session(session)
-            return await repo.create_checkpoint(checkpoint)
-
-    async def get_checkpoint(self, checkpoint_id: str) -> Optional["CaseCheckpoint"]:
-        """Get a checkpoint by ID."""
-        async with get_db_session() as session:
-            repo = get_repository_for_session(session)
-            return await repo.get_checkpoint(checkpoint_id)
-
-    async def get_checkpoints(self, case_id: str) -> builtins.list["CaseCheckpoint"]:
-        """Get all checkpoints for a case."""
-        async with get_db_session() as session:
-            repo = get_repository_for_session(session)
-            return await repo.get_checkpoints(case_id)

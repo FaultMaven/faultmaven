@@ -46,16 +46,11 @@ async def _apply_turn_response(
     attachments,
     case,
     metadata,
-    plan,
     response_obj,
     upload_report,
     user_message,
 ):
-    """Apply the generated response to the case: structured updates, automatic transitions, progress scoring and validation.
-
-    A transition's checkpoint goes into ``plan`` (the turn's ``TurnCommitPlan``)
-    and commits with the turn (#1882).
-    """
+    """Apply the generated response to the case: structured updates, automatic transitions, progress scoring and validation."""
     case_updated, response_metadata = await responses.process_response_structured(
         case, user_message, response_obj, attachments, upload_report
     )
@@ -116,7 +111,7 @@ async def _apply_turn_response(
 
     # 4. Check for automatic status transitions
     case_updated = await transitions.check_automatic_transitions(
-        case_updated, metadata, user_message, plan=plan
+        case_updated, metadata, user_message
     )
 
     # 4b. Re-score progress now that EVERY arm writer has run (#1270).

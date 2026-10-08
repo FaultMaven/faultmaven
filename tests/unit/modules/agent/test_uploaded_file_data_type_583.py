@@ -1108,12 +1108,7 @@ def test_every_reader_of_uploaded_file_data_type_is_classified():
       …)``). 0 today: the two SQL texts with ``data_type`` before ``=`` are
       the upserts' ``SET data_type = COALESCE(…)``;
     - whole-row serialisation. It exists, and moves the value verbatim:
-      ``Case.model_validate(case.model_dump())`` in the SQLite save,
-      ``CheckpointService.create_checkpoint``'s ``case.model_dump()`` snapshot
-      (a snapshot taken before #583 carries the 6-valued string, one taken
-      after carries the ``DataType``; nothing restores a ``Case`` from a
-      snapshot today, and if something did, the value would re-enter the
-      column in a vocabulary every reader already accepts), and any
+      ``Case.model_validate(case.model_dump())`` in the SQLite save, and any
       ``model_dump`` / ``vars`` / ``**`` spread other than into
       ``UploadedFile`` itself;
     - SQL that names the column without one of the markers above, and a

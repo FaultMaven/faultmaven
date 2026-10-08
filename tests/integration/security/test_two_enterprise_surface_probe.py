@@ -255,7 +255,6 @@ pytestmark = [
 ENTERPRISE_SCOPED_TABLES = frozenset(
     {
         "case_actions",
-        "case_checkpoints",
         "case_entities",
         "case_messages",
         "case_tags",

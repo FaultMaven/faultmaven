@@ -54,7 +54,6 @@ NOT_STAMPED_BY_A_WRITER: dict[str, str] = {
         "transition of a case billed to X is billed to X even when the actor "
         "moved organizations since"
     ),
-    "case_checkpoints": "see case_actions — derived from the parent case",
     "case_entities": "see case_actions — derived from the parent case",
     "case_messages": "see case_actions — derived from the parent case",
     "case_tags": "see case_actions — derived from the parent case",

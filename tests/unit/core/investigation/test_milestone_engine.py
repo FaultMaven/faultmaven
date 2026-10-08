@@ -2363,7 +2363,7 @@ class TestNeedsInfoFollowupProposesClose:
         # re-eval (critical_missing >= 2 AND not has_evidence).
         metadata = {}
         await engine.transitions.check_automatic_transitions(
-            case, metadata, user_message="ok", plan=TurnCommitPlan()
+            case, metadata, user_message="ok"
         )
 
         assert case.pending_transition is not None
@@ -2412,7 +2412,7 @@ class TestNeedsInfoFollowupProposesClose:
         # (one critical missing — "solution")
         metadata = {}
         await engine.transitions.check_automatic_transitions(
-            case, metadata, user_message="ok", plan=TurnCommitPlan()
+            case, metadata, user_message="ok"
         )
 
         assert case.pending_transition is not None
@@ -2463,7 +2463,7 @@ class TestNeedsInfoFollowupProposesClose:
         needs_info_key = case.pending_transition["proposed_at"]
         metadata = {}
         await engine.transitions.check_automatic_transitions(
-            case, metadata, user_message="ok", plan=TurnCommitPlan()
+            case, metadata, user_message="ok"
         )
 
         # Pending transition stays as RESOLVED, and no longer needs info

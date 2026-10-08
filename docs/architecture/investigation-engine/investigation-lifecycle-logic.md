@@ -1003,8 +1003,8 @@ work arriving while it waits is staged on the revision with the evidence ids its
 refs resolve against. On a click or a bare "yes" — read by the disposition
 gate's own grammar, before the LLM call — the revision commits: description,
 `symptom_statement` and the causal graph's PROBLEM node (re-texted in place, so
-chains keep their anchor) change together, open symptom needs are superseded, a
-checkpoint is taken, the KB pre-fetch re-runs, the status becomes `verified`, and
+chains keep their anchor) change together, open symptom needs are superseded,
+the KB pre-fetch re-runs, the status becomes `verified`, and
 the staged work replays through the normal apply path. Any offer the replay
 makes carries its same-turn guard and card into the confirmation turn, so the
 "yes" that confirmed the statement never executes it. A decline returns the

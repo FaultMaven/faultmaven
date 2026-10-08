@@ -355,9 +355,7 @@ async def _typed_yes_on_a_pending_close_pivots():
     engine = _engine()
     metadata: dict = {}
     with patch.object(terminal_transitions, "close_pivoted_to_resolve_total"):
-        await engine.transitions.check_automatic_transitions(
-            case, metadata, "yes", plan=TurnCommitPlan()
-        )
+        await engine.transitions.check_automatic_transitions(case, metadata, "yes")
     assert metadata.get("close_pivoted_to_resolve") is True
     assert (
         _keys(metadata["override_suggestions"])
@@ -399,7 +397,6 @@ async def _llm_proposes_a_transition():
             case=case,
             metadata=metadata,
             user_message="The fix worked.",
-            plan=TurnCommitPlan(),
         )
         assert (
             _keys(metadata["override_suggestions"])

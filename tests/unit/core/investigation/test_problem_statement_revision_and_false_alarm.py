@@ -1168,9 +1168,7 @@ class TestHandshakeDoors:
             to_state="closed"
         )
         metadata: dict = {"response_obj": response}
-        await engine.transitions.check_automatic_transitions(
-            case, metadata, "close", plan=TurnCommitPlan()
-        )
+        await engine.transitions.check_automatic_transitions(case, metadata, "close")
         assert case.pending_transition is None
         assert "awaiting the user's confirmation" in metadata["system_feedback"]
 

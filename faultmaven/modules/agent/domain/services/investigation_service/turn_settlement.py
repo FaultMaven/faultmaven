@@ -10,8 +10,8 @@ A turn is split in two at its commit:
   ``settle_turn`` under ``asyncio.shield``. The route does not bound it.
 
 ``settle_turn`` is the turn's ONE commit (``commit_turn_plan``: the case, its
-messages, files, clock and state, with the plan's report and checkpoint rows,
-in one transaction) followed by the steps that must follow a commit and may not
+messages, files, clock and state, with the plan's report rows, in one
+transaction) followed by the steps that must follow a commit and may not
 undo it. It OWNS the plan's settlement (design v2, R1): it releases the gates on
 success, and on a failed commit it cancels them and emits the #1142 error row.
 Nobody else settles a plan once it has started.

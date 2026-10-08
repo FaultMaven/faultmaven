@@ -11,8 +11,8 @@ is answered as an ordinary turn with the revision still standing.
 
 Confirmation runs BEFORE the turn's LLM call (section 0b of the engine), so the
 model works the turn on the revised statement. The commit writes the statement
-into every store that holds it (``problem_status.commit_revision``), takes a
-checkpoint, re-runs the KB pre-fetch on the new wording, and replays the cause
+into every store that holds it (``problem_status.commit_revision``), re-runs the
+KB pre-fetch on the new wording, and replays the cause
 work staged while the revision waited — through the normal apply path, with the
 evidence ids each staged turn resolved against. So the confirmation turn can
 verify the revised problem, form its hypotheses, ground the chain and identify
@@ -38,9 +38,6 @@ from .transition_consent import (
 )
 
 if TYPE_CHECKING:
-    from faultmaven.core.investigation.milestone_engine.turn_commit import (
-        TurnCommitPlan,
-    )
     from faultmaven.modules.case.contracts import Case, PendingRevision
 
 logger = logging.getLogger(__name__)
@@ -148,11 +145,8 @@ def revision_confirmation_suggestions(case: "Case") -> list:
 
 async def confirm_revision(
     responses: Any,
-    deps: Any,
     case: "Case",
     metadata: dict,
-    *,
-    plan: TurnCommitPlan,
 ) -> None:
     """The user re-confirmed the revision: commit it and replay what was staged.
 
@@ -161,16 +155,6 @@ async def confirm_revision(
     one staged turn at a time, each with a fresh metadata seeded with the
     evidence ids that turn's refs resolve against.
     """
-    if deps.checkpoint_service:
-        # The snapshot before the revision commits, carried to the turn's own
-        # commit (#1882).
-        plan.add_checkpoint(
-            deps.checkpoint_service.capture(
-                case,
-                trigger="pre_case_action",
-                metadata={"action": "problem_statement_revised"},
-            )
-        )
     pending = commit_revision(case)
     await responses.kb_prefetcher.prefetch_kb_context(case, pending.text, "symptom")
 

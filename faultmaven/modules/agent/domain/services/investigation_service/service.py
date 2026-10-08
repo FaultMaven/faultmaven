@@ -398,7 +398,7 @@ class InvestigationService:
             #    ``uploaded_files`` rows (#1878), the engine's state changes,
             #    nor the agent's reply. The engine and its deterministic and
             #    terminal branches write nothing the turn owns; the rows they
-            #    produce (checkpoints, report rows) and the work that must wait
+            #    produce (report rows) and the work that must wait
             #    for the commit (the runbook conversion's gate) ride the
             #    turn's ``TurnCommitPlan``. ``commit_turn`` commits all of it
             #    in one transaction, or none of it (#1882): a turn that fails

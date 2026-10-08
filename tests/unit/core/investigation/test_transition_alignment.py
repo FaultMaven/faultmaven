@@ -316,7 +316,6 @@ async def test_check_automatic_transitions_sets_override_for_resolved():
         case=case,
         metadata=metadata,
         user_message="The fix worked.",
-        plan=TurnCommitPlan(),
     )
 
     assert case.pending_transition is not None
@@ -345,7 +344,6 @@ async def test_check_automatic_transitions_sets_override_for_closed():
         case=case,
         metadata=metadata,
         user_message="Close as unresolved.",
-        plan=TurnCommitPlan(),
     )
 
     assert case.pending_transition is not None
@@ -381,7 +379,6 @@ async def test_check_automatic_transitions_closure_reason_inquiry_only():
         case=case,
         metadata=metadata,
         user_message="never mind, close this case.",
-        plan=TurnCommitPlan(),
     )
 
     assert case.pending_transition is not None
@@ -422,7 +419,6 @@ async def test_check_automatic_transitions_closure_reason_stabilized_investigati
         case=case,
         metadata=metadata,
         user_message="ok closing — mitigation worked",
-        plan=TurnCommitPlan(),
     )
 
     assert case.pending_transition is not None
@@ -456,7 +452,6 @@ async def test_llm_emit_resolved_pivots_to_close_when_thin():
         case=case,
         metadata=metadata,
         user_message="The fix worked.",
-        plan=TurnCommitPlan(),
     )
 
     assert case.pending_transition is not None
@@ -497,7 +492,6 @@ async def test_llm_emit_closed_pivots_to_resolved_when_resolution_grade():
         case=case,
         metadata=metadata,
         user_message="Let's close this.",
-        plan=TurnCommitPlan(),
     )
 
     assert case.pending_transition is not None
@@ -559,7 +553,6 @@ async def test_llm_emit_resolved_needs_info_keeps_resolve_with_flag():
         case=case,
         metadata=metadata,
         user_message="The fix worked.",
-        plan=TurnCommitPlan(),
     )
 
     assert case.pending_transition is not None
@@ -595,7 +588,6 @@ async def test_llm_emit_resolved_ready_keeps_resolve_pair():
         case=case,
         metadata=metadata,
         user_message="The fix worked.",
-        plan=TurnCommitPlan(),
     )
 
     assert case.pending_transition is not None
@@ -624,7 +616,6 @@ async def test_check_automatic_transitions_no_override_when_no_proposal():
         case=case,
         metadata=metadata,
         user_message="Let me check the logs.",
-        plan=TurnCommitPlan(),
     )
 
     assert case.pending_transition is None

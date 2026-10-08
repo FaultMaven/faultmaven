@@ -77,7 +77,6 @@ class MockCaseRepository:
         self._storage: dict[str, Case] = {}
         # The rows a turn's one commit carried with its case (#1882).
         self.reports: list = []
-        self.checkpoints: list = []
         self.get = AsyncMock(side_effect=self._get)
         self.save = AsyncMock(side_effect=self._save)
         self.list = AsyncMock(side_effect=self._list)
@@ -90,13 +89,12 @@ class MockCaseRepository:
         # we want to track mutations
         return self._storage.get(case_id)
 
-    async def _save(self, case: Case, *, reports=(), checkpoints=()) -> Case:
+    async def _save(self, case: Case, *, reports=()) -> Case:
         """Save case - store it (service passes the updated case), with the
-        report and checkpoint rows the turn commits alongside it."""
+        report rows the turn commits alongside it."""
         # Store the case object directly - service passes the updated case after mutations
         self._storage[case.case_id] = case
         self.reports.extend(reports)
-        self.checkpoints.extend(checkpoints)
         return case
 
     async def _list(
@@ -209,12 +207,11 @@ class RecordingCaseRepository(MockCaseRepository):
     them does not build a third copy.
     """
 
-    async def _save(self, case: Case, *, reports=(), checkpoints=()) -> Case:
+    async def _save(self, case: Case, *, reports=()) -> Case:
         self._storage[case.case_id] = case.model_copy(
             update={"current_turn": case.effective_current_turn}
         )
         self.reports.extend(reports)
-        self.checkpoints.extend(checkpoints)
         return case
 
 

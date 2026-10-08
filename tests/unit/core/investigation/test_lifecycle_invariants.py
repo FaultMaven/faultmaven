@@ -699,9 +699,7 @@ class TestINV06_KBResolutionUsesPendingTransition:
             "knowledge_resolution_signalled": True,
         }
 
-        result = await engine.transitions.check_automatic_transitions(
-            case, metadata, plan=TurnCommitPlan()
-        )
+        result = await engine.transitions.check_automatic_transitions(case, metadata)
 
         assert result.state == CaseState.INVESTIGATING, (
             "Same-turn confirm fired on the KB-resolution turn. #722 "
@@ -747,7 +745,7 @@ class TestINV06_KBResolutionUsesPendingTransition:
 
         # The triggering message pattern-matches as a bare confirmation.
         result = await engine.transitions.check_automatic_transitions(
-            case, metadata, user_message="yes, stable now", plan=TurnCommitPlan()
+            case, metadata, user_message="yes, stable now"
         )
 
         assert result.state == CaseState.INVESTIGATING, (
@@ -2130,9 +2128,7 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
         case = self._make_inquiry_case()
         metadata = {"response_obj": self._response_obj_with_proposed("resolved")}
 
-        result = await engine.transitions.check_automatic_transitions(
-            case, metadata, plan=TurnCommitPlan()
-        )
+        result = await engine.transitions.check_automatic_transitions(case, metadata)
 
         # No pending transition was set — the rejection happened BEFORE
         # propose_transition could run.
@@ -2160,9 +2156,7 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
         case = self._make_inquiry_case()
         metadata = {"response_obj": self._response_obj_with_proposed("resolved")}
 
-        await engine.transitions.check_automatic_transitions(
-            case, metadata, plan=TurnCommitPlan()
-        )
+        await engine.transitions.check_automatic_transitions(case, metadata)
 
         repairs = metadata.get("validation_repairs", [])
         assert any("Rejected proposed_transition" in r for r in repairs), (
@@ -2182,9 +2176,7 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
         case = self._make_inquiry_case()
         metadata = {"response_obj": self._response_obj_with_proposed("closed")}
 
-        result = await engine.transitions.check_automatic_transitions(
-            case, metadata, plan=TurnCommitPlan()
-        )
+        result = await engine.transitions.check_automatic_transitions(case, metadata)
 
         # Valid edge → pending transition WAS set.
         assert result.pending_transition is not None, (
@@ -2209,9 +2201,7 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
         case = _make_investigating_case()
         metadata = {"response_obj": self._response_obj_with_proposed("resolved")}
 
-        result = await engine.transitions.check_automatic_transitions(
-            case, metadata, plan=TurnCommitPlan()
-        )
+        result = await engine.transitions.check_automatic_transitions(case, metadata)
 
         # No INVALID TRANSITION ERROR — the validation passed; whatever
         # happens downstream (SUGGEST_CLOSE pivot, NEEDS_INFO, or READY

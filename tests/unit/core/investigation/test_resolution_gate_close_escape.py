@@ -130,7 +130,6 @@ async def test_repeat_needs_info_escapes_to_close_not_clobbered():
         case=case,
         metadata=metadata,
         user_message="yes, it's resolved",
-        plan=TurnCommitPlan(),
     )
 
     # Escape fired and was NOT clobbered by the LLM's re-proposed RESOLVED.
@@ -155,7 +154,6 @@ async def test_first_needs_info_stays_resolved_not_prematurely_closed():
         case=case,
         metadata=metadata,
         user_message="mark resolved",
-        plan=TurnCommitPlan(),
     )
 
     assert case.pending_transition["to_state"] == "resolved"
@@ -182,7 +180,6 @@ async def test_ready_case_resolves_guard_does_not_interfere():
         case=case,
         metadata=metadata,
         user_message="mark resolved",
-        plan=TurnCommitPlan(),
     )
 
     assert case.pending_transition["to_state"] == "resolved"
@@ -203,7 +200,6 @@ async def test_readiness_verdict_recorded_for_transition_compliance():
         case=case,
         metadata=metadata,
         user_message="mark resolved",
-        plan=TurnCommitPlan(),
     )
 
     assert metadata.get("resolution_readiness_verdict") == "needs_info"
@@ -230,7 +226,6 @@ async def test_readiness_verdict_recorded_on_needs_info_recheck():
         case=case,
         metadata=metadata,
         user_message="I don't have a solution",
-        plan=TurnCommitPlan(),
     )
 
     assert metadata.get("resolution_readiness_verdict") == "needs_info"
@@ -250,7 +245,6 @@ async def test_the_flag_alone_with_nothing_pending_supersedes_nothing():
         case=case,
         metadata=metadata,
         user_message="mark resolved",
-        plan=TurnCommitPlan(),
     )
 
     assert case.pending_transition["to_state"] == "resolved"

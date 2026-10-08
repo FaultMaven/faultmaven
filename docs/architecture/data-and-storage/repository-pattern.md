@@ -374,7 +374,7 @@ class CaseRepository(ABC):
     """
     Abstract repository for Case persistence.
     SIMPLIFIED FOR ILLUSTRATION — see faultmaven/modules/case/infrastructure/case_repository.py
-    for the full interface (>30 methods spanning reports, checkpoints, evidence,
+    for the full interface (>30 methods spanning reports, evidence,
     agent executions, and tool calls).
     Note (v2.1): the prior "standalone evidence" methods (create/get/list/delete/link)
     are removed in the locked design — evidence is always created in a case context.
@@ -394,7 +394,6 @@ class CaseRepository(ABC):
         case: Case,
         *,
         reports: Sequence[CaseReport] = (),
-        checkpoints: Sequence[CaseCheckpoint] = (),
     ) -> Case:
         """Save or update a case. Returns the saved case.
 
@@ -404,9 +403,8 @@ class CaseRepository(ABC):
         §4.1.1. Use the explicit scoped `delete_*` methods for
         intentional removal.
 
-        `reports` and `checkpoints` are inserted in the same
-        transaction, after the case and before the commit: all of it
-        commits or none does (#1882). A taken checkpoint id raises.
+        `reports` are inserted in the same transaction, after the case
+        and before the commit: all of it commits or none does (#1882).
         """
         ...
 
@@ -496,12 +494,11 @@ class CaseRepository(ABC):
 
     # NOT SHOWN (see canonical interface):
     #   - Report ops: save_report, get_report, list_reports_for_case, ...
-    #   - Checkpoint ops: save_checkpoint, get_checkpoint, list_checkpoints, ...
     #   - Standalone evidence ops
     #   - Agent execution + tool-call ops
 ```
 
-**Illustrated above: 11 methods** (5 CRUD + 2 messages + 4 specialized). The full interface adds report, checkpoint, evidence, and agent-execution operations — see the canonical `case_repository.py` for the complete contract.
+**Illustrated above: 11 methods** (5 CRUD + 2 messages + 4 specialized). The full interface adds report, evidence, and agent-execution operations — see the canonical `case_repository.py` for the complete contract.
 
 ---
 
@@ -546,9 +543,9 @@ commit, so the bytes such a turn stored are an ordinary orphan the storage sweep
 reclaims at TTL.
 
 **A turn commits once (#1882).** The engine performs no case-scoped write: the
-rows a turn produces besides the case (its checkpoints, its report rows) ride
-the turn's `TurnCommitPlan`, and the service commits case and rows in the one
-`save(case, reports=..., checkpoints=...)` above, after the turn's response is
+rows a turn produces besides the case (its report rows) ride the turn's
+`TurnCommitPlan`, and the service commits case and rows in the one
+`save(case, reports=...)` above, after the turn's response is
 built. Work that must follow the commit (the runbook conversion) waits on a gate
 in the plan, released by the commit and cancelled when it fails. So a 2xx means
 the whole turn committed and a non-2xx means none of it did.
@@ -1078,7 +1075,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from asyncio import TimeoutError
 
 class PostgreSQLHybridCaseRepository(CaseRepository):
-    async def save(self, case: Case, *, reports=(), checkpoints=()) -> Case:
+    async def save(self, case: Case, *, reports=()) -> Case:
         try:
             # Attempt save
             result = await self.db.execute(insert_query, case.dict())
@@ -1193,9 +1190,9 @@ async def save_case_with_retry(repo: CaseRepository, case: Case) -> Case:
 import logging
 logger = logging.getLogger(__name__)
 
-async def save(self, case: Case, *, reports=(), checkpoints=()) -> Case:
+async def save(self, case: Case, *, reports=()) -> Case:
     try:
-        result = await self._execute_save(case, reports, checkpoints)
+        result = await self._execute_save(case, reports)
         logger.debug(f"Saved case {case.case_id}")
         return result
     except IntegrityError as e:

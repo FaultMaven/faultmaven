@@ -227,13 +227,12 @@ async def test_check_automatic_transitions_surfaces_resolve_confirmation_on_pivo
     case = _resolvable_case_with_pending_close()
     eng = MilestoneEngine.__new__(MilestoneEngine)
     eng.deps = EngineDeps()
-    eng.deps.checkpoint_service = None
     eng.transitions = TransitionManager(deps=eng.deps, kb_prefetcher=None)
     metadata: dict = {}
 
     with patch.object(terminal_transitions, "close_pivoted_to_resolve_total"):
         updated = await eng.transitions.check_automatic_transitions(
-            case, metadata, "yes", plan=TurnCommitPlan()
+            case, metadata, "yes"
         )
 
     # No terminal transition; the case stays INVESTIGATING with a RESOLVED

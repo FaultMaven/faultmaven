@@ -10,7 +10,6 @@ from sqlalchemy import bindparam, text
 from faultmaven.modules.case.contracts import (
     Case,
     CaseAction,
-    CaseCheckpoint,
     CaseReport,
     CausalEdge,
     CausalNode,
@@ -1119,72 +1118,5 @@ async def _insert_report(db, report: CaseReport) -> None:
             # through later via an add_report() signature change when
             # API routes start carrying it.
             "generated_by": getattr(report, "generated_by", None),
-        },
-    )
-
-
-async def _delete_uncommitted_checkpoints(db, case_id: str) -> None:
-    """Delete this case's checkpoint rows from turns that never committed.
-
-    A checkpoint row whose ``turn_number`` is above the case's COMMITTED
-    ``current_turn`` was written by a turn that did not commit: before #1882 a
-    checkpoint committed in its own transaction, mid-turn, so a turn that then
-    failed left its row behind at turn N while the case stayed at N-1. The
-    retry is turn N again, with the same deterministic checkpoint id, and the
-    turn's one commit inserts checkpoints loudly (no ``ON CONFLICT``, R6): left
-    in place, the orphan would fail that case's every retry (#1882).
-
-    Run inside ``save``'s transaction and BEFORE the case row is written, so
-    the subquery reads the committed turn, not the one this save is about to
-    commit; a turn that commits after this deletes nothing of its own. Run on
-    every save, not only one carrying checkpoints: a retried turn that takes no
-    checkpoint would otherwise commit turn N and leave the orphan looking like
-    that turn's own snapshot. A case with no row yet deletes nothing (the
-    subquery is NULL). Under PostgreSQL RLS the DELETE sees only the bound
-    tenant's rows, which is every row of this case.
-    """
-    await db.execute(
-        text("""
-            DELETE FROM case_checkpoints
-            WHERE case_id = :case_id
-              AND turn_number > (
-                  SELECT current_turn FROM cases WHERE case_id = :case_id
-              )
-        """),
-        {"case_id": case_id},
-    )
-
-
-async def _insert_checkpoint(db, checkpoint: CaseCheckpoint) -> None:
-    """Write one checkpoint row on ``db``, without committing (SQLite-compatible).
-
-    A plain INSERT, never ``ON CONFLICT DO NOTHING``: a second snapshot under an
-    id already taken is a defect at the site that took it, and it fails the
-    transaction it is in rather than vanishing (#1882 R6).
-    """
-    query = text("""
-        INSERT INTO case_checkpoints (
-            checkpoint_id, case_id, enterprise_id, organization_id, turn_number, case_snapshot,
-            snapshot_hash, trigger, created_at, metadata
-        ) VALUES (
-            :checkpoint_id, :case_id,
-            (SELECT enterprise_id FROM cases WHERE case_id = :case_id),
-            (SELECT organization_id FROM cases WHERE case_id = :case_id),
-            :turn_number, :case_snapshot,
-            :snapshot_hash, :trigger, :created_at, :metadata
-        )
-    """)
-
-    await db.execute(
-        query,
-        {
-            "checkpoint_id": checkpoint.checkpoint_id,
-            "case_id": checkpoint.case_id,
-            "turn_number": checkpoint.turn_number,
-            "case_snapshot": json.dumps(to_json_compatible(checkpoint.case_snapshot)),
-            "snapshot_hash": checkpoint.snapshot_hash,
-            "trigger": checkpoint.trigger,
-            "created_at": checkpoint.created_at,
-            "metadata": json.dumps(to_json_compatible(checkpoint.metadata)),
         },
     )

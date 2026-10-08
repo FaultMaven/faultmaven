@@ -1,8 +1,8 @@
 """Pure row <-> domain-model mapping for the PostgreSQL case repository.
 
 Functions that read no instance state: turning a SELECT row into a domain
-object (``_row_to_evidence``, ``_row_to_evidence_need``, ``_row_to_report``,
-``_row_to_case_checkpoint``), or a domain object into the bound-parameter
+object (``_row_to_evidence``, ``_row_to_evidence_need``, ``_row_to_report``),
+or a domain object into the bound-parameter
 values a write needs (``_case_record_params``, ``_bind_ids``,
 ``_derive_solution_state``), plus the tag and evidence-stance codecs the
 mappers share. ``_cast`` and ``_as_datetime`` live here too, taking
@@ -39,7 +39,6 @@ from faultmaven.modules.case.domain.models.evidence_needs import (
 from faultmaven.modules.case.domain.models.solution import (
     Solution,
 )
-from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
 from faultmaven.modules.case.domain.owned_models.report import CaseReport
 from faultmaven.utils.datetime import parse_utc_timestamp
 
@@ -126,7 +125,7 @@ def _as_datetime(value: Any, default: datetime) -> datetime:
     ("invalid input for query argument"), and (unlike a JSONB cast) it
     fails even inside ``CAST(:ts AS TIMESTAMPTZ)`` because asyncpg encodes
     the bind as timestamptz BEFORE the cast applies. Pydantic-backed rows
-    (cases / evidence / hypotheses / solutions / reports / checkpoints)
+    (cases / evidence / hypotheses / solutions / reports)
     are already datetimes via field validation, so only the dict-sourced
     message timestamps need this coercion. SQLite's repository already
     does the same via its own ``_parse_dt`` — this restores parity.
@@ -518,30 +517,4 @@ def _row_to_report(row) -> "CaseReport":
         generated_at=generated_at,
         updated_at=updated_at,
         metadata=metadata,
-    )
-
-
-def _row_to_case_checkpoint(row: Any) -> CaseCheckpoint:
-    """Convert DB row to CaseCheckpoint domain model."""
-    snapshot_data = row.case_snapshot
-    if isinstance(snapshot_data, str):
-        snapshot_data = json.loads(snapshot_data)
-
-    metadata = row.metadata
-    if isinstance(metadata, str):
-        metadata = json.loads(metadata)
-
-    created_at = row.created_at
-    if created_at and created_at.tzinfo is None:
-        created_at = created_at.replace(tzinfo=timezone.utc)
-
-    return CaseCheckpoint(
-        checkpoint_id=row.checkpoint_id,
-        case_id=row.case_id,
-        turn_number=row.turn_number,
-        case_snapshot=snapshot_data or {},
-        snapshot_hash=row.snapshot_hash,
-        trigger=row.trigger,
-        created_at=created_at,
-        metadata=metadata or {},
     )

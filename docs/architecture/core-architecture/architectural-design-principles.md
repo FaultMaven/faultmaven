@@ -317,7 +317,7 @@ oauth_authorization_codes
 -- via RedisSessionStore — there is no SQL `sessions` table.
 
 -- Case module (case domain — owns evidence, reports, agent audit data)
-cases, case_messages, case_actions, case_tags, case_checkpoints,
+cases, case_messages, case_actions, case_tags,
 evidence, hypotheses, solutions, uploaded_files,
 investigation_sessions, agent_executions, agent_tool_calls,
 reports, conversion_jobs, conversion_drafts

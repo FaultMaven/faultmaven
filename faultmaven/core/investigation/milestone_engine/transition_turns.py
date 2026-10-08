@@ -1,8 +1,8 @@
 """The pending-transition confirm/decline turns, the refused confirmation click, and the explicit status_transition intent to 'closed'.
 
 None of these turns writes anything. Each mutates the case in memory and
-returns it; the turn commits once, at the service, with the checkpoint and
-report rows a confirm adds to the turn's ``TurnCommitPlan`` (#1882).
+returns it; the turn commits once, at the service, with the report rows a
+confirm adds to the turn's ``TurnCommitPlan`` (#1882).
 """
 
 import logging
@@ -48,7 +48,6 @@ STALE_OFFER_LINE = "That button was for an earlier offer that's no longer open."
 
 
 async def _confirm_pending_transition(
-    checkpoint_service,
     report_service,
     repository,
     terminal,
@@ -59,29 +58,16 @@ async def _confirm_pending_transition(
     user_message,
     confirmed_via,
 ):
-    """Execute a confirmed pending transition: checkpoint, transition, render the closure/resolution report and compose the ack turn.
+    """Execute a confirmed pending transition: transition, render the closure/resolution report and compose the ack turn.
 
-    ``repository`` is read for the regeneration count only. The checkpoint
-    and the report row go into ``plan`` and commit with the terminal state,
-    in the turn's one transaction: a turn whose commit fails leaves no
-    CLOSED/RESOLVED state, no report and no checkpoint (#1882).
+    ``repository`` is read for the regeneration count only. The report row
+    goes into ``plan`` and commits with the terminal state, in the turn's one
+    transaction: a turn whose commit fails leaves no CLOSED/RESOLVED state and
+    no report (#1882).
     """
     from faultmaven.core.investigation.terminal_transitions import (
         confirm_pending_transition,
     )
-
-    if checkpoint_service:
-        to_state = case.pending_transition.get("to_state", "unknown")
-        plan.add_checkpoint(
-            checkpoint_service.capture(
-                case,
-                trigger="pre_case_action",
-                metadata={
-                    "from_state": case.state.value,
-                    "to_state": to_state,
-                },
-            )
-        )
 
     executed = confirm_pending_transition(case, case.user_id)
     if not executed and (case.pending_transition or {}).get("to_state") == "resolved":

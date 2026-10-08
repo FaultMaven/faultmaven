@@ -31,7 +31,6 @@ from faultmaven.core.investigation.case_telemetry import (
     TELEMETRY_LOGGER_NAME,
     TurnPath,
 )
-from faultmaven.core.investigation.checkpoint_service import CheckpointService
 from faultmaven.core.investigation.milestone_engine import runbook_creation
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.terminal_replies import (
@@ -131,7 +130,8 @@ async def _seed(sessions, case: Case) -> None:
 
 
 async def _committed(sessions) -> dict[str, Any]:
-    """What a fresh session reads: the case, and its report and checkpoint rows."""
+    """What a fresh session reads: the case (its ``case_actions`` records
+    included) and its report rows."""
     async with sessions() as other:
         case = await SQLiteCaseRepository(other).get(CASE_ID)
         reports = (
@@ -140,16 +140,12 @@ async def _committed(sessions) -> dict[str, Any]:
                 {"c": CASE_ID},
             )
         ).fetchall()
-        checkpoints = (
-            await other.execute(
-                text(
-                    "SELECT turn_number, metadata FROM case_checkpoints "
-                    "WHERE case_id = :c"
-                ),
-                {"c": CASE_ID},
-            )
-        ).fetchall()
-    return {"case": case, "reports": reports, "checkpoints": checkpoints}
+    return {"case": case, "reports": reports}
+
+
+def _resolved_actions(case: Case) -> list:
+    """The ``case_actions`` records of a transition to RESOLVED."""
+    return [a for a in case.action_history if a.to_state == CaseState.RESOLVED]
 
 
 def _engine(
@@ -163,7 +159,6 @@ def _engine(
         MagicMock(),
         repository,
         investigation_tools=MagicMock(),
-        checkpoint_service=CheckpointService(),
         report_service=ReportGenerationService(case_repository=repository),
         conversion_service=conversion_service,
     )
@@ -278,11 +273,12 @@ class TestTheTurnCommitsOnce:
         assert committed.current_turn == 5
         assert [m["role"] for m in committed.messages] == ["user", "assistant"]
 
-    async def test_a_terminal_confirm_is_one_save_with_its_report_and_checkpoint(
+    async def test_a_terminal_confirm_is_one_save_with_its_report_and_record(
         self, sessions
     ):
         """Control for the failure test below: the CLOSED/RESOLVED state, its
-        summary report and its checkpoint all land, in the one save."""
+        summary report and its ``case_actions`` record all land, in the one
+        save."""
         case = _pending_resolve_case()
         await _seed(sessions, case)
 
@@ -294,7 +290,7 @@ class TestTheTurnCommitsOnce:
         got = await _committed(sessions)
         assert got["case"].state == CaseState.RESOLVED
         assert [r[0] for r in got["reports"]] == [ReportType.RESOLUTION_SUMMARY.value]
-        assert len(got["checkpoints"]) == 1
+        assert len(_resolved_actions(got["case"])) == 1
         assert response.case_state == CaseState.RESOLVED
 
 
@@ -329,12 +325,12 @@ class TestAFailedCommitLeavesNothing:
         assert [m["role"] for m in committed.messages] == ["user", "assistant"]
         assert [m["turn_number"] for m in committed.messages] == [5, 5]
 
-    async def test_a_terminal_confirm_whose_commit_fails_leaves_no_closed_report_or_checkpoint(
+    async def test_a_terminal_confirm_whose_commit_fails_leaves_no_closed_report_or_record(
         self, sessions
     ):
         """The inverse window, closed by construction: the summary row and the
-        checkpoint ride the same transaction as RESOLVED, so a failed commit
-        leaves none of the three."""
+        transition's ``case_actions`` record ride the same transaction as
+        RESOLVED, so a failed commit leaves none of the three."""
         case = _pending_resolve_case()
         await _seed(sessions, case)
 
@@ -351,7 +347,7 @@ class TestAFailedCommitLeavesNothing:
         assert got["case"].state == CaseState.INVESTIGATING
         assert got["case"].pending_transition
         assert got["reports"] == []
-        assert got["checkpoints"] == []
+        assert _resolved_actions(got["case"]) == []
 
     async def test_a_regenerate_turn_whose_commit_fails_consumes_no_slot(
         self, sessions

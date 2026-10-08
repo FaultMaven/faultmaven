@@ -66,12 +66,11 @@ def _case(severity_guess=None, urgency=None) -> Case:
 
 async def _gate1(case: Case) -> ProblemVerification:
     deps = MagicMock()
-    deps.checkpoint_service = None
     prefetcher = MagicMock()
     prefetcher.prefetch_kb_context = AsyncMock()
     await TransitionManager(
         deps=deps, kb_prefetcher=prefetcher
-    )._transition_to_investigating(case, plan=TurnCommitPlan())
+    )._transition_to_investigating(case)
     assert case.problem_verification is not None
     return case.problem_verification
 

@@ -3,8 +3,7 @@
 A turn commits once, at the service, with the rows its ``TurnCommitPlan``
 carries. These scans keep a mid-turn commit from coming back under
 ``core/investigation/milestone_engine/``: no repository ``save``, no
-``add_report`` / ``create_checkpoint`` / ``generate_reports`` (each a write of
-its own), and no background task that is not behind the turn's commit gate.
+``add_report`` / ``generate_reports`` (each a write of its own), and no background task that is not behind the turn's commit gate.
 
 The documented exceptions, and why each is not a turn write:
 
@@ -49,7 +48,7 @@ SERVICE_DIR = (
 ROUTE = ROOT / "faultmaven" / "modules" / "case" / "api" / "routes" / "conversation.py"
 
 #: Writes that commit on their own.
-OWN_COMMIT_CALLS = {"add_report", "create_checkpoint", "generate_reports"}
+OWN_COMMIT_CALLS = {"add_report", "generate_reports"}
 #: Spawners of background work.
 SPAWNS = {"create_task", "ensure_future"}
 

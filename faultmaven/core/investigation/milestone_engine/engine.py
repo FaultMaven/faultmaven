@@ -242,7 +242,6 @@ class MilestoneEngine:
         repository: Any,  # Case repository abstraction (duck typing)
         investigation_tools: Any,
         knowledge_service: IKnowledgeService | None = None,
-        checkpoint_service: Any | None = None,
         da_provider: Any | None = None,
         da_model: str | None = None,
         sanitizer: Any | None = None,
@@ -262,7 +261,6 @@ class MilestoneEngine:
                 (search_file, deep_analysis, etc.). Required — DA turns use
                 these for evidence searching during generation.
             knowledge_service: Optional knowledge service for KB searches
-            checkpoint_service: Optional CheckpointService for state snapshots
             da_provider: Dedicated provider for DA (directed analysis) turns
                 (configured via DA_PROVIDER in .env).
                 When None, falls back to llm_provider.
@@ -300,7 +298,6 @@ class MilestoneEngine:
             llm_provider=llm_provider,
             repository=repository,
             knowledge_service=knowledge_service,
-            checkpoint_service=checkpoint_service,
             investigation_tools=investigation_tools,
             da_provider=da_provider,
             da_model=da_model,
@@ -378,7 +375,7 @@ class MilestoneEngine:
                 ride in it (the same reason ``user_id`` is kept out).
 
         Writes nothing the turn owns (#1882). The case is mutated in memory
-        and returned; the rows the turn produced (checkpoints, report rows)
+        and returned; the rows the turn produced (report rows)
         and the work that must wait for its commit (gates) are collected in
         the returned ``commit_plan``. The caller commits both in one
         transaction (``turn_commit.commit_turn_plan``) or not at all. The
@@ -768,7 +765,6 @@ class MilestoneEngine:
 
                     if verdict == "confirm":
                         return await _confirm_pending_transition(
-                            self.deps.checkpoint_service,
                             self.deps.report_service,
                             self.deps.repository,
                             self.terminal,
@@ -919,9 +915,7 @@ class MilestoneEngine:
                     user_message, None, intent_value=revision_intent, typed=typed
                 )
                 if revision_verdict == "confirm":
-                    await confirm_revision(
-                        self.responses, self.deps, case, metadata, plan=plan
-                    )
+                    await confirm_revision(self.responses, case, metadata)
                 elif revision_verdict == "decline":
                     declined = decline_revision(case)
                     discarded = staged_work_summary(declined)
@@ -1244,7 +1238,6 @@ class MilestoneEngine:
                     attachments=attachments,
                     case=case,
                     metadata=metadata,
-                    plan=plan,
                     response_obj=response_obj,
                     upload_report=upload_report,
                     user_message=user_message,

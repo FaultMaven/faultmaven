@@ -2,70 +2,30 @@
 
 This document details the core orchestration capabilities of the FaultMaven Investigation Engine, specifically focusing on state management, debugging, execution control, and real-time feedback.
 
-These capabilities are implemented in the `MilestoneEngine` and supported by the `CaseRepository`.
+These capabilities are implemented in the `MilestoneEngine` and supported by the `CaseRepository`. §1 and §2 record two that were retired.
 
-## 1. State Checkpointing
+## 1. State Checkpointing — RETIRED
 
-FaultMaven snapshots case state immediately **before each state transition**, so a
-transition that goes wrong leaves the prior state recoverable from the database.
-This is a pre-transition recovery record, not a replay log: it is written on
-transitions only, and it has no online reader (see §2).
+> **Removed (#1882, owner ruling 2026-10-08).** Case checkpoints — a full
+> `case.model_dump()` snapshot taken before each state transition, stored in
+> `case_checkpoints` — are gone: the service, the four engine sites, the
+> repository methods, the model and the table (revision 009 drops it).
 
-### 1.1 Mechanism
+Nothing ever read a checkpoint, and no deployment ever wrote one: the composition
+root never constructed the checkpoint service, so every site was skipped in
+production. What a pre-transition snapshot was meant to preserve is kept where it
+is read:
 
-- **Construction**: [`CheckpointService.capture`](../../../faultmaven/core/investigation/checkpoint_service.py) builds a `CaseCheckpoint` from `case.model_dump()` and computes a SHA-256 hash of the JSON snapshot, touching no storage. It is the only way to take one.
-- **Persistence: in the turn's one commit** (#1882). Each site adds its snapshot to the turn's `TurnCommitPlan` (`plan.add_checkpoint(...)`), and the service commits the plan with the case: `ICaseRepository.save(case, checkpoints=[...])` writes the row in the case's own transaction. A checkpoint therefore exists only for a transition that committed; a turn that fails leaves none. (Before #1882 each site committed its row on its own, mid-turn, so a turn that then failed left a checkpoint of a transition that never happened.) The same transaction first deletes the case's checkpoint rows above its committed `current_turn` — rows such an earlier failed turn left — so the retried turn's identical id does not collide.
-- **Storage**: `CaseCheckpoint` rows live in `case_checkpoints`. PostgreSQL uses `JSONB` for efficient querying; SQLite (dev) uses `Text` for compatibility.
-- **Immutability**: Checkpoints are append-only. The checkpoint_id is a UUIDv5 of `(case_id, current_turn, trigger, target)`, where the target is the metadata's `to_state`, or its `action` for a site that names no state (`checkpoint_id_for`). Two sites in one turn therefore never share an id, while one site firing twice for the same transition does: the plan keeps the first and drops the repeat (`add_checkpoint`), and the INSERT is a plain one that refuses a taken id rather than skipping it. A UUID because the column is `VARCHAR(36)`: the readable `{case_id}:turn:{n}:{trigger}` it replaced was 40+ characters, and PostgreSQL refused every one of them.
-- **Wiring**: every site is guarded by a `checkpoint_service` presence check. The composition root (`container/providers/services.py`) does not construct a `CheckpointService` today, so a deployment takes no checkpoints; the tests wire one.
+- **`case_actions`** (`case.action_history`) records every state transition: from,
+  to, who and when.
+- **`statement_history`** keeps every revision of the problem statement.
+- **`turn_history`** (`TurnProgress`) records every turn: gate and progress
+  milestones, evidence added, hypotheses generated, the outcome. It is the
+  per-turn audit surface and the feed for the turn-by-turn UI.
 
-### 1.2 Trigger Sites
-
-Checkpoints fire at four sites — the button-confirm path in
-`milestone_engine/transition_turns.py`, two in the `TransitionManager` collaborator
-(`milestone_engine/transitions.py`) and the statement-revision confirm in
-`milestone_engine/statement_revision.py` — and all with trigger `pre_case_action`.
-Each adds its snapshot to the turn's plan; none writes. Every site is guarded by a
-`checkpoint_service` presence check, so the engine degrades safely when the service
-is not wired. No two of them can fire in one turn, and their targets differ, so their
-checkpoint ids do too.
-
-| Site | When | Metadata captured |
-|---|---|---|
-| [`milestone_engine/transition_turns.py`](../../../faultmaven/core/investigation/milestone_engine/transition_turns.py) `_confirm_pending_transition` | Confirmed case-state transition via the `pending_transition` path | `from_state`, `to_state` |
-| [`milestone_engine/transitions.py`](../../../faultmaven/core/investigation/milestone_engine/transitions.py) `TransitionManager._transition_to_investigating` | Just before INQUIRY → INVESTIGATING (Gap #6) | `from_state`, `to_state="investigating"` |
-| [`milestone_engine/transitions.py`](../../../faultmaven/core/investigation/milestone_engine/transitions.py) `TransitionManager.check_automatic_transitions` | Just before a user-confirmed terminal transition (Gap #6) | `from_state`, `to_state` |
-| [`milestone_engine/statement_revision.py`](../../../faultmaven/core/investigation/milestone_engine/statement_revision.py) `confirm_revision` | Just before a revised problem statement the user re-confirmed is committed | `action="problem_statement_revised"` |
-
-These snapshots make every state change reversible at the data layer — the prior
-state is still on disk, recoverable by an operator reading `case_checkpoints`.
-That is the whole of what checkpoints promise.
-
-**There is no per-turn checkpoint, by decision.** A further site took a
-`turn_complete` snapshot at the end of every successful turn. It lived in
-`AgentOrchestrationService` — on the `/sessions/execute` surface no frontend
-called — and was deleted with it in #982; it was never on the `/turns` path, so
-per-turn coverage has never existed for a case a user actually ran.
-
-It was not reinstated, because a checkpoint is a **full `case.model_dump()`**. One
-snapshot per turn makes storage grow with turns × case size, and a case's snapshot
-grows as its own evidence and hypotheses accumulate — so the cost is quadratic in
-the length of an investigation, not linear. Turning that on responsibly needs a
-retention and pruning policy that does not exist. Transition-shaped checkpointing
-is bounded (a handful per case lifetime) and buys the property actually claimed
-above.
-
-`CheckpointService.capture` still defaults `trigger` to `"turn_complete"`. That
-default has no caller; it is left as the seam a future per-turn implementation would
-use, once retention is designed.
-
-### 1.3 Auditability Today
-
-`TurnProgress` entries in `case.turn_history` capture per-turn gate/progress
-milestones, evidence added, hypotheses generated, and turn outcomes. **That — not
-checkpoints — is the per-turn audit surface**, and it is the primary feed for the
-in-product turn-by-turn UI. Checkpoints sit beneath it as a transition-time
-recovery record with no user-facing surface.
+And since #1882 a turn commits once, at the end, or not at all, so "the state
+before a transition" is simply the committed row the transition's turn started
+from.
 
 ## 2. Replay & Debugging (Time Travel) — RETIRED
 
@@ -76,9 +36,9 @@ recovery record with no user-facing surface.
 
 ### 2.1 Why
 
-`restore_at_turn` matched a checkpoint by exact turn number, with no
-nearest-preceding fallback. Checkpoints are written only at state transitions
-(§1.2), so most turn numbers had no snapshot and the endpoint answered
+`restore_at_turn` matched a case checkpoint by exact turn number, with no
+nearest-preceding fallback. Checkpoints were written only at state transitions,
+so most turn numbers had no snapshot and the endpoint answered
 `NotFoundError`. It was not a degraded experience; for the substance of an
 investigation — turns that add evidence and hypotheses without changing state —
 it was a guaranteed 404.
@@ -90,19 +50,16 @@ shape as the shadow stack removed in #982, and removed for the same reason.
 
 ### 2.2 What it would take to bring back
 
-Replay needs per-turn checkpoints, and per-turn checkpoints need a retention
-policy first — a checkpoint is a full `case.model_dump()`, so writing one per turn
-costs turns × case size, and the case grows as the investigation does. Designing
-that is the prerequisite; the API is the easy part and should be rebuilt against
-whatever the retention model turns out to be, not restored from git.
-
-Two things survive to build on: `CheckpointService.capture` still takes a
-`trigger` (defaulting to the now-callerless `"turn_complete"`), and
-`case_checkpoints` still stores immutable, hash-stamped snapshots.
+Replay needs per-turn snapshots, and per-turn snapshots need a retention policy
+first — a full `case.model_dump()` per turn costs turns × case size, and the case
+grows as the investigation does. Designing that is the prerequisite; the API is
+the easy part and should be rebuilt against whatever the retention model turns
+out to be, not restored from git. Nothing of the retired case checkpoints (§1)
+survives to build on.
 
 ### 2.3 What still answers "what happened on turn N"
 
-`case.turn_history` (§1.3). It is per-turn, it is already the feed for the
+`case.turn_history` (§1). It is per-turn, it is already the feed for the
 turn-by-turn UI, and it costs a row rather than a full case snapshot.
 
 ## 3. Interrupt & Resume (Human-in-the-Loop)

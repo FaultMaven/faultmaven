@@ -58,7 +58,6 @@ from faultmaven.modules.case.domain.models.lifecycle import (
 )
 from faultmaven.modules.case.domain.models.problem import InquiryData
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
-from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
 from faultmaven.modules.case.domain.owned_models.report import (
     CaseReport,
     ReportStatus,
@@ -1272,97 +1271,6 @@ class TestReports:
     @pytest.mark.asyncio
     async def test_delete_report_missing(self, repository):
         assert await repository.delete_report("report_missing") is False
-
-
-# ============================================================
-# Checkpoints
-# ============================================================
-
-
-def _make_checkpoint(case_id: str, turn: int = 1) -> CaseCheckpoint:
-    return CaseCheckpoint(
-        checkpoint_id=f"{case_id}:turn:{turn}",
-        case_id=case_id,
-        turn_number=turn,
-        case_snapshot={"state": "inquiry", "turn": turn},
-        snapshot_hash=f"hash_{turn}",
-        trigger="turn_complete",
-        created_at=datetime.now(timezone.utc),
-        metadata={"note": f"checkpoint {turn}"},
-    )
-
-
-class TestCheckpoints:
-    @pytest.mark.asyncio
-    async def test_create_and_get_checkpoint(self, repository):
-        case = _make_case()
-        await repository.save(case)
-        cp = _make_checkpoint(case.case_id, turn=1)
-
-        saved = await repository.create_checkpoint(cp)
-        retrieved = await repository.get_checkpoint(saved.checkpoint_id)
-
-        assert retrieved is not None
-        assert retrieved.checkpoint_id == cp.checkpoint_id
-        assert retrieved.turn_number == 1
-        assert retrieved.snapshot_hash == "hash_1"
-        assert retrieved.case_snapshot["turn"] == 1
-        assert retrieved.metadata == {"note": "checkpoint 1"}
-
-    @pytest.mark.asyncio
-    async def test_get_checkpoint_missing_returns_none(self, repository):
-        assert await repository.get_checkpoint("nope") is None
-
-    @pytest.mark.asyncio
-    async def test_get_checkpoints_ordered_by_turn_asc(self, repository):
-        case = _make_case()
-        await repository.save(case)
-        await repository.create_checkpoint(_make_checkpoint(case.case_id, turn=2))
-        await repository.create_checkpoint(_make_checkpoint(case.case_id, turn=1))
-        await repository.create_checkpoint(_make_checkpoint(case.case_id, turn=3))
-
-        checkpoints = await repository.get_checkpoints(case.case_id)
-
-        assert [c.turn_number for c in checkpoints] == [1, 2, 3]
-
-    @pytest.mark.asyncio
-    async def test_get_checkpoints_empty_list_for_case_without_checkpoints(
-        self, repository
-    ):
-        case = _make_case()
-        await repository.save(case)
-
-        checkpoints = await repository.get_checkpoints(case.case_id)
-        assert checkpoints == []
-
-    @pytest.mark.asyncio
-    async def test_create_checkpoint_wraps_errors(self, async_session):
-        repo = SQLiteCaseRepository(async_session)
-        repo.db = AsyncMock()
-        repo.db.execute.side_effect = RuntimeError("boom")
-        repo.db.rollback = AsyncMock()
-
-        cp = _make_checkpoint("case_abc", turn=1)
-        with pytest.raises(RepositoryException, match="Failed to create checkpoint"):
-            await repo.create_checkpoint(cp)
-
-    @pytest.mark.asyncio
-    async def test_get_checkpoint_wraps_errors(self, async_session):
-        repo = SQLiteCaseRepository(async_session)
-        repo.db = AsyncMock()
-        repo.db.execute.side_effect = RuntimeError("boom")
-
-        with pytest.raises(RepositoryException, match="Failed to get checkpoint"):
-            await repo.get_checkpoint("cp_abc")
-
-    @pytest.mark.asyncio
-    async def test_get_checkpoints_wraps_errors(self, async_session):
-        repo = SQLiteCaseRepository(async_session)
-        repo.db = AsyncMock()
-        repo.db.execute.side_effect = RuntimeError("boom")
-
-        with pytest.raises(RepositoryException, match="Failed to get checkpoints"):
-            await repo.get_checkpoints("case_abc")
 
 
 # ============================================================

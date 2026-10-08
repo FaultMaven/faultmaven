@@ -10,7 +10,6 @@ from faultmaven.modules.case.contracts import (
     ActionAttempt,
     Case,
     CaseAction,
-    CaseCheckpoint,
     CaseReport,
     CaseState,
     DocumentationData,
@@ -235,60 +234,6 @@ def _bind_ids(params: dict[str, Any], ids: builtins.list[str]) -> str:
         params[key] = cid
         names.append(f":{key}")
     return ", ".join(names)
-
-
-def _row_to_case_checkpoint(row: Any) -> CaseCheckpoint:
-    """Convert DB row to CaseCheckpoint domain model."""
-    # Handle dict-like access for Row objects
-    if hasattr(row, "_mapping"):
-        row_dict = dict(row._mapping)
-    else:
-        # Fallback for older SQLAlchemy versions or raw tuples
-        # Try to map by position if we know the query order, or check keys
-        try:
-            # If specific known columns
-            keys = [
-                "checkpoint_id",
-                "case_id",
-                "turn_number",
-                "case_snapshot",
-                "snapshot_hash",
-                "trigger",
-                "created_at",
-                "metadata",
-            ]
-            row_dict = dict(zip(keys, row))
-        except Exception:
-            # If row has keys/keys()
-            if hasattr(row, "keys"):
-                row_dict = dict(zip(row.keys(), row))
-            else:
-                raise Exception("Cannot map row to dictionary")
-
-    # Parse JSON fields
-    snapshot_data = row_dict.get("case_snapshot")
-    if isinstance(snapshot_data, str):
-        snapshot_data = json.loads(snapshot_data) if snapshot_data else {}
-
-    metadata = row_dict.get("metadata")
-    if isinstance(metadata, str):
-        metadata = json.loads(metadata) if metadata else {}
-
-    # Handle timestamp
-    created_at = row_dict.get("created_at")
-    if isinstance(created_at, str):
-        created_at = datetime.fromisoformat(created_at.replace(" ", "T"))
-
-    return CaseCheckpoint(
-        checkpoint_id=row_dict["checkpoint_id"],
-        case_id=row_dict["case_id"],
-        turn_number=row_dict["turn_number"],
-        case_snapshot=snapshot_data,
-        snapshot_hash=row_dict["snapshot_hash"],
-        trigger=row_dict["trigger"],
-        created_at=created_at,
-        metadata=metadata,
-    )
 
 
 def _case_record_params(case: Case, last_activity_at: datetime) -> dict[str, Any]:

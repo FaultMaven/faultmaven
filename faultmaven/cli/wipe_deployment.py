@@ -131,7 +131,6 @@ MUST_BE_EMPTY = frozenset(
         # Case domain
         "cases",
         "case_actions",
-        "case_checkpoints",
         "case_entities",
         "case_messages",
         "case_tags",
