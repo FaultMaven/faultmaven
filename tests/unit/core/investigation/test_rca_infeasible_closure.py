@@ -13,11 +13,22 @@ unreachable (declared via rca_infeasible + rationale), which outranks the
 mitigation_verified, so both always apply and the more informative label wins.
 """
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _apply_stage_gate_side_effects,
     _close_confirmation_suggestions,
+)
+from faultmaven.core.investigation.schemas import (
+    EvidenceToAdd,
+    EvidenceTrail,
+    InvestigationResponse_Mitigation,
+    MilestoneJustifications,
+    MilestoneUpdates,
+    ProposedTransition,
 )
 from faultmaven.core.investigation.terminal_transitions import (
     cancel_pending_transition,
@@ -26,9 +37,13 @@ from faultmaven.core.investigation.terminal_transitions import (
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
+    Evidence,
+    EvidenceCategory,
+    EvidenceSourceType,
     InquiryData,
     InvestigationProgress,
     MitigationRecord,
+    ProblemStatus,
     ProblemVerification,
 )
 
@@ -186,3 +201,106 @@ def test_closure_message_uses_rationale_or_fallback(rationale, expected_phrase):
     )
 
     assert expected_phrase in metadata["rca_infeasible_closure_message"]
+
+
+def _turn_engine(model_proposes: str | None) -> MilestoneEngine:
+    """A real engine whose stubbed model verifies the mitigation and, when
+    asked, proposes a transition beside it."""
+    repo = MagicMock()
+    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.get = AsyncMock(side_effect=lambda cid: None)
+    engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
+    engine.kb_prefetcher.prefetch_kb_context = AsyncMock(return_value=None)
+    state_updates = {
+        "milestones": MilestoneUpdates(mitigation_verified=True),
+        "evidence_to_add": [
+            EvidenceToAdd(
+                summary="error rate 0% for 30 minutes after failover",
+                extract="gateway 5xx rate: 0.0 at 14:30-15:00",
+                category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+                source_type=EvidenceSourceType.USER_DESCRIPTION,
+            )
+        ],
+    }
+    if model_proposes:
+        state_updates["proposed_transition"] = ProposedTransition(
+            to_state=model_proposes
+        )
+    engine.generator.generate_structured_output = AsyncMock(
+        return_value=InvestigationResponse_Mitigation(
+            agent_response="The failover held.",
+            state_updates=state_updates,
+            evidence_trail=EvidenceTrail(
+                evidence_analyzed=[],
+                milestone_justifications=MilestoneJustifications(
+                    mitigation_verified="error rate back to 0 after the failover"
+                ),
+            ),
+        )
+    )
+    return engine
+
+
+def _turn_case() -> Case:
+    case = _make_case(rca_infeasible=True, mitigation_verified=False)
+    case.progress.problem_status = ProblemStatus.VERIFIED
+    return case
+
+
+@pytest.mark.parametrize("model_proposes", ["closed", "resolved"])
+async def test_the_models_same_turn_proposal_leaves_the_engines_close(model_proposes):
+    """#1885, through a real turn: the engine's stabilized-close offer is what
+    the user answers, whatever the model proposed beside it. Replaced, the
+    offer the user confirmed was the model's, not the one whose reason the
+    reply shows."""
+    case = _turn_case()
+    result = await _turn_engine(model_proposes).process_turn(
+        case=case, user_message="the failover held, error rate is 0"
+    )
+
+    assert case.progress.mitigation.verified is True
+    pending = case.pending_transition
+    assert pending["to_state"] == "closed"
+    assert pending["closure_reason"] == "closed_rca_infeasible"
+    assert pending["summary"] == (
+        "The mitigation is verified and stable. Since third-party API outage, "
+        "shall we close this case as stabilized?"
+    )
+    assert pending["summary"] in result["agent_response"]
+
+
+@pytest.mark.parametrize("model_proposes", [None, "resolved", "closed"])
+async def test_a_resolvable_case_is_never_offered_the_stabilized_close(
+    model_proposes,
+):
+    """The stabilized close reads closure readiness like every engine opener
+    (#1885 review): on a case whose cause is confirmed eliminated it is not
+    offered, so the resolve offer the readiness bar calls for is what the user
+    answers — the model's own, or the INV-43 backstop's — and one "yes"
+    resolves it."""
+    case = _turn_case()
+    case.evidence.append(
+        Evidence(
+            category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            primary_purpose="confirm the cause was eliminated",
+            summary="after the vendor rolled back their change the 5xx stopped",
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            collected_by="user",
+            collected_at_turn=1,
+        )
+    )
+    engine = _turn_engine(model_proposes)
+    result = await engine.process_turn(
+        case=case, user_message="the failover held, error rate is 0"
+    )
+
+    assert case.progress.mitigation.verified is True
+    assert case.pending_transition["to_state"] == "resolved"
+    assert "stabilized" not in result["agent_response"]
+    labels = [s["label"] for s in result["suggested_follow_ups"]]
+    assert "Yes, mark as resolved" in labels
+    assert "Yes, close this case" not in labels
+
+    case.current_turn += 1
+    result = await engine.process_turn(case=case, user_message="yes")
+    assert result["case_updated"].state == CaseState.RESOLVED

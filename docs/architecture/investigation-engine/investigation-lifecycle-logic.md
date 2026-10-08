@@ -466,7 +466,7 @@ on gate turns remain engine-owned **replacements** — that is the separate
 suggestion-ownership decision (#428's "augment" was reverted by #430) and is
 deliberately unchanged.
 
-> **Loop-bound (`resolution_suggest_close` guard).** The "suggests Close instead" pivot above is produced by the handshake block early in `_check_automatic_transitions`. But the user typically re-confirms ("yes, it's resolved") and the LLM dutifully re-emits `proposed_transition=resolved` on the **same** turn — and the later LLM-proposal block in the same method calls `propose_transition`, which **replaces `pending_transition` wholesale**, clobbering the CLOSE pivot. Unguarded, that re-arms RESOLVED+`needs_info` every turn → the gate loops to max_turns ([project-resolution-gate-stuck-loop]; Run 36). The invariant is enforced by a guard: when the handshake block has set `metadata["resolution_suggest_close"]` this turn, the LLM's same-turn `proposed_transition` is **ignored** so it cannot overwrite the escape. This is what makes "no re-ask loop" actually hold — independent of *why* the case is in resolution `NEEDS_INFO` (instant/index resolution, mitigation-first, or any desync that leaves 0 `Solution` records).
+> **Loop-bound (the engine's same-turn offer stands).** The "suggests Close instead" pivot above is produced by the handshake block early in `_check_automatic_transitions`. But the user typically re-confirms ("yes, it's resolved") and the LLM dutifully re-emits `proposed_transition=resolved` on the **same** turn — and the later LLM-proposal block in the same method calls `propose_transition`, which **replaces `pending_transition` wholesale**, clobbering the CLOSE pivot. Unguarded, that re-arms RESOLVED+`needs_info` every turn → the gate loops to max_turns ([project-resolution-gate-stuck-loop]; Run 36). The guard is the general same-turn rule (INV-43, #1885): when an engine opener has left an offer standing this turn (`metadata["transition_proposed_this_turn"]` with a `pending_transition`), the LLM's same-turn `proposed_transition` is **ignored** so it cannot overwrite it. This is what makes "no re-ask loop" actually hold — independent of *why* the case is in resolution `NEEDS_INFO` (instant/index resolution, mitigation-first, or any desync that leaves 0 `Solution` records).
 >
 > **Gate strictness — absence-driven.** `assess_resolution_readiness` gates RESOLVED on a **qualifying** `causal_absence_evidence` row (`_has_causal_absence` → `cause_assurance.resolution_confirmation_rows`, INV-30): non-engine-authored (the engine only mints absence rows as M6 failed-fix *dis*confirmations), not itself a failed-fix disconfirmation (REFUTES-linked, on either belief axis, to the cause the engine marked disconfirmed — a sibling-scoped REFUTES is proof-by-exclusion and does not disqualify), and at-or-after the latest engine-known failed-fix disconfirmation — the same metadata bar the RESOLVED confirm-stamp's candidate filter uses. The root cause is confirmed *eliminated*, which is the only failure-proof, non-circular "the fix worked" signal. That row alone is sufficient — a separate `Solution` record is for documentation quality (and the higher runbook bar), not a resolution gate; an out-of-band fix the user reports verbally yields `causal_absence_evidence` (`source_type=user_description`) with no `solutions_to_add` and still resolves. A case that never confirms the cause is gone — stabilized, deferred, or symptom-only relief (`symptom_absence_evidence`) — converges to CLOSE instead. (This is the settled end-state of the [project-resolution-gate-stuck-loop] sequencing: the success flow now emits absence evidence on confirmed resolution and the gate keys on it. The earlier gate, which required a `Solution` record, produced the documented stuck-loop — it refused a clear "yes, it's resolved" and kept demanding a "documented solution" the user did not have, then closed.)
 
@@ -1024,8 +1024,17 @@ evidence of a different problem (a revision, which withdraws the engine's close
 offer), or the user disputing the finding (`invalidation_withdrawn`, back to
 where the problem stood before the finding — `verified` if it was, since nothing
 refuted that verification). The dispute, like an edit, takes back a pending
-false-alarm close whoever proposed it, the engine or the model; a revision is the
-exit limited to the engine's own close.
+false-alarm close whoever proposed it: the engine, the model, or the user's own
+close from the status menu (`_close_on_explicit_intent`, which derives
+`closed_false_alarm` on an invalidated case and carries no signature). A
+revision is the exit limited to the engine's own close. On the turn the finding
+is made, the engine's signed offer is the one the user answers even when the
+model proposed a transition beside it (INV-43's same-turn rule, #1885): replaced
+by the model's, it lost the signature, so a decline recorded nothing. (On a chat
+turn section 0b withdraws a pending close before the model is called, so the
+revision gate's refusal of an unsigned close is reached only where the apply
+step meets the close still standing; it is the backstop there, not a chat-path
+refusal.)
 
 A `causal_absence` row is judged against the turn's own verification, after the
 step-2b review and again after step 2c: on a problem not verified by then it is
@@ -1749,6 +1758,8 @@ The signal's effect is narrow and specific — when a mitigation has been verifi
 | `False` (default) | Agent pushes toward RCA: *"The mitigation is working. Now let's investigate the root cause to prevent recurrence."* |
 | `True` | Agent proposes closure: *"The mitigation is verified. Since [rationale], shall we close this case?"* Uses User-Agent Handshake — user must confirm. |
 
+The close is not offered on a case whose cause is confirmed eliminated (closure readiness SUGGEST_RESOLVE, a qualifying `causal_absence` row): there the resolve offer is the one the case warrants, made by the resolution backstop (INV-43) or by the model's own RESOLVED proposal. Every engine opener reads closure readiness before choosing its target (#1885).
+
 If `rca_infeasible=True` but the user says "actually, let's dig deeper" — the agent proceeds with RCA. The signal is advisory, not binding.
 
 #### 2.4.4 Terminal State
@@ -1770,7 +1781,7 @@ The unified flow was ratified with the following decisions (resolved 2026-06-05)
    The exception is **resolve preservation** (INV-37). `solution_feasible` is only ever written by the LLM and is never reset by the engine, so the DEFERRED flag outlives the deferral: a case can carry it while a qualifying `causal_absence` row (gone⇒gone) arrives on a later turn. That case is resolution-grade, and closing it would record it unresolved and discard the attribution. The engine-side proposer therefore consults `assess_closure_readiness` and proposes **RESOLVED** on `SUGGEST_RESOLVE`, exactly as the LLM-proposal path and the confirm-time guard already did — deferred implementation says *when* the remaining work lands, not whether the cause was found. Trigger is `_has_causal_absence`, the same bar `assess_resolution_readiness` uses for READY; a merely stabilized case has `symptom_absence` and correctly does not pivot.
 3. **One mitigation record for now** (forward-only), but the flow must stay open to user-led action so a non-mitigating insert is never a dead-end (§2.3; INV-24). Multiple structured mitigation records are a possible future extension.
 4. **`cause_state = CANDIDATES` is derived** from the active-hypothesis count (≥2 ACTIVE hypotheses), not a second stored field — coupled to the prompt change that forces hypothesis emission under uncertainty (they ship together; see §1.4.1 and INV-22). A derived signal over an unreliable producer is worse than the boolean it replaced, so the derivation and the prompt mandate are not separable.
-5. **Resolution-gate interaction** (`solution_verified` ↔ the absence-evidence end-state) is revisited *after* this redesign rather than folded in — see the resolution-gate notes and the `resolution_suggest_close` guard in §1.2.
+5. **Resolution-gate interaction** (`solution_verified` ↔ the absence-evidence end-state) is revisited *after* this redesign rather than folded in — see the resolution-gate notes and the loop-bound (same-turn offer) guard in §1.2.
 
 Parse-time robustness for malformed LLM structured output (the general never-500 backstop) is a separate layer, specified in [error-handling-and-recovery.md §3.4](./error-handling-and-recovery.md#34-never-500-backstop-for-parse-time-validation-errors).
 

@@ -22,6 +22,7 @@ from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngin
 from faultmaven.core.investigation.schemas import (
     InvestigationResponse_Diagnosis,
     MilestoneUpdates,
+    ProposedTransition,
 )
 from faultmaven.modules.case.contracts import ProblemStatus
 from faultmaven.modules.case.domain.models.case import Case
@@ -169,3 +170,55 @@ async def test_confirmed_case_is_offered_resolve_not_close():
     assert LLM_ANALYSIS in text
     assert "Closing would" not in text, "pivot-from-close prose on an unprompted offer"
     assert "out-of-band" in text
+
+
+def _deferred_response_with(model_proposes: str):
+    """The deferred turn, with the model's own transition beside it."""
+    return InvestigationResponse_Diagnosis(
+        agent_response=LLM_ANALYSIS,
+        state_updates={
+            "milestones": MilestoneUpdates(solution_feasible="deferred"),
+            "proposed_transition": ProposedTransition(to_state=model_proposes),
+        },
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model_proposes", ["closed", "resolved"])
+async def test_the_models_same_turn_proposal_leaves_the_signed_offer(model_proposes):
+    """#1885: the engine's offer is what the user answers. Replaced by the
+    model's, it lost its signature, a decline recorded nothing, and the engine
+    offered the same close again on the next ordinary turn (fm#1122's re-nag).
+    A model RESOLVED on this case is not ready, and used to stand in for the
+    engine's close as a resolve offer."""
+    case = _case(causal_absence=False)
+    engine = _engine(_deferred_response_with(model_proposes))
+
+    result = await engine.process_turn(
+        case=case, user_message="the platform team ships it"
+    )
+    pending = case.pending_transition
+    assert pending["to_state"] == "closed"
+    assert "justifying_signature" in pending
+    labels = [s["label"] for s in result["suggested_follow_ups"]]
+    assert "Yes, close this case" in labels
+
+    case.current_turn += 1
+    engine.generator.generate_structured_output = AsyncMock(
+        return_value=InvestigationResponse_Diagnosis(
+            agent_response="ok", state_updates={}
+        )
+    )
+    await engine.process_turn(case=case, user_message="no")
+    assert case.progress.deferred_disposition_declined_signatures == [
+        pending["justifying_signature"]
+    ]
+
+    case.current_turn += 1
+    engine.generator.generate_structured_output = AsyncMock(
+        return_value=_deferred_response()
+    )
+    await engine.process_turn(
+        case=case, user_message="what should the platform team change first?"
+    )
+    assert case.pending_transition is None, "the declined offer came back"

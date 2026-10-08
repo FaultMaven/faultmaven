@@ -447,22 +447,52 @@ class TransitionManager:
                     # Skip downstream proposal processing.
                     proposed = None
 
-            # Loop-bound (project-resolution-gate-stuck-loop): if the
-            # handshake block above already pivoted this case to CLOSE this
-            # turn — a repeated resolution NEEDS_INFO that re-asking cannot
-            # satisfy (the user keeps confirming but no Solution is/can be
-            # recorded) — do NOT let the LLM's same-turn ``proposed_transition``
-            # re-arm RESOLVED and clobber that CLOSE via ``propose_transition``.
-            # The LLM re-proposes RESOLVED every turn while the user confirms;
-            # without this guard the CLOSE pivot is overwritten every turn and
-            # the gate loops forever (Run 36, case_95d86b7daf8c). Honoring the
-            # CLOSE pivot terminates the case cleanly (root cause preserved).
-            if proposed and metadata.get("resolution_suggest_close"):
+            # The engine's same-turn offer stands (#1885). Every engine opener
+            # that runs before this point — the apply step's false-alarm and
+            # deferred-disposition proposers, the rca_infeasible stage-gate
+            # close, a staged-work replay's offer, and step 0's needs_info
+            # re-proposals above — leaves its offer on ``pending_transition``
+            # and sets ``transition_proposed_this_turn``. The model's proposal
+            # must not replace it: ``propose_transition`` builds a fresh dict,
+            # so it would erase the offer's provenance (``justifying_signature``,
+            # which a decline is recorded against and which lets a revision
+            # withdraw a false-alarm close, INV-45) and, on a different target,
+            # put an offer in front of the user the engine's own readiness
+            # reading did not make. A DIFFERENT target loses too: the engine
+            # chose its target from the same readiness the model's proposal
+            # would be run through, a CLOSE still pivots to RESOLVED at confirm
+            # on a resolvable case (INV-37), and the model can propose again
+            # once the user has answered. One rule, so the escape from a
+            # repeated resolution NEEDS_INFO (step 0's CLOSE pivot, which the
+            # model used to re-arm to RESOLVED every turn: Run 36,
+            # case_95d86b7daf8c) is one instance of it rather than its own
+            # guard.
+            #
+            # The ``pending_transition`` conjunct is defensive: every writer of
+            # the flag leaves its offer standing, so today the flag alone would
+            # do. It keeps a flag that outlived its offer (an offer withdrawn
+            # later in the same turn) from silently swallowing the model's
+            # proposal with nothing in front of the user.
+            if (
+                proposed
+                and metadata.get("transition_proposed_this_turn")
+                and getattr(case, "pending_transition", None)
+            ):
+                engine_to = case.pending_transition.get("to_state")
                 logger.info(
-                    f"Case {case.case_id}: honoring handshake CLOSE pivot — "
-                    f"ignoring same-turn LLM proposed_transition="
-                    f"{getattr(proposed, 'to_state', None)!r} so it does not "
-                    f"clobber the escape from a repeated resolution NEEDS_INFO."
+                    f"Case {case.case_id}: the engine opened a {engine_to!r} "
+                    f"handshake this turn — ignoring same-turn LLM "
+                    f"proposed_transition={getattr(proposed, 'to_state', None)!r}."
+                )
+                # Read by the turn's ``transition_compliance`` line: the
+                # model's proposal was dropped, not pivoted.
+                metadata["transition_superseded_by_engine"] = True
+                _add_system_feedback(
+                    metadata,
+                    "TRANSITION NOT PROPOSED: the engine already offered the "
+                    f"user a {engine_to!r} transition this turn, and that offer "
+                    "is what they will answer. Do not re-propose a transition "
+                    "until they have answered it.",
                 )
                 proposed = None
 

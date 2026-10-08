@@ -526,10 +526,15 @@ async def _compose_turn_reply(
         if case_updated.pending_transition
         else None
     )
+    # A proposal the engine's same-turn offer superseded was DROPPED, not
+    # pivoted (#1885): the two are separate fields so the pivot rate keeps
+    # meaning "the engine re-read the model's request".
+    _transition_superseded = bool(metadata.get("transition_superseded_by_engine"))
     _transition_pivoted = bool(
         _llm_proposed_to_status
         and _engine_to_status
         and _llm_proposed_to_status != _engine_to_status
+        and not _transition_superseded
     )
     logger.info(
         "transition_compliance",
@@ -543,6 +548,7 @@ async def _compose_turn_reply(
             "llm_proposed_to_status": _llm_proposed_to_status,
             "engine_effective_to_status": _engine_to_status,
             "transition_pivoted": _transition_pivoted,
+            "transition_superseded_by_engine": _transition_superseded,
             "user_confirmed_investigation_emitted": bool(
                 getattr(
                     getattr(response_obj, "state_updates", None),
