@@ -227,8 +227,11 @@ class FileStorageService(BaseService):
     async def mark_linked(self, storage_key: str) -> bool:
         """Flip a stored file's sidecar `linked` flag to True.
 
-        Called after Evidence is created referencing this file so the
-        orphan-cleanup job knows not to delete it.
+        Called after the commit of the turn that carried the upload — the
+        commit that writes the ``uploaded_files`` row referencing this file
+        (``_mark_turn_uploads_linked``, #1878) — so the orphan-cleanup job
+        knows not to delete it. Never before that commit: a blob marked linked
+        with no row behind it is exempt from the sweep for good.
 
         Args:
             storage_key: Backend key (as returned by `store_file` in the

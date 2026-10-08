@@ -347,9 +347,9 @@ class TestThePersistedConsequence:
             content_hash, content_type, uploaded_by, turn, count = row
             assert count == 1
             assert content_hash == "a" * 64, (
-                "content_hash was nulled -- find_uploaded_file_by_content_hash "
-                "returns None for a byte-identical re-submission, so per-case "
-                "dedup is dead and identical_to_prior_upload_at_turn with it"
+                "content_hash was nulled -- the per-case dedup over the loaded "
+                "case's rows finds nothing for a byte-identical re-submission, "
+                "so it is dead and identical_to_prior_upload_at_turn with it"
             )
             assert content_type == "text/plain"
             assert uploaded_by == "user_123"

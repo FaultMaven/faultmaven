@@ -588,10 +588,11 @@ invariant).
 ### 5.5 Dedup is a file-level concern
 
 Per-case content-hash deduplication now operates on
-`uploaded_files`, not on `evidence`. The repository contract is
-`find_uploaded_file_by_content_hash(case_id, content_hash) →
-UploadedFile?`. When an attachment with a previously-seen
-content_hash is submitted, the existing UploadedFile is returned;
+`uploaded_files`, not on `evidence`. It matches the attachment's
+content_hash against the loaded case's `uploaded_files` — every
+committed row, plus the earlier attachments of the same submission
+(#1878); there is no repository lookup. When an attachment with a
+previously-seen content_hash is submitted, the existing UploadedFile is returned;
 no new file is stored and no Evidence is created (Evidence only
 exists when the agent extracts a claim-relevant slice, which is
 unaffected by dedup).
