@@ -71,9 +71,7 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.service imp
     DEFAULT_ENTERPRISE_ID,
     ConversionService,
 )
-from faultmaven.modules.knowledge.domain.services.runbook_validator import (
-    VALID_SYMPTOM_CLASSES,
-)
+from faultmaven.modules.knowledge.taxonomy import SymptomClass, vocabulary
 
 # =============================================================================
 # Fixtures
@@ -2333,7 +2331,7 @@ class TestSymptomClassProducePath:
         reclassified frontmatter — otherwise duplicate runbooks slip dedup."""
         for prompt in (CONVERSION_SYSTEM_PROMPT, ANALYSIS_SYSTEM_PROMPT):
             assert "__SYMPTOM_CLASS_VOCAB__" not in prompt
-            for term in VALID_SYMPTOM_CLASSES:
+            for term in vocabulary(SymptomClass):
                 assert term in prompt, f"vocab term missing: {term}"
 
     def test_prompt_no_longer_freezes_symptom_class(self):

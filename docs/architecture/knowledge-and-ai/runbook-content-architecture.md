@@ -63,13 +63,15 @@ Classification serves two functions:
 
 Every runbook declares its classification in YAML frontmatter. These fields are stored as ChromaDB metadata, enabling filtered vector search (semantic similarity within a domain, not across all documents).
 
+The table is canonical for the six closed vocabularies — `domain`, `symptom_class`, `severity`, `scope`, `difficulty` and `status`. Their one copy in code is `faultmaven/modules/knowledge/taxonomy.py` (one enum each, in this order); the validator, the conversion prompts, the request schema published in `openapi.json` and the database CHECK constraints all derive from it, and `tests/unit/modules/knowledge/test_runbook_taxonomy_one_owner.py` fails when this table and the enums differ (#1886). Change a vocabulary here and in that module together; a value removed from or added to `severity` or `scope` also needs a migration moving the CHECK constraint.
+
 | Field | Type | Required | Purpose |
 |-------|------|----------|---------|
 | `id` | string | Yes | Unique identifier for the runbook |
 | `title` | string | Yes | Human-readable title |
 | `domain` | string | Yes | Engineering vertical: `database`, `networking`, `compute`, `application`, `security`, `storage`, `messaging` |
 | `service` | string | Yes | Specific technology: `postgresql`, `kubernetes`, `redis`, `nginx`, `kafka` |
-| `symptom_class` | list of strings | Yes | Failure modes addressed: `latency`, `oom`, `connection_refused`, `timeout`, `disk_full`, `crash_loop`, `auth_failure` |
+| `symptom_class` | list of strings | Yes | Failure modes addressed, each one of: `auth_failure`, `connection_refused`, `cpu_saturation`, `crash_loop`, `data_loss`, `deployment_failure`, `disk_full`, `image_pull_failure`, `latency`, `node_failure`, `oom`, `replication_lag`, `scheduling_failure`, `service_unavailable`, `throughput_degradation`, `timeout` |
 | `severity` | enum | Yes | Impact level: `critical`, `high`, `medium`, `low`, `info` |
 | `scope` | enum | Yes | KB tier: `global`, `team`, `personal` |
 | `tags` | list of strings | No | Additional search terms (e.g., `aws`, `gcp`, `linux`) |
@@ -109,7 +111,7 @@ status: verified
 
 Atomic runbooks produce better retrieval because the entire document is relevant to the query, not just a buried section.
 
-**Fixed vocabulary for `domain` and `symptom_class`.** Free-text values drift over time. Maintain a controlled vocabulary so that metadata filtering works consistently. The lists above are starting points — extend them deliberately, not ad hoc. For long-tail symptoms that don't fit the controlled vocabulary (e.g., `split_brain`, `clock_skew`, `certificate_expiry`, `cache_stampede`), use the `tags` field. Tags are free-text and indexed in ChromaDB metadata, providing an escape valve for specific failure modes without diluting the core vocabulary. Both vocabularies are validated as hard **errors** (not warnings) by kb-toolkit `ValidationConfig` (`valid_domains` / `valid_symptom_classes`) on the authoring side and the backend `runbook_validator.py` (`VALID_DOMAINS` / `VALID_SYMPTOM_CLASSES`) on the produce side. How a caller reacts to those errors varies by path: the runbook **upload** endpoint rejects the file (422), while **conversion** persists the draft with the validation errors attached for the author to fix. The two hand-maintained copies (the repos can't import each other) are kept byte-equal by the cross-repo parity gate (`scripts/check_vocab_cross_repo.py`, run in kb-toolkit CI) — extend a vocabulary in **both** repos and their frozen-literal tests in lock-step, never by loosening a gate.
+**Fixed vocabulary for `domain` and `symptom_class`.** Free-text values drift over time. Maintain a controlled vocabulary so that metadata filtering works consistently. The table above is the vocabulary, not a sample of it; it grows, but only deliberately, never ad hoc — by editing the table and its one owner in code (`taxonomy.py`) together. For long-tail symptoms that don't fit the controlled vocabulary (e.g., `split_brain`, `clock_skew`, `certificate_expiry`, `cache_stampede`), use the `tags` field. Tags are free-text and indexed in ChromaDB metadata, providing an escape valve for specific failure modes without diluting the core vocabulary. Both vocabularies are validated as hard **errors** (not warnings) by kb-toolkit `ValidationConfig` (`valid_domains` / `valid_symptom_classes`) on the authoring side and the backend `runbook_validator.py` (against `RunbookDomain` / `SymptomClass` in `taxonomy.py`) on the produce side. How a caller reacts to those errors varies by path: the runbook **upload** endpoint rejects the file (422), while **conversion** persists the draft with the validation errors attached for the author to fix. kb-toolkit cannot import the backend, so its copy is kept equal by the cross-repo parity gate (`scripts/check_vocab_cross_repo.py`, run in kb-toolkit CI) — extend a vocabulary in **both** repos and their frozen-literal tests in lock-step, never by loosening a gate.
 
 **`service` is the technology, not the team.** Teams change; technologies are stable identifiers. Tag by what the runbook diagnoses, not who owns it.
 
@@ -332,8 +334,7 @@ Validates YAML frontmatter completeness and correctness.
 
 - All required taxonomy fields are present (`id`, `title`, `domain`, `service`, `symptom_class`, `severity`, `scope`, `version`, `last_updated`, `verified_by`, `status`)
 - Optional fields validated if present: `tags`, `difficulty`
-- `status` is one of: `draft`, `in-review`, `verified`, `stale`, `deprecated`
-- `domain` and `symptom_class` values are from the controlled vocabulary
+- `domain`, `symptom_class`, `severity`, `scope`, `difficulty` and `status` values are from their vocabularies in [§Taxonomy Schema](#taxonomy-schema), matched exactly (case-sensitive)
 - `last_updated` is a valid ISO 8601 date
 
 **Implementation:** Validated during the scan → verify workflow in `conversion_service/service.py`

@@ -49,6 +49,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from faultmaven.modules.knowledge.taxonomy import KnowledgeScope, vocabulary
 from faultmaven.utils.path_containment import PathEscape, resolve_within_root
 
 logger = logging.getLogger(__name__)
@@ -105,15 +106,9 @@ def resolve_pack_dir(project_root: Path, configured: str) -> Path:
 
 #: The knowledge tiers a pack entry may declare. Derived from the enum rather
 #: than spelled out, so a new tier cannot be accepted by the writers and refused
-#: here (or the reverse). Imported lazily at module scope is not possible here —
-#: the domain models pull in persistence — so the values are read at import of
-#: this module's first use instead.
+#: here (or the reverse).
 def _pack_scopes() -> frozenset:
-    from faultmaven.modules.knowledge.domain.models.knowledge_item import (
-        KnowledgeScope,
-    )
-
-    return frozenset(member.value for member in KnowledgeScope)
+    return frozenset(vocabulary(KnowledgeScope))
 
 
 class KbPack:

@@ -15,11 +15,11 @@ import pytest
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     KnowledgeItem,
     KnowledgeItemType,
-    KnowledgeScope,
 )
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
+from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
 from tests.unit.modules.knowledge.test_document_read_visibility import (
     _app,
     _read_service,

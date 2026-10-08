@@ -21,11 +21,11 @@ from fastapi.testclient import TestClient
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     KnowledgeItem,
     KnowledgeItemType,
-    KnowledgeScope,
 )
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
     DatabaseKnowledgeItemRepository,
 )
+from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
 
 ORG = "org-1"
 #: The enterprise every row here is isolated to — the one the fixture seeds.

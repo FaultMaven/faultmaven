@@ -66,7 +66,27 @@ from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import func
 from sqlalchemy.types import JSON, TypeDecorator
 
+from faultmaven.modules.knowledge.taxonomy import (
+    KnowledgeScope,
+    RunbookSeverity,
+    vocabulary,
+)
+
 Base = declarative_base()
+
+
+def sql_value_list(enum_cls: type[enum.Enum]) -> str:
+    """A vocabulary as the body of a SQL ``IN (...)``: ``'a', 'b'``.
+
+    For CHECK constraints built from the enum that owns the vocabulary, so the
+    database cannot admit a different set than the code (#1886). The values are
+    our own enum literals; a quote in one would be a bug, so it is refused
+    rather than escaped.
+    """
+    values = vocabulary(enum_cls)
+    if any("'" in value for value in values):
+        raise ValueError(f"{enum_cls.__name__} has a value with a quote in it")
+    return ", ".join(f"'{value}'" for value in values)
 
 
 # ============================================================
@@ -2916,7 +2936,7 @@ class KnowledgeItemModel(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "scope IN ('personal', 'team', 'global')",
+            f"scope IN ({sql_value_list(KnowledgeScope)})",
             name="knowledge_items_scope_check",
         ),
         CheckConstraint(
@@ -3160,7 +3180,7 @@ class ConversionJobModel(Base):
             name="conversion_jobs_status_check",
         ),
         CheckConstraint(
-            "scope IN ('personal', 'team', 'global')",
+            f"scope IN ({sql_value_list(KnowledgeScope)})",
             name="conversion_jobs_scope_check",
         ),
         CheckConstraint(
@@ -3233,8 +3253,10 @@ class ConversionDraftModel(Base):
             "status IN ('draft', 'verified', 'discarded')",
             name="conversion_drafts_status_check",
         ),
+        # Built from ``RunbookSeverity`` (#1886): this CHECK was a hand copy that
+        # lost ``info``, so a runbook the validator passed could not be verified.
         CheckConstraint(
-            "severity IS NULL OR severity IN ('low', 'medium', 'high', 'critical')",
+            f"severity IS NULL OR severity IN ({sql_value_list(RunbookSeverity)})",
             name="conversion_drafts_severity_check",
         ),
         Index("ix_conversion_drafts_tags", "tags", postgresql_using="gin"),

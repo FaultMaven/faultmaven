@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from enum import Enum, IntEnum
 from typing import Any, Dict, List, Optional
 
+from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
+
 # BGE-M3 produces 1024-dimensional vectors (canonical embedding model).
 EMBEDDING_DIMENSIONS = 1024
 
@@ -46,28 +48,6 @@ class KnowledgeItemType(str, Enum):
     BEST_PRACTICE = "best_practice"
     FAQ = "faq"
     RUNBOOK = "runbook"
-
-
-class KnowledgeScope(str, Enum):
-    """Visibility scope for a KnowledgeItem.
-
-    Mirrors the `knowledge_items.scope` CHECK constraint in the ORM. The
-    `str` subclassing makes serialization (`scope.value`, JSON encoding,
-    and `model.scope = item.scope.value` repository writes) ergonomic;
-    consumers should still compare against enum members
-    (`KnowledgeScope.PERSONAL`), not against string literals.
-
-    Values:
-        PERSONAL: Visible only to one user (requires owner_id).
-        TEAM: Shared to one or more teams via the share table (``resource_shares``
-            rows; the scope enum is the derived convenience — ``team`` ⟺ at least
-            one share row, maintained by the KB write path). ADR-013 §D4.
-        GLOBAL: Platform-wide built-in runbooks (FaultMaven-shipped only).
-    """
-
-    PERSONAL = "personal"
-    TEAM = "team"
-    GLOBAL = "global"
 
 
 @dataclass

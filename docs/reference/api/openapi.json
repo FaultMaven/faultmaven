@@ -1028,14 +1028,8 @@
             "type": "string"
           },
           "scope": {
-            "default": "personal",
-            "enum": [
-              "personal",
-              "team",
-              "global"
-            ],
-            "title": "Scope",
-            "type": "string"
+            "$ref": "#/components/schemas/KnowledgeScope",
+            "default": "personal"
           },
           "source_url": {
             "anyOf": [
@@ -3559,6 +3553,16 @@
         "title": "KnowledgeBaseDocument",
         "type": "object"
       },
+      "KnowledgeScope": {
+        "description": "``scope``: the KB tier, which is also a knowledge item's visibility.\n\nOne vocabulary, not two: a runbook's frontmatter ``scope`` is the tier its\nknowledge item is published at. Stored in ``knowledge_items.scope`` and\n``conversion_jobs.scope``, whose CHECKs are built from this. Compare\nagainst members (``KnowledgeScope.PERSONAL``), not string literals.\n\nValues:\n    GLOBAL: Platform-wide built-in runbooks (FaultMaven-shipped only).\n    TEAM: Shared to one or more teams via the share table (``resource_shares``\n        rows; the scope enum is the derived convenience \u2014 ``team`` \u27fa at least\n        one share row, maintained by the KB write path). ADR-013 \u00a7D4.\n    PERSONAL: Visible only to one user (requires owner_id).",
+        "enum": [
+          "global",
+          "team",
+          "personal"
+        ],
+        "title": "KnowledgeScope",
+        "type": "string"
+      },
       "LLMConfigResponse": {
         "description": "LLM configuration and provider status response.",
         "properties": {
@@ -5158,6 +5162,7 @@
         "type": "object"
       },
       "RunbookCreateRequest": {
+        "description": "A runbook authored field by field (the dashboard's Create form).\n\nThe closed vocabularies are typed with the taxonomy enums, so the request\nschema publishes the allowed values and an off-vocabulary value is a 422\nhere rather than a draft that fails validation (#1886).",
         "properties": {
           "applicability": {
             "minLength": 10,
@@ -5176,13 +5181,11 @@
             "type": "string"
           },
           "difficulty": {
-            "default": "intermediate",
-            "title": "Difficulty",
-            "type": "string"
+            "$ref": "#/components/schemas/RunbookDifficulty",
+            "default": "intermediate"
           },
           "domain": {
-            "title": "Domain",
-            "type": "string"
+            "$ref": "#/components/schemas/RunbookDomain"
           },
           "prevention": {
             "minLength": 10,
@@ -5190,20 +5193,18 @@
             "type": "string"
           },
           "scope": {
-            "title": "Scope",
-            "type": "string"
+            "$ref": "#/components/schemas/KnowledgeScope"
           },
           "service": {
             "title": "Service",
             "type": "string"
           },
           "severity": {
-            "title": "Severity",
-            "type": "string"
+            "$ref": "#/components/schemas/RunbookSeverity"
           },
           "symptom_class": {
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/SymptomClass"
             },
             "minItems": 1,
             "title": "Symptom Class",
@@ -5254,6 +5255,31 @@
         ],
         "title": "RunbookCreateRequest",
         "type": "object"
+      },
+      "RunbookDifficulty": {
+        "description": "``difficulty`` (optional): the expertise a runbook assumes.",
+        "enum": [
+          "beginner",
+          "intermediate",
+          "advanced",
+          "expert"
+        ],
+        "title": "RunbookDifficulty",
+        "type": "string"
+      },
+      "RunbookDomain": {
+        "description": "``domain``: the engineering vertical a runbook belongs to.",
+        "enum": [
+          "database",
+          "networking",
+          "compute",
+          "application",
+          "security",
+          "storage",
+          "messaging"
+        ],
+        "title": "RunbookDomain",
+        "type": "string"
       },
       "RunbookMetadata": {
         "description": "Metadata for runbook reports supporting dual sources.\nTracks origin (incident vs document) for transparency.",
@@ -5343,6 +5369,18 @@
         ],
         "title": "RunbookMetadata",
         "type": "object"
+      },
+      "RunbookSeverity": {
+        "description": "``severity``: the impact level a runbook addresses.\n\nStored in ``conversion_drafts.severity``, whose CHECK is built from this.",
+        "enum": [
+          "critical",
+          "high",
+          "medium",
+          "low",
+          "info"
+        ],
+        "title": "RunbookSeverity",
+        "type": "string"
       },
       "RunbookSource": {
         "description": "Origin of runbook content",
@@ -5912,6 +5950,29 @@
         ],
         "title": "SuggestedActionResponse",
         "type": "object"
+      },
+      "SymptomClass": {
+        "description": "``symptom_class``: the controlled failure-mode vocabulary.\n\nA list field in frontmatter; every item must be one of these. Long-tail\nsymptoms go in the free-text ``tags`` instead (spec \u00a7Taxonomy Design Rules).",
+        "enum": [
+          "auth_failure",
+          "connection_refused",
+          "cpu_saturation",
+          "crash_loop",
+          "data_loss",
+          "deployment_failure",
+          "disk_full",
+          "image_pull_failure",
+          "latency",
+          "node_failure",
+          "oom",
+          "replication_lag",
+          "scheduling_failure",
+          "service_unavailable",
+          "throughput_degradation",
+          "timeout"
+        ],
+        "title": "SymptomClass",
+        "type": "string"
       },
       "TeamCreateRequest": {
         "description": "What it takes to create a team: a name, and optionally a description.\n\n``max_length`` matches ``teams.name``'s ``VARCHAR(200)`` exactly. A wider\nrequest field does not accept more \u2014 it defers the refusal to PostgreSQL,\nwhich answers ``StringDataRightTruncation`` and a 500 where a 422 naming the\nfield belongs. (``description`` is ``TEXT``; the cap here is a request-size\nbound, not a column one.)",
@@ -6832,7 +6893,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "12.0.0"
+    "version": "12.1.0"
   },
   "openapi": "3.1.0",
   "paths": {

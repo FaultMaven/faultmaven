@@ -1,7 +1,10 @@
 """LLM prompts and token/threshold limits for the conversion pipeline."""
 
-from faultmaven.modules.knowledge.domain.services.runbook_validator import (
-    VALID_SYMPTOM_CLASSES,
+from faultmaven.modules.knowledge.taxonomy import (
+    RunbookDomain,
+    RunbookSeverity,
+    SymptomClass,
+    render_vocabulary,
 )
 
 # Output budget for one runbook conversion, and the cap the single truncation
@@ -75,10 +78,10 @@ Respond with JSON matching this schema:
     {
       "id": "kebab-case-id",
       "title": "Technology Failure Description",
-      "domain": "database|networking|compute|application|security|storage|messaging",
+      "domain": "__DOMAIN_VOCAB__",
       "service": "specific-service-name",
       "symptom_class": ["<one or more values from the controlled vocabulary above>"],
-      "severity": "critical|high|medium|low|info",
+      "severity": "__SEVERITY_VOCAB__",
       "symptoms_summary": "Error messages and symptoms",
       "resolution_summary": "Brief resolution approach"
     }
@@ -96,9 +99,16 @@ Respond with JSON matching this schema:
 # Without this, analysis free-picks an off-vocab label, the conversion prompt
 # (rule 9) later reclassifies it, and the dedup key no longer equals the persisted
 # symptom_class — so two modes that classify to the same value slip dedup and yield
-# duplicate runbooks. Sourced from the single VALID_SYMPTOM_CLASSES constant.
-ANALYSIS_SYSTEM_PROMPT = ANALYSIS_SYSTEM_PROMPT.replace(
-    "__SYMPTOM_CLASS_VOCAB__", ", ".join(VALID_SYMPTOM_CLASSES)
+# duplicate runbooks. Every vocabulary the schema names — symptom_class, domain
+# and severity — is rendered from the taxonomy enums, so the prompt cannot offer
+# a value the validator or the draft row's CHECK refuses (#1886: it offered
+# ``info`` while the CHECK did not admit it).
+ANALYSIS_SYSTEM_PROMPT = (
+    ANALYSIS_SYSTEM_PROMPT.replace(
+        "__SYMPTOM_CLASS_VOCAB__", render_vocabulary(SymptomClass)
+    )
+    .replace("__DOMAIN_VOCAB__", render_vocabulary(RunbookDomain, "|"))
+    .replace("__SEVERITY_VOCAB__", render_vocabulary(RunbookSeverity, "|"))
 )
 
 # DESIGN DECISION (predicate-less conversion — intentional, not a gap).
@@ -219,8 +229,8 @@ RULES:
 # frontmatter is in-vocab for BOTH the document and case paths — the case path
 # supplies no symptom_class taxonomy, so the model classifies here rather than
 # emitting an off-vocab placeholder. RunbookValidator (the draft-validation gate)
-# is the mechanical backstop if the model still strays off-vocab. Sourced from the
-# single VALID_SYMPTOM_CLASSES constant so the prompt can't drift from the gate.
+# is the mechanical backstop if the model still strays off-vocab. Rendered from
+# the ``SymptomClass`` enum so the prompt can't drift from the gate.
 CONVERSION_SYSTEM_PROMPT = CONVERSION_SYSTEM_PROMPT.replace(
-    "__SYMPTOM_CLASS_VOCAB__", ", ".join(VALID_SYMPTOM_CLASSES)
+    "__SYMPTOM_CLASS_VOCAB__", render_vocabulary(SymptomClass)
 )

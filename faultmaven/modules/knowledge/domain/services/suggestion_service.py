@@ -46,11 +46,15 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.prompts imp
     RUNBOOK_MAX_TOKENS_CEILING,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
-    VALID_DOMAINS,
     RunbookValidator,
     avalidate_content,
 )
 from faultmaven.modules.knowledge.exceptions import SuggestionConcurrencyError
+from faultmaven.modules.knowledge.taxonomy import (
+    RunbookDomain,
+    RunbookSeverity,
+    render_vocabulary,
+)
 from faultmaven.utils.line_endings import normalize_line_endings
 from faultmaven.utils.runbook_id import (
     is_hash_only_runbook_id,
@@ -200,6 +204,7 @@ infer each one from the case content, using only the controlled vocabularies.
 the technology — a Kubernetes scheduling failure is `compute`, a cache eviction
 is `database`, a resolver timeout is `networking`, a web tier is `application`.
 Put the technology in `service` and `tags`, where it is free text.
+`severity` MUST be one of: {severity_vocab}.
 
 Each Indicator carries exactly ONE `[Step N]` token. To cite two steps, write
 two Indicator entries — `[Step 2, Step 3]` is not a token and is rejected.
@@ -467,7 +472,8 @@ corrected runbook, starting at the opening `---`, and output nothing else.
             # the model free-picks — and picked `kubernetes`, `cache` and `web`,
             # every one of them a hard gate error, in 4 of 8 first drafts before
             # the vocabulary was named here (see the eval's --attempts 1 mode).
-            domain_vocab=", ".join(VALID_DOMAINS),
+            domain_vocab=render_vocabulary(RunbookDomain),
+            severity_vocab=render_vocabulary(RunbookSeverity),
             today_iso=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             source_label=f"Case {case_id}",
             case_title=case_title,

@@ -118,7 +118,7 @@ _RUNBOOK_BODY = {
     "title": "Test runbook title",
     "domain": "networking",
     "service": "svc",
-    "symptom_class": ["timeouts"],
+    "symptom_class": ["timeout"],
     "severity": "high",
     "scope": "global",
     "symptom_recognition": "x" * 20,

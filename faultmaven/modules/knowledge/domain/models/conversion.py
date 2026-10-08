@@ -19,6 +19,7 @@ from faultmaven.modules.case.contracts import (
     classify_solution_outcome,
     mechanism_for_display,
 )
+from faultmaven.modules.knowledge.taxonomy import RunbookDomain
 from faultmaven.utils.runbook_id import runbook_id_from_parts
 
 # =============================================================================
@@ -444,7 +445,7 @@ class CaseConversionRequest(BaseModel):
         service = affected[0] if affected else "unknown"
         tags = getattr(case, "tags", []) or []
 
-        # Resolve `domain` to one of the 7 taxonomy values so the generated
+        # Resolve `domain` to a ``RunbookDomain`` value so the generated
         # runbook passes validation. The keyword map is intentionally narrow
         # — match on service names, tags, and root-cause/symptom text. When
         # nothing matches we fall back to "application" (the broadest valid
@@ -483,13 +484,12 @@ class CaseConversionRequest(BaseModel):
 # Domain Resolution
 # =============================================================================
 
-# Keyword maps for case-to-domain classification. Must stay aligned with the
-# 7 valid domain values in RunbookValidator (database, networking, compute,
-# application, security, storage, messaging). "application" is the catch-all
-# default and intentionally has no keywords — anything that matches none of
-# the others lands there.
-_DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "networking": (
+# Keyword maps for case-to-domain classification, keyed by the ``RunbookDomain``
+# vocabulary so a key cannot name a domain the validator refuses.
+# ``application`` is the catch-all default and intentionally has no keywords —
+# anything that matches none of the others lands there.
+_DOMAIN_KEYWORDS: dict[RunbookDomain, tuple[str, ...]] = {
+    RunbookDomain.NETWORKING: (
         "istio",
         "envoy",
         "service mesh",
@@ -520,7 +520,7 @@ _DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
         "udp",
         "grpc",
     ),
-    "database": (
+    RunbookDomain.DATABASE: (
         "postgres",
         "postgresql",
         "mysql",
@@ -543,7 +543,7 @@ _DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
         "db pool",
         "connection pool exhaustion",
     ),
-    "compute": (
+    RunbookDomain.COMPUTE: (
         "kubernetes",
         "k8s",
         "pod",
@@ -563,7 +563,7 @@ _DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
         "ec2",
         "vm",
     ),
-    "security": (
+    RunbookDomain.SECURITY: (
         "auth",
         "oauth",
         "jwt",
@@ -582,7 +582,7 @@ _DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
         "vulnerability",
         "encryption",
     ),
-    "storage": (
+    RunbookDomain.STORAGE: (
         "s3",
         "ebs",
         "efs",
@@ -597,7 +597,7 @@ _DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
         "bucket",
         "object storage",
     ),
-    "messaging": (
+    RunbookDomain.MESSAGING: (
         "kafka",
         "rabbitmq",
         "pubsub",
@@ -625,14 +625,14 @@ def _resolve_domain(text: str) -> str:
     app-layer issues that the other domains don't cover.
     """
     if not text:
-        return "application"
-    scores: dict[str, int] = {}
+        return RunbookDomain.APPLICATION.value
+    scores: dict[RunbookDomain, int] = {}
     for domain, keywords in _DOMAIN_KEYWORDS.items():
         scores[domain] = sum(1 for k in keywords if k in text)
     best_domain, best_score = max(scores.items(), key=lambda kv: kv[1])
     if best_score == 0:
-        return "application"
-    return best_domain
+        return RunbookDomain.APPLICATION.value
+    return best_domain.value
 
 
 # =============================================================================

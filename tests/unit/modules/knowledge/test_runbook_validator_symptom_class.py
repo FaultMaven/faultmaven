@@ -3,8 +3,7 @@
 ``symptom_class`` is a controlled failure-mode taxonomy (like ``domain``), not
 free text (unlike ``service``). The producer side lives in
 ``faultmaven-kb-toolkit`` (``ValidationConfig.valid_symptom_classes``); the app
-mirrors it by hand in ``VALID_SYMPTOM_CLASSES`` (the repos can't import each
-other). These tests pin the app copy and the gate that rejects off-vocabulary
+owns it in ``taxonomy.SymptomClass`` (the repos can't import each other). These tests pin the app copy and the gate that rejects off-vocabulary
 values — the metadata-drift the whole controlled-vocabulary rule exists to
 prevent (``latency`` vs. ``latency-issue`` vs. ``high_latency``).
 """
@@ -14,9 +13,9 @@ from __future__ import annotations
 import pytest
 
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
-    VALID_SYMPTOM_CLASSES,
     RunbookValidator,
 )
+from faultmaven.modules.knowledge.taxonomy import SymptomClass, vocabulary
 
 pytestmark = pytest.mark.unit
 
@@ -110,7 +109,7 @@ def _symptom_class_errors(content: str) -> list[str]:
 
 def test_vocab_is_the_frozen_curated_set():
     """The app copy matches the curated kb-toolkit set exactly, in order."""
-    assert VALID_SYMPTOM_CLASSES == _EXPECTED_VOCAB
+    assert list(vocabulary(SymptomClass)) == _EXPECTED_VOCAB
 
 
 def test_in_vocab_value_passes():

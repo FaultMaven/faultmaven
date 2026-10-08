@@ -635,7 +635,7 @@ FAILURE MODE: {failure_mode.title}
 DOMAIN: {failure_mode.domain}
 SERVICE: {failure_mode.service}
 SYMPTOM_CLASS: {failure_mode.symptom_class}
-SEVERITY: {failure_mode.severity or '(not assessed — choose one of critical, high, medium, low from the source material)'}
+SEVERITY: {failure_mode.severity or '(not assessed — choose one of <the severity vocabulary> from the source material)'}
 SCOPE: {scope}
 SOURCE FILENAME: {original_filename}
 TODAY: {iso_date}
@@ -644,6 +644,8 @@ TODAY: {iso_date}
 {relevant_excerpt_or_full_text}
 --- END SOURCE MATERIAL ---
 ```
+
+`<the severity vocabulary>` is rendered from `RunbookSeverity` (`faultmaven/modules/knowledge/taxonomy.py`), whose values are the spec's: [runbook-content-architecture.md §Taxonomy Schema](./runbook-content-architecture.md#taxonomy-schema).
 
 ### 4.3 Prompt Design Decisions
 

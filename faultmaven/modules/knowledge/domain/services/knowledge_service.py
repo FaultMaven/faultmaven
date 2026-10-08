@@ -1410,12 +1410,12 @@ class KnowledgeService:
         from faultmaven.modules.knowledge.domain.models.knowledge_item import (
             KnowledgeItem,
             KnowledgeItemType,
-            KnowledgeScope,
             VerificationLevel,
         )
         from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
             DatabaseKnowledgeItemRepository,
         )
+        from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
 
         now = datetime.now(timezone.utc)
 

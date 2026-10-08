@@ -66,6 +66,16 @@ from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
     iter_cause_blocks,
     parse_cause_subfields,
 )
+from faultmaven.modules.knowledge.taxonomy import (
+    KnowledgeScope,
+    RunbookDifficulty,
+    RunbookDomain,
+    RunbookSeverity,
+    RunbookStatus,
+    SymptomClass,
+    render_vocabulary,
+    vocabulary,
+)
 from faultmaven.utils.frontmatter import (
     match_frontmatter,
     parse_frontmatter,
@@ -305,64 +315,12 @@ REQUIRED_SECTIONS = [
     "Sources",
 ]
 
-#: The ingestion gate's view of the domain taxonomy. The same vocabulary is
-#: published to the agent side as ``TROUBLESHOOTING_DOMAINS`` (with glosses) —
-#: see there for why the agent needs it.
-#:
-#: ‼ This MUST stay a literal list. kb-toolkit's cross-repo parity gate
-#: (``scripts/check_vocab_cross_repo.py``) reads it out of the AST with
-#: ``ast.literal_eval`` and never imports this module, so ``list(...)`` of
-#: anything is an ``ast.Call`` it cannot evaluate — it dies with a ValueError
-#: rather than reporting a vocabulary diff, and that gate runs in the OTHER
-#: repo's CI against this repo's default branch, so nothing here catches it.
-#: Drift between the two copies is caught instead by
-#: ``test_ingestion_gate_matches_the_published_territory``.
-VALID_DOMAINS = [
-    "database",
-    "networking",
-    "compute",
-    "application",
-    "security",
-    "storage",
-    "messaging",
-]
-
-VALID_SCOPES = ["global", "team", "personal"]
-
-VALID_SEVERITIES = ["critical", "high", "medium", "low", "info"]
-
-VALID_DIFFICULTIES = ["beginner", "intermediate", "advanced", "expert"]
-
-VALID_STATUSES = ["draft", "in-review", "verified", "stale", "deprecated"]
-
-# Controlled vocabulary for `symptom_class` — the failure-mode taxonomy. Mirrors
-# the kb-toolkit producer side (``ValidationConfig.valid_symptom_classes``,
-# config.py) exactly: same 16 curated values, same order. Like ``VALID_DOMAINS``,
-# this is a hand-maintained copy — the repos can't import each other — so grow it
-# HERE and in kb-toolkit in lock-step with the taxonomy design rule
-# (runbook-content-architecture.md §Taxonomy-Design-Rules), never by loosening the
-# gate. An off-vocabulary value is a hard error: the author either extends the
-# vocabulary deliberately or moves a long-tail symptom into the free-text `tags`
-# escape valve. `service` stays free-text (technologies proliferate faster than a
-# curated list can track).
-VALID_SYMPTOM_CLASSES = [
-    "auth_failure",
-    "connection_refused",
-    "cpu_saturation",
-    "crash_loop",
-    "data_loss",
-    "deployment_failure",
-    "disk_full",
-    "image_pull_failure",
-    "latency",
-    "node_failure",
-    "oom",
-    "replication_lag",
-    "scheduling_failure",
-    "service_unavailable",
-    "throughput_degradation",
-    "timeout",
-]
+# The closed frontmatter vocabularies (domain, symptom_class, severity, scope,
+# difficulty, status) are NOT defined here: they are the enums in
+# ``faultmaven.modules.knowledge.taxonomy``, the one copy in code of
+# runbook-content-architecture.md §Taxonomy Schema. This gate checks against
+# them, so a value it passes is one every other reader — the ORM CHECKs, the
+# reranker, the published request schema — also accepts (#1886).
 
 MAX_TITLE_LENGTH = 100
 MIN_CONTENT_LENGTH = 500
@@ -645,36 +603,29 @@ class RunbookValidator:
             if len(metadata["title"]) < 10:
                 warnings.append("Title is very short (< 10 characters)")
 
-        # Severity vocabulary
-        if "severity" in metadata and isinstance(metadata["severity"], str):
-            if metadata["severity"].lower() not in VALID_SEVERITIES:
+        # Closed scalar vocabularies. Matched EXACTLY, not case-folded: the
+        # value is stored as written (``conversion_drafts.severity``, the
+        # vector-store metadata the reranker reads), and those readers match
+        # it exactly, so a gate that passed ``High`` passed a runbook verify
+        # could not store (#1886). ``difficulty`` is optional and checked
+        # only when present. A non-string (``severity: 3``) is refused too:
+        # it used to skip the check, and the stored ``str()`` of it then
+        # failed the column's CHECK at verify. Absent and empty values are the
+        # required-field check's to report, above.
+        for field, enum_cls in (
+            ("severity", RunbookSeverity),
+            ("domain", RunbookDomain),
+            ("scope", KnowledgeScope),
+            ("status", RunbookStatus),
+            ("difficulty", RunbookDifficulty),
+        ):
+            value = metadata.get(field)
+            if value is None or (isinstance(value, str) and not value.strip()):
+                continue
+            if not isinstance(value, str) or value not in vocabulary(enum_cls):
                 errors.append(
-                    f"Invalid severity '{metadata['severity']}'. "
-                    f"Must be one of: {', '.join(VALID_SEVERITIES)}"
-                )
-
-        # Domain vocabulary
-        if "domain" in metadata and isinstance(metadata["domain"], str):
-            if metadata["domain"].lower() not in VALID_DOMAINS:
-                errors.append(
-                    f"Invalid domain '{metadata['domain']}'. "
-                    f"Must be one of: {', '.join(VALID_DOMAINS)}"
-                )
-
-        # Scope vocabulary
-        if "scope" in metadata and isinstance(metadata["scope"], str):
-            if metadata["scope"].lower() not in VALID_SCOPES:
-                errors.append(
-                    f"Invalid scope '{metadata['scope']}'. "
-                    f"Must be one of: {', '.join(VALID_SCOPES)}"
-                )
-
-        # Status vocabulary
-        if "status" in metadata and isinstance(metadata["status"], str):
-            if metadata["status"].lower() not in VALID_STATUSES:
-                errors.append(
-                    f"Invalid status '{metadata['status']}'. "
-                    f"Must be one of: {', '.join(VALID_STATUSES)}"
+                    f"Invalid {field} '{value}'. "
+                    f"Must be one of: {render_vocabulary(enum_cls)}"
                 )
 
         # Tags
@@ -691,7 +642,7 @@ class RunbookValidator:
 
         # Symptom class — controlled vocabulary (faithfully mirrors kb-toolkit
         # RunbookValidator._validate_symptom_class): shape, then format, then a
-        # hard error on any value outside VALID_SYMPTOM_CLASSES. The vocab check
+        # hard error on any value outside ``SymptomClass``. The vocab check
         # subsumes the old format-only gate — every off-vocab value (including a
         # hyphenated one like `throughput-degradation`) is now rejected. The shape
         # check matters: a YAML scalar (``symptom_class: unknown``) or a non-string
@@ -711,10 +662,10 @@ class RunbookValidator:
                         errors.append(
                             f"symptom_class must be lowercase with hyphens/underscores: {item}"
                         )
-                    elif item not in VALID_SYMPTOM_CLASSES:
+                    elif item not in vocabulary(SymptomClass):
                         errors.append(
                             f"Invalid symptom_class '{item}'. Must be one of the controlled "
-                            f"vocabulary ({', '.join(VALID_SYMPTOM_CLASSES)}), or move it to "
+                            f"vocabulary ({render_vocabulary(SymptomClass)}), or move it to "
                             f"`tags` if it is a long-tail symptom."
                         )
 

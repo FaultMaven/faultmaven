@@ -56,6 +56,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (  # noqa: E40
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (  # noqa: E402
     ConversionService,
 )
+from tests.taxonomy_spec import spec_vocabularies  # noqa: E402
 
 
 async def _user_message_for(severity) -> str:
@@ -98,11 +99,14 @@ async def _user_message_for(severity) -> str:
 
 
 async def test_an_unassessed_severity_names_the_allowed_vocabulary():
+    """The runbook's vocabulary as the spec states it (#1886) — ``info``
+    included, which a hand-written list here had left out."""
     message = await _user_message_for(None)
+    allowed = ", ".join(spec_vocabularies()["severity"])
     assert (
-        "SEVERITY: (not assessed — choose one of critical, high, medium, low "
-        "from the source material)"
-    ) in message
+        f"SEVERITY: (not assessed — choose one of {allowed} from the source material)"
+        in message
+    )
 
 
 async def test_an_assessed_severity_is_stated():

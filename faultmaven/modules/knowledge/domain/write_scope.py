@@ -24,6 +24,7 @@ an absent tier means. Keep it that way: a third writer belongs here too.
 from typing import Any, Optional
 
 from faultmaven.models.exceptions import KnowledgeBaseError
+from faultmaven.modules.knowledge.taxonomy import KnowledgeScope, vocabulary
 
 
 def require_write_scope(document_id: Any, scope: Optional[str]) -> str:
@@ -52,12 +53,6 @@ def require_write_scope(document_id: Any, scope: Optional[str]) -> str:
             healthy to every consistency check there is. Fail-closed, but
             silent, and this refusal is what makes it loud.
     """
-    # Lazy: the knowledge domain models pull in persistence, and the services
-    # importing this module are on the far side of that cycle.
-    from faultmaven.modules.knowledge.domain.models.knowledge_item import (
-        KnowledgeScope,
-    )
-
     if not scope:
         raise KnowledgeBaseError(
             f"Refusing to index document {document_id!r} with no scope: the "
@@ -66,7 +61,7 @@ def require_write_scope(document_id: Any, scope: Optional[str]) -> str:
             error_code="KNOWLEDGE_SCOPE_REQUIRED",
         )
 
-    valid = {member.value for member in KnowledgeScope}
+    valid = set(vocabulary(KnowledgeScope))
     if scope not in valid:
         raise KnowledgeBaseError(
             f"Refusing to index document {document_id!r}: scope {scope!r} is "

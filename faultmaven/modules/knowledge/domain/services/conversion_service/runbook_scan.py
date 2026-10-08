@@ -38,6 +38,7 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.job_persist
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     avalidate_and_score,
 )
+from faultmaven.modules.knowledge.taxonomy import RunbookSeverity, member_value
 from faultmaven.utils.frontmatter import match_frontmatter
 from faultmaven.utils.runbook_id import (
     RunbookPathEscape,
@@ -463,7 +464,13 @@ async def _scan_for_runbooks_impl(
                 if dm:
                     dm.domain = fm_meta.get("domain")
                     dm.service = fm_meta.get("service")
-                    dm.severity = fm_meta.get("severity")
+                    # The scan records files whatever their validation verdict,
+                    # so this value is unvalidated, and the column's CHECK
+                    # admits only the vocabulary: one file with an
+                    # off-vocabulary severity used to abort the whole scan.
+                    # The draft carries the validation error; the column
+                    # records nothing until the file is fixed (#1886).
+                    dm.severity = member_value(RunbookSeverity, fm_meta.get("severity"))
                     dm.tags = tags_list
                     dm.document_type = "runbook"
                     await session.commit()

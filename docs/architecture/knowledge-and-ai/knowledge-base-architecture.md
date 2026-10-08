@@ -219,12 +219,12 @@ This difference affects how runbook content is authored — each `### Cause` sub
 | `document_id` | Unique runbook identifier |
 | `title` | Runbook title |
 | `enterprise_id` | Owning tenant: the `knowledge_items` row's `enterprise_id` (the Standalone enterprise for the global tier). Required on every KB write the service makes since #1168; read conjunct #1775 |
-| `domain` | Engineering vertical (database, networking, compute, etc.) |
+| `domain` | Engineering vertical (vocabulary: [runbook-content-architecture.md §Taxonomy Schema](./runbook-content-architecture.md#taxonomy-schema)) |
 | `service` | Specific technology (postgresql, kubernetes, redis, etc.) |
 | `symptom_class` | Failure modes addressed (comma-joined list) |
-| `severity` | Severity level |
+| `severity` | Severity level (vocabulary: [§Taxonomy Schema](./runbook-content-architecture.md#taxonomy-schema)) |
 | `tags` | Additional search terms (comma-joined) |
-| `status` | Lifecycle state (draft, in-review, verified, stale, deprecated) |
+| `status` | Lifecycle state (vocabulary: [§Taxonomy Schema](./runbook-content-architecture.md#taxonomy-schema)) |
 | `last_updated` | ISO date — used for staleness detection at retrieval time |
 | `document_type` | Content type |
 | `source_url` | Original source reference |

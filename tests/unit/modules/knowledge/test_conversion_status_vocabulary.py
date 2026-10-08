@@ -187,7 +187,21 @@ _DRAFT_CHECK = "conversion_drafts_status_check"
 #: Every migration that mentions the drafts CHECK. Asserted rather than
 #: assumed, so a LATER migration that rewrites the constraint fails this file
 #: instead of leaving it comparing the ORM against a superseded definition.
-_DRAFT_CHECK_MIGRATIONS = [_baseline_path().name]
+#: 008 (#1886) rebuilds ``conversion_drafts`` on SQLite to widen the SEVERITY
+#: check, and its frozen table re-states this one; it must re-state it
+#: verbatim, which ``test_the_severity_rebuild_restates_the_draft_check``
+#: pins, so the baseline stays the owning definition.
+_DRAFT_CHECK_MIGRATIONS = sorted(
+    [
+        _baseline_path().name,
+        *(
+            p.name
+            for p in (_REPO_ROOT / "alembic" / "versions").glob(
+                "*_008_runbook_severity_admits_info.py"
+            )
+        ),
+    ]
+)
 
 
 def _draft_orm_check_expression() -> str:
@@ -213,6 +227,15 @@ def test_the_pin_names_every_migration_that_touches_the_draft_check():
         p.name for p in versions.glob("*.py") if _DRAFT_CHECK in p.read_text()
     )
     assert mentions == _DRAFT_CHECK_MIGRATIONS
+
+
+def test_the_severity_rebuild_restates_the_draft_check():
+    """008's SQLite rebuild re-creates this CHECK from its frozen table; a
+    different expression there would change the vocabulary on SQLite only."""
+    (rebuild,) = (_REPO_ROOT / "alembic" / "versions").glob(
+        "*_008_runbook_severity_admits_info.py"
+    )
+    assert f'"{_check_in_baseline(_DRAFT_CHECK)}"' in rebuild.read_text()
 
 
 def test_the_draft_orm_check_matches_the_owning_migration():

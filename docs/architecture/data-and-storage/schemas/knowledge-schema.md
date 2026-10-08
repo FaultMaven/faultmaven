@@ -80,7 +80,7 @@ KnowledgeDocument:
         tags: List[str]
         source_url: str
         last_updated: str
-        difficulty: str  # beginner | intermediate | advanced
+        difficulty: str  # vocabulary: runbook-content-architecture.md §Taxonomy Schema
         category: str
 
     created_at: datetime

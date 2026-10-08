@@ -298,6 +298,7 @@ from faultmaven.modules.knowledge.domain.models.suggestion import (
     PIIScanStatus,
     SuggestionStatus,
 )
+from faultmaven.modules.knowledge.taxonomy import RunbookDomain, render_vocabulary
 
 # ============================================================
 # Note: Knowledge module uses infrastructure/vector/ for vector store
@@ -311,11 +312,11 @@ from faultmaven.modules.knowledge.domain.models.suggestion import (
 # ============================================================
 
 #: The engineering domains FaultMaven troubleshoots, and the single definition
-#: of its territory.
+#: of its territory: ``taxonomy.RunbookDomain``, the runbook ``domain``
+#: vocabulary.
 #:
-#: This vocabulary already existed as ``runbook_validator.VALID_DOMAINS``, where
-#: it gates KB ingestion: a runbook declaring a domain outside this set is
-#: rejected. It is published here because the *agent* side needs the same answer
+#: That vocabulary gates KB ingestion: a runbook declaring a domain outside it
+#: is rejected. The prose helpers below publish it because the *agent* side needs the same answer
 #: to "what is FaultMaven for?" and was improvising its own prose versions
 #: instead — "engineering work" in the out-of-band classifier, "technical
 #: questions" in INQUIRY triage — while the case model carried no domain at all.
@@ -341,8 +342,8 @@ from faultmaven.modules.knowledge.domain.models.suggestion import (
 #: what gets answered while being precise about what gets investigated is the
 #: point; a topic gate built on this constant would defeat it.
 #:
-#: Hand-maintained in lock-step with the kb-toolkit producer side; grow it here
-#: and there together, never by loosening the ingestion gate.
+#: Grow it in the spec and ``RunbookDomain`` together (and kb-toolkit with
+#: them), never by loosening the ingestion gate.
 #: Each domain with what it covers. The gloss is load-bearing, not decoration:
 #: a bare noun leaves the agent to infer for itself whether a question about a
 #: BIOS setting, a Windows service or a Kubernetes scheduler belongs to any of
@@ -354,42 +355,37 @@ from faultmaven.modules.knowledge.domain.models.suggestion import (
 #: under compute, security, storage AND networking, and ``aws-ec2`` under two;
 #: which vertical a runbook belongs to is decided by what failed, not by what
 #: it failed in. The technology is the separate ``service`` field.
-_DOMAIN_GLOSSES: Dict[str, str] = {
-    "database": (
+_DOMAIN_GLOSSES: Dict[RunbookDomain, str] = {
+    RunbookDomain.DATABASE: (
         "relational and non-relational data stores — queries, connections, "
         "replication, locking, indexes, capacity"
     ),
-    "networking": (
+    RunbookDomain.NETWORKING: (
         "how traffic reaches a service — DNS, routing, load balancers, "
         "proxies, service mesh, TLS, reachability"
     ),
-    "compute": (
+    RunbookDomain.COMPUTE: (
         "the machines and what runs on them — hosts, VMs and containers, the "
         "operating system and firmware beneath them (Linux, Windows, BIOS), "
         "and the schedulers that place workloads"
     ),
-    "application": (
+    RunbookDomain.APPLICATION: (
         "code and the runtimes it runs in — memory, concurrency, framework "
         "behaviour, build and deploy pipelines, infrastructure-as-code"
     ),
-    "security": (
+    RunbookDomain.SECURITY: (
         "identity, authorization, secrets and certificates — who may do what, "
         "and the credentials that prove it"
     ),
-    "storage": (
+    RunbookDomain.STORAGE: (
         "persistence beneath a workload — volumes, filesystems, object "
         "stores, attachment, capacity, durability"
     ),
-    "messaging": (
+    RunbookDomain.MESSAGING: (
         "asynchronous transport between services — queues, topics, brokers, "
         "consumers, backlog and delivery"
     ),
 }
-
-#: The vocabulary itself. Derived from the glosses so a domain cannot exist
-#: without one, and ordered by them — the cross-repo parity gate compares this
-#: sequence element by element, so insertion order is part of the contract.
-TROUBLESHOOTING_DOMAINS: Tuple[str, ...] = tuple(_DOMAIN_GLOSSES)
 
 
 def describe_troubleshooting_domains() -> str:
@@ -398,7 +394,7 @@ def describe_troubleshooting_domains() -> str:
     Used where the text is read on every turn and length is a real cost, or
     where the point is what may be CLAIMED rather than how to classify.
     """
-    return ", ".join(TROUBLESHOOTING_DOMAINS)
+    return render_vocabulary(RunbookDomain)
 
 
 def describe_troubleshooting_scope() -> str:
@@ -408,5 +404,5 @@ def describe_troubleshooting_scope() -> str:
     its kind of work. That decision is a mapping from the user's words to a
     vertical, and a list of seven bare nouns does not support it.
     """
-    lines = [f"- {name}: {gloss}" for name, gloss in _DOMAIN_GLOSSES.items()]
+    lines = [f"- {domain.value}: {_DOMAIN_GLOSSES[domain]}" for domain in RunbookDomain]
     return "\n".join(lines)

@@ -215,12 +215,12 @@ class TestTriage:
         the one documented as supporting that decision; bare nouns are for sites
         that only state what may be claimed."""
         from faultmaven.modules.knowledge.contracts import (
-            TROUBLESHOOTING_DOMAINS,
             describe_troubleshooting_scope,
         )
+        from faultmaven.modules.knowledge.taxonomy import RunbookDomain, vocabulary
 
         prompt = OutOfBandTriage._build_prompt(_case(), "is the pool exhausted?")
-        for domain in TROUBLESHOOTING_DOMAINS:
+        for domain in vocabulary(RunbookDomain):
             assert domain in prompt, f"router prompt omits {domain!r}"
         assert describe_troubleshooting_scope() in prompt
 
@@ -533,11 +533,11 @@ class TestAnswer:
         personal finance, the meta lane correctly described engineering
         incidents — because only one of them carried any scope at all.
         """
-        from faultmaven.modules.knowledge.contracts import TROUBLESHOOTING_DOMAINS
+        from faultmaven.modules.knowledge.taxonomy import RunbookDomain, vocabulary
 
         for kind in OutOfBandKind:  # iterate, so a new lane is covered too
             prompt = build_answer_prompt(_case(), "can you help me?", kind)
-            for domain in TROUBLESHOOTING_DOMAINS:
+            for domain in vocabulary(RunbookDomain):
                 assert domain in prompt, f"{kind.value} prompt omits {domain!r}"
 
     def test_profile_maps_technologies_onto_domains_rather_than_listing_nouns(self):
