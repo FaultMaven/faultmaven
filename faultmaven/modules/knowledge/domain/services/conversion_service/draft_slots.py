@@ -260,9 +260,9 @@ async def _raise_if_runbook_id_taken(
     exception's message: the same commit also carries
     ``uq_conversion_jobs_live_case_id``. That one is NOT distinguishable
     from a runbook_id duplicate by re-read alone — two replicas converting
-    the same case produce the same ``(service, title)`` pairs and therefore
-    the same ids, so this re-read finds the winner's drafts and raises a
-    409 for what is really the live-case race. ``convert_from_case``
+    the same case mint their ids from the frontmatter each model wrote
+    (#1880), and when those coincide this re-read finds the winner's drafts
+    and raises a 409 for what is really the live-case race. ``convert_from_case``
     therefore catches ``ConflictError`` as well as ``IntegrityError`` and
     resolves it with ITS OWN confirming re-read
     (``get_conversion_by_case``), which is the discriminator that actually

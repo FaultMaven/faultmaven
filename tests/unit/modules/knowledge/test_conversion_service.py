@@ -1370,7 +1370,6 @@ class TestConvertFromCaseDedup:
             case_id=case_id,
             title="Test failure",
             domain="application",
-            service="test-svc",
             symptom_class=["timeout"],
             severity="high",
             description="The thing failed",
@@ -2409,7 +2408,6 @@ class TestSymptomClassProducePath:
             case_id="case-no-symptom",
             title="Something broke",
             domain="application",
-            service="test-svc",
             # symptom_class deliberately omitted (defaults to []).
             severity="high",
             description="The thing failed",
@@ -2445,7 +2443,6 @@ class TestSymptomClassProducePath:
             case_id="case-with-symptom",
             title="Something broke",
             domain="application",
-            service="test-svc",
             symptom_class=["timeout"],
             severity="high",
             description="The thing failed",

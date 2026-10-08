@@ -74,7 +74,6 @@ class KBToolAdapter(AgentTool):
                 user_id=context.user_id,
                 shared_kb_ids=context.shared_kb_ids,
                 k=5,
-                context_metadata=context.kb_context_metadata or None,
             )
             return ToolResult(success=True, data=result, error=None)
         except Exception as e:

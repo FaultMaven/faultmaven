@@ -318,7 +318,14 @@ class CaseConversionRequest(BaseModel):
     - hypotheses_summary: Validated hypothesis statements from Case.hypotheses
     - evidence_summary: Case.working_conclusion.statement + evidence summaries
     - severity: Case.problem_verification.severity (None when not assessed)
-    - service: Case.problem_verification.affected_services[0]
+
+    No ``service``, and no ``tags``, by design (#1880). A runbook's ``service``
+    is the TECHNOLOGY (postgresql, redis, kubernetes); what a case records is
+    the user's own service ("checkout", "payment-api"), an incident identifier
+    that matches no runbook and must not enter reusable knowledge. A case
+    carries no technology field, so the conversion prompt infers it from the
+    source material, as it already classifies ``symptom_class``
+    (``case_authoring.TECHNOLOGY_RULE``).
     """
 
     case_id: str
@@ -334,10 +341,8 @@ class CaseConversionRequest(BaseModel):
     hypotheses_summary: str = ""
     evidence_summary: str = ""
     domain: str = "application"
-    service: str = "unknown"
     symptom_class: List[str] = Field(default_factory=list)
     severity: Optional[str] = None  # None: the case recorded no severity
-    tags: List[str] = Field(default_factory=list)
     scope: str = "personal"
 
     @classmethod
@@ -365,7 +370,6 @@ class CaseConversionRequest(BaseModel):
         pv = getattr(case, "problem_verification", None)
         symptom = (getattr(pv, "symptom_statement", "") or "") if pv else ""
         severity = getattr(pv, "severity", None) if pv else None
-        affected = (getattr(pv, "affected_services", []) or []) if pv else []
 
         # Solutions
         #
@@ -442,19 +446,13 @@ class CaseConversionRequest(BaseModel):
         if briefs:
             ev_summary += "\n\nKey evidence:\n" + "\n".join(f"- {b}" for b in briefs)
 
-        service = affected[0] if affected else "unknown"
-        tags = getattr(case, "tags", []) or []
-
         # Resolve `domain` to a ``RunbookDomain`` value so the generated
         # runbook passes validation. The keyword map is intentionally narrow
-        # — match on service names, tags, and root-cause/symptom text. When
-        # nothing matches we fall back to "application" (the broadest valid
-        # bucket) rather than "general" (rejected by RunbookValidator).
+        # — match on the symptom and root-cause text. When nothing matches we
+        # fall back to "application" (the broadest valid bucket) rather than
+        # "general" (rejected by RunbookValidator).
         signal_text = " ".join(
             [
-                service,
-                " ".join(tags),
-                " ".join(affected),
                 symptom,
                 root_cause or "",
                 rc_mechanism or "",
@@ -473,9 +471,7 @@ class CaseConversionRequest(BaseModel):
             hypotheses_summary=hyp_summary,
             evidence_summary=ev_summary,
             domain=domain,
-            service=service,
             severity=severity.lower() if isinstance(severity, str) else None,
-            tags=tags if tags else affected,
             scope=scope,
         )
 

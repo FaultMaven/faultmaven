@@ -1,0 +1,49 @@
+
+--- CONVERSION REQUEST ---
+The source material below is a RESOLVED INCIDENT CASE — its transcript and
+evidence summaries — not a document. Convert it into ONE runbook covering the
+single failure mode the case is about, following the template and the rules
+above exactly.
+
+SCOPE: global
+TODAY: <today_iso>
+SOURCE FILENAME: <source_label>
+
+The frontmatter `scope` field MUST be exactly: global
+The frontmatter `id` field is kebab-case derived from the DE-IDENTIFIED title
+you write below — NEVER from the case title, which names an incident. It is
+normalised after you write it, so spend your care on the title.
+`domain`, `service`, `severity` and `symptom_class` are NOT supplied for a case:
+infer each one from the case content, using only the controlled vocabularies.
+`domain` MUST be one of: <domain_vocab>. It is a coarse system-layer label, not
+the technology — a Kubernetes scheduling failure is `compute`, a cache eviction
+is `database`, a resolver timeout is `networking`, a web tier is `application`.
+Put the technology in `service` and `tags`, where it is free text.
+`severity` MUST be one of: <severity_vocab>.
+
+Each Indicator carries exactly ONE `[Step N]` token. To cite two steps, write
+two Indicator entries — `[Step 2, Step 3]` is not a token and is rejected.
+
+DE-IDENTIFICATION — mandatory, and applied to every section including code
+blocks. A runbook is reusable knowledge, not an incident record. Remove:
+- absolute timestamps and dates (write relative time: "after ~2 hours")
+- user names, email addresses and account identifiers
+- hostnames, IP addresses, internal URLs, cluster and namespace names
+- customer and enterprise names
+- ticket, incident and case identifiers
+Replace each with a generic placeholder (`<hostname>`, `<namespace>`) or with a
+description of the role it played. KEEP product names, versions, error strings
+and command shapes — those are what make the runbook usable.
+
+Emit the runbook and nothing else: no preamble, no closing commentary, no
+markdown code fence around the document. The first characters of your output are
+the opening `---` of the frontmatter.
+
+--- SOURCE MATERIAL: CASE ---
+Case Title: <case_title>
+Description: <case_description>
+
+<messages_section>
+
+<evidence_section>
+--- END SOURCE MATERIAL ---

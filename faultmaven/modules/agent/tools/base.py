@@ -48,32 +48,6 @@ class Tool:
         }
 
 
-def derive_kb_context_metadata(case: Any) -> Dict[str, str]:
-    """Extract KB-reranker context (service) from a case's problem verification.
-
-    The reranker's metadata signal (``_compute_metadata_score``) exact-matches
-    a chunk's ``domain``/``service`` frontmatter against this context to boost
-    aligned runbooks. We derive ``service`` from the first affected service
-    (mirroring the runbook-conversion mapping ``affected_services[0]``).
-
-    ``domain`` is intentionally omitted: the case has no domain field, and a
-    fabricated/default domain would produce false exact-matches in the
-    reranker. Wire it here in one line if the case model gains a domain signal.
-
-    Duck-typed (``getattr``, no case-model import) to respect module
-    boundaries, matching how the engine reads the case elsewhere.
-    """
-    pv = getattr(case, "problem_verification", None)
-    if not pv:
-        return {}
-
-    ctx: Dict[str, str] = {}
-    services = getattr(pv, "affected_services", None) or []
-    if services and isinstance(services[0], str) and services[0].strip():
-        ctx["service"] = services[0].strip()
-    return ctx
-
-
 @dataclass
 class ToolContext:
     """Context passed to tool execution.
@@ -102,10 +76,13 @@ class ToolContext:
             writing a separately-loaded copy was silently overwritten by that
             save. So: do not cache it across turns, and do not copy it and
             expect a write to the copy to survive.
-        kb_context_metadata: Case context (e.g. affected service) used by the
-            KB reranker's metadata signal to boost domain/service-aligned
-            chunks. Populated from the case's problem verification; empty when
-            no verification data exists yet. Consumed by KBToolAdapter.
+
+    No KB context metadata (#1880). The reranker's metadata signal reads a
+    runbook's ``service``, which is the technology; the case records no
+    technology, and the field this used to carry was the user's own service,
+    which never matched one. The source the retrieval design names — the
+    copilot's page context — is not built, and when it is it wires this path
+    then.
     """
 
     session_id: str
@@ -120,7 +97,6 @@ class ToolContext:
     execution_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     in_memory_case: Optional[Any] = None
-    kb_context_metadata: Dict[str, str] = field(default_factory=dict)
 
     def with_execution_id(self, execution_id: str) -> "ToolContext":
         """Create a new context with the execution ID set."""
@@ -134,7 +110,6 @@ class ToolContext:
             execution_id=execution_id,
             metadata=self.metadata,
             in_memory_case=self.in_memory_case,
-            kb_context_metadata=self.kb_context_metadata,
         )
 
 

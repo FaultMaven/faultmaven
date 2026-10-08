@@ -149,16 +149,23 @@ class TestCaseConversionRequestDefaults:
         assert req.scope == "team"
 
     def test_domain_is_application_when_no_signal(self):
-        # No tags / affected services / root cause → no keyword match →
-        # fallback domain `application` (not `general`).
+        # No symptom / root cause → no keyword match → fallback domain
+        # `application` (not `general`).
         req = CaseConversionRequest.from_case(_StubCase("c1", "Title"))
         assert req.domain == "application"
 
-    def test_domain_resolves_from_case_title_signals(self):
-        # When the title carries domain signal, that flows through the
-        # _resolve_domain heuristic.
+    def test_domain_resolves_from_the_root_cause_signals(self):
+        # Root-cause text carrying domain signal flows through the
+        # _resolve_domain heuristic. (It used to be driven by ``case.tags``,
+        # a field ``Case`` does not have, #1880.)
+        from types import SimpleNamespace
+
         case = _StubCase("c1", "Title")
-        case.tags = ["istio", "envoy", "destinationrule"]
+        case.root_cause_conclusion = SimpleNamespace(
+            root_cause="istio envoy DestinationRule mismatch",
+            mechanism=None,
+            contributing_factors=[],
+        )
         req = CaseConversionRequest.from_case(case)
         assert req.domain == "networking"
 

@@ -160,7 +160,6 @@ class DocumentQATool:
         scope_id: Optional[str] = None,
         k: int = 5,
         filters: Optional[Dict[str, Any]] = None,
-        context_metadata: Optional[Dict[str, str]] = None,
     ) -> str:
         """
         Answer factual question from documents (KB-neutral).
@@ -170,18 +169,13 @@ class DocumentQATool:
             scope_id: Scoping identifier (case_id, user_id, etc.) or None
             k: Number of chunks to retrieve
             filters: Optional ChromaDB metadata filters
-            context_metadata: Optional case context (domain/service) for
-                metadata-aware reranking. Applied as a soft boost only —
-                aligned chunks score higher but nothing is filtered out.
 
         Returns:
             Formatted answer with citations
         """
         logger.info(f"Query: {question[:100]}, scope_id: {scope_id}")
 
-        result = await self.answer_question(
-            question, scope_id, k, filters, context_metadata
-        )
+        result = await self.answer_question(question, scope_id, k, filters)
 
         # Delegate response formatting to KB config
         return self._kb_config.format_response(
@@ -197,7 +191,6 @@ class DocumentQATool:
         scope_id: Optional[str],
         k: int,
         filters: Optional[Dict[str, Any]] = None,
-        context_metadata: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """
         Core Q&A logic (KB-neutral).
@@ -228,9 +221,7 @@ class DocumentQATool:
         # rendered as a substantive finding (#943). Letting it propagate is
         # what lets the adapter report success=False. A store-level fix alone
         # would merge inert against this handler.
-        chunks = await self._dispatch_search(
-            collection, question, k, filters, context_metadata
-        )
+        chunks = await self._dispatch_search(collection, question, k, filters)
 
         if not chunks:
             logger.info(f"No chunks found in collection: {collection}")
@@ -450,7 +441,6 @@ Answer:"""
         question: str,
         k: int,
         filters: Optional[Dict[str, Any]],
-        context_metadata: Optional[Dict[str, str]] = None,
     ) -> list:
         """Retrieve chunks per the KB config's search mode.
 
@@ -459,9 +449,8 @@ Answer:"""
         NOT caught upstream: it propagates to the tool boundary so the adapter
         renders ``success=False`` rather than an answer (#943).
 
-        ``context_metadata`` (case domain/service) only informs the hybrid
-        reranker's metadata signal and is applied as a soft boost
-        (``filter_mode="soft"``); pure vector search ignores it.
+        No ``context_metadata`` reaches the reranker from here (#1880): the
+        case supplies no technology for its metadata signal to match.
         """
         if self._kb_config.search_mode == "hybrid" and hasattr(
             self._vector_store, "hybrid_search"
@@ -471,8 +460,6 @@ Answer:"""
                 query=question,
                 k=k,
                 where=filters,
-                context_metadata=context_metadata,
-                filter_mode="soft",
             )
         return await self._vector_store.search(
             collection_name=collection, query=question, k=k, where=filters

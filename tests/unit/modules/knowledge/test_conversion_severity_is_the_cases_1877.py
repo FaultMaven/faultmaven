@@ -69,7 +69,7 @@ async def _user_message_for(severity) -> str:
         id=f"case-{request.case_id}",
         title=request.title,
         domain=request.domain,
-        service=request.service,
+        service="",
         symptom_class=[],
         severity=request.severity,
         symptoms_summary=request.description,
@@ -93,6 +93,7 @@ async def _user_message_for(severity) -> str:
         conversion_id="conv_1",
         user_id="u",
         enterprise_id="o",
+        case_id=request.case_id,
     )
     messages = router.route.await_args.kwargs["messages"]
     return next(m["content"] for m in messages if m["role"] == "user")
