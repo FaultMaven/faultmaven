@@ -626,8 +626,8 @@ RULES:
 8. If source material lacks enough information for a field, write
    "[INSUFFICIENT SOURCE DATA -- manual completion required]".
 9. Use the `domain` and `service` values provided; do not change them.
-   `symptom_class` MUST be one or more values from the controlled vocabulary;
-   classify from the source material when none is supplied.
+   `symptom_class` MUST be one or more values from the controlled vocabulary,
+   usually one; never invent a value (a long-tail symptom goes in `tags`).
 ````
 
 **User message** (document path):
@@ -653,6 +653,8 @@ The frontmatter `id` field MUST be exactly: {runbook_id}
 {relevant_excerpt_or_full_text}
 --- END SOURCE MATERIAL ---
 ```
+
+Rule 9 constrains the values; the instruction to classify when no `symptom_class` is supplied is not in rule 9 but in the user message's `SYMPTOM_CLASS` line above.
 
 On the case path (§1), no `RUNBOOK_ID` is sent. `FAILURE MODE` and `SERVICE` say that they are not supplied for a case: the model writes the title and infers the technology. The `id` instruction is replaced by the three `case_authoring` rules: the id rule, the technology rule and the de-identification rules. Rule 9 still reads "the values provided", and on this path no `service` value is provided.
 
@@ -753,11 +755,13 @@ There is no section-header pre-chunking step: because the preprocessor hard-reje
 
 ### 5.3 ID Generation
 
-Runbook IDs are minted deterministically from a failure mode's service and title. There is one mint point, `runbook_id_from_parts(service, title)` in `faultmaven/utils/runbook_id.py`, and both paths that write an id use it:
+Runbook IDs are minted deterministically from a failure mode's service and title. There is one mint point, `runbook_id_from_parts(service, title)` in `faultmaven/utils/runbook_id.py`, and all three groups of paths that write an id use it:
 
 - the LLM conversion path from a document, through `generate_runbook_id(failure_mode)` in `faultmaven/modules/knowledge/domain/models/conversion.py`, before the LLM call;
-- the LLM conversion path from a case, and the extraction path, through `mint_case_runbook_id(content, case_id)` in `faultmaven/modules/knowledge/domain/case_authoring.py`. This runs after the write and reads the `service` and `title` the model produced, never the case title, which names the incident. A draft with no usable title falls back to `case-<case_id>`;
+- the LLM conversion path from a case, and the extraction path, through `mint_case_runbook_id(content, case_id)` in `faultmaven/modules/knowledge/domain/case_authoring.py`. This runs after the model writes the draft and reads the `service` and `title` the model produced, never the case title, which names the incident. A draft with no usable title falls back to `case-<case_id>`. `usable_title` decides what is usable, for this mint and for the draft's title alike: not blank, not the rule-8 `[INSUFFICIENT SOURCE DATA ...]` placeholder, and not a title with no character the slug keeps (`!!!`);
 - the manual path, `ConversionService.create_runbook_from_template`.
+
+Because a case-built id comes from what the model wrote, two different cases about the same failure can mint the same id, and the slot is enterprise-wide, so the holder can be another user's personal draft. On the case path only, `claim_case_draft_slot` (`conversion_service/draft_slots.py`) re-mints once, as `runbook_id_from_parts(<minted id>, case-<case_id>)`, when the minted id's slot is held. The file, the forced frontmatter `id` and the row all use the id it returns. When the re-minted id is held too, or the minted id already is the case stem, the conversion is refused with the usual 409. With today's `case_<12 hex>` ids the stem is 22 characters, so a minted id over 37 characters leaves no room for it, and the stem then shows only through the over-length hash below. The extraction path has no draft slot and does not re-mint.
 
 The rules:
 

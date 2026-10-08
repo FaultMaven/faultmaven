@@ -3,7 +3,8 @@ already held by a live draft in this tenant, before any new draft
 write."""
 
 import logging
-from typing import Dict, List, Optional, Sequence, Tuple
+from pathlib import Path
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy import or_, select
 
@@ -15,6 +16,9 @@ from faultmaven.exceptions import (
 )
 from faultmaven.infrastructure.persistence.models import (
     ConversionDraftModel,
+)
+from faultmaven.modules.knowledge.domain.case_authoring import (
+    case_disambiguated_runbook_id,
 )
 from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionError,
@@ -238,6 +242,57 @@ async def refuse_if_draft_slot_taken(
         raise _duplicate_draft_conflict(taken)
 
 
+async def claim_case_draft_slot(
+    db_session_factory,
+    enterprise_id: Optional[str],
+    minted_id: str,
+    case_id: str,
+    path_for: Callable[[str], Path],
+) -> str:
+    """The id a case-built draft is written under: ``minted_id``, or its
+    case-disambiguated form when ``minted_id``'s slot is held. Raises the
+    usual 409 when both are held.
+
+    The case path mints from the title the model wrote (#1880), so two
+    different cases about one failure mint one id, and the enterprise-wide
+    slot may belong to a colleague's personal draft. The re-mint
+    (:func:`~faultmaven.modules.knowledge.domain.case_authoring.case_disambiguated_runbook_id`)
+    appends the case stem, so a second case gets its own id. A held
+    re-minted id is a collision within one case, and is refused as before.
+    So is a held case-stem id, which only this case mints.
+
+    The same check as :func:`refuse_if_draft_slot_taken`, on both keys (id and
+    file path), so the caller writes the file, forces the frontmatter id and
+    persists the row under the one id this returns. Only the case path calls
+    it: the document path's ids are fixed before the model call and are
+    refused outright.
+    """
+    if not db_session_factory:
+        return minted_id
+    scoped = writable_enterprise_id(enterprise_id)
+    taken = await _find_live_draft_owning(
+        db_session_factory, scoped, [minted_id], file_path=str(path_for(minted_id))
+    )
+    if not taken:
+        return minted_id
+    disambiguated = case_disambiguated_runbook_id(minted_id, case_id)
+    if disambiguated is None:
+        raise _duplicate_draft_conflict(taken)
+    retaken = await _find_live_draft_owning(
+        db_session_factory,
+        scoped,
+        [disambiguated],
+        file_path=str(path_for(disambiguated)),
+    )
+    if retaken:
+        raise _duplicate_draft_conflict(retaken)
+    logger.info(
+        "case_draft_id_disambiguated",
+        extra={"case_id": case_id, "minted": minted_id, "runbook_id": disambiguated},
+    )
+    return disambiguated
+
+
 async def _raise_if_runbook_id_taken(
     db_session_factory, enterprise_id: str, runbook_ids: Sequence[Optional[str]]
 ) -> None:
@@ -248,7 +303,8 @@ async def _raise_if_runbook_id_taken(
     same id is ordinary — ``runbook_id_from_parts`` is deterministic on
     ``(service, title)``, deliberately, because the disk scan reconciles a
     file to its row by that id — so a user converting the same source
-    twice, or two cases about the same failure, lands here. Without this
+    twice lands here, and so do two cases about the same failure that race
+    past ``claim_case_draft_slot``. Without this
     the whole commit surfaces as an unhandled ``IntegrityError``, i.e. a
     500 that says nothing.
 
@@ -261,7 +317,10 @@ async def _raise_if_runbook_id_taken(
     ``uq_conversion_jobs_live_case_id``. That one is NOT distinguishable
     from a runbook_id duplicate by re-read alone — two replicas converting
     the same case mint their ids from the frontmatter each model wrote
-    (#1880), and when those coincide this re-read finds the winner's drafts
+    (#1880). Those ids can coincide across cases too, but there
+    ``claim_case_draft_slot`` appends the case stem; within ONE case the stem
+    is the same on both replicas, so it cannot separate them, and this
+    re-read finds the winner's drafts
     and raises a 409 for what is really the live-case race. ``convert_from_case``
     therefore catches ``ConflictError`` as well as ``IntegrityError`` and
     resolves it with ITS OWN confirming re-read

@@ -30,6 +30,8 @@ blocks. A runbook is reusable knowledge, not an incident record. Remove:
 - user names, email addresses and account identifiers
 - hostnames, IP addresses, internal URLs, cluster and namespace names
 - customer and enterprise names
+- internal service, application and team names (describe the role each played:
+  "the upstream API", "the on-call team")
 - ticket, incident and case identifiers
 Replace each with a generic placeholder (`<hostname>`, `<namespace>`) or with a
 description of the role it played. KEEP product names, versions, error strings

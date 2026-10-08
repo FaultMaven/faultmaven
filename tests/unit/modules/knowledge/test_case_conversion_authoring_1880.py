@@ -22,9 +22,14 @@ Pinned here, with the knowledge model stubbed (no live LLM call):
    verbatim.
 3. **The id and the draft's title come from the produced frontmatter**, through
    the shared mint, so a noisy case title reaches neither.
-4. **The extraction prompt is byte-identical** to its pre-#1880 render: moving
-   its rules into ``case_authoring`` changed where they live, not what the
-   model reads.
+4. **The extraction prompt is pinned byte for byte** to a golden render of
+   the shared rules. Moving them into ``case_authoring`` changed nothing the
+   model reads; the one deliberate change since is the internal-service-name
+   line #1900's review added to ``DE_IDENTIFICATION_RULES``, and the fixture
+   moved with it.
+5. **One predicate says what a title is.** The rule-8 placeholder and a
+   punctuation-only title are no title, for the mint and for the draft's name
+   alike, on both paths.
 """
 
 import string
@@ -40,8 +45,11 @@ from faultmaven.modules.knowledge.domain.case_authoring import (
     CASE_ID_RULE,
     DE_IDENTIFICATION_RULES,
     TECHNOLOGY_RULE,
+    case_disambiguated_runbook_id,
+    case_stem_runbook_id,
     draft_title,
     mint_case_runbook_id,
+    usable_title,
 )
 from faultmaven.modules.knowledge.domain.models.conversion import (
     CaseConversionRequest,
@@ -53,8 +61,12 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.service imp
 from faultmaven.modules.knowledge.domain.services.suggestion_service import (
     SuggestionService,
 )
+from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
+    InMemorySuggestionRepository,
+)
 from faultmaven.utils.runbook_id import draft_filename
 from tests.runbook_samples import valid_runbook
+from tests.utils import case_repository_holding
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
@@ -69,8 +81,28 @@ GOLDEN = (
     Path(__file__).parent
     / "fixtures"
     / "extraction_prompt"
-    / "rendered_before_1880.txt"
+    / "rendered_with_case_authoring_rules.txt"
 )
+
+#: The line #1900's review added to ``DE_IDENTIFICATION_RULES``: the user's
+#: own service ("checkout") is an incident identifier, not a product name.
+SERVICE_NAME_RULE_LINE = (
+    "- internal service, application and team names (describe the role each played:"
+)
+
+#: Frontmatter titles that are no title (``usable_title``), quoted as the
+#: rule-8 skeleton quotes its placeholder (unquoted, ``[...]`` is a YAML list
+#: and ``!!!`` a YAML tag).
+NOT_A_TITLE = {
+    "placeholder": '"[INSUFFICIENT SOURCE DATA -- manual completion required]"',
+    "punctuation-only": '"!!!"',
+}
+
+
+def _titled(raw_title: str) -> str:
+    return valid_runbook(PRODUCED_TITLE).replace(
+        f"title: {PRODUCED_TITLE}\n", f"title: {raw_title}\n"
+    )
 
 
 def _resolved_case():
@@ -166,6 +198,14 @@ async def test_the_model_is_told_to_infer_under_the_shared_rules(tmp_path):
     assert f"CASE TITLE: {NOISY_TITLE}" in source
 
 
+async def test_the_case_path_tells_the_model_to_remove_internal_service_names(
+    tmp_path,
+):
+    _, message = await _convert(tmp_path, valid_runbook(PRODUCED_TITLE))
+    instructions, _, _ = message.partition("--- SOURCE MATERIAL ---")
+    assert SERVICE_NAME_RULE_LINE in instructions
+
+
 async def test_the_id_and_title_come_from_the_produced_frontmatter(tmp_path):
     produced = valid_runbook(PRODUCED_TITLE)
     response, _ = await _convert(tmp_path, produced)
@@ -210,7 +250,7 @@ def _sentinel_render(template: str) -> str:
     return template.format(**{f: f"<{f}>" for f in fields})
 
 
-def test_the_extraction_prompt_renders_byte_identically_to_before_the_move():
+def test_the_extraction_prompt_renders_byte_identically_to_its_golden():
     assert _sentinel_render(SuggestionService.EXTRACTION_PROMPT) == GOLDEN.read_text(
         encoding="utf-8"
     )
@@ -219,3 +259,88 @@ def test_the_extraction_prompt_renders_byte_identically_to_before_the_move():
 def test_the_extraction_prompt_renders_the_shared_rules():
     for rule in (CASE_ID_RULE, TECHNOLOGY_RULE, DE_IDENTIFICATION_RULES):
         assert rule in SuggestionService.EXTRACTION_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# 5. One "usable title" predicate, both helpers, both paths
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("raw_title", NOT_A_TITLE.values(), ids=NOT_A_TITLE.keys())
+def test_the_shared_helpers_agree_that_it_is_no_title(raw_title):
+    produced = _titled(raw_title)
+    assert usable_title(raw_title.strip('"')) is None
+    assert draft_title(produced) is None
+    assert mint_case_runbook_id(produced, CASE_ID) == case_stem_runbook_id(CASE_ID)
+
+
+def test_a_real_title_is_usable_and_stripped():
+    assert usable_title(f"  {PRODUCED_TITLE} ") == PRODUCED_TITLE
+
+
+@pytest.mark.parametrize("raw_title", NOT_A_TITLE.values(), ids=NOT_A_TITLE.keys())
+async def test_the_case_path_names_such_a_draft_by_the_case_stem(tmp_path, raw_title):
+    response, _ = await _convert(tmp_path, _titled(raw_title))
+
+    (draft,) = response.drafts
+    assert draft.runbook_id == case_stem_runbook_id(CASE_ID)
+    assert draft.title == draft.runbook_id
+    assert f"\nid: {draft.runbook_id}\n" in draft.content
+
+
+class _SameBodyProvider:
+    """Returns one body on every call: the extraction loop retries a draft the
+    gate refuses, and a ``!!!`` title is short enough to be refused."""
+
+    def __init__(self, body: str):
+        self.body = body
+
+    async def generate(self, *, prompt: str, **kwargs) -> SimpleNamespace:
+        return SimpleNamespace(content=self.body, is_truncated=False)
+
+
+@pytest.mark.parametrize("raw_title", NOT_A_TITLE.values(), ids=NOT_A_TITLE.keys())
+async def test_the_extraction_path_mints_such_a_draft_by_the_case_stem(raw_title):
+    service = SuggestionService(
+        case_repository=case_repository_holding(
+            CASE_ID, enterprise_id="ent_1880", title=NOISY_TITLE
+        ),
+        knowledge_service=MagicMock(),
+        sanitizer=None,
+        llm_provider=_SameBodyProvider(_titled(raw_title)),
+        suggestion_repository=InMemorySuggestionRepository(),
+    )
+    suggestion = await service.extract_knowledge_from_case(
+        case_id=CASE_ID, enterprise_id="ent_1880", extracted_by="u_1880"
+    )
+
+    assert f"\nid: {case_stem_runbook_id(CASE_ID)}\n" in suggestion.suggested_content
+    # The draft's "title" was not taken as its name either.
+    assert "!!!" not in suggestion.suggested_title
+    assert "INSUFFICIENT" not in suggestion.suggested_title
+
+
+# ---------------------------------------------------------------------------
+# The case-path re-mint (the slot itself is exercised on SQLite in
+# tests/integration/modules/knowledge/test_case_ids_across_cases_1880.py)
+# ---------------------------------------------------------------------------
+
+
+def test_the_re_mint_appends_the_case_stem_through_the_shared_mint():
+    minted = "postgresql-redis-oom-kills"
+    assert (
+        case_disambiguated_runbook_id(minted, CASE_ID)
+        == f"{minted}-{case_stem_runbook_id(CASE_ID)}"
+    )
+
+
+def test_a_long_minted_id_is_still_separated_by_the_case_stem():
+    minted = mint_case_runbook_id(valid_runbook(PRODUCED_TITLE), CASE_ID)
+    other = "case_bb0000001880"
+    ours = case_disambiguated_runbook_id(minted, CASE_ID)
+    theirs = case_disambiguated_runbook_id(minted, other)
+    assert len({minted, ours, theirs}) == 3
+
+
+def test_the_case_stem_is_never_re_minted():
+    assert case_disambiguated_runbook_id(case_stem_runbook_id(CASE_ID), CASE_ID) is None

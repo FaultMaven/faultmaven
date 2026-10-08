@@ -22,7 +22,13 @@ Three rules, rendered verbatim into each path's prompt:
 * :data:`DE_IDENTIFICATION_RULES` — what a runbook may not carry.
 
 And the mint, applied after the write: :func:`mint_case_runbook_id` reads the
-draft's own frontmatter ``service`` and ``title``.
+draft's own frontmatter ``service`` and ``title``. What counts as a title is one
+predicate, :func:`usable_title`, which both the mint and :func:`draft_title`
+read, so the id and the draft's name cannot disagree about it.
+
+Because the id comes from what the model wrote, two different cases about the
+same failure can mint the same id. The case path disambiguates that with
+:func:`case_disambiguated_runbook_id`, which re-mints once with the case stem.
 """
 
 from typing import Any, Dict, Optional
@@ -50,6 +56,8 @@ blocks. A runbook is reusable knowledge, not an incident record. Remove:
 - user names, email addresses and account identifiers
 - hostnames, IP addresses, internal URLs, cluster and namespace names
 - customer and enterprise names
+- internal service, application and team names (describe the role each played:
+  "the upstream API", "the on-call team")
 - ticket, incident and case identifiers
 Replace each with a generic placeholder (`<hostname>`, `<namespace>`) or with a
 description of the role it played. KEEP product names, versions, error strings
@@ -84,20 +92,43 @@ def _draft_frontmatter(content: str) -> Dict[str, Any]:
     return metadata if isinstance(metadata, dict) else {}
 
 
-def draft_title(content: str) -> Optional[str]:
-    """The draft's own frontmatter ``title``, when it has a usable one.
+#: The rule-8 skeleton's title. It is a form to fill in, not a name.
+_PLACEHOLDER_MARKER = "INSUFFICIENT SOURCE DATA"
 
-    ``None`` for a draft with no frontmatter, no title, or the rule-8
-    ``[INSUFFICIENT SOURCE DATA]`` placeholder the skeleton carries — that last
-    one is a form, not a name.
+
+def usable_title(title: object) -> Optional[str]:
+    """``title`` stripped, when it can name a runbook; otherwise ``None``.
+
+    The one statement of "what is a title" for a case-built draft. Both
+    :func:`mint_case_runbook_id` and :func:`draft_title` read it, so a value
+    the id is minted from is always the value the draft is named by. Not a
+    title:
+
+    * a non-string, or a blank string;
+    * the rule-8 ``[INSUFFICIENT SOURCE DATA ...]`` placeholder. Minting from
+      it gave every such draft of one technology the same id
+      (``postgresql-insufficient-source-data-manual-completion-r-6e91``);
+    * a title with no character the id grammar keeps (``"!!!"``). With a
+      ``service`` beside it the mint was the bare technology, ``postgresql``,
+      shared by every such draft of that technology. Asked of the grammar
+      itself: the title alone mints a hash-only id.
     """
-    title = _draft_frontmatter(content).get("title")
     if not isinstance(title, str):
         return None
     title = title.strip()
-    if not title or "INSUFFICIENT SOURCE DATA" in title:
+    if not title or _PLACEHOLDER_MARKER in title:
+        return None
+    if is_hash_only_runbook_id(runbook_id_from_parts("", title)):
         return None
     return title
+
+
+def draft_title(content: str) -> Optional[str]:
+    """The draft's own frontmatter ``title``, when :func:`usable_title` admits it.
+
+    ``None`` for a draft with no frontmatter or no usable title.
+    """
+    return usable_title(_draft_frontmatter(content).get("title"))
 
 
 def mint_case_runbook_id(content: str, case_id: str) -> str:
@@ -120,20 +151,38 @@ def mint_case_runbook_id(content: str, case_id: str) -> str:
     The emitted title is de-identified because the prompt says so
     (:data:`DE_IDENTIFICATION_RULES`); the mint is normalisation only, so a
     title that slipped is a prompt failure, not one this can catch. Falls back
-    to the case stem when the draft carries no usable title.
+    to the case stem when the draft carries no usable title
+    (:func:`usable_title`).
     """
     metadata = _draft_frontmatter(content)
-    title = metadata.get("title")
+    title = usable_title(metadata.get("title"))
+    if title is None:
+        return case_stem_runbook_id(case_id)
     service = metadata.get("service")
-    if isinstance(title, str) and title.strip():
-        minted = runbook_id_from_parts(
-            service if isinstance(service, str) else "", title
-        )
-        # The mint no longer returns ``""`` for a title that filters to nothing
-        # — it returns ``runbook-<hash>`` (#1230). That is a valid id but a
-        # nameless one, and the case stem is strictly more traceable, so the
-        # "no usable title" fallback below is preserved by asking the mint which
-        # branch it took.
-        if not is_hash_only_runbook_id(minted):
-            return minted
-    return case_stem_runbook_id(case_id)
+    return runbook_id_from_parts(service if isinstance(service, str) else "", title)
+
+
+def case_disambiguated_runbook_id(minted: str, case_id: str) -> Optional[str]:
+    """The id to retry with when ``minted``'s draft slot is already held.
+
+    The id is minted from the title the model wrote, so two DIFFERENT cases
+    about one failure (two users, one PostgreSQL pool exhaustion) write the
+    same title and mint the same id. The slot is enterprise-wide, so the
+    holder can be another user's personal draft, which the second user cannot
+    see or discard. When the id came from the case title, the two cases got
+    different ids. This restores that, without the case title: the same mint,
+    over the minted id and the case stem.
+
+    The stem is readable in the result only while ``minted`` is short enough
+    for both to fit the id's length limit. Past it, ``runbook_id_from_parts``
+    keeps the prefix and a hash over the whole slug, so the case stem still
+    decides the id but survives only inside that hash.
+
+    ``None`` when ``minted`` already IS the case stem: the holder is this
+    case's own draft, and a second id for it would be a duplicate runbook, not
+    a disambiguation.
+    """
+    stem = case_stem_runbook_id(case_id)
+    if minted == stem:
+        return None
+    return runbook_id_from_parts(minted, stem)

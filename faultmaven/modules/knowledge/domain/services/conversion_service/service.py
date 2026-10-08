@@ -62,6 +62,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.draft_slots import (
     _refuse_modes_whose_id_is_taken,
+    claim_case_draft_slot,
     refuse_if_draft_slot_taken,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.errors import (
@@ -601,8 +602,11 @@ class ConversionService:
         # migration 046 made the two indistinguishable at the commit:
         # ``_persist_job`` re-reads on any IntegrityError and, in exactly this
         # race, can FIND the winner's drafts — two replicas converting one case
-        # mint their ids from what each model wrote, which can coincide — and
-        # then reports a runbook_id duplicate for what is really the live-case
+        # mint their ids from what each model wrote, which can coincide. Ids
+        # from DIFFERENT cases can coincide too, and ``claim_case_draft_slot``
+        # separates those with the case stem; one case's two replicas share the
+        # stem, so it cannot separate them — and ``_persist_job`` then reports
+        # a runbook_id duplicate for what is really the live-case
         # race. Catching only
         # IntegrityError would have handed the loser a 409 instead of the
         # winner's conversion. The re-read below is the discriminator that does
@@ -919,11 +923,22 @@ class ConversionService:
                     retryable=True,
                 )
 
+            scope_dir = _scope_dir(self._data_dir, scope, team_id, user_id)
+
             if case_id is not None:
                 # The case path's id, minted now from the frontmatter the model
-                # wrote — the extraction path's mint, shared (#1880). Everything
-                # below keys on it: the file path, the slot check, the row.
-                runbook_id = mint_case_runbook_id(runbook_content, case_id)
+                # wrote — the extraction path's mint, shared (#1880) — and
+                # claimed here, BEFORE the write, for the reason on
+                # ``refuse_if_draft_slot_taken`` below: a slot another case
+                # holds gets this case's stem appended. Everything below keys
+                # on the id this returns: the frontmatter, the file, the row.
+                runbook_id = await claim_case_draft_slot(
+                    self._db_session_factory,
+                    enterprise_id,
+                    mint_case_runbook_id(runbook_content, case_id),
+                    case_id,
+                    lambda rid: scope_dir / draft_filename(rid),
+                )
 
             # Belt-and-suspenders: prompt instructions don't fully constrain
             # the LLM, so rewrite the frontmatter `id` to the kebab-case
@@ -943,17 +958,17 @@ class ConversionService:
             # from an allowlist so an escape is unconstructible today — the
             # guard is what keeps that true if the mint rule is loosened or a
             # new caller assembles its own name (#1213 follow-up).
-            draft_path = _scope_dir(
-                self._data_dir, scope, team_id, user_id
-            ) / draft_filename(runbook_id)
+            draft_path = scope_dir / draft_filename(runbook_id)
 
-            # BEFORE the write. The path is derived from ``runbook_id``, so a
-            # duplicate lands on the EXISTING draft's file and would replace
-            # its content on the way to an INSERT migration 046 rejects. See
-            # ``refuse_if_draft_slot_taken``.
-            await refuse_if_draft_slot_taken(
-                self._db_session_factory, enterprise_id, runbook_id, str(draft_path)
-            )
+            if case_id is None:
+                # BEFORE the write. The path is derived from ``runbook_id``, so
+                # a duplicate lands on the EXISTING draft's file and would
+                # replace its content on the way to an INSERT migration 046
+                # rejects. See ``refuse_if_draft_slot_taken``. The case path
+                # made the same check above, in ``claim_case_draft_slot``.
+                await refuse_if_draft_slot_taken(
+                    self._db_session_factory, enterprise_id, runbook_id, str(draft_path)
+                )
 
             write_runbook_file(
                 draft_path,
