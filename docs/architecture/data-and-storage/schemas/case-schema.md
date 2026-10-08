@@ -1043,7 +1043,7 @@ boundary; `triggered_by` round-trips verbatim.
 
 ```sql
 CREATE TABLE case_checkpoints (
-    checkpoint_id VARCHAR(36) PRIMARY KEY,      -- Format: {case_id}:turn:{turn_number} (Phase 4 normalized 50→36)
+    checkpoint_id VARCHAR(36) PRIMARY KEY,      -- UUIDv5 of (case_id, turn, trigger, target): checkpoint_service.checkpoint_id_for
     case_id VARCHAR(36) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
     turn_number INTEGER NOT NULL,
 

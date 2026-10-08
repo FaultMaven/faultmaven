@@ -13,9 +13,9 @@ transitions only, and it has no online reader (see §2).
 
 ### 1.1 Mechanism
 
-- **Construction & persistence**: [`checkpoint_service.py:57`](../../../faultmaven/core/investigation/checkpoint_service.py) builds a `CaseCheckpoint` from `case.model_dump()`, computes a SHA-256 hash of the JSON snapshot, and persists via `case_repo.create_checkpoint(...)`.
+- **Construction & persistence**: [`CheckpointService.capture`](../../../faultmaven/core/investigation/checkpoint_service.py) builds a `CaseCheckpoint` from `case.model_dump()` and computes a SHA-256 hash of the JSON snapshot, touching no storage. `create_checkpoint` is `capture` plus a write of its own (`case_repo.create_checkpoint(...)`); a turn can instead carry the captured row to its own commit, `ICaseRepository.save(case, checkpoints=[...])`, which writes it in the case's transaction (#1882).
 - **Storage**: `CaseCheckpoint` rows live in `case_checkpoints`. PostgreSQL uses `JSONB` for efficient querying; SQLite (dev) uses `Text` for compatibility.
-- **Immutability**: Checkpoints are append-only. The checkpoint_id is `{case_id}:turn:{current_turn}:{trigger}`, so a given `(case, turn, trigger)` tuple is unique.
+- **Immutability**: Checkpoints are append-only. The checkpoint_id is a UUIDv5 of `(case_id, current_turn, trigger, target)`, where the target is the metadata's `to_state`, or its `action` for a site that names no state (`checkpoint_id_for`). Two sites in one turn therefore never share an id, while one site firing twice for the same transition does, and the second INSERT fails on the primary key rather than being skipped. A UUID because the column is `VARCHAR(36)`: the readable `{case_id}:turn:{n}:{trigger}` it replaced was 40+ characters, and PostgreSQL refused every one of them.
 
 ### 1.2 Trigger Sites
 

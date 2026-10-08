@@ -189,7 +189,7 @@ OTHER_READERS: dict[tuple[str, str], tuple[int, str]] = {
     ): (1, _PERSISTENCE),
     (
         "faultmaven/core/investigation/checkpoint_service.py",
-        "CheckpointService.create_checkpoint",
+        "CheckpointService.capture",
     ): (
         3,
         _PERSISTENCE,

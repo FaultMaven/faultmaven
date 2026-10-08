@@ -36,6 +36,8 @@ from faultmaven.modules.case.domain.models.lifecycle import (
 from faultmaven.modules.case.domain.models.solution import (
     Solution,
 )
+from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
+from faultmaven.modules.case.domain.owned_models.report import CaseReport
 from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.rows import (
     _STANCE_TO_RELATIONSHIP,
@@ -1044,3 +1046,165 @@ async def _append_case_actions(
                 "metadata": json.dumps({}),
             },
         )
+
+
+def _org_lookup_case_id(is_pg) -> str:
+    """``:case_id`` cast to VARCHAR, for the tenancy-derivation subqueries.
+
+    Several INSERTs derive ``enterprise_id`` and ``organization_id`` via
+    ``(SELECT ... FROM cases WHERE case_id = :case_id)`` while
+    ALSO binding ``:case_id`` as a column value in the same statement.
+    SQLAlchemy collapses both occurrences to a single asyncpg ``$N``; with
+    both bare, asyncpg cannot deduce one consistent type and raises
+    ``AmbiguousParameterError`` ("inconsistent types deduced for parameter
+    $N") — which broke every such write on real PostgreSQL.
+
+    Casting the subquery occurrence to VARCHAR gives ``$N`` an explicit
+    type, leaving the column-value occurrence as the sole inference source.
+    The cast is load-bearing, NOT cosmetic: do not simplify it back to a
+    bare ``:case_id``. Covered by
+    ``tests/integration/test_postgresql_repository_roundtrip.py``.
+    """
+    return _cast(is_pg, "case_id", "VARCHAR")
+
+
+async def _insert_report(is_pg, db, report: CaseReport) -> None:
+    """Write one report row on ``db``, without committing.
+
+    The one copy of the report INSERT: ``add_report`` commits it on its own,
+    and ``save(case, reports=...)`` writes it inside the case's transaction so
+    the row commits with the case or not at all (#1882).
+    """
+    # If this is marked as current, unmark other reports of the same type for this case
+    if report.is_current:
+        unmark_query = text("""
+            UPDATE reports
+            SET is_current = FALSE, updated_at = NOW()
+            WHERE case_id = :case_id
+              AND report_type = :report_type
+              AND is_current = TRUE
+        """)
+        await db.execute(
+            unmark_query,
+            {"case_id": report.case_id, "report_type": report.report_type.value},
+        )
+
+    # Insert report
+    metadata_json = (
+        json.dumps(report.metadata.model_dump(mode="json")) if report.metadata else "{}"
+    )
+
+    # ``enterprise_id`` is NOT NULL FK CASCADE on reports, and
+    # ``organization_id`` beside it is nullable billing attribution; both are
+    # derived from the parent case via subquery so callers don't have to
+    # thread them through. ``report_type`` CHECK allows only
+    # ('resolution_summary', 'closure_summary').
+    insert_query = text(f"""
+        INSERT INTO reports (
+            report_id, case_id, enterprise_id, organization_id, report_type, version, is_current,
+            linked_to_closure, title, content, format,
+            generation_status, generation_time_ms, metadata,
+            generated_at, updated_at, generated_by
+        ) VALUES (
+            :report_id, :case_id,
+            (SELECT enterprise_id FROM cases
+             WHERE case_id = {_org_lookup_case_id(is_pg)}),
+            (SELECT organization_id FROM cases
+             WHERE case_id = {_org_lookup_case_id(is_pg)}),
+            :report_type, :version, :is_current,
+            :linked_to_closure, :title, :content, :format,
+            :generation_status, :generation_time_ms, {_cast(is_pg, 'metadata')},
+            {_cast(is_pg, 'generated_at', 'TIMESTAMPTZ')}, {_cast(is_pg, 'updated_at', 'TIMESTAMPTZ')}, :generated_by
+        )
+        ON CONFLICT (report_id) DO UPDATE SET
+            version = EXCLUDED.version,
+            is_current = EXCLUDED.is_current,
+            linked_to_closure = EXCLUDED.linked_to_closure,
+            title = EXCLUDED.title,
+            content = EXCLUDED.content,
+            format = EXCLUDED.format,
+            generation_status = EXCLUDED.generation_status,
+            generation_time_ms = EXCLUDED.generation_time_ms,
+            metadata = EXCLUDED.metadata,
+            updated_at = EXCLUDED.updated_at,
+            generated_by = EXCLUDED.generated_by
+    """)
+
+    now = datetime.now(timezone.utc)
+    generated_at = (
+        datetime.fromisoformat(report.generated_at.replace("Z", "+00:00"))
+        if isinstance(report.generated_at, str)
+        else now
+    )
+    # Use report.updated_at if set, otherwise use generated_at (for new reports)
+    if report.updated_at:
+        updated_at = (
+            datetime.fromisoformat(report.updated_at.replace("Z", "+00:00"))
+            if isinstance(report.updated_at, str)
+            else now
+        )
+    else:
+        updated_at = generated_at  # New reports: updated_at same as generated_at (None -> use generated_at)
+
+    await db.execute(
+        insert_query,
+        {
+            "report_id": report.report_id,
+            "case_id": report.case_id,
+            "report_type": report.report_type.value,
+            "version": report.version,
+            "is_current": report.is_current,
+            "linked_to_closure": report.linked_to_closure,
+            "title": report.title,
+            "content": report.content,
+            "format": report.format,
+            "generation_status": report.generation_status.value,
+            "generation_time_ms": report.generation_time_ms,
+            "metadata": metadata_json,
+            "generated_at": generated_at,
+            "updated_at": updated_at,
+            # Auto-generated terminal summaries have no human author,
+            # so generated_by is NULL. Explicit user_id threading via
+            # API routes deferred.
+            "generated_by": getattr(report, "generated_by", None),
+        },
+    )
+
+
+async def _insert_checkpoint(is_pg, db, checkpoint: CaseCheckpoint) -> None:
+    """Write one checkpoint row on ``db``, without committing.
+
+    A plain INSERT, never ``ON CONFLICT DO NOTHING``: a second snapshot under an
+    id already taken is a defect at the site that took it, and it fails the
+    transaction it is in rather than vanishing (#1882 R6).
+    """
+    from faultmaven.utils.serialization import to_json_compatible
+
+    query = text(f"""
+        INSERT INTO case_checkpoints (
+            checkpoint_id, case_id, enterprise_id, organization_id, turn_number, case_snapshot,
+            snapshot_hash, trigger, created_at, metadata
+        ) VALUES (
+            :checkpoint_id, :case_id,
+            (SELECT enterprise_id FROM cases
+             WHERE case_id = {_org_lookup_case_id(is_pg)}),
+            (SELECT organization_id FROM cases
+             WHERE case_id = {_org_lookup_case_id(is_pg)}),
+            :turn_number, {_cast(is_pg, 'case_snapshot')},
+            :snapshot_hash, :trigger, {_cast(is_pg, 'created_at', 'TIMESTAMPTZ')}, {_cast(is_pg, 'metadata')}
+        )
+    """)
+
+    await db.execute(
+        query,
+        {
+            "checkpoint_id": checkpoint.checkpoint_id,
+            "case_id": checkpoint.case_id,
+            "turn_number": checkpoint.turn_number,
+            "case_snapshot": json.dumps(to_json_compatible(checkpoint.case_snapshot)),
+            "snapshot_hash": checkpoint.snapshot_hash,
+            "trigger": checkpoint.trigger,
+            "created_at": checkpoint.created_at,
+            "metadata": json.dumps(to_json_compatible(checkpoint.metadata)),
+        },
+    )
