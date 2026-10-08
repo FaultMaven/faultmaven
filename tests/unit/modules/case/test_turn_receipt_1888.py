@@ -25,15 +25,17 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import fakeredis.aioredis as fakeredis_aio
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -79,6 +81,7 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
     TurnReceipt,
+    TurnReceiptExistsError,
 )
 from faultmaven.modules.case.domain.models.problem import ProblemVerification
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
@@ -164,13 +167,17 @@ def _runbook_ready_case() -> Case:
 def _preprocessing():
     """Extraction whose content hash is the real hash of the bytes."""
 
+    seen: list = []
+
     async def _classify(content, filename=None, source_metadata=None):
+        seen.append((filename, content))
         result = make_preprocessing_result()
         result.content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
         return result
 
     service = MagicMock()
     service.classify_and_extract = AsyncMock(side_effect=_classify)
+    service.seen = seen
     return service
 
 
@@ -219,6 +226,8 @@ class World:
     conversion: MagicMock
     redis: Any
     faults: _Faults
+    app: Any = None
+    preprocessing: Any = None
     user: dict = field(default_factory=lambda: {"id": OWNER})
 
     async def seed(self, case: Case) -> None:
@@ -327,10 +336,11 @@ async def world(tmp_path, monkeypatch):
     milestone_engine.generator.generate_structured_output = generate
     cap = MagicMock()
     cap.reserve = AsyncMock()
+    preprocessing = _preprocessing()
     service = InvestigationService(
         milestone_engine,
         repository,
-        preprocessing_service=_preprocessing(),
+        preprocessing_service=preprocessing,
         file_storage_service=_Storage(),
         turn_cap=cap,
     )
@@ -363,6 +373,8 @@ async def world(tmp_path, monkeypatch):
                 conversion=conversion,
                 redis=redis,
                 faults=faults,
+                app=app,
+                preprocessing=preprocessing,
             )
             w.user = user
             yield w
@@ -439,6 +451,30 @@ class TestTheReceiptCommitsWithTheTurn:
 
         assert await world.receipts() == []
         assert (await world.committed()).title == "a concurrent writer won"
+
+    async def test_a_receipt_refused_by_another_constraint_is_not_a_duplicate(
+        self, world
+    ):
+        """The unique-key translation is decided by re-reading the key, not by
+        the error: a receipt refused by its CHECK, under a key with no receipt,
+        stays the save's own failure."""
+        await world.seed(_investigating_case())
+        case = await world.committed()
+        broken = TurnReceipt.model_construct(
+            case_id=CASE_ID,
+            author_id=OWNER,
+            idempotency_key=KEY,
+            request_fingerprint="f" * 64,
+            turn_number=-1,
+            response={"agent_response": "x"},
+            created_at=datetime.now(timezone.utc),
+        )
+
+        with pytest.raises(RepositoryException) as failed:
+            await world.repository.save(case, receipt=broken)
+
+        assert not isinstance(failed.value, TurnReceiptExistsError)
+        assert await world.receipts() == []
 
     async def test_an_unkeyed_turn_commits_no_receipt(self, world):
         await world.seed(_investigating_case())
@@ -537,6 +573,9 @@ class TestARetryReplaysTheCommittedTurn:
         upload = {"files": ("app.log", b"ERROR pool exhausted\n", "text/plain")}
         first = await world.post(QUERY, files=upload)
         assert first.status_code == 200, first.text
+        # The bytes were read once, for the fingerprint, and the SAME bytes
+        # reached the engine: a second ``UploadFile.read()`` returns b"".
+        assert world.preprocessing.seen == [("app.log", "ERROR pool exhausted\n")]
 
         retry = await world.post(QUERY, files=upload)
         assert retry.status_code == 200, retry.text
@@ -555,12 +594,36 @@ class TestARetryReplaysTheCommittedTurn:
 # ---------------------------------------------------------------------------
 
 
-class TestAKeyReusedForADifferentTurn:
-    async def test_is_refused_and_charges_nothing(self, world):
-        await world.seed(_investigating_case())
-        assert (await world.post(QUERY)).status_code == 200
+PASTE = {
+    "query": "what does the pool log show?",
+    "pasted_content": "2026-10-08T10:00:00Z pool exhausted",
+    "input_type": "text_paste",
+    "observed_at": "2026-10-08T10:00:00Z",
+}
 
-        reused = await world.post({"query": "and the replica lag?"})
+
+class TestAKeyReusedForADifferentTurn:
+    @pytest.mark.parametrize(
+        "changed",
+        [
+            {"query": "and the replica lag?"},
+            {"pasted_content": "2026-10-08T10:05:00Z pool drained"},
+            {"input_type": "page_capture"},
+            {"source_url": "https://status.example.com/incident/7"},
+            {"observed_at": "2026-10-08T09:00:00Z"},
+            {"intent_type": "conversation"},
+            {"intent_data": json.dumps({"note": "x"})},
+        ],
+        ids=lambda changed: next(iter(changed)),
+    )
+    async def test_is_refused_and_charges_nothing(self, world, changed):
+        """Every form field is in the fingerprint: the same key with any ONE
+        of them changed is a different turn."""
+        await world.seed(_investigating_case())
+        assert (await world.post(PASTE)).status_code == 200
+        assert world.generate.await_count == 1, "control: the first turn ran"
+
+        reused = await world.post({**PASTE, **changed})
 
         assert reused.status_code == 409, reused.text
         assert reused.headers["x-error-code"] == IDEMPOTENCY_KEY_REUSE
@@ -772,6 +835,153 @@ class TestTheClaimIsOwnerTokened:
 # ---------------------------------------------------------------------------
 
 
+def _opener(redis, case_service=None, *, agent_timeout: float = 120.0):
+    case = _investigating_case()
+    if case_service is None:
+        case_service = MagicMock()
+        case_service.get_turn_receipt = AsyncMock(return_value=None)
+
+    async def _open() -> KeyedTurn:
+        return await open_keyed_turn(
+            redis=redis,
+            case=case,
+            author_id=OWNER,
+            idempotency_key=KEY,
+            fingerprint="f" * 64,
+            case_service=case_service,
+            agent_timeout=agent_timeout,
+            correlation_id="c",
+        )
+
+    return case, _open
+
+
+class TestTheClaimsLifetime:
+    async def test_the_claim_expires_at_the_turns_whole_bound(self):
+        """A claim with no TTL would outlive a request that died without its
+        ``finally`` and refuse its key forever."""
+        redis = fakeredis_aio.FakeRedis(decode_responses=True)
+        case, _open = _opener(redis)
+
+        keyed = await _open()
+
+        remaining_ms = await redis.pttl(claim_name(case, OWNER, KEY))
+        expected_ms = turn_idempotency.claim_ttl_seconds(120.0) * 1000
+        assert expected_ms - 1000 <= remaining_ms <= expected_ms
+        await keyed.release()
+
+    async def test_retry_after_is_the_claims_remaining_ttl(self):
+        redis = fakeredis_aio.FakeRedis(decode_responses=True)
+        case, _open = _opener(redis)
+        holder = await _open()
+        await redis.pexpire(claim_name(case, OWNER, KEY), 47_000)
+        remaining_s = math.ceil(await redis.pttl(claim_name(case, OWNER, KEY)) / 1000)
+
+        with pytest.raises(HTTPException) as refused:
+            await _open()
+
+        assert refused.value.headers["x-error-code"] == TURN_IN_PROGRESS
+        retry_after = int(refused.value.headers["Retry-After"])
+        assert remaining_s - 5 <= retry_after <= remaining_s
+        await holder.release()
+
+    async def test_a_failed_lookup_releases_the_claim(self, world):
+        """The receipt lookup raises after the claim was taken: the request
+        fails, and leaves no claim behind to refuse its own retry."""
+        await world.seed(_investigating_case())
+        world.repository.get_turn_receipt = AsyncMock(
+            side_effect=RuntimeError("receipt store unavailable")
+        )
+
+        response = await world.post(QUERY)
+
+        assert response.status_code == 500, response.text
+        assert world.repository.get_turn_receipt.await_count == 1, "control"
+        case = await world.committed()
+        assert await world.redis.exists(claim_name(case, OWNER, KEY)) == 0
+        assert world.generate.await_count == 0
+
+
+class TestWithoutAClaim:
+    async def test_a_late_duplicate_is_answered_with_the_committed_turn(self, world):
+        """No claim store (no Redis; likewise a claim that failed or expired).
+        A duplicate whose lookup missed BEFORE the first turn committed, and
+        which loaded the case AFTER it, passes OCC and meets the receipt's
+        unique key. Nothing of it commits; it answers with the committed turn.
+
+        The second LLM run is this degraded mode's residual, pinned."""
+        await world.seed(_investigating_case())
+        world.app.state.redis_client = None
+        gate = _Gate()
+        first_done = asyncio.Event()
+
+        async def _slow(*_args, **_kwargs):
+            await gate.park()
+            return InvestigationResponse_Diagnosis(
+                agent_response=REPLY, state_updates={}
+            )
+
+        world.generate.side_effect = _slow
+        real_lookup = world.repository.get_turn_receipt
+        lookups = {"n": 0}
+
+        async def _lookup(**kwargs):
+            lookups["n"] += 1
+            found = await real_lookup(**kwargs)
+            if lookups["n"] == 2:  # the duplicate's: let the first commit first
+                gate.go.set()
+                await first_done.wait()
+            return found
+
+        world.repository.get_turn_receipt = _lookup
+
+        async def _first():
+            try:
+                return await world.post(QUERY)
+            finally:
+                first_done.set()
+
+        first = asyncio.create_task(_first())
+        await asyncio.wait_for(gate.reached.wait(), 10)
+        duplicate = asyncio.create_task(world.post(QUERY))
+        first_response = await asyncio.wait_for(first, 30)
+        dup = await asyncio.wait_for(duplicate, 30)
+
+        assert first_response.status_code == 200, first_response.text
+        assert lookups["n"] == 3, "the duplicate read the receipt back"
+        assert dup.status_code == 200, dup.text
+        assert dup.headers[IDEMPOTENCY_REPLAYED_HEADER] == "true"
+        assert dup.content == first_response.content
+        assert await world.receipts() == [(OWNER, KEY, 5)]
+        committed = await world.committed()
+        assert committed.current_turn == 5
+        assert len(committed.messages) == 2
+        assert world.generate.await_count == 2, "the residual: a second LLM run"
+
+    async def test_a_refused_receipt_that_cannot_be_read_back_is_in_progress(
+        self, world
+    ):
+        """The refusal's receipt vanished before the read-back (its case was
+        deleted in between): no receipt to replay, no claim to time. In flight,
+        with a short Retry-After; the next retry decides."""
+        await world.seed(_investigating_case())
+        real_save = world.repository.save
+
+        async def _refused(case, **rows):
+            raise TurnReceiptExistsError(case.case_id, KEY)
+
+        world.repository.save = _refused
+
+        response = await world.post(QUERY)
+
+        assert response.status_code == 409, response.text
+        assert response.headers["x-error-code"] == TURN_IN_PROGRESS
+        assert response.headers["Retry-After"] == str(
+            turn_idempotency.REFUSED_REPLAY_RETRY_AFTER_SECONDS
+        )
+        world.repository.save = real_save
+
+
 class TestKeyScoping:
     async def test_a_teammate_with_the_owners_key_is_refused_as_today(self, world):
         """A5: only the owner may submit a turn. The teammate can SEE the case,
@@ -873,7 +1083,11 @@ class TestALostAcknowledgement:
         self, world
     ):
         """6c: the probe matches the key AND the turn number. A receipt the key
-        left at an earlier turn says nothing about this commit."""
+        left at an earlier turn says nothing about this commit.
+
+        Through ``save`` that receipt refuses this turn's INSERT first
+        (``TurnReceiptExistsError``, never probed), so the probe is asked
+        directly, with its own control."""
         await world.seed(_investigating_case())
         case = await world.committed()
         older = TurnReceipt(
@@ -886,14 +1100,15 @@ class TestALostAcknowledgement:
         )
         case.current_turn += 1
         await world.repository.save(case, receipt=older)
+        this_turn = older.model_copy(update={"turn_number": older.turn_number + 1})
+
+        assert await world.repository._receipt_committed(case, older), "control"
+        assert not await world.repository._receipt_committed(case, this_turn)
 
         case = await world.committed()
-        case.current_turn += 1
-        this_turn = older.model_copy(update={"turn_number": case.current_turn})
-        world.faults.commit_raises_without_landing = True
-
-        with pytest.raises(RepositoryException):
+        with pytest.raises(TurnReceiptExistsError):
             await world.repository.save(case, receipt=this_turn)
+        assert await world.receipts() == [(OWNER, KEY, older.turn_number)]
 
 
 # ---------------------------------------------------------------------------

@@ -93,6 +93,7 @@ from faultmaven.modules.case.domain.owned_models.report import (
 # retry under the same Idempotency-Key is answered with the committed turn.
 from faultmaven.modules.case.domain.owned_models.turn_receipt import (
     TurnReceipt,
+    TurnReceiptExistsError,
     TurnReceiptKey,
 )
 
@@ -128,7 +129,8 @@ class ICaseRepository(Protocol):
         BEGIN bound, the case's own, and carry the case's enterprise. Every row
         must name ``case`` (``ValueError`` otherwise). A receipt whose key the
         case already holds is refused by the table's unique key, and the whole
-        save with it.
+        save with it: ``TurnReceiptExistsError``, raised unwrapped, as
+        ``StaleCaseException`` is.
 
         MUTATES ``case.messages``: a row missing ``message_id`` or
         ``created_at`` is completed in place, so the in-memory list carries
@@ -632,6 +634,7 @@ __all__ = [
     "CaseClosureResponse",
     # Case-owned turn receipts (#1888)
     "TurnReceipt",
+    "TurnReceiptExistsError",
     "TurnReceiptKey",
     # Case-owned Agent Execution models (per module-organization-design.md)
     # Investigation models from Agent module (shared for investigation coordination)

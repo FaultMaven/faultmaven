@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Set
 
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.modules.case.domain.models.case import Case
@@ -38,7 +39,10 @@ from faultmaven.modules.case.domain.models.lifecycle import (
 
 # Case-owned models (per module-organization-design.md)
 from faultmaven.modules.case.domain.owned_models.report import CaseReport, ReportType
-from faultmaven.modules.case.domain.owned_models.turn_receipt import TurnReceipt
+from faultmaven.modules.case.domain.owned_models.turn_receipt import (
+    TurnReceipt,
+    TurnReceiptExistsError,
+)
 from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.modules.case.infrastructure.case_scope import case_scope_where
@@ -314,12 +318,16 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             for report in reports:
                 await _insert_report(self._is_pg, self.db, report)
             if receipt is not None:
-                await _insert_turn_receipt(self._is_pg, self.db, case, receipt)
+                try:
+                    await _insert_turn_receipt(self._is_pg, self.db, case, receipt)
+                except IntegrityError as refused:
+                    await self._raise_if_receipt_exists(case, receipt, refused)
+                    raise
 
             await self.db.commit()
             return case
 
-        except StaleCaseException:
+        except (StaleCaseException, TurnReceiptExistsError):
             # OCC mismatch — propagate unwrapped so callers can retry or
             # surface 409 without unwrapping a generic RepositoryException.
             await self.db.rollback()
@@ -329,6 +337,32 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             await self.db.rollback()
             self.restore_save_stamps(case, stamps)
             raise RepositoryException(f"Failed to save case {case.case_id}: {e}") from e
+
+    async def _raise_if_receipt_exists(
+        self, case: Case, receipt: TurnReceipt, refused: IntegrityError
+    ) -> None:
+        """Raise ``TurnReceiptExistsError`` when the receipt INSERT was refused
+        because the key already has a receipt (#1888).
+
+        Decided by re-reading, not by the driver's message: an
+        ``IntegrityError`` names its constraint differently per dialect (see
+        ``team_repository``). The transaction is rolled back first (a refused
+        statement aborts it on PostgreSQL); the read runs in a fresh one, which
+        the session's ``begin`` listener binds to the same tenant. A key with
+        no receipt means the refusal was some other constraint, and the
+        caller re-raises it unchanged.
+        """
+        await self.db.rollback()
+        existing = await self.get_turn_receipt(
+            enterprise_id=case.enterprise_id,
+            case_id=case.case_id,
+            author_id=receipt.author_id,
+            idempotency_key=receipt.idempotency_key,
+        )
+        if existing is not None:
+            raise TurnReceiptExistsError(
+                case.case_id, receipt.idempotency_key
+            ) from refused
 
     async def get_turn_receipt(
         self,

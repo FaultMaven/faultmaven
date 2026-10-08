@@ -75,8 +75,10 @@ from faultmaven.modules.case.api.turn_idempotency import (
     TURN_IN_PROGRESS,
     KeyedTurn,
     open_keyed_turn,
+    replay_committed_turn,
     request_fingerprint,
 )
+from faultmaven.modules.case.contracts import TurnReceiptExistsError
 from faultmaven.modules.case.exceptions import StaleCaseException
 
 router = APIRouter(prefix="/cases", tags=["cases"])
@@ -751,10 +753,25 @@ async def submit_turn(
                     ),
                     timeout=agent_timeout,
                 )
-                response = await investigation_service.commit_turn(
-                    prepared,
-                    receipt_key=keyed.receipt_key if keyed is not None else None,
-                )
+                try:
+                    response = await investigation_service.commit_turn(
+                        prepared,
+                        receipt_key=keyed.receipt_key if keyed is not None else None,
+                    )
+                except TurnReceiptExistsError:
+                    # Another request under this key committed while this one
+                    # ran without a claim (``turn_idempotency``'s degraded
+                    # mode); nothing of this one committed. Answer with the
+                    # committed turn, as its retry would be.
+                    replay = await replay_committed_turn(
+                        keyed=keyed,
+                        case=case,
+                        case_service=case_service,
+                        correlation_id=correlation_id,
+                    )
+                    if http_response is not None:
+                        http_response.headers[IDEMPOTENCY_REPLAYED_HEADER] = "true"
+                    return replay
 
             # Name the case from its own content. Called unconditionally: whether
             # the case is *titleable* is decided inside, against the case as it

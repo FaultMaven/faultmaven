@@ -36,6 +36,7 @@ from faultmaven.modules.case.contracts import (
     Hypothesis,
     Solution,
     TurnReceipt,
+    TurnReceiptExistsError,
     UploadedFile,
 )
 from faultmaven.modules.case.exceptions import StaleCaseException
@@ -144,8 +145,9 @@ class SessionlessCaseRepository(CaseRepository):
            concurrent writer, so an unkeyed in-commit failure stays ambiguous
            (a named residual).
 
-        A ``StaleCaseException`` is never probed: the conflict is the
-        database's own answer that nothing of this save committed.
+        A ``StaleCaseException`` or ``TurnReceiptExistsError`` is never
+        probed: either is the database's own answer that nothing of this save
+        committed.
 
         Not closed here: a shutdown cancellation inside ``db.commit()``
         (window 1). ``CancelledError`` is not an ``Exception``, nothing can
@@ -157,7 +159,7 @@ class SessionlessCaseRepository(CaseRepository):
             async with get_db_session() as session:
                 repo = get_repository_for_session(session)
                 saved = await repo.save(case, reports=reports, receipt=receipt)
-        except StaleCaseException:
+        except (StaleCaseException, TurnReceiptExistsError):
             raise
         except Exception as exc:
             if saved is not None:

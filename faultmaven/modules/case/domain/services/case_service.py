@@ -326,7 +326,7 @@ class CaseService(ICaseService):
             logger.error(f"Failed to create case: {e}")
             raise ServiceException(f"Case creation failed: {str(e)}") from e
 
-    @trace("case_service_get_case")
+    @trace("case_service_get_turn_receipt")
     async def get_turn_receipt(
         self,
         *,
@@ -349,6 +349,7 @@ class CaseService(ICaseService):
             idempotency_key=idempotency_key,
         )
 
+    @trace("case_service_get_case")
     async def get_case(
         self, case_id: str, user_id: Optional[str] = None, *, owner_only: bool = False
     ) -> Optional[Case]:

@@ -60,3 +60,28 @@ class TurnReceipt(BaseModel):
     sent for this turn."""
 
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class TurnReceiptExistsError(Exception):
+    """A turn tried to commit under a key that already has a receipt.
+
+    The receipt's unique key ``(enterprise_id, case_id, author_id,
+    idempotency_key)`` refused the INSERT, so this save committed NOTHING (the
+    whole transaction rolled back) and ANOTHER turn under the same key already
+    did. Raised by every ``ICaseRepository.save(..., receipt=...)``, unwrapped,
+    as ``StaleCaseException`` is.
+
+    Reached only when a duplicate ran without the route's in-flight claim (no
+    Redis, a claim store that failed, or a claim outlived by its turn) and
+    loaded the case after the first turn committed, so optimistic concurrency
+    let it through. The route answers it with the committed turn: it reads the
+    receipt back and replays it (#1888).
+    """
+
+    def __init__(self, case_id: str, idempotency_key: str) -> None:
+        self.case_id = case_id
+        self.idempotency_key = idempotency_key
+        super().__init__(
+            f"A turn under Idempotency-Key {idempotency_key!r} already committed "
+            f"on case {case_id}"
+        )

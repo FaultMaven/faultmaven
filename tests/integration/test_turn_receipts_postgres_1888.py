@@ -30,7 +30,10 @@ import pytest
 from sqlalchemy import text
 
 from faultmaven.config.idempotency_key import IDEMPOTENCY_KEY_MAX_LENGTH
-from faultmaven.modules.case.domain.owned_models.turn_receipt import TurnReceipt
+from faultmaven.modules.case.domain.owned_models.turn_receipt import (
+    TurnReceipt,
+    TurnReceiptExistsError,
+)
 from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure import (
     sessionless_case_repository as sessionless_module,
@@ -179,7 +182,8 @@ async def test_a_second_receipt_under_the_key_commits_nothing(
 ):
     """A plain INSERT: a second turn committing under a key that already has a
     receipt fails with its whole transaction rather than overwriting the
-    answer the first one's retries are owed."""
+    answer the first one's retries are owed. The refusal is read back, under
+    RLS in a fresh transaction, and named: ``TurnReceiptExistsError``."""
     ent_a, _ = enterprises
     case = _case(ent_a)
     with tenant(ent_a):
@@ -189,7 +193,7 @@ async def test_a_second_receipt_under_the_key_commits_nothing(
             )
         case.title = "Retitled by the second turn"
         async with tenant_sessions() as session:
-            with pytest.raises(RepositoryException):
+            with pytest.raises(TurnReceiptExistsError):
                 await PostgreSQLHybridCaseRepository(session).save(
                     case, receipt=_receipt(case, turn=2)
                 )
@@ -204,6 +208,26 @@ async def test_a_second_receipt_under_the_key_commits_nothing(
             )
         ).scalar()
     assert title == "Turn commit case"
+
+
+@pytest.mark.asyncio
+async def test_a_receipt_refused_by_another_constraint_stays_a_repository_error(
+    superuser_engine, enterprises, tenant_sessions
+):
+    """Control for the translation above: the CHECK refuses a negative turn
+    number, the key has no receipt, so the refusal is the save's own."""
+    ent_a, _ = enterprises
+    case = _case(ent_a)
+    broken = TurnReceipt.model_construct(
+        **{**_receipt(case).model_dump(), "turn_number": -1}
+    )
+    with tenant(ent_a):
+        async with tenant_sessions() as session:
+            with pytest.raises(RepositoryException) as failed:
+                await PostgreSQLHybridCaseRepository(session).save(case, receipt=broken)
+
+    assert not isinstance(failed.value, TurnReceiptExistsError)
+    assert await _stored(superuser_engine, case.case_id) == []
 
 
 def _commit_fault(monkeypatch, *, lands: bool) -> dict:
@@ -268,17 +292,24 @@ async def test_a_commit_that_did_not_land_still_raises(
 
 @pytest.mark.asyncio
 async def test_an_older_receipt_under_the_key_does_not_vouch(
-    superuser_engine, enterprises, sessionless, monkeypatch
+    superuser_engine, enterprises, sessionless
 ):
-    """6c under RLS: the key matches, the turn number does not."""
+    """6c under RLS: the key matches, the turn number does not. The probe is
+    asked directly (with its control), because through ``save`` the older
+    receipt refuses the INSERT first: ``TurnReceiptExistsError``, never
+    probed, unwrapped through the session wrapper."""
     ent_a, _ = enterprises
     case = _case(ent_a)
     with tenant(ent_a):
         await sessionless.save(case, receipt=_receipt(case, turn=1))
-        _commit_fault(monkeypatch, lands=False)
+        assert await sessionless._receipt_committed(case, _receipt(case, turn=1))
+        assert not await sessionless._receipt_committed(case, _receipt(case, turn=2))
         case.title = "Retitled by a later turn"
-        with pytest.raises(RepositoryException):
+        with pytest.raises(TurnReceiptExistsError):
             await sessionless.save(case, receipt=_receipt(case, turn=2))
+
+    [(_, _, _, turn, _)] = await _stored(superuser_engine, case.case_id)
+    assert turn == 1
 
 
 @pytest.mark.asyncio

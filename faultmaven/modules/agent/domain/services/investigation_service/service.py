@@ -106,6 +106,7 @@ from faultmaven.modules.case.contracts import (
     Case,
     TurnOutcome,
     TurnReceipt,
+    TurnReceiptExistsError,
     TurnReceiptKey,
 )
 from faultmaven.modules.case.contracts import ICaseRepository as CaseRepository
@@ -624,6 +625,8 @@ class InvestigationService:
             TurnDeadlineExceeded: Too little budget left to start the commit.
             StaleCaseException: The case changed since the turn loaded it
                 (409); nothing of the turn is committed.
+            TurnReceiptExistsError: Another turn under the same key already
+                committed; nothing of this one is (the route replays that one).
             ServiceException: The commit failed (500); nothing is committed.
         """
         try:
@@ -652,7 +655,7 @@ class InvestigationService:
             await run_settlement_shielded(
                 self.repository, self.file_storage_service, prepared
             )
-        except StaleCaseException:
+        except (StaleCaseException, TurnReceiptExistsError):
             raise
         except Exception as e:
             logger.error(f"Failed to commit turn for case {prepared.case.case_id}: {e}")

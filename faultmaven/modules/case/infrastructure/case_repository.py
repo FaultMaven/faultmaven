@@ -36,7 +36,10 @@ from faultmaven.modules.case.domain.models.problem import (
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import Solution
 from faultmaven.modules.case.domain.models.turn import TurnProgress
-from faultmaven.modules.case.domain.owned_models.turn_receipt import TurnReceipt
+from faultmaven.modules.case.domain.owned_models.turn_receipt import (
+    TurnReceipt,
+    TurnReceiptExistsError,
+)
 
 if TYPE_CHECKING:
     # Report models now owned by Case module - import from case domain models
@@ -1058,10 +1061,7 @@ class InMemoryCaseRepository(CaseRepository):
             if receipt_key is not None and receipt_key in self._receipts:
                 # The SQL repositories' unique-key violation, refused before
                 # anything is stored, as theirs rolls the whole save back.
-                raise ValueError(
-                    f"turn receipt for key {receipt.idempotency_key!r} already "
-                    f"exists on case {case.case_id}"
-                )
+                raise TurnReceiptExistsError(case.case_id, receipt.idempotency_key)
         except Exception:
             self.restore_save_stamps(case, stamps)
             raise

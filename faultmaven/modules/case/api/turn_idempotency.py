@@ -34,11 +34,26 @@ its case lookup and before the terminal-case gates and ``prepare_turn``):
 
 The claim is an optimisation and a truthful answer, never the correctness
 mechanism: optimistic concurrency (``cases.version``) and the receipt's unique
-key still let exactly one turn commit. It saves the second LLM run. Without
-Redis there is no claim (logged once): a concurrent duplicate then runs, OCC
-lets one commit and the other gets ``CASE_VERSION_CONFLICT``, and the next
-retry replays. Under FakeRedis the claim is per process, which is exactly the
-standalone deployment: one process.
+key still let exactly one turn commit. What the claim saves is the second LLM
+run. Without it (no Redis, logged once; a claim store that failed; or a claim
+its turn outlived) a duplicate whose lookup missed runs the turn, and then:
+
+- if it loaded the case BEFORE the first turn committed, OCC refuses its save:
+  409 ``CASE_VERSION_CONFLICT``, and the next retry replays;
+- if it loaded the case AFTER, OCC passes and the receipt's unique key refuses
+  it (``TurnReceiptExistsError``, nothing of it commits). The route answers
+  with the committed turn (``replay_committed_turn``): it reads the receipt
+  back and replays it, 200 with ``X-Idempotency-Replayed``.
+
+Either way exactly one turn commits and the client is told the truth. The
+second LLM run is this degraded mode's residual. Under FakeRedis the claim is
+per process, which is exactly the standalone deployment: one process.
+
+Also a residual (window 1, beside ``turn_settlement``'s): a CANCELLED handler
+(client disconnect, shutdown) runs the route's ``finally`` and releases the
+claim while the shielded settlement may still be committing. A duplicate in
+that gap misses the receipt and runs; OCC or the unique key still lets only
+one commit, as above.
 """
 
 import hashlib
@@ -57,7 +72,7 @@ from faultmaven.core.investigation.turn_budget import TURN_COMMIT_RESERVE_SECOND
 from faultmaven.models.api_models import TurnResponse
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.case.api.title_generation import AUTO_TITLE_TIMEOUT_SECONDS
-from faultmaven.modules.case.contracts import Case, TurnReceiptKey
+from faultmaven.modules.case.contracts import Case, TurnReceipt, TurnReceiptKey
 
 logger = logging.getLogger(__name__)
 
@@ -231,6 +246,64 @@ async def open_keyed_turn(
     # The turn this key names already committed: nothing of this request will
     # run, so the claim goes now rather than at the route's end.
     await keyed.release()
+    keyed.replay = _answer_from_receipt(receipt, fingerprint, case, correlation_id)
+    return keyed
+
+
+async def replay_committed_turn(
+    *,
+    keyed: KeyedTurn,
+    case: Case,
+    case_service: ICaseService,
+    correlation_id: str,
+) -> TurnResponse:
+    """Answer a keyed turn whose commit the receipt's unique key refused.
+
+    ``TurnReceiptExistsError``: another request under this key committed while
+    this one ran without a claim (the module docstring's degraded mode).
+    Nothing of this one committed, so the honest answer is the committed turn:
+    read its receipt back and replay it, as a retry would be. A lookup that
+    still misses (the receipt's case was deleted in between) is answered as
+    in flight, with a short ``Retry-After``: the next retry decides.
+    """
+    receipt_key = keyed.receipt_key
+    receipt = await case_service.get_turn_receipt(
+        enterprise_id=case.enterprise_id,
+        case_id=case.case_id,
+        author_id=receipt_key.author_id,
+        idempotency_key=receipt_key.idempotency_key,
+    )
+    if receipt is None:
+        raise _in_progress(correlation_id, REFUSED_REPLAY_RETRY_AFTER_SECONDS)
+    return _answer_from_receipt(
+        receipt, receipt_key.request_fingerprint, case, correlation_id
+    )
+
+
+#: ``Retry-After`` when a refused commit's receipt cannot be read back: there is
+#: no claim whose TTL to report, and the next retry decides.
+REFUSED_REPLAY_RETRY_AFTER_SECONDS = 2
+
+
+def _in_progress(correlation_id: str, retry_after: int) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=(
+            "This turn is still being processed. Retry with the same "
+            "Idempotency-Key after Retry-After seconds to receive its result."
+        ),
+        headers={
+            "x-correlation-id": correlation_id,
+            "x-error-code": TURN_IN_PROGRESS,
+            "Retry-After": str(retry_after),
+        },
+    )
+
+
+def _answer_from_receipt(
+    receipt: TurnReceipt, fingerprint: str, case: Case, correlation_id: str
+) -> TurnResponse:
+    """The committed turn's response, or the 409 its receipt calls for."""
     if receipt.request_fingerprint != fingerprint:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -245,7 +318,7 @@ async def open_keyed_turn(
             },
         )
     try:
-        keyed.replay = TurnResponse.model_validate(receipt.response)
+        return TurnResponse.model_validate(receipt.response)
     except ValidationError as invalid:
         logger.error(
             "Turn receipt on case %s (turn %d) no longer validates as a "
@@ -262,7 +335,6 @@ async def open_keyed_turn(
                 "x-error-code": IDEMPOTENCY_REPLAY_UNAVAILABLE,
             },
         )
-    return keyed
 
 
 async def _claim(
@@ -312,15 +384,4 @@ async def _claim(
             retry_after = max(1, math.ceil(remaining_ms / 1000))
     except Exception:  # noqa: BLE001 - 1 s is an honest lower bound
         pass
-    raise HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail=(
-            "This turn is still being processed. Retry with the same "
-            "Idempotency-Key after Retry-After seconds to receive its result."
-        ),
-        headers={
-            "x-correlation-id": correlation_id,
-            "x-error-code": TURN_IN_PROGRESS,
-            "Retry-After": str(retry_after),
-        },
-    )
+    raise _in_progress(correlation_id, retry_after)
