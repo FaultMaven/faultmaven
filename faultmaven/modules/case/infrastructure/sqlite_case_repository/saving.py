@@ -1123,6 +1123,38 @@ async def _insert_report(db, report: CaseReport) -> None:
     )
 
 
+async def _delete_uncommitted_checkpoints(db, case_id: str) -> None:
+    """Delete this case's checkpoint rows from turns that never committed.
+
+    A checkpoint row whose ``turn_number`` is above the case's COMMITTED
+    ``current_turn`` was written by a turn that did not commit: before #1882 a
+    checkpoint committed in its own transaction, mid-turn, so a turn that then
+    failed left its row behind at turn N while the case stayed at N-1. The
+    retry is turn N again, with the same deterministic checkpoint id, and the
+    turn's one commit inserts checkpoints loudly (no ``ON CONFLICT``, R6): left
+    in place, the orphan would fail that case's every retry (#1882).
+
+    Run inside ``save``'s transaction and BEFORE the case row is written, so
+    the subquery reads the committed turn, not the one this save is about to
+    commit; a turn that commits after this deletes nothing of its own. Run on
+    every save, not only one carrying checkpoints: a retried turn that takes no
+    checkpoint would otherwise commit turn N and leave the orphan looking like
+    that turn's own snapshot. A case with no row yet deletes nothing (the
+    subquery is NULL). Under PostgreSQL RLS the DELETE sees only the bound
+    tenant's rows, which is every row of this case.
+    """
+    await db.execute(
+        text("""
+            DELETE FROM case_checkpoints
+            WHERE case_id = :case_id
+              AND turn_number > (
+                  SELECT current_turn FROM cases WHERE case_id = :case_id
+              )
+        """),
+        {"case_id": case_id},
+    )
+
+
 async def _insert_checkpoint(db, checkpoint: CaseCheckpoint) -> None:
     """Write one checkpoint row on ``db``, without committing (SQLite-compatible).
 

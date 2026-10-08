@@ -41,7 +41,7 @@ PHASE_MODULES: dict[str, object] = {
     "_close_on_explicit_intent": _transition_turns,
     "_generate_turn_response": _turn_generation,
     "_apply_turn_response": _turn_application,
-    "_persist_turn": _turn_completion,
+    "_finalize_turn": _turn_completion,
     "_compose_turn_reply": _turn_completion,
 }
 

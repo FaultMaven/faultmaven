@@ -14,6 +14,7 @@ import pytest
 from faultmaven.core.investigation.milestone_engine.transitions import (
     TransitionManager,
 )
+from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.core.investigation.problem_status import edit_statement
 from faultmaven.core.investigation.prompts.context_builder.evidence import (
     _render_problem_context,
@@ -70,7 +71,7 @@ async def _gate1(case: Case) -> ProblemVerification:
     prefetcher.prefetch_kb_context = AsyncMock()
     await TransitionManager(
         deps=deps, kb_prefetcher=prefetcher
-    )._transition_to_investigating(case)
+    )._transition_to_investigating(case, plan=TurnCommitPlan())
     assert case.problem_verification is not None
     return case.problem_verification
 

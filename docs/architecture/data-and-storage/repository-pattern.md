@@ -538,19 +538,20 @@ Scoped methods:
 method for `uploaded_files`. A turn's attachment is appended to
 `case.uploaded_files` in memory, stamped with the turn's number, and written by
 the aggregate `save(case)` that commits the turn — in the same transaction as
-`current_turn` and the user message, on both backends. So a file is listed,
-searchable and attributed to a committed turn together, or not at all. A turn
-that fails before its first commit (an LLM error, a `StaleCaseException` at the
-engine's Step-7 save) leaves no row. The storage sidecar is marked linked only
-after the turn's final save, so the bytes such a turn stored are an ordinary
-orphan the storage sweep reclaims at TTL.
+`current_turn`, the user message and the agent's reply, on both backends. So a
+file is listed, searchable and attributed to a committed turn together, or not
+at all. A turn that fails anywhere (an LLM error, a `StaleCaseException` at its
+commit) leaves no row. The storage sidecar is marked linked only after that
+commit, so the bytes such a turn stored are an ordinary orphan the storage sweep
+reclaims at TTL.
 
-One window remains (#1882). An engine-routed turn commits twice: at the engine's
-Step 7 and again at the service's final save. A failure between the two — a
-`StaleCaseException` at the final save included — leaves the user message,
-`current_turn` and the upload row committed without the agent's reply, and the
-sidecar unflipped. The row is still attributed to a turn that committed, and the
-sweep keeps a row-referenced blob; the half turn is #1882's to close.
+**A turn commits once (#1882).** The engine performs no case-scoped write: the
+rows a turn produces besides the case (its checkpoints, its report rows) ride
+the turn's `TurnCommitPlan`, and the service commits case and rows in the one
+`save(case, reports=..., checkpoints=...)` above, after the turn's response is
+built. Work that must follow the commit (the runbook conversion) waits on a gate
+in the plan, released by the commit and cancelled when it fails. So a 2xx means
+the whole turn committed and a non-2xx means none of it did.
 
 A scoped `add_uploaded_file` used to commit the row at intake (#1013), because
 `mark_linked` ran before any row existed and a failed turn otherwise left a

@@ -1,12 +1,21 @@
 """How many report/runbook regenerations a case has left, read from the report service and repository the owner passes at call time."""
 
+from typing import Mapping
+
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
+    ReportType,
 )
 
 
-async def _remaining_regens_for(report_service, repository, case: "Case") -> int:
+async def _remaining_regens_for(
+    report_service,
+    repository,
+    case: "Case",
+    *,
+    pending: Mapping[ReportType, int],
+) -> int:
     """How many regenerations the user has left for this case's
     canonical terminal summary (RESOLUTION_SUMMARY for RESOLVED,
     CLOSURE_SUMMARY for CLOSED).
@@ -18,10 +27,13 @@ async def _remaining_regens_for(report_service, repository, case: "Case") -> int
     showing the affordance when the count cannot be checked.
 
     Counted from the persisted ``reports`` table (each generation
-    writes a new row). See ICaseRepository.count_reports.
+    writes a new row), plus ``pending``: per type, the rows the turn has
+    rendered and not yet committed (``TurnCommitPlan.pending_reports``). A
+    turn's report rows commit with the turn (#1882), so on the ack turn the
+    summary just rendered is not in the table yet, and without ``pending``
+    the label would offer a regeneration the cap has already spent. See
+    ICaseRepository.count_reports.
     """
-    from faultmaven.modules.case.contracts import ReportType
-
     if report_service is None or repository is None:
         return getattr(report_service, "MAX_REGENERATIONS", 5)
     if case.state == CaseState.RESOLVED:
@@ -39,4 +51,4 @@ async def _remaining_regens_for(report_service, repository, case: "Case") -> int
         # without an affordance. Fall back to the cap.
         return getattr(report_service, "MAX_REGENERATIONS", 5)
     max_regens = getattr(report_service, "MAX_REGENERATIONS", 5)
-    return max(0, max_regens - count)
+    return max(0, max_regens - count - pending.get(report_type, 0))

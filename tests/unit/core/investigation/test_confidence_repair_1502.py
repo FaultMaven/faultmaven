@@ -1366,7 +1366,7 @@ async def test_a_turn_records_every_repair_on_its_turn_history():
         }
     )
     repo = MagicMock()
-    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.save = AsyncMock(side_effect=lambda c, **_: c)
     engine = MilestoneEngine(_StrictLLM(body), repo, investigation_tools=None)
 
     result = await engine.process_turn(case, "what now?")

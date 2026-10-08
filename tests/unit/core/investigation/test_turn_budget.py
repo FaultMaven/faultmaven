@@ -24,13 +24,17 @@ import time
 
 import pytest
 
+from faultmaven.core.investigation import turn_budget
 from faultmaven.core.investigation.llm_error_handler import LLMErrorHandler, RetryConfig
 from faultmaven.core.investigation.turn_budget import (
     TURN_BUDGET_BACKSTOP_RESERVE_SECONDS,
     TURN_BUDGET_RESERVE_SECONDS,
+    TURN_COMMIT_RESERVE_SECONDS,
+    TurnDeadlineExceeded,
     backstop_turn_budget,
     bind_turn_deadline,
     can_afford_next_attempt,
+    check_commit_budget,
     clamp_to_turn_budget,
     remaining_turn_budget,
     spendable_turn_budget,
@@ -86,19 +90,26 @@ class TestTheShippedLadderShape:
 #
 # A POPULATION, not a fixture: a single (T, A) pair proves nothing about a
 # boundary, and the boundary is where the previous analysis went wrong. Spans
-# both sides of 35/36 at the default 120s turn, the shipped default, the two
+# both sides of 33/34 at the default 120s turn, the shipped default, the two
 # configurations measured on real deployments, and the values the documentation
 # itself invites (`{"fireworks": 180, "ollama": 600}`).
+#
+# The boundary counts the commit reserve (#1882): a ladder fits when it ends
+# with the step reserve AND the turn's commit reserve still unspent, so at a
+# 120s turn ``3T + 14 + 1 + TURN_COMMIT_RESERVE_SECONDS`` must stay within 120.
+# Before the commit left the deadline's ``wait_for`` the boundary was 35/36.
 _LADDER_POPULATION = [
     # ---- fits ----
     ("shipped_default_30_120", 30, 120, 104.0, True, 3),
-    ("boundary_fits_35_120", 35, 120, 119.0, True, 3),
+    ("boundary_fits_33_120", 33, 120, 113.0, True, 3),
     ("generous_turn_30_600", 30, 600, 104.0, True, 3),
     ("tiny_timeout_5_120", 5, 120, 29.0, True, 3),
     # ---- breaches ----
-    # One second past the ceiling. #1292 called 38 safe here; it is not, and 36
-    # is already over.
-    ("boundary_breaches_36_120", 36, 120, 122.0, False, 3),
+    # The first second past the ceiling, once the commit's reserve is kept
+    # back: 35 fitted before #1882 and 34 no longer does.
+    ("boundary_breaches_34_120", 34, 120, 116.0, False, 3),
+    # #1292 called 38 safe here; it is not, and 36 is already over.
+    ("breaches_36_120", 36, 120, 122.0, False, 3),
     # The value #1292 proposed as the safe ceiling. It breaches by 8s AND the
     # deadline-aware ladder can only afford two of the three attempts.
     ("issue_1292_claimed_safe_38_120", 38, 120, 128.0, False, 2),
@@ -153,26 +164,84 @@ class TestWorstCaseLadderPlan:
         with a value that violates it.
         """
         plan = _plan(request_timeout, agent_timeout)
-        assert plan.afforded_seconds <= agent_timeout - TURN_BUDGET_RESERVE_SECONDS
+        assert plan.afforded_seconds <= (
+            agent_timeout - TURN_BUDGET_RESERVE_SECONDS - TURN_COMMIT_RESERVE_SECONDS
+        )
         assert 1 <= plan.attempts <= _PAID_ATTEMPTS
 
     def test_fits_is_exactly_whole_ladder_plus_reserve_inside_the_turn(self):
         """``fits`` must not quietly become "the afforded attempts fit".
 
         Those differ: at T=36/A=120 the deadline-aware ladder affords all three
-        attempts (114s of a 119s budget) and yet the CONFIGURATION does not fit,
-        because the full ladder costs 122s. Reporting True there would tell an
-        operator their timeouts are coherent when they are not.
+        attempts (114s of a 115.5s budget) and yet the CONFIGURATION does not
+        fit, because the full ladder costs 122s. Reporting True there would tell
+        an operator their timeouts are coherent when they are not.
         """
         plan = _plan(request_timeout=36, agent_timeout=120)
         assert plan.attempts == _PAID_ATTEMPTS  # every attempt afforded ...
         assert plan.fits is False  # ... and still incoherent
 
     def test_no_attempt_at_all_when_the_budget_is_already_gone(self):
-        plan = _plan(request_timeout=30, agent_timeout=TURN_BUDGET_RESERVE_SECONDS)
+        plan = _plan(
+            request_timeout=30,
+            agent_timeout=TURN_BUDGET_RESERVE_SECONDS + TURN_COMMIT_RESERVE_SECONDS,
+        )
         assert plan.attempts == 0
         assert plan.afforded_seconds == 0.0
         assert plan.fits is False
+
+
+@pytest.mark.unit
+class TestTheLadderPaysForTheCommit:
+    """The turn's commit runs outside the deadline's ``wait_for`` and needs its
+    reserve left when the preparation ends (#1882). The ladder is what spends
+    the budget, so the ladder is what leaves it."""
+
+    def test_the_plan_reports_the_reserve_it_kept(self):
+        plan = _plan(request_timeout=30, agent_timeout=120)
+        assert plan.commit_reserve_seconds == TURN_COMMIT_RESERVE_SECONDS
+
+    def test_a_ladder_that_would_spend_the_commit_reserve_does_not_fit(self):
+        """At T=34 the ladder plus the step reserve fits in 120s (117s) and
+        only the commit reserve tips it over."""
+        assert 3 * 34 + 14 + TURN_BUDGET_RESERVE_SECONDS <= 120
+        assert _plan(request_timeout=34, agent_timeout=120).fits is False
+        no_commit = worst_case_ladder_plan(
+            agent_timeout=120,
+            attempt_seconds=34,
+            paid_attempts=_PAID_ATTEMPTS,
+            backoffs=_BACKOFFS,
+            commit_reserve=0.0,
+        )
+        assert no_commit.fits is True  # control: the reserve is what decides
+
+    def test_the_reserve_is_read_at_call_time(self, monkeypatch):
+        monkeypatch.setattr(turn_budget, "TURN_COMMIT_RESERVE_SECONDS", 0.0)
+        assert _plan(request_timeout=34, agent_timeout=120).fits is True
+
+
+@pytest.mark.unit
+class TestTheCommitBudgetCheck:
+    """``check_commit_budget`` is what ``commit_turn`` asks before its commit."""
+
+    def test_inert_outside_a_bound_turn(self):
+        check_commit_budget()
+
+    def test_enough_left_passes(self):
+        with bind_turn_deadline(TURN_COMMIT_RESERVE_SECONDS + 5):
+            check_commit_budget()
+
+    def test_less_than_the_reserve_left_is_refused(self):
+        with bind_turn_deadline(TURN_COMMIT_RESERVE_SECONDS - 0.5):
+            with pytest.raises(TurnDeadlineExceeded) as refused:
+                check_commit_budget()
+        assert refused.value.reserve == TURN_COMMIT_RESERVE_SECONDS
+        assert refused.value.remaining < TURN_COMMIT_RESERVE_SECONDS
+
+    def test_a_passed_deadline_is_refused(self):
+        with bind_turn_deadline(-1):
+            with pytest.raises(TurnDeadlineExceeded):
+                check_commit_budget()
 
 
 @pytest.mark.unit
@@ -226,11 +295,13 @@ class TestBindingTheDeadline:
         assert 119.0 < remaining <= 120.0
 
     def test_the_reserve_is_deducted_once(self):
+        """The step reserve and the commit reserve, each once (#1882)."""
         with bind_turn_deadline(120):
             remaining = remaining_turn_budget()
             spendable = spendable_turn_budget()
         assert remaining is not None and spendable is not None
-        assert abs((remaining - spendable) - TURN_BUDGET_RESERVE_SECONDS) < 0.05
+        reserves = TURN_BUDGET_RESERVE_SECONDS + TURN_COMMIT_RESERVE_SECONDS
+        assert abs((remaining - spendable) - reserves) < 0.05
 
     def test_the_deadline_does_not_outlive_its_block(self):
         """Otherwise the next turn on this worker inherits a spent budget."""
@@ -280,7 +351,9 @@ class TestClampingOneCallsOwnTimeout:
         with bind_turn_deadline(30):
             clamped = clamp_to_turn_budget(600.0)
         assert clamped < 30.0
-        assert clamped == pytest.approx(30.0 - TURN_BUDGET_RESERVE_SECONDS, abs=0.05)
+        assert clamped == pytest.approx(
+            30.0 - TURN_BUDGET_RESERVE_SECONDS - TURN_COMMIT_RESERVE_SECONDS, abs=0.05
+        )
 
     def test_a_spent_budget_clamps_to_zero_never_negative(self):
         """``asyncio.wait_for`` turns 0.0 into an immediate, CLASSIFIED timeout.
@@ -330,6 +403,14 @@ class TestTheProviderClampWinsTheRace:
         route will cancel on — or it would be the 504 it exists to prevent."""
         with bind_turn_deadline(120):
             assert backstop_turn_budget() < remaining_turn_budget()
+
+    def test_the_backstop_leaves_the_commit_reserve_too(self):
+        """A call that reached a provider without the router must not eat the
+        turn's commit reserve either (#1882)."""
+        with bind_turn_deadline(120):
+            assert backstop_turn_budget() <= (
+                remaining_turn_budget() - TURN_COMMIT_RESERVE_SECONDS
+            )
 
     def test_unbound_reads_none_like_every_other_budget_reader(self):
         assert backstop_turn_budget() is None

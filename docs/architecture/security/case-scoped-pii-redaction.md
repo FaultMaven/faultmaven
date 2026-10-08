@@ -30,7 +30,7 @@ This creates three requirements:
 
 **Before:** The LLM responded with `<IP_ADDRESS_1>` placeholders. These were returned to the user as-is. Users saw placeholders instead of real values.
 
-**After:** `InvestigationService.process_turn()` calls `redaction_ctx.reverse()` on the agent response before returning it to the user, in its `_absorb_engine_result` phase (`investigation_service/turn_results.py`). The user sees original values.
+**After:** `InvestigationService.prepare_turn()` calls `redaction_ctx.reverse()` on the agent response before returning it to the user, in its `_absorb_engine_result` phase (`investigation_service/turn_results.py`). The user sees original values.
 
 ## Architecture
 
@@ -40,7 +40,7 @@ Redaction is a **case-scoped, LLM-boundary concern** managed by the MilestoneEng
 User uploads file
     → stored raw (never redacted at rest)
                                             ↓
-InvestigationService.process_turn()
+InvestigationService.prepare_turn()
   └─ Preprocessing (classify_and_extract) builds the file's summary and
      structural index from the raw content; both are persisted raw
                                             ↓
@@ -51,11 +51,14 @@ MilestoneEngine._process_turn_impl()
   ├─ Send to LLM
   ├─ LLM calls tool → execute → redact result with SAME registry → return to LLM
   ├─ LLM responds with placeholders
-  └─ Save registry to Redis                                       (_persist_turn)
+  └─ Save registry to Redis                                       (_finalize_turn)
                                             ↓
-InvestigationService.process_turn()
+InvestigationService.prepare_turn()
   ├─ turn_results._absorb_engine_result: reverse-substitute placeholders → original values
-  └─ turn_response._build_turn_response: return TurnResponse to user (real IPs, names, etc.)
+  └─ turn_response._build_turn_response: build the TurnResponse (real IPs, names, etc.)
+                                            ↓
+InvestigationService.commit_turn()
+  └─ the turn's one commit (#1882), then the TurnResponse is returned
 ```
 
 Redaction happens at one boundary: where content leaves for an LLM. Everything upstream (the upload, the summary and structural index preprocessing builds from it, the evidence) is stored and assembled raw. The engine redacts the assembled prompt and every tool result with the case-scoped registry, so one consistent namespace covers all the PII that reaches the model, whichever file or turn it came from.
@@ -132,8 +135,8 @@ phases:
 1. **Create context** — after case loading, before prompt generation, in `_generate_turn_response` (`turn_generation.py`)
 2. **Redact prompt** — at the entry to `StructuredOutputGenerator.generate_structured_output()`, covering both DA (tool-augmented) and single-shot paths
 3. **Redact tool results** — in `StructuredOutputGenerator._tool_augmented_generate()` after `_format_tool_result()` and before truncation/append
-4. **Save registry** — after LLM call completes, before returning result, in `_persist_turn` (`turn_completion.py`)
-5. **Return context** — threaded from `_generate_turn_response` through `_persist_turn` as a phase input/output, then included in the result dict so `InvestigationService` can reverse-substitute
+4. **Save registry** — after LLM call completes, before returning result, in `_finalize_turn` (`turn_completion.py`). It is not part of the turn's commit and need not be: a pseudonym is a keyed function of the value, so mappings left by a turn that then fails are a harmless superset (#1882)
+5. **Return context** — threaded from `_generate_turn_response` through `_finalize_turn` as a phase input/output, then included in the result dict so `InvestigationService` can reverse-substitute
 
 The `_should_redact()` helper checks `SANITIZE_PII` setting. When `False`, `CaseRedactionContext` is created with `enabled=False` and all operations are no-ops.
 
@@ -141,7 +144,7 @@ The `_should_redact()` helper checks `SANITIZE_PII` setting. When `False`, `Case
 
 **File:** `modules/agent/domain/services/investigation_service/turn_results.py`
 
-The service has one integration point, **response reverse-substitution**: after the engine returns, in `process_turn`'s `_absorb_engine_result` phase (`modules/agent/domain/services/investigation_service/turn_results.py`):
+The service has one integration point, **response reverse-substitution**: after the engine returns, in `prepare_turn`'s `_absorb_engine_result` phase (`modules/agent/domain/services/investigation_service/turn_results.py`):
 
 ```python
 redaction_ctx = result.get("redaction_ctx")
@@ -196,7 +199,7 @@ If a user types `<IP_ADDRESS_1>` in their message, `reverse()` would replace it 
 | `infrastructure/security/redaction.py` | `DataSanitizer`, including `sanitize_text_with_registry()`, the Presidio settings wiring, and the `\b` word boundary on the password regex |
 | `core/investigation/milestone_engine/turn_generation.py` | Creates the context and loads its registry (`_generate_turn_response`) |
 | `core/investigation/milestone_engine/generation.py` | Redacts the prompt and each tool result (`StructuredOutputGenerator`) |
-| `core/investigation/milestone_engine/turn_completion.py` | Saves the registry (`_persist_turn`) |
+| `core/investigation/milestone_engine/turn_completion.py` | Saves the registry (`_finalize_turn`) |
 | `core/investigation/milestone_engine/terminal_turns.py` | The same lifecycle on the terminal Q&A path |
 | `modules/agent/domain/services/investigation_service/turn_results.py` | Reverse-substitution (`_absorb_engine_result`) |
 | `container/providers/services.py` | Passes the sanitizer and the Redis client to the engine |

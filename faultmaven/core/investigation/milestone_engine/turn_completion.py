@@ -1,4 +1,8 @@
-"""Recording and saving a turn, and composing its final reply: gate prose, follow-ups and telemetry."""
+"""Finishing a generated turn and composing its final reply: gate prose, follow-ups and telemetry.
+
+Nothing here writes the case. The turn commits once, at the service, with the
+rows the turn's ``TurnCommitPlan`` carries (#1882).
+"""
 
 import logging
 from datetime import UTC, datetime
@@ -92,20 +96,26 @@ def _narration_overclaim_notice(
     return _NARRATION_OVERCLAIM_NOTICE
 
 
-async def _persist_turn(
-    repository, terminal, *, case_updated, metadata, redaction_ctx, response_obj
+async def _finalize_turn(
+    terminal, *, case_updated, metadata, plan, redaction_ctx, response_obj
 ):
-    """Record the turn in case history, save the case, and generate the terminal summary if the case just went terminal."""
+    """Stamp the turn's activity clock, render the terminal summary if the case just went terminal, flatten the follow-ups and save the redaction registry.
+
+    Persists nothing of the case (#1882). It used to save the case here (the
+    engine's "Step 7"), before the reply was composed and before the service's
+    own save, so a failure in between committed half a turn. The case now
+    commits once, at the service; the summary row this renders goes into
+    ``plan`` and commits with the terminal state.
+    """
     case_updated.updated_at = datetime.now(UTC)
     case_updated.last_activity_at = datetime.now(UTC)
-    await repository.save(case_updated)
 
     # Step 7b: Auto-generate terminal summary synchronously on
     # terminal transition. The rendered summary (or skip / failure
     # note) is appended to the agent reply below so it appears in
     # chat at the moment of generation — consistent with the
-    # explicit-confirmation path. `summary_failed` flags an LLM-
-    # error so the ack-turn follow-ups can include the regen
+    # explicit-confirmation path. `summary_failed` flags a render
+    # failure so the ack-turn follow-ups can include the regen
     # affordance (G2).
     summary_payload: str | None = None
     summary_failed: bool = False
@@ -114,7 +124,7 @@ async def _persist_turn(
         CaseState.CLOSED,
     ):
         summary_payload, summary_failed = await terminal.auto_generate_report(
-            case_updated
+            case_updated, plan=plan
         )
 
     logger.info(
@@ -131,7 +141,10 @@ async def _persist_turn(
     ):
         follow_ups = _flatten_follow_ups(response_obj.suggested_follow_ups, metadata)
 
-    # Persist redaction registry for cross-turn consistency
+    # Persist redaction registry for cross-turn consistency. Not part of the
+    # turn's commit, and need not be: a pseudonym is a keyed function of the
+    # value, so mappings left by a turn that then fails are a harmless
+    # superset (class C, #1882). It never raises (``CaseRedactionContext``).
     await redaction_ctx.save()
     return follow_ups, summary_failed, summary_payload
 
@@ -144,6 +157,7 @@ async def _compose_turn_reply(
     case_updated,
     follow_ups,
     metadata,
+    plan,
     redaction_ctx,
     response_obj,
     stagnation_str,
@@ -406,15 +420,18 @@ async def _compose_turn_reply(
         CaseState.CLOSED,
     ):
         remaining = await _remaining_regens_for(
-            report_service, repository, case_updated
+            report_service,
+            repository,
+            case_updated,
+            pending=plan.pending_reports(),
         )
         follow_ups = _select_ack_follow_ups(case_updated, summary_failed, remaining)
 
     # Append the synthesized summary (or skip / failure note) so it
     # appears in chat at the moment of generation. The composed reply
-    # is persisted by the caller (investigation_service step 4) from
-    # the returned ``agent_response`` — turn_history records are
-    # frozen and carry only a summary, never the chat text.
+    # is committed by the service, in the turn's one commit, from the
+    # returned ``agent_response`` — turn_history records are frozen and
+    # carry only a summary, never the chat text.
     if summary_payload:
         agent_response_text = f"{agent_response_text}\n\n{summary_payload}".strip()
 
@@ -468,8 +485,8 @@ async def _compose_turn_reply(
     # model is replayed its own uncorrected over-claim (the #668 loop
     # INV-40 exists to break) and terminal summaries vanish from
     # long-case state prompts. TurnProgress is frozen — replace the
-    # record, never mutate; the caller's step-4 save persists it
-    # alongside the messages.
+    # record, never mutate; the turn's one commit, at the service,
+    # persists it alongside the messages.
     # Nothing composed onto a synthesized placeholder: it IS the reply,
     # and stays flagged. Anything composed replaced it with engine
     # prose, which is a real answer and is not flagged.

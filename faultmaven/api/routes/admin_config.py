@@ -1212,11 +1212,13 @@ async def get_env_config_status(
                 f"{plan.paid_attempts} attempts inside one turn. The full "
                 f"retry ladder costs {plan.full_ladder_seconds:.0f}s "
                 f"(attempts plus backoff); this turn's budget affords "
-                f"{plan.afforded_seconds:.0f}s of it."
+                f"{plan.afforded_seconds:.0f}s of it, after keeping "
+                f"{plan.commit_reserve_seconds:g}s back for the turn's commit."
             ),
             config_hint=(
                 "True when the whole retry ladder completes inside the turn "
-                "deadline. False means LLM_REQUEST_TIMEOUT (or an entry in "
+                "deadline with the turn's commit reserve left over. False "
+                "means LLM_REQUEST_TIMEOUT (or an entry in "
                 "LLM_PROVIDER_TIMEOUT_OVERRIDES) is too large for "
                 "AGENT_REQUEST_TIMEOUT (or AGENT_PROVIDER_TIMEOUT_OVERRIDES) "
                 "for this provider — lower the first or raise the second. "

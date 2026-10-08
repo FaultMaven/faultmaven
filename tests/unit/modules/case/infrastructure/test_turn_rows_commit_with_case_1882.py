@@ -23,6 +23,7 @@ from faultmaven.core.investigation.checkpoint_service import CheckpointService
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 from faultmaven.modules.case.domain.owned_models.report import (
     CaseReport,
     ReportStatus,
@@ -430,3 +431,154 @@ class TestAFailedSaveLeavesTheObjectAsItWas:
         assert (case.version, case.updated_at) == (version, updated_at)
         await repo.save(case)
         assert case.version == version + 1
+
+
+# ---------------------------------------------------------------------------
+# Orphan checkpoints from a turn that never committed (#1882, PR-2)
+# ---------------------------------------------------------------------------
+
+
+def _at_turn(case: Case, turn: int) -> None:
+    """Move ``case`` to ``turn`` the way a turn does: the clock and its record."""
+    case.current_turn = turn
+    case.turn_history.append(
+        TurnProgress(
+            turn_number=turn, progress_made=False, outcome=TurnOutcome.CONVERSATION
+        )
+    )
+
+
+async def _checkpoint_rows(sessions, case_id: str) -> list[tuple]:
+    async with sessions() as s:
+        return (
+            await s.execute(
+                text(
+                    "SELECT checkpoint_id, turn_number, snapshot_hash "
+                    "FROM case_checkpoints WHERE case_id = :c ORDER BY turn_number"
+                ),
+                {"c": case_id},
+            )
+        ).fetchall()
+
+
+async def _committed_at_turn_two_with_an_orphan_at_three(repo):
+    """The pre-#1882 wedge, built as it happened: the case committed at turn 2,
+    then turn 3's checkpoint committed in its own transaction (as
+    ``create_checkpoint`` did, mid-turn) and turn 3 never committed."""
+    case = _case()
+    _at_turn(case, 1)
+    _at_turn(case, 2)
+    await repo.save(case)
+
+    stale_attempt = case.model_copy(deep=True)
+    _at_turn(stale_attempt, 3)
+    _add_message(stale_attempt, "the attempt that never committed")
+    orphan = _checkpoint(stale_attempt, to_state="investigating")
+    await repo.create_checkpoint(orphan)
+    return case, orphan
+
+
+class TestOrphanCheckpointsFromATurnThatNeverCommitted:
+    """Every save deletes, inside its own transaction and before the case row,
+    the case's checkpoint rows above the COMMITTED turn. The retry of a turn
+    whose checkpoint committed on its own (before #1882) then commits instead of
+    colliding on the checkpoint's deterministic id, forever."""
+
+    @pytest.mark.asyncio
+    async def test_a_retried_turn_commits_over_an_orphan_checkpoint(
+        self, repo, sessions
+    ):
+        case, orphan = await _committed_at_turn_two_with_an_orphan_at_three(repo)
+        _at_turn(case, 3)
+        _add_message(case, "the retried turn")
+        retried = _checkpoint(case, to_state="investigating")
+        assert retried.checkpoint_id == orphan.checkpoint_id
+
+        await repo.save(case, checkpoints=[retried])
+
+        got = await _committed(sessions, case.case_id)
+        assert got["version"] == 2
+        assert got["messages"] == 1
+        assert got["checkpoints"] == {retried.checkpoint_id: ENTERPRISE}
+        rows = await _checkpoint_rows(sessions, case.case_id)
+        # The row is the retry's snapshot, not the orphan's.
+        assert [(r[1], r[2]) for r in rows] == [(3, retried.snapshot_hash)]
+        assert retried.snapshot_hash != orphan.snapshot_hash
+
+    @pytest.mark.asyncio
+    async def test_through_the_sessionless_wrapper(self, sessionless, sessions):
+        """The production wrapper: each call its own session, as in a deployment."""
+        case, orphan = await _committed_at_turn_two_with_an_orphan_at_three(sessionless)
+        _at_turn(case, 3)
+        retried = _checkpoint(case, to_state="investigating")
+
+        await sessionless.save(case, checkpoints=[retried])
+
+        rows = await _checkpoint_rows(sessions, case.case_id)
+        assert [(r[0], r[2]) for r in rows] == [
+            (orphan.checkpoint_id, retried.snapshot_hash)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_retried_turn_without_a_checkpoint_removes_the_orphan(
+        self, repo, sessions
+    ):
+        """Otherwise the orphan would sit at the now-committed turn 3, looking
+        like that turn's own snapshot."""
+        case, _ = await _committed_at_turn_two_with_an_orphan_at_three(repo)
+        _at_turn(case, 3)
+        await repo.save(case)
+        assert await _checkpoint_rows(sessions, case.case_id) == []
+
+    @pytest.mark.asyncio
+    async def test_the_cleanup_keeps_a_committed_turns_checkpoint(self, repo, sessions):
+        """Control: a checkpoint at or below the committed turn is that turn's
+        own, and later saves (one outside a turn, then the next turn) keep it."""
+        case = _case()
+        _at_turn(case, 1)
+        kept = _checkpoint(case, to_state="investigating")
+        await repo.save(case, checkpoints=[kept])
+        case.title = "Renamed outside a turn"
+        await repo.save(case)
+        _at_turn(case, 2)
+        await repo.save(case)
+
+        got = await _committed(sessions, case.case_id)
+        assert got["checkpoints"] == {kept.checkpoint_id: ENTERPRISE}
+
+    @pytest.mark.asyncio
+    async def test_a_refused_retry_leaves_the_orphan_and_commits_nothing(
+        self, repo, sessions
+    ):
+        """The cleanup is part of the save's transaction: a save that fails
+        rolls the delete back with everything else."""
+        case, orphan = await _committed_at_turn_two_with_an_orphan_at_three(repo)
+        _at_turn(case, 3)
+        with pytest.raises(RepositoryException):
+            await repo.save(case, reports=[_report(case, ReportType.RUNBOOK)])
+
+        got = await _committed(sessions, case.case_id)
+        assert got["version"] == 1
+        assert got["checkpoints"] == {orphan.checkpoint_id: ENTERPRISE}
+
+    @pytest.mark.asyncio
+    async def test_in_memory_matches(self):
+        repo = InMemoryCaseRepository()
+        case, orphan = await _committed_at_turn_two_with_an_orphan_at_three(repo)
+        _at_turn(case, 3)
+        retried = _checkpoint(case, to_state="investigating")
+
+        await repo.save(case, checkpoints=[retried])
+
+        assert await repo.get_checkpoint(orphan.checkpoint_id) is retried
+
+    @pytest.mark.asyncio
+    async def test_in_memory_a_refused_retry_keeps_the_orphan(self):
+        repo = InMemoryCaseRepository()
+        case, orphan = await _committed_at_turn_two_with_an_orphan_at_three(repo)
+        stale = case.model_copy(deep=True)
+        stale.version += 1  # a version the store never took
+        _at_turn(stale, 3)
+        with pytest.raises(StaleCaseException):
+            await repo.save(stale, checkpoints=[_checkpoint(stale, "investigating")])
+        assert await repo.get_checkpoint(orphan.checkpoint_id) is orphan

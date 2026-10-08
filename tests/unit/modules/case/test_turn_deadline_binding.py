@@ -8,9 +8,11 @@ seam the whole fix hangs on: without it every budget test in
 ``tests/integration/core/test_llm_ladder_turn_budget.py`` still passes and the
 running system is unchanged (#1278, #1292).
 
-Asserted from INSIDE ``process_turn``, because that is where the ladder reads it
+Asserted from INSIDE ``prepare_turn``, because that is where the ladder reads it
 from, and against the SAME resolved ceiling ``asyncio.wait_for`` is given —
 a binding that used a different number would guard against the wrong deadline.
+The binding also covers ``commit_turn``, which runs OUTSIDE the ``wait_for``
+(#1882) and reads the deadline to decide whether its commit reserve is left.
 """
 
 from types import SimpleNamespace
@@ -20,6 +22,7 @@ import pytest
 
 from faultmaven.core.investigation.turn_budget import (
     TURN_BUDGET_RESERVE_SECONDS,
+    TURN_COMMIT_RESERVE_SECONDS,
     remaining_turn_budget,
 )
 from faultmaven.models.api_models import TurnResponse
@@ -55,13 +58,17 @@ def _user() -> UserDTO:
     )
 
 
-async def _submit(process_turn) -> TurnResponse:
+async def _submit(prepare_turn, commit_turn=None) -> TurnResponse:
     case = _case()
     case_service = AsyncMock()
     case_service.get_case = AsyncMock(return_value=case)
 
     investigation_service = MagicMock()
-    investigation_service.process_turn = process_turn
+    investigation_service.prepare_turn = prepare_turn
+    # The prepared stand-in is the response itself; the commit hands it back.
+    investigation_service.commit_turn = commit_turn or AsyncMock(
+        side_effect=lambda prepared: prepared
+    )
 
     request = MagicMock()
     request.app.state.llm_provider = None
@@ -95,18 +102,18 @@ def _ok() -> TurnResponse:
 @pytest.mark.unit
 class TestTheTurnEndpointBindsItsDeadline:
     @pytest.mark.asyncio
-    async def test_process_turn_can_see_the_deadline(self):
+    async def test_prepare_turn_can_see_the_deadline(self):
         """Not "bind_turn_deadline was called" — what the ladder actually reads."""
         seen = {}
 
-        async def process_turn(**_):
+        async def prepare_turn(**_):
             seen["remaining"] = remaining_turn_budget()
             return _ok()
 
-        await _submit(AsyncMock(side_effect=process_turn))
+        await _submit(AsyncMock(side_effect=prepare_turn))
 
         assert seen["remaining"] is not None, (
-            "process_turn ran with no turn deadline bound: the retry ladder "
+            "prepare_turn ran with no turn deadline bound: the retry ladder "
             "inside it would budget against nothing"
         )
 
@@ -124,11 +131,11 @@ class TestTheTurnEndpointBindsItsDeadline:
         expected, _provider = _resolve_agent_timeout(get_settings())
         seen = {}
 
-        async def process_turn(**_):
+        async def prepare_turn(**_):
             seen["remaining"] = remaining_turn_budget()
             return _ok()
 
-        await _submit(AsyncMock(side_effect=process_turn))
+        await _submit(AsyncMock(side_effect=prepare_turn))
 
         # Bound just before the wait_for starts, so it is at most the ceiling and
         # only microseconds under it.
@@ -138,19 +145,47 @@ class TestTheTurnEndpointBindsItsDeadline:
     async def test_there_is_a_usable_budget_left_after_the_reserve(self):
         """A binding that left nothing spendable would refuse every LLM call.
 
-        ``agent_request_timeout`` is constrained ``ge=30`` and the reserve is a
-        second, so this holds by construction — but it holds only while the two
-        are related, and nothing else in the codebase relates them.
+        ``agent_request_timeout`` is constrained ``ge=30`` and the reserves are
+        a second plus the commit's, so this holds by construction — but it
+        holds only while they are related, and nothing else in the codebase
+        relates them.
         """
         seen = {}
 
-        async def process_turn(**_):
+        async def prepare_turn(**_):
             seen["remaining"] = remaining_turn_budget()
             return _ok()
 
-        await _submit(AsyncMock(side_effect=process_turn))
+        await _submit(AsyncMock(side_effect=prepare_turn))
 
-        assert seen["remaining"] - TURN_BUDGET_RESERVE_SECONDS > 0
+        assert (
+            seen["remaining"]
+            - TURN_BUDGET_RESERVE_SECONDS
+            - TURN_COMMIT_RESERVE_SECONDS
+            > 0
+        )
+
+    @pytest.mark.asyncio
+    async def test_commit_turn_runs_inside_the_binding(self):
+        """``commit_turn`` checks the commit reserve against this deadline, so
+        it must run while it is bound — and after the preparation, with what
+        is left of the same deadline."""
+        seen = {}
+
+        async def prepare_turn(**_):
+            seen["prepare"] = remaining_turn_budget()
+            return _ok()
+
+        async def commit_turn(prepared):
+            seen["commit"] = remaining_turn_budget()
+            return prepared
+
+        await _submit(
+            AsyncMock(side_effect=prepare_turn), AsyncMock(side_effect=commit_turn)
+        )
+
+        assert seen["commit"] is not None
+        assert seen["commit"] <= seen["prepare"]
 
     @pytest.mark.asyncio
     async def test_the_deadline_is_bound_during_the_turn_and_not_after(self):
@@ -167,11 +202,11 @@ class TestTheTurnEndpointBindsItsDeadline:
         """
         seen = {}
 
-        async def process_turn(**_):
+        async def prepare_turn(**_):
             seen["during"] = remaining_turn_budget()
             return _ok()
 
-        await _submit(AsyncMock(side_effect=process_turn))
+        await _submit(AsyncMock(side_effect=prepare_turn))
 
         assert seen["during"] is not None
         assert remaining_turn_budget() is None

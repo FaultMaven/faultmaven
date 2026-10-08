@@ -7,20 +7,26 @@ Work that may only start once that commit has landed (the runbook conversion)
 waits on a gate future in ``on_commit``: released after the commit, cancelled
 when the commit fails, so it never runs for a turn that did not commit.
 
-``commit_turn_plan`` is that commit. The engine and the service do not call it
-yet (#1882 part 2 moves the turn's saves onto it); the tests do.
+The engine performs no case-scoped write of its own: every site that used to
+commit mid-turn (the engine's Step-7 save, the deterministic branches' saves,
+the checkpoint writes, the report rows) now adds to the turn's plan, and the
+engine returns the plan in its result as ``commit_plan``.
+``InvestigationService`` commits it once, with ``commit_turn_plan``, inside the
+shielded settlement coroutine that owns it (``_commit_and_settle``). An
+engine-only test commits the same way, through the same function.
 """
 
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Any, List
+from typing import Any, Dict, Iterable, List
 
 from faultmaven.modules.case.contracts import (
     Case,
     CaseCheckpoint,
     CaseReport,
     ICaseRepository,
+    ReportType,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,6 +64,23 @@ class TurnCommitPlan:
             return False
         self.checkpoints.append(checkpoint)
         return True
+
+    def add_reports(self, reports: Iterable[CaseReport]) -> None:
+        """Carry rendered ``reports`` to the commit, in render order."""
+        self.reports.extend(reports)
+
+    def pending_reports(self) -> Dict[ReportType, int]:
+        """Per type, the report rows this plan holds uncommitted.
+
+        What ``ReportGenerationService.render_reports(pending=...)`` and every
+        ack site's regeneration count (``_remaining_regens_for``) add to the
+        committed rows: a summary rendered earlier in this turn is a version
+        the next render and the "regenerations left" label must already see.
+        """
+        counts: Dict[ReportType, int] = {}
+        for report in self.reports:
+            counts[report.report_type] = counts.get(report.report_type, 0) + 1
+        return counts
 
     def gate(self) -> "asyncio.Future[Any]":
         """A future that resolves once the turn has committed, and is cancelled

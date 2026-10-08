@@ -37,6 +37,7 @@ from faultmaven.core.investigation.milestone_engine.terminal_replies import (
 from faultmaven.core.investigation.milestone_engine.transitions import (
     TransitionManager,
 )
+from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.core.investigation.terminal_transitions import (
     ClosureReadiness,
     assess_closure_readiness,
@@ -232,7 +233,7 @@ async def test_check_automatic_transitions_surfaces_resolve_confirmation_on_pivo
 
     with patch.object(terminal_transitions, "close_pivoted_to_resolve_total"):
         updated = await eng.transitions.check_automatic_transitions(
-            case, metadata, "yes"
+            case, metadata, "yes", plan=TurnCommitPlan()
         )
 
     # No terminal transition; the case stays INVESTIGATING with a RESOLVED

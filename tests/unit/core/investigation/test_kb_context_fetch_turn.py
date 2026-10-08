@@ -37,7 +37,7 @@ from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkee
     _record_turn_kb_sources,
 )
 from faultmaven.modules.agent.domain.services.investigation_service.turn_messages import (
-    _save_and_emit_turn,
+    _append_turn_messages,
 )
 from faultmaven.modules.case.contracts import MESSAGE_METADATA_KB_SOURCES
 from faultmaven.modules.case.domain.models.case import Case
@@ -151,7 +151,7 @@ def _investigating_case(kb_context) -> Case:
 
 def _generating_engine() -> MilestoneEngine:
     repo = MagicMock()
-    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.save = AsyncMock(side_effect=lambda c, **_: c)
     repo.get = AsyncMock(side_effect=lambda cid: None)
     engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
     engine.generator.generate_structured_output = AsyncMock(
@@ -257,28 +257,20 @@ class TestTheTurnRecordsWhatItsPromptCarried:
         assert _new_flags(turn_meta) == {"rb_a": True}
 
 
-async def _save(case: Case, turn_meta: dict) -> dict:
-    repository = MagicMock()
-    repository.save = AsyncMock()
-    await _save_and_emit_turn(
-        repository,
+async def _reply_row(case: Case, turn_meta: dict) -> dict:
+    """The agent's row as the turn appends it (the turn's one commit stores
+    that same row)."""
+    _append_turn_messages(
         agent_response_text="Rotate the logs first.",
-        attachment_metadata=[],
-        intent=None,
-        intent_type=IntentType.CONVERSATION,
-        oob_kind=None,
-        payload=SimpleNamespace(query="disk is full"),
         turn_meta=turn_meta,
-        turn_telemetry={},
         updated_case=case,
-        was_terminal=False,
     )
     return case.messages[-1]
 
 
 class TestTheRowAndTheResponseShareOneList:
     async def test_the_row_carries_the_sources_its_prompt_carried(self):
-        row = await _save(_case(), {TURN_METADATA_KB_PROMPTED: [_entry("rb_a")]})
+        row = await _reply_row(_case(), {TURN_METADATA_KB_PROMPTED: [_entry("rb_a")]})
 
         (stored,) = row["metadata"][MESSAGE_METADATA_KB_SOURCES]
         assert stored["metadata"]["document_id"] == "rb_a"
@@ -288,7 +280,7 @@ class TestTheRowAndTheResponseShareOneList:
     async def test_a_turn_whose_prompt_carried_none_stores_none(self):
         # The case still holds context, as after a pre-fetch fired during
         # application; this turn's prompt did not carry it.
-        row = await _save(_case(kb_context=[_entry("rb_late")]), {})
+        row = await _reply_row(_case(kb_context=[_entry("rb_late")]), {})
         assert MESSAGE_METADATA_KB_SOURCES not in row["metadata"]
 
     def test_the_turn_response_reads_the_recorded_list(self):

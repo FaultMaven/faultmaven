@@ -1,4 +1,9 @@
-"""The pending-transition confirm/decline turns, the refused confirmation click, and the explicit status_transition intent to 'closed'."""
+"""The pending-transition confirm/decline turns, the refused confirmation click, and the explicit status_transition intent to 'closed'.
+
+None of these turns writes anything. Each mutates the case in memory and
+returns it; the turn commits once, at the service, with the checkpoint and
+report rows a confirm adds to the turn's ``TurnCommitPlan`` (#1882).
+"""
 
 import logging
 from typing import Optional
@@ -9,6 +14,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
 from faultmaven.core.investigation.milestone_engine.regeneration import (
     _remaining_regens_for,
 )
+from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.core.investigation.milestone_engine.turn_records import (
     _finish_deterministic_turn,
 )
@@ -48,24 +54,33 @@ async def _confirm_pending_transition(
     terminal,
     *,
     case,
+    plan: TurnCommitPlan,
     upload_report,
     user_message,
     confirmed_via,
 ):
-    """Execute a confirmed pending transition: checkpoint, commit, generate the closure/resolution report and the ack turn."""
+    """Execute a confirmed pending transition: checkpoint, transition, render the closure/resolution report and compose the ack turn.
+
+    ``repository`` is read for the regeneration count only. The checkpoint
+    and the report row go into ``plan`` and commit with the terminal state,
+    in the turn's one transaction: a turn whose commit fails leaves no
+    CLOSED/RESOLVED state, no report and no checkpoint (#1882).
+    """
     from faultmaven.core.investigation.terminal_transitions import (
         confirm_pending_transition,
     )
 
     if checkpoint_service:
         to_state = case.pending_transition.get("to_state", "unknown")
-        await checkpoint_service.create_checkpoint(
-            case,
-            trigger="pre_case_action",
-            metadata={
-                "from_state": case.state.value,
-                "to_state": to_state,
-            },
+        plan.add_checkpoint(
+            checkpoint_service.capture(
+                case,
+                trigger="pre_case_action",
+                metadata={
+                    "from_state": case.state.value,
+                    "to_state": to_state,
+                },
+            )
         )
 
     executed = confirm_pending_transition(case, case.user_id)
@@ -90,7 +105,6 @@ async def _confirm_pending_transition(
             upload_report,
             progress_made=False,
         )
-        await repository.save(case)
         return {
             "agent_response": resolve_msg,
             "suggested_follow_ups": _resolution_confirmation_suggestions(case),
@@ -98,22 +112,18 @@ async def _confirm_pending_transition(
             "metadata": turn_metadata,
         }
 
-    # Persist the terminal status before generating the
-    # summary — the Report row FKs to case_id.
-    await repository.save(case)
-
-    # Synchronous summary generation. Returns rendered
-    # markdown on success, a skip note when the gate
-    # blocks generation, a failure note on LLM error,
-    # or None when no report service is configured.
-    # The second tuple element flags an LLM-error
-    # failure so the ack-turn can offer the regen
-    # affordance (G2 — there's no inline summary to
-    # be noisy next to when generation failed).
+    # Synchronous summary render, its row added to the plan so it commits
+    # with the terminal state (the report row FKs to the case, which the same
+    # transaction writes first). Returns rendered markdown on success, a skip
+    # note when the gate blocks generation, a failure note when the render
+    # raised, or None when no report service is configured. The second tuple
+    # element flags a render failure so the ack-turn can offer the regen
+    # affordance (G2 — there's no inline summary to be noisy next to when
+    # generation failed).
     (
         summary_payload,
         summary_failed,
-    ) = await terminal.auto_generate_report(case)
+    ) = await terminal.auto_generate_report(case, plan=plan)
 
     agent_response = _compose_terminal_reply(case, summary_payload)
     turn_metadata = _finish_deterministic_turn(
@@ -124,7 +134,6 @@ async def _confirm_pending_transition(
         progress_made=True,
         **confirmed_transition_arms(case, executed, confirmed_via),
     )
-    await repository.save(case)
 
     # Closure-ack follow-ups depend on whether
     # generation succeeded. Success: minimal
@@ -134,7 +143,9 @@ async def _confirm_pending_transition(
     # user can retry immediately — the "noise next
     # to inline summary" rationale doesn't apply
     # when there's no summary inline.
-    remaining = await _remaining_regens_for(report_service, repository, case)
+    remaining = await _remaining_regens_for(
+        report_service, repository, case, pending=plan.pending_reports()
+    )
     follow_ups = _select_ack_follow_ups(case, summary_failed, remaining)
 
     return {
@@ -145,7 +156,7 @@ async def _confirm_pending_transition(
     }
 
 
-async def _decline_bare_reply(repository, *, case, upload_report, user_message):
+def _decline_bare_reply(*, case, upload_report, user_message):
     """Reply to a bare (non-substantive) decline of a pending transition, leaving the case open."""
     agent_response = "Understood. The case remains open for further investigation."
     turn_metadata = _finish_deterministic_turn(
@@ -155,7 +166,6 @@ async def _decline_bare_reply(repository, *, case, upload_report, user_message):
         upload_report,
         progress_made=False,
     )
-    await repository.save(case)
 
     return {
         "agent_response": agent_response,
@@ -184,9 +194,7 @@ def _pending_transition_reask(case) -> tuple[str, list]:
     return agent_response, follow_ups
 
 
-async def _represent_pending_transition(
-    repository, *, case, upload_report, user_message
-):
+def _represent_pending_transition(*, case, upload_report, user_message):
     """Re-present the pending transition's options when the user's reply answered neither yes nor no.
 
     Every time it is asked for, and recording nothing: a re-ask is never a
@@ -201,7 +209,6 @@ async def _represent_pending_transition(
         upload_report,
         progress_made=False,
     )
-    await repository.save(case)
 
     return {
         "agent_response": agent_response,
@@ -211,8 +218,7 @@ async def _represent_pending_transition(
     }
 
 
-async def _refuse_offer_click(
-    repository,
+def _refuse_offer_click(
     *,
     case,
     upload_report,
@@ -264,7 +270,6 @@ async def _refuse_offer_click(
         upload_report,
         progress_made=False,
     )
-    await repository.save(case)
 
     if presentation is not None:
         # INV-01's pair, through the one helper ``_compose_turn_reply`` uses.
@@ -278,8 +283,7 @@ async def _refuse_offer_click(
     }
 
 
-async def _close_on_explicit_intent(
-    repository,
+def _close_on_explicit_intent(
     *,
     assess_closure_readiness,
     case,
@@ -322,7 +326,6 @@ async def _close_on_explicit_intent(
             upload_report,
             progress_made=False,
         )
-        await repository.save(case)
         return {
             "agent_response": closure.message,
             "suggested_follow_ups": _resolution_confirmation_suggestions(case),
@@ -343,8 +346,8 @@ async def _close_on_explicit_intent(
         f"(pending user confirmation)"
     )
 
-    # Save and return with closure summary + canonical
-    # confirm/decline pair (alignment with agent-initiated path).
+    # Return with closure summary + canonical confirm/decline pair
+    # (alignment with agent-initiated path).
     turn_metadata = _finish_deterministic_turn(
         case,
         user_message or "",
@@ -352,7 +355,6 @@ async def _close_on_explicit_intent(
         upload_report,
         progress_made=False,
     )
-    await repository.save(case)
     return {
         "agent_response": closure.message,
         "suggested_follow_ups": _close_confirmation_suggestions(case),

@@ -24,6 +24,7 @@ import pytest
 
 from faultmaven.core.investigation.checkpoint_service import CheckpointService
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.turn_commit import commit_turn_plan
 from faultmaven.core.investigation.schemas import (
     EvidenceToAdd,
     EvidenceTrail,
@@ -375,8 +376,8 @@ def case_repo() -> InMemoryCaseRepository:
 
 
 @pytest.fixture
-def checkpoint_service(case_repo) -> CheckpointService:
-    return CheckpointService(case_repo=case_repo)
+def checkpoint_service() -> CheckpointService:
+    return CheckpointService()
 
 
 @pytest.fixture
@@ -766,6 +767,10 @@ class TestCheckpointing:
             )
 
         assert result["case_updated"].state == CaseState.INVESTIGATING
+        # The engine takes the checkpoint into the turn's plan and writes
+        # nothing (#1882); the turn's one commit stores it with the case.
+        assert await case_repo.get_checkpoints(case.case_id) == []
+        await commit_turn_plan(case_repo, result["case_updated"], result["commit_plan"])
 
         # Verify checkpoint was created
         checkpoints = await case_repo.get_checkpoints(case.case_id)
@@ -825,6 +830,7 @@ class TestCheckpointing:
                 case, "I applied the config change and latency is back to normal"
             )
 
+        await commit_turn_plan(case_repo, result["case_updated"], result["commit_plan"])
         case = result["case_updated"]
         assert case.state == CaseState.INVESTIGATING  # NOT resolved yet
         assert case.pending_transition is not None
@@ -840,11 +846,12 @@ class TestCheckpointing:
         )
 
         assert result["case_updated"].state == CaseState.RESOLVED
+        await commit_turn_plan(case_repo, result["case_updated"], result["commit_plan"])
         persisted = await case_repo.get(case.case_id)
         assert persisted.state == CaseState.RESOLVED
 
         # The checkpoint this test is NAMED for. It asserted only the state
-        # change, so deleting the ``create_checkpoint`` call in section 0b's
+        # change, so deleting the checkpoint in section 0b's
         # confirm arm left it green while its name claimed to cover it — and
         # `checkpoint_service` was injected and never read. Asserted the way
         # its sibling above does, against the persisted record.
@@ -1094,10 +1101,15 @@ class TestTurnHistoryAndProgress:
         assert result["metadata"]["progress_made"] is False
         assert updated.turns_without_progress >= 1
 
-    async def test_case_saved_to_repository_after_turn(self, engine, case_repo):
-        """Case is persisted to repository after each turn."""
+    async def test_the_engine_saves_nothing_and_the_turn_commits_once(
+        self, engine, case_repo
+    ):
+        """The engine returns the case and its commit plan and saves nothing;
+        the turn's one commit (``commit_turn_plan``, as the service runs it)
+        persists it (#1882)."""
         case = _make_inquiry_case(current_turn=1)
         await case_repo.save(case)
+        version = case.version
         original_updated_at = case.updated_at
 
         with patch.object(
@@ -1107,8 +1119,11 @@ class TestTurnHistoryAndProgress:
         ):
             result = await engine.process_turn(case, "Our API is having issues")
 
+        assert case.version == version, "the engine committed mid-turn"
+        await commit_turn_plan(case_repo, result["case_updated"], result["commit_plan"])
         persisted = await case_repo.get(case.case_id)
         assert persisted is not None
+        assert persisted.version == version + 1
         assert persisted.updated_at >= original_updated_at
 
 

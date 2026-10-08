@@ -85,7 +85,7 @@ class _StubLLM(ILLMProvider):
 def engine_and_llm():
     llm = _StubLLM()
     repo = MagicMock()
-    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.save = AsyncMock(side_effect=lambda c, **_: c)
     repo.get = AsyncMock()
     return MilestoneEngine(llm, repo, investigation_tools=MagicMock()), llm
 
@@ -424,7 +424,7 @@ async def test_an_ordinary_turn_is_scored_on_the_same_ordering(engine_and_llm):
 def _terminal_confirm_engine():
     """An engine whose only live path is a deterministic terminal confirm."""
     repo = MagicMock()
-    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.save = AsyncMock(side_effect=lambda c, **_: c)
     repo.get = AsyncMock(return_value=None)
     engine = MilestoneEngine(_StubLLM(), repo, investigation_tools=MagicMock())
     engine.terminal.auto_generate_report = AsyncMock(return_value=(None, False))

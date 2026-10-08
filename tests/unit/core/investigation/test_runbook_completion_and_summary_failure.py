@@ -26,6 +26,7 @@ Covered behaviors:
 - RG5: missing ``runbook_kb`` is logged at WARNING when dedup is skipped
 """
 
+import asyncio
 import inspect
 import re
 from contextlib import nullcontext
@@ -43,6 +44,7 @@ from faultmaven.core.investigation.milestone_engine.regeneration import (
 from faultmaven.core.investigation.milestone_engine.runbook_creation import (
     RunbookCreator,
 )
+from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
@@ -78,7 +80,7 @@ def mock_llm():
 @pytest.fixture
 def mock_repo():
     repo = MagicMock()
-    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.save = AsyncMock(side_effect=lambda c, **_: c)
     repo.get = AsyncMock(return_value=None)
     return repo
 
@@ -210,17 +212,9 @@ class TestAutoGenerateReportTupleReturn:
         report = MagicMock()
         report.content = "# Resolution Summary\n\nDetails here."
         report_service = MagicMock()
-        # generate_reports returns ReportGenerationResponse, not a bare
-        # list. Previously a bare-list mock masked a prod bug where
-        # callers were doing reports[0] on the response object.
-        # ``model_construct`` bypasses Pydantic validation so the inner
-        # report can stay a MagicMock — this test is about the response
-        # *wrapper's* unpacking, not the report's field schema.
-        report_service.generate_reports = AsyncMock(
-            return_value=ReportGenerationResponse.model_construct(
-                case_id=case.case_id, reports=[report], remaining_regenerations=4
-            )
-        )
+        # Rendered, not written (#1882): ``render_reports`` returns the rows
+        # and the turn's plan carries them to the turn's one commit.
+        report_service.render_reports = AsyncMock(return_value=[report])
 
         engine = MilestoneEngine(
             mock_llm,
@@ -228,9 +222,12 @@ class TestAutoGenerateReportTupleReturn:
             investigation_tools=MagicMock(),
             report_service=report_service,
         )
-        payload, failed = await engine.terminal.auto_generate_report(case)
+        plan = TurnCommitPlan()
+        payload, failed = await engine.terminal.auto_generate_report(case, plan=plan)
         assert payload == "# Resolution Summary\n\nDetails here."
         assert failed is False
+        assert plan.reports == [report]
+        mock_repo.save.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_resolved_failure_uses_resolution_summary_label(
@@ -243,7 +240,7 @@ class TestAutoGenerateReportTupleReturn:
         """
         case = _make_resolved_case()
         report_service = MagicMock()
-        report_service.generate_reports = AsyncMock(
+        report_service.render_reports = AsyncMock(
             side_effect=RuntimeError("LLM exploded")
         )
 
@@ -253,7 +250,9 @@ class TestAutoGenerateReportTupleReturn:
             investigation_tools=MagicMock(),
             report_service=report_service,
         )
-        payload, failed = await engine.terminal.auto_generate_report(case)
+        plan = TurnCommitPlan()
+        payload, failed = await engine.terminal.auto_generate_report(case, plan=plan)
+        assert plan.reports == []
         assert failed is True, "RESOLVED failure must flag summary_failed=True"
         assert payload is not None
         assert payload.startswith(
@@ -282,7 +281,7 @@ class TestAutoGenerateReportTupleReturn:
             )
         ]
         report_service = MagicMock()
-        report_service.generate_reports = AsyncMock(
+        report_service.render_reports = AsyncMock(
             side_effect=RuntimeError("LLM exploded")
         )
 
@@ -292,7 +291,9 @@ class TestAutoGenerateReportTupleReturn:
             investigation_tools=MagicMock(),
             report_service=report_service,
         )
-        payload, failed = await engine.terminal.auto_generate_report(case)
+        payload, failed = await engine.terminal.auto_generate_report(
+            case, plan=TurnCommitPlan()
+        )
         assert failed is True
         assert payload is not None
         assert payload.startswith("Closure summary generation did not complete")
@@ -414,7 +415,11 @@ class TestRunbookCreationFollowUps:
         # knowledge_service without runbook_kb → dedup is skipped
         engine.deps.knowledge_service = MagicMock(spec=[])
 
-        result = await engine.runbooks.handle_runbook_creation(case, metadata={})
+        plan = TurnCommitPlan()
+        result = await engine.runbooks.handle_runbook_creation(
+            case, metadata={}, plan=plan
+        )
+        plan.cancel_gates()  # the turn is not committed here
 
         # `runbook_already_exists=True` is passed at this call site (we
         # just kicked off conversion). The expected list contains only
@@ -422,7 +427,10 @@ class TestRunbookCreationFollowUps:
         assert result["suggested_follow_ups"] == _resolved_suggestions(
             case,
             remaining=await _remaining_regens_for(
-                engine.deps.report_service, engine.deps.repository, case
+                engine.deps.report_service,
+                engine.deps.repository,
+                case,
+                pending=plan.pending_reports(),
             ),
             runbook_already_exists=True,
         )
@@ -442,7 +450,9 @@ class TestRunbookCreationFollowUps:
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
         engine.deps.knowledge_service = MagicMock(spec=[])
 
-        result = await engine.runbooks.handle_runbook_creation(case, metadata={})
+        result = await engine.runbooks.handle_runbook_creation(
+            case, metadata={}, plan=TurnCommitPlan()
+        )
         assert result["suggested_follow_ups"] == []
 
 
@@ -528,8 +538,15 @@ async def _run_creation_turn(mock_llm, mock_repo, monkeypatch, scenario: str) ->
         engine.deps.runbook_kb = _dedup_kb([])
         embed_patch = patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024))
 
-    with embed_patch:
-        return await engine.runbooks.handle_runbook_creation(case, metadata={})
+    plan = TurnCommitPlan()
+    try:
+        with embed_patch:
+            return await engine.runbooks.handle_runbook_creation(
+                case, metadata={}, plan=plan
+            )
+    finally:
+        # These turns are not committed: a spawned conversion ends at its gate.
+        plan.cancel_gates()
 
 
 # Every user-visible outcome of `_handle_runbook_creation`. The function has
@@ -550,6 +567,13 @@ _CREATION_TURN_SCENARIOS = [
 ]
 
 _NOTIFICATION_OUTCOMES = ["success", "no-drafts", "exception"]
+
+
+def _committed_gate() -> "asyncio.Future":
+    """The spawning turn's commit gate, already released: the turn committed."""
+    gate = asyncio.get_running_loop().create_future()
+    gate.set_result(None)
+    return gate
 
 
 async def _notification_content(mock_llm, outcome: str) -> str:
@@ -585,7 +609,7 @@ async def _notification_content(mock_llm, outcome: str) -> str:
     engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
 
     await engine.runbooks._run_runbook_conversion(
-        conversion_service, request, "u1", "o1"
+        conversion_service, request, "u1", "o1", committed=_committed_gate()
     )
     return case.messages[-1]["content"]
 
@@ -876,7 +900,7 @@ class TestRunbookCompletionNotification:
         engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
 
         await engine.runbooks._run_runbook_conversion(
-            conversion_service, request, "u1", "o1"
+            conversion_service, request, "u1", "o1", committed=_committed_gate()
         )
 
         assert len(case.messages) == initial_message_count + 1
@@ -925,7 +949,7 @@ class TestRunbookCompletionNotification:
         engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
 
         await engine.runbooks._run_runbook_conversion(
-            conversion_service, request, "u1", "o1"
+            conversion_service, request, "u1", "o1", committed=_committed_gate()
         )
 
         notification = case.messages[-1]
@@ -967,7 +991,7 @@ class TestRunbookCompletionNotification:
         engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
 
         await engine.runbooks._run_runbook_conversion(
-            conversion_service, request, "u1", "o1"
+            conversion_service, request, "u1", "o1", committed=_committed_gate()
         )
 
         notification = case.messages[-1]
@@ -1004,7 +1028,7 @@ class TestRunbookCompletionNotification:
 
         # Must not raise
         await engine.runbooks._run_runbook_conversion(
-            conversion_service, request, "u1", "o1"
+            conversion_service, request, "u1", "o1", committed=_committed_gate()
         )
         repo.save.assert_not_called()
 
@@ -1154,10 +1178,12 @@ class TestRunbookConversionCarriesOrg:
             spawned.append(coro)
             return MagicMock()
 
+        plan = TurnCommitPlan()
         with patch("asyncio.create_task", side_effect=_capture):
-            await engine.runbooks.handle_runbook_creation(case, metadata={})
+            await engine.runbooks.handle_runbook_creation(case, metadata={}, plan=plan)
 
         assert spawned, "kickoff did not schedule the background conversion"
+        plan.release_gates()  # the turn committed
         for coro in spawned:
             await coro
 
@@ -1190,3 +1216,115 @@ class TestRunbookConversionCarriesOrg:
             "#1143: _run_runbook_conversion.enterprise_id must stay required; "
             "a default reopens the silent-omission path."
         )
+
+
+# =============================================================================
+# The conversion waits for its turn's commit (#1882)
+# =============================================================================
+
+
+class TestTheConversionWaitsForItsTurnsCommit:
+    """``handle_runbook_creation`` spawns the conversion behind a gate in the
+    turn's plan: released once the turn has committed, cancelled when it does
+    not. A turn that fails therefore produces no draft, and its retry is not
+    told "already exists" for one."""
+
+    @staticmethod
+    def _conversion():
+        from faultmaven.modules.knowledge.domain.models.conversion import (
+            CaseConversionRequest,
+        )
+
+        case = _make_resolved_case()
+        request = CaseConversionRequest(
+            case_id=case.case_id,
+            title=case.title,
+            description=case.description,
+            scope="global",
+        )
+        service = MagicMock()
+        service.convert_from_case = AsyncMock(return_value=MagicMock(drafts=[]))
+        repo = MagicMock()
+        repo.get = AsyncMock(return_value=case)
+        repo.save = AsyncMock()
+        return case, request, service, repo
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_gate_starts_nothing_and_writes_nothing(self, mock_llm):
+        _, request, service, repo = self._conversion()
+        engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
+        gate = asyncio.get_running_loop().create_future()
+        gate.cancel()
+
+        await engine.runbooks._run_runbook_conversion(
+            service, request, "u1", "o1", committed=gate
+        )
+
+        service.convert_from_case.assert_not_awaited()
+        repo.save.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_nothing_runs_until_the_gate_is_released(self, mock_llm):
+        _, request, service, repo = self._conversion()
+        engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
+        gate = asyncio.get_running_loop().create_future()
+        task = asyncio.ensure_future(
+            engine.runbooks._run_runbook_conversion(
+                service, request, "u1", "o1", committed=gate
+            )
+        )
+        for _ in range(5):
+            await asyncio.sleep(0)
+        service.convert_from_case.assert_not_awaited()
+
+        gate.set_result(None)
+        await task
+        service.convert_from_case.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cancelling_the_task_is_not_read_as_an_uncommitted_turn(
+        self, mock_llm
+    ):
+        """Shutdown cancels the task, not the gate: the task re-raises rather
+        than reporting a turn that did not commit, and the gate is untouched."""
+        _, request, service, repo = self._conversion()
+        engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
+        gate = asyncio.get_running_loop().create_future()
+        task = asyncio.ensure_future(
+            engine.runbooks._run_runbook_conversion(
+                service, request, "u1", "o1", committed=gate
+            )
+        )
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not gate.done()
+
+    @pytest.mark.asyncio
+    async def test_the_kickoff_spawns_behind_a_gate_of_the_turns_plan(
+        self, mock_llm, mock_repo
+    ):
+        case = _make_resolved_case()
+        _make_runbook_ready(case)
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        conversion_service = MagicMock()
+        conversion_service.convert_from_case = AsyncMock(
+            return_value=MagicMock(drafts=[])
+        )
+        conversion_service.get_conversion_by_case = AsyncMock(return_value=None)
+        engine.deps.conversion_service = conversion_service
+        engine.deps.knowledge_service = MagicMock(spec=[])
+
+        plan = TurnCommitPlan()
+        await engine.runbooks.handle_runbook_creation(case, metadata={}, plan=plan)
+        assert len(plan.on_commit) == 1
+        for _ in range(5):
+            await asyncio.sleep(0)
+        conversion_service.convert_from_case.assert_not_awaited()
+
+        plan.cancel_gates()  # the turn's commit failed
+        for _ in range(5):
+            await asyncio.sleep(0)
+        conversion_service.convert_from_case.assert_not_awaited()
+        mock_repo.save.assert_not_called()

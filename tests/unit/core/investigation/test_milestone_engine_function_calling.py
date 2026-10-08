@@ -95,7 +95,7 @@ def function_calling_provider():
 @pytest.fixture
 def mock_repo():
     repo = MagicMock()
-    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.save = AsyncMock(side_effect=lambda c, **_: c)
     repo.get = AsyncMock()
     return repo
 

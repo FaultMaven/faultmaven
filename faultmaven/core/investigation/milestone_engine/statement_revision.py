@@ -38,6 +38,9 @@ from .transition_consent import (
 )
 
 if TYPE_CHECKING:
+    from faultmaven.core.investigation.milestone_engine.turn_commit import (
+        TurnCommitPlan,
+    )
     from faultmaven.modules.case.contracts import Case, PendingRevision
 
 logger = logging.getLogger(__name__)
@@ -144,7 +147,12 @@ def revision_confirmation_suggestions(case: "Case") -> list:
 
 
 async def confirm_revision(
-    responses: Any, deps: Any, case: "Case", metadata: dict
+    responses: Any,
+    deps: Any,
+    case: "Case",
+    metadata: dict,
+    *,
+    plan: TurnCommitPlan,
 ) -> None:
     """The user re-confirmed the revision: commit it and replay what was staged.
 
@@ -154,10 +162,14 @@ async def confirm_revision(
     evidence ids that turn's refs resolve against.
     """
     if deps.checkpoint_service:
-        await deps.checkpoint_service.create_checkpoint(
-            case,
-            trigger="pre_case_action",
-            metadata={"action": "problem_statement_revised"},
+        # The snapshot before the revision commits, carried to the turn's own
+        # commit (#1882).
+        plan.add_checkpoint(
+            deps.checkpoint_service.capture(
+                case,
+                trigger="pre_case_action",
+                metadata={"action": "problem_statement_revised"},
+            )
         )
     pending = commit_revision(case)
     await responses.kb_prefetcher.prefetch_kb_context(case, pending.text, "symptom")

@@ -59,6 +59,7 @@ from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.ro
 )
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.saving import (
     _append_case_actions,
+    _delete_uncommitted_checkpoints,
     _insert_checkpoint,
     _insert_report,
     _org_lookup_case_id,
@@ -173,6 +174,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         Save case using hybrid schema with transactions.
 
         Strategy:
+        0. Delete checkpoint rows from turns that never committed (#1882)
         1. Upsert cases table (main record + JSONB)
         2. Upsert normalized tables (evidence, hypotheses, solutions)
         3. Append-only tables (messages, case_actions)
@@ -223,6 +225,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             enterprise_id = case.enterprise_id
             organization_id = case.organization_id
 
+            # Before the case row: it reads the committed turn (#1882).
+            await _delete_uncommitted_checkpoints(self.db, case.case_id)
             await _upsert_case_record(self._is_pg, self.db, case)
             # Post-010: evidence.source_file_id is a real FK to
             # uploaded_files.file_id, so files must exist before any

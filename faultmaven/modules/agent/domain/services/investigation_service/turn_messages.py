@@ -1,4 +1,4 @@
-"""Per-turn message-row bookkeeping: appending the user's turn and the agent's reply to the case, and the completion side effects (save + #1142 telemetry emission + the #1748 terminal-confirmation counters) that go with the agent one."""
+"""Per-turn message-row bookkeeping: appending the user's turn and the agent's reply to the case (in memory), and the side effects that follow the turn's commit (the #1142 telemetry emission and the #1748 terminal-confirmation counters)."""
 
 import logging
 from typing import Optional
@@ -107,21 +107,13 @@ def _build_user_message(*, case, case_id, next_turn, payload, query, user_id):
     return intent, intent_type, orientation_kind, user_message_obj, was_terminal
 
 
-async def _save_and_emit_turn(
-    repository,
-    *,
-    agent_response_text,
-    attachment_metadata,
-    intent,
-    intent_type,
-    oob_kind,
-    payload,
-    turn_meta,
-    turn_telemetry,
-    updated_case,
-    was_terminal,
-):
-    """Append the agent message, save the case, and emit the #1142 turn-telemetry row."""
+def _append_turn_messages(*, agent_response_text, turn_meta, updated_case):
+    """Append the agent's reply row to the case, IN MEMORY, and return its text.
+
+    The first half of what used to be one save-and-emit step (#1882, R4): the
+    turn's response is built from the appended row (below), and only then is
+    the turn committed, so the commit is the last fallible step of the turn.
+    """
     # The KB context this turn's prompt carried rides on the row, so history
     # shows it where the live turn did; the turn response reads the same entry.
     # Before the append, so the comparison for ``new_this_turn`` sees only
@@ -135,28 +127,44 @@ async def _save_and_emit_turn(
         metadata=turn_meta,
     )
     # Read back from the row, not branched beside it: ``TurnResponse``
-    # below reads this same name, and a marker that reached only the
-    # stored row would leave the live client rendering an empty bubble
-    # while a reload showed text that was never delivered. (Slack
-    # rejects an empty message outright.) This kind never drops a row.
-    agent_response_text = agent_message["content"]
+    # reads this same name, and a marker that reached only the stored row
+    # would leave the live client rendering an empty bubble while a reload
+    # showed text that was never delivered. (Slack rejects an empty message
+    # outright.) This kind never drops a row.
     updated_case.message_count += 1
-    await repository.save(updated_case)
+    return agent_message["content"]
 
-    # #1748: the terminal-confirmation pair, counted HERE — after the save, at
-    # the one point every route passes through — so a turn that fails or
+
+def _emit_committed_turn(
+    *,
+    attachment_metadata,
+    intent,
+    intent_type,
+    oob_kind,
+    payload,
+    turn_meta,
+    turn_telemetry,
+    updated_case,
+    was_terminal,
+) -> None:
+    """The #1748 counters and the #1142 turn row, for a turn that COMMITTED.
+
+    Called only after the turn's one commit has returned (#1882), and never
+    raises: a metric or a log line cannot turn a committed turn into an error.
+    """
+    # #1748: the terminal-confirmation pair, counted HERE — after the commit,
+    # at the one point every route passes through — so a turn that fails or
     # conflicts and is retried counts once, and a route that never reaches the
     # engine (GREETING) counts like any other.
     _count_terminal_confirmation(
         updated_case, intent=intent, user_message=payload.query or ""
     )
 
-    # 4b. #1142: one row per consumed turn, on every route. Emitted
-    # AFTER the save so the counter, the case state and both ledgers are
-    # the settled post-turn values — the pre-existing
-    # ``grounding_assessment`` trace reports from inside response
-    # application and therefore carries the PREVIOUS turn's
-    # ``turns_without_progress``.
+    # #1142: one row per consumed turn, on every route. Emitted AFTER the
+    # commit so the counter, the case state and both ledgers are the settled
+    # post-turn values — the pre-existing ``grounding_assessment`` trace
+    # reports from inside response application and therefore carries the
+    # PREVIOUS turn's ``turns_without_progress``.
     #
     # The route is taken from the engine's handoff when there is one.
     # The fallbacks are not cosmetic: GREETING and FILE_RECLASSIFICATION
@@ -205,7 +213,6 @@ async def _save_and_emit_turn(
         user_message_chars=len(payload.query or ""),
         attachment_count=len(attachment_metadata or []),
     )
-    return agent_response_text
 
 
 def _count_terminal_confirmation(updated_case, *, intent, user_message) -> None:
@@ -241,7 +248,7 @@ def _count_terminal_confirmation(updated_case, *, intent, user_message) -> None:
     is a double submit or a retry of the confirmation, and carries nothing new
     about whether the close held.
 
-    A metric must never fail a turn: the turn is already saved, and a
+    A metric must never fail a turn: the turn is already committed, and a
     registry failure here is logged and dropped.
     """
     try:

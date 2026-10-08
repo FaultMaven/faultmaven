@@ -281,6 +281,9 @@ class CaseRepository(ABC):
             reports: Report rows to write in the same transaction as the case
             checkpoints: Checkpoint rows to write in the same transaction as
                 the case. A checkpoint id already stored fails the whole save.
+                Before them, the same transaction deletes the case's checkpoint
+                rows above its committed ``current_turn`` (rows from a turn
+                that never committed, #1882), on every save.
 
         Returns:
             Saved case (may have updated timestamps)
@@ -1012,6 +1015,11 @@ class InMemoryCaseRepository(CaseRepository):
         self._cases: Dict[str, Case] = {}
         self._reports: Dict[str, "CaseReport"] = {}  # report_id -> CaseReport
         self._checkpoints: Dict[str, Any] = {}  # checkpoint_id -> CaseCheckpoint
+        # case_id -> the turn its last save committed. The stored case is the
+        # caller's own object (by reference), so its ``current_turn`` may
+        # already be the next turn's; this is the committed value the SQL
+        # repositories read from the ``cases`` row.
+        self._committed_turns: Dict[str, int] = {}
         # Phase 4 — case entity registry. Keyed by (case_id, evidence_id)
         # for O(1) delete-before-insert on re-extraction, with the
         # composite (case, type, value, evidence) tuple preserved
@@ -1074,7 +1082,8 @@ class InMemoryCaseRepository(CaseRepository):
             # The primary key the SQL tables enforce, enforced before the
             # version is touched or anything is stored: a refused save stores
             # nothing.
-            self._refuse_taken_checkpoint_ids(checkpoints)
+            orphans = self._uncommitted_checkpoint_ids(case.case_id)
+            self._refuse_taken_checkpoint_ids(checkpoints, deleting=orphans)
             if existing is not None and existing.version != case.version:
                 raise StaleCaseException(
                     case_id=case.case_id,
@@ -1086,24 +1095,50 @@ class InMemoryCaseRepository(CaseRepository):
             raise
         case.version = 1 if existing is None else case.version + 1
 
+        for checkpoint_id in orphans:
+            del self._checkpoints[checkpoint_id]
         self._cases[case.case_id] = case
+        self._committed_turns[case.case_id] = case.effective_current_turn
         for report in reports:
             self._store_report(report)
         for checkpoint in checkpoints:
             self._checkpoints[checkpoint.checkpoint_id] = checkpoint
         return case
 
+    def _uncommitted_checkpoint_ids(self, case_id: str) -> List[str]:
+        """The SQL repositories' orphan cleanup (#1882), for the in-memory store.
+
+        This case's checkpoints above the turn its last save committed: rows
+        written for a turn that never committed. ``save`` drops them before it
+        stores this save's checkpoints, and only once every check that can
+        refuse the save has passed, so a refused save drops nothing.
+        """
+        committed = self._committed_turns.get(case_id)
+        if committed is None:
+            return []
+        return [
+            cid
+            for cid, cp in self._checkpoints.items()
+            if cp.case_id == case_id and cp.turn_number > committed
+        ]
+
     def _refuse_taken_checkpoint_ids(
-        self, checkpoints: Sequence["CaseCheckpoint"]
+        self,
+        checkpoints: Sequence["CaseCheckpoint"],
+        *,
+        deleting: Sequence[str] = (),
     ) -> None:
         """Raise when a checkpoint id is already stored or repeated in the batch.
 
         The SQL tables refuse a duplicate ``checkpoint_id`` on the primary key;
         this is the same refusal for the in-memory store, so a test on either
-        backend sees a collision fail loudly.
+        backend sees a collision fail loudly. ``deleting`` are the ids the same
+        save drops first (the orphan cleanup), which the SQL save has deleted
+        by the time it inserts.
         """
         ids = [cp.checkpoint_id for cp in checkpoints]
-        taken = {i for i in ids if i in self._checkpoints}
+        gone = set(deleting)
+        taken = {i for i in ids if i in self._checkpoints and i not in gone}
         taken |= {i for i in ids if ids.count(i) > 1}
         if taken:
             raise RepositoryException(f"Checkpoint id already taken: {sorted(taken)}")
@@ -1721,6 +1756,7 @@ class InMemoryCaseRepository(CaseRepository):
         self._cases.clear()
         self._reports.clear()
         self._checkpoints.clear()
+        self._committed_turns.clear()
 
 
 # NOTE: Legacy PostgreSQLCaseRepository was removed (2026-03-18).

@@ -1,18 +1,18 @@
 """Checkpoint Service for Investigation Engine
 
-Centralizes checkpoint creation logic for case state snapshots.
-Checkpoints are taken before state transitions.
+Case state snapshots, taken before state transitions.
 
-Two halves (#1882):
-
-- ``capture`` builds the snapshot and touches no storage, so a turn can carry
-  it to the turn's own commit (``ICaseRepository.save(case, checkpoints=...)``).
-- ``create_checkpoint`` is ``capture`` plus a write of its own.
+``capture`` builds the snapshot and touches no storage. The turn carries it to
+its own commit (``TurnCommitPlan.add_checkpoint``, then
+``ICaseRepository.save(case, checkpoints=...)``), so a checkpoint commits with
+the transition it precedes, or not at all (#1882). There is no write of its
+own: a checkpoint committed separately is a mid-turn commit, which outlives a
+turn that then fails.
 
 Usage:
-    service = CheckpointService(case_repo)
-    checkpoint = service.capture(case, trigger="pre_case_action", metadata=...)
-    await service.create_checkpoint(case, trigger="pre_case_action")
+    plan.add_checkpoint(
+        CheckpointService().capture(case, trigger="pre_case_action", metadata=...)
+    )
 """
 
 import hashlib
@@ -53,11 +53,7 @@ def checkpoint_id_for(
 
 
 class CheckpointService:
-    """Creates and manages case checkpoints (immutable state snapshots)."""
-
-    def __init__(self, case_repo: Any):
-        """Initialize with a case repository that supports create_checkpoint()."""
-        self.case_repo = case_repo
+    """Takes case checkpoints (immutable state snapshots)."""
 
     @staticmethod
     def capture(
@@ -102,36 +98,3 @@ class CheckpointService:
             created_at=datetime.now(timezone.utc),
             metadata=metadata,
         )
-
-    async def create_checkpoint(
-        self,
-        case: Any,
-        trigger: str = "turn_complete",
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Optional[CaseCheckpoint]:
-        """
-        Capture a snapshot of the case and write it in its own transaction.
-
-        Args:
-            case: The Case object to snapshot
-            trigger: Event that triggered the checkpoint
-            metadata: Additional context (e.g., old_status, new_status)
-
-        Returns:
-            CaseCheckpoint if created, None if failed
-        """
-        try:
-            checkpoint = self.capture(case, trigger, metadata)
-            await self.case_repo.create_checkpoint(checkpoint)
-            logger.debug(
-                f"Checkpoint created: case={case.case_id} turn={case.current_turn} trigger={trigger}"
-            )
-            return checkpoint
-
-        except Exception as e:
-            logger.warning(
-                f"Failed to create checkpoint for case {case.case_id}: {e}",
-                exc_info=True,
-                extra={"case_id": case.case_id, "trigger": trigger},
-            )
-            return None

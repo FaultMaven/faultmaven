@@ -150,7 +150,7 @@ def _gate1_click(value, statement: str = PROPOSED) -> dict:
 def _repo(case):
     repo = MagicMock()
     repo.get = AsyncMock(return_value=case)
-    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.save = AsyncMock(side_effect=lambda c, **_: c)
     repo.get_case_messages = AsyncMock(return_value=[])
     return repo
 

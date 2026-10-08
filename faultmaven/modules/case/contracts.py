@@ -125,6 +125,12 @@ class ICaseRepository(Protocol):
         bound, the case's own. Every row must name ``case`` (``ValueError``
         otherwise).
 
+        Every save, in the same transaction and before the case row is
+        written, deletes the case's checkpoint rows whose ``turn_number`` is
+        above the COMMITTED ``current_turn``: rows from a turn that never
+        committed, which would otherwise collide with the retried turn's own
+        checkpoint id and refuse its commit (#1882).
+
         MUTATES ``case.messages``: a row missing ``message_id`` or
         ``created_at`` is completed in place, so the in-memory list carries
         what the stored rows carry (#1418). Both fields are read back — the id

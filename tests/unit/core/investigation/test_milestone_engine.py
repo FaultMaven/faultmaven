@@ -6,6 +6,7 @@ import pytest
 
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.errors import MilestoneEngineError
+from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.core.investigation.milestone_engine.turn_records import (
     _create_turn_record,
 )
@@ -65,7 +66,7 @@ def mock_llm():
 @pytest.fixture
 def mock_repo():
     repo = MagicMock()
-    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.save = AsyncMock(side_effect=lambda c, **_: c)
     repo.get = AsyncMock()
     return repo
 
@@ -2314,7 +2315,7 @@ class TestNeedsInfoFollowupProposesClose:
         mock_llm = MockLLMProvider()
         mock_llm.generate = AsyncMock()
         mock_repo = MagicMock()
-        mock_repo.save = AsyncMock(side_effect=lambda c: c)
+        mock_repo.save = AsyncMock(side_effect=lambda c, **_: c)
         return MilestoneEngine(
             mock_llm,
             mock_repo,
@@ -2362,7 +2363,7 @@ class TestNeedsInfoFollowupProposesClose:
         # re-eval (critical_missing >= 2 AND not has_evidence).
         metadata = {}
         await engine.transitions.check_automatic_transitions(
-            case, metadata, user_message="ok"
+            case, metadata, user_message="ok", plan=TurnCommitPlan()
         )
 
         assert case.pending_transition is not None
@@ -2411,7 +2412,7 @@ class TestNeedsInfoFollowupProposesClose:
         # (one critical missing — "solution")
         metadata = {}
         await engine.transitions.check_automatic_transitions(
-            case, metadata, user_message="ok"
+            case, metadata, user_message="ok", plan=TurnCommitPlan()
         )
 
         assert case.pending_transition is not None
@@ -2462,7 +2463,7 @@ class TestNeedsInfoFollowupProposesClose:
         needs_info_key = case.pending_transition["proposed_at"]
         metadata = {}
         await engine.transitions.check_automatic_transitions(
-            case, metadata, user_message="ok"
+            case, metadata, user_message="ok", plan=TurnCommitPlan()
         )
 
         # Pending transition stays as RESOLVED, and no longer needs info
@@ -2490,7 +2491,7 @@ class TestCreateTurnRecordSystemFeedbackTruncation:
         mock_llm = MockLLMProvider()
         mock_llm.generate = AsyncMock()
         mock_repo = MagicMock()
-        mock_repo.save = AsyncMock(side_effect=lambda c: c)
+        mock_repo.save = AsyncMock(side_effect=lambda c, **_: c)
         return MilestoneEngine(
             mock_llm,
             mock_repo,

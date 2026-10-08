@@ -1032,10 +1032,11 @@ and one `Sidecar drift: <key> … NOT deleting` WARNING per file.
 
 **What it means:** the cross-check saved a live file. Its `uploaded_files` row
 exists and the case references it, but its sidecar still says `linked: false`
-past the TTL — so `mark_linked` failed for that upload, or never ran: it runs
-after the turn's final save, and on an engine-routed turn the engine commits the
-row at its own earlier save, so a turn that fails between the two leaves a
-committed row with an unflipped sidecar (#1882). Before #1232 the sweep
+past the TTL — so `mark_linked` failed for that upload, timed out, or never
+ran: it runs after the turn's one commit, best effort, each call bounded by
+`MARK_LINKED_TIMEOUT_SECONDS` (#1882), and a failure there is counted on
+`faultmaven_evidence_mark_linked_failures_total` rather than failing the committed turn.
+Before #1232 the sweep
 would have **deleted** it. Nothing is wrong with the sweep; something is wrong
 upstream.
 

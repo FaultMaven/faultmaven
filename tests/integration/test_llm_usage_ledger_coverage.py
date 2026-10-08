@@ -432,7 +432,11 @@ class TestAnEngineTurn:
             spawned.append(
                 asyncio.create_task(
                     engine.runbooks._run_runbook_conversion(
-                        conversion, request, USER, ENTERPRISE
+                        conversion,
+                        request,
+                        USER,
+                        ENTERPRISE,
+                        committed=_committed_gate(),
                     )
                 )
             )
@@ -713,3 +717,11 @@ class TestOutsideATurn:
             "org_640",
         )
         assert row["actor_user_id"] == ""
+
+
+def _committed_gate():
+    """The spawning turn's commit gate, already released: the turn committed
+    (#1882 — the conversion waits for it before anything else)."""
+    gate = asyncio.get_running_loop().create_future()
+    gate.set_result(None)
+    return gate

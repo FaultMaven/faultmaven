@@ -1,6 +1,7 @@
 """#1882 part 1: the pieces a turn's single commit is built from.
 
-- ``CheckpointService.capture`` snapshots without touching storage, and its id
+- ``CheckpointService.capture`` snapshots without touching storage (there is
+  no other way to take one since #1882 part 2), and its id
   tells two sites in one turn apart while a site that fires twice collides.
 - ``TurnCommitPlan`` / ``commit_turn_plan`` commit the case with the turn's
   rows in one ``save`` and settle the gates: released on success, cancelled on
@@ -75,14 +76,16 @@ def _transition(case: Case, to_state: str):
 
 
 class TestCapture:
-    def test_capture_touches_no_storage(self):
-        repo = MagicMock()
-        service = CheckpointService(repo)
+    def test_capture_is_pure(self):
+        """No storage at all: the service holds no repository, and the
+        snapshot is only ever written by the turn's one commit (#1882)."""
         case = _case()
 
-        checkpoint = service.capture(case, "pre_case_action", {"to_state": "closed"})
+        checkpoint = CheckpointService().capture(
+            case, "pre_case_action", {"to_state": "closed"}
+        )
 
-        assert repo.mock_calls == []
+        assert not hasattr(CheckpointService, "create_checkpoint")
         assert checkpoint.case_id == case.case_id
         assert checkpoint.turn_number == 3
         assert checkpoint.trigger == "pre_case_action"
@@ -127,23 +130,6 @@ class TestCapture:
         refuses a longer value (pinned against a real PG in
         ``test_turn_rows_commit_with_case_postgres_1882.py``)."""
         assert len(_transition(_case(turn=99999), "investigating").checkpoint_id) <= 36
-
-    @pytest.mark.asyncio
-    async def test_create_checkpoint_is_capture_plus_its_own_write(self):
-        repo = InMemoryCaseRepository()
-        case = _case()
-        created = await CheckpointService(repo).create_checkpoint(
-            case, "pre_case_action", {"to_state": "closed"}
-        )
-        assert created is not None
-        assert created.checkpoint_id == _transition(case, "closed").checkpoint_id
-        assert await repo.get_checkpoint(created.checkpoint_id) is created
-
-    @pytest.mark.asyncio
-    async def test_create_checkpoint_still_logs_and_drops_a_failed_write(self):
-        repo = MagicMock()
-        repo.create_checkpoint = AsyncMock(side_effect=RuntimeError("db down"))
-        assert await CheckpointService(repo).create_checkpoint(_case()) is None
 
 
 class TestTurnCommitPlan:

@@ -140,6 +140,7 @@ from __future__ import annotations
 
 from typing import Dict
 
+from faultmaven.core.investigation.turn_budget import TURN_COMMIT_RESERVE_SECONDS
 from faultmaven.modules.preprocessing.preprocessing_service import (
     TIER1_TIMEOUT_SECONDS,
 )
@@ -379,6 +380,21 @@ ADVERSARIAL_LINE_EXTRACTION = LatencyBudget(
     regression=2.0,
     product_target=TIER1_TIMEOUT_SECONDS,
     reference=0.92524,
+)
+
+
+# tests/performance/test_turn_commit_latency.py (#1882)
+#: The p99 of a turn's ONE commit on SQLite, through the production wrapper,
+#: over three cases grown to 60 turns (``tests/turn_commit_latency.py``).
+#: ``reference`` from three runs on the development box (p99 176.7, 184.3,
+#: 187.1 ms). The product target is the commit reserve itself: the commit must
+#: fit in the end of the turn budget kept back for it. The reserve was sized
+#: from this measurement and its PostgreSQL twin at p99 x 10.
+TURN_COMMIT_P99 = LatencyBudget(
+    "test_the_turn_commit_fits_its_reserve",
+    regression=0.5,
+    product_target=TURN_COMMIT_RESERVE_SECONDS,
+    reference=0.19,
 )
 
 

@@ -940,8 +940,8 @@ async def _auto_title_case_if_default(
     * **The next turn cannot clobber this write.** A title-only update takes
       ``CaseService.update_case``'s metadata channel — a scoped UPDATE with no
       version bump — deliberately, so it cannot stale-conflict with an in-flight
-      turn save. But that cuts both ways: the versioned full-row ``save`` the
-      engine performs writes ``title`` from its own in-memory snapshot, and OCC
+      turn save. But that cuts both ways: the versioned full-row ``save`` a
+      turn commits writes ``title`` from its own in-memory snapshot, and OCC
       cannot see a write that never bumped the version. A turn that had loaded the
       case *before* titling landed would therefore save the placeholder straight
       back over the generated title. Finishing before the response is what orders

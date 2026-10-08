@@ -75,6 +75,9 @@ class MockCaseRepository:
 
     def __init__(self):
         self._storage: dict[str, Case] = {}
+        # The rows a turn's one commit carried with its case (#1882).
+        self.reports: list = []
+        self.checkpoints: list = []
         self.get = AsyncMock(side_effect=self._get)
         self.save = AsyncMock(side_effect=self._save)
         self.list = AsyncMock(side_effect=self._list)
@@ -87,10 +90,13 @@ class MockCaseRepository:
         # we want to track mutations
         return self._storage.get(case_id)
 
-    async def _save(self, case: Case) -> Case:
-        """Save case - store it (service passes the updated case)."""
+    async def _save(self, case: Case, *, reports=(), checkpoints=()) -> Case:
+        """Save case - store it (service passes the updated case), with the
+        report and checkpoint rows the turn commits alongside it."""
         # Store the case object directly - service passes the updated case after mutations
         self._storage[case.case_id] = case
+        self.reports.extend(reports)
+        self.checkpoints.extend(checkpoints)
         return case
 
     async def _list(
@@ -126,8 +132,9 @@ class MockCaseRepository:
 class MockMilestoneEngine:
     """Mock MilestoneEngine for testing InvestigationService.
 
-    Note: Real MilestoneEngine saves case via repository internally.
-    Mock doesn't need to save since InvestigationService also saves after adding agent message.
+    Like the real engine, it saves nothing: the service commits the turn once
+    (#1882). It returns no ``commit_plan``, which the service reads as an empty
+    one.
     """
 
     def __init__(self):
@@ -150,10 +157,9 @@ class MockMilestoneEngine:
         so case.messages already contains the user message.
 
         Real engine:
-        - Increments current_turn
-        - Updates case state
-        - Saves case via repository (but we don't need to mock that since service saves again)
-        - Returns updated case
+        - Updates case state, in memory
+        - Returns the updated case and its ``commit_plan``; the service
+          commits both (#1882)
 
         Mock behavior:
         - Increments current_turn to match expected behavior
@@ -203,10 +209,12 @@ class RecordingCaseRepository(MockCaseRepository):
     them does not build a third copy.
     """
 
-    async def _save(self, case: Case) -> Case:
+    async def _save(self, case: Case, *, reports=(), checkpoints=()) -> Case:
         self._storage[case.case_id] = case.model_copy(
             update={"current_turn": case.effective_current_turn}
         )
+        self.reports.extend(reports)
+        self.checkpoints.extend(checkpoints)
         return case
 
 

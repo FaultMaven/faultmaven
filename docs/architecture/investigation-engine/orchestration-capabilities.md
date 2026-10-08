@@ -13,9 +13,11 @@ transitions only, and it has no online reader (see §2).
 
 ### 1.1 Mechanism
 
-- **Construction & persistence**: [`CheckpointService.capture`](../../../faultmaven/core/investigation/checkpoint_service.py) builds a `CaseCheckpoint` from `case.model_dump()` and computes a SHA-256 hash of the JSON snapshot, touching no storage. `create_checkpoint` is `capture` plus a write of its own (`case_repo.create_checkpoint(...)`); a turn can instead carry the captured row to its own commit, `ICaseRepository.save(case, checkpoints=[...])`, which writes it in the case's transaction (#1882).
+- **Construction**: [`CheckpointService.capture`](../../../faultmaven/core/investigation/checkpoint_service.py) builds a `CaseCheckpoint` from `case.model_dump()` and computes a SHA-256 hash of the JSON snapshot, touching no storage. It is the only way to take one.
+- **Persistence: in the turn's one commit** (#1882). Each site adds its snapshot to the turn's `TurnCommitPlan` (`plan.add_checkpoint(...)`), and the service commits the plan with the case: `ICaseRepository.save(case, checkpoints=[...])` writes the row in the case's own transaction. A checkpoint therefore exists only for a transition that committed; a turn that fails leaves none. (Before #1882 each site committed its row on its own, mid-turn, so a turn that then failed left a checkpoint of a transition that never happened.) The same transaction first deletes the case's checkpoint rows above its committed `current_turn` — rows such an earlier failed turn left — so the retried turn's identical id does not collide.
 - **Storage**: `CaseCheckpoint` rows live in `case_checkpoints`. PostgreSQL uses `JSONB` for efficient querying; SQLite (dev) uses `Text` for compatibility.
-- **Immutability**: Checkpoints are append-only. The checkpoint_id is a UUIDv5 of `(case_id, current_turn, trigger, target)`, where the target is the metadata's `to_state`, or its `action` for a site that names no state (`checkpoint_id_for`). Two sites in one turn therefore never share an id, while one site firing twice for the same transition does, and the second INSERT fails on the primary key rather than being skipped. A UUID because the column is `VARCHAR(36)`: the readable `{case_id}:turn:{n}:{trigger}` it replaced was 40+ characters, and PostgreSQL refused every one of them.
+- **Immutability**: Checkpoints are append-only. The checkpoint_id is a UUIDv5 of `(case_id, current_turn, trigger, target)`, where the target is the metadata's `to_state`, or its `action` for a site that names no state (`checkpoint_id_for`). Two sites in one turn therefore never share an id, while one site firing twice for the same transition does: the plan keeps the first and drops the repeat (`add_checkpoint`), and the INSERT is a plain one that refuses a taken id rather than skipping it. A UUID because the column is `VARCHAR(36)`: the readable `{case_id}:turn:{n}:{trigger}` it replaced was 40+ characters, and PostgreSQL refused every one of them.
+- **Wiring**: every site is guarded by a `checkpoint_service` presence check. The composition root (`container/providers/services.py`) does not construct a `CheckpointService` today, so a deployment takes no checkpoints; the tests wire one.
 
 ### 1.2 Trigger Sites
 
@@ -23,9 +25,10 @@ Checkpoints fire at four sites — the button-confirm path in
 `milestone_engine/transition_turns.py`, two in the `TransitionManager` collaborator
 (`milestone_engine/transitions.py`) and the statement-revision confirm in
 `milestone_engine/statement_revision.py` — and all with trigger `pre_case_action`.
-Every site is guarded by a `checkpoint_service` presence check, so the engine
-degrades safely when the service is not wired. No two of them can fire in one turn,
-and their targets differ, so their checkpoint ids do too.
+Each adds its snapshot to the turn's plan; none writes. Every site is guarded by a
+`checkpoint_service` presence check, so the engine degrades safely when the service
+is not wired. No two of them can fire in one turn, and their targets differ, so their
+checkpoint ids do too.
 
 | Site | When | Metadata captured |
 |---|---|---|
@@ -52,9 +55,9 @@ retention and pruning policy that does not exist. Transition-shaped checkpointin
 is bounded (a handful per case lifetime) and buys the property actually claimed
 above.
 
-`CheckpointService.create_checkpoint` still defaults `trigger` to
-`"turn_complete"`. That default now has no caller; it is left as the seam a future
-per-turn implementation would use, once retention is designed.
+`CheckpointService.capture` still defaults `trigger` to `"turn_complete"`. That
+default has no caller; it is left as the seam a future per-turn implementation would
+use, once retention is designed.
 
 ### 1.3 Auditability Today
 
@@ -93,7 +96,7 @@ costs turns × case size, and the case grows as the investigation does. Designin
 that is the prerequisite; the API is the easy part and should be rebuilt against
 whatever the retention model turns out to be, not restored from git.
 
-Two things survive to build on: `CheckpointService.create_checkpoint` still takes a
+Two things survive to build on: `CheckpointService.capture` still takes a
 `trigger` (defaulting to the now-callerless `"turn_complete"`), and
 `case_checkpoints` still stores immutable, hash-stamped snapshots.
 

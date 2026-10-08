@@ -54,6 +54,10 @@ import pytest
 import faultmaven.core.investigation.prompts.context_builder as context_builder
 from faultmaven.core.investigation.milestone_engine import progress as progress_module
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.turn_commit import (
+    TurnCommitPlan,
+    commit_turn_plan,
+)
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
@@ -107,7 +111,7 @@ def _no_file_id() -> dict[str, Any]:
 
 def _engine() -> MilestoneEngine:
     repo = MagicMock()
-    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.save = AsyncMock(side_effect=lambda c, **_: c)
     repo.get = AsyncMock(side_effect=lambda cid: None)
     engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
     engine.generator.generate_structured_output = AsyncMock(side_effect=_SeamReached())
@@ -204,16 +208,28 @@ class TestAGateTurnCarryingANovelUpload:
         assert case.turns_without_progress == 0
 
     async def test_the_reset_is_saved(self):
-        """The reset is applied above the fork, so it precedes the branch's own
-        ``save`` rather than being computed after it."""
+        """The reset is applied above the fork, so it is on the case the turn
+        commits. The branch saves nothing itself (#1882): the engine returns the
+        case, and the turn's one commit (``commit_turn_plan``, as the service
+        runs it) stores it."""
         engine = _engine()
         case = _investigating_case()
         saved: list[int] = []
         engine.deps.repository.save = AsyncMock(
-            side_effect=lambda c: saved.append(c.turns_without_progress) or c
+            side_effect=lambda c, **_: saved.append(c.turns_without_progress) or c
         )
 
-        await _gate_turn(engine, case, [_novel()])
+        result = await engine.process_turn(
+            case=case,
+            user_message="closing this out",
+            attachments=[_novel()],
+            intent_type="status_transition",
+            intent_data={"to_state": "closed"},
+        )
+        assert saved == [], "the engine committed mid-turn"
+        await commit_turn_plan(
+            engine.deps.repository, result["case_updated"], result["commit_plan"]
+        )
 
         assert saved == [0], f"counter at save time: {saved}"
 
@@ -331,6 +347,8 @@ class TestTheTerminalShortCircuit:
             case: Case,
             user_message: str,
             metadata: dict[str, Any],
+            *,
+            plan: TurnCommitPlan,
             user_id: Optional[str] = None,
         ) -> dict[str, Any]:
             seen.update(metadata)
@@ -359,7 +377,7 @@ class TestTheTerminalShortCircuit:
         case = self._terminal_case()
         seen: dict = {}
 
-        async def spy(case, user_message, metadata, user_id=None):
+        async def spy(case, user_message, metadata, *, plan, user_id=None):
             seen.update(metadata)
             return {"agent_response": "", "case_updated": case, "metadata": metadata}
 
@@ -376,7 +394,7 @@ class TestTheTerminalShortCircuit:
         engine = _engine()
         case = self._terminal_case()
 
-        async def spy(case, user_message, metadata, user_id=None):
+        async def spy(case, user_message, metadata, *, plan, user_id=None):
             return {"agent_response": "", "case_updated": case, "metadata": metadata}
 
         engine.terminal.process_terminal_turn = spy
@@ -392,7 +410,7 @@ def _generating_engine() -> MilestoneEngine:
     """An engine whose LLM seam returns a real response, so the turn completes
     and we can read what crosses the RETURN boundary."""
     repo = MagicMock()
-    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.save = AsyncMock(side_effect=lambda c, **_: c)
     repo.get = AsyncMock(side_effect=lambda cid: None)
     engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
     engine.generator.generate_structured_output = AsyncMock(

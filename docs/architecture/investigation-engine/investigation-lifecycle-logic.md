@@ -1513,8 +1513,8 @@ def is_terminal(self) -> bool:
 
 **Three interaction scenarios**:
 
-1. **User asks to regenerate the report** → Pattern matching triggers `_handle_report_regeneration`, which calls `ReportService.generate_reports` **synchronously** (single LLM call using SYNTHESIS capability) and embeds the rendered markdown inline in the chat reply. The substance gate is re-applied for CLOSED so low-substance cases can't be regenerated into existence by clicking around. Overwrites the existing Report row — there is always exactly one summary per case.
-2. **User accepts runbook suggestion** (RESOLVED only) → Pattern matching triggers `RunbookCreator.handle_runbook_creation()`: evaluates readiness + deduplication synchronously, then kicks off `ConversionService.convert_from_case()` as a **fire-and-forget background task**. The chat reply returns immediately ("Creating your runbook draft..."), and a `role="system"` completion message is appended to the case transcript when the background task finishes (success: names the new draft; no-drafts or exception: states that nothing was saved and points at manual authoring in the Knowledge Base). That row is invisible in the copilot, which drops system messages, so the Dashboard is its only reader — see §1.7.3. The Dashboard *Knowledge Base > Drafts* tab is the persistent surface.
+1. **User asks to regenerate the report** → Pattern matching triggers `_handle_report_regeneration`, which renders the summary with `ReportGenerationService.render_reports` **synchronously** (deterministic, from case fields — no LLM call) and embeds the rendered markdown inline in the chat reply. The substance gate is re-applied for CLOSED so low-substance cases can't be regenerated into existence by clicking around. The new version (up to `MAX_REGENERATIONS`) is marked current, and its row commits in the turn's one commit (#1882): a regenerate turn that fails consumes no slot.
+2. **User accepts runbook suggestion** (RESOLVED only) → Pattern matching triggers `RunbookCreator.handle_runbook_creation()`: evaluates readiness + deduplication synchronously, then kicks off `ConversionService.convert_from_case()` as a **fire-and-forget background task** that first waits for the turn's commit (a gate in the turn's `TurnCommitPlan`; a turn that fails starts no conversion, #1882). The chat reply returns immediately ("Creating your runbook draft..."), and a `role="system"` completion message is appended to the case transcript when the background task finishes (success: names the new draft; no-drafts or exception: states that nothing was saved and points at manual authoring in the Knowledge Base). That row is invisible in the copilot, which drops system messages, so the Dashboard is its only reader — see §1.7.3. The Dashboard *Knowledge Base > Drafts* tab is the persistent surface.
 3. **User asks questions about the case** → Agent answers via the LLM with TERMINAL_TEMPLATE.
 
 **Implementation in milestone engine**:
@@ -1529,7 +1529,7 @@ async def _process_turn_impl(self, case, user_message, ...):
     # Normal investigation flow...
 ```
 
-**Report regeneration**: The summary report is auto-generated at closure time and rendered inline in the closure-turn chat reply. The DECIDE *"Regenerate &lt;type&gt; summary"* affordance is the only chat-side path — free-typed paraphrases like *"give me a recap"* route to Q&A and never produce a persisted Report. Regeneration overwrites the existing report — there is always exactly one summary per case. Where the affordance appears depends on whether initial generation succeeded; see *Where it's offered* in §1.7.3 below.
+**Report regeneration**: The summary report is auto-generated at closure time and rendered inline in the closure-turn chat reply. The DECIDE *"Regenerate &lt;type&gt; summary"* affordance is the only chat-side path — free-typed paraphrases like *"give me a recap"* route to Q&A and never produce a persisted Report. Each regeneration adds a version (up to `MAX_REGENERATIONS`) and marks it current. Where the affordance appears depends on whether initial generation succeeded; see *Where it's offered* in §1.7.3 below.
 
 **API-level enforcement** (`submit_turn` endpoint):
 
@@ -1554,11 +1554,10 @@ When a case reaches a terminal state, the system synchronously generates a light
 
 **Generation approach**:
 
-- Single LLM call using SYNTHESIS capability (Fireworks/Groq for speed and cost).
-- Input assembled via `context_builder/` (`build_investigation_context`): case messages, evidence list, hypothesis states, action_history, milestone progress.
-- Stored as `Report` with `auto_generated=True` (distinguishes from user-requested reports).
-- **Synchronous**: the closure-turn agent reply waits for generation to complete and then embeds the rendered markdown inline. The state transition itself does not depend on LLM availability — generation exceptions are caught and the closure still commits, but the chat reply embeds a status-aware failure note (*"Resolution summary generation did not complete..."* / *"Closure summary generation did not complete..."*) and the regen affordance is offered **on the same ack-turn** for immediate retry. The "regen would be noise next to the inline summary" rationale only applies on the success path; on the failure path there is no inline summary, so offering regen alongside the failure note is the right UX. See *Where it's offered* below.
-- One report per case — regeneration overwrites the existing row.
+- Rendered deterministically from case fields (hypotheses, solutions, evidence, milestones, timestamps) by `ReportGenerationService.render_reports` — no LLM call.
+- Stored as `Report` with `auto_generated=True` (distinguishes from user-requested reports), **in the turn's one commit**: the row rides the same transaction as the CLOSED/RESOLVED state it summarises (#1882), so a summary row never exists for a terminal state that did not commit, and a turn whose commit fails leaves neither.
+- **Synchronous**: the closure-turn agent reply waits for the render and then embeds the rendered markdown inline. A render failure is caught and the closure still commits (owner ruling on #1882, INV-13), but the chat reply embeds a status-aware failure note (*"Resolution summary generation did not complete..."* / *"Closure summary generation did not complete..."*) and the regen affordance is offered **on the same ack-turn** for immediate retry. The "regen would be noise next to the inline summary" rationale only applies on the success path; on the failure path there is no inline summary, so offering regen alongside the failure note is the right UX. See *Where it's offered* below.
+- Each regeneration adds a version (up to `MAX_REGENERATIONS`), marked current.
 
 **Substance gate** (`should_generate_terminal_summary()` in `terminal_transitions.py`):
 
@@ -2182,9 +2181,9 @@ After a case reaches RESOLVED or CLOSED, the system auto-generates a terminal su
 
 #### 4.5.0 Auto-Generated Terminal Summary
 
-**Trigger**: Synchronous on terminal transition (both RESOLVED and CLOSED). The closure-turn agent reply waits for generation to complete and embeds the rendered markdown inline. Generation exceptions are caught — the state transition still commits — but the chat reply tells the user generation didn't complete and the regen affordance is offered on the next terminal turn for retry.
+**Trigger**: Synchronous on terminal transition (both RESOLVED and CLOSED). The closure-turn agent reply waits for the render and embeds the rendered markdown inline. A render failure is caught — the state transition still commits — but the chat reply tells the user generation didn't complete and the regen affordance is offered on the same ack turn for retry.
 
-**Implementation**: `TerminalTurnHandler.auto_generate_report()` (`milestone_engine/terminal_turns.py`) calls `ReportGenerationService.generate_reports()` after the case is saved in terminal state, returns either the rendered markdown (success), a skip note (gate FAIL), or a failure note (LLM error). The closure-turn reply is composed by `_compose_terminal_reply()` which appends the return value to the deterministic status line. Called from three places: the explicit-confirmation path, the dropdown-resolution path, and the end-of-turn LLM-driven transition path.
+**Implementation**: `TerminalTurnHandler.auto_generate_report()` (`milestone_engine/terminal_turns.py`) calls `ReportGenerationService.render_reports()` (deterministic, no write, no LLM call) and adds the row to the turn's `TurnCommitPlan`, so it commits with the terminal state in the turn's one commit (#1882). It returns either the rendered markdown (success), a skip note (gate FAIL), or a failure note (render error). The closure-turn reply is composed by `_compose_terminal_reply()` which appends the return value to the deterministic status line. Called from three places: the explicit-confirmation path, the dropdown-resolution path, and the end-of-turn LLM-driven transition path.
 
 **Substance gate** (`should_generate_terminal_summary()` in `terminal_transitions.py`): RESOLVED always generates — a verified solution is meaningful content by definition. CLOSED requires `evidence > 0` OR `hypotheses > 0` OR `completed_milestones > 0`. The gate is substance-only by design — conversation depth (`message_count`) is intentionally not a signal, since terminal Q&A inflates it and would let the verdict flip after closure. The three substance signals are naturally frozen in CLOSED state, so the gate is stable across the terminal lifetime without a snapshot field.
 
@@ -2209,7 +2208,7 @@ Summaries are built from case data fields (hypotheses, solutions, evidence, mile
 
 **Dashboard**: `ReportTab` is view-only — displays auto-generated summaries with formatted markdown rendering and download. No manual generate button. If no summary was generated for a closed case (substance gate FAIL), the tab surfaces a derived skip-reason note (via `terminal_summary_skip_reason()` in `terminal_transitions.py`). If the gate PASSed but no Report row exists (generation failed), the tab surfaces a "regenerate from Copilot" note. RESOLVED cases always have a summary.
 
-**Two views, one record**: The chat and the Dashboard show the same `CaseReport` row. The chat renders it once at the moment of generation (and again on each regeneration); the Dashboard renders it persistently. There is exactly one summary per case — each regeneration overwrites the row.
+**Two views, one record**: The chat and the Dashboard show the same `CaseReport` row. The chat renders it once at the moment of generation (and again on each regeneration); the Dashboard renders it persistently. Each regeneration adds a version and marks it current; both views show the current one.
 
 **API endpoints:**
 

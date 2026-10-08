@@ -1,8 +1,14 @@
 """The turn-wide deadline, and the budget the LLM retry ladder spends against it.
 
-A turn is a BOUNDED operation: ``submit_turn`` runs ``process_turn`` under an
-``asyncio.wait_for`` whose ceiling is ``AGENT_REQUEST_TIMEOUT`` (resolved
-per-provider). Inside that bound the engine runs an LLM retry ladder whose own
+A turn is a BOUNDED operation: ``submit_turn`` runs the turn's PREPARATION
+(``InvestigationService.prepare_turn``: everything up to, and not including, the
+commit) under an ``asyncio.wait_for`` whose ceiling is ``AGENT_REQUEST_TIMEOUT``
+(resolved per-provider), then commits it (``commit_turn``) outside that bound,
+because a cancellation that lands inside a commit leaves its outcome unknown
+(#1882). The commit is paid for out of the same ceiling: ``commit_turn`` refuses
+to start one with less than ``TURN_COMMIT_RESERVE_SECONDS`` left, and every LLM
+step leaves that reserve unspent. Inside the bound the engine runs an LLM retry
+ladder whose own
 worst-case cost is a function of a DIFFERENT setting in a DIFFERENT settings
 class — ``LLM_REQUEST_TIMEOUT`` / ``LLMSettings.provider_timeout_overrides``.
 Nothing related the two, so the ladder could begin an attempt it had no room to
@@ -80,6 +86,45 @@ _turn_deadline: ContextVar[Optional[float]] = ContextVar("turn_deadline", defaul
 TURN_BUDGET_RESERVE_SECONDS = 1.0
 
 
+# The time a turn keeps back, at the end of its budget, for its ONE commit
+# (#1882). The route's ``wait_for`` bounds only the preparation, and
+# ``commit_turn`` checks what is left before it starts: with less than this,
+# the turn answers the same 504 + ``Retry-After`` a timeout does, with nothing
+# committed. Started, the commit runs to completion whatever the clock says,
+# so the client's own timeout must exceed ``AGENT_REQUEST_TIMEOUT`` plus this
+# plus its network margin.
+#
+# Paid for by the LLM steps, not by the commit: ``spendable_turn_budget`` and
+# ``backstop_turn_budget`` both subtract it, so a ladder that runs the budget
+# down still leaves the commit its room, and ``worst_case_ladder_plan`` counts
+# it when it reports whether a configuration fits.
+#
+# SIZED FROM MEASUREMENT, not chosen (#1882, R8): the turn's one commit, timed
+# through the production wrapper over cases grown to 60 turns with the rows a
+# turn carries (``tests/turn_commit_latency.py``), measured p99 185 ms on
+# SQLite and 270-315 ms on PostgreSQL 16 under RLS; the worse p99 times a
+# safety factor of 10 is 3.15 s, rounded up. The two tests that measure it fail
+# when a run's p99 exceeds a third of this. Re-measure before changing it.
+TURN_COMMIT_RESERVE_SECONDS = 3.5
+
+
+class TurnDeadlineExceeded(Exception):
+    """Too little of the turn's budget is left to start its commit (#1882).
+
+    Raised by ``InvestigationService.commit_turn`` BEFORE the commit starts, so
+    nothing of the turn is committed; the route answers it exactly as it
+    answers a timeout of the preparation (504 + ``Retry-After``).
+    """
+
+    def __init__(self, remaining: float, reserve: float) -> None:
+        self.remaining = remaining
+        self.reserve = reserve
+        super().__init__(
+            f"{remaining:.3f}s of the turn budget left, under the "
+            f"{reserve:.3f}s commit reserve"
+        )
+
+
 # A SECOND, smaller reserve, used only by the retry ladder's backstop clamp.
 #
 # Two things bound an LLM attempt against the turn deadline, and their order
@@ -102,6 +147,8 @@ TURN_BUDGET_RESERVE_SECONDS = 1.0
 # backstop's deadline strictly LATER, so the provider clamp always gets there
 # first and the backstop only ever fires on a call the router never bounded.
 # The ordering is an invariant, not a coincidence, and is asserted in tests.
+# Both subtract ``TURN_COMMIT_RESERVE_SECONDS`` as well, so the ordering is
+# unchanged by it and neither clamp spends the commit's room.
 TURN_BUDGET_BACKSTOP_RESERVE_SECONDS = 0.25
 
 
@@ -147,9 +194,11 @@ def remaining_turn_budget() -> Optional[float]:
 def spendable_turn_budget(reserve: Optional[float] = None) -> Optional[float]:
     """What is left of the turn that a step may actually spend, or ``None``.
 
-    ``remaining_turn_budget()`` minus the reserve. Apply the reserve here and
-    only here — subtracting it a second time downstream would compound into a
-    ceiling nobody configured.
+    ``remaining_turn_budget()`` minus the step reserve and the commit reserve
+    (``TURN_COMMIT_RESERVE_SECONDS``, read at call time: the time the turn's
+    one commit needs after the last step, #1882). Apply the reserves here and
+    only here — subtracting them a second time downstream would compound into
+    a ceiling nobody configured.
 
     ``reserve=None`` reads ``TURN_BUDGET_RESERVE_SECONDS`` at CALL time rather
     than binding it as a default argument at import time. The difference is not
@@ -163,7 +212,7 @@ def spendable_turn_budget(reserve: Optional[float] = None) -> Optional[float]:
         return None
     if reserve is None:
         reserve = TURN_BUDGET_RESERVE_SECONDS
-    return remaining - reserve
+    return remaining - reserve - TURN_COMMIT_RESERVE_SECONDS
 
 
 def backstop_turn_budget() -> Optional[float]:
@@ -172,11 +221,31 @@ def backstop_turn_budget() -> Optional[float]:
     See ``TURN_BUDGET_BACKSTOP_RESERVE_SECONDS``: a call the router bounded is
     cut by the provider's own timeout, which records the failure; this only
     catches a call that reached a provider without going through the router.
+    It leaves the commit reserve unspent too (#1882).
     """
     remaining = remaining_turn_budget()
     if remaining is None:
         return None
-    return remaining - TURN_BUDGET_BACKSTOP_RESERVE_SECONDS
+    return (
+        remaining - TURN_BUDGET_BACKSTOP_RESERVE_SECONDS - TURN_COMMIT_RESERVE_SECONDS
+    )
+
+
+def check_commit_budget() -> None:
+    """Refuse to start the turn's commit with less than its reserve left.
+
+    The check ``InvestigationService.commit_turn`` makes before its one commit
+    (#1882): the route's ``wait_for`` no longer covers the commit, so this is
+    what keeps a turn whose preparation used up the budget from committing
+    after the client has stopped waiting. Inert outside a bound turn
+    (``remaining_turn_budget() is None``), like every other check here.
+
+    Raises:
+        TurnDeadlineExceeded: Less than ``TURN_COMMIT_RESERVE_SECONDS`` left.
+    """
+    remaining = remaining_turn_budget()
+    if remaining is not None and remaining < TURN_COMMIT_RESERVE_SECONDS:
+        raise TurnDeadlineExceeded(remaining, TURN_COMMIT_RESERVE_SECONDS)
 
 
 def clamp_to_turn_budget(timeout: float) -> float:
@@ -249,8 +318,13 @@ class LadderPlan:
     backoff, including the one before the attempt the circuit breaker
     short-circuits."""
 
+    commit_reserve_seconds: float
+    """The end of the turn budget kept back for the turn's one commit
+    (``TURN_COMMIT_RESERVE_SECONDS``, #1882): the ladder never spends it."""
+
     fits: bool
-    """Whether the whole ladder completes inside the turn budget. False means
+    """Whether the whole ladder completes inside the turn budget, its commit
+    reserve left unspent. False means
     the two timeouts are configured incoherently: the deadline-aware ladder
     keeps the turn honest by cutting attempts short, but the operator is
     getting fewer retries than the retry configuration says.
@@ -270,6 +344,7 @@ def worst_case_ladder_plan(
     paid_attempts: int,
     backoffs: Sequence[float],
     reserve: Optional[float] = None,
+    commit_reserve: Optional[float] = None,
 ) -> LadderPlan:
     """Model the retry ladder against a turn budget, for reporting a config.
 
@@ -290,11 +365,15 @@ def worst_case_ladder_plan(
 
     Returns the plan the deadline-aware ladder would follow, using the same
     ``can_afford_next_attempt`` predicate the running ladder uses, so the report
-    and the runtime cannot drift apart.
+    and the runtime cannot drift apart. Like the running budget, it leaves the
+    commit reserve (``TURN_COMMIT_RESERVE_SECONDS``, read at call time) unspent
+    (#1882).
     """
     if reserve is None:
         reserve = TURN_BUDGET_RESERVE_SECONDS
-    spendable = agent_timeout - reserve
+    if commit_reserve is None:
+        commit_reserve = TURN_COMMIT_RESERVE_SECONDS
+    spendable = agent_timeout - reserve - commit_reserve
 
     full = float(attempt_seconds) * paid_attempts + float(sum(backoffs))
 
@@ -309,6 +388,7 @@ def worst_case_ladder_plan(
             paid_attempts=paid_attempts,
             afforded_seconds=0.0,
             full_ladder_seconds=full,
+            commit_reserve_seconds=commit_reserve,
             fits=False,
         )
 
@@ -334,5 +414,6 @@ def worst_case_ladder_plan(
         paid_attempts=paid_attempts,
         afforded_seconds=spent,
         full_ladder_seconds=full,
-        fits=full + reserve <= agent_timeout,
+        commit_reserve_seconds=commit_reserve,
+        fits=full + reserve + commit_reserve <= agent_timeout,
     )

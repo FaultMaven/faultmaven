@@ -37,6 +37,7 @@ import pytest
 
 from faultmaven.core.investigation import terminal_transitions as tt
 from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
+from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.models.report import RunbookMatch
@@ -356,7 +357,9 @@ async def test_a_similar_match_stops_creation_and_offers_generate_anyway(
     engine.deps.runbook_kb = _similar_match_kb()
 
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
-        result = await engine.runbooks.handle_runbook_creation(ready_case, metadata={})
+        result = await engine.runbooks.handle_runbook_creation(
+            ready_case, metadata={}, plan=TurnCommitPlan()
+        )
 
     engine.runbooks._run_runbook_conversion.assert_not_called()
     assert "OOMKilled recovery" in result["agent_response"]
@@ -385,7 +388,7 @@ async def test_generate_anyway_proceeds_past_the_similar_match(ready_case, monke
 
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
         result = await engine.runbooks.handle_runbook_creation(
-            ready_case, metadata={}, dedup_confirmed=True
+            ready_case, metadata={}, dedup_confirmed=True, plan=TurnCommitPlan()
         )
 
     assert "Creating your runbook draft" in result["agent_response"]
@@ -420,13 +423,14 @@ async def test_the_confirm_payload_dispatches_with_dedup_confirmed():
     case = MagicMock()
     case.state = CaseState.RESOLVED
 
+    plan = TurnCommitPlan()
     result = await engine.terminal.process_terminal_turn(
-        case, GENERATE_RUNBOOK_ANYWAY_PAYLOAD, metadata={}
+        case, GENERATE_RUNBOOK_ANYWAY_PAYLOAD, metadata={}, plan=plan
     )
 
     assert result == {"routed": True}
     engine.runbooks.handle_runbook_creation.assert_awaited_once_with(
-        case, {}, dedup_confirmed=True
+        case, {}, plan=plan, dedup_confirmed=True
     )
 
 
@@ -455,7 +459,7 @@ async def test_the_plain_generate_payload_still_stops_on_a_similar_match(
 
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
         result = await engine.terminal.process_terminal_turn(
-            ready_case, GENERATE_RUNBOOK_PAYLOAD, metadata={}
+            ready_case, GENERATE_RUNBOOK_PAYLOAD, metadata={}, plan=TurnCommitPlan()
         )
 
     engine.runbooks._run_runbook_conversion.assert_not_called()
@@ -575,7 +579,9 @@ async def test_the_dedup_caveat_reaches_the_user_visible_turn(ready_case, monkey
     )
 
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=None)):
-        result = await engine.runbooks.handle_runbook_creation(ready_case, metadata={})
+        result = await engine.runbooks.handle_runbook_creation(
+            ready_case, metadata={}, plan=TurnCommitPlan()
+        )
 
     assert "could not check" in result["agent_response"], (
         "the dedup caveat never reached the user — the turn claims a draft is "
@@ -595,7 +601,9 @@ async def test_a_clean_dedup_turn_carries_no_caveat(ready_case, monkeypatch):
     )
 
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
-        result = await engine.runbooks.handle_runbook_creation(ready_case, metadata={})
+        result = await engine.runbooks.handle_runbook_creation(
+            ready_case, metadata={}, plan=TurnCommitPlan()
+        )
 
     assert "could not check" not in result["agent_response"]
 

@@ -10,6 +10,7 @@ This service wraps the MilestoneEngine and provides:
 - Integration with session management
 """
 
+import asyncio
 import copy
 import logging
 from enum import Enum
@@ -26,9 +27,14 @@ from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngin
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     gate1_bare_consent,
 )
+from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.core.investigation.suggestion_liveness import (
     live_suggestions,
+)
+from faultmaven.core.investigation.turn_budget import (
+    TurnDeadlineExceeded,
+    check_commit_budget,
 )
 from faultmaven.core.investigation.turn_uploads import report_turn_uploads
 from faultmaven.exceptions import (
@@ -55,7 +61,6 @@ from faultmaven.models.api_models import (
 )
 from faultmaven.modules.agent.domain.services.investigation_service.attachments import (
     _engine_attachment_metadata,
-    _mark_turn_uploads_linked,
     _preprocess_turn_uploads,
 )
 from faultmaven.modules.agent.domain.services.investigation_service.intent_gates import (
@@ -67,14 +72,18 @@ from faultmaven.modules.agent.domain.services.investigation_service.reclassifica
     _reextract_under_override,
 )
 from faultmaven.modules.agent.domain.services.investigation_service.turn_messages import (
+    _append_turn_messages,
     _build_user_message,
-    _save_and_emit_turn,
 )
 from faultmaven.modules.agent.domain.services.investigation_service.turn_response import (
     _build_turn_response,
 )
 from faultmaven.modules.agent.domain.services.investigation_service.turn_results import (
     _absorb_engine_result,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.turn_settlement import (
+    PreparedTurn,
+    run_settlement_shielded,
 )
 from faultmaven.modules.agent.domain.services.orientation import (
     OUT_OF_BAND_MARKER,
@@ -271,11 +280,38 @@ class InvestigationService:
     async def process_turn(
         self, case_id: str, user_id: str, payload: TurnPayload
     ) -> TurnResponse:
+        """Process a user turn: ``prepare_turn``, then ``commit_turn``.
+
+        For a caller with no turn deadline. The turn route calls the two
+        halves itself, because its deadline bounds the preparation and never
+        the commit (#1882): a cancellation inside a commit leaves its outcome
+        unknown.
+
+        Raises:
+            Everything ``prepare_turn`` and ``commit_turn`` raise.
         """
-        Process a user turn through the two-step pipeline.
+        prepared = await self.prepare_turn(
+            case_id=case_id, user_id=user_id, payload=payload
+        )
+        return await self.commit_turn(prepared)
+
+    @trace("investigation_service_prepare_turn")
+    async def prepare_turn(
+        self, case_id: str, user_id: str, payload: TurnPayload
+    ) -> PreparedTurn:
+        """
+        Prepare a user turn through the two-step pipeline, committing nothing.
 
         Step 1: Preprocess any attachments (classify + extract, before LLM).
         Step 2: LLM inference with query + evidence context.
+
+        Then the agent's reply row is appended and the ``TurnResponse`` built,
+        all in memory. The turn's writes are committed by ``commit_turn``, in
+        one transaction (#1882). What this leaves behind if it fails, or is
+        cancelled by the route's deadline, is only what does not depend on the
+        turn committing: the turn-cap unit, the LLM spend ledger, an unlinked
+        upload blob, redaction mappings, evidence vectors and the #1142 error
+        row.
 
         Args:
             case_id: Case identifier
@@ -283,30 +319,38 @@ class InvestigationService:
             payload: Turn payload with optional query and/or attachments
 
         Returns:
-            TurnResponse with agent response, milestones, progress, and attachment results
+            The ``PreparedTurn`` for ``commit_turn``.
 
         Raises:
             NotFoundError: If case not found
             PermissionDeniedException: If user not authorized
             ServiceException: If turn processing fails
+            asyncio.CancelledError: Re-raised, never swallowed: the route's
+                ``wait_for`` cancels this on a timeout, and a coroutine that
+                returned instead would hand it a partial turn as a result
+                (#1882 R7).
         """
         # #1142: bound before the try so the error path can tell "the case was
-        # never loaded" from "a turn was consumed and then failed", and so a
-        # failure AFTER the success row is emitted does not produce a second row
-        # for the same turn.
+        # never loaded" from "a turn was consumed and then failed".
         case = None
         turn_consumed = False
-        turn_row_emitted = False
+        # The turn's commit plan, once the handler has produced one. A plan
+        # that never reaches ``commit_turn`` has its gates cancelled here, so a
+        # spawned runbook conversion ends at its gate.
+        plan: Optional[TurnCommitPlan] = None
 
-        def _emit_error_row() -> None:
-            """One row for a turn that was consumed and then failed (#1142).
+        def _abandon() -> None:
+            """Settle a turn that will not commit: cancel its gates, and emit
+            its #1142 row when a turn was consumed.
 
-            Carries the volume facts off ``payload`` — they are known whatever
-            failed, and omitting them reports the user as having gone silent on
-            a turn they pasted 4 KB into, which is the mirror image of the
-            misattribution the ``error`` label exists to prevent.
+            The row carries the volume facts off ``payload`` — they are known
+            whatever failed, and omitting them reports the user as having gone
+            silent on a turn they pasted 4 KB into, which is the mirror image
+            of the misattribution the ``error`` label exists to prevent.
             """
-            if turn_consumed and not turn_row_emitted and case is not None:
+            if plan is not None:
+                plan.cancel_gates()
+            if turn_consumed and case is not None:
                 emit_case_turn(
                     case,
                     path=TurnPath.ERROR,
@@ -332,9 +376,8 @@ class InvestigationService:
             # so the implicit-query helper can describe what the user
             # submitted. ``_preprocess_attachment`` appends each new row to
             # ``case.uploaded_files`` IN MEMORY and commits nothing: the row
-            # becomes durable in the same commit as this turn (#1878), so a
-            # turn that fails before its first commit leaves no row behind.
-            # (A failure after the engine's Step-7 save is #1882's half turn.)
+            # becomes durable in the turn's one commit (#1878, #1882), so a
+            # turn that fails leaves no row behind.
             classification, preprocess_results, query, uploaded_files_this_turn = (
                 await _preprocess_turn_uploads(
                     self.file_storage_service,
@@ -349,37 +392,19 @@ class InvestigationService:
                 )
             )
 
-            # 2. Build user message and update case in-memory (NOT persisted yet).
-            #    What the deferral actually buys: nothing is committed BEFORE the
-            #    LLM runs — not the user message, not the turn count, and not the
-            #    turn's ``uploaded_files`` rows (#1878) — so a turn that fails in
-            #    the LLM call leaves no orphaned user message, no inflated turn
-            #    count and no file listed against a turn that never happened, and
-            #    the client can retry the same turn. That is the whole of it.
-            #
-            #    ⚠️ It does NOT make the turn atomic, and it does NOT commit the
-            #    user message and the agent's reply together. Two earlier versions
-            #    of this comment claimed one or the other; both were false, so
-            #    check this against the code before trusting it:
-            #
-            #      - On an engine-routed turn ``MilestoneEngine`` saves the case
-            #        UNCONDITIONALLY at its Step 7 (``_persist_turn``,
-            #        ``milestone_engine/turn_completion.py``) — before returning, and therefore
-            #        before the agent reply is appended by step 4 below. The user
-            #        message is durable at that point and the reply is not. A
-            #        failure in the window between them (reverse-redaction,
-            #        clarification building, response assembly) leaves exactly the
-            #        orphaned-user-message + inflated-turn state this comment used
-            #        to promise was impossible.
-            #      - The deterministic and terminal branches commit the same
-            #        ``case`` object earlier still, at their own ``save(case)``
-            #        sites.
-            #
-            #    So: an LLM failure commits nothing; a post-LLM failure can commit
-            #    a half turn (#1882). The turn's upload rows ride whichever of
-            #    those saves commits first, so they are never committed without
-            #    the turn's user message and ``current_turn``. Do not reason
-            #    about this path as all-or-nothing.
+            # 2. Build user message and update case in-memory (NOT persisted).
+            #    Nothing of the turn is committed here or anywhere in this
+            #    method — not the user message, the turn count, the turn's
+            #    ``uploaded_files`` rows (#1878), the engine's state changes,
+            #    nor the agent's reply. The engine and its deterministic and
+            #    terminal branches write nothing the turn owns; the rows they
+            #    produce (checkpoints, report rows) and the work that must wait
+            #    for the commit (the runbook conversion's gate) ride the
+            #    turn's ``TurnCommitPlan``. ``commit_turn`` commits all of it
+            #    in one transaction, or none of it (#1882): a turn that fails
+            #    anywhere leaves no orphaned user message, no inflated turn
+            #    count and no file listed against a turn that never happened,
+            #    and the client can retry the same turn.
             intent, intent_type, orientation_kind, user_message_obj, was_terminal = (
                 _build_user_message(
                     case=case,
@@ -431,6 +456,12 @@ class InvestigationService:
                     user_message_obj=user_message_obj,
                 )
             )
+            # The engine's plan, or an empty one for a route that never
+            # reached the engine (greeting, out-of-band, file
+            # reclassification): those commit the case alone.
+            plan = result.pop("commit_plan", None)
+            if plan is None:
+                plan = TurnCommitPlan()
 
             # 3. Processing succeeded — extract updated case
             (
@@ -444,22 +475,8 @@ class InvestigationService:
                 preprocess_results=preprocess_results, query=query, result=result
             )
 
-            # 4. Append the agent response and save.
-            #    ⚠️ This is NOT an atomic commit of both messages, though it used
-            #    to say so ("commits both messages together, guaranteeing no
-            #    half-completed turns"). On an engine-routed turn the engine has
-            #    ALREADY committed the user message at its Step 7 save, so by the
-            #    time control reaches here a half-completed turn is exactly what
-            #    is in the database, and this save completes it rather than
-            #    preventing it.
-            #
-            #    It IS the single commit for both only when no engine save
-            #    intervened — GREETING and FILE_RECLASSIFICATION. The other three
-            #    SERVICE intents (STATUS_TRANSITION, CONFIRMATION,
-            #    HYPOTHESIS_ACTION) delegate to ``engine.process_turn`` from their
-            #    handlers, so they hit Step 7 just like an engine-routed turn.
-            #    "Service-dispatched" is NOT a synonym for "no engine save".
-            #    See the STEP-2 comment for the full ordering.
+            # 4. Append the agent response, in memory (R4: before the response
+            #    is built, which reads the appended row's text back).
             # An empty ``agent_response`` is a FAILED turn, not a quiet one.
             # Blank content aborts the aggregate save and takes the user's turn
             # with it, for a turn already charged — so the row kind records
@@ -483,34 +500,16 @@ class InvestigationService:
             # ``result.setdefault("metadata", {})`` far above and has already
             # been ``.pop()``-ed from by then, so a None would have raised long
             # before this line.
-            agent_response_text = await _save_and_emit_turn(
-                self.repository,
+            agent_response_text = _append_turn_messages(
                 agent_response_text=agent_response_text,
-                attachment_metadata=attachment_metadata,
-                # The intent ``_build_user_message`` settled on — the client's,
-                # minus a GREETING it re-derives from the text — not a mint.
-                intent=intent,
-                intent_type=intent_type,
-                oob_kind=oob_kind,
-                payload=payload,
                 turn_meta=turn_meta,
-                turn_telemetry=turn_telemetry,
                 updated_case=updated_case,
-                was_terminal=was_terminal,
-            )
-            turn_row_emitted = True
-
-            # 4c. The turn is committed, and with it every upload row it
-            # carried (#1878): only now may their blobs be marked linked. Done
-            # earlier, a turn that then failed left a blob marked linked with
-            # no row — exempt from the orphan sweep for good. Best-effort and
-            # never fatal; see ``_mark_turn_uploads_linked``.
-            await _mark_turn_uploads_linked(
-                self.file_storage_service, preprocess_results
             )
 
-            # 5. Build TurnResponse
-            return _build_turn_response(
+            # 5. Build TurnResponse. Pure: it reads only the in-memory case, so
+            #    it is built BEFORE the commit and the commit is the turn's last
+            #    fallible step (#1882).
+            response = _build_turn_response(
                 agent_response_text=agent_response_text,
                 case_id=case_id,
                 clarification=clarification,
@@ -520,6 +519,27 @@ class InvestigationService:
                 turn_meta=turn_meta,
                 updated_case=updated_case,
                 uploaded_files_this_turn=uploaded_files_this_turn,
+            )
+            return PreparedTurn(
+                case=updated_case,
+                plan=plan,
+                response=response,
+                payload=payload,
+                preprocess_results=preprocess_results,
+                committed_turn_row={
+                    "attachment_metadata": attachment_metadata,
+                    # The intent ``_build_user_message`` settled on — the
+                    # client's, minus a GREETING it re-derives from the text —
+                    # not a mint.
+                    "intent": intent,
+                    "intent_type": intent_type,
+                    "oob_kind": oob_kind,
+                    "payload": payload,
+                    "turn_meta": turn_meta,
+                    "turn_telemetry": turn_telemetry,
+                    "updated_case": updated_case,
+                    "was_terminal": was_terminal,
+                },
             )
 
         except (
@@ -540,12 +560,13 @@ class InvestigationService:
             # route's 429 arm would be unreachable code.
             #
             # #1142: these get a row too when the turn was already consumed.
-            # StaleCaseException is the case that matters — on an engine-routed
-            # turn the engine has ALREADY committed the incremented
-            # ``current_turn`` at its own save, so an OCC conflict on the
-            # service's save leaves a durably consumed turn with no row, and a
-            # gap shortens every streak computed over the stream.
-            _emit_error_row()
+            _abandon()
+            raise
+        except asyncio.CancelledError:
+            # The route's deadline (``wait_for``) cancelled the turn. Nothing
+            # was committed; the row says the turn failed, and the
+            # cancellation is re-raised, never swallowed (#1882 R7).
+            _abandon()
             raise
         except Exception as e:
             # #1142: the turn number was consumed at STEP 1 and the request then
@@ -553,10 +574,9 @@ class InvestigationService:
             # the turns where something went wrong. The point of labelling it is
             # attribution: a provider outage or a tool-loop failure must not read
             # as an idle engine. ``case`` may be unbound if the failure preceded
-            # the load, and the case may never have been saved at this turn
-            # number, so a consumer dedups on (case_id, turn) preferring the
-            # non-error row.
-            _emit_error_row()
+            # the load, and the case is not committed at this turn number, so a
+            # consumer dedups on (case_id, turn) preferring the non-error row.
+            _abandon()
             logger.error(f"Failed to process turn for case {case_id}: {e}")
             # Preserve a typed error_code (e.g. QUOTA_EXHAUSTED billing) through
             # the wrap so the route handler can map it to a precise HTTP status
@@ -565,6 +585,55 @@ class InvestigationService:
                 f"Turn processing failed: {str(e)}",
                 details={"error_code": getattr(e, "error_code", None)},
             ) from e
+
+    @trace("investigation_service_commit_turn")
+    async def commit_turn(self, prepared: PreparedTurn) -> TurnResponse:
+        """Commit a prepared turn, once, and return its response (#1882).
+
+        Before the commit starts: if the turn's deadline leaves less than
+        ``TURN_COMMIT_RESERVE_SECONDS``, ``TurnDeadlineExceeded`` is raised and
+        nothing is committed (the route answers it as a timeout, 504). This is
+        the only failure this method settles itself.
+
+        From the moment the commit starts, the shielded settlement coroutine
+        (``turn_settlement.settle_turn``) owns the plan (design v2 R1): it
+        releases the gates on success, and on a failed commit it cancels them
+        and emits the #1142 error row. This method then only maps what the
+        commit raised, and a cancellation of this method reaches its caller
+        untouched while the settlement runs to its end. So a 2xx means the
+        whole turn is committed, and an error means none of it is.
+
+        Raises:
+            TurnDeadlineExceeded: Too little budget left to start the commit.
+            StaleCaseException: The case changed since the turn loaded it
+                (409); nothing of the turn is committed.
+            ServiceException: The commit failed (500); nothing is committed.
+        """
+        try:
+            check_commit_budget()
+        except TurnDeadlineExceeded:
+            logger.warning(
+                "Turn on case %s not committed: the deadline left too little "
+                "for its commit",
+                prepared.case.case_id,
+            )
+            prepared.plan.cancel_gates()
+            prepared.emit_error_row()
+            raise
+
+        try:
+            await run_settlement_shielded(
+                self.repository, self.file_storage_service, prepared
+            )
+        except StaleCaseException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to commit turn for case {prepared.case.case_id}: {e}")
+            raise ServiceException(
+                f"Turn processing failed: {str(e)}",
+                details={"error_code": getattr(e, "error_code", None)},
+            ) from e
+        return prepared.response
 
     async def _verify_access_and_reserve(self, *, case, case_id, payload, user_id):
         """Refuse a missing/unauthorized case, reserve the daily turn cap, then classify the query."""

@@ -596,8 +596,9 @@ close_pivoted_to_resolve_total = Counter(
 
 # Terminal-confirmation telemetry (#1748, the observable behind #723). A
 # rule-fire and outcome pair, both counted by the investigation service after
-# the turn's FINAL save (``turn_messages._save_and_emit_turn``) from the saved
-# turn records, so a turn that fails at that save and is retried counts once.
+# the turn's ONE commit (``turn_messages._emit_committed_turn``, #1882) from the
+# committed turn records, so a turn that fails at that commit and is retried
+# counts once.
 # ``faultmaven_terminal_confirmation_total`` counts terminal transitions a
 # user's confirmation executed at the engine's pending-transition gate,
 # labelled by ``via`` and ``to_state`` (``resolved`` | ``closed``). ``via`` is

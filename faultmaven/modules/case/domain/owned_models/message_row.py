@@ -82,7 +82,8 @@ MESSAGE_METADATA_AGENT_SYNTHESIZED = "agent_response_synthesized"
 #: context was fetched, which is where a client shows it. ``GET .../messages``
 #: lifts it out of ``metadata`` into the typed ``Message.sources``, so a
 #: conversation read back from history renders it exactly as the live turn
-#: did. Written by the turn's save (``_save_and_emit_turn``).
+#: did. Written onto the reply row by ``_append_turn_messages``, committed with
+#: the turn.
 MESSAGE_METADATA_KB_SOURCES = "kb_sources"
 
 

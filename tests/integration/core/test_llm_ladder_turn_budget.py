@@ -11,8 +11,8 @@ Timings are SCALED. The real numbers (``LLM_REQUEST_TIMEOUT`` against
 are pinned exactly and without a clock in
 ``tests/unit/core/investigation/test_turn_budget.py``; a wall-clock test can only
 afford the shapes, so it takes the shapes and leaves generous margins. The
-reserve is scaled with everything else — leaving it at its production 1.0s
-against a 2s turn would make the budget zero, the ladder refuse every attempt,
+reserves are scaled with everything else — leaving them at their production
+1.0s and 3.5s against a 2s turn would make the budget zero, the ladder refuse every attempt,
 and the whole file pass for the wrong reason.
 
 **Time is virtual (#1579).** Every async test here runs on
@@ -49,6 +49,10 @@ from tests.wallclock import VirtualTimePolicy, virtual_now, virtual_time_module
 # has at least half a second of margin), small enough to leave most of the turn
 # usable.
 SCALED_RESERVE = 0.5
+# The turn's commit reserve (#1882) is scaled with the rest: at its production
+# 3.5s it would leave a 2s turn no budget at all. The ladder leaves it unspent
+# exactly as it leaves the step reserve.
+SCALED_COMMIT_RESERVE = 0.25
 
 CANCELLED = "cancelled"
 
@@ -56,6 +60,9 @@ CANCELLED = "cancelled"
 @pytest.fixture(autouse=True)
 def scaled_reserve(monkeypatch):
     monkeypatch.setattr(turn_budget, "TURN_BUDGET_RESERVE_SECONDS", SCALED_RESERVE)
+    monkeypatch.setattr(
+        turn_budget, "TURN_COMMIT_RESERVE_SECONDS", SCALED_COMMIT_RESERVE
+    )
 
 
 @pytest.fixture
@@ -287,7 +294,7 @@ class TestACoherentConfigurationIsUnaffected:
         handler = LLMErrorHandler(RetryConfig(base_delay_seconds=0.05))
         # A budget so small every retry would be refused, to prove the code
         # comes from the classifier and not from the budget check.
-        with bind_turn_deadline(SCALED_RESERVE + 0.05):
+        with bind_turn_deadline(SCALED_RESERVE + SCALED_COMMIT_RESERVE + 0.05):
             result, error = await handler.with_retry(operation=out_of_credits)
 
         assert result is None
@@ -534,6 +541,11 @@ class TestTheCutShortCallStillReachesTheBreaker:
         assert virtual_now() - started < 0.5, "an open breaker must fast-fail"
 
 
+#: The verdict tests' turn: 1.3s of spendable-plus-step-reserve shape, plus the
+#: (scaled) commit reserve the ladder leaves unspent (#1882).
+_VERDICT_TURN = 1.3 + SCALED_COMMIT_RESERVE
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 class TestWhichVerdictTheBudgetReports:
@@ -552,14 +564,14 @@ class TestWhichVerdictTheBudgetReports:
         """3 of 3 paid attempts made; only the breaker-refused iteration was
         skipped, and skipping it cannot have changed the answer."""
         outcome = await _run_turn(
-            hang_seconds=0.1, turn_seconds=1.3, base_delay=0.1, bind=True
+            hang_seconds=0.1, turn_seconds=_VERDICT_TURN, base_delay=0.1, bind=True
         )
         assert outcome.attempts == 3
         assert outcome.error_code == "RETRY_EXHAUSTED"
 
     async def test_a_lost_attempt_reports_a_configuration_verdict(self):
         outcome = await _run_turn(
-            hang_seconds=0.5, turn_seconds=1.3, base_delay=0.1, bind=True
+            hang_seconds=0.5, turn_seconds=_VERDICT_TURN, base_delay=0.1, bind=True
         )
         assert outcome.attempts < 3
         assert outcome.error_code == TURN_BUDGET_EXHAUSTED
@@ -569,10 +581,10 @@ class TestWhichVerdictTheBudgetReports:
         flips exactly where a paid attempt starts being lost. A single shape
         would not show that the code tracks anything."""
         full = await _run_turn(
-            hang_seconds=0.1, turn_seconds=1.3, base_delay=0.1, bind=True
+            hang_seconds=0.1, turn_seconds=_VERDICT_TURN, base_delay=0.1, bind=True
         )
         lost = await _run_turn(
-            hang_seconds=0.5, turn_seconds=1.3, base_delay=0.1, bind=True
+            hang_seconds=0.5, turn_seconds=_VERDICT_TURN, base_delay=0.1, bind=True
         )
         assert full.error_code != lost.error_code
         assert full.attempts > lost.attempts
@@ -645,7 +657,10 @@ class TestTheRouterAppliesTheClamp:
 
         assert clamped < router.request_timeout
         assert clamped == pytest.approx(
-            deadline - turn_budget.TURN_BUDGET_RESERVE_SECONDS, abs=0.1
+            deadline
+            - turn_budget.TURN_BUDGET_RESERVE_SECONDS
+            - turn_budget.TURN_COMMIT_RESERVE_SECONDS,
+            abs=0.1,
         )
 
     def test_the_router_applies_the_SHARED_clamp_not_a_local_min(self, router):

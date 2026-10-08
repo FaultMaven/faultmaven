@@ -3024,8 +3024,9 @@ class AgentSettings(BaseSettings):
     )
 
     # Per-provider overrides for the agent-level (turn-wide) timeout. The
-    # turn endpoint wraps the entire process_turn call in asyncio.wait_for
-    # using this ceiling; providers that take longer per turn (e.g.
+    # turn endpoint bounds the turn's preparation with asyncio.wait_for at
+    # this ceiling, keeping its last TURN_COMMIT_RESERVE_SECONDS for the
+    # turn's commit (#1882); providers that take longer per turn (e.g.
     # Fireworks DeepSeek V4 Pro on log-heavy cases, local Ollama on CPU)
     # need more headroom but raising the global default hurts faster
     # providers. Mirrors LLMSettings.provider_timeout_overrides; resolved

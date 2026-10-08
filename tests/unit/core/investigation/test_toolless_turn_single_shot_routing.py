@@ -196,7 +196,7 @@ def _investigating_case() -> Case:
 
 def _tool_engine() -> MilestoneEngine:
     repo = MagicMock()
-    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.save = AsyncMock(side_effect=lambda c, **_: c)
     repo.get = AsyncMock(side_effect=lambda cid: None)
     tools = MagicMock()
     tools.get_all_tools.return_value = []

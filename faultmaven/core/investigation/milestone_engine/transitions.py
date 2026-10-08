@@ -6,6 +6,7 @@ from typing import Any
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     pending_gate_verdict,
 )
+from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.core.investigation.problem_status import record_confirmed_statement
 from faultmaven.modules.case.contracts import (
     Case,
@@ -37,7 +38,9 @@ class TransitionManager:
         self.deps = deps
         self.kb_prefetcher = kb_prefetcher
 
-    async def _transition_to_investigating(self, case: Case) -> None:
+    async def _transition_to_investigating(
+        self, case: Case, *, plan: TurnCommitPlan
+    ) -> None:
         """
         Transition case from INQUIRY to INVESTIGATING.
 
@@ -65,15 +68,18 @@ class TransitionManager:
         """
         logger.info(f"Transitioning case {case.case_id} to INVESTIGATING")
 
-        # Gap #6: Checkpoint before status change
+        # Gap #6: Checkpoint before status change. Taken now (the snapshot is
+        # the case BEFORE the transition) and committed with the turn (#1882).
         if self.deps.checkpoint_service:
-            await self.deps.checkpoint_service.create_checkpoint(
-                case,
-                trigger="pre_case_action",
-                metadata={
-                    "from_state": case.state.value,
-                    "to_state": "investigating",
-                },
+            plan.add_checkpoint(
+                self.deps.checkpoint_service.capture(
+                    case,
+                    trigger="pre_case_action",
+                    metadata={
+                        "from_state": case.state.value,
+                        "to_state": "investigating",
+                    },
+                )
             )
 
         # Copy confirmed problem statement to description BEFORE changing status
@@ -139,7 +145,12 @@ class TransitionManager:
         await self.kb_prefetcher.prefetch_kb_context(case, case.description, "symptom")
 
     async def check_automatic_transitions(
-        self, case: Case, metadata: dict[str, Any], user_message: str = ""
+        self,
+        case: Case,
+        metadata: dict[str, Any],
+        user_message: str = "",
+        *,
+        plan: TurnCommitPlan,
     ) -> Case:
         """
         Check if case should automatically transition status.
@@ -298,16 +309,19 @@ class TransitionManager:
                     typed=True,
                 )
                 if verdict == "confirm":
-                    # Gap #6: Checkpoint before terminal transition
+                    # Gap #6: Checkpoint before terminal transition, committed
+                    # with the turn (#1882).
                     if self.deps.checkpoint_service:
                         to_state = case.pending_transition.get("to_state", "unknown")
-                        await self.deps.checkpoint_service.create_checkpoint(
-                            case,
-                            trigger="pre_case_action",
-                            metadata={
-                                "from_state": case.state.value,
-                                "to_state": to_state,
-                            },
+                        plan.add_checkpoint(
+                            self.deps.checkpoint_service.capture(
+                                case,
+                                trigger="pre_case_action",
+                                metadata={
+                                    "from_state": case.state.value,
+                                    "to_state": to_state,
+                                },
+                            )
                         )
                     executed = confirm_pending_transition(case, case.user_id)
                     if executed:
@@ -356,7 +370,7 @@ class TransitionManager:
             # has no independent meaning. One condition, one gate (#1607).
             gate1_passed = case.inquiry.problem_statement_confirmed
             if gate1_passed:
-                await self._transition_to_investigating(case)
+                await self._transition_to_investigating(case, plan=plan)
                 metadata["status_transitioned"] = True
                 case.action_history.append(
                     CaseAction(

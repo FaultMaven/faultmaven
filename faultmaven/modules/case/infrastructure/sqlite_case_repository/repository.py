@@ -69,6 +69,7 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository.rows import (
 )
 from faultmaven.modules.case.infrastructure.sqlite_case_repository.saving import (
     _append_case_actions,
+    _delete_uncommitted_checkpoints,
     _insert_checkpoint,
     _insert_report,
     _reconcile_causal_graph,
@@ -188,6 +189,8 @@ class SQLiteCaseRepository(CaseRepository):
             # organization is nullable billing attribution beside it.
             enterprise_id = case.enterprise_id
             organization_id = case.organization_id
+            # Before the case row: it reads the committed turn (#1882).
+            await _delete_uncommitted_checkpoints(self.db, case.case_id)
             await _upsert_case_record(self.db, case)
             # evidence.source_file_id is a real FK to uploaded_files.file_id,
             # so files must exist before any evidence row that references them.

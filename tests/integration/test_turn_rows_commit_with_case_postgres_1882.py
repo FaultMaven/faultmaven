@@ -39,6 +39,7 @@ from faultmaven.config.tenant_context import (
 from faultmaven.core.investigation.checkpoint_service import CheckpointService
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 from faultmaven.modules.case.domain.owned_models.report import (
     CaseReport,
     ReportStatus,
@@ -54,6 +55,12 @@ from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.re
 )
 from faultmaven.modules.case.infrastructure.sessionless_case_repository import (
     SessionlessCaseRepository,
+)
+from tests.turn_commit_latency import (
+    TURNS,
+    investigating_case,
+    measure_turn_commits,
+    summarize,
 )
 from tests.utils import seed_enterprises
 
@@ -126,6 +133,12 @@ async def tenant_sessions(superuser_engine):
         await conn.exec_driver_sql(
             "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public "
             f"TO {_LIMITED_ROLE}"
+        )
+        # As production's app role has them (the enterprise-infra init script):
+        # a terminal transition appends a ``case_actions`` row, keyed by a
+        # sequence.
+        await conn.exec_driver_sql(
+            f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {_LIMITED_ROLE}"
         )
 
     limited_url = make_url(os.environ["DATABASE_URL"]).set(
@@ -404,22 +417,23 @@ async def test_a_captured_checkpoint_fits_its_column(
 ):
     """``case_checkpoints.checkpoint_id`` is VARCHAR(36). The readable id this
     replaced was 40+ characters, and PostgreSQL refused every one of them
-    (StringDataRightTruncation), which ``create_checkpoint`` logged and
-    dropped. SQLite does not enforce the width, so only this test can see it."""
+    (StringDataRightTruncation), which the old ``create_checkpoint`` logged
+    and dropped. SQLite does not enforce the width, so only this test can see
+    it."""
     ent_a, _ = enterprises
     case = _case(ent_a)
+    captured = CheckpointService.capture(
+        case,
+        trigger="pre_case_action",
+        metadata={"from_state": "inquiry", "to_state": "investigating"},
+    )
     with tenant(ent_a):
         async with tenant_sessions() as session:
-            repo = PostgreSQLHybridCaseRepository(session)
-            await repo.save(case)
-            created = await CheckpointService(repo).create_checkpoint(
-                case,
-                trigger="pre_case_action",
-                metadata={"from_state": "inquiry", "to_state": "investigating"},
+            await PostgreSQLHybridCaseRepository(session).save(
+                case, checkpoints=[captured]
             )
-    assert created is not None
     got = await _committed(superuser_engine, case.case_id)
-    assert got["checkpoints"] == {created.checkpoint_id: ent_a}
+    assert got["checkpoints"] == {captured.checkpoint_id: ent_a}
 
 
 @pytest.mark.asyncio
@@ -488,3 +502,202 @@ async def test_a_failed_save_leaves_the_object_as_it_was(
     got = await _committed(superuser_engine, case.case_id)
     assert got["version"] == 2
     assert got["title"] == "Retitled by the failing turn"
+
+
+# ---------------------------------------------------------------------------
+# Orphan checkpoints from a turn that never committed (#1882, PR-2)
+# ---------------------------------------------------------------------------
+
+
+def _at_turn(case: Case, turn: int) -> None:
+    """Move ``case`` to ``turn`` the way a turn does: the clock and its record."""
+    case.current_turn = turn
+    case.turn_history.append(
+        TurnProgress(
+            turn_number=turn, progress_made=False, outcome=TurnOutcome.CONVERSATION
+        )
+    )
+
+
+async def _checkpoint_rows(superuser_engine, case_id: str) -> list[tuple]:
+    async with superuser_engine.connect() as conn:
+        return (
+            await conn.execute(
+                text(
+                    "SELECT checkpoint_id, turn_number, snapshot_hash "
+                    "FROM case_checkpoints WHERE case_id = :c ORDER BY turn_number"
+                ),
+                {"c": case_id},
+            )
+        ).fetchall()
+
+
+async def _committed_at_turn_two_with_an_orphan_at_three(tenant_sessions, ent):
+    """The pre-#1882 wedge, built as it happened: the case committed at turn 2,
+    then turn 3's checkpoint committed in its own transaction (as
+    ``create_checkpoint`` did, mid-turn) and turn 3 never committed."""
+    case = _case(ent)
+    _at_turn(case, 1)
+    _at_turn(case, 2)
+    async with tenant_sessions() as session:
+        await PostgreSQLHybridCaseRepository(session).save(case)
+
+    stale_attempt = case.model_copy(deep=True)
+    _at_turn(stale_attempt, 3)
+    _add_message(stale_attempt, "the attempt that never committed")
+    orphan = _checkpoint(stale_attempt, to_state="investigating")
+    async with tenant_sessions() as session:
+        await PostgreSQLHybridCaseRepository(session).create_checkpoint(orphan)
+    return case, orphan
+
+
+@pytest.mark.asyncio
+async def test_a_retried_turn_commits_over_an_orphan_checkpoint(
+    superuser_engine, enterprises, tenant_sessions
+):
+    """The retry of turn 3 takes the same checkpoint (same id) and commits: the
+    orphan is deleted in the retry's own transaction, under the tenant, before
+    the insert. Without the cleanup this raised on the primary key, on every
+    attempt."""
+    ent_a, _ = enterprises
+    with tenant(ent_a):
+        case, orphan = await _committed_at_turn_two_with_an_orphan_at_three(
+            tenant_sessions, ent_a
+        )
+        _at_turn(case, 3)
+        _add_message(case, "the retried turn")
+        retried = _checkpoint(case, to_state="investigating")
+        assert retried.checkpoint_id == orphan.checkpoint_id
+        async with tenant_sessions() as session:
+            await PostgreSQLHybridCaseRepository(session).save(
+                case, checkpoints=[retried]
+            )
+
+    got = await _committed(superuser_engine, case.case_id)
+    assert got["version"] == 2
+    assert got["messages"] == 1
+    assert got["checkpoints"] == {retried.checkpoint_id: ent_a}
+    rows = await _checkpoint_rows(superuser_engine, case.case_id)
+    # The row is the retry's snapshot, not the orphan's.
+    assert [(r[1], r[2]) for r in rows] == [(3, retried.snapshot_hash)]
+    assert retried.snapshot_hash != orphan.snapshot_hash
+
+
+@pytest.mark.asyncio
+async def test_a_retried_turn_without_a_checkpoint_removes_the_orphan(
+    superuser_engine, enterprises, tenant_sessions
+):
+    """Otherwise the orphan would sit at the now-committed turn 3, looking like
+    that turn's own snapshot."""
+    ent_a, _ = enterprises
+    with tenant(ent_a):
+        case, _ = await _committed_at_turn_two_with_an_orphan_at_three(
+            tenant_sessions, ent_a
+        )
+        _at_turn(case, 3)
+        async with tenant_sessions() as session:
+            await PostgreSQLHybridCaseRepository(session).save(case)
+
+    assert await _checkpoint_rows(superuser_engine, case.case_id) == []
+
+
+@pytest.mark.asyncio
+async def test_the_cleanup_keeps_a_committed_turns_checkpoint(
+    superuser_engine, enterprises, tenant_sessions
+):
+    """Control: a checkpoint at or below the committed turn is that turn's
+    own, and a later save (a non-turn save at the same turn, then the next
+    turn) keeps it."""
+    ent_a, _ = enterprises
+    case = _case(ent_a)
+    with tenant(ent_a):
+        _at_turn(case, 1)
+        kept = _checkpoint(case, to_state="investigating")
+        async with tenant_sessions() as session:
+            await PostgreSQLHybridCaseRepository(session).save(case, checkpoints=[kept])
+        case.title = "Renamed outside a turn"
+        async with tenant_sessions() as session:
+            await PostgreSQLHybridCaseRepository(session).save(case)
+        _at_turn(case, 2)
+        async with tenant_sessions() as session:
+            await PostgreSQLHybridCaseRepository(session).save(case)
+
+    got = await _committed(superuser_engine, case.case_id)
+    assert got["checkpoints"] == {kept.checkpoint_id: ent_a}
+
+
+@pytest.mark.asyncio
+async def test_a_refused_retry_leaves_the_orphan_and_commits_nothing(
+    superuser_engine, enterprises, tenant_sessions
+):
+    """The cleanup is part of the save's transaction: a save that fails rolls
+    the delete back with everything else."""
+    ent_a, _ = enterprises
+    with tenant(ent_a):
+        case, orphan = await _committed_at_turn_two_with_an_orphan_at_three(
+            tenant_sessions, ent_a
+        )
+        _at_turn(case, 3)
+        async with tenant_sessions() as session:
+            with pytest.raises(RepositoryException):
+                await PostgreSQLHybridCaseRepository(session).save(
+                    case, reports=[_report(case, ReportType.RUNBOOK)]
+                )
+
+    got = await _committed(superuser_engine, case.case_id)
+    assert got["version"] == 1
+    assert got["checkpoints"] == {orphan.checkpoint_id: ent_a}
+
+
+@pytest.mark.asyncio
+async def test_the_cleanup_cannot_reach_another_enterprises_rows(
+    superuser_engine, enterprises, tenant_sessions
+):
+    """RLS: a save bound to enterprise B, naming a case id that is A's, deletes
+    none of A's rows. The DELETE's own predicate cannot be bypassed by a wrong
+    case id, because the policy hides the rows from it."""
+    ent_a, ent_b = enterprises
+    with tenant(ent_a):
+        case, orphan = await _committed_at_turn_two_with_an_orphan_at_three(
+            tenant_sessions, ent_a
+        )
+    from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.saving import (
+        _delete_uncommitted_checkpoints,
+    )
+
+    with tenant(ent_b):
+        async with tenant_sessions() as session:
+            await _delete_uncommitted_checkpoints(session, case.case_id)
+            await session.commit()
+
+    got = await _committed(superuser_engine, case.case_id)
+    assert got["checkpoints"] == {orphan.checkpoint_id: ent_a}
+
+
+# ---------------------------------------------------------------------------
+# The PostgreSQL measurement the commit reserve is sized from (#1882, R8)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_postgresql_turn_commit_is_measured(enterprises, sessionless):
+    """The turn's one commit through the production wrapper, under the limited
+    role with RLS bound per transaction, timed over three grown cases, and
+    printed: these are the numbers ``TURN_COMMIT_RESERVE_SECONDS`` is sized
+    from (with the SQLite twin's, ``tests/performance/test_turn_commit_latency.py``).
+
+    It judges no clock — an integration test may not (#1579); the SQLite twin is
+    the judged one. What it does assert is that every commit landed: one case
+    version per turn, each case closed with its report and checkpoint."""
+    ent_a, _ = enterprises
+    timings = []
+    with tenant(ent_a):
+        for _ in range(3):
+            case = investigating_case(ent_a)
+            await sessionless.save(case)
+            timings += await measure_turn_commits(sessionless, case)
+            assert case.version == 1 + TURNS
+            assert case.state == CaseState.CLOSED
+
+    print(f"\nPostgreSQL turn commit: {summarize(timings)}")
+    assert len(timings) == 3 * TURNS

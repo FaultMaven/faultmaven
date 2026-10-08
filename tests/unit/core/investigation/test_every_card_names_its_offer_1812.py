@@ -43,6 +43,7 @@ from faultmaven.core.investigation.milestone_engine.transition_consent import (
     revision_offer_key,
     terminal_offer_key,
 )
+from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.core.investigation.milestone_engine.turn_completion import (
     _compose_turn_reply,
 )
@@ -156,7 +157,7 @@ def built(monkeypatch):
 
 def _repo():
     repo = MagicMock()
-    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.save = AsyncMock(side_effect=lambda c, **_: c)
     repo.get = AsyncMock(side_effect=lambda cid: None)
     return repo
 
@@ -354,7 +355,9 @@ async def _typed_yes_on_a_pending_close_pivots():
     engine = _engine()
     metadata: dict = {}
     with patch.object(terminal_transitions, "close_pivoted_to_resolve_total"):
-        await engine.transitions.check_automatic_transitions(case, metadata, "yes")
+        await engine.transitions.check_automatic_transitions(
+            case, metadata, "yes", plan=TurnCommitPlan()
+        )
     assert metadata.get("close_pivoted_to_resolve") is True
     assert (
         _keys(metadata["override_suggestions"])
@@ -368,6 +371,7 @@ async def _typed_yes_on_a_pending_close_pivots():
         case_updated=case,
         follow_ups=[],
         metadata={"close_pivoted_to_resolve": True},
+        plan=TurnCommitPlan(),
         redaction_ctx=None,
         response_obj=InvestigationResponse_Diagnosis(
             agent_response="Noted.", state_updates={}
@@ -392,7 +396,10 @@ async def _llm_proposes_a_transition():
         )
         metadata: dict = {"response_obj": response}
         await _engine().transitions.check_automatic_transitions(
-            case=case, metadata=metadata, user_message="The fix worked."
+            case=case,
+            metadata=metadata,
+            user_message="The fix worked.",
+            plan=TurnCommitPlan(),
         )
         assert (
             _keys(metadata["override_suggestions"])
