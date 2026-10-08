@@ -1068,7 +1068,6 @@ def _wire_services(app, chroma) -> None:
     from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
         DatabaseSuggestionRepository,
     )
-    from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
     from tests.utils import InMemoryRevocationStore
 
     settings = get_settings()

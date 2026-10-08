@@ -66,7 +66,6 @@ def test_multi_resolves_in_core_under_cloud(ent_repo):
     with patch(_SETTINGS, return_value=_settings("multi", is_cloud=True)):
         provider = create_tenant_provider(enterprise_repository=ent_repo)
     assert isinstance(provider, MultiTenantProvider)
-    assert provider.enterprise_repository is ent_repo
 
 
 @pytest.mark.unit

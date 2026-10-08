@@ -2,8 +2,8 @@
 
 ``validate_enterprise_access`` refuses a case whose enterprise is not the one the
 request is bound to. It used to answer that question by resolving the enterprise
-through the tenant provider (handing it the bound enterprise id) and comparing ``enterprise.enterprise_id`` to the
-case — a whole ``enterprises`` row read, per request, per report call, to compare
+through the tenant provider (handing it the bound enterprise id) and comparing
+``enterprise.enterprise_id`` to the case — a whole ``enterprises`` row read, per request, per report call, to compare
 an id to itself. Nothing of the row was ever used, and the provider could be
 absent, which made the check conditional on wiring rather than on the tenant.
 

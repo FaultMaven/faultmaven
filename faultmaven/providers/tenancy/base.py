@@ -6,7 +6,7 @@ It does NOT resolve the request's enterprise. That is bound exactly once per
 request by ``api/middleware/tenant_scope.bind_request_enterprise_context`` (the
 verified ``enterprise_id`` claim under multi, the Standalone sentinel under
 single) and read back from ``config.tenant_context``; PostgreSQL RLS scopes every
-read to it. A ``get_current_enterprise`` method used to live here and was
+tenant-scoped table to it. A ``get_current_enterprise`` method used to live here and was
 removed (#1891) once nothing called it.
 
 Under ADR-017 the tenant is the **enterprise**: it is what isolates, and it is

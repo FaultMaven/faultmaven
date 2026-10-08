@@ -24,7 +24,7 @@ if TYPE_CHECKING:  # static analysis only — see make_org_knowledge_item
     )
 
 # Default enterprise UUID — mirrors STANDALONE_ENTERPRISE_ID
-# and migration 006's seeded row. Tests that build orgs/users without a
+# and the 001 baseline's seeded row. Tests that build orgs/users without a
 # specific enterprise context anchor to this row.
 DEFAULT_TEST_ENTERPRISE_ID = "00000000-0000-0000-0000-000000000002"
 

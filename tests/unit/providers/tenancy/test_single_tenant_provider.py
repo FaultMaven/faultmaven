@@ -15,6 +15,8 @@ import pytest
 
 from faultmaven.config.constants import (
     STANDALONE_ENTERPRISE_ID,
+    STANDALONE_ENTERPRISE_NAME,
+    STANDALONE_ENTERPRISE_SLUG,
     STANDALONE_TEAM_ID,
     STANDALONE_TEAM_NAME,
 )
@@ -88,6 +90,8 @@ async def test_ensure_default_enterprise_creates_when_absent(provider, enterpris
     created = await provider.ensure_default_enterprise_exists()
 
     assert created.enterprise_id == STANDALONE_ENTERPRISE_ID
+    assert created.slug == STANDALONE_ENTERPRISE_SLUG
+    assert created.name == STANDALONE_ENTERPRISE_NAME
     assert created.plan_tier is EnterprisePlanTier.PRO
 
 
@@ -109,6 +113,8 @@ async def test_the_default_team_hangs_off_the_enterprise(provider, teams):
     team = await provider.ensure_default_team_exists()
 
     assert team.enterprise_id == STANDALONE_ENTERPRISE_ID
+    assert team.team_id == STANDALONE_TEAM_ID
+    assert team.name == STANDALONE_TEAM_NAME
     assert not hasattr(team, "organization_id")
 
 

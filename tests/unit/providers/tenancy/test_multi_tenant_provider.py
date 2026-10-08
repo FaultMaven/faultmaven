@@ -11,21 +11,14 @@ grants nothing about data, so confining a request by it would confine it by who
 pays.
 """
 
-from unittest.mock import AsyncMock
-
 import pytest
 
 from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
 
 
 @pytest.fixture
-def enterprises():
-    return AsyncMock()
-
-
-@pytest.fixture
-def provider(enterprises):
-    return MultiTenantProvider(enterprise_repository=enterprises)
+def provider():
+    return MultiTenantProvider()
 
 
 async def test_there_is_no_per_request_resolution_left_on_the_provider(provider):
@@ -46,7 +39,7 @@ async def test_it_never_consults_an_organization(provider):
     """The billing roster is not part of this decision (ADR-017 D2).
 
     Asserted structurally rather than by absence of a call: the provider holds
-    no organization port at all, so there is nothing it could ask.
+    no repository port at all, so there is nothing it could ask.
     """
     assert not hasattr(provider, "organization_repository")
-    assert set(vars(provider)) == {"enterprise_repository"}
+    assert set(vars(provider)) == set()

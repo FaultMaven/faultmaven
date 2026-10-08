@@ -23,12 +23,11 @@ called it. What holds the boundary instead is upstream and is a fact about a row
 the claim is minted from ``users.enterprise_id`` at token time, the request front
 door refuses a token without it, and refresh rotation re-reads the row, so a
 re-anchored or removed account loses its claim within one rotation (under thirty
-minutes). Below that, PostgreSQL RLS scopes every read to the bound enterprise
+minutes). Below that, PostgreSQL RLS scopes every tenant-scoped table to the bound enterprise
 regardless of what any object believes. A route that genuinely needs a *fresh*
 membership answer must read ``users.enterprise_id`` itself and say why; none does.
 """
 
-from faultmaven.models.interfaces_user import IEnterpriseRepository
 from faultmaven.providers.tenancy.base import TenantProvider
 
 
@@ -37,7 +36,7 @@ class MultiTenantProvider(TenantProvider):
 
     Behavior:
     - Reports itself multi-tenant; there is no default enterprise to fall back to
-    - Holds the enterprise repository for the Cloud composition's wiring
+    - Holds no state: the request's enterprise is bound elsewhere
 
     Use Cases:
     - Cloud SaaS deployment (many isolated enterprises)
@@ -48,14 +47,6 @@ class MultiTenantProvider(TenantProvider):
         JWT claim, bound by ``api/middleware/tenant_scope`` and read back from
         ``config.tenant_context``.
     """
-
-    def __init__(self, enterprise_repository: IEnterpriseRepository):
-        """Initialize multi-tenant provider.
-
-        Args:
-            enterprise_repository: Repository for enterprise persistence
-        """
-        self.enterprise_repository = enterprise_repository
 
     async def is_multi_tenant(self) -> bool:
         """Multi-tenant mode."""
