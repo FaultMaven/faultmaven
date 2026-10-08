@@ -1388,11 +1388,10 @@ async def _seed_case_with_content(
                 "turn_number": 1,
             },
         )
-        # The uploaded file first: ``evidence.source_file_id`` is an FK to it, and
-        # the aggregate save writes evidence in the same statement batch. The
-        # third argument is the tenant the row is stamped with — passed
-        # positionally so Phase 3's rename of the parameter does not break this.
-        await repository.add_uploaded_file(case_id, uploaded_file, enterprise_id)
+        # The uploaded file rides the aggregate save, as a turn's upload does
+        # (#1878); the save writes ``uploaded_files`` before ``evidence``, whose
+        # ``source_file_id`` is an FK to it, and stamps both with the case's
+        # enterprise.
         case.uploaded_files = [uploaded_file]
         case.evidence = [evidence]
         await repository.save(case)

@@ -1338,8 +1338,9 @@ class MilestoneEngine:
 
     # #1210: ``_create_uploaded_file_from_attachment`` is gone. The engine does
     # not mint ``UploadedFile`` rows — ``investigation_service
-    # ._preprocess_attachment`` persists the authoritative row and appends it to
-    # the case aggregate before ``process_turn`` runs. The row the engine built
+    # ._preprocess_attachment`` builds the authoritative row and appends it to
+    # the case aggregate before ``process_turn`` runs; the turn's own aggregate
+    # save is what persists it (#1878). The row the engine built
     # from the attachment metadata was a strict subset of that one and was
     # discarded on every turn once #1209 gated the append.
 

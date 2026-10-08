@@ -719,11 +719,9 @@ _TURN_BOOKKEEPING = (
     "modules/agent/domain/services/investigation_service/turn_bookkeeping.py"
 )
 _INGEST = "modules/case/domain/services/case_data_ingestion_service.py"
-#: #1707 split SQLite's repository into a package: ``find_uploaded_file_by_content_hash``
-#: stayed on the owner in ``repository.py``; ``_load_*`` moved to module functions
-#: in ``loading.py``; ``_upsert_*`` and ``_row_to_case`` moved to ``saving.py`` /
+#: #1707 split SQLite's repository into a package: ``_load_*`` moved to module
+#: functions in ``loading.py``; ``_upsert_*`` and ``_row_to_case`` moved to ``saving.py`` /
 #: ``rows.py`` respectively (they read no instance state but ``db``).
-_SQLITE = "modules/case/infrastructure/sqlite_case_repository/repository.py"
 _SQLITE_LOADING = "modules/case/infrastructure/sqlite_case_repository/loading.py"
 _SQLITE_SAVING = "modules/case/infrastructure/sqlite_case_repository/saving.py"
 _SQLITE_ROWS = "modules/case/infrastructure/sqlite_case_repository/rows.py"
@@ -795,7 +793,7 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
     # The engine attachment dict's ``data_type`` key. No engine code reads it
     # (``turn_uploads`` reads ``file_id`` / ``is_novel``).
     (_ATTACHMENTS, "_engine_attachment_metadata", "attr", "uf"): ("opaque", 1),
-    # --- repositories: the string between row and model (9 functions) ------
+    # --- repositories: the string between row and model (7 functions) ------
     (_SQLITE_LOADING, "_load_uploaded_files", "sql", "<sql>"): (
         "passthrough",
         1,
@@ -814,18 +812,6 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
         "row_index",
         "row[13]",
     ): ("passthrough", 1),
-    (
-        _SQLITE,
-        "SQLiteCaseRepository.find_uploaded_file_by_content_hash",
-        "sql",
-        "<sql>",
-    ): ("passthrough", 1),
-    (
-        _SQLITE,
-        "SQLiteCaseRepository.find_uploaded_file_by_content_hash",
-        "construct_kw",
-        "row[15]",
-    ): ("passthrough", 1),
     (_SQLITE_SAVING, "_upsert_uploaded_files", "sql", "<sql>"): (
         "passthrough",
         1,
@@ -841,18 +827,6 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
     # ``get``'s query builds each row with ``json_build_object(…'data_type',
     # f.data_type…)``; ``_row_to_case`` spreads it into ``UploadedFile(**f)``.
     (_PG, "PostgreSQLHybridCaseRepository.get", "sql", "<sql>"): ("passthrough", 1),
-    (
-        _PG,
-        "PostgreSQLHybridCaseRepository.find_uploaded_file_by_content_hash",
-        "sql",
-        "<sql>",
-    ): ("passthrough", 1),
-    (
-        _PG,
-        "PostgreSQLHybridCaseRepository.find_uploaded_file_by_content_hash",
-        "construct_kw",
-        "row[15]",
-    ): ("passthrough", 1),
     (_PG_SAVING, "_upsert_uploaded_files", "sql", "<sql>"): (
         "passthrough",
         2,
@@ -1025,15 +999,17 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
 }
 
 #: Functions that read ``UploadedFile.data_type``: 4 boundary + 5 opaque +
-#: 9 repository pass-through. Stated here so a change to it is a decision.
-_N_COLUMN_READERS = 18
+#: 7 repository pass-through. Stated here so a change to it is a decision.
+#: (Was 18 with 9 pass-throughs; #1878 removed both repositories'
+#: ``find_uploaded_file_by_content_hash`` — dedup reads the loaded case.)
+_N_COLUMN_READERS = 16
 
 
 def test_every_reader_of_uploaded_file_data_type_is_classified():
     """State N: every read SITE of ``data_type`` in the package, and what it is.
 
-    **N = 18 functions read ``UploadedFile.data_type``**: 4 need the 6-valued
-    type and go through the boundary, 5 use it as an opaque string, 9 are
+    **N = 16 functions read ``UploadedFile.data_type``**: 4 need the 6-valued
+    type and go through the boundary, 5 use it as an opaque string, 7 are
     repository pass-throughs (SQL text, positional row reads, keyword and
     ``**`` construction of ``UploadedFile``). Every other ``data_type`` read
     in the package is listed as ``other`` with its reason. Two readers parsed
@@ -1149,7 +1125,6 @@ def test_every_reader_of_uploaded_file_data_type_is_classified():
         "modules/agent/tools/vectorize_file_tool.py",
         "modules/agent/tools/deep_analysis_tool.py",
         _SVC,
-        _SQLITE,
         _SQLITE_LOADING,
         _SQLITE_SAVING,
         _SQLITE_ROWS,

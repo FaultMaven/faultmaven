@@ -90,8 +90,12 @@ a companion **sidecar object** at key `{key}.meta.json`:
 }
 ```
 
-`mark_linked()` flips `linked` to `true` once the referencing `Evidence` row
-exists. The `storage_cleanup` job sweeps sidecars via
+`mark_linked()` flips `linked` to `true` once the referencing `uploaded_files`
+row is committed — after the commit of the turn that carried the upload (#1878).
+A turn that fails before its first commit writes no row and never marks its blob
+linked, so both signals agree that it is an orphan. (On an engine-routed turn a
+failure after the engine's Step-7 save leaves the row committed and the sidecar
+unflipped — the #1882 half turn; the database reference keeps that blob.) The `storage_cleanup` job sweeps sidecars via
 `IFileStorageBackend.list_keys()` and deletes only files that are
 `linked=false`, older than `ORPHAN_FILE_TTL_HOURS`, **and not named by any
 `uploaded_files.storage_ref` row**. A file with no sidecar is *never* deleted,

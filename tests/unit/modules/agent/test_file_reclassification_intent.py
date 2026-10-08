@@ -1055,7 +1055,7 @@ class TestRecoveryLoopSurvivesAnIgnoredQuestion:
 
     @pytest.mark.asyncio
     async def test_two_single_failure_turns_do_not_mint_the_same_wording_twice(
-        self, wired
+        self, wired, preprocessing_service
     ):
         """The emitter's disambiguation premise was "more than one attachment
         failed THIS TURN". Once a question outlives its turn that is the
@@ -1072,6 +1072,12 @@ class TestRecoveryLoopSurvivesAnIgnoredQuestion:
         service, repo, case = wired
 
         await self._upload_that_fails(service, case)
+        # Different bytes, so a different hash. The fixture's one hash for
+        # every upload would make the second file a duplicate of the first now
+        # that dedup also reads the case's own rows (#1878).
+        preprocessing_service.classify_and_extract.return_value = (
+            self._failed_classification("e" * 64)
+        )
         await service.process_turn(
             case_id=case.case_id,
             user_id="user_owner",
@@ -2564,7 +2570,6 @@ class TestDedupHitChipNamesTheSubmittedFile:
             structural_index="ERROR upstream timed out",
         )
         case.uploaded_files.append(stored)
-        repo.find_uploaded_file_by_content_hash = AsyncMock(return_value=stored)
 
         classify_result = make_preprocessing_result()
         classify_result.content_hash = "e" * 64
@@ -3117,8 +3122,6 @@ def test_every_data_type_writer_retires_the_question():
     assert {
         service_module,
         reclassification_module,
-        "modules/case/infrastructure/sqlite_case_repository/repository.py",
-        "modules/case/infrastructure/postgresql_hybrid_case_repository/repository.py",
     } <= parsed, f"the token filter excluded a module holding a known writer: {parsed}"
 
     assert found == {
@@ -3159,23 +3162,6 @@ def test_every_data_type_writer_retires_the_question():
             service_module,
             "InvestigationService.reclassify_evidence",
             "reclassification",
-        ),
-        # Not writers: the two repositories HYDRATE an ``UploadedFile`` from a
-        # stored row, which carries ``data_type=`` like every other column.
-        # The matcher cannot tell a read from a write syntactically, and
-        # narrowing it to try would be how the constructor shape escaped in
-        # the first place — so they are named here instead. A NEW constructor
-        # entry is the one to look at: outside a repository, building a row
-        # with a ``data_type`` is a write.
-        (
-            "modules/case/infrastructure/sqlite_case_repository/repository.py",
-            "SQLiteCaseRepository.find_uploaded_file_by_content_hash",
-            "constructor",
-        ),
-        (
-            "modules/case/infrastructure/postgresql_hybrid_case_repository/repository.py",
-            "PostgreSQLHybridCaseRepository.find_uploaded_file_by_content_hash",
-            "constructor",
         ),
     }, f"an unexpected writer of UploadedFile.data_type: {sorted(found)}"
 

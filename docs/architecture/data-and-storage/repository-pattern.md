@@ -517,7 +517,6 @@ class CaseRepository(ABC):
 | --- | --- |
 | `update_evidence_vectorized(case_id, evidence_id, vectorized)` | Flip the `vectorized` flag after BGE-M3 encode completes. |
 | `update_activity_timestamp(case_id)` | Refresh `cases.updated_at` without re-serializing the aggregate. |
-| `add_uploaded_file(case_id, uploaded_file, enterprise_id, organization_id=None)` | Commit ONE `uploaded_files` row mid-turn, without committing the turn. `enterprise_id` is the RLS key (required); `organization_id` is billing attribution only (optional, `None` when nobody pays). |
 
 Scoped methods:
 
@@ -525,24 +524,34 @@ Scoped methods:
 - Are safe to call from a fire-and-forget task holding a stale `Case` snapshot — the stale snapshot is never consulted during the write.
 - Make the intent visible in the signature, so code review can catch misuse.
 
-**Why `add_uploaded_file` exists.** An upload is a user-initiated fact: the bytes
-are already in storage, and `mark_linked` has already exempted them from TTL
-reclaim, by the time the turn continues. Letting the row wait for the end-of-turn
-`save(case)` meant a turn that raised left the bytes stored, reclaim-exempt, and
-referenced by nothing — a permanent orphan — and the retry stored a second copy,
-because `find_uploaded_file_by_content_hash` cannot dedup against a row that was
-never written.
+**Upload rows commit with their turn (#1878).** There is deliberately no scoped
+method for `uploaded_files`. A turn's attachment is appended to
+`case.uploaded_files` in memory, stamped with the turn's number, and written by
+the aggregate `save(case)` that commits the turn — in the same transaction as
+`current_turn` and the user message, on both backends. So a file is listed,
+searchable and attributed to a committed turn together, or not at all. A turn
+that fails before its first commit (an LLM error, a `StaleCaseException` at the
+engine's Step-7 save) leaves no row. The storage sidecar is marked linked only
+after the turn's final save, so the bytes such a turn stored are an ordinary
+orphan the storage sweep reclaims at TTL.
 
-The reason it is scoped is **not** that the aggregate save would delete the row
-(it would not — see below). It is that `save(case)` commits the *whole* case, so
-calling it mid-turn would make the half-built turn durable: the user message
-appended at step 2 and the bumped `current_turn`, which deferring the save exists
-to avoid. Ordering with the later aggregate save is safe precisely because
-`_upsert_uploaded_files` is additive — it re-upserts the row rather than removing
-it. `tests/integration/modules/case/test_sqlite_case_repository.py::TestScopedAddUploadedFile`
-pins that with an aggregate save from a snapshot that never saw the row.
+One window remains (#1882). An engine-routed turn commits twice: at the engine's
+Step 7 and again at the service's final save. A failure between the two — a
+`StaleCaseException` at the final save included — leaves the user message,
+`current_turn` and the upload row committed without the agent's reply, and the
+sidecar unflipped. The row is still attributed to a turn that committed, and the
+sweep keeps a row-referenced blob; the half turn is #1882's to close.
 
-⚠️ Do not generalise that safety to `causal_nodes` / `causal_edges`: those ARE
+A scoped `add_uploaded_file` used to commit the row at intake (#1013), because
+`mark_linked` ran before any row existed and a failed turn otherwise left a
+permanently protected orphan. It also stamped the row with a turn number the case
+never committed, which the next committed turn reused; with `mark_linked` moved
+after the commit it protected nothing and was removed.
+`tests/integration/modules/case/test_sqlite_case_repository.py::TestUploadRowsRideTheAggregateSave`
+pins the transactional half.
+
+⚠️ The aggregate save is additive for `uploaded_files`, as for every `_upsert_*`
+helper — but do not generalise that to `causal_nodes` / `causal_edges`: those ARE
 reconciled destructively by `_reconcile_causal_graph` on aggregate save. "The
 aggregate save is additive" holds for every `_upsert_*` helper, not for the
 causal-graph reconciler.

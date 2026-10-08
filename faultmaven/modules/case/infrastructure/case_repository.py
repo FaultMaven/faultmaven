@@ -395,34 +395,6 @@ class CaseRepository(ABC):
         pass
 
     @abstractmethod
-    async def find_uploaded_file_by_content_hash(
-        self, case_id: str, content_hash: str
-    ) -> Optional[UploadedFile]:
-        """
-        Return the oldest UploadedFile in this case whose content_hash matches.
-
-        Post-010 strict evidence model: file uploads create only an
-        UploadedFile row (no auto-Evidence at intake), so dedup is a
-        file-level concern. An attachment whose SHA-256 content hash
-        already exists on the same case returns the existing
-        UploadedFile instead of creating a new row.
-
-        Args:
-            case_id: Case to search within (scope is per-case, not global).
-            content_hash: SHA-256 hex of UTF-8 text (as produced by
-                PreprocessingService.classify_and_extract).
-
-        Returns:
-            The oldest matching UploadedFile (by upload timestamp) if
-            found, None otherwise. NULL content_hash rows are never
-            matched.
-
-        Raises:
-            RepositoryException: If lookup fails
-        """
-        pass
-
-    @abstractmethod
     async def upsert_case_entities(
         self,
         case_id: str,
@@ -749,49 +721,6 @@ class CaseRepository(ABC):
 
         Raises:
             RepositoryException: If the delete fails.
-        """
-        pass
-
-    @abstractmethod
-    async def add_uploaded_file(
-        self,
-        case_id: str,
-        uploaded_file: UploadedFile,
-        enterprise_id: str,
-        organization_id: Optional[str] = None,
-    ) -> None:
-        """
-        Commit ONE uploaded_file row on its own, outside the aggregate save.
-
-        An upload is a user-initiated fact whose durability must not depend on
-        the rest of the turn succeeding. The bytes are already in storage when
-        this is called; committing the row here keeps the two consistent. When
-        the row rode along on the end-of-turn `save(case)` instead, a turn that
-        raised left the bytes stored and unreferenced, and the retry stored a
-        second copy — `find_uploaded_file_by_content_hash` cannot dedup against
-        a row that was never written.
-
-        Scoped rather than `save(case)` because the aggregate save commits the
-        WHOLE case: mid-turn that makes the half-built turn durable (the user
-        message appended at step 2, the bumped `current_turn`), which is exactly
-        what deferring the save exists to avoid. This commits the upload without
-        committing the turn.
-
-        Ordering with the later aggregate save is safe because
-        `_upsert_uploaded_files` is purely additive — it re-upserts this row
-        rather than deleting it. That is NOT true of `causal_nodes`/`causal_edges`,
-        which the aggregate save reconciles destructively; do not generalise this
-        method's safety to those tables.
-
-        Args:
-            case_id: Case the file belongs to.
-            uploaded_file: The row to commit.
-            enterprise_id: Tenant that owns the row (the RLS key).
-            organization_id: Billing attribution, or ``None`` when nobody pays
-                for the account that owns the case.
-
-        Raises:
-            RepositoryException: If the write fails.
         """
         pass
 
@@ -1236,24 +1165,6 @@ class InMemoryCaseRepository(CaseRepository):
             return True
         return False
 
-    async def find_uploaded_file_by_content_hash(
-        self, case_id: str, content_hash: str
-    ) -> Optional[UploadedFile]:
-        """Find oldest UploadedFile in a case whose ``content_hash``
-        matches. Post-010: dedup is a file-level concern (no Evidence
-        rows at intake).
-        """
-        if not content_hash:
-            return None
-        case = self._cases.get(case_id)
-        if case is None:
-            return None
-        matches = [uf for uf in case.uploaded_files if uf.content_hash == content_hash]
-        if not matches:
-            return None
-        matches.sort(key=lambda uf: getattr(uf, "uploaded_at_turn", 0) or 0)
-        return matches[0]
-
     async def list_evidence_by_time_window(
         self,
         case_id: str,
@@ -1532,31 +1443,6 @@ class InMemoryCaseRepository(CaseRepository):
             f for f in case.uploaded_files if getattr(f, "file_id", None) != file_id
         ]
         return len(case.uploaded_files) < before
-
-    async def add_uploaded_file(
-        self,
-        case_id: str,
-        uploaded_file: UploadedFile,
-        enterprise_id: str,
-        organization_id: Optional[str] = None,
-    ) -> None:
-        """Commit one uploaded_file row in memory (idempotent by file_id)."""
-        case = self._cases.get(case_id)
-        if not case:
-            # Do NOT no-op. The SQL implementations fail on the FK, and the
-            # contract documents RepositoryException — a silent return would
-            # let a wrong case_id certify green in every in-memory-backed test.
-            raise RepositoryException(
-                f"Cannot add uploaded_file to unknown case {case_id}"
-            )
-        if case.uploaded_files is None:
-            case.uploaded_files = []
-        file_id = getattr(uploaded_file, "file_id", None)
-        for i, existing in enumerate(case.uploaded_files):
-            if getattr(existing, "file_id", None) == file_id:
-                case.uploaded_files[i] = uploaded_file
-                return
-        case.uploaded_files.append(uploaded_file)
 
     async def get_analytics(self, case_id: str) -> Dict[str, Any]:
         """Compute analytics for case in memory."""

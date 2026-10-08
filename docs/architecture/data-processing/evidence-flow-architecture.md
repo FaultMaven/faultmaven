@@ -59,8 +59,8 @@ This document describes the complete evidence flow architecture in FaultMaven. A
 │  │ Raw file persistence (storage_service.store_file) + per-case      │ │
 │  │ content-hash dedup short-circuit happen at the evidence-creation  │ │
 │  │ layer (_preprocess_attachment in InvestigationService). Dedup     │ │
-│  │ calls ICaseRepository.find_by_content_hash before creating any    │ │
-│  │ new Evidence row.                                                  │ │
+│  │ matches content_hash against the loaded case's uploaded_files     │ │
+│  │ before storing anything (#1878: no repository lookup).            │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
 └─────┬───────────────────────────────────────────────────────────────────┘
       │
@@ -314,10 +314,10 @@ User          API(/turns)    Investigation    LLM         Database
 
 ## Sequence Diagram: Duplicate Upload
 
-Per-case content-hash deduplication is live. Before creating a new Evidence row, `_preprocess_attachment` calls `ICaseRepository.find_by_content_hash(case_id, content_hash)`. A match returns the existing Evidence and skips raw-file re-storage (no new write to the storage backend). The per-attachment `AttachmentResult` carries `duplicate_of` + `duplicate_turn` so the frontend can render a toast. Scope is per-case; same content uploaded to a different case proceeds as new Evidence.
+Per-case content-hash deduplication is live. Before storing an attachment, `_preprocess_attachment` matches its `content_hash` against the loaded case's `uploaded_files` (#1878 — the case holds every committed row, and the earlier attachments of this submission). A match returns the existing `UploadedFile` and skips raw-file re-storage (no new write to the storage backend). The per-attachment `AttachmentResult` carries `duplicate_of` + `duplicate_turn` so the frontend can render a toast. Scope is per-case; same content uploaded to a different case proceeds as new Evidence.
 
 ```
-User          API(/turns)    Investigation    Preprocessing    Case Repository
+User          API(/turns)    Investigation    Preprocessing    (loaded case)
  │              │                │                │             │
  │─POST turn───>│                │                │             │
  │ {files:      │                │                │             │
@@ -331,10 +331,10 @@ User          API(/turns)    Investigation    Preprocessing    Case Repository
  │              │                │<───────────────│ (abc123)    │
  │              │                │  PreprocessingResult         │
  │              │                │                              │
- │              │                │─find_by_content_hash────────>│
- │              │                │  (case_id, abc123)           │
+ │              │                │─match abc123 against────────>│
+ │              │                │  case.uploaded_files         │
  │              │                │<─────────────────────────────│
- │              │                │  MATCH ev_xyz (turn 5)        │
+ │              │                │  MATCH file_xyz (turn 5)     │
  │              │                │                              │
  │              │                │  (skip Evidence creation,    │
  │              │                │   skip storage.store_file,   │

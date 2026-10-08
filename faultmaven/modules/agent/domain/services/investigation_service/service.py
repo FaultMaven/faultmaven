@@ -55,6 +55,7 @@ from faultmaven.models.api_models import (
 )
 from faultmaven.modules.agent.domain.services.investigation_service.attachments import (
     _engine_attachment_metadata,
+    _mark_turn_uploads_linked,
     _preprocess_turn_uploads,
 )
 from faultmaven.modules.agent.domain.services.investigation_service.intent_gates import (
@@ -329,13 +330,15 @@ class InvestigationService:
             # later when the LLM emits ``evidence_to_add`` during
             # INVESTIGATING. Track the UploadedFiles created this turn
             # so the implicit-query helper can describe what the user
-            # submitted; ``case.uploaded_files`` already had each row
-            # appended inside ``_preprocess_attachment``.
+            # submitted. ``_preprocess_attachment`` appends each new row to
+            # ``case.uploaded_files`` IN MEMORY and commits nothing: the row
+            # becomes durable in the same commit as this turn (#1878), so a
+            # turn that fails before its first commit leaves no row behind.
+            # (A failure after the engine's Step-7 save is #1882's half turn.)
             classification, preprocess_results, query, uploaded_files_this_turn = (
                 await _preprocess_turn_uploads(
                     self.file_storage_service,
                     self.preprocessing_service,
-                    self.repository,
                     case=case,
                     case_id=case_id,
                     classification=classification,
@@ -348,9 +351,11 @@ class InvestigationService:
 
             # 2. Build user message and update case in-memory (NOT persisted yet).
             #    What the deferral actually buys: nothing is committed BEFORE the
-            #    LLM runs, so a turn that fails in the LLM call leaves no orphaned
-            #    user message and no inflated turn count, and the client can retry
-            #    the same turn. That is the whole of it.
+            #    LLM runs — not the user message, not the turn count, and not the
+            #    turn's ``uploaded_files`` rows (#1878) — so a turn that fails in
+            #    the LLM call leaves no orphaned user message, no inflated turn
+            #    count and no file listed against a turn that never happened, and
+            #    the client can retry the same turn. That is the whole of it.
             #
             #    ⚠️ It does NOT make the turn atomic, and it does NOT commit the
             #    user message and the agent's reply together. Two earlier versions
@@ -371,7 +376,10 @@ class InvestigationService:
             #        sites.
             #
             #    So: an LLM failure commits nothing; a post-LLM failure can commit
-            #    a half turn. Do not reason about this path as all-or-nothing.
+            #    a half turn (#1882). The turn's upload rows ride whichever of
+            #    those saves commits first, so they are never committed without
+            #    the turn's user message and ``current_turn``. Do not reason
+            #    about this path as all-or-nothing.
             intent, intent_type, orientation_kind, user_message_obj, was_terminal = (
                 _build_user_message(
                     case=case,
@@ -400,7 +408,7 @@ class InvestigationService:
             # which answers from a static string, never calls the engine, and
             # therefore reported no upload, armed no progress arm, and left the
             # two #1224 degradation warnings unreachable. The row was already
-            # committed and dedup-classified by then; only the engine was not
+            # built and dedup-classified by then; only the engine was not
             # told. A turn that delivers data is not a greeting, whatever the
             # covering text says — the same judgement #708 applies one block
             # below when it re-routes a generic cover note to Directed
@@ -491,6 +499,15 @@ class InvestigationService:
                 was_terminal=was_terminal,
             )
             turn_row_emitted = True
+
+            # 4c. The turn is committed, and with it every upload row it
+            # carried (#1878): only now may their blobs be marked linked. Done
+            # earlier, a turn that then failed left a blob marked linked with
+            # no row — exempt from the orphan sweep for good. Best-effort and
+            # never fatal; see ``_mark_turn_uploads_linked``.
+            await _mark_turn_uploads_linked(
+                self.file_storage_service, preprocess_results
+            )
 
             # 5. Build TurnResponse
             return _build_turn_response(
@@ -827,8 +844,8 @@ class InvestigationService:
         # branch: the SERVICE-routed handlers below delegate to the very
         # same ``engine.process_turn`` and used to hand it
         # ``attachments=None`` even though ``_preprocess_attachment`` had
-        # already run and committed a row for every attachment on the turn.
-        # An upload riding a suggestion-chip intent was persisted and
+        # already run and recorded a row for every attachment on the turn.
+        # An upload riding a suggestion-chip intent was recorded and
         # dedup-classified, and the engine was told nothing arrived (#1229).
         attachment_metadata = [
             _engine_attachment_metadata(res) for res in preprocess_results
@@ -984,7 +1001,7 @@ class InvestigationService:
                 KB read allowlist)
             attachments: The turn's engine attachment metadata. Passed through
                 verbatim — this handler used to hardcode ``None`` while
-                ``_preprocess_attachment`` had already committed a row for every
+                ``_preprocess_attachment`` had already recorded a row for every
                 attachment, so an upload riding a dropdown/chip intent was
                 invisible to the engine (#1229).
             typed: True when the intent was minted from typed text by the

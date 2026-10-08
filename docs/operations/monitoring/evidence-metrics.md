@@ -23,7 +23,7 @@ Names follow the `faultmaven_` prefix convention shared with
 | `faultmaven_evidence_orphan_files_found_total` | counter | — | `faultmaven.modules.agent.jobs.storage_cleanup` | **Live** |
 | `faultmaven_evidence_orphan_files_deleted_total` | counter | — | `faultmaven.modules.agent.jobs.storage_cleanup` | **Live** |
 | `faultmaven_evidence_orphan_files_rescued_total` | counter | — | `faultmaven.modules.agent.jobs.storage_cleanup` | **Live** — files the DB cross-check saved (#1232). Not scrapable in practice: see the note below |
-| `faultmaven_evidence_mark_linked_failures_total` | counter | `outcome` | `attachments._preprocess_attachment` | **Live** — API process, so genuinely scraped |
+| `faultmaven_evidence_mark_linked_failures_total` | counter | `outcome` | `attachments._mark_turn_uploads_linked` (after the turn's commit) | **Live** — API process, so genuinely scraped |
 | `faultmaven_evidence_turn_async_retry_enqueued_total` | counter | `reason` | Turn retry path (async-turn-retry plan, deferred) | Scaffolded only; no emit sites (async retry plan deferred 2026-04-19) |
 | `faultmaven_evidence_turn_async_retry_outcome_total` | counter | `outcome` | Turn retry path (async-turn-retry plan, deferred) | Scaffolded only; no emit sites |
 | `faultmaven_evidence_turn_async_retry_latency_seconds` | histogram | — | Turn retry path (async-turn-retry plan, deferred) | Scaffolded only; no emit sites |
@@ -54,10 +54,13 @@ never linked to an Evidence row.
     summary: "Orphan file rate high — {{ $value }} orphans in the last hour"
     description: |
       More than 10 files were found orphaned (past TTL with linked=False).
-      This indicates files are being stored but Evidence rows aren't being
-      created / linked. Check `faultmaven/modules/agent/domain/services/
-      investigation_service/attachments.py::_preprocess_attachment` for errors between
-      `store_file` and Evidence persistence.
+      A turn that fails after storing its upload but before its first
+      commit writes no uploaded_files row (#1878), so each such failed
+      upload turn leaves one orphan by design; a high rate tracks failed
+      upload turns. Check the API's turn
+      error rate first, then `faultmaven/modules/agent/domain/services/
+      investigation_service/attachments.py::_preprocess_attachment` for
+      errors after `store_file`.
     runbook_url: "https://docs.faultmaven.internal/runbooks/orphan-files"
 ```
 
@@ -98,7 +101,7 @@ would justify retrying the call (#1232 direction 3, deliberately not taken).
       uploaded_files.storage_ref, and the row's ON DELETE CASCADE lifetime
       reclaims the object normally once the case is deleted — so this is a
       signal about the STORAGE BACKEND, not about data at risk. Check
-      `investigation_service/attachments.py::_preprocess_attachment` and the backend for
+      `investigation_service/attachments.py::_mark_turn_uploads_linked` and the backend for
       errors on the mark_linked write.
 ```
 
