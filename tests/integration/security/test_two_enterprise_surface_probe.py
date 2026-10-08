@@ -1143,9 +1143,6 @@ def _wire_services(app, chroma) -> None:
     app.state.share_repository = share_repository
     app.state.knowledge_service = knowledge_service
     app.state.organization_repository = organization_repository
-    app.state.tenant_provider = MultiTenantProvider(
-        enterprise_repository=SessionlessEnterpriseRepository()
-    )
     app.state.operator_audit_repository = SessionlessOperatorAuditRepository()
     app.state.operator_grant_repository = SessionlessOperatorGrantRepository()
     # The cross-enterprise operator case list, as the composition root wires it

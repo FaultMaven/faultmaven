@@ -194,8 +194,7 @@ def validate_enterprise_access(
     """Refuse a case that belongs to an enterprise other than the bound one.
 
     One comparison, no query. This used to resolve the enterprise through
-    ``TenantProvider.get_current_enterprise(current_user, enterprise_id=
-    get_current_enterprise_id())`` and then compare ``enterprise.enterprise_id``
+    the tenant provider (passing it the bound enterprise id) and then compare ``enterprise.enterprise_id``
     against the case — i.e. it read a whole ``enterprises`` row, per request, per
     report call, in order to compare an id to itself. Nothing of the row was
     used. The binding IS the answer: ``api/middleware/tenant_scope`` sets it from
