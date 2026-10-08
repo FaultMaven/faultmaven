@@ -37,6 +37,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.core.investigation.cause_assurance import CauseAssuranceGrade
+from faultmaven.core.investigation.milestone_engine import runbook_creation
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.regeneration import (
     _remaining_regens_for,
@@ -1179,7 +1180,13 @@ class TestRunbookConversionCarriesOrg:
             return MagicMock()
 
         plan = TurnCommitPlan()
-        with patch("asyncio.create_task", side_effect=_capture):
+        # The double returned for the task is held in the module's task set and
+        # its done-callback never fires; give the call its own set so the double
+        # does not outlive this test on the worker.
+        with (
+            patch("asyncio.create_task", side_effect=_capture),
+            patch.object(runbook_creation, "_CONVERSION_TASKS", set()),
+        ):
             await engine.runbooks.handle_runbook_creation(case, metadata={}, plan=plan)
 
         assert spawned, "kickoff did not schedule the background conversion"

@@ -193,6 +193,9 @@ async def _turn(
         service = _service(repository, engine)
         if lose_the_race:
             repository.lose_the_next_race()
+        # The task set is module-global: another test on this worker may have
+        # left its own entries (doubles included). Wait only for this turn's.
+        tasks_before = set(runbook_creation._CONVERSION_TASKS)
         try:
             response = await service.process_turn(
                 case_id=CASE_ID,
@@ -204,7 +207,8 @@ async def _turn(
             # repository; production's is sessionless, this one is not, so let
             # it finish before the session closes.
             await asyncio.gather(
-                *list(runbook_creation._CONVERSION_TASKS), return_exceptions=True
+                *(set(runbook_creation._CONVERSION_TASKS) - tasks_before),
+                return_exceptions=True,
             )
     return response, repository
 
@@ -385,6 +389,7 @@ class TestAFailedCommitLeavesNothing:
         _make_runbook_ready(case)
         await _seed(sessions, case)
 
+        tasks_before = set(runbook_creation._CONVERSION_TASKS)
         with pytest.raises(StaleCaseException):
             await _turn(
                 sessions,
@@ -393,7 +398,7 @@ class TestAFailedCommitLeavesNothing:
                 conversion_service=conversion_service,
             )
         conversion_service.convert_from_case.assert_not_awaited()
-        assert not runbook_creation._CONVERSION_TASKS
+        assert set(runbook_creation._CONVERSION_TASKS) <= tasks_before
 
         # Control: the same click on a turn that commits starts it.
         await _turn(
