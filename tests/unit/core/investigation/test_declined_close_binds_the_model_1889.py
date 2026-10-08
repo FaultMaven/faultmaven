@@ -12,10 +12,11 @@ away on every client. The user's own close is never blocked.
 Real ``process_turn`` turns with a stubbed generator: no live LLM.
 """
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from faultmaven.core.investigation.milestone_engine import turn_completion
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     declined_close_card,
@@ -279,6 +280,38 @@ class TestADeclinedFalseAlarmCloseBindsTheModel:
         # The closed case still holds its declined finding, so the read that
         # attaches the card would answer; the closing reply carries none.
         assert _CLOSE_INTENT not in _intents(closing)
+
+    async def test_a_closed_false_alarm_answers_questions_with_no_card(self):
+        """A CLOSED false-alarm case still holds its declined finding, so the
+        read behind the card would answer. Nothing reaches it: a terminal
+        turn takes the terminal path, and step 2's refusal sits behind the
+        legality check, which admits no target from CLOSED. Even a model that
+        proposes ``closed`` on a Q&A turn gets no card and no refusal."""
+        engine, case, _ = await _declined_finding()
+        refused = await _turn(engine, case, "ok, close it", _proposes("closed"))
+        card = refused["suggested_follow_ups"][-1]
+        case.current_turn += 1
+        await engine.process_turn(
+            case=case,
+            user_message=card["payload"],
+            intent_type=card["intent"]["type"],
+            intent_data={"to_state": card["intent"]["to_state"]},
+        )
+        await _turn(engine, case, "yes")
+        assert case.state == CaseState.CLOSED
+        assert case.problem_verification.invalidation.close_declined_at_turn == 5
+
+        with patch.object(turn_completion.logger, "info") as info:
+            answer = await _turn(
+                engine, case, "why was this a false alarm?", _proposes("closed")
+            )
+        assert case.state == CaseState.CLOSED
+        assert _CLOSE_INTENT not in _intents(answer)
+        assert "declined_close_card" not in answer["metadata"]
+        assert not any(
+            (c.kwargs.get("extra") or {}).get("transition_refused_as_declined")
+            for c in info.call_args_list
+        )
 
 
 # ---------------------------------------------------------------------------

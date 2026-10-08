@@ -431,9 +431,12 @@ async def _compose_turn_reply(
     # (#1889). The close stays one step away: its card is APPENDED to the
     # follow-ups as settled above, never substituted for them — replacing the
     # model's suggestions with a lone close button (``override_suggestions``)
-    # would turn the refusal into the re-ask it exists to stop.
+    # would turn the refusal into the re-ask it exists to stop. No terminal
+    # check: nothing reaches the refusal on a terminal case (0a hands its
+    # turns to the terminal path, and step 2's refusal sits behind the legality
+    # check, which admits no target from a terminal state).
     declined_side = metadata.get("declined_close_card")
-    if declined_side and not case_updated.is_terminal:
+    if declined_side:
         follow_ups = [*follow_ups, declined_close_card(declined_side)]
 
     # Append the synthesized summary (or skip / failure note) so it
