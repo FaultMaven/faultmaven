@@ -273,9 +273,12 @@ class TestADeclinedFalseAlarmCloseBindsTheModel:
             key,
         ]
 
-        await _turn(engine, case, "yes")
+        closing = await _turn(engine, case, "yes", _proposes("closed"))
         assert case.state == CaseState.CLOSED
         assert case.closure_reason == FALSE_ALARM_CLOSURE_REASON
+        # The closed case still holds its declined finding, so the read that
+        # attaches the card would answer; the closing reply carries none.
+        assert _CLOSE_INTENT not in _intents(closing)
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +428,34 @@ class TestADeclinedDeferredCloseBindsTheModel:
         ]
         assert _intents(result)[-1] == _CLOSE_INTENT
 
+    async def test_the_card_closes_the_case_with_the_solution_documented(self):
+        """End to end on the deferred side: the refused re-proposal's card opens
+        the user's own close, whose confirm pair executes it as deferred."""
+        engine, case = await self._declined()
+        refused = await _turn(
+            engine, case, "nothing more to do here", _proposes("closed")
+        )
+        card = refused["suggested_follow_ups"][-1]
+        assert card["intent"] == _CLOSE_INTENT
+
+        case.current_turn += 1
+        offered = await engine.process_turn(
+            case=case,
+            user_message=card["payload"],
+            intent_type=card["intent"]["type"],
+            intent_data={"to_state": card["intent"]["to_state"]},
+        )
+        assert case.pending_transition["closure_reason"] == "solution_deferred"
+        key = terminal_offer_key(case.pending_transition)
+        assert [
+            f["intent"].get("proposal_id") for f in offered["suggested_follow_ups"]
+        ] == [key, key]
+
+        closing = await _turn(engine, case, "yes", _proposes("closed"))
+        assert case.state == CaseState.CLOSED
+        assert case.closure_reason == "solution_deferred"
+        assert _CLOSE_INTENT not in _intents(closing)
+
     async def test_a_moved_premise_lets_the_models_close_through(self):
         """A second solution changes the justifying signature: the decline was
         about the state it was given in. The engine's own deferred close comes
@@ -477,13 +508,18 @@ class TestTheHoldBlock:
         assert "Do not propose it unprompted" in block
 
     @pytest.mark.parametrize(
-        "stage", [InvestigationStage.TREATMENT, InvestigationStage.MITIGATION]
+        "stage",
+        [
+            InvestigationStage.DIAGNOSIS,
+            InvestigationStage.TREATMENT,
+            InvestigationStage.MITIGATION,
+        ],
     )
     def test_it_renders_on_every_stage(self, stage):
         case = _invalidated_case()
         if stage == InvestigationStage.TREATMENT:
             case.progress.solution_accepted = True
-        else:
+        elif stage == InvestigationStage.MITIGATION:
             case.progress.mitigation = MitigationRecord(
                 proposed_at_turn=1, accepted=True
             )
@@ -492,6 +528,10 @@ class TestTheHoldBlock:
         prompt = get_prompt_for_case(case, "what now?")
         assert "Reported problem not present (false alarm)" in prompt
         assert "declined closing on this finding at turn 6" in prompt
+        # The hold IS the focus emphasis: on DIAGNOSIS the zone block must not
+        # take its place (an INVALIDATED problem is not verified, so the zone
+        # reading would be Zone 1's verification ask).
+        assert "Symptom verification pending" not in prompt
 
     def test_the_card_names_a_state_not_an_offer(self):
         for side in ("false_alarm", "deferred"):
