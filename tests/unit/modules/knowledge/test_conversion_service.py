@@ -24,6 +24,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.infrastructure.llm.providers import LLMResponse, StopReason
 from faultmaven.infrastructure.persistence.models import (
     Base,
@@ -68,7 +69,6 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.prompts imp
     RUNBOOK_MAX_TOKENS_CEILING,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
-    DEFAULT_ENTERPRISE_ID,
     ConversionService,
 )
 from faultmaven.modules.knowledge.taxonomy import SymptomClass, vocabulary
@@ -1740,7 +1740,7 @@ async def live_case_session_factory(live_case_engine):
     async with factory() as session:
         session.add(
             EnterpriseModel(
-                enterprise_id=DEFAULT_ENTERPRISE_ID,
+                enterprise_id=STANDALONE_ENTERPRISE_ID,
                 name="Default Enterprise",
                 slug="default",
             )
@@ -1784,7 +1784,7 @@ async def _insert_case_job(
         session.add(
             UploadedFileModel(
                 file_id=file_id,
-                enterprise_id=DEFAULT_ENTERPRISE_ID,
+                enterprise_id=STANDALONE_ENTERPRISE_ID,
                 case_id=None,
                 uploaded_by="u1",
                 filename="src",
@@ -1799,7 +1799,7 @@ async def _insert_case_job(
             ConversionJobModel(
                 id=conversion_id,
                 user_id="u1",
-                enterprise_id=DEFAULT_ENTERPRISE_ID,
+                enterprise_id=STANDALONE_ENTERPRISE_ID,
                 scope="personal",
                 status=status.value,
                 source_file_id=file_id,
@@ -1829,7 +1829,7 @@ async def _insert_case_job(
             session.add(
                 ConversionDraftModel(
                     id=d.draft_id,
-                    enterprise_id=DEFAULT_ENTERPRISE_ID,
+                    enterprise_id=STANDALONE_ENTERPRISE_ID,
                     conversion_id=conversion_id,
                     runbook_id=d.runbook_id,
                     title=d.title,
@@ -1890,7 +1890,7 @@ class TestPersistJobLiveCaseKey:
             svc._share_repo,
             conversion_id="conv-case-live",
             user_id="u1",
-            enterprise_id=DEFAULT_ENTERPRISE_ID,
+            enterprise_id=STANDALONE_ENTERPRISE_ID,
             scope="personal",
             team_id=None,
             status=ConversionStatus.COMPLETED,
@@ -1914,7 +1914,7 @@ class TestPersistJobLiveCaseKey:
             svc._share_repo,
             conversion_id="conv-doc",
             user_id="u1",
-            enterprise_id=DEFAULT_ENTERPRISE_ID,
+            enterprise_id=STANDALONE_ENTERPRISE_ID,
             scope="personal",
             team_id=None,
             status=ConversionStatus.COMPLETED,
@@ -1938,7 +1938,7 @@ class TestPersistJobLiveCaseKey:
             svc._share_repo,
             conversion_id="conv-failed",
             user_id="u1",
-            enterprise_id=DEFAULT_ENTERPRISE_ID,
+            enterprise_id=STANDALONE_ENTERPRISE_ID,
             scope="personal",
             team_id=None,
             status=ConversionStatus.FAILED,
@@ -2714,7 +2714,7 @@ class TestPersistJobOrgStamp:
     ):
         """A caller that supplies no org gets the tenant the session is bound to.
 
-        The regression: it used to get ``DEFAULT_ENTERPRISE_ID`` — correct in
+        The regression: it used to get ``STANDALONE_ENTERPRISE_ID`` — correct in
         a single-tenant deployment by coincidence, and the sentinel org (which
         no tenant may write) everywhere else.
         """
@@ -2775,7 +2775,7 @@ class TestPersistJobOrgStamp:
 
         assert await self._stamped_orgs(
             live_case_session_factory, "conv_org_standalone"
-        ) == {DEFAULT_ENTERPRISE_ID}
+        ) == {STANDALONE_ENTERPRISE_ID}
 
     def test_conversion_source_upload_stays_case_less(self):
         """The synthetic ``uploaded_files`` row must NOT carry ``case_id``.

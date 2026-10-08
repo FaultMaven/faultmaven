@@ -11,7 +11,6 @@ standalone deployment that the rest of the campaign assumes is not there.
 import pytest
 
 from faultmaven.config import constants
-from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
 
 @pytest.mark.unit
@@ -25,17 +24,6 @@ class TestStandaloneConstants:
 
     def test_the_team_sentinel_is_pinned(self):
         assert constants.STANDALONE_TEAM_ID == "00000000-0000-0000-0000-000000000003"
-
-    def test_the_provider_reads_the_constants_rather_than_its_own_copy(self):
-        assert (
-            SingleTenantProvider.DEFAULT_ENTERPRISE_ID
-            == constants.STANDALONE_ENTERPRISE_ID
-        )
-        assert (
-            SingleTenantProvider.DEFAULT_ENTERPRISE_SLUG
-            == constants.STANDALONE_ENTERPRISE_SLUG
-        )
-        assert SingleTenantProvider.DEFAULT_TEAM_ID == constants.STANDALONE_TEAM_ID
 
     @pytest.mark.security
     @pytest.mark.parametrize(

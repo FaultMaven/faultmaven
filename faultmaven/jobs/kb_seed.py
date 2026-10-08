@@ -74,8 +74,8 @@ async def run(
             return result
 
         from faultmaven.bootstrap.kb_init import bootstrap_kb
+        from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
         from faultmaven.infrastructure.persistence.database import get_db_session
-        from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
         # organization_id applies only to org-owned (personal/team) pack rows —
         # the shipped pack is all-global, and global rows are stored org-free
@@ -83,7 +83,7 @@ async def run(
         bootstrap_result = await bootstrap_kb(
             knowledge_service=knowledge_service,
             db_session_factory=get_db_session,
-            enterprise_id=SingleTenantProvider.DEFAULT_ENTERPRISE_ID,
+            enterprise_id=STANDALONE_ENTERPRISE_ID,
         )
 
         result["ingested"] = len(bootstrap_result.ingested)

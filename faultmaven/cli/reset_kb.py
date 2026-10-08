@@ -497,8 +497,8 @@ async def reset_kb(
         print()
         print("Rebuilding KB in-process (this may take a minute on first run)...")
         from faultmaven.bootstrap.kb_init import bootstrap_kb
+        from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
         from faultmaven.container import container
-        from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
         await container.initialize()
         knowledge_service = container.get_knowledge_service()
@@ -508,7 +508,7 @@ async def reset_kb(
         result = await bootstrap_kb(
             knowledge_service=knowledge_service,
             db_session_factory=get_db_session,
-            enterprise_id=SingleTenantProvider.DEFAULT_ENTERPRISE_ID,
+            enterprise_id=STANDALONE_ENTERPRISE_ID,
         )
         print(f"Bootstrap result: {result!r}")
         if result.failed:

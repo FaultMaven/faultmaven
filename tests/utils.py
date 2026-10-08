@@ -23,7 +23,7 @@ if TYPE_CHECKING:  # static analysis only — see make_org_knowledge_item
         KnowledgeItemType,
     )
 
-# Default enterprise UUID — mirrors SingleTenantProvider.DEFAULT_ENTERPRISE_ID
+# Default enterprise UUID — mirrors STANDALONE_ENTERPRISE_ID
 # and migration 006's seeded row. Tests that build orgs/users without a
 # specific enterprise context anchor to this row.
 DEFAULT_TEST_ENTERPRISE_ID = "00000000-0000-0000-0000-000000000002"

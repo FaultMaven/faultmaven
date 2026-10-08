@@ -61,7 +61,6 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
     DatabaseKnowledgeItemRepository,
 )
-from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
 pytestmark = pytest.mark.integration
 
@@ -295,7 +294,7 @@ async def test_a_pack_ingested_runbook_carries_the_standalone_enterprise(
     That is the value #1775's read conjunct will accept for the global arm, and
     it is what every production pack ingestion passes (web-startup bootstrap,
     ``fm-reset-kb`` and the ``kb_seed`` job all hand ``bootstrap_kb``
-    ``SingleTenantProvider.DEFAULT_ENTERPRISE_ID``).
+    ``STANDALONE_ENTERPRISE_ID``).
     """
     pack_dir, item_id = _write_pack(tmp_path)
 
@@ -303,7 +302,7 @@ async def test_a_pack_ingested_runbook_carries_the_standalone_enterprise(
         result = await kb_init.bootstrap_kb(
             knowledge_service=service,
             db_session_factory=session_factory,
-            enterprise_id=SingleTenantProvider.DEFAULT_ENTERPRISE_ID,
+            enterprise_id=STANDALONE_ENTERPRISE_ID,
             project_root=tmp_path,
             pack_dir=pack_dir,
         )

@@ -28,19 +28,19 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.exceptions import ConflictError
 from faultmaven.modules.knowledge.domain.models.conversion import DraftStatus
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
-from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 from faultmaven.utils.runbook_id import RunbookPathEscape
 
 #: The standalone deployment's one enterprise — the ISOLATION key every row
 #: below is stamped with (ADR-017 D1). It was called ``ORG`` while the
 #: organization was the isolation boundary; the provider constant it reads has
 #: already moved, so the name was the only thing still saying "organization".
-ENTERPRISE_ID = SingleTenantProvider.DEFAULT_ENTERPRISE_ID
+ENTERPRISE_ID = STANDALONE_ENTERPRISE_ID
 
 #: A billing organization inside that enterprise (ADR-017 D2). Seeded only as a
 #: parent row; no row these tests write carries it and no path they exercise

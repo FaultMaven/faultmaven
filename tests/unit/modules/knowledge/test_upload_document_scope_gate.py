@@ -235,7 +235,7 @@ def test_upload_stamps_the_session_enterprise_not_a_sentinel():
     """#1143, made reachable by #1377.
 
     `KnowledgeService.upload_document` stamped
-    `SingleTenantProvider.DEFAULT_ENTERPRISE_ID` on `uploaded_files`,
+    `STANDALONE_ENTERPRISE_ID` on `uploaded_files`,
     `conversion_jobs`, `conversion_drafts`, `knowledge_items` and the
     `resource_shares` row. That was harmless while the route refused every
     upload under multi with the platform-tier gate — the path was unreachable
@@ -261,7 +261,7 @@ def test_upload_stamps_the_session_enterprise_not_a_sentinel():
         "writable_enterprise_id" in source
     ), "upload_document no longer resolves the enterprise from the session"
     assert (
-        "DEFAULT_ENTERPRISE_ID" not in source
+        "STANDALONE_ENTERPRISE_ID" not in source
     ), "upload_document stamps a hardcoded single-tenant sentinel again"
 
     # And the helper it now uses really does follow the bound session, which is

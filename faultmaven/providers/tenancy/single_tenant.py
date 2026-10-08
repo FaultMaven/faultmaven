@@ -50,13 +50,6 @@ class SingleTenantProvider(TenantProvider):
         startup.py).
     """
 
-    DEFAULT_ENTERPRISE_ID = STANDALONE_ENTERPRISE_ID
-    DEFAULT_ENTERPRISE_SLUG = STANDALONE_ENTERPRISE_SLUG
-    DEFAULT_ENTERPRISE_NAME = STANDALONE_ENTERPRISE_NAME
-
-    DEFAULT_TEAM_ID = STANDALONE_TEAM_ID
-    DEFAULT_TEAM_NAME = STANDALONE_TEAM_NAME
-
     def __init__(
         self,
         enterprise_repository: Optional[IEnterpriseRepository] = None,
@@ -100,16 +93,16 @@ class SingleTenantProvider(TenantProvider):
             return None
 
         existing = await self.enterprise_repository.get_enterprise(
-            self.DEFAULT_ENTERPRISE_ID
+            STANDALONE_ENTERPRISE_ID
         )
         if existing:
             return existing
 
         now = datetime.now(timezone.utc)
         default_enterprise = Enterprise(
-            enterprise_id=self.DEFAULT_ENTERPRISE_ID,
-            slug=self.DEFAULT_ENTERPRISE_SLUG,
-            name=self.DEFAULT_ENTERPRISE_NAME,
+            enterprise_id=STANDALONE_ENTERPRISE_ID,
+            slug=STANDALONE_ENTERPRISE_SLUG,
+            name=STANDALONE_ENTERPRISE_NAME,
             plan_tier=EnterprisePlanTier.PRO,
             max_members=100,
             max_cases=None,
@@ -144,16 +137,16 @@ class SingleTenantProvider(TenantProvider):
             return None
 
         existing = await self.team_repository.get_team(
-            self.DEFAULT_ENTERPRISE_ID, self.DEFAULT_TEAM_ID
+            STANDALONE_ENTERPRISE_ID, STANDALONE_TEAM_ID
         )
         if existing:
             return existing
 
         now = datetime.now(timezone.utc)
         default_team = Team(
-            team_id=self.DEFAULT_TEAM_ID,
-            enterprise_id=self.DEFAULT_ENTERPRISE_ID,
-            name=self.DEFAULT_TEAM_NAME,
+            team_id=STANDALONE_TEAM_ID,
+            enterprise_id=STANDALONE_ENTERPRISE_ID,
+            name=STANDALONE_TEAM_NAME,
             description="Default team for standalone deployment",
             created_at=now,
             updated_at=now,
