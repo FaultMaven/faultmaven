@@ -1,7 +1,10 @@
 """SingleTenantProvider for standalone (self-hosted) deployments.
 
-Returns a single default **enterprise** for every request. All accounts belong to
-it, which is what makes standalone a one-tenant deployment (ADR-017 D8).
+Owns the single default **enterprise** and team of a standalone deployment and
+seeds them at startup. All accounts belong to the enterprise, which is what makes
+standalone a one-tenant deployment (ADR-017 D8). The per-request binding is not
+here: ``api/middleware/tenant_scope`` forces the Standalone sentinel and discards
+any claim, so a forged claim cannot re-scope a single-tenant deployment.
 
 There is deliberately no default *organization*: the organization is a billing
 target, and nobody is billed for a self-hosted deployment. ``organization_id`` on
@@ -18,7 +21,6 @@ from faultmaven.config.constants import (
     STANDALONE_TEAM_ID,
     STANDALONE_TEAM_NAME,
 )
-from faultmaven.exceptions import NotFoundError
 from faultmaven.models.interfaces_user import (
     Enterprise,
     EnterprisePlanTier,
@@ -26,17 +28,14 @@ from faultmaven.models.interfaces_user import (
     ITeamRepository,
     Team,
 )
-from faultmaven.providers.tenancy.base import TenantProvider, TenantUser
-
-# Re-exported for callers that import the module-level symbol.
-DEFAULT_ENTERPRISE_ID = STANDALONE_ENTERPRISE_ID
+from faultmaven.providers.tenancy.base import TenantProvider
 
 
 class SingleTenantProvider(TenantProvider):
     """Single-tenant provider for standalone (self-hosted) deployments.
 
     Behavior:
-    - Returns a single default enterprise for all requests
+    - Seeds a single default enterprise and team
     - All accounts belong to that enterprise
     - Simplifies local development and standalone deployments
 
@@ -48,15 +47,8 @@ class SingleTenantProvider(TenantProvider):
     Design Notes:
         The default enterprise is seeded by the migration baseline and
         re-ensured by the startup bootstrapper (see faultmaven/bootstrap/
-        startup.py), then cached for performance.
+        startup.py).
     """
-
-    DEFAULT_ENTERPRISE_ID = STANDALONE_ENTERPRISE_ID
-    DEFAULT_ENTERPRISE_SLUG = STANDALONE_ENTERPRISE_SLUG
-    DEFAULT_ENTERPRISE_NAME = STANDALONE_ENTERPRISE_NAME
-
-    DEFAULT_TEAM_ID = STANDALONE_TEAM_ID
-    DEFAULT_TEAM_NAME = STANDALONE_TEAM_NAME
 
     def __init__(
         self,
@@ -68,8 +60,7 @@ class SingleTenantProvider(TenantProvider):
         Args:
             enterprise_repository: Repository for enterprise persistence. When
                 absent, ensure_default_enterprise_exists() is a no-op (the
-                migration baseline's own seed is the source of truth) and
-                get_default_enterprise() raises NotFoundError.
+                migration baseline's own seed is the source of truth).
             team_repository: Repository for team persistence. Optional — when
                 absent, ensure_default_team_exists() is a no-op. Used only to
                 seed the default team row (schema/relationship completeness);
@@ -77,51 +68,6 @@ class SingleTenantProvider(TenantProvider):
         """
         self.enterprise_repository = enterprise_repository
         self.team_repository = team_repository
-        self._default_enterprise: Optional[Enterprise] = None
-        self._default_team: Optional[Team] = None
-
-    async def get_current_enterprise(
-        self, current_user: TenantUser, enterprise_id: Optional[str] = None
-    ) -> Enterprise:
-        """Always returns the default enterprise (ignores ``enterprise_id``).
-
-        Ignoring the argument is the standalone re-leak guard: a forged claim
-        cannot re-scope a single-tenant deployment.
-
-        Args:
-            current_user: Authenticated user (not used in single-tenant)
-            enterprise_id: Ignored in single-tenant mode
-
-        Returns:
-            Enterprise: The default enterprise
-
-        Raises:
-            NotFoundError: If the default enterprise doesn't exist
-        """
-        return await self.get_default_enterprise()
-
-    async def get_default_enterprise(self) -> Enterprise:
-        """Get the default enterprise, from cache or from the database.
-
-        Returns:
-            Enterprise: The default enterprise
-
-        Raises:
-            NotFoundError: If the default enterprise is not found (indicates the
-                migration baseline's seed never ran)
-        """
-        if self._default_enterprise is None:
-            enterprise = None
-            if self.enterprise_repository is not None:
-                enterprise = await self.enterprise_repository.get_enterprise(
-                    self.DEFAULT_ENTERPRISE_ID
-                )
-            if enterprise is None:
-                raise NotFoundError(
-                    resource_type="Enterprise", resource_id=self.DEFAULT_ENTERPRISE_ID
-                )
-            self._default_enterprise = enterprise
-        return self._default_enterprise
 
     async def is_multi_tenant(self) -> bool:
         """Single-tenant mode."""
@@ -147,17 +93,16 @@ class SingleTenantProvider(TenantProvider):
             return None
 
         existing = await self.enterprise_repository.get_enterprise(
-            self.DEFAULT_ENTERPRISE_ID
+            STANDALONE_ENTERPRISE_ID
         )
         if existing:
-            self._default_enterprise = existing
             return existing
 
         now = datetime.now(timezone.utc)
         default_enterprise = Enterprise(
-            enterprise_id=self.DEFAULT_ENTERPRISE_ID,
-            slug=self.DEFAULT_ENTERPRISE_SLUG,
-            name=self.DEFAULT_ENTERPRISE_NAME,
+            enterprise_id=STANDALONE_ENTERPRISE_ID,
+            slug=STANDALONE_ENTERPRISE_SLUG,
+            name=STANDALONE_ENTERPRISE_NAME,
             plan_tier=EnterprisePlanTier.PRO,
             max_members=100,
             max_cases=None,
@@ -166,7 +111,6 @@ class SingleTenantProvider(TenantProvider):
             updated_at=now,
         )
         created = await self.enterprise_repository.create_enterprise(default_enterprise)
-        self._default_enterprise = created
         return created
 
     async def ensure_default_team_exists(self) -> Optional[Team]:
@@ -193,21 +137,19 @@ class SingleTenantProvider(TenantProvider):
             return None
 
         existing = await self.team_repository.get_team(
-            self.DEFAULT_ENTERPRISE_ID, self.DEFAULT_TEAM_ID
+            STANDALONE_ENTERPRISE_ID, STANDALONE_TEAM_ID
         )
         if existing:
-            self._default_team = existing
             return existing
 
         now = datetime.now(timezone.utc)
         default_team = Team(
-            team_id=self.DEFAULT_TEAM_ID,
-            enterprise_id=self.DEFAULT_ENTERPRISE_ID,
-            name=self.DEFAULT_TEAM_NAME,
+            team_id=STANDALONE_TEAM_ID,
+            enterprise_id=STANDALONE_ENTERPRISE_ID,
+            name=STANDALONE_TEAM_NAME,
             description="Default team for standalone deployment",
             created_at=now,
             updated_at=now,
         )
         created_team = await self.team_repository.create_team(default_team)
-        self._default_team = created_team
         return created_team

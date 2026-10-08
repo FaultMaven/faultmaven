@@ -98,7 +98,6 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     avalidate_and_score,
 )
 from faultmaven.modules.knowledge.taxonomy import RunbookSeverity, render_vocabulary
-from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 from faultmaven.utils.frontmatter import match_frontmatter
 from faultmaven.utils.line_endings import normalize_line_endings
 from faultmaven.utils.runbook_id import (
@@ -111,15 +110,6 @@ from faultmaven.utils.runbook_id import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Single-tenant default enterprise. It is the *contextvar's* default (see
-# ``config.tenant_context``), not a fallback any writer here applies directly:
-# stamping this constant on a write is only correct in a single-tenant
-# deployment, and under ``TENANT_PROVIDER=multi`` it is the sentinel enterprise,
-# which no tenant session may write (#1143). Writers resolve the tenant through
-# :func:`writable_enterprise_id` instead. No production code reads this any more;
-# it stays exported because the tests name the single-tenant enterprise by it.
-DEFAULT_ENTERPRISE_ID = SingleTenantProvider.DEFAULT_ENTERPRISE_ID
 
 
 # =============================================================================

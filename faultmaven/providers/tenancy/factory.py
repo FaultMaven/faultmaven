@@ -70,9 +70,10 @@ def create_tenant_provider(
     """Build the configured tenant provider (``single`` or ``multi``).
 
     Args:
-        enterprise_repository: Enterprise repository. The single-tenant default
-            uses it for its default-enterprise bootstrap; the multi-tenant
-            provider resolves the request's tenant through it.
+        enterprise_repository: Enterprise repository, used by the single-tenant
+            default for its default-enterprise bootstrap. The multi-tenant
+            provider holds no repository: the request's enterprise is bound by
+            ``tenant_scope`` from the verified claim.
         team_repository: Team repository, used by the single-tenant default to
             seed the default team row. The multi-tenant provider does not use it.
 
@@ -98,7 +99,7 @@ def create_tenant_provider(
             logger.critical(MULTI_REQUIRES_CLOUD_MSG)
             raise TenancyConfigurationError(MULTI_REQUIRES_CLOUD_MSG)
         logger.info("Tenant provider: built-in 'multi' (multi-tenant)")
-        return MultiTenantProvider(enterprise_repository=enterprise_repository)
+        return MultiTenantProvider()
 
     msg = (
         f"TENANT_PROVIDER='{requested}' is not a recognized provider "

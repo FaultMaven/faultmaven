@@ -504,7 +504,6 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
     app.state.enhanced_agent_service = container.get_enhanced_agent_service()
     app.state.orchestration_service = container.get_orchestration_service()
     app.state.data_service = container.get_data_service()
-    app.state.tenant_provider = container.get_tenant_provider()
     # Organization rows (the tenant substrate, ADR-010 D4). Management is the
     # hosted admin composed module; the core exposes the repository so read
     # paths like the /auth/me tenant label resolve it through DI.

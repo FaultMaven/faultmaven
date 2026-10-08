@@ -1962,19 +1962,16 @@ class KnowledgeService:
         the already tenant-isolated set.
         """
         try:
+            from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
             from faultmaven.modules.knowledge.domain.models.knowledge_item import (
                 KnowledgeItemType,
             )
             from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
                 DatabaseKnowledgeItemRepository,
             )
-            from faultmaven.providers.tenancy.single_tenant import (
-                SingleTenantProvider,
-            )
 
             enterprise_id = (
-                getattr(user, "enterprise_id", None)
-                or SingleTenantProvider.DEFAULT_ENTERPRISE_ID
+                getattr(user, "enterprise_id", None) or STANDALONE_ENTERPRISE_ID
             )
             user_id = getattr(user, "user_id", None) if user else None
 
@@ -2200,16 +2197,13 @@ class KnowledgeService:
             if not document_id:
                 return None
 
+            from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
             from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
                 DatabaseKnowledgeItemRepository,
             )
-            from faultmaven.providers.tenancy.single_tenant import (
-                SingleTenantProvider,
-            )
 
             enterprise_id = (
-                getattr(user, "enterprise_id", None)
-                or SingleTenantProvider.DEFAULT_ENTERPRISE_ID
+                getattr(user, "enterprise_id", None) or STANDALONE_ENTERPRISE_ID
             )
             user_id = getattr(user, "user_id", None) if user else None
 
@@ -2578,18 +2572,17 @@ class KnowledgeService:
         creation order (#1288).
         """
         from faultmaven.api.v1.utils.parsing import normalize_tags_field
+        from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
         from faultmaven.modules.knowledge.domain.models.knowledge_item import (
             KnowledgeItemType,
         )
         from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
             DatabaseKnowledgeItemRepository,
         )
-        from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
         try:
             enterprise_id = (
-                getattr(user, "enterprise_id", None)
-                or SingleTenantProvider.DEFAULT_ENTERPRISE_ID
+                getattr(user, "enterprise_id", None) or STANDALONE_ENTERPRISE_ID
             )
             user_id = getattr(user, "user_id", None) if user else None
             may_read_content = _may_read_document_content(user)

@@ -15,12 +15,12 @@ import pytest
 
 from faultmaven.config.constants import (
     STANDALONE_ENTERPRISE_ID,
+    STANDALONE_ENTERPRISE_NAME,
+    STANDALONE_ENTERPRISE_SLUG,
     STANDALONE_TEAM_ID,
     STANDALONE_TEAM_NAME,
 )
-from faultmaven.exceptions import NotFoundError
 from faultmaven.models.interfaces_user import Enterprise, EnterprisePlanTier, Team
-from faultmaven.modules.auth.domain.models.user import User
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
 
@@ -67,55 +67,16 @@ def provider(enterprises, teams):
     )
 
 
-def _user() -> User:
-    return User(
-        user_id="user_1",
-        email="u@example.com",
-        hashed_password="h",
-        full_name="U",
-    )
+async def test_there_is_no_per_request_resolution_left_on_the_provider(provider):
+    """Removed in #1891. The standalone re-leak guard lives at the binder.
 
-
-async def test_every_request_resolves_the_one_enterprise(provider, enterprises):
-    enterprises.get_enterprise.return_value = _enterprise()
-
-    resolved = await provider.get_current_enterprise(current_user=_user())
-
-    assert resolved.enterprise_id == STANDALONE_ENTERPRISE_ID
-
-
-async def test_an_injected_enterprise_is_ignored(provider, enterprises):
-    """The standalone re-leak guard (ADR-010).
-
-    A forged claim must not re-scope a single-tenant deployment, so the argument
-    is not merely defaulted — it is discarded.
+    ``api/middleware/tenant_scope`` forces the Standalone sentinel and discards
+    any claim (``test_single_tenant_forces_standalone_ignoring_the_claim``), so a
+    forged claim can neither re-scope a single-tenant deployment nor probe for a
+    row. The provider only seeds.
     """
-    enterprises.get_enterprise.return_value = _enterprise()
-
-    resolved = await provider.get_current_enterprise(
-        current_user=_user(), enterprise_id="ent_somebody_elses"
-    )
-
-    assert resolved.enterprise_id == STANDALONE_ENTERPRISE_ID
-    enterprises.get_enterprise.assert_awaited_once_with(STANDALONE_ENTERPRISE_ID)
-
-
-async def test_the_default_enterprise_is_cached(provider, enterprises):
-    enterprises.get_enterprise.return_value = _enterprise()
-
-    first = await provider.get_default_enterprise()
-    second = await provider.get_default_enterprise()
-
-    assert first is second
-    assert enterprises.get_enterprise.await_count == 1
-
-
-async def test_a_missing_default_enterprise_is_not_found(provider, enterprises):
-    """The seed did not run. Reported, not invented."""
-    enterprises.get_enterprise.return_value = None
-
-    with pytest.raises(NotFoundError):
-        await provider.get_default_enterprise()
+    assert not hasattr(provider, "get_current_enterprise")
+    assert not hasattr(provider, "get_default_enterprise")
 
 
 async def test_it_reports_itself_single_tenant(provider):
@@ -129,6 +90,8 @@ async def test_ensure_default_enterprise_creates_when_absent(provider, enterpris
     created = await provider.ensure_default_enterprise_exists()
 
     assert created.enterprise_id == STANDALONE_ENTERPRISE_ID
+    assert created.slug == STANDALONE_ENTERPRISE_SLUG
+    assert created.name == STANDALONE_ENTERPRISE_NAME
     assert created.plan_tier is EnterprisePlanTier.PRO
 
 
@@ -150,6 +113,8 @@ async def test_the_default_team_hangs_off_the_enterprise(provider, teams):
     team = await provider.ensure_default_team_exists()
 
     assert team.enterprise_id == STANDALONE_ENTERPRISE_ID
+    assert team.team_id == STANDALONE_TEAM_ID
+    assert team.name == STANDALONE_TEAM_NAME
     assert not hasattr(team, "organization_id")
 
 

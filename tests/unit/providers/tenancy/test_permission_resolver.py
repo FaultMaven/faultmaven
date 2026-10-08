@@ -326,7 +326,7 @@ async def test_standalone_ignores_the_ids():
 async def test_factory_follows_the_tenant_provider(org_repo):
     """The mode is read off the built provider, so there is one decision."""
     single = SingleTenantProvider(enterprise_repository=org_repo)
-    multi_provider = MultiTenantProvider(enterprise_repository=org_repo)
+    multi_provider = MultiTenantProvider()
 
     assert isinstance(
         await create_permission_resolver(single, org_repo),

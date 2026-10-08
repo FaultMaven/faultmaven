@@ -418,10 +418,11 @@ async def test_an_out_of_band_org_never_overrides_the_claim(client, surface):
 
     Asserting a negative on purpose. The binder reads exactly one thing — the
     verified ``enterprise_id`` claim — and this is the guard against that
-    quietly gaining a second input. ``test_standalone_isolation_guard.py``
-    forbids header-sourced tenancy in the core by source scan; this is its
-    behavioural counterpart on the multi-tenant arm, where an injected org would
-    name a *real* other tenant rather than being ignored by construction.
+    quietly gaining a second input. ``test_tenant_scope.py::
+    test_single_tenant_forces_standalone_ignoring_the_claim`` pins the
+    single-tenant arm, where an injected id is discarded by construction; this is
+    its behavioural counterpart on the multi-tenant arm, where an injected org
+    would name a *real* other tenant.
     """
     status, org = await _bound_org(client, _mint(enterprise_id=ORG_A), **surface)
 

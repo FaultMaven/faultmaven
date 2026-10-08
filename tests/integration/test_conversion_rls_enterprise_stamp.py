@@ -51,6 +51,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.tenant_context import (
     _current_enterprise_id,
     get_current_enterprise_id,
@@ -74,7 +75,6 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.job_persist
     _persist_job,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
-    DEFAULT_ENTERPRISE_ID,
     ConversionService,
 )
 from tests.utils import seed_enterprises
@@ -342,7 +342,7 @@ async def test_sentinel_enterprise_stamp_is_refused_under_tenant_rls(
     try:
         with pytest.raises(DBAPIError) as exc:
             await _persist(
-                service, f"conv_{uuid4().hex[:12]}", DEFAULT_ENTERPRISE_ID, tmp_path
+                service, f"conv_{uuid4().hex[:12]}", STANDALONE_ENTERPRISE_ID, tmp_path
             )
     finally:
         _current_enterprise_id.reset(token)

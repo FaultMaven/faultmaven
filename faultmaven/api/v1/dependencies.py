@@ -33,7 +33,6 @@ from ...modules.auth.contracts import IUserQuery
 # Lazy import to avoid circular dependency - DataService, SessionService imported in functions or TYPE_CHECKING
 # OLD: from ...services.agentic.orchestration.agent_service import AgentService (ARCHIVED)
 from ...modules.preprocessing import PreprocessingService
-from ...providers.tenancy.base import TenantProvider
 
 # Type hints for lazy imports
 if TYPE_CHECKING:
@@ -157,14 +156,6 @@ async def get_case_repository(request: Request) -> Optional[Any]:
     except Exception:
         # Case repository is optional - return None if not available
         return None
-
-
-async def get_tenant_provider(request: Request) -> Optional[TenantProvider]:
-    """Get TenantProvider instance from app.state (TASK-023/024).
-
-    Returns TenantProvider for multi-tenant isolation in API endpoints.
-    """
-    return getattr(request.app.state, "tenant_provider", None)
 
 
 async def get_report_generation_service(request: Request):

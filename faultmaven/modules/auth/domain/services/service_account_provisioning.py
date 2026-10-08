@@ -255,13 +255,13 @@ def _validate_enterprise(enterprise_id: Optional[str]) -> None:
     """
     # Deferred: tenancy config pulls in settings, which must not be imported at
     # auth-module import time (same discipline as ``resolve_enterprise_claim``).
+    from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
     from faultmaven.providers.tenancy.factory import (
         BUILTIN_MULTI,
         requested_tenant_provider,
     )
-    from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
-    if enterprise_id == SingleTenantProvider.DEFAULT_ENTERPRISE_ID:
+    if enterprise_id == STANDALONE_ENTERPRISE_ID:
         raise ServiceAccountProvisioningError(
             f"enterprise_id {enterprise_id!r} is the Standalone sentinel enterprise, "
             "which identifies the single-tenant deployment itself and is not a "
