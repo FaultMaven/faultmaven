@@ -21,9 +21,13 @@ a new revision moves the constraint.
 Dialects
 --------
 
-PostgreSQL drops and re-adds the constraint in place. No row changes, so no
-``row_security`` setting is needed: every existing row already satisfies the
-wider set.
+PostgreSQL drops and re-adds the constraint in place. No row changes, so the
+upgrade needs no ``row_security`` setting: every existing row already
+satisfies the wider set. The downgrade's guard COUNTS rows, and runs that count
+under ``SET LOCAL row_security = off`` (restored to ``DEFAULT`` after), the
+choice and reasoning of revisions 006 and 007: the count is tenant-wide by
+construction, and a role the policy would filter raises rather than counting a
+subset.
 
 SQLite cannot alter a CHECK, so the table is rebuilt (``batch_alter_table`` from
 a frozen copy of the baseline definition, ``recreate="always"``). Unlike 007's
@@ -73,6 +77,15 @@ SEVERITY_WITHOUT_INFO = (
 )
 
 COUNT_INFO_ROWS = text("SELECT COUNT(*) FROM conversion_drafts WHERE severity = 'info'")
+
+#: ``conversion_drafts`` is tenant-scoped. The count runs with row security off
+#: so it is every enterprise's by construction, as 006's and 007's UPDATEs are:
+#: the migrating role owns the table and is exempt anyway, and a role the
+#: policy would filter raises here instead of counting one enterprise's rows and
+#: letting the downgrade proceed over the others'.
+ROW_SECURITY_OFF = "SET LOCAL row_security = off"
+#: Back to the value before, for whatever runs later in the same transaction.
+ROW_SECURITY_RESTORED = "SET LOCAL row_security TO DEFAULT"
 
 _TAGS_ARRAY = sa.Text().with_variant(
     postgresql.ARRAY(sa.String(length=50)), "postgresql"
@@ -183,9 +196,16 @@ def _set_severity_check(*, check: str, old_check: str) -> None:
 
 def _refuse_while_info_rows_exist() -> None:
     """The four-value CHECK cannot hold an ``info`` row; refuse, naming them."""
-    if op.get_context().as_sql:
+    context = op.get_context()
+    if context.as_sql:
         return
-    count = op.get_bind().execute(COUNT_INFO_ROWS).scalar()
+    postgresql_dialect = context.dialect.name == "postgresql"
+    bind = op.get_bind()
+    if postgresql_dialect:
+        bind.execute(text(ROW_SECURITY_OFF))
+    count = bind.execute(COUNT_INFO_ROWS).scalar()
+    if postgresql_dialect:
+        bind.execute(text(ROW_SECURITY_RESTORED))
     if count:
         raise RuntimeError(
             f"008 downgrade refused: {count} conversion_drafts row(s) hold "

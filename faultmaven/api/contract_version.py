@@ -1793,6 +1793,11 @@ asked to accept, and it belongs to a person.
 # validator passed with `severity: info` failed verify on a database CHECK that
 # had lost `info`; it now verifies. No client sends a value outside the lists:
 # faultmaven-dashboard's `CreateRunbookForm` offers exactly these.
+# The runbook validator now matches these vocabularies exactly, so a runbook
+# upload (`POST /knowledge/documents`) whose frontmatter says `domain: Database`,
+# `difficulty: foo` or `severity: 3` now gets a 422 naming the field. The first
+# two used to be accepted; `severity: 3` (and `severity: High`) passed the gate
+# and then failed on the draft row's CHECK.
 #
 # Clients: faultmaven-dashboard's `CreateRunbookForm` reads the generated enums
 # instead of its hand-kept lists when it adopts this version.

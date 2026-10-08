@@ -987,6 +987,60 @@ class TestRunbookSeverityRevision:
                     referencing.append(table)
         assert referencing == []
 
+    def test_the_downgrade_count_runs_with_row_security_off_on_postgresql(self):
+        """``--sql`` cannot show it (offline, the guard has no rows to count),
+        so the guard runs against a recording connection: off, the count, back
+        to the value before — tenant-wide by construction, as in 006 and 007.
+        On SQLite, which has no row security, only the count runs."""
+        import importlib.util
+
+        path = next(
+            (PROJECT_ROOT / "alembic" / "versions").glob(
+                f"*_{RUNBOOK_SEVERITY_REVISION}_*.py"
+            )
+        )
+        spec = importlib.util.spec_from_file_location("rev_008", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        def run_guard(dialect: str) -> list[str]:
+            executed: list[str] = []
+
+            class _Result:
+                @staticmethod
+                def scalar():
+                    return 0
+
+            class _Bind:
+                def execute(self, statement):
+                    executed.append(str(statement))
+                    return _Result()
+
+            class _Context:
+                as_sql = False
+
+            _Context.dialect = type("D", (), {"name": dialect})()
+
+            class _Op:
+                @staticmethod
+                def get_context():
+                    return _Context()
+
+                @staticmethod
+                def get_bind():
+                    return _Bind()
+
+            module.op = _Op()
+            module._refuse_while_info_rows_exist()
+            return executed
+
+        assert run_guard("postgresql") == [
+            "SET LOCAL row_security = off",
+            str(module.COUNT_INFO_ROWS),
+            "SET LOCAL row_security TO DEFAULT",
+        ]
+        assert run_guard("sqlite") == [str(module.COUNT_INFO_ROWS)]
+
     def test_the_postgresql_statements_alter_the_constraint_in_place(self):
         """Offline (``--sql``): drop and re-add, no data statement, no
         ``row_security`` change."""

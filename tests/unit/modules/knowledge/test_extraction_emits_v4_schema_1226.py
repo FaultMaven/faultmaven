@@ -52,6 +52,7 @@ from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_reposito
 )
 from faultmaven.modules.knowledge.taxonomy import RunbookDomain, vocabulary
 from tests.runbook_samples import valid_runbook
+from tests.taxonomy_spec import spec_vocabularies
 from tests.utils import (
     CaseReadDouble,
     SanitizerDouble,
@@ -339,6 +340,19 @@ class TestThePromptAsksForV4:
         for domain in vocabulary(RunbookDomain):
             assert domain in prompt, f"prompt omits domain {domain!r}"
         assert "`domain` MUST be one of:" in prompt
+
+    async def test_the_prompt_offers_the_spec_vocabularies(self):
+        """The case path is told to infer ``domain`` and ``severity`` "using
+        only the controlled vocabularies", and was never shown the severity
+        one (#1886). Compared with the spec's table, not with the code's own
+        rendering, so a renderer that dropped a value fails here."""
+        provider = ScriptedProvider(valid_runbook())
+        await _extract(_service(provider))
+
+        spec = spec_vocabularies()
+        prompt = provider.prompts[0]
+        assert f"`domain` MUST be one of: {', '.join(spec['domain'])}." in prompt
+        assert f"`severity` MUST be one of: {', '.join(spec['severity'])}." in prompt
 
     async def test_the_prompt_forbids_a_multi_step_indicator_token(self):
         """``[Step 2, Step 3]`` is not a token — INDICATOR_TOKEN_RE does not

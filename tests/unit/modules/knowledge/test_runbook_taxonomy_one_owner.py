@@ -65,13 +65,10 @@ from faultmaven.modules.knowledge.taxonomy import (
     vocabulary,
 )
 from tests.runbook_samples import valid_runbook
+from tests.taxonomy_spec import SPEC, spec_vocabularies
 
 pytestmark = pytest.mark.unit
 
-SPEC = (
-    Path(__file__).resolve().parents[4]
-    / "docs/architecture/knowledge-and-ai/runbook-content-architecture.md"
-)
 
 #: Every CHECK built from a vocabulary: (table, constraint, column, enum).
 CONSTRAINED_COLUMNS = [
@@ -84,24 +81,6 @@ CONSTRAINED_COLUMNS = [
     ("knowledge_items", "knowledge_items_scope_check", "scope", KnowledgeScope),
     ("conversion_jobs", "conversion_jobs_scope_check", "scope", KnowledgeScope),
 ]
-
-
-def _spec_vocabularies() -> dict[str, list[str]]:
-    """The backticked values in the Purpose cell of each §Taxonomy Schema row.
-
-    Read from the table rather than restated, so this test is a comparison of
-    the two copies and not a third one.
-    """
-    text = SPEC.read_text(encoding="utf-8")
-    section = text.split("### Taxonomy Schema", 1)[1].split("\n### ", 1)[0]
-    table: dict[str, list[str]] = {}
-    for line in section.splitlines():
-        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        if len(cells) != 4 or not cells[0].startswith("`"):
-            continue
-        field = cells[0].strip("`")
-        table[field] = re.findall(r"`([^`]+)`", cells[3])
-    return table
 
 
 def _check_values(sqltext: str, column: str) -> list[str]:
@@ -120,13 +99,13 @@ def _check_values(sqltext: str, column: str) -> list[str]:
 def test_every_vocabulary_is_the_spec_table(field: str, enum_cls: type[Enum]):
     """Same values, same order. Mutation: drop ``INFO`` from
     ``RunbookSeverity`` (or a value from the table) and this fails."""
-    assert list(vocabulary(enum_cls)) == _spec_vocabularies()[field]
+    assert list(vocabulary(enum_cls)) == spec_vocabularies()[field]
 
 
 def test_the_spec_table_is_read_at_all():
     """A positive control: a parser that found no rows would pass the test
     above vacuously for every field it then failed to look up."""
-    table = _spec_vocabularies()
+    table = spec_vocabularies()
     assert {field for field, _ in TAXONOMY_FIELDS} <= set(table)
     assert "info" in table["severity"]
 
@@ -198,7 +177,8 @@ def test_the_validator_rejects_a_value_outside_the_enum(field, enum_cls, bad):
     value = vocabulary(enum_cls)[0].upper() if bad == "UPPER" else bad
     errors = _errors_for(_with(field, value), field)
     assert errors, f"{field}: {value!r} passed"
-    assert render_vocabulary(enum_cls) in errors[0]
+    # The allowed list the author is shown is the spec's, whole.
+    assert ", ".join(spec_vocabularies()[field]) in errors[0]
 
 
 def test_the_validator_rejects_an_off_vocabulary_symptom_class():
@@ -219,36 +199,24 @@ def test_member_value_admits_only_exact_members():
 # ---------------------------------------------------------------------------
 
 
-def test_the_analysis_prompt_renders_every_vocabulary_it_names():
-    assert f'"severity": "{render_vocabulary(RunbookSeverity, "|")}"' in (
-        ANALYSIS_SYSTEM_PROMPT
-    )
-    assert f'"domain": "{render_vocabulary(RunbookDomain, "|")}"' in (
-        ANALYSIS_SYSTEM_PROMPT
-    )
-    assert render_vocabulary(SymptomClass) in ANALYSIS_SYSTEM_PROMPT
+# Each prompt is compared with the SPEC's vocabulary, never with
+# ``render_vocabulary`` of the enum: that would compare the code with itself,
+# and a renderer that dropped ``info`` would pass (#1886 review). The case
+# extraction prompt is checked on the real extraction path, in
+# ``test_extraction_emits_v4_schema_1226.py``.
+
+
+def test_the_analysis_prompt_offers_the_spec_vocabularies():
+    spec = spec_vocabularies()
+    assert f'"severity": "{"|".join(spec["severity"])}"' in ANALYSIS_SYSTEM_PROMPT
+    assert f'"domain": "{"|".join(spec["domain"])}"' in ANALYSIS_SYSTEM_PROMPT
+    assert ", ".join(spec["symptom_class"]) in ANALYSIS_SYSTEM_PROMPT
     assert "__" not in ANALYSIS_SYSTEM_PROMPT.replace("__init__", "")
 
 
-def test_the_conversion_prompt_renders_the_symptom_vocabulary():
-    assert render_vocabulary(SymptomClass) in CONVERSION_SYSTEM_PROMPT
+def test_the_conversion_prompt_offers_the_spec_symptom_vocabulary():
+    assert ", ".join(spec_vocabularies()["symptom_class"]) in CONVERSION_SYSTEM_PROMPT
     assert "__SYMPTOM_CLASS_VOCAB__" not in CONVERSION_SYSTEM_PROMPT
-
-
-def test_the_case_extraction_prompt_names_the_severity_vocabulary():
-    """The case path is told to infer severity "using only the controlled
-    vocabularies" and was never shown the severity one."""
-    prompt = SuggestionService.EXTRACTION_PROMPT.format(
-        domain_vocab=render_vocabulary(RunbookDomain),
-        severity_vocab=render_vocabulary(RunbookSeverity),
-        today_iso="2026-10-07",
-        source_label="Case c1",
-        case_title="t",
-        case_description="d",
-        messages_section="m",
-        evidence_section="e",
-    )
-    assert f"`severity` MUST be one of: {render_vocabulary(RunbookSeverity)}" in prompt
 
 
 # ---------------------------------------------------------------------------
