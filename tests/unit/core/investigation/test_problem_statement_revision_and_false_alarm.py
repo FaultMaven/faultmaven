@@ -1651,15 +1651,17 @@ class TestTheEnginesFalseAlarmOfferStands:
         feedback = result["case_updated"].turn_history[-1].system_feedback or ""
         assert "TRANSITION NOT PROPOSED" in feedback
 
-    async def test_a_bare_no_then_records_the_decline(self):
+    async def test_a_bare_no_then_records_the_decline_on_the_finding(self):
+        """The decline is a fact about the finding (#1889): recorded there, and
+        never in the deferred-disposition signature list, where no reader
+        matched it and it could only evict a live deferred refusal."""
         engine, case, _ = await _finding_turn(model_proposes="closed")
         case.current_turn += 1
         _respond(engine, _DSU())
         await engine.process_turn(case=case, user_message="no")
         assert case.pending_transition is None
-        assert case.progress.deferred_disposition_declined_signatures == [
-            f"{FALSE_ALARM_CLOSURE_REASON}|4"
-        ]
+        assert case.problem_verification.invalidation.close_declined_at_turn == 5
+        assert case.progress.deferred_disposition_declined_signatures == []
 
     async def test_a_revision_then_withdraws_the_close(self):
         """INV-45: a revision may withdraw the ENGINE's false-alarm close.

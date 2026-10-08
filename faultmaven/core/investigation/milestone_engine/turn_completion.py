@@ -47,7 +47,7 @@ from .response_synthesis import (
     _prose_with_gate_notice,
     is_agent_response_synthesized,
 )
-from .stage_gates import _close_confirmation_suggestions
+from .stage_gates import _close_confirmation_suggestions, declined_close_card
 from .statement_revision import revision_presentation
 from .terminal_replies import (
     _build_resolution_confirmation,
@@ -427,6 +427,18 @@ async def _compose_turn_reply(
         )
         follow_ups = _select_ack_follow_ups(case_updated, summary_failed, remaining)
 
+    # The model re-proposed a close the user declined, and step 2 refused it
+    # (#1889). The close stays one step away: its card is APPENDED to the
+    # follow-ups as settled above, never substituted for them — replacing the
+    # model's suggestions with a lone close button (``override_suggestions``)
+    # would turn the refusal into the re-ask it exists to stop. No terminal
+    # check: nothing reaches the refusal on a terminal case (0a hands its
+    # turns to the terminal path, and step 2's refusal sits behind the legality
+    # check, which admits no target from a terminal state).
+    declined_side = metadata.get("declined_close_card")
+    if declined_side:
+        follow_ups = [*follow_ups, declined_close_card(declined_side)]
+
     # Append the synthesized summary (or skip / failure note) so it
     # appears in chat at the moment of generation. The composed reply
     # is committed by the service, in the turn's one commit, from the
@@ -566,6 +578,9 @@ async def _compose_turn_reply(
             "engine_effective_to_status": _engine_to_status,
             "transition_pivoted": _transition_pivoted,
             "transition_superseded_by_engine": _transition_superseded,
+            # The model's proposal re-asked a close the user declined and was
+            # refused (#1889): ``false_alarm`` or ``deferred``, else None.
+            "transition_refused_as_declined": metadata.get("declined_close_card"),
             "user_confirmed_investigation_emitted": bool(
                 getattr(
                     getattr(response_obj, "state_updates", None),

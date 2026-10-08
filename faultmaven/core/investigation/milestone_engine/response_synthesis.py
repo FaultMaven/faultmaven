@@ -1,6 +1,10 @@
 import logging
 from typing import Any
 
+from faultmaven.core.investigation.problem_status import (
+    is_false_alarm_close,
+    record_false_alarm_close_declined,
+)
 from faultmaven.infrastructure.llm.providers import (
     StopReason,
     normalize_stop_reason,
@@ -43,8 +47,22 @@ def _note_engine_disposition_withdrawn(case: "Case", metadata: dict) -> None:
 def _record_deferred_disposition_decline(
     case: "Case", *, superseded_by: "str | None" = None
 ) -> None:
-    """Persist that the user refused an ENGINE-proposed offer, against the
-    state that justified it.
+    """Persist that the user refused a disposition offer, against what
+    justified it.
+
+    **A declined false-alarm close is recorded on the finding**, whoever
+    opened it (#1889): the closure reason is derived from the same finding
+    whether the engine, the model or the user's own status-menu pick asked, so
+    one rationale and one record (``record_false_alarm_close_declined``). It
+    used to land in the signature list below as ``closed_false_alarm|<turn>``,
+    which no reader matched (they key ``verdict|n|leg``) and which could only
+    evict a live deferred refusal from the bounded list; a model- or
+    user-opened one was recorded nowhere. Nothing false-alarm lands in the
+    list any more. The engine offer's ``justifying_signature`` stays on the
+    pending dict as provenance (INV-45's revision gate and
+    ``_note_engine_disposition_withdrawn`` read it), not as a refusal record.
+
+    Everything below is the deferred/resolve signature space.
 
     Shared by both engine proposers (``_maybe_propose_deferred_close`` and
     ``_maybe_propose_confirmed_resolution``), which key the SAME signature
@@ -65,10 +83,14 @@ def _record_deferred_disposition_decline(
     proposer it must silence is keyed on the case.
 
     Scoped to a RESOLVED target on a SUGGEST_RESOLVE case. A declined CLOSE
-    keeps the provenance rule — the deferred-close proposer's rationale ("the
-    fix needs a change window") is not the LLM's rationale for closing, so one
-    says nothing about the other, and no proposer re-fires on close from
-    readiness alone.
+    the model or the user opened keeps the provenance rule — the deferred-close
+    proposer's rationale ("the fix needs a change window") is not the LLM's
+    rationale for closing, so one says nothing about the other, and no
+    proposer re-fires on close from readiness alone. The other direction does
+    bind: a declined ENGINE deferred close refuses the model's close at the
+    same justifying state (``transitions.declined_close_reask``, #1889), since
+    that close derives the same ``solution_deferred`` reason from the same
+    state and is the question the user just answered.
 
     The two are not fully independent, and the honest statement is that they
     share one list: a derived SUGGEST_RESOLVE signature is also what
@@ -95,6 +117,9 @@ def _record_deferred_disposition_decline(
     """
     pending = getattr(case, "pending_transition", None) or {}
     if not getattr(case, "progress", None):
+        return
+    if is_false_alarm_close(pending):
+        record_false_alarm_close_declined(case)
         return
     # A refusal the engine is about to OVERRIDE is not a refusal. When the
     # contradicting pick is CLOSE on a case the closure gate reads as

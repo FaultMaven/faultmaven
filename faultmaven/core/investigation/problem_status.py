@@ -30,7 +30,8 @@ Two more outcomes follow verification besides "verified":
 * **The problem never existed** (a false alarm): ``invalidate_problem``
   (INVALIDATED). The case can be closed, never resolved; nothing progresses
   until new evidence shows a problem (a revision) or the user disputes the
-  finding (``withdraw_invalidation``).
+  finding (``withdraw_invalidation``). A declined close is a fact about the
+  finding and is recorded on it (``record_false_alarm_close_declined``).
 
 The ``*_refusal`` functions are the guards: each returns why a proposal cannot
 be accepted, or None. The transitions assume their guard passed.
@@ -353,6 +354,43 @@ def withdraw_invalidation(case: Case, *, basis: str) -> bool:
     return True
 
 
+def record_false_alarm_close_declined(case: Case) -> None:
+    """The user declined closing the case on the false-alarm finding.
+
+    Recorded on the finding, whoever opened the close: the closure reason is
+    derived from the same finding whichever proposer asked, so one refusal
+    answers all of them. Until this, the engine's decline went into the
+    deferred-disposition signature list, which nothing on the false-alarm side
+    read (and where it could only evict a live deferred refusal), and a model-
+    or user-opened decline was recorded nowhere, so the model re-proposed the
+    close on the next turn (#1889). No signature and no eviction: the record is
+    cleared with the finding, which is the "until a premise moves" rule by
+    construction. The latest decline's turn is kept; the prompt names it.
+    """
+    pv = case.problem_verification
+    if pv is None or pv.invalidation is None:
+        return
+    pv.invalidation.close_declined_at_turn = case.current_turn
+    logger.info(
+        "Case %s: false-alarm close declined at turn %s; held on the finding "
+        "until it is withdrawn, revised or edited",
+        case.case_id,
+        case.current_turn,
+    )
+
+
+def false_alarm_close_declined_at(case: Case) -> int | None:
+    """The turn the user declined closing on the standing false-alarm finding,
+    or None when no finding stands or its close was never declined. Read only
+    while the case is INVALIDATED: a finding carried under a pending revision
+    is answered by the revision's own handshake first."""
+    if case.progress.problem_status != ProblemStatus.INVALIDATED:
+        return None
+    pv = case.problem_verification
+    invalidation = pv.invalidation if pv else None
+    return invalidation.close_declined_at_turn if invalidation else None
+
+
 def _clear_invalidation(case: Case, *, via: str) -> None:
     pv = case.problem_verification
     prior = pv.invalidation.prior_status if pv.invalidation else None
@@ -425,9 +463,10 @@ def is_false_alarm_close(pending: dict | None) -> bool:
 
 
 def is_engine_false_alarm_close(pending: dict | None) -> bool:
-    """Whether ``pending`` is the engine's own false-alarm close offer (it
-    carries the ``justifying_signature`` a decline is recorded against) — the
-    one pending transition a revision may take back and coexist with."""
+    """Whether ``pending`` is the engine's own false-alarm close offer — the
+    one pending transition a revision may take back and coexist with. Its
+    ``justifying_signature`` is provenance only: a decline of any false-alarm
+    close is recorded on the finding (``record_false_alarm_close_declined``)."""
     return is_false_alarm_close(pending) and "justifying_signature" in (pending or {})
 
 

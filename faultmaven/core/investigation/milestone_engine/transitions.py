@@ -6,7 +6,10 @@ from typing import Any
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     pending_gate_verdict,
 )
-from faultmaven.core.investigation.problem_status import record_confirmed_statement
+from faultmaven.core.investigation.problem_status import (
+    false_alarm_close_declined_at,
+    record_confirmed_statement,
+)
 from faultmaven.modules.case.contracts import (
     Case,
     CaseAction,
@@ -28,6 +31,74 @@ from .terminal_replies import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: How a refused re-proposal tells the model what binds it. Conditional, never
+#: a flat ban: a model that obeys a ban never proposes, so a user who later
+#: types "ok, close it" (on Slack, with no status menu) gets no refusal and no
+#: card, and no way to close at all.
+_DIRECTED_ONLY = (
+    "Propose {what} only if the user directs it; the engine then attaches the "
+    "Close action to your reply. Do not propose it unprompted."
+)
+
+
+def declined_close_reask(
+    case: Case, *, closure_verdict: str | None = None
+) -> tuple[str, str] | None:
+    """Whether a transition the model proposes now re-asks a close the user
+    declined, as ``(side, feedback)``, or None (#1889).
+
+    The one read for both declined engine closes:
+
+    * ``false_alarm`` — the user declined closing on the standing false-alarm
+      finding (``ProblemInvalidation.close_declined_at_turn``, whoever opened
+      that close). Gated on the CASE, not on the proposal's target: on an
+      invalidated case a model ``resolved`` pivots to a ``closed_false_alarm``
+      close (resolution readiness is SUGGEST_CLOSE), so a target gate lets the
+      same question back in through ``resolved``.
+    * ``deferred`` — the model's ``closed`` stays CLOSED under the closure
+      verdict (``closure_verdict`` is passed only then) and the signature the
+      engine's deferred close was declined against still holds. That close
+      derives the same ``solution_deferred`` reason from the same state, so it
+      is the question the user just answered.
+
+    The RESOLVE side is not read here: RESOLVED is not user-selectable, so a
+    refused re-proposal would leave every client with no card to offer.
+    """
+    declined_at = false_alarm_close_declined_at(case)
+    if declined_at is not None:
+        return (
+            "false_alarm",
+            "TRANSITION NOT PROPOSED: resolution is not eligible on a false "
+            "alarm, and the user declined closing on this finding at turn "
+            f"{declined_at}. " + _DIRECTED_ONLY.format(what="a close"),
+        )
+    if closure_verdict is None:
+        return None
+    from faultmaven.core.investigation.terminal_transitions import (
+        deferred_disposition_signature,
+    )
+
+    signature = deferred_disposition_signature(case, closure_verdict)
+    if signature in case.progress.deferred_disposition_declined_signatures:
+        return (
+            "deferred",
+            "TRANSITION NOT PROPOSED: the user declined closing this case with "
+            "the solution documented (the deferred-implementation close), and "
+            "nothing that justified that offer has changed since. "
+            + _DIRECTED_ONLY.format(what="that close"),
+        )
+    return None
+
+
+def _refuse_declined_reask(metadata: dict[str, Any], side: str, feedback: str) -> None:
+    """Refuse the model's re-proposal: the feedback for its next turn, and the
+    close card appended to this turn's follow-ups (``declined_close_card``),
+    so a user who did ask still has the close one step away."""
+    _add_system_feedback(metadata, feedback)
+    # Read at the end of the turn: the card is appended once the follow-up
+    # list is settled, and ``transition_compliance`` reports the refusal.
+    metadata["declined_close_card"] = side
 
 
 class TransitionManager:
@@ -428,6 +499,24 @@ class TransitionManager:
                     # Skip downstream proposal processing.
                     proposed = None
 
+            # A declined close binds the model too (#1889). The user's "no" to
+            # closing on a false-alarm finding is recorded on the finding,
+            # whoever asked; while it stands, any proposal the model makes on
+            # the case is the same question again (a ``resolved`` pivots to
+            # the false-alarm close). Checked after legality and before the
+            # same-turn rule so the refusal, not a supersession, is what the
+            # turn reports.
+            if proposed:
+                reask = declined_close_reask(case)
+                if reask is not None:
+                    _refuse_declined_reask(metadata, *reask)
+                    logger.info(
+                        f"Case {case.case_id}: model proposed "
+                        f"{proposed.to_state!r} on a false-alarm finding whose "
+                        f"close the user declined — refused."
+                    )
+                    proposed = None
+
             # The engine's same-turn offer stands (#1885). Every engine opener
             # that runs before this point — the apply step's false-alarm and
             # deferred-disposition proposers, the rca_infeasible stage-gate
@@ -436,10 +525,11 @@ class TransitionManager:
             # and sets ``transition_proposed_this_turn``. The model's proposal
             # must not replace it: ``propose_transition`` builds a fresh dict,
             # so it would erase the offer's provenance (``justifying_signature``,
-            # which a decline is recorded against and which lets a revision
-            # withdraw a false-alarm close, INV-45) and, on a different target,
-            # put an offer in front of the user the engine's own readiness
-            # reading did not make. A DIFFERENT target loses too: the engine
+            # which a deferred or resolve decline is recorded against and which
+            # lets a revision withdraw the engine's false-alarm close, INV-45; a
+            # false-alarm decline is recorded on the finding, #1889) and, on a
+            # different target, put an offer in front of the user the engine's
+            # own readiness reading did not make. A DIFFERENT target loses too: the engine
             # chose its target from the same readiness the model's proposal
             # would be run through, a CLOSE still pivots to RESOLVED at confirm
             # on a resolvable case (INV-37), and the model can propose again
@@ -499,6 +589,9 @@ class TransitionManager:
                 #   HAS_SUBSTANCE / TRIVIAL → propose CLOSED with summary
                 effective_to_status = proposed.to_state
                 needs_info_message: str | None = None
+                # The closure verdict this proposal was read under, when the
+                # closed branch below read one.
+                closing_verdict: str | None = None
 
                 if proposed.to_state == "resolved":
                     readiness = assess_resolution_readiness(case)
@@ -524,6 +617,7 @@ class TransitionManager:
                         summary = _build_resolution_confirmation(case)
                 else:  # closed
                     closure = assess_closure_readiness(case)
+                    closing_verdict = closure.verdict
                     metadata["closure_readiness_verdict"] = closure.verdict
                     if closure.verdict == closure.SUGGEST_RESOLVE:
                         effective_to_status = "resolved"
@@ -535,6 +629,25 @@ class TransitionManager:
                         )
                     else:
                         summary = closure.message
+
+                # The deferred side of #1889: a close at the state the user
+                # already declined the engine's deferred close against. Read
+                # where the closed branch read the closure verdict and kept
+                # CLOSED. A ``resolved`` the resolution check pivots to CLOSED
+                # cannot land on such a state: the deferred proposer offers
+                # only on a validated cause with a fix on record, where
+                # resolution readiness is NEEDS_INFO, and a cause that falls
+                # moves the signature's leg.
+                if effective_to_status == "closed" and closing_verdict is not None:
+                    reask = declined_close_reask(case, closure_verdict=closing_verdict)
+                    if reask is not None:
+                        _refuse_declined_reask(metadata, *reask)
+                        logger.info(
+                            f"Case {case.case_id}: model proposed CLOSED at "
+                            f"the state the user declined the deferred close "
+                            f"against — refused."
+                        )
+                        return case
 
                 propose_transition(
                     case=case,

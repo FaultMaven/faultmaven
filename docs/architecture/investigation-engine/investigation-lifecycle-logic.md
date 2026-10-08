@@ -366,7 +366,15 @@ same space the deferred proposer uses, so declining either silences both until a
 premise moves (fm#1122). The refusal binds whoever opened the offer — an
 LLM-opened one carries no signature of its own, so one is derived at decline
 time; otherwise the backstop, which fires on readiness alone, re-proposes on the
-next turn.
+next turn. A declined deferred close binds the model too (#1889): while its
+signature stands, a model `closed` proposal that the closure check keeps at
+CLOSED is refused (one it pivots to RESOLVED on a resolvable case is not), with
+feedback saying the model may propose it only when the user directs it, and a
+**Close with the solution documented** card appended to the turn's follow-ups.
+The model's re-proposal of a declined RESOLVE is not refused this way: RESOLVED
+is not user-selectable, so a refusal would leave no card to offer. (A
+false-alarm close is not in this signature space at all; its decline is
+recorded on the finding, §1.4.1.)
 
 **Why RESOLVED left the status menu.** It was listed in `USER_SELECTABLE_ACTIONS`
 until the engine could see the readiness bar for itself, and the listing was
@@ -1019,7 +1027,21 @@ eliminated (`causal_absence`), which proves the problem existed. The case moves
 to `invalidated`, the engine offers the close once (INV-46), and resolution is
 not eligible. Declined, the case holds: no hypotheses, updates, chains,
 solutions or mitigations, and no mitigation or solution signal is accepted;
-housekeeping, repair patterns and the stall counter pause. Two exits: new
+housekeeping, repair patterns and the stall counter pause. The decline is a
+fact about the finding and is recorded on it
+(`ProblemInvalidation.close_declined_at_turn`, written by
+`record_false_alarm_close_declined`), whoever opened the close: the engine, the
+model, or the user's own status-menu pick, since each derives the same
+`closed_false_alarm` reason from the same finding (#1889). A finding is
+replaced only after it is cleared, so the record lasts exactly as long as the
+premise it is about. While it stands, a transition the model proposes is
+refused whatever its target (a `resolved` would pivot to this close), the model
+is told the user declined at turn N and may propose a close only when the user
+directs it, and the turn's follow-ups gain one **Close as false alarm** card:
+the status menu's own `status_transition` intent, appended to the model's
+suggestions, never replacing them. A bare "no" is answered with what the hold
+is and what moves it, and the same card; the prompt's false-alarm block, which
+renders on every stage, carries the declined line. Two exits: new
 evidence of a different problem (a revision, which withdraws the engine's close
 offer), or the user disputing the finding (`invalidation_withdrawn`, back to
 where the problem stood before the finding — `verified` if it was, since nothing
