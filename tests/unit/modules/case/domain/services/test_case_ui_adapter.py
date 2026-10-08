@@ -795,3 +795,124 @@ class TestSerialization:
 
         assert ev.collected_at_turn == 0
         assert ev.category == "OTHER"
+
+
+# ============================================================
+# ProblemVerificationData reads the case's own record (#1877)
+# ============================================================
+
+
+def _with_record(case: Case, **fields) -> Case:
+    from faultmaven.modules.case.domain.models.problem import ProblemVerification
+
+    case.problem_verification = ProblemVerification(
+        symptom_statement="Production DNS failing", **fields
+    )
+    return case
+
+
+@pytest.mark.unit
+class TestProblemVerificationReadsTheRecord:
+    def test_values_are_the_records_lowercased(self):
+        from faultmaven.modules.case.domain.models.problem import (
+            TemporalState,
+            UrgencyLevel,
+        )
+
+        case = _with_record(
+            _make_investigating_case(),
+            severity="HIGH",
+            urgency_level=UrgencyLevel.CRITICAL,
+            temporal_state=TemporalState.ONGOING,
+        )
+        pv = transform_case_for_ui(case).problem_verification
+        assert pv.severity == "high"
+        assert pv.urgency_level == "critical"
+        assert pv.temporal_state == "ongoing"
+
+    def test_an_unassessed_record_sends_null_not_a_default(self):
+        case = _with_record(_make_investigating_case())
+        pv = transform_case_for_ui(case).problem_verification
+        assert pv.severity is None
+        assert pv.urgency_level is None
+        assert pv.temporal_state is None
+
+    def test_a_case_with_no_record_sends_null_everywhere(self):
+        case = _make_investigating_case()
+        case.problem_verification = None
+        case.inquiry.problem_confirmation = ProblemConfirmation(
+            problem_type="unavailability", severity_guess="high"
+        )
+        pv = transform_case_for_ui(case).problem_verification
+        assert pv.severity is None
+        assert pv.urgency_level is None
+        assert pv.temporal_state is None
+        assert pv.original_problem_statement is None
+
+    def test_the_inquiry_guess_is_not_read_around_the_record(self):
+        case = _with_record(_make_investigating_case())
+        case.inquiry.problem_confirmation = ProblemConfirmation(
+            problem_type="unavailability", severity_guess="high"
+        )
+        assert transform_case_for_ui(case).problem_verification.severity is None
+
+    def test_temporal_state_is_the_records_not_inferred_from_evidence(self):
+        from faultmaven.modules.case.domain.models.problem import TemporalState
+
+        case = _with_record(
+            _make_investigating_case(), temporal_state=TemporalState.HISTORICAL
+        )
+        case.evidence.append(_make_evidence(turn=1))
+        case.evidence.append(_make_evidence(turn=2))
+        pv = transform_case_for_ui(case).problem_verification
+        assert pv.temporal_state == "historical"
+
+    def test_evidence_alone_does_not_produce_a_temporal_state(self):
+        case = _with_record(_make_investigating_case())
+        case.evidence.append(_make_evidence(turn=1))
+        assert transform_case_for_ui(case).problem_verification.temporal_state is None
+
+    def test_the_description_is_never_mined_for_scope(self):
+        case = _with_record(_make_investigating_case())
+        case.description = "install rapid call for all users"
+        dumped = transform_case_for_ui(case).model_dump(mode="json")
+        pv = dumped["problem_verification"]
+        assert "impact" not in pv
+        assert "user_impact" not in pv
+        assert set(pv) == {
+            "urgency_level",
+            "severity",
+            "temporal_state",
+            "problem_status",
+            "original_problem_statement",
+            "pending_revision",
+            "invalidation_finding",
+        }
+
+    @pytest.mark.parametrize("make", [_make_resolved_case, _make_closed_case])
+    def test_terminal_cases_keep_the_statement_fields_and_invent_nothing(self, make):
+        from faultmaven.modules.case.domain.models.problem import (
+            ProblemInvalidation,
+        )
+
+        case = _with_record(make())
+        case.problem_verification.invalidation = ProblemInvalidation(
+            rationale="the alert misfired"
+        )
+        case.progress.problem_status = ProblemStatus.INVALIDATED
+        pv = transform_case_for_ui(case).problem_verification
+        assert pv.problem_status == ProblemStatus.INVALIDATED
+        assert pv.invalidation_finding == "the alert misfired"
+        assert pv.severity is None
+        assert pv.urgency_level is None
+        assert pv.temporal_state is None
+
+
+@pytest.mark.unit
+def test_a_resolved_root_cause_summary_carries_no_made_up_severity():
+    """The adapter sent the literal "medium" for every resolved case; no
+    source records a cause's severity, so the field is gone (#1877)."""
+    case = _make_resolved_case()
+    case.problem_verification = None
+    result = transform_case_for_ui(case)
+    assert "severity" not in result.model_dump(mode="json")["root_cause"]

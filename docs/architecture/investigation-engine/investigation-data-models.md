@@ -781,102 +781,39 @@ Summarizes what was accomplished: evidence count, hypotheses explored, milestone
 ```python
 class ProblemVerification(BaseModel):
     """
-    Consolidated problem verification data.
-    Created when investigation starts (INQUIRY → INVESTIGATING).
-    Combines symptom verification, timeline analysis, and affected components.
+    The verified problem, as the investigation opened it (Gate 1) and as its
+    statement has stood since. Created at INQUIRY → INVESTIGATING.
+
+    Every value is read from what the case itself recorded. A field the record
+    has no value for is None, never a default that looks like an assessment.
     """
 
-    # ============================================================
-    # Symptom
-    # ============================================================
     symptom_statement: str = Field(
         description="User's description of the problem"
     )
-    symptom_indicators: List[str] = Field(
-        default_factory=list,
-        description="Specific metrics/observations confirming symptom"
-    )
 
-    # ============================================================
-    # Scope
-    # ============================================================
     affected_services: List[str] = Field(
         default_factory=list,
         description="Services/components affected by problem"
     )
-    affected_users: Optional[str] = Field(
+    severity: Optional[str] = Field(
         default=None,
-        description="User impact: 'all', '10%', 'premium tier', etc."
-    )
-    affected_regions: List[str] = Field(
-        default_factory=list,
-        description="Geographic regions or data centers affected"
-    )
-    severity: str = Field(
-        description="CRITICAL | HIGH | MEDIUM | LOW"
-    )
-    user_impact: Optional[str] = Field(
-        default=None,
-        description="Description of impact on users"
-    )
-
-    # ============================================================
-    # Timeline
-    # ============================================================
-    started_at: Optional[datetime] = Field(
-        default=None,
-        description="When problem started (if known)"
-    )
-    noticed_at: Optional[datetime] = Field(
-        default=None,
-        description="When problem was first noticed"
-    )
-    resolved_naturally_at: Optional[datetime] = Field(
-        default=None,
-        description="If problem resolved on its own, when? (for historical problems)"
-    )
-    duration: Optional[timedelta] = Field(
-        default=None,
-        description="How long problem lasted (for historical problems)"
+        description=(
+            "CRITICAL | HIGH | MEDIUM | LOW, from the user's problem "
+            "confirmation (severity_guess). None when not assessed."
+        ),
     )
     temporal_state: Optional[TemporalState] = Field(
         default=None,
-        description="ONGOING | HISTORICAL (determined during verification)"
+        description="ONGOING | HISTORICAL, as reported at Gate 1"
     )
 
-    # ============================================================
-    # Changes
-    # ============================================================
-    recent_changes: List[Change] = Field(
-        default_factory=list,
-        description="Recent changes that may be relevant"
-    )
-    correlations: List[Correlation] = Field(
-        default_factory=list,
-        description="Correlations between changes and symptom"
-    )
-    correlation_confidence: float = Field(
-        default=0.0,
-        ge=0.0,
-        le=1.0,
-        description="Confidence in change-symptom correlation"
-    )
-
-    # ============================================================
-    # Urgency Assessment
-    # ============================================================
     urgency_level: UrgencyLevel = Field(
         default=UrgencyLevel.UNKNOWN,
-        description="CRITICAL | HIGH | MEDIUM | LOW | UNKNOWN"
-    )
-    urgency_factors: List[str] = Field(
-        default_factory=list,
-        description="Factors contributing to urgency assessment"
+        description="CRITICAL | HIGH | MEDIUM | LOW | UNKNOWN, from the preliminary urgency"
     )
 
-    # ============================================================
-    # Diagnostic Feasibility (Advisory)
-    # ============================================================
+    # Diagnostic feasibility (advisory)
     rca_infeasible: bool = Field(
         default=False,
         description=(
@@ -898,20 +835,28 @@ class ProblemVerification(BaseModel):
         max_length=500,
     )
 
-    # ============================================================
-    # Metadata
-    # ============================================================
-    verified_at: Optional[datetime] = Field(
-        default=None,
-        description="When verification was completed"
-    )
-    verification_confidence: float = Field(
-        default=0.0,
-        ge=0.0,
-        le=1.0,
-        description="Confidence in verification completeness"
-    )
+    # Statement lifecycle — written only by core/investigation/problem_status:
+    # statement_history, pending_revision, invalidation, declined_revision_keys
+    # (see investigation-lifecycle-logic.md §1.4.1).
 ```
+
+**Severity and urgency are different axes.** `severity` is the user's own
+assessment from the problem confirmation and is null when none was given;
+`urgency_level` is the business-impact urgency from the preliminary urgency.
+Urgency never substitutes for severity: a case whose confirmation said
+`severity_guess: "unknown"` has `severity = None` whatever its urgency, and an
+explicit `"medium"` is kept as `MEDIUM`. The API serves both lowercase, null
+when not assessed (`urgency_level` serves null for `UNKNOWN`).
+
+**Fields the record does not carry.** Scope and timeline facts beyond Gate 1's
+`temporal_state` (affected users and regions, user impact, start/notice/resolve
+times, duration), change correlations (`recent_changes`, `correlations`,
+`correlation_confidence`), `symptom_indicators`, `urgency_factors` and
+`verified_at`/`verification_confidence` were once designed here and never had a
+writer or a reader, so they were removed rather than left to be mistaken for
+data. Old stored records that still carry those keys load unchanged (the model
+ignores unknown keys). `affected_services` is kept: it is read by the knowledge
+rerank context and by case-to-runbook conversion, though nothing writes it yet.
 
 **Design Decision: `rca_infeasible` as Advisory Signal**
 
@@ -931,47 +876,6 @@ Root cause analysis is sometimes infeasible — uncontrollable external dependen
 See [Investigation Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-mitigation-as-an-insert) for behavioral specification.
 
 ```python
-class Change(BaseModel):
-    """Recent change that may be relevant to the problem"""
-    description: str = Field(
-        description="Description of the change"
-    )
-    occurred_at: datetime = Field(
-        description="When the change occurred"
-    )
-    change_type: str = Field(
-        description="deployment | config | scaling | code | infrastructure | data | other"
-    )
-    change_id: Optional[str] = Field(
-        default=None,
-        description="Deployment ID, PR number, or change ticket"
-    )
-    changed_by: Optional[str] = Field(
-        default=None,
-        description="Who made the change (user, system, team)"
-    )
-    details: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="Additional structured details (version numbers, config values, etc.)"
-    )
-
-class Correlation(BaseModel):
-    """Correlation between a change and the symptom"""
-    change_description: str = Field(
-        description="Description of the change"
-    )
-    timing_description: str = Field(
-        description="Temporal relationship: '2 minutes before', 'immediately after', etc."
-    )
-    confidence: float = Field(
-        ge=0.0,
-        le=1.0,
-        description="Confidence in this correlation"
-    )
-    correlation_type: str = Field(
-        description="temporal | causal | coincidental"
-    )
-
 class UrgencyLevel(str, Enum):
     """Problem urgency level for routing decisions"""
     CRITICAL = "critical"
@@ -1044,9 +948,9 @@ class ProblemConfirmation(BaseModel):
     severity_guess: str = Field(
         description=(
             "Initial severity assessment: critical | high | medium | low | unknown. "
-            "NOTE: lowercase, 5 values. The downstream `ProblemVerification.severity` "
-            "field currently rejects 'unknown' and the impedance mismatch causes a 500 "
-            "on INQUIRY → INVESTIGATING transition when the LLM returns it."
+            "NOTE: lowercase, 5 values. At INQUIRY → INVESTIGATING, 'unknown' "
+            "maps to `ProblemVerification.severity = None` (not assessed); the "
+            "other four are stored upper-case."
         )
     )
     created_at: datetime = Field(

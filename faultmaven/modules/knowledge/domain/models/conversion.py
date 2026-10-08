@@ -115,7 +115,7 @@ class FailureModeAnalysis(BaseModel):
     domain: str
     service: str
     symptom_class: List[str]
-    severity: str
+    severity: Optional[str]  # None: the source carried no severity
     symptoms_summary: str
     resolution_summary: str
 
@@ -317,7 +317,7 @@ class CaseConversionRequest(BaseModel):
     - solutions: Structured text from Case.solutions[] (title, steps, commands, risks)
     - hypotheses_summary: Validated hypothesis statements from Case.hypotheses
     - evidence_summary: Case.working_conclusion.statement + evidence summaries
-    - severity: Case.problem_verification.severity
+    - severity: Case.problem_verification.severity (None when not assessed)
     - service: Case.problem_verification.affected_services[0]
     """
 
@@ -336,7 +336,7 @@ class CaseConversionRequest(BaseModel):
     domain: str = "application"
     service: str = "unknown"
     symptom_class: List[str] = Field(default_factory=list)
-    severity: str = "medium"
+    severity: Optional[str] = None  # None: the case recorded no severity
     tags: List[str] = Field(default_factory=list)
     scope: str = "personal"
 
@@ -364,7 +364,7 @@ class CaseConversionRequest(BaseModel):
         # Problem description
         pv = getattr(case, "problem_verification", None)
         symptom = (getattr(pv, "symptom_statement", "") or "") if pv else ""
-        severity = (getattr(pv, "severity", "medium") or "medium") if pv else "medium"
+        severity = getattr(pv, "severity", None) if pv else None
         affected = (getattr(pv, "affected_services", []) or []) if pv else []
 
         # Solutions
@@ -474,7 +474,7 @@ class CaseConversionRequest(BaseModel):
             evidence_summary=ev_summary,
             domain=domain,
             service=service,
-            severity=severity.lower() if isinstance(severity, str) else "medium",
+            severity=severity.lower() if isinstance(severity, str) else None,
             tags=tags if tags else affected,
             scope=scope,
         )

@@ -86,7 +86,11 @@ class CaseResponse(BaseModel):
         # Extract severity from problem_verification or metadata
         case_severity = severity
         if case_severity is None:
-            if hasattr(case, "problem_verification") and case.problem_verification:
+            if (
+                hasattr(case, "problem_verification")
+                and case.problem_verification
+                and case.problem_verification.severity
+            ):
                 try:
                     case_severity = CaseSeverity.from_string(
                         case.problem_verification.severity
