@@ -420,11 +420,12 @@ class TestTheBudgetTable:
     """
 
     def test_every_budget_in_the_suite_is_in_the_table(self):
-        # 50 latency/throughput budgets, the number #1556 measured. The
+        # 43 latency/throughput budgets: the 50 #1556 measured, less the 7
+        # that judged the removed APICaseService (#1881). The
         # memory assertions are deliberately NOT among them: megabytes do
         # not scale with machine throughput and #1556 re-anchored nothing
         # there.
-        assert len(budget_table.ALL_BUDGETS) == 50
+        assert len(budget_table.ALL_BUDGETS) == 43
 
     def test_every_budget_in_the_performance_suite_is_in_its_table(self):
         # 21 latency budgets. 27 hand-rolled comparisons went in; four
@@ -1380,8 +1381,9 @@ class TestEveryMeasurementIsJudged:
     def test_the_search_follows_a_wrapper(self):
         """‼ The property the first draft of this check got wrong.
 
-        `tests/benchmarks/test_case_service_operations.py` calls
-        `report_p95`, which calls `assert_latency_within`. A one-level
+        `report_benchmark` in
+        `tests/benchmarks/test_investigation_session_service_operations.py`
+        calls `assert_latency_within`. A one-level
         search reported it as unjudged — a false positive that, had it been
         allowlisted instead of read, would have left a real benchmark
         exempt from the guard forever.

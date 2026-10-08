@@ -13,7 +13,7 @@ and domain repositories for investigation session management. It handles:
 Architecture:
     FastAPI Routes → InvestigationSessionService → Repositories → Database
 
-This complements the APICaseService (TASK-011) by providing session-specific
+This provides session-specific
 workflow management for investigation activities.
 """
 

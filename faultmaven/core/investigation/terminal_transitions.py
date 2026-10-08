@@ -310,10 +310,10 @@ def _resolve_resolution_provider() -> str:
 
 
 def finalize_resolution_truth_surface(case: "Case") -> bool:
-    """The ONE resolution-time truth-surface finalizer, shared by EVERY
-    resolve surface (the chat-side ``_execute_resolved_transition`` and the
-    dashboard/API ``ApiCaseService.close_case``) — a second hand-mirrored
-    copy is how the two surfaces previously diverged on terminal truth.
+    """The ONE resolution-time truth-surface finalizer, called only by
+    ``_execute_resolved_transition`` (the one writer of RESOLVED) — a second
+    hand-mirrored copy is how two resolve surfaces once diverged on terminal
+    truth.
 
     M2 confirm-side stamp: the user just CONFIRMED the resolution — the
     strongest confirmation signal the flow produces — so the engine links the
@@ -343,9 +343,9 @@ def finalize_resolution_truth_surface(case: "Case") -> bool:
     # would relabel a backstop-licensed resolution as "chain" and understate
     # backstop reliance (biasing the #673 gate toward premature retirement — the
     # NO-COLLAPSE regression the gate guards). Emitted HERE because this finalizer
-    # is the single chokepoint every RESOLVED executor shares (the chat-side
-    # _execute_resolved_transition and the dashboard/API ApiCaseService.close_case),
-    # so it fires exactly once per resolution across every surface. Metric-only.
+    # is the single chokepoint of the one RESOLVED executor
+    # (_execute_resolved_transition), so it fires exactly once per resolution.
+    # Metric-only.
     resolution_cause_leg_total.labels(
         provider=_resolve_resolution_provider(),
         leg=cause_identification_leg(case) or "none",

@@ -82,10 +82,6 @@ _MIN_FILES_EXPECTED = 600
 ALLOWED_UNCONDITIONAL_SKIPS: frozenset[str] = frozenset(
     {
         "benchmarks/test_knowledge_search.py::TestKnowledgeSearchPerformance",
-        "integration/test_case_service_integration.py::"
-        "TestConcurrentOperations.test_concurrent_case_creation",
-        "integration/test_case_service_integration.py::"
-        "TestConcurrentOperations.test_concurrent_updates_same_case",
         "integration/test_kb_ingestion_and_indexing.py::"
         "test_upload_lists_and_indexes_in_chroma",
         "integration/test_mock_verification.py::"

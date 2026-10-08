@@ -15,7 +15,7 @@ type = independence
 modules =
     # Legacy services migrated to modules:
     #   auth_service, user_service → modules/auth/domain/services/
-    #   case_service → modules/case/domain/services/api_case_service.py
+    #   case_service → modules/case/domain/services/case_service.py
     #   investigation_session_service → modules/case/domain/services/
     #   evidence_artifact_service, file_storage_service → modules/evidence/domain/services/
     # Preprocessing moved to modules/preprocessing (Domain Service pattern)
@@ -336,11 +336,6 @@ ignore_imports =
     # the job. Same rationale as the container entries on contracts 11 and 12.
     faultmaven.services.service_factory -> faultmaven.modules.case.infrastructure.**
     faultmaven.api.v1.auth_dependencies -> faultmaven.container
-    # The Case module's own domain service reaching its own repository is
-    # internal to Case, not a caller crossing a boundary. What this contract is
-    # about is OTHER layers naming Case infrastructure directly; reaching it
-    # through Case's domain service is the supported route.
-    faultmaven.modules.case.domain.services.api_case_service -> faultmaven.modules.case.infrastructure.**
 
 # ============================================================================
 # CONTRACT 14: Preprocessing Module Uses Case Contracts Only

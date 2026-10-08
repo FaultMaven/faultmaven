@@ -552,7 +552,6 @@ def mock_services_for_integration_tests(
     """
     from starlette.testclient import TestClient
 
-    from faultmaven.api.dependencies import get_api_case_service
     from faultmaven.api.v1.auth_dependencies import require_authentication
     from faultmaven.api.v1.dependencies import (
         get_case_repository,
@@ -593,7 +592,6 @@ def mock_services_for_integration_tests(
     # Override all dependencies BEFORE creating TestClient
     app.dependency_overrides[require_authentication] = get_mock_user
     app.dependency_overrides[get_case_service] = get_mock_case_service
-    app.dependency_overrides[get_api_case_service] = get_mock_case_service
     app.dependency_overrides[_di_get_case_service_dependency] = get_mock_case_service
     app.dependency_overrides[_di_get_session_service_dependency] = (
         get_mock_session_service
