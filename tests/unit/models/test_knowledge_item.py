@@ -11,8 +11,8 @@ from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     EMBEDDING_DIMENSIONS,
     KnowledgeItem,
     KnowledgeItemType,
-    KnowledgeScope,
 )
+from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
 from tests.utils import generate_item_id, generate_org_id
 
 

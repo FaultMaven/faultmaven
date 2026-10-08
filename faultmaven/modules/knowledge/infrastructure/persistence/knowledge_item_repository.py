@@ -70,8 +70,8 @@ from faultmaven.infrastructure.persistence.models import (
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     KnowledgeItem,
     KnowledgeItemType,
-    KnowledgeScope,
 )
+from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
 from faultmaven.utils.serialization import decode_json_blob
 
 logger = logging.getLogger(__name__)

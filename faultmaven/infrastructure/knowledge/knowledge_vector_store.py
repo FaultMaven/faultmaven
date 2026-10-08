@@ -57,6 +57,7 @@ from faultmaven.infrastructure.vector_similarity import (
 )
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.models.vector_metadata import VectorMetadata
+from faultmaven.modules.knowledge.taxonomy import RunbookStatus
 
 logger = logging.getLogger(__name__)
 
@@ -111,10 +112,23 @@ RERANK_WEIGHT_FRESHNESS_ID = 0.15
 # Staleness decay: score = 1 / (1 + days/HALF_LIFE)
 STALENESS_HALF_LIFE_DAYS = 365
 
+#: Lifecycle trust per frontmatter ``status``, one entry per ``RunbookStatus``
+#: member (a test pins the coverage, so a new lifecycle state cannot score as
+#: an unknown string by omission). Keyed by the enum; a chunk's plain-string
+#: status finds its entry because a ``str`` enum hashes and compares as its
+#: value.
+_STATUS_WEIGHTS: Dict[RunbookStatus, float] = {
+    RunbookStatus.DRAFT: -0.1,
+    RunbookStatus.IN_REVIEW: 0.1,
+    RunbookStatus.VERIFIED: 0.4,
+    RunbookStatus.STALE: -0.2,
+    RunbookStatus.DEPRECATED: -0.3,
+}
+
 # Most negative sum ``_compute_metadata_score`` can reach (deprecated, no
 # domain/service match). The signal is mapped from [this, 1.0] onto [0, 1]
 # instead of being truncated at zero, so demotion survives.
-_METADATA_SCORE_MIN = -0.3
+_METADATA_SCORE_MIN = min(_STATUS_WEIGHTS.values())
 
 # Collection name that requires scope filtering
 KB_COLLECTION = "faultmaven_kb"
@@ -1192,19 +1206,11 @@ class KnowledgeVectorStore(BaseExternalClient):
             if ctx_service and chunk_service == ctx_service:
                 score += 0.3
 
-        # Runbook lifecycle status → trust signal.
-        # Frontmatter status values: verified | in-review | draft | stale | deprecated
+        # Runbook lifecycle status → trust signal (``_STATUS_WEIGHTS``); a
+        # status outside the vocabulary contributes nothing.
         status = chunk_metadata.get("status", "")
-        if status == "verified":
-            score += 0.4
-        elif status == "in-review":
-            score += 0.1
-        elif status == "stale":
-            score -= 0.2
-        elif status == "draft":
-            score -= 0.1
-        elif status == "deprecated":
-            score -= 0.3
+        if isinstance(status, str):
+            score += _STATUS_WEIGHTS.get(status, 0.0)
 
         return (max(_METADATA_SCORE_MIN, min(1.0, score)) - _METADATA_SCORE_MIN) / (
             1.0 - _METADATA_SCORE_MIN

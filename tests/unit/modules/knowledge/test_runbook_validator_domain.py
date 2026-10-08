@@ -1,13 +1,12 @@
 """Controlled-vocabulary enforcement for ``domain`` in RunbookValidator.
 
-``domain`` is a controlled taxonomy (like ``symptom_class``), mirrored by hand
-between kb-toolkit (``ValidationConfig.valid_domains``) and the app
-(``VALID_DOMAINS``) since the repos can't import each other. The cross-repo parity
-gate keeps the two copies byte-equal, but it only runs in kb-toolkit CI — so an
-app-side edit to ``VALID_DOMAINS`` would otherwise pass app CI and be caught only
-at the next kb-toolkit CI run. This frozen-literal pin closes that gap on the app
-side, symmetric with ``test_runbook_validator_symptom_class.py`` (which already
-pins ``VALID_SYMPTOM_CLASSES``).
+``domain`` is a controlled taxonomy (like ``symptom_class``), owned in this repo
+by ``taxonomy.RunbookDomain`` and mirrored by kb-toolkit
+(``ValidationConfig.valid_domains``), which cannot import it. The cross-repo
+parity gate only runs in kb-toolkit CI, so an app-side edit would otherwise pass
+app CI and be caught only at the next kb-toolkit CI run. This frozen-literal pin
+closes that gap on the app side, symmetric with
+``test_runbook_validator_symptom_class.py``.
 """
 
 from __future__ import annotations
@@ -16,14 +15,13 @@ import pytest
 
 from faultmaven.modules.knowledge.contracts import (
     _DOMAIN_GLOSSES,
-    TROUBLESHOOTING_DOMAINS,
     describe_troubleshooting_domains,
     describe_troubleshooting_scope,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
-    VALID_DOMAINS,
     RunbookValidator,
 )
+from faultmaven.modules.knowledge.taxonomy import RunbookDomain, vocabulary
 
 pytestmark = pytest.mark.unit
 
@@ -108,7 +106,7 @@ def _domain_errors(content: str) -> list[str]:
 
 def test_domains_are_the_frozen_curated_set():
     """The app copy matches the curated kb-toolkit set exactly, in order."""
-    assert VALID_DOMAINS == _EXPECTED_DOMAINS
+    assert list(vocabulary(RunbookDomain)) == _EXPECTED_DOMAINS
 
 
 def test_in_vocab_domain_passes():
@@ -124,23 +122,9 @@ def test_off_vocab_domain_is_error():
 
 # ---------------------------------------------------------------------------
 # Single-source property: the ingestion gate and the published territory are
-# the SAME vocabulary. Before this, the agent side had no access to the
-# taxonomy and carried four improvised prose versions of it instead; a second
-# literal here is how that starts again.
+# the SAME vocabulary — ``RunbookDomain`` — so there is no second copy to
+# compare. The prose renderers below must still be total over it.
 # ---------------------------------------------------------------------------
-
-
-def test_ingestion_gate_matches_the_published_territory():
-    """The two copies of the vocabulary hold the same values, in the same order.
-
-    They cannot be ONE definition: kb-toolkit's cross-repo parity gate reads
-    ``VALID_DOMAINS`` out of the AST with ``ast.literal_eval``, so deriving it
-    from the contract crashes that gate instead of comparing it — in the other
-    repo's CI, against this repo's default branch, where nothing here would
-    catch it. So the drift check lives here instead, and it is a real check
-    rather than a restatement of an assignment.
-    """
-    assert VALID_DOMAINS == list(TROUBLESHOOTING_DOMAINS)
 
 
 def test_every_domain_reaches_the_prose_renderer():
@@ -150,7 +134,7 @@ def test_every_domain_reaches_the_prose_renderer():
     name it cannot drift; that only holds if the helper is total.
     """
     rendered = describe_troubleshooting_domains()
-    for domain in TROUBLESHOOTING_DOMAINS:
+    for domain in vocabulary(RunbookDomain):
         assert domain in rendered
 
 
@@ -163,28 +147,22 @@ def test_every_domain_reaches_the_prose_renderer():
 
 
 def test_no_domain_can_exist_without_a_gloss():
-    """The vocabulary is derived from the glosses, so this holds by shape.
+    """Every ``RunbookDomain`` member has a gloss, and nothing else does.
 
-    Asserted anyway because the derivation is the thing worth protecting: a
-    future edit that re-literalises the tuple silently reintroduces bare nouns
-    for any domain it adds.
+    A domain added to the enum without one would otherwise reach the prompts
+    as a bare noun — or, since the mapping renderer indexes the glosses by
+    member, fail every prompt build that states the territory.
     """
-    assert tuple(_DOMAIN_GLOSSES) == TROUBLESHOOTING_DOMAINS
+    assert set(_DOMAIN_GLOSSES) == set(RunbookDomain)
     for name, gloss in _DOMAIN_GLOSSES.items():
         assert gloss.strip(), f"{name} has no gloss"
-
-
-def test_gloss_order_is_the_vocabulary_order():
-    """Order is part of the contract — the cross-repo parity gate compares
-    the sequence element by element, so a reordered mapping breaks it."""
-    assert list(_DOMAIN_GLOSSES) == list(TROUBLESHOOTING_DOMAINS)
 
 
 def test_scope_rendering_is_total():
     """Every domain reaches the mapping-form rendering, with its gloss."""
     rendered = describe_troubleshooting_scope()
     for name, gloss in _DOMAIN_GLOSSES.items():
-        assert name in rendered
+        assert name.value in rendered
         assert gloss.split("—")[0].strip() in rendered
 
 
@@ -197,18 +175,17 @@ def test_both_renderings_cover_the_same_vocabulary():
     """
     short = describe_troubleshooting_domains()
     scope = describe_troubleshooting_scope()
-    for name in TROUBLESHOOTING_DOMAINS:
+    for name in vocabulary(RunbookDomain):
         assert name in short and name in scope
 
 
 def test_conversion_side_domain_keywords_stay_inside_the_vocabulary():
     """The case→runbook converter stamps `domain`; the gate then validates it.
 
-    ``_DOMAIN_KEYWORDS`` is a SECOND, un-derived copy of the vocabulary on the
-    producing side of the same gate, with its own key set and its own
-    ``application`` fallback. Nothing related them, so renaming a domain here
-    left the converter stamping a value the validator rejects — case-to-runbook
-    conversion failing at ingestion, with no test in between.
+    ``_DOMAIN_KEYWORDS`` is keyed by ``RunbookDomain``, with its own
+    ``application`` fallback. Before it was, its keys were a second copy of the
+    vocabulary, and renaming a domain left the converter stamping a value the
+    validator rejects — case-to-runbook conversion failing at ingestion.
 
     A subset check rather than equality: the converter needs keywords only for
     domains it can actually infer, and `application` is deliberately keyword-free
@@ -219,9 +196,13 @@ def test_conversion_side_domain_keywords_stay_inside_the_vocabulary():
         _resolve_domain,
     )
 
-    unknown = set(_DOMAIN_KEYWORDS) - set(TROUBLESHOOTING_DOMAINS)
+    unknown = set(_DOMAIN_KEYWORDS) - set(RunbookDomain)
     assert not unknown, f"converter can stamp domains the gate rejects: {unknown}"
 
     # The fallback must itself be in the vocabulary, or a case matching no
-    # keyword produces a draft that cannot be ingested.
-    assert _resolve_domain("nothing here matches any keyword") in VALID_DOMAINS
+    # keyword produces a draft that cannot be ingested; and what it returns is
+    # the plain value, which is what reaches the frontmatter.
+    fallback = _resolve_domain("nothing here matches any keyword")
+    assert fallback in vocabulary(RunbookDomain)
+    assert type(fallback) is str
+    assert type(_resolve_domain("kafka consumer lag")) is str

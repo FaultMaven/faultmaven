@@ -30,12 +30,12 @@ from faultmaven.modules.knowledge.domain import global_authoring
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     KnowledgeItem,
     KnowledgeItemType,
-    KnowledgeScope,
 )
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
     DatabaseKnowledgeItemRepository,
     InMemoryKnowledgeItemRepository,
 )
+from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
 from faultmaven.providers.tenancy.factory import BUILTIN_SINGLE
 
 GLOBAL_ID = "kb_0123456789ab"

@@ -70,6 +70,11 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookQualityError,
 )
+from faultmaven.modules.knowledge.taxonomy import (
+    KnowledgeScope,
+    render_vocabulary,
+    vocabulary,
+)
 from faultmaven.utils.line_endings import decode_text
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge_base"])
@@ -282,7 +287,7 @@ async def upload_document(
     tags: Optional[str] = Form(None),
     source_url: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
-    scope: Literal["personal", "team", "global"] = Form("personal"),
+    scope: KnowledgeScope = Form(KnowledgeScope.PERSONAL),
     team_id: Optional[str] = Form(None),
     request: Request = None,  # noqa: B008 — app.state carries team_service
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
@@ -323,14 +328,14 @@ async def upload_document(
     # drift: global is the org-free platform tier, readable by every tenant and
     # retrieved into every tenant's investigations, so authoring it is a
     # platform-operator action (`global_authoring.py`, #770).
-    if scope == "global":
+    if scope == KnowledgeScope.GLOBAL:
         require_global_authoring_allowed()
         if not current_user.is_platform_admin():
             raise HTTPException(
                 status_code=403,
                 detail="Global KB runbook upload requires platform admin role",
             )
-    if scope == "team":
+    if scope == KnowledgeScope.TEAM:
         if not team_id:
             raise HTTPException(
                 status_code=400, detail="team_id is required for team scope"
@@ -462,7 +467,7 @@ async def upload_document(
             document_type=document_type,
             # The tier is stated here rather than inherited from a default
             # (#1166); the gate for it is above.
-            scope=scope,
+            scope=scope.value,
             team_id=team_id,
             # REQUIRED for personal scope, and it was never passed while this
             # route only wrote global. `owner_id` decides two things: the
@@ -535,10 +540,10 @@ async def list_documents(
         # Validate scope if provided. The detail must not echo the submitted
         # value: this endpoint takes optional auth, so an anonymous caller
         # would otherwise get arbitrary input reflected back in the body.
-        if scope and scope not in ("global", "team", "personal"):
+        if scope and scope not in vocabulary(KnowledgeScope):
             raise HTTPException(
                 status_code=400,
-                detail="Invalid scope. Allowed: global, team, personal",
+                detail=f"Invalid scope. Allowed: {render_vocabulary(KnowledgeScope)}",
             )
 
         # Parse tags filter

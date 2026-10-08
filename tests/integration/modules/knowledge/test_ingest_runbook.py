@@ -44,12 +44,12 @@ from faultmaven.infrastructure.persistence.models import (
 )
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     KnowledgeItemType,
-    KnowledgeScope,
     VerificationLevel,
 )
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
+from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
 
 # =============================================================================
 # Fixtures

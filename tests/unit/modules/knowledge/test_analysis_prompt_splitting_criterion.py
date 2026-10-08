@@ -21,9 +21,7 @@ import pytest
 from faultmaven.modules.knowledge.domain.services.conversion_service.prompts import (
     ANALYSIS_SYSTEM_PROMPT,
 )
-from faultmaven.modules.knowledge.domain.services.runbook_validator import (
-    VALID_SYMPTOM_CLASSES,
-)
+from faultmaven.modules.knowledge.taxonomy import SymptomClass, vocabulary
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
@@ -84,7 +82,7 @@ def test_the_symptom_class_test_is_offered_from_the_real_vocabulary():
     """
     assert "symptom_class" in ANALYSIS_SYSTEM_PROMPT
     assert "__SYMPTOM_CLASS_VOCAB__" not in ANALYSIS_SYSTEM_PROMPT
-    for value in VALID_SYMPTOM_CLASSES:
+    for value in vocabulary(SymptomClass):
         assert value in ANALYSIS_SYSTEM_PROMPT
 
 

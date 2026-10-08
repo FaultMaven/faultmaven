@@ -411,9 +411,9 @@ class TestRouteRefusalPassthrough:
         )
         body = {
             "title": "A title long enough",
-            "domain": "databases",
+            "domain": "database",
             "service": "postgres",
-            "symptom_class": ["connectivity"],
+            "symptom_class": ["connection_refused"],
             "severity": "high",
             "scope": "team",
             "team_id": "team_other",

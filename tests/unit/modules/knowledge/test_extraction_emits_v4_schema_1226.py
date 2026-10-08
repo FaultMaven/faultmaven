@@ -42,7 +42,6 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.prompts imp
     CONVERSION_SYSTEM_PROMPT,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
-    VALID_DOMAINS,
     RunbookValidator,
 )
 from faultmaven.modules.knowledge.domain.services.suggestion_service import (
@@ -51,6 +50,7 @@ from faultmaven.modules.knowledge.domain.services.suggestion_service import (
 from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
     InMemorySuggestionRepository,
 )
+from faultmaven.modules.knowledge.taxonomy import RunbookDomain, vocabulary
 from tests.runbook_samples import valid_runbook
 from tests.utils import (
     CaseReadDouble,
@@ -336,7 +336,7 @@ class TestThePromptAsksForV4:
         await _extract(_service(provider))
 
         prompt = provider.prompts[0]
-        for domain in VALID_DOMAINS:
+        for domain in vocabulary(RunbookDomain):
             assert domain in prompt, f"prompt omits domain {domain!r}"
         assert "`domain` MUST be one of:" in prompt
 

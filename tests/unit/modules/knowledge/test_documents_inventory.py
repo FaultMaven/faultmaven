@@ -24,12 +24,12 @@ import pytest
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     KnowledgeItem,
     KnowledgeItemType,
-    KnowledgeScope,
 )
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
     DatabaseKnowledgeItemRepository,
     InMemoryKnowledgeItemRepository,
 )
+from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
 from faultmaven.utils.runbook_id import (
     authored_item_id,
     is_builtin_item_id,

@@ -48,6 +48,15 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.errors impo
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
+from faultmaven.modules.knowledge.taxonomy import (
+    KnowledgeScope,
+    RunbookDifficulty,
+    RunbookDomain,
+    RunbookSeverity,
+    SymptomClass,
+    render_vocabulary,
+    vocabulary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,10 +122,13 @@ async def convert_document(
     current_user: DevUser = Depends(_require_auth),
 ):
     """Upload a document and convert it to one or more runbook drafts."""
-    # Validate scope
-    if scope not in ("global", "team", "personal"):
+    # Validate scope. A 400, not the 422 a typed Form field would answer:
+    # this form field predates the taxonomy enums and its status is part of
+    # the published contract. The allowed set is the enum's.
+    if scope not in vocabulary(KnowledgeScope):
         raise HTTPException(
-            status_code=400, detail="scope must be 'global', 'team', or 'personal'"
+            status_code=400,
+            detail=f"scope must be one of: {render_vocabulary(KnowledgeScope)}",
         )
 
     if scope == "team" and not team_id:
@@ -493,14 +505,21 @@ async def delete_draft(
 
 
 class RunbookCreateRequest(BaseModel):
+    """A runbook authored field by field (the dashboard's Create form).
+
+    The closed vocabularies are typed with the taxonomy enums, so the request
+    schema publishes the allowed values and an off-vocabulary value is a 422
+    here rather than a draft that fails validation (#1886).
+    """
+
     title: str = Field(min_length=10, max_length=100)
-    domain: str
+    domain: RunbookDomain
     service: str
-    symptom_class: list[str] = Field(min_length=1)
-    severity: str
-    scope: str
+    symptom_class: list[SymptomClass] = Field(min_length=1)
+    severity: RunbookSeverity
+    scope: KnowledgeScope
     tags: list[str] = Field(default_factory=list)
-    difficulty: str = "intermediate"
+    difficulty: RunbookDifficulty = RunbookDifficulty.INTERMEDIATE
     symptom_recognition: str = Field(min_length=10)
     applicability: str = Field(min_length=10)
     diagnostic_steps: str = Field(min_length=10)
@@ -527,14 +546,14 @@ async def create_runbook_manually(
     """Create a runbook manually from template fields. Returns a draft for review."""
     # Access control: global scope is the platform tier — never authorable
     # from a tenant session under multi (#770), admin-only in single-tenant.
-    if body.scope == "global":
+    if body.scope == KnowledgeScope.GLOBAL:
         require_global_authoring_allowed()
         if not current_user.is_platform_admin():
             raise HTTPException(
                 status_code=403,
                 detail="Global KB runbook creation requires platform admin role",
             )
-    if body.scope == "team" and not body.team_id:
+    if body.scope == KnowledgeScope.TEAM and not body.team_id:
         raise HTTPException(
             status_code=400, detail="team_id is required for team scope"
         )
@@ -542,13 +561,13 @@ async def create_runbook_manually(
     try:
         result = await service.create_runbook_from_template(
             title=body.title,
-            domain=body.domain,
+            domain=body.domain.value,
             service_name=body.service,
-            symptom_class=body.symptom_class,
-            severity=body.severity,
-            scope=body.scope,
+            symptom_class=[item.value for item in body.symptom_class],
+            severity=body.severity.value,
+            scope=body.scope.value,
             tags=body.tags,
-            difficulty=body.difficulty,
+            difficulty=body.difficulty.value,
             symptom_recognition=body.symptom_recognition,
             applicability=body.applicability,
             diagnostic_steps=body.diagnostic_steps,

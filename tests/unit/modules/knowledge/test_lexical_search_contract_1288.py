@@ -30,7 +30,6 @@ import pytest
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     KnowledgeItem,
     KnowledgeItemType,
-    KnowledgeScope,
 )
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
@@ -39,6 +38,7 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
     DatabaseKnowledgeItemRepository,
     KnowledgeItemRepository,
 )
+from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
 
 # ---------------------------------------------------------------------------
 # A. GET /documents/{id}/snippet — lexical, and provably not semantic

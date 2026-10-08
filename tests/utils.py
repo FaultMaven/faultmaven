@@ -620,8 +620,8 @@ def make_org_knowledge_item(
     from faultmaven.modules.knowledge.domain.models.knowledge_item import (
         KnowledgeItem,
         KnowledgeItemType,
-        KnowledgeScope,
     )
+    from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
 
     if item_type is None:
         item_type = KnowledgeItemType.TROUBLESHOOTING_GUIDE

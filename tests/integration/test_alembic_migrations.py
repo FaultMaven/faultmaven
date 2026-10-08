@@ -38,7 +38,8 @@ TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 # the 001-053 chain) plus additive revisions on top of it, so the seed
 # assertions below reverse the whole schema with "downgrade base" and each
 # additive revision is stepped over on its own.
-HEAD_REVISION = "497ae8900ae2"  # 007_problem_status_single_source
+#: 008_runbook_severity_admits_info
+HEAD_REVISION = "558d7f3cfed1"  # pragma: allowlist secret
 #: The baseline, which every additive revision parents onto.
 BASELINE_REVISION = "a1e0c17bd001"  # 001_enterprise_baseline
 #: The first additive revision.
@@ -56,6 +57,9 @@ CONVERSION_SOURCE_REF_REVISION = "f37066de2792"  # pragma: allowlist secret
 #: ``problem_status`` in the progress blob, and ``captured`` leaves
 #: ``hypotheses.state``.
 PROBLEM_STATUS_REVISION = "497ae8900ae2"
+#: ``008_runbook_severity_admits_info``: ``conversion_drafts_severity_check``
+#: admits the spec's severity vocabulary, ``info`` included (#1886).
+RUNBOOK_SEVERITY_REVISION = "558d7f3cfed1"  # pragma: allowlist secret
 #: The tables 002_llm_usage_ledger adds (#640).
 LLM_USAGE_TABLES = ["llm_turn_spend", "llm_usage_daily"]
 
@@ -829,6 +833,181 @@ class TestProblemStatusRevision:
         )
         assert off < progress < retire < restored < drop, sql
         assert "'captured'" not in sql[drop:], sql
+
+
+class TestRunbookSeverityRevision:
+    """008 widens ``conversion_drafts_severity_check`` to the spec's severity
+    vocabulary, ``info`` included (#1886). On SQLite it rebuilds the table, so
+    the rows, the indexes and the other constraints must come back unchanged.
+    That the widened set equals ``RunbookSeverity`` is pinned by
+    ``tests/unit/modules/knowledge/test_runbook_taxonomy_one_owner.py``.
+    """
+
+    #: ``(id, runbook_id, status, severity)`` seeded at the parent revision.
+    DRAFTS = [
+        ("d_high", "rb-high", "verified", "high"),
+        ("d_none", "rb-none", "draft", None),
+        ("d_gone", "rb-high", "discarded", "low"),
+    ]
+
+    @staticmethod
+    def _connect() -> sqlite3.Connection:
+        return sqlite3.connect(TEST_DB)
+
+    def _seed(self) -> None:
+        enterprise = TestStandaloneTenancySeed.STANDALONE_ENTERPRISE_ID
+        conn = self._connect()
+        try:
+            conn.execute(
+                "INSERT INTO conversion_jobs (id, enterprise_id, source_file_id, "
+                "scope) VALUES ('job_1', ?, 'file_1', 'personal')",
+                (enterprise,),
+            )
+            for draft_id, runbook_id, status, severity in self.DRAFTS:
+                self._insert(conn, draft_id, runbook_id, status, severity)
+            conn.commit()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _insert(conn, draft_id, runbook_id, status, severity) -> None:
+        conn.execute(
+            "INSERT INTO conversion_drafts (id, enterprise_id, conversion_id, "
+            "runbook_id, title, file_path, status, severity) VALUES "
+            "(?, ?, 'job_1', ?, 't', 'f.md', ?, ?)",
+            (
+                draft_id,
+                TestStandaloneTenancySeed.STANDALONE_ENTERPRISE_ID,
+                runbook_id,
+                status,
+                severity,
+            ),
+        )
+
+    @staticmethod
+    def _drafts() -> list:
+        return query_rows(
+            TEST_DB,
+            "SELECT id, runbook_id, status, severity FROM conversion_drafts "
+            "ORDER BY id",
+        )
+
+    @staticmethod
+    def _indexes() -> list:
+        return query_rows(
+            TEST_DB,
+            "SELECT name, sql FROM sqlite_master WHERE type = 'index' "
+            "AND tbl_name = 'conversion_drafts' ORDER BY name",
+        )
+
+    def test_upgrade_admits_info_and_keeps_rows_and_indexes(
+        self, clean_database, database_url
+    ):
+        result = run_alembic(f"upgrade {PROBLEM_STATUS_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        self._seed()
+        rows, indexes = self._drafts(), self._indexes()
+        conn = self._connect()
+        try:
+            with pytest.raises(sqlite3.IntegrityError, match="severity_check"):
+                self._insert(conn, "d_info", "rb-info", "draft", "info")
+        finally:
+            conn.close()
+
+        result = run_alembic(f"upgrade {RUNBOOK_SEVERITY_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        assert self._drafts() == rows
+        # The partial unique index among them: the rebuild re-creates every
+        # index from the frozen definition, predicate included.
+        assert self._indexes() == indexes
+        assert any("status <> 'discarded'" in (sql or "") for _, sql in indexes)
+
+        conn = self._connect()
+        try:
+            self._insert(conn, "d_info", "rb-info", "draft", "info")
+            with pytest.raises(sqlite3.IntegrityError, match="severity_check"):
+                self._insert(conn, "d_bad", "rb-bad", "draft", "urgent")
+            with pytest.raises(sqlite3.IntegrityError, match="status_check"):
+                self._insert(conn, "d_bad", "rb-bad", "pending", "low")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_downgrade_refuses_while_an_info_row_exists(
+        self, clean_database, database_url
+    ):
+        result = run_alembic(f"upgrade {RUNBOOK_SEVERITY_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        self._seed()
+        conn = self._connect()
+        try:
+            self._insert(conn, "d_info", "rb-info", "draft", "info")
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = run_alembic(f"downgrade {PROBLEM_STATUS_REVISION}", database_url)
+        assert result.returncode != 0
+        assert "1 conversion_drafts row(s) hold severity 'info'" in result.stderr
+        assert get_current_revision(database_url) == RUNBOOK_SEVERITY_REVISION
+
+        conn = self._connect()
+        try:
+            conn.execute("DELETE FROM conversion_drafts WHERE id = 'd_info'")
+            conn.commit()
+        finally:
+            conn.close()
+        rows = self._drafts()
+        result = run_alembic(f"downgrade {PROBLEM_STATUS_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        assert get_current_revision(database_url) == PROBLEM_STATUS_REVISION
+        assert self._drafts() == rows
+        conn = self._connect()
+        try:
+            with pytest.raises(sqlite3.IntegrityError, match="severity_check"):
+                self._insert(conn, "d_info", "rb-info", "draft", "info")
+        finally:
+            conn.close()
+
+    def test_no_foreign_key_targets_the_rebuilt_table(
+        self, clean_database, database_url
+    ):
+        """Why the SQLite rebuild carries no ``PRAGMA foreign_keys`` guard,
+        unlike 007's: dropping a table runs ON DELETE actions only for rows
+        that REFERENCE it, and nothing does. If a table ever gains such a key,
+        this fails and the rebuild needs 007's guard."""
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stderr
+        referencing = []
+        for (table,) in query_rows(
+            TEST_DB, "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ):
+            for row in query_rows(TEST_DB, f'PRAGMA foreign_key_list("{table}")'):
+                if row[2] == "conversion_drafts":
+                    referencing.append(table)
+        assert referencing == []
+
+    def test_the_postgresql_statements_alter_the_constraint_in_place(self):
+        """Offline (``--sql``): drop and re-add, no data statement, no
+        ``row_security`` change."""
+        result = run_alembic(
+            f"upgrade {PROBLEM_STATUS_REVISION}:{RUNBOOK_SEVERITY_REVISION} --sql",
+            "postgresql://offline@localhost/offline",
+        )
+        assert result.returncode == 0, result.stderr
+        sql = result.stdout
+        drop = sql.index(
+            "ALTER TABLE conversion_drafts DROP CONSTRAINT "
+            "conversion_drafts_severity_check;"
+        )
+        add = sql.index(
+            "ALTER TABLE conversion_drafts ADD CONSTRAINT "
+            "conversion_drafts_severity_check CHECK (severity IS NULL OR severity "
+            "IN ('critical', 'high', 'medium', 'low', 'info'));"
+        )
+        assert drop < add, sql
+        assert "row_security" not in sql
+        assert "UPDATE conversion_drafts" not in sql
 
 
 class TestRbacSeed:
