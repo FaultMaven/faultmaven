@@ -1,26 +1,32 @@
 """What a turn commits besides the case, and the one call that commits it (#1882).
 
 A turn's writes are one commit: the case (its messages, files, clock and state)
-plus the report and checkpoint rows the turn produced, written by
-``ICaseRepository.save(case, reports=..., checkpoints=...)`` in one transaction.
+plus the report rows the turn produced, written by
+``ICaseRepository.save(case, reports=...)`` in one transaction.
 Work that may only start once that commit has landed (the runbook conversion)
 waits on a gate future in ``on_commit``: released after the commit, cancelled
 when the commit fails, so it never runs for a turn that did not commit.
 
-``commit_turn_plan`` is that commit. The engine and the service do not call it
-yet (#1882 part 2 moves the turn's saves onto it); the tests do.
+The engine performs no case-scoped write of its own: every site that used to
+commit mid-turn (the engine's Step-7 save, the deterministic branches' saves,
+the report rows) now adds to the turn's plan, and the
+engine returns the plan in its result as ``commit_plan``.
+``InvestigationService`` commits it once, with ``commit_turn_plan``, inside the
+shielded settlement coroutine that owns it
+(``investigation_service.turn_settlement.settle_turn``). An
+engine-only test commits the same way, through the same function.
 """
 
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Any, List
+from typing import Any, Dict, Iterable, List
 
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseCheckpoint,
     CaseReport,
     ICaseRepository,
+    ReportType,
 )
 
 logger = logging.getLogger(__name__)
@@ -31,33 +37,24 @@ class TurnCommitPlan:
     """The rows a turn commits with its case, and what waits on that commit."""
 
     reports: List[CaseReport] = field(default_factory=list)
-    checkpoints: List[CaseCheckpoint] = field(default_factory=list)
     on_commit: List["asyncio.Future[Any]"] = field(default_factory=list)
 
-    def add_checkpoint(self, checkpoint: CaseCheckpoint) -> bool:
-        """Carry ``checkpoint`` to the commit, once.
+    def add_reports(self, reports: Iterable[CaseReport]) -> None:
+        """Carry rendered ``reports`` to the commit, in render order."""
+        self.reports.extend(reports)
 
-        A checkpoint id is (case, turn, trigger, target), so a second one under
-        the same id is the same snapshot point taken twice in one turn. The
-        first, taken before anything moved, is the one kept; the repeat is
-        logged and dropped HERE, explicitly, because the repository refuses a
-        duplicate id loudly and would fail the turn's whole commit over it.
+    def pending_reports(self) -> Dict[ReportType, int]:
+        """Per type, the report rows this plan holds uncommitted.
 
-        Returns:
-            Whether the checkpoint was added.
+        What ``ReportGenerationService.render_reports(pending=...)`` and every
+        ack site's regeneration count (``_remaining_regens_for``) add to the
+        committed rows: a summary rendered earlier in this turn is a version
+        the next render and the "regenerations left" label must already see.
         """
-        if any(c.checkpoint_id == checkpoint.checkpoint_id for c in self.checkpoints):
-            logger.warning(
-                "Case %s: checkpoint %s (turn %s, %s) taken twice in one turn; "
-                "the first is kept",
-                checkpoint.case_id,
-                checkpoint.checkpoint_id,
-                checkpoint.turn_number,
-                checkpoint.trigger,
-            )
-            return False
-        self.checkpoints.append(checkpoint)
-        return True
+        counts: Dict[ReportType, int] = {}
+        for report in self.reports:
+            counts[report.report_type] = counts.get(report.report_type, 0) + 1
+        return counts
 
     def gate(self) -> "asyncio.Future[Any]":
         """A future that resolves once the turn has committed, and is cancelled
@@ -97,9 +94,7 @@ async def commit_turn_plan(
     sees is one the commit really raised.
     """
     try:
-        saved = await repository.save(
-            case, reports=tuple(plan.reports), checkpoints=tuple(plan.checkpoints)
-        )
+        saved = await repository.save(case, reports=tuple(plan.reports))
     except BaseException:
         plan.cancel_gates()
         raise

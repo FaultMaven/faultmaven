@@ -60,9 +60,10 @@ the turn that carried the upload, from
 #1878 it ran at intake, ahead of any committed row, so a turn that failed left
 a blob marked linked with nothing referencing it. Now a turn that fails before
 its first commit writes no row and leaves the sidecar `linked: false`, and both
-signals agree: the blob is an ordinary orphan this sweep reclaims at TTL. A turn
-that fails after the engine's Step-7 save (#1882) leaves its row committed and
-the sidecar `linked: false`; the database reference keeps that blob.
+signals agree: the blob is an ordinary orphan this sweep reclaims at TTL. That
+holds wherever the turn fails, its one commit included (#1882). A committed row
+whose sidecar still says `linked: false` means `mark_linked` failed or timed out
+after the commit; the database reference keeps that blob.
 
 ## Fail-closed postures
 

@@ -335,15 +335,15 @@ class TestBothCallSitesUseFlattener:
     def test_both_seams_call_flatten_follow_ups(self):
         import inspect
 
-        # #1707 wave 3 step B: ``_persist_turn`` moved out of the engine
-        # class into a module function of turn_completion.py, so it is read
-        # there rather than off ``MilestoneEngine``.
+        # #1707 wave 3 step B moved the phase out of the engine class into a
+        # module function of turn_completion.py; #1882 renamed it
+        # ``_finalize_turn`` when it stopped saving.
         from faultmaven.core.investigation.milestone_engine.turn_completion import (
-            _persist_turn,
+            _finalize_turn,
         )
 
         src_terminal = inspect.getsource(TerminalTurnHandler._process_terminal_qa)
-        src_turn = inspect.getsource(_persist_turn)
+        src_turn = inspect.getsource(_finalize_turn)
         # #1707: _flatten_follow_ups moved out of the engine into a module
         # function (turn_records.py), called directly rather than through
         # self, from both seams.

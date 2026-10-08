@@ -374,7 +374,7 @@ class CaseRepository(ABC):
     """
     Abstract repository for Case persistence.
     SIMPLIFIED FOR ILLUSTRATION — see faultmaven/modules/case/infrastructure/case_repository.py
-    for the full interface (>30 methods spanning reports, checkpoints, evidence,
+    for the full interface (>30 methods spanning reports, evidence,
     agent executions, and tool calls).
     Note (v2.1): the prior "standalone evidence" methods (create/get/list/delete/link)
     are removed in the locked design — evidence is always created in a case context.
@@ -394,7 +394,6 @@ class CaseRepository(ABC):
         case: Case,
         *,
         reports: Sequence[CaseReport] = (),
-        checkpoints: Sequence[CaseCheckpoint] = (),
     ) -> Case:
         """Save or update a case. Returns the saved case.
 
@@ -404,9 +403,8 @@ class CaseRepository(ABC):
         §4.1.1. Use the explicit scoped `delete_*` methods for
         intentional removal.
 
-        `reports` and `checkpoints` are inserted in the same
-        transaction, after the case and before the commit: all of it
-        commits or none does (#1882). A taken checkpoint id raises.
+        `reports` are inserted in the same transaction, after the case
+        and before the commit: all of it commits or none does (#1882).
         """
         ...
 
@@ -496,12 +494,11 @@ class CaseRepository(ABC):
 
     # NOT SHOWN (see canonical interface):
     #   - Report ops: save_report, get_report, list_reports_for_case, ...
-    #   - Checkpoint ops: save_checkpoint, get_checkpoint, list_checkpoints, ...
     #   - Standalone evidence ops
     #   - Agent execution + tool-call ops
 ```
 
-**Illustrated above: 11 methods** (5 CRUD + 2 messages + 4 specialized). The full interface adds report, checkpoint, evidence, and agent-execution operations — see the canonical `case_repository.py` for the complete contract.
+**Illustrated above: 11 methods** (5 CRUD + 2 messages + 4 specialized). The full interface adds report, evidence, and agent-execution operations — see the canonical `case_repository.py` for the complete contract.
 
 ---
 
@@ -538,19 +535,20 @@ Scoped methods:
 method for `uploaded_files`. A turn's attachment is appended to
 `case.uploaded_files` in memory, stamped with the turn's number, and written by
 the aggregate `save(case)` that commits the turn — in the same transaction as
-`current_turn` and the user message, on both backends. So a file is listed,
-searchable and attributed to a committed turn together, or not at all. A turn
-that fails before its first commit (an LLM error, a `StaleCaseException` at the
-engine's Step-7 save) leaves no row. The storage sidecar is marked linked only
-after the turn's final save, so the bytes such a turn stored are an ordinary
-orphan the storage sweep reclaims at TTL.
+`current_turn`, the user message and the agent's reply, on both backends. So a
+file is listed, searchable and attributed to a committed turn together, or not
+at all. A turn that fails anywhere (an LLM error, a `StaleCaseException` at its
+commit) leaves no row. The storage sidecar is marked linked only after that
+commit, so the bytes such a turn stored are an ordinary orphan the storage sweep
+reclaims at TTL.
 
-One window remains (#1882). An engine-routed turn commits twice: at the engine's
-Step 7 and again at the service's final save. A failure between the two — a
-`StaleCaseException` at the final save included — leaves the user message,
-`current_turn` and the upload row committed without the agent's reply, and the
-sidecar unflipped. The row is still attributed to a turn that committed, and the
-sweep keeps a row-referenced blob; the half turn is #1882's to close.
+**A turn commits once (#1882).** The engine performs no case-scoped write: the
+rows a turn produces besides the case (its report rows) ride the turn's
+`TurnCommitPlan`, and the service commits case and rows in the one
+`save(case, reports=...)` above, after the turn's response is
+built. Work that must follow the commit (the runbook conversion) waits on a gate
+in the plan, released by the commit and cancelled when it fails. So a 2xx means
+the whole turn committed and a non-2xx means none of it did.
 
 A scoped `add_uploaded_file` used to commit the row at intake (#1013), because
 `mark_linked` ran before any row existed and a failed turn otherwise left a
@@ -1077,7 +1075,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from asyncio import TimeoutError
 
 class PostgreSQLHybridCaseRepository(CaseRepository):
-    async def save(self, case: Case, *, reports=(), checkpoints=()) -> Case:
+    async def save(self, case: Case, *, reports=()) -> Case:
         try:
             # Attempt save
             result = await self.db.execute(insert_query, case.dict())
@@ -1192,9 +1190,9 @@ async def save_case_with_retry(repo: CaseRepository, case: Case) -> Case:
 import logging
 logger = logging.getLogger(__name__)
 
-async def save(self, case: Case, *, reports=(), checkpoints=()) -> Case:
+async def save(self, case: Case, *, reports=()) -> Case:
     try:
-        result = await self._execute_save(case, reports, checkpoints)
+        result = await self._execute_save(case, reports)
         logger.debug(f"Saved case {case.case_id}")
         return result
     except IntegrityError as e:

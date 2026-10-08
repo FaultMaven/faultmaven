@@ -344,21 +344,20 @@ class TestTheErrorPathIsARowNotAGap:
             "previous turn's number and collides with that turn's real row"
         )
 
-    async def test_a_stale_case_conflict_after_the_engine_saved_is_still_a_row(
+    async def test_a_stale_conflict_at_the_turns_commit_is_an_error_row(
         self, service, repo, case, caplog
     ):
-        """``StaleCaseException`` is re-raised unwrapped for its 409, and it is
-        the one contract error that can follow a DURABLY consumed turn: on an
-        engine-routed turn the engine already committed the incremented
-        ``current_turn`` at its own save, so an OCC conflict on the service's
-        save leaves a consumed turn. No row there is a gap, and a gap shortens
-        every streak computed over the stream.
+        """``StaleCaseException`` is re-raised unwrapped for its 409. The turn
+        was consumed (its number was taken) and then committed nothing — the
+        engine no longer saves mid-turn (#1882), so the conflict at the turn's
+        one commit leaves nothing of it. The row says so: one row, the error
+        row, emitted by the settlement that owns the failed commit.
         """
         from faultmaven.modules.case.exceptions import StaleCaseException
 
         await repo.save(case)  # seed BEFORE the conflict is installed
 
-        async def conflict_on_the_service_save(_case_arg):
+        async def conflict_on_the_service_save(_case_arg, **_):
             raise StaleCaseException(case.case_id, 1, 2)
 
         repo.save.side_effect = conflict_on_the_service_save
@@ -375,11 +374,13 @@ class TestTheErrorPathIsARowNotAGap:
         assert len(rows) == 1
         assert rows[0].path == TurnPath.ERROR.value
 
-    async def test_a_failure_after_the_row_does_not_emit_a_second_one(
+    async def test_a_failure_assembling_the_response_commits_nothing_and_is_one_error_row(
         self, service, repo, case, monkeypatch, caplog
     ):
-        """The success row is emitted before ``TurnResponse`` is assembled, so a
-        failure in between would otherwise produce two rows for one turn."""
+        """``TurnResponse`` is assembled BEFORE the turn's one commit (#1882,
+        R4), so a failure there commits nothing and the turn's only row is the
+        error row. (It used to follow the commit and the success row, which is
+        why this test once guarded against a second row.)"""
         # #1707 wave 3: ``TurnResponse(...)`` is constructed inside
         # ``_build_turn_response``, moved off the class into ``turn_response``,
         # so that module's own binding is the one that runs at call time.
@@ -390,15 +391,20 @@ class TestTheErrorPathIsARowNotAGap:
 
         monkeypatch.setattr(mod, "TurnResponse", explode)
 
+        await repo.save(case)
+        repo.save.reset_mock()
         with caplog.at_level(logging.INFO, logger=TELEMETRY_LOGGER_NAME):
             with pytest.raises(Exception):
-                await _run(
-                    service, repo, case, TurnPayload(query="what does this mean?")
+                await service.process_turn(
+                    case_id=case.case_id,
+                    user_id=case.user_id,
+                    payload=TurnPayload(query="what does this mean?"),
                 )
 
+        repo.save.assert_not_called()
         rows = _rows(caplog)
         assert len(rows) == 1
-        assert rows[0].path == TurnPath.LLM.value
+        assert rows[0].path == TurnPath.ERROR.value
 
 
 class TestUploadTurnAttribution:
@@ -539,18 +545,15 @@ class TestPathCoverageIsExhaustive:
         assert bypasses_engine, "expected at least GREETING to bypass the engine"
 
         # Just the emission block: from the label decision to the emit call.
-        # #1707 wave 3: this block now lives in ``_save_and_emit_turn``, which
-        # the owner calls just before setting ``turn_row_emitted = True`` — the
-        # phase itself never binds that name (R4: it stays in the owner). Step
-        # B moved the phase itself off the class into a module function of
-        # ``turn_messages``.
+        # #1882: this block lives in ``_emit_committed_turn``, which the
+        # turn's settlement calls once the turn has committed.
         from faultmaven.modules.agent.domain.services.investigation_service import (
             turn_messages,
         )
 
-        src = inspect.getsource(turn_messages._save_and_emit_turn)
+        src = inspect.getsource(turn_messages._emit_committed_turn)
         start = src.index("turn_arms = turn_telemetry.get")
-        end = src.index("return agent_response_text")
+        end = src.index("emit_case_turn(\n")
         telemetry_block = src[start:end]
 
         # The block must be narrow enough that the dispatch chain is not in it,

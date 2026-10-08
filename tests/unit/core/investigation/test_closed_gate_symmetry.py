@@ -37,6 +37,7 @@ from faultmaven.core.investigation.milestone_engine.terminal_replies import (
 from faultmaven.core.investigation.milestone_engine.transitions import (
     TransitionManager,
 )
+from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.core.investigation.terminal_transitions import (
     ClosureReadiness,
     assess_closure_readiness,
@@ -226,7 +227,6 @@ async def test_check_automatic_transitions_surfaces_resolve_confirmation_on_pivo
     case = _resolvable_case_with_pending_close()
     eng = MilestoneEngine.__new__(MilestoneEngine)
     eng.deps = EngineDeps()
-    eng.deps.checkpoint_service = None
     eng.transitions = TransitionManager(deps=eng.deps, kb_prefetcher=None)
     metadata: dict = {}
 

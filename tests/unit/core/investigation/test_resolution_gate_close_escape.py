@@ -20,6 +20,7 @@ import pytest
 
 from faultmaven.core.investigation.milestone_engine import turn_completion
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.core.investigation.schemas import (
     EvidenceToAdd,
     InvestigationResponse_Diagnosis,
@@ -44,7 +45,7 @@ from faultmaven.modules.case.domain.models.solution import Solution, SolutionTyp
 
 def _make_repo():
     repo = MagicMock()
-    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.save = AsyncMock(side_effect=lambda c, **_: c)
     repo.get = AsyncMock(side_effect=lambda cid: None)
     return repo
 
@@ -126,7 +127,9 @@ async def test_repeat_needs_info_escapes_to_close_not_clobbered():
     metadata = _llm_proposes_resolved()
 
     await engine.transitions.check_automatic_transitions(
-        case=case, metadata=metadata, user_message="yes, it's resolved"
+        case=case,
+        metadata=metadata,
+        user_message="yes, it's resolved",
     )
 
     # Escape fired and was NOT clobbered by the LLM's re-proposed RESOLVED.
@@ -148,7 +151,9 @@ async def test_first_needs_info_stays_resolved_not_prematurely_closed():
     metadata = _llm_proposes_resolved()
 
     await engine.transitions.check_automatic_transitions(
-        case=case, metadata=metadata, user_message="mark resolved"
+        case=case,
+        metadata=metadata,
+        user_message="mark resolved",
     )
 
     assert case.pending_transition["to_state"] == "resolved"
@@ -172,7 +177,9 @@ async def test_ready_case_resolves_guard_does_not_interfere():
     metadata = _llm_proposes_resolved()
 
     await engine.transitions.check_automatic_transitions(
-        case=case, metadata=metadata, user_message="mark resolved"
+        case=case,
+        metadata=metadata,
+        user_message="mark resolved",
     )
 
     assert case.pending_transition["to_state"] == "resolved"
@@ -190,7 +197,9 @@ async def test_readiness_verdict_recorded_for_transition_compliance():
     metadata = _llm_proposes_resolved()
 
     await engine.transitions.check_automatic_transitions(
-        case=case, metadata=metadata, user_message="mark resolved"
+        case=case,
+        metadata=metadata,
+        user_message="mark resolved",
     )
 
     assert metadata.get("resolution_readiness_verdict") == "needs_info"
@@ -214,7 +223,9 @@ async def test_readiness_verdict_recorded_on_needs_info_recheck():
     }
 
     await engine.transitions.check_automatic_transitions(
-        case=case, metadata=metadata, user_message="I don't have a solution"
+        case=case,
+        metadata=metadata,
+        user_message="I don't have a solution",
     )
 
     assert metadata.get("resolution_readiness_verdict") == "needs_info"
@@ -231,7 +242,9 @@ async def test_the_flag_alone_with_nothing_pending_supersedes_nothing():
     metadata["transition_proposed_this_turn"] = True
 
     await engine.transitions.check_automatic_transitions(
-        case=case, metadata=metadata, user_message="mark resolved"
+        case=case,
+        metadata=metadata,
+        user_message="mark resolved",
     )
 
     assert case.pending_transition["to_state"] == "resolved"

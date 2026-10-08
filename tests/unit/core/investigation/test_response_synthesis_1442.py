@@ -316,7 +316,7 @@ def _synthesized_diagnosis(reason: StopReason):
 
 def _turn_engine(response):
     repo = MagicMock()
-    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.save = AsyncMock(side_effect=lambda c, **_: c)
     repo.get = AsyncMock(return_value=None)
     engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
     engine.generator.generate_structured_output = AsyncMock(return_value=response)
@@ -413,7 +413,7 @@ async def test_the_terminal_qa_path_reports_the_flag_on_its_metadata():
     blank = TerminalResponse(agent_response="", state_updates={})
     synthesized = _synthesize_agent_response(blank, StopReason.MAX_TOKENS)
     repo = MagicMock()
-    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.save = AsyncMock(side_effect=lambda c, **_: c)
     repo.get = AsyncMock(return_value=None)
     engine = MilestoneEngine(MagicMock(), repo, investigation_tools=None)
     engine.generator.generate_structured_output = AsyncMock(return_value=synthesized)
@@ -491,7 +491,7 @@ def _schema_tool_provider():
 
 def _repo():
     repo = MagicMock()
-    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.save = AsyncMock(side_effect=lambda c, **_: c)
     repo.get = AsyncMock(return_value=None)
     return repo
 

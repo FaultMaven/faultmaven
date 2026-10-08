@@ -92,7 +92,7 @@ from faultmaven.modules.evidence.domain.validators import validate_evidence     
 
 - Boundaries are enforced by import-linter: `.importlinter` holds the contracts (15 today) and `lint-imports` prints the authoritative list.
 - **No backward compatibility — the system is pre-user.** A refactor builds the clean end state directly: one canonical import path per symbol (the module that defines it), no facades, re-exports, shims or deprecated aliases; a package's `__init__.py` holds a docstring and genuinely package-level code only. Update every caller, test, script and doc example in the same change; loggers use `logging.getLogger(__name__)`. Same rule the Database section's baseline was built under (#1707 owner ruling).
-- The `case` module owns evidence, reports, checkpoints and message rows (`domain/owned_models/`) and investigation sessions (`domain/investigation_session.py`); `evidence/domain/models.py` re-exports from Case contracts.
+- The `case` module owns evidence, reports and message rows (`domain/owned_models/`) and investigation sessions (`domain/investigation_session.py`); `evidence/domain/models.py` re-exports from Case contracts.
 - Agent tools (`modules/agent/tools/`) include one `kb_qa` (every knowledge scope via metadata filter — there is no per-scope variant), `case_evidence_qa`, `document_qa_tool`, `search_file` / `deep_analysis` (query strategies over raw files), `read_file`, the `list_evidence*` and entity tools, `vectorize_file` and `web_search` (Tavily).
 - Design docs: `docs/architecture/core-architecture/` (start at `module-organization-design.md`). The `architecture` skill applies when adding endpoints, services or modules.
 

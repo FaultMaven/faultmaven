@@ -12,7 +12,7 @@ Schema is organized into four domains:
   `llm_turn_spend` are the LLM usage ledger (#640): what the billed calls cost,
   per payer and actor per UTC day, and per engine turn.
 - **Case domain** — `cases` and its children: evidence, hypotheses, solutions,
-  messages, files, actions, tags, checkpoints, entities, sessions, agent
+  messages, files, actions, tags, entities, sessions, agent
   executions, tool calls, hypothesis-evidence junction, reports.
 - **Knowledge domain** — `knowledge_items` (RAG corpus), `knowledge_suggestions`
   (HITL pipeline from cases), `conversion_jobs` / `conversion_drafts`
@@ -2637,49 +2637,6 @@ class CaseTagModel(Base):
         # Tag value cannot contain comma so the SQLite comma-separated tag
         # serialization round-trips losslessly.
         CheckConstraint("tag NOT LIKE '%,%'", name="case_tags_no_commas"),
-    )
-
-
-class CaseCheckpointModel(Base):
-    """Immutable snapshot of a case at a specific turn (time-travel debugging)."""
-
-    __tablename__ = "case_checkpoints"
-
-    checkpoint_id = Column(String(36), primary_key=True)
-    enterprise_id = Column(
-        String(36),
-        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    organization_id = Column(
-        String(36),
-        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    case_id = Column(
-        String(36),
-        ForeignKey("cases.case_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    turn_number = Column(Integer, nullable=False)
-    case_snapshot = Column(JSON().with_variant(JSONB, "postgresql"), nullable=False)
-    snapshot_hash = Column(String(64), nullable=False)
-    trigger = Column(String(50), nullable=False)
-    checkpoint_metadata = Column(
-        "metadata", JsonBlob, nullable=False, server_default="{}"
-    )
-    created_at = Column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
-    )
-
-    __table_args__ = (
-        Index("ix_case_checkpoints_case_turn", "case_id", "turn_number"),
-        CheckConstraint(
-            "LENGTH(TRIM(snapshot_hash)) > 0", name="case_checkpoints_hash_not_empty"
-        ),
     )
 
 

@@ -25,6 +25,7 @@ from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngin
 from faultmaven.core.investigation.milestone_engine.runbook_creation import (
     RunbookCreator,
 )
+from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.core.investigation.seeded_provenance import (
     SEEDED_FROM_RUNBOOK_KEY,
     SEEDED_INTERVENTIONS_KEY,
@@ -294,7 +295,9 @@ async def test_action_short_circuits_when_confirmed_cause_seeded(monkeypatch):
     ks = _TitleKnowledgeStub({"rb_cover": "ArgoCD sync failure"})
     engine = _engine(ks)
     engine.deps.conversion_service = None  # must not be reached — no draft created
-    result = await engine.runbooks.handle_runbook_creation(_case(), {})
+    result = await engine.runbooks.handle_runbook_creation(
+        _case(), {}, plan=TurnCommitPlan()
+    )
     assert ks.title_calls == ["rb_cover"]
     assert "ArgoCD sync failure" in result["agent_response"]
     assert result["suggested_follow_ups"] == []
@@ -306,7 +309,9 @@ async def test_action_message_degrades_when_title_unavailable(monkeypatch):
     ks = _TitleKnowledgeStub({})
     engine = _engine(ks)
     engine.deps.conversion_service = None
-    result = await engine.runbooks.handle_runbook_creation(_case(), {})
+    result = await engine.runbooks.handle_runbook_creation(
+        _case(), {}, plan=TurnCommitPlan()
+    )
     assert "an existing runbook" in result["agent_response"]
 
 
@@ -327,7 +332,9 @@ async def test_action_proceeds_when_cause_self_discovered(monkeypatch):
     ks = _TitleKnowledgeStub({"rb_cover": "should not be used"})
     engine = _engine(ks)
     engine.deps.conversion_service = None
-    result = await engine.runbooks.handle_runbook_creation(_case(), {})
+    result = await engine.runbooks.handle_runbook_creation(
+        _case(), {}, plan=TurnCommitPlan()
+    )
     assert result["agent_response"] == "not ready"
     assert ks.title_calls == []
 

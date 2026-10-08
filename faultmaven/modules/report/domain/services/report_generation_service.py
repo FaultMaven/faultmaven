@@ -76,7 +76,9 @@ class ReportGenerationService:
     - RESOLUTION_SUMMARY for RESOLVED cases (root cause, solution, evidence, timeline)
     - CLOSURE_SUMMARY for CLOSED cases (investigation state, approaches, closure reason)
     - PII sanitization before storage
-    - Fire-and-forget from milestone engine (failure doesn't block transition)
+    - Rendered by the milestone engine (``render_reports``) into the turn's
+      commit plan, so a summary row commits with its terminal state (#1882);
+      a render failure does not block the transition
     - Trivial case detection (skipped by should_generate_terminal_summary guardrail)
     """
 

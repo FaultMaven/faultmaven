@@ -186,7 +186,7 @@ TURN2 = json.dumps(
 async def replay(rec: dict) -> tuple[str, bool | None, int | None]:
     llm = StubLLM()
     repo = MagicMock()
-    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.save = AsyncMock(side_effect=lambda c, **_: c)
     repo.get = AsyncMock()
     engine = MilestoneEngine(llm, repo, investigation_tools=MagicMock())
     case = Case(

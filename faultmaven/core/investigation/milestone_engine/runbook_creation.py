@@ -1,11 +1,13 @@
 """Turning a resolved case into a runbook draft: the dedup scope resolver, the conversion call, and the case-level draft check that gates it."""
 
+import asyncio
 import logging
 from typing import Any
 
 from faultmaven.core.investigation.milestone_engine.regeneration import (
     _remaining_regens_for,
 )
+from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.modules.case.contracts import (
     Case,
     MessageRowKind,
@@ -18,6 +20,12 @@ from .terminal_replies import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: Strong references to the conversion tasks in flight. The event loop keeps
+#: only a weak reference to a task, and a conversion task spends its first
+#: moments parked on its turn's commit gate, so without this a task could be
+#: collected before it ever ran. Each removes itself when done.
+_CONVERSION_TASKS: set["asyncio.Task[None]"] = set()
 
 
 class RunbookCreator:
@@ -52,9 +60,19 @@ class RunbookCreator:
         self,
         case: "Case",
         metadata: dict[str, Any],
+        *,
+        plan: TurnCommitPlan,
         dedup_confirmed: bool = False,
     ) -> dict[str, Any]:
         """Evaluate readiness + dedup, then create runbook draft (fire-and-forget).
+
+        The conversion is spawned here but WAITS on a gate in ``plan``
+        (``plan.gate()``) before it does anything: the gate is released once
+        this turn has committed and cancelled if it does not (#1882). So a
+        turn that fails starts no conversion, and its retry is not told
+        "already exists" for a draft the failed turn produced — and of two
+        clicks racing on one case, the one whose commit loses (409) starts
+        nothing.
 
         Only RESOLVED cases reach this path — runbooks codify complete
         troubleshooting scenarios (root cause + verified solution).
@@ -212,17 +230,20 @@ class RunbookCreator:
             # default. Global is reserved for platform-curated content; the
             # owner can promote later via the Dashboard.
             request = CaseConversionRequest.from_case(case, scope="personal")
-            # Don't await the full pipeline — fire and forget
-            import asyncio
-
-            asyncio.create_task(
+            # Don't await the full pipeline — fire and forget, behind the
+            # turn's commit gate. A spawn failure stays here, before the
+            # commit, and keeps its "Failed to start" reply below.
+            task = asyncio.create_task(
                 self._run_runbook_conversion(
                     conversion_service,
                     request,
                     case.user_id,
                     case.enterprise_id,
+                    committed=plan.gate(),
                 )
             )
+            _CONVERSION_TASKS.add(task)
+            task.add_done_callback(_CONVERSION_TASKS.discard)
 
             # Name only what the reader can act on while reading this turn.
             #
@@ -290,7 +311,10 @@ class RunbookCreator:
             # payload). The Dashboard create/edit path it names instead is
             # reachable independently of any turn's suggestion set.
             remaining = await _remaining_regens_for(
-                self.deps.report_service, self.deps.repository, case
+                self.deps.report_service,
+                self.deps.repository,
+                case,
+                pending=plan.pending_reports(),
             )
             follow_ups = _resolved_suggestions(
                 case, remaining, runbook_already_exists=True
@@ -364,8 +388,18 @@ class RunbookCreator:
         request,
         user_id: str,
         enterprise_id: str,
+        *,
+        committed: "asyncio.Future[Any]",
     ) -> None:
         """Background task for runbook conversion.
+
+        ``committed`` is the spawning turn's commit gate (#1882). Nothing
+        happens until it resolves: released, the turn committed and the
+        conversion runs; cancelled, the turn did not commit and the task ends
+        here, having written nothing. The knowledge writes behind it
+        (``ConversionService.convert_from_case``: the conversion job, its
+        draft, the synthetic source upload, and this method's completion
+        notice) all sit behind the gate.
 
         ``enterprise_id`` is the SOURCE CASE's enterprise, and it is required, not
         optional. The conversion persists three RLS-tenanted rows (the synthetic
@@ -409,6 +443,23 @@ class RunbookCreator:
         path, which is a weaker remedy than the conversion they were promised
         but the only one on their screen.
         """
+        try:
+            # Shielded so that cancelling THIS task (shutdown) cannot cancel
+            # the gate itself: a cancelled task cancels the future it awaits,
+            # and the check below must be able to tell "the turn did not
+            # commit" from "the task was cancelled".
+            await asyncio.shield(committed)
+        except asyncio.CancelledError:
+            if not committed.cancelled():
+                raise
+            logger.info(
+                "Runbook conversion for case %s not started: its turn did "
+                "not commit",
+                request.case_id,
+                extra={"case_id": request.case_id},
+            )
+            return
+
         notification_content: str
         try:
             result = await conversion_service.convert_from_case(

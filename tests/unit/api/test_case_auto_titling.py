@@ -380,7 +380,12 @@ class TestTurnEndpointNamesTheCase:
         app.state.llm_provider = None
 
         investigation_service = MagicMock()
-        investigation_service.process_turn = AsyncMock(
+        # The route prepares under its deadline and commits after (#1882);
+        # the prepared stand-in is the response, handed back by the commit.
+        investigation_service.commit_turn = AsyncMock(
+            side_effect=lambda prepared: prepared
+        )
+        investigation_service.prepare_turn = AsyncMock(
             return_value=TurnResponse(
                 agent_response="Looking into it.",
                 turn_number=1,
@@ -444,7 +449,7 @@ class TestTurnEndpointNamesTheCase:
         An EMPTY post is no longer the way to make a turn fail — it is accepted
         as an orientation turn now — so the service itself is made to fail.
         """
-        client.fm_investigation_service.process_turn.side_effect = RuntimeError(
+        client.fm_investigation_service.prepare_turn.side_effect = RuntimeError(
             "provider down"
         )
         response = client.post(
@@ -462,7 +467,7 @@ class TestTurnEndpointNamesTheCase:
         response = client.post(f"/api/v1/cases/{case.case_id}/turns", data={})
 
         assert response.status_code == 200
-        payload = client.fm_investigation_service.process_turn.await_args.kwargs[
+        payload = client.fm_investigation_service.prepare_turn.await_args.kwargs[
             "payload"
         ]
         assert payload.has_query is False
@@ -515,7 +520,12 @@ class TestTitlingOrdering:
         service = _service_for(case)
 
         investigation_service = MagicMock()
-        investigation_service.process_turn = AsyncMock(
+        # The route prepares under its deadline and commits after (#1882);
+        # the prepared stand-in is the response, handed back by the commit.
+        investigation_service.commit_turn = AsyncMock(
+            side_effect=lambda prepared: prepared
+        )
+        investigation_service.prepare_turn = AsyncMock(
             return_value=TurnResponse(
                 agent_response="Looking into it.",
                 turn_number=1,

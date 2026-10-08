@@ -207,7 +207,7 @@ def _turn_engine(model_proposes: str | None) -> MilestoneEngine:
     """A real engine whose stubbed model verifies the mitigation and, when
     asked, proposes a transition beside it."""
     repo = MagicMock()
-    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.save = AsyncMock(side_effect=lambda c, **_: c)
     repo.get = AsyncMock(side_effect=lambda cid: None)
     engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
     engine.kb_prefetcher.prefetch_kb_context = AsyncMock(return_value=None)

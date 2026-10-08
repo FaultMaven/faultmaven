@@ -175,8 +175,7 @@ OTHER_READERS: dict[tuple[str, str], tuple[int, str]] = {
         "faultmaven/modules/case/infrastructure/sqlite_case_repository/repository.py",
         "SQLiteCaseRepository.save",
     ): (2, _PERSISTENCE),
-    # Whole-record dumps into storage: the turn records a case row carries,
-    # and the checkpoint snapshot (a hash and a stored copy, never a prompt).
+    # Whole-record dumps into storage: the turn records a case row carries.
     # ``_case_record_params`` reads no instance state, so the #1707 SQLite
     # split moved it to a module function in ``rows.py``.
     (
@@ -187,13 +186,6 @@ OTHER_READERS: dict[tuple[str, str], tuple[int, str]] = {
         "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository/rows.py",
         "_case_record_params",
     ): (1, _PERSISTENCE),
-    (
-        "faultmaven/core/investigation/checkpoint_service.py",
-        "CheckpointService.capture",
-    ): (
-        3,
-        _PERSISTENCE,
-    ),
     (
         "faultmaven/infrastructure/llm/providers/anthropic.py",
         "AnthropicProvider.generate",

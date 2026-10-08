@@ -142,9 +142,9 @@ FaultMaven's case data has predictable access patterns:
 ```python
 # Abstract interface
 class CaseRepository(ABC):
-    # reports/checkpoints are inserted in the case's own transaction, after
-    # the case and before the commit: all of it commits or none does (#1882)
-    async def save(self, case: Case, *, reports=(), checkpoints=()) -> Case
+    # reports are inserted in the case's own transaction, after the case
+    # and before the commit: all of it commits or none does (#1882)
+    async def save(self, case: Case, *, reports=()) -> Case
     async def get(self, case_id: str) -> Optional[Case]
     async def list(...) -> tuple[List[Case], int]
     async def delete(self, case_id: str) -> bool
@@ -161,7 +161,7 @@ class InMemoryCaseRepository(CaseRepository):
     def __init__(self):
         self._cases: Dict[str, Case] = {}
 
-    async def save(self, case: Case, *, reports=(), checkpoints=()) -> Case:
+    async def save(self, case: Case, *, reports=()) -> Case:
         self._cases[case.case_id] = case
         return case
 ```
@@ -185,7 +185,7 @@ class SQLiteCaseRepository(CaseRepository):
     def __init__(self, db_session):
         self.db = db_session
 
-    async def save(self, case: Case, *, reports=(), checkpoints=()) -> Case:
+    async def save(self, case: Case, *, reports=()) -> Case:
         # Uses SQLite-compatible SQL:
         # - No ::jsonb type casts
         # - No jsonb_build_object()
@@ -227,7 +227,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     def __init__(self, db_session):
         self.db = db_session
 
-    async def save(self, case: Case, *, reports=(), checkpoints=()) -> Case:
+    async def save(self, case: Case, *, reports=()) -> Case:
         # Uses PostgreSQL-optimized SQL:
         # - ::jsonb type casts for performance
         # - jsonb_build_object() for efficiency
@@ -342,7 +342,6 @@ High-Cardinality Tables (10):
 ├── case_messages         -- Turn-by-turn messages (very high volume)
 ├── case_actions          -- Audit trail of phase transitions
 ├── case_tags             -- Free-form tags on a case
-├── case_checkpoints      -- State snapshots (one per turn)
 ├── case_entities         -- Cross-artifact entity index
 └── reports               -- Generated case-summary documents (resolution/closure)
 
@@ -1041,37 +1040,14 @@ COMMENT ON TABLE case_actions IS 'Audit trail of case actions and status transit
 `to_status` enum coercion happens in `CaseState(row.value)` at the
 boundary; `triggered_by` round-trips verbatim.
 
-### 4.9 case_checkpoints (High-Cardinality Table)
+### 4.9 case_checkpoints — retired
 
-```sql
-CREATE TABLE case_checkpoints (
-    checkpoint_id VARCHAR(36) PRIMARY KEY,      -- UUIDv5 of (case_id, turn, trigger, target): checkpoint_service.checkpoint_id_for
-    case_id VARCHAR(36) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
-    turn_number INTEGER NOT NULL,
-
-    -- ============================================================
-    -- Snapshot Data
-    -- ============================================================
-    case_snapshot JSONB NOT NULL,               -- Complete case state representation
-    snapshot_hash VARCHAR(64) NOT NULL,         -- SHA256 hash for drift detection
-    trigger VARCHAR(50) NOT NULL,               -- reason (turn_complete, manual, etc.)
-
-    -- ============================================================
-    -- Metadata
-    -- ============================================================
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    metadata JSONB DEFAULT '{}'::jsonb,
-
-    CONSTRAINT case_checkpoints_hash_not_empty
-        CHECK (LENGTH(TRIM(snapshot_hash)) > 0)
-);
-
--- Indexes
-CREATE INDEX ix_case_turn ON case_checkpoints(case_id, turn_number);
-CREATE INDEX idx_checkpoints_created_at ON case_checkpoints(created_at DESC);
-
-COMMENT ON TABLE case_checkpoints IS 'Immutable snapshots of case state per turn/event';
-```
+Dropped by revision 009 (#1882, owner ruling 2026-10-08). It held a full case
+snapshot taken before each state transition; no deployment ever wrote one and
+nothing ever read one. Every transition is recorded in `case_actions` (§4.8), the
+problem statement's revisions in `statement_history`, and every turn in
+`turn_history`. The section number is kept so references to §4.10 onward stay
+valid.
 
 ### 4.10 reports (High-Cardinality Table)
 
@@ -1350,7 +1326,6 @@ WHERE e.case_id = :case_id
 - ✅ `case_messages`
 - ✅ `case_actions`
 - ✅ `case_tags`
-- ✅ `case_checkpoints`
 - ✅ `case_entities`
 - ✅ `reports`
 - ✅ `investigation_sessions`
@@ -1671,7 +1646,6 @@ DELETE FROM cases WHERE case_id = :case_id;
 -- - All case_messages (ON DELETE CASCADE)
 -- - All uploaded_files (ON DELETE CASCADE)
 -- - All case_actions (ON DELETE CASCADE)
--- - All case_checkpoints (ON DELETE CASCADE)
 -- - All reports (ON DELETE CASCADE)
 -- - All investigation_sessions (ON DELETE CASCADE)
 ```
@@ -1684,7 +1658,7 @@ All tenanted case-domain tables get RLS policies in PostgreSQL deployments, keye
 
 **Tenanted case-domain tables** covered by RLS:
 
-`cases`, `case_messages`, `case_actions`, `case_tags`, `case_checkpoints`, `case_entities`, `evidence`, `hypotheses`, `hypothesis_evidence`, `solutions`, `uploaded_files`, `investigation_sessions`, `reports`, `conversion_jobs`, `conversion_drafts`, `causal_nodes`, `causal_edges`, `causal_node_evidence`
+`cases`, `case_messages`, `case_actions`, `case_tags`, `case_entities`, `evidence`, `hypotheses`, `hypothesis_evidence`, `solutions`, `uploaded_files`, `investigation_sessions`, `reports`, `conversion_jobs`, `conversion_drafts`, `causal_nodes`, `causal_edges`, `causal_node_evidence`
 
 > The baseline migration (`001_enterprise_baseline`) creates every one of these policies from a shared table list at once, keyed on `enterprise_id`. That list does not reach a table a later revision adds: a new tenanted case-domain table is enrolled by the revision that creates it, or it silently escapes tenant isolation.
 
@@ -1725,8 +1699,8 @@ alembic upgrade head
 psql -U faultmaven -d faultmaven_cases -c "\dt"
 # Expected case-domain tables: cases, evidence, hypotheses, hypothesis_evidence,
 # solutions, uploaded_files, case_messages, case_actions, case_tags,
-# case_checkpoints, case_entities, reports, investigation_sessions.
-# See er-diagram.md for the full 41-table enumeration across all domains.
+# case_entities, reports, investigation_sessions.
+# See er-diagram.md for the full table enumeration across all domains.
 
 # Verify indexes created
 psql -U faultmaven -d faultmaven_cases -c "\di"

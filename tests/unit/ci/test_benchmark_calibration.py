@@ -441,7 +441,9 @@ class TestTheBudgetTable:
         # required gates ran as raw wall clock — two sanitizer throughputs,
         # two disabled-shim call costs, vocabulary and timestamp extraction,
         # and extraction beside a hostile line against the Tier-1 timeout.
-        assert len(performance_table.ALL_BUDGETS) == 28
+        #
+        # +1 in #1882: the p99 of a turn's one commit against its reserve.
+        assert len(performance_table.ALL_BUDGETS) == 29
 
     @pytest.mark.parametrize("name", sorted(ALL_ANCHORS))
     def test_the_anchor_is_2_to_3x_its_measured_reference(self, name):
@@ -1981,6 +1983,12 @@ TREE_UNJUDGED_TIMED_TESTS = {
         "test_the_deadline_is_monotonic_not_wall_clock",
     ): "a bracket, not a budget (allowlisted)",
     (
+        "tests/integration/test_turn_rows_commit_with_case_postgres_1882.py",
+        "test_the_postgresql_turn_commit_is_measured",
+    ): "prints the PostgreSQL commit latency the #1882 commit reserve is sized "
+    "from and judges no clock; its SQLite twin is judged by TURN_COMMIT_P99 in "
+    "tests/performance/",
+    (
         "tests/unit/modules/knowledge/test_gate_stays_off_the_event_loop.py",
         "test_the_gate_does_not_stall_the_event_loop",
     ): "judges a count of event-loop turns (allowlisted)",
@@ -2336,16 +2344,18 @@ class TestTheRestOfTheTree:
         assert not dead, dead
 
     def test_the_tree_allowlist_cost_is_what_was_measured(self):
-        """Counted, not tuned: nine comparisons, fourteen tests.
+        """Counted, not tuned: nine comparisons, fifteen tests.
 
         The nine are orderings of timestamps, two counts of log records, a
         floor under a sleep, a bracket, a tick count, a window membership and
-        a test double's TTL check. Ten of the fourteen tests are the
+        a test double's TTL check. Ten of the fifteen tests are the
         calibration instrument's own tests, which reach the real measurement
-        through the call graph and pin or stub it at run time.
+        through the call graph and pin or stub it at run time. One (#1882)
+        prints the PostgreSQL measurement a constant is sized from and
+        judges nothing on the clock.
         """
         assert len(TREE_THRESHOLD_ALLOWLIST) == 9
-        assert len(TREE_UNJUDGED_TIMED_TESTS) == 14
+        assert len(TREE_UNJUDGED_TIMED_TESTS) == 15
 
     def test_the_three_scopes_partition_tests(self):
         """Every module under tests/ is watched by exactly one rule."""

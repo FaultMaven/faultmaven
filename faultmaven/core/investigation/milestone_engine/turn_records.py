@@ -162,10 +162,9 @@ def _finish_deterministic_turn(
     so the stored turn-history entry, the returned metadata and the case's
     stall counter cannot disagree about the same turn.
 
-    Must be called BEFORE the branch's ``repository.save(case)`` — the
-    counter it writes is part of what that save persists. Every call site
-    follows the ``metadata = self._finish_deterministic_turn(...)`` →
-    ``save`` → ``return`` shape for that reason. (Recording a
+    The counter it writes is part of what the turn's one commit persists:
+    the branch returns the case it called this on, and the service commits it
+    (#1882). (Recording a
     ``TurnProgress`` at all is load-bearing on its own: without one the
     turn_history validator rejects the case on its next load, because a
     deterministic branch still consumes a turn number.)

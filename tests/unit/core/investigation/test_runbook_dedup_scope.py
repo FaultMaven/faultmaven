@@ -30,6 +30,7 @@ from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngin
 from faultmaven.core.investigation.milestone_engine.runbook_creation import (
     RunbookCreator,
 )
+from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.models.report import RunbookMatch
 from faultmaven.modules.case.contracts import (
@@ -301,7 +302,9 @@ async def test_the_engine_passes_its_injected_kb_and_owner_resolver_to_dedup(
         fake_evaluate,
     )
 
-    await engine.runbooks.handle_runbook_creation(_case(), metadata={})
+    await engine.runbooks.handle_runbook_creation(
+        _case(), metadata={}, plan=TurnCommitPlan()
+    )
 
     assert captured["runbook_kb"] is engine.deps.runbook_kb
     assert captured["scope_resolver"] is not None

@@ -21,6 +21,7 @@ defaults respectively) and is uniform after it.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 from datetime import datetime, timezone
@@ -190,10 +191,10 @@ class _SaveSpy:
         self.orders: list = []
         inner = repository.save
 
-        async def _save(case):
+        async def _save(case, **rows):
             self.saved.append(case)
             self.orders.append([(m["role"], m["content"]) for m in case.messages])
-            return await inner(case)
+            return await inner(case, **rows)
 
         repository.save = _save
 
@@ -433,7 +434,11 @@ class TestSystemNoticeRow:
             scope="global",
         )
         await engine.runbooks._run_runbook_conversion(
-            conversion_service, request, USER_ID, ENTERPRISE
+            conversion_service,
+            request,
+            USER_ID,
+            ENTERPRISE,
+            committed=_committed_gate(),
         )
         live = spy.saved[-1]
         reloaded = await repository.get(case.case_id)
@@ -569,8 +574,17 @@ class TestNewRowsGoLast:
             ),
             USER_ID,
             ENTERPRISE,
+            committed=_committed_gate(),
         )
 
         order = spy.orders[-1]
         assert order[:-1] == [(m["role"], m["content"]) for m in history]
         assert order[-1][0] == "system"
+
+
+def _committed_gate():
+    """The spawning turn's commit gate, already released: the turn committed
+    (#1882 — the conversion waits for it before anything else)."""
+    gate = asyncio.get_running_loop().create_future()
+    gate.set_result(None)
+    return gate

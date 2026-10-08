@@ -14,6 +14,7 @@ import pytest
 from faultmaven.core.investigation.milestone_engine.transitions import (
     TransitionManager,
 )
+from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.core.investigation.problem_status import edit_statement
 from faultmaven.core.investigation.prompts.context_builder.evidence import (
     _render_problem_context,
@@ -65,7 +66,6 @@ def _case(severity_guess=None, urgency=None) -> Case:
 
 async def _gate1(case: Case) -> ProblemVerification:
     deps = MagicMock()
-    deps.checkpoint_service = None
     prefetcher = MagicMock()
     prefetcher.prefetch_kb_context = AsyncMock()
     await TransitionManager(

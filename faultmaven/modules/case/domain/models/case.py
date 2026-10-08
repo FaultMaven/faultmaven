@@ -1155,9 +1155,9 @@ class Case(BaseModel):
     #               since they share a source. Either way it round-trips safely:
     #               `parse_utc_timestamp` reads a bare timestamp back as UTC,
     #               identically to the `Z` form — verified for all three shapes.
-    #               No live API surface serialises the domain `Case`; the only
-    #               consumer is the checkpoint hash, which is never compared
-    #               against a stored value.
+    #               No live API surface serialises the domain `Case`. (The
+    #               one consumer this note used to name, the case-checkpoint
+    #               hash, was retired with case checkpoints in #1882.)
     #   timedelta — dead. Config does not propagate to nested models in V2, and
     #               no model reachable from `Case` carries a timedelta field.
     model_config = ConfigDict(

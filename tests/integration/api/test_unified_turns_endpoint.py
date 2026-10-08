@@ -467,7 +467,7 @@ class TestTurnResponseModel:
 class TestSubmitTurnRejectsMalformedIntent:
     """The /turns endpoint must reject a malformed intent with 422, never 500.
     Calls the handler directly with mocked deps; the intent guard fires before
-    process_turn, so no real services are exercised. Closes the loop on the
+    prepare_turn, so no real services are exercised. Closes the loop on the
     route-level behavior that test_query_intent_schema.py only covers at the
     schema layer.
     """
@@ -530,7 +530,12 @@ class TestSubmitTurnBillingExhaustion:
         case_service = MagicMock()
         case_service.get_case = AsyncMock(return_value=_make_mock_case())
         investigation_service = MagicMock()
-        investigation_service.process_turn = AsyncMock(side_effect=service_error)
+        # The route prepares under its deadline and commits after (#1882);
+        # the prepared stand-in is the response, handed back by the commit.
+        investigation_service.commit_turn = AsyncMock(
+            side_effect=lambda prepared: prepared
+        )
+        investigation_service.prepare_turn = AsyncMock(side_effect=service_error)
         current_user = MagicMock()
         current_user.user_id = "test-user-123"
 

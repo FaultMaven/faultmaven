@@ -9,6 +9,7 @@ from faultmaven.core.investigation.milestone_engine.redaction import _should_red
 from faultmaven.core.investigation.milestone_engine.regeneration import (
     _remaining_regens_for,
 )
+from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.core.investigation.milestone_engine.turn_records import (
     _flatten_follow_ups,
 )
@@ -102,30 +103,39 @@ class TerminalTurnHandler:
         self.generator = generator
         self.runbooks = runbooks
 
-    async def auto_generate_report(self, case: "Case") -> tuple[str | None, bool]:
-        """Synchronous auto-generation of terminal summary.
+    async def auto_generate_report(
+        self, case: "Case", *, plan: TurnCommitPlan
+    ) -> tuple[str | None, bool]:
+        """Render the terminal summary and carry its row to the turn's commit.
 
         RESOLVED cases always generate (a confirmed solution is meaningful
         content by definition). CLOSED cases generate only when the
         substance gate passes — gated by
         ``should_generate_terminal_summary``.
 
+        The row is rendered here (``render_reports``, deterministic: no LLM
+        call and no write) and added to ``plan``, so it commits in the same
+        transaction as the CLOSED/RESOLVED state it summarises, or not at all
+        (#1882): a summary row can never exist for a case whose terminal state
+        did not commit, and a terminal state never commits half-summarised.
+
         Returns:
             A tuple ``(payload, generation_failed)``:
 
             - ``(rendered_markdown, False)`` on success — embed inline.
-            - ``(failure_note, True)`` on LLM exception — embed inline AND
-              offer the regen affordance on the ack-turn (G2).
+            - ``(failure_note, True)`` when the render raised — embed inline
+              AND offer the regen affordance on the ack-turn (G2).
             - ``(skip_note, False)`` when the substance gate skipped
               generation (CLOSED-only path).
             - ``(None, False)`` when no report service is configured.
 
         Callers embed ``payload`` in the closure-turn agent reply and use
         ``generation_failed`` to decide whether to offer the regen
-        affordance on the ack-turn. Exceptions are caught and reported as
-        a return value rather than propagated — the closure state
-        transition has already committed and must not be undone by a
-        synthesis-LLM hiccup.
+        affordance on the ack-turn. A render failure is reported as a return
+        value rather than propagated: the case still closes, with the failure
+        note and the regenerate card (owner ruling on #1882, INV-13). A
+        failure of the turn's COMMIT is different — nothing of the turn
+        commits, the terminal state included.
         """
         from faultmaven.core.investigation.terminal_transitions import (
             should_generate_terminal_summary,
@@ -161,19 +171,21 @@ class TerminalTurnHandler:
             return None, False
 
         try:
-            # generate_reports returns ReportGenerationResponse; its
-            # .reports field is the list of newly-persisted CaseReports.
-            response = await self.deps.report_service.generate_reports(
-                case, [report_type]
+            # Rendered, not written: the rows ride the turn's commit.
+            # ``pending`` counts a same-type row this turn already holds
+            # toward the cap and the version, as a committed row would.
+            reports = await self.deps.report_service.render_reports(
+                case, [report_type], pending=plan.pending_reports()
             )
+            plan.add_reports(reports)
             logger.info(
                 f"Auto-generated {report_type.value} for case {case.case_id}",
                 extra={"case_id": case.case_id, "report_type": report_type.value},
             )
-            # Pull the rendered markdown content from the freshly-generated
+            # Pull the rendered markdown content from the freshly-rendered
             # report so it can be embedded in the closure-turn reply.
-            if response.reports:
-                content = response.reports[0].content
+            if reports:
+                content = reports[0].content
                 if content:
                     terminal_summary_total.labels(
                         summary_type=report_type.value, outcome="generated"
@@ -202,9 +214,14 @@ class TerminalTurnHandler:
         case: "Case",
         user_message: str,
         metadata: dict[str, Any],
+        *,
+        plan: TurnCommitPlan,
         user_id: str | None = None,
     ) -> dict[str, Any]:
         """Handle turns on terminal cases: Q&A, report regeneration, runbook creation.
+
+        Writes nothing: a regenerated report row and the runbook conversion's
+        gate go into ``plan``, which commits (or releases) with the turn.
 
         Terminal cases are immutable — no evidence, milestones, or state changes.
         Three scenarios:
@@ -221,7 +238,7 @@ class TerminalTurnHandler:
         # through to Q&A so typing can never produce a persisted Report
         # side effect.
         if card is TerminalCardAction.REGENERATE_REPORT:
-            return await self._handle_report_regeneration(case, metadata)
+            return await self._handle_report_regeneration(case, metadata, plan=plan)
 
         # Scenario 2: Runbook creation. Strict exact-match (same policy
         # as regen): only the DECIDE suggestion's precomposed
@@ -230,23 +247,30 @@ class TerminalTurnHandler:
         # ``terminal_card_action`` — runbooks codify a confirmed
         # root-cause-to-solution chain.
         if card is TerminalCardAction.CREATE_RUNBOOK:
-            return await self.runbooks.handle_runbook_creation(case, metadata)
+            return await self.runbooks.handle_runbook_creation(
+                case, metadata, plan=plan
+            )
         if card is TerminalCardAction.CONFIRM_RUNBOOK:
             return await self.runbooks.handle_runbook_creation(
-                case, metadata, dedup_confirmed=True
+                case, metadata, plan=plan, dedup_confirmed=True
             )
 
         # Scenario 3: Q&A
         return await self._process_terminal_qa(
-            case, user_message, metadata, user_id=user_id
+            case, user_message, metadata, plan=plan, user_id=user_id
         )
 
     async def _handle_report_regeneration(
         self,
         case: "Case",
         metadata: dict[str, Any],
+        *,
+        plan: TurnCommitPlan,
     ) -> dict[str, Any]:
         """Regenerate the terminal summary report for a terminal case.
+
+        The new version is rendered and added to ``plan``, so it commits with
+        the turn: a turn that fails consumes no regeneration slot (#1882).
 
         For CLOSED cases, the same substance gate applied at closure time
         applies here — strict gating, no end-run around
@@ -298,12 +322,12 @@ class TerminalTurnHandler:
             }
 
         try:
-            # generate_reports returns ReportGenerationResponse; its
-            # .reports field is the list of newly-persisted CaseReports.
-            response = await self.deps.report_service.generate_reports(
-                case, [report_type]
+            # Rendered, not written: the row rides the turn's commit.
+            reports = await self.deps.report_service.render_reports(
+                case, [report_type], pending=plan.pending_reports()
             )
-            content = response.reports[0].content if response.reports else None
+            plan.add_reports(reports)
+            content = reports[0].content if reports else None
             agent_response = (
                 content
                 if content
@@ -324,10 +348,14 @@ class TerminalTurnHandler:
             )
 
         # Re-offer the regen affordance — the user may want to iterate.
-        # The "remaining" count comes from the DB and reflects the row
-        # just written, so it correctly decrements turn-over-turn.
+        # The "remaining" count is the committed rows plus the one this turn
+        # just rendered (``pending``), which commits with this reply, so it
+        # correctly decrements turn-over-turn.
         remaining = await _remaining_regens_for(
-            self.deps.report_service, self.deps.repository, case
+            self.deps.report_service,
+            self.deps.repository,
+            case,
+            pending=plan.pending_reports(),
         )
         if case.state == CaseState.RESOLVED:
             runbook_exists = await self.runbooks.case_has_runbook_draft(case)
@@ -347,6 +375,8 @@ class TerminalTurnHandler:
         case: "Case",
         user_message: str,
         metadata: dict[str, Any],
+        *,
+        plan: TurnCommitPlan,
         user_id: str | None = None,
     ) -> dict[str, Any]:
         """Process a Q&A turn on a terminal case via the LLM.
@@ -450,12 +480,18 @@ class TerminalTurnHandler:
         #     RESOLVED enables.
         if case.state == CaseState.CLOSED:
             remaining = await _remaining_regens_for(
-                self.deps.report_service, self.deps.repository, case
+                self.deps.report_service,
+                self.deps.repository,
+                case,
+                pending=plan.pending_reports(),
             )
             follow_ups = follow_ups + _closed_suggestions(case, remaining)
         elif case.state == CaseState.RESOLVED:
             remaining = await _remaining_regens_for(
-                self.deps.report_service, self.deps.repository, case
+                self.deps.report_service,
+                self.deps.repository,
+                case,
+                pending=plan.pending_reports(),
             )
             runbook_exists = await self.runbooks.case_has_runbook_draft(case)
             follow_ups = follow_ups + _resolved_suggestions(

@@ -24,7 +24,6 @@ class EngineDeps:
     llm_provider: ILLMProvider | None = None
     repository: Any = None
     knowledge_service: IKnowledgeService | None = None
-    checkpoint_service: Any | None = None
     investigation_tools: Any = None
     da_provider: Any | None = None
     da_model: str | None = None

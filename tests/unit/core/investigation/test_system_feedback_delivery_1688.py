@@ -98,7 +98,7 @@ class _SeamReached(Exception):
 
 def _engine() -> MilestoneEngine:
     repo = MagicMock()
-    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.save = AsyncMock(side_effect=lambda c, **_: c)
     repo.get = AsyncMock(side_effect=lambda cid: None)
     engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
     engine.generator.generate_structured_output = AsyncMock(side_effect=_SeamReached())
@@ -408,7 +408,7 @@ class TestTheNoticeIsDeliveredOnceAcrossAGate:
         llm = _StubLLM()
         llm.generate = AsyncMock()
         repo = MagicMock()
-        repo.save = AsyncMock(side_effect=lambda c: c)
+        repo.save = AsyncMock(side_effect=lambda c, **_: c)
         repo.get = AsyncMock()
         engine = MilestoneEngine(llm, repo, investigation_tools=MagicMock())
         case = _investigating_case()

@@ -3,20 +3,18 @@
 The invariant (owner ruling): a row exists only inside the commit that creates
 the turn that carried it. So a file is listed, searchable (every file tool
 resolves through ``case.uploaded_files``) and attributed to a committed turn
-together, or none of these. A turn that fails before its first commit leaves
-no row, and its retry is a fresh upload, never reported as a duplicate of its
-own failed attempt. (A failure after the engine's Step-7 save leaves a half turn
-whose row is committed — #1882, not pinned here.)
+together, or none of these. A turn that fails leaves no row, wherever it fails
+— its one commit included (#1882) — and its retry is a fresh upload, never
+reported as a duplicate of its own failed attempt.
 
 Driven through ``InvestigationService.process_turn`` on the REAL
 ``SQLiteCaseRepository`` over a file database, and read back through a separate
 session — which sees only COMMITTED rows. A read on the writing session would
 see its own uncommitted INSERT and pass with the commit deleted.
 
-The engine double below models the engine route's Step 7 (``_persist_turn``):
-it commits the aggregate before returning, as the real engine does, so
-"after the commit" in these tests means after the engine's save AND the
-service's final one.
+The engine double below saves nothing, as the real engine saves nothing
+(#1882): the turn commits once, at the service, so "after the commit" in these
+tests means after that one save.
 """
 
 from __future__ import annotations
@@ -61,7 +59,7 @@ from faultmaven.modules.evidence.domain.services.file_storage_service import (
     FileStorageService,
 )
 
-from .conftest import create_sample_case, make_preprocessing_result
+from .conftest import create_sample_case, drain_post_commit, make_preprocessing_result
 
 pytestmark = pytest.mark.unit
 
@@ -90,8 +88,8 @@ class _RecordingRepository(SQLiteCaseRepository):
         super().__init__(session)
         self._calls = calls
 
-    async def save(self, case):
-        result = await super().save(case)
+    async def save(self, case, **rows):
+        result = await super().save(case, **rows)
         self._calls.append(("save", tuple(f.file_id for f in case.uploaded_files)))
         return result
 
@@ -126,10 +124,12 @@ class _Storage:
 
 
 class _Engine:
-    """The engine route: Step 7 commits the aggregate before returning.
+    """The engine route: mutates the case and returns it, committing nothing
+    (#1882) — the service commits the turn once.
 
     Records what each turn's ``case`` held on entry (the aggregate the prompt is
-    built from) and the attachment metadata it was handed.
+    built from) and the attachment metadata it was handed. ``before_commit``
+    runs inside the engine, so before the turn's one commit.
     """
 
     def __init__(
@@ -163,7 +163,6 @@ class _Engine:
             raise self._fail
         if self._before_commit is not None:
             await self._before_commit(case)
-        await self._repository.save(case)  # Step 7, ``_persist_turn``
         return {
             "case_updated": case,
             "agent_response": f"Looked at: {user_message}",
@@ -238,6 +237,8 @@ class _World:
                     query=query, attachments=attachments or [], intent=intent
                 ),
             )
+            # mark_linked runs after the commit, off the response path (#1882).
+            await drain_post_commit()
         return response, engine, storage
 
     async def committed(self) -> Case:
@@ -376,12 +377,13 @@ class TestAFailedUploadTurnLeavesNoRow:
         [listed] = await world.listed()
         assert listed.uploaded_at_turn == 7
 
-    async def test_8_an_occ_conflict_at_the_engines_step7_save_leaves_no_row(
+    async def test_8_an_occ_conflict_at_the_turns_one_commit_leaves_no_row(
         self, sessions
     ):
-        """The conflict lands on the turn's FIRST commit, the engine's Step 7.
-        A conflict at the service's later final save is the #1882 half turn,
-        where the row is already committed."""
+        """A concurrent writer wins while the turn runs, so the turn's one
+        commit conflicts (409). Nothing of the turn is committed: no row, no
+        turn advance, no sidecar flip. (Before #1882 the engine's own Step-7
+        save could commit the row first and leave a half turn.)"""
         world = await _world(sessions, current_turn=2)
 
         async def _a_concurrent_writer_wins(case):
@@ -406,6 +408,60 @@ class TestAFailedUploadTurnLeavesNoRow:
             k for k, _ in world.calls
         ], "positive control: the conflict happened after the bytes were stored"
 
+    async def test_11_the_former_half_turn_a_conflict_after_the_engine_returned(
+        self, sessions, monkeypatch
+    ):
+        """The shape #1882 was filed for: the engine has RETURNED (it used to
+        have committed the row, the user message and the clock at its Step 7
+        by then) and the conflict lands on the service's save. Now that save is
+        the turn's only commit, so nothing of the turn is stored — and the
+        retry is the same turn at the same number, a fresh upload rather than a
+        duplicate of its own failed attempt."""
+        from faultmaven.modules.agent.domain.services.investigation_service import (
+            service as service_module,
+        )
+
+        world = await _world(sessions, current_turn=2)
+        original_commit = service_module.InvestigationService.commit_turn
+        armed = {"once": True}
+
+        async def _a_concurrent_writer_wins_then_commit(self, prepared):
+            # The engine has returned and the response is built: the turn is
+            # prepared. A concurrent writer wins before its commit.
+            if armed.pop("once", False):
+                async with sessions() as other:
+                    repo = SQLiteCaseRepository(other)
+                    concurrent = await repo.get(world.case_id)
+                    concurrent.title = "a concurrent writer won"
+                    await repo.save(concurrent)
+            return await original_commit(self, prepared)
+
+        monkeypatch.setattr(
+            service_module.InvestigationService,
+            "commit_turn",
+            _a_concurrent_writer_wins_then_commit,
+        )
+
+        with pytest.raises(StaleCaseException):
+            await world.turn("here are the logs", [_attachment()])
+
+        committed = await world.committed()
+        assert committed.title == "a concurrent writer won", "positive control"
+        assert committed.uploaded_files == []
+        assert committed.current_turn == 2
+        assert not [m for m in committed.messages if m["role"] == "user"]
+        assert "mark_linked" not in [k for k, _ in world.calls]
+
+        response, _, _ = await world.turn("here are the logs", [_attachment()])
+
+        [result] = response.attachments_processed
+        assert (result.duplicate_of, result.duplicate_turn) == (None, None)
+        committed = await world.committed()
+        [row] = committed.uploaded_files
+        assert (row.file_id, row.uploaded_at_turn) == (result.file_id, 3)
+        assert committed.current_turn == 3
+        assert len([m for m in committed.messages if m["role"] == "user"]) == 1
+
 
 # ---------------------------------------------------------------------------
 # A successful turn: the row lands at N, and the sidecar flips only after
@@ -427,6 +483,7 @@ class TestASuccessfulUploadTurn:
 
         kinds = [k for k, _ in world.calls]
         assert storage.marked() == [row.storage_ref]
+        assert kinds.count("save") == 1, f"the turn committed more than once: {kinds}"
         last_save = max(i for i, k in enumerate(kinds) if k == "save")
         assert (
             kinds.index("mark_linked") > last_save
@@ -564,7 +621,7 @@ class TestASuccessfulUploadTurn:
 
 
 # ---------------------------------------------------------------------------
-# A deterministic route commits the row at its own (earlier) save
+# A deterministic route commits the row in the turn's one commit
 # ---------------------------------------------------------------------------
 
 
@@ -595,9 +652,10 @@ def _investigating_case() -> Case:
 class TestADeterministicRouteCommitsTheRowWithItsTurn:
     async def test_10_a_dropdown_close_carrying_a_file(self, sessions):
         """``status_transition`` → closed with nothing pending: the real engine
-        proposes the close on a deterministic branch and saves the case there
+        proposes the close on a deterministic branch
         (``transition_turns._close_on_explicit_intent``), never reaching the
-        LLM. The upload row rides that save."""
+        LLM. That branch saves nothing (#1882): the upload row rides the turn's
+        one commit, with the proposal."""
         world = await _world(sessions, case=_investigating_case())
 
         def _real_engine(repository):
@@ -619,10 +677,10 @@ class TestADeterministicRouteCommitsTheRowWithItsTurn:
         assert not engine.generator.generate_structured_output.called
         [result] = response.attachments_processed
         saves = [files for kind, files in world.calls if kind == "save"]
-        assert len(saves) >= 2, "the engine's own save and the service's"
+        assert len(saves) == 1, f"the turn committed more than once: {saves}"
         assert (
             result.file_id in saves[0]
-        ), "the deterministic branch's save did not carry the turn's upload"
+        ), "the turn's one commit did not carry the turn's upload"
         [row] = (await world.committed()).uploaded_files
         assert (row.file_id, row.uploaded_at_turn) == (result.file_id, 8)
         assert storage.marked() == storage.stored

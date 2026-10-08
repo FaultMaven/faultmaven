@@ -167,18 +167,11 @@ CLARIFICATION_CARRY_TURNS = 3
 #: "Yes, mark as resolved" means nothing once the proposal it belonged to is
 #: gone — so it must NOT inherit the clarification window.
 #:
-#: It does NOT, on its own, close fm#918's mid-turn-save exposure, and this
-#: comment used to claim it did — "the engine appends ``turn_history`` at its
-#: Step 6 and saves at Step 7, so a row committed by a save whose final
-#: assignment never ran carries turn N in the persisted counter and a stamp of
-#: N-1, which is out of window on the retry turn". Measured: two saves on the
-#: transition turn path (``milestone_engine/transition_turns.py``) run BEFORE
-#: the turn is recorded (both "persist
-#: terminal state before synthesis", ahead of ``_finish_deterministic_turn``),
-#: so such a row carries N-1 in the persisted counter AND a stamp of N-1. The
-#: retry asks at N, the age is exactly 1, and the follow-up is inside this
-#: window rather than outside it. What closes that window is the terminal
-#: guard in ``suggestion_is_live``: both of those saves commit a TERMINAL case.
+#: fm#918's mid-turn-save exposure — a row committed by an engine save whose
+#: turn then failed, stamping suggestions the retry would still accept — is
+#: gone with the mid-turn saves themselves: a turn commits once, at the end,
+#: or not at all (#1882), so no stored suggestion list comes from a turn that
+#: did not commit.
 FOLLOW_UP_CARRY_TURNS = 1
 
 #: Distinct attachments whose clarification choices may be on offer at once. A

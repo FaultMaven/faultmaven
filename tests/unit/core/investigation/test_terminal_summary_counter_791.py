@@ -1,7 +1,8 @@
 """#791: every automatic terminal-summary attempt increments one outcome series.
 
 Drives ``TerminalTurnHandler.auto_generate_report`` with a stub report service
-(no LLM call). The counter is a no-op shim unless ``ENABLE_METRICS`` is set, so
+(no LLM call). The summary is rendered (``render_reports``) and its row carried
+in the turn's plan (#1882); the counter counts the render ATTEMPT. The counter is a no-op shim unless ``ENABLE_METRICS`` is set, so
 the labelled child is asserted through a patched counter object.
 """
 
@@ -19,6 +20,7 @@ from faultmaven.core.investigation.milestone_engine import terminal_turns
 from faultmaven.core.investigation.milestone_engine.terminal_turns import (
     TerminalTurnHandler,
 )
+from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.modules.case.contracts import CaseState
 
 pytestmark = pytest.mark.unit
@@ -45,12 +47,11 @@ def _handler(report_service):
 def _service(content=None, *, reports=True, raises=False):
     svc = AsyncMock()
     if raises:
-        svc.generate_reports.side_effect = RuntimeError("llm down")
+        svc.render_reports.side_effect = RuntimeError("render failed")
     else:
-        resp = SimpleNamespace(
-            reports=[SimpleNamespace(content=content)] if reports else []
+        svc.render_reports.return_value = (
+            [SimpleNamespace(content=content, report_type="x")] if reports else []
         )
-        svc.generate_reports.return_value = resp
     return svc
 
 
@@ -58,7 +59,9 @@ def _service(content=None, *, reports=True, raises=False):
 class TestTerminalSummaryCounter:
     async def _run(self, case, service):
         with patch.object(terminal_turns, "terminal_summary_total") as counter:
-            result = await _handler(service).auto_generate_report(case)
+            result = await _handler(service).auto_generate_report(
+                case, plan=TurnCommitPlan()
+            )
         return result, counter
 
     async def test_resolved_generated(self):
@@ -107,7 +110,7 @@ class TestTerminalSummaryCounter:
             _case(CaseState.CLOSED, substance=False), service
         )
         assert failed is False
-        service.generate_reports.assert_not_awaited()
+        service.render_reports.assert_not_awaited()
         counter.labels.assert_called_once_with(
             summary_type="closure_summary", outcome="skipped"
         )

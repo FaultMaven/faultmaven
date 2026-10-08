@@ -562,14 +562,13 @@ asked to accept, and it belongs to a person.
 #
 # WHY DELETE RATHER THAN RETURN 501, which #1425 offered as its third option.
 # 501 keeps a promise alive, so it is worth something only if the promise has a
-# referent. Session restoration has none. The nearest thing in the codebase is
-# `CaseCheckpoint`, and it is a different noun: a snapshot of a CASE, keyed
-# `{case_id}:turn:{n}:{trigger}`, with no session dimension at all. It is
-# written (three call sites in `milestone_engine`) and never read — `get_checkpoint`
-# and `get_checkpoints` have no caller outside the repositories that implement
-# them — so it could not restore a session even if a session were the thing it
-# snapshotted. A 501 here would be a promise pointing at nothing, which is the
-# same defect this entry is about with a different status code.
+# referent. Session restoration has none. The nearest thing in the codebase was
+# `CaseCheckpoint`, and it was a different noun: a snapshot of a CASE, with no
+# session dimension at all. It was written and never read, so it could not
+# restore a session even if a session were the thing it snapshotted (case
+# checkpoints were retired in #1882 for that reason). A 501 here would be a
+# promise pointing at nothing, which is the same defect this entry is about
+# with a different status code.
 #
 # THE CASES ROUTE HAD THREE FAULTS, NOT ONE, and each alone would have been a
 # reason to change it:

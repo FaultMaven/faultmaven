@@ -30,7 +30,7 @@ Names follow the `faultmaven_` prefix convention shared with
 
 **Label values:**
 
-- `mark_linked_failures_total{outcome}`: `returned_false | raised` — `mark_linked` reports failure by RETURNING False rather than raising, so both arms are counted; the returning arm is the commoner one.
+- `mark_linked_failures_total{outcome}`: `returned_false | raised | timed_out` — `mark_linked` reports failure by RETURNING False rather than raising, so both arms are counted; the returning arm is the commoner one. `timed_out` is a call cut off by `MARK_LINKED_TIMEOUT_SECONDS`: it runs after the turn's commit, which the turn's 2xx waits on, so a hanging storage backend is bounded rather than allowed to hold the response (#1882).
 - `async_retry_enqueued_total{reason}`: `timeout | 5xx | rate_limit | network_error | other`
 - `async_retry_outcome_total{outcome}`: `success | failure | timeout | superseded | cancelled`
 

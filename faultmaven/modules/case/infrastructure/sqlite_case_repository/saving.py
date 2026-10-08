@@ -10,7 +10,6 @@ from sqlalchemy import bindparam, text
 from faultmaven.modules.case.contracts import (
     Case,
     CaseAction,
-    CaseCheckpoint,
     CaseReport,
     CausalEdge,
     CausalNode,
@@ -1119,40 +1118,5 @@ async def _insert_report(db, report: CaseReport) -> None:
             # through later via an add_report() signature change when
             # API routes start carrying it.
             "generated_by": getattr(report, "generated_by", None),
-        },
-    )
-
-
-async def _insert_checkpoint(db, checkpoint: CaseCheckpoint) -> None:
-    """Write one checkpoint row on ``db``, without committing (SQLite-compatible).
-
-    A plain INSERT, never ``ON CONFLICT DO NOTHING``: a second snapshot under an
-    id already taken is a defect at the site that took it, and it fails the
-    transaction it is in rather than vanishing (#1882 R6).
-    """
-    query = text("""
-        INSERT INTO case_checkpoints (
-            checkpoint_id, case_id, enterprise_id, organization_id, turn_number, case_snapshot,
-            snapshot_hash, trigger, created_at, metadata
-        ) VALUES (
-            :checkpoint_id, :case_id,
-            (SELECT enterprise_id FROM cases WHERE case_id = :case_id),
-            (SELECT organization_id FROM cases WHERE case_id = :case_id),
-            :turn_number, :case_snapshot,
-            :snapshot_hash, :trigger, :created_at, :metadata
-        )
-    """)
-
-    await db.execute(
-        query,
-        {
-            "checkpoint_id": checkpoint.checkpoint_id,
-            "case_id": checkpoint.case_id,
-            "turn_number": checkpoint.turn_number,
-            "case_snapshot": json.dumps(to_json_compatible(checkpoint.case_snapshot)),
-            "snapshot_hash": checkpoint.snapshot_hash,
-            "trigger": checkpoint.trigger,
-            "created_at": checkpoint.created_at,
-            "metadata": json.dumps(to_json_compatible(checkpoint.metadata)),
         },
     )

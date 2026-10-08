@@ -39,7 +39,6 @@ from faultmaven.modules.case.domain.models.turn import TurnProgress
 
 if TYPE_CHECKING:
     # Report models now owned by Case module - import from case domain models
-    from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
     from faultmaven.modules.case.domain.owned_models.report import (
         CaseReport,
         ReportType,
@@ -243,22 +242,14 @@ class CaseRepository(ABC):
             object.__setattr__(case, name, value)
 
     @staticmethod
-    def check_turn_rows(
-        case: Case,
-        reports: Sequence["CaseReport"],
-        checkpoints: Sequence["CaseCheckpoint"],
-    ) -> None:
-        """Refuse a report or checkpoint that belongs to another case.
+    def check_turn_rows(case: Case, reports: Sequence["CaseReport"]) -> None:
+        """Refuse a report that belongs to another case.
 
-        ``save(case, reports=..., checkpoints=...)`` commits these rows with
-        ``case`` and derives their enterprise from it, so a row naming another
-        case is a caller defect, refused before anything is written.
+        ``save(case, reports=...)`` commits these rows with ``case`` and derives
+        their enterprise from it, so a row naming another case is a caller
+        defect, refused before anything is written.
         """
-        strays = [
-            row.case_id
-            for row in (*reports, *checkpoints)
-            if row.case_id != case.case_id
-        ]
+        strays = [row.case_id for row in reports if row.case_id != case.case_id]
         if strays:
             raise ValueError(
                 f"save({case.case_id}) was handed rows for other cases: "
@@ -271,7 +262,6 @@ class CaseRepository(ABC):
         case: Case,
         *,
         reports: Sequence["CaseReport"] = (),
-        checkpoints: Sequence["CaseCheckpoint"] = (),
     ) -> Case:
         """
         Save case to persistence layer.
@@ -279,8 +269,6 @@ class CaseRepository(ABC):
         Args:
             case: Case domain object
             reports: Report rows to write in the same transaction as the case
-            checkpoints: Checkpoint rows to write in the same transaction as
-                the case. A checkpoint id already stored fails the whole save.
 
         Returns:
             Saved case (may have updated timestamps)
@@ -933,49 +921,6 @@ class CaseRepository(ABC):
         """
         pass
 
-    # Checkpoint Operations
-    @abstractmethod
-    async def create_checkpoint(self, checkpoint: "CaseCheckpoint") -> "CaseCheckpoint":
-        """
-        Create a new case checkpoint.
-
-        Args:
-            checkpoint: CaseCheckpoint domain object
-
-        Returns:
-            Created checkpoint
-
-        Raises:
-            RepositoryException: If creation fails
-        """
-        pass
-
-    @abstractmethod
-    async def get_checkpoint(self, checkpoint_id: str) -> Optional["CaseCheckpoint"]:
-        """
-        Get a checkpoint by ID.
-
-        Args:
-            checkpoint_id: Checkpoint identifier
-
-        Returns:
-            CaseCheckpoint if found, None otherwise
-        """
-        pass
-
-    @abstractmethod
-    async def get_checkpoints(self, case_id: str) -> List["CaseCheckpoint"]:
-        """
-        Get all checkpoints for a case.
-
-        Args:
-            case_id: Case identifier
-
-        Returns:
-            List of checkpoints ordered by turn_number
-        """
-        pass
-
     async def begin_transaction(self):
         """
         Begin a transaction context (optional feature).
@@ -1011,7 +956,6 @@ class InMemoryCaseRepository(CaseRepository):
         """Initialize empty in-memory store."""
         self._cases: Dict[str, Case] = {}
         self._reports: Dict[str, "CaseReport"] = {}  # report_id -> CaseReport
-        self._checkpoints: Dict[str, Any] = {}  # checkpoint_id -> CaseCheckpoint
         # Phase 4 — case entity registry. Keyed by (case_id, evidence_id)
         # for O(1) delete-before-insert on re-extraction, with the
         # composite (case, type, value, evidence) tuple preserved
@@ -1023,7 +967,6 @@ class InMemoryCaseRepository(CaseRepository):
         case: Case,
         *,
         reports: Sequence["CaseReport"] = (),
-        checkpoints: Sequence["CaseCheckpoint"] = (),
     ) -> Case:
         """Save case to memory with optimistic concurrency control.
 
@@ -1036,11 +979,10 @@ class InMemoryCaseRepository(CaseRepository):
           version is bumped and the case is stored.
         - Existing case, version mismatch: raises StaleCaseException.
 
-        ``reports`` and ``checkpoints`` are stored with the case or not at all:
-        every check that can refuse the save (version, checkpoint id taken)
-        runs before anything is stored (#1882).
+        ``reports`` are stored with the case or not at all: every check that
+        can refuse the save runs before anything is stored (#1882).
         """
-        self.check_turn_rows(case, reports, checkpoints)
+        self.check_turn_rows(case, reports)
         stamps = self.save_stamps(case)
         from faultmaven.core.investigation.terminal_transitions import (
             derive_disposition_eligibility,
@@ -1071,10 +1013,6 @@ class InMemoryCaseRepository(CaseRepository):
 
         existing = self._cases.get(case.case_id)
         try:
-            # The primary key the SQL tables enforce, enforced before the
-            # version is touched or anything is stored: a refused save stores
-            # nothing.
-            self._refuse_taken_checkpoint_ids(checkpoints)
             if existing is not None and existing.version != case.version:
                 raise StaleCaseException(
                     case_id=case.case_id,
@@ -1089,24 +1027,7 @@ class InMemoryCaseRepository(CaseRepository):
         self._cases[case.case_id] = case
         for report in reports:
             self._store_report(report)
-        for checkpoint in checkpoints:
-            self._checkpoints[checkpoint.checkpoint_id] = checkpoint
         return case
-
-    def _refuse_taken_checkpoint_ids(
-        self, checkpoints: Sequence["CaseCheckpoint"]
-    ) -> None:
-        """Raise when a checkpoint id is already stored or repeated in the batch.
-
-        The SQL tables refuse a duplicate ``checkpoint_id`` on the primary key;
-        this is the same refusal for the in-memory store, so a test on either
-        backend sees a collision fail loudly.
-        """
-        ids = [cp.checkpoint_id for cp in checkpoints]
-        taken = {i for i in ids if i in self._checkpoints}
-        taken |= {i for i in ids if ids.count(i) > 1}
-        if taken:
-            raise RepositoryException(f"Checkpoint id already taken: {sorted(taken)}")
 
     async def get(self, case_id: str) -> Optional[Case]:
         """Get case from memory.
@@ -1697,30 +1618,11 @@ class InMemoryCaseRepository(CaseRepository):
             return True
         return False
 
-    async def create_checkpoint(self, checkpoint: "CaseCheckpoint") -> "CaseCheckpoint":
-        """Create checkpoint in memory; an id already stored raises, as the
-        SQL primary key does."""
-        self._refuse_taken_checkpoint_ids((checkpoint,))
-        self._checkpoints[checkpoint.checkpoint_id] = checkpoint
-        return checkpoint
-
-    async def get_checkpoint(self, checkpoint_id: str) -> Optional["CaseCheckpoint"]:
-        """Get checkpoint from memory."""
-        return self._checkpoints.get(checkpoint_id)
-
-    async def get_checkpoints(self, case_id: str) -> List["CaseCheckpoint"]:
-        """Get checkpoints for case from memory."""
-        checkpoints = [cp for cp in self._checkpoints.values() if cp.case_id == case_id]
-        # Sort by turn number
-        checkpoints.sort(key=lambda x: x.turn_number)
-        return checkpoints
-
     # ============================================================
     def clear(self):
         """Clear all cases and reports (testing utility)."""
         self._cases.clear()
         self._reports.clear()
-        self._checkpoints.clear()
 
 
 # NOTE: Legacy PostgreSQLCaseRepository was removed (2026-03-18).

@@ -480,7 +480,8 @@ class TestEngineWiring:
 
     #1707 wave 3 split ``_process_turn_impl`` into phase methods
     (``_apply_turn_response`` now holds the terminal sweep and the linker;
-    ``_persist_turn`` holds the save and the flattening). The order these
+    ``_finalize_turn`` holds the flattening, and since #1882 nothing in the
+    engine saves). The order these
     tests pin spans both, so they read it from
     ``reinlined_process_turn_impl_source()`` — an AST inline of the phases
     back into the owner's body, not a concatenation of the two methods'
@@ -500,14 +501,6 @@ class TestEngineWiring:
             "— every ask goes back to being a free-floating string that "
             "neither the obtainability wall nor mention decay can see (#1079)."
         )
-
-    def test_linking_runs_before_the_save(self):
-        # #1707 wave 3 step B: ``repository`` is now a direct parameter of
-        # ``_persist_turn``, not ``self.deps.repository``.
-        src = self._source()
-        assert src.index("link_evidence_suggestions_to_needs(") < src.index(
-            "await repository.save(case_updated)"
-        ), "linking must precede save() or created needs and the ask history are lost"
 
     def test_linking_runs_before_flattening(self):
         src = self._source()
@@ -1103,22 +1096,6 @@ class TestSweepIsWiredBeforeLinking:
             "link_evidence_suggestions_to_needs("
         )
 
-    def test_sweep_runs_before_the_save(self):
-        # #1707 wave 3: the save now lives in the phase ``_persist_turn``,
-        # split off after ``_apply_turn_response`` (which holds the sweep) —
-        # an order question spanning two phases, answered from the AST
-        # re-inline rather than either phase's own source.
-        from tests.unit.core.investigation.turn_path_reinline import (
-            reinlined_process_turn_impl_source,
-        )
-
-        # #1707 wave 3 step B: ``repository`` is now a direct parameter of
-        # ``_persist_turn``, not ``self.deps.repository``.
-        src = reinlined_process_turn_impl_source()
-        assert src.index("sweep_silent_inferred_needs(") < src.index(
-            "await repository.save(case_updated)"
-        )
-
 
 @pytest.mark.unit
 class TestGuardCallIsPinned:
@@ -1173,3 +1150,104 @@ class TestDeclaredIdOnDeadNeed:
         assert dead.surfaced_turns == []
         assert fu.evidence_need_id != dead.need_id
         assert len(case.evidence_needs) == 2
+
+
+class _SnapshotStore:
+    """A repository as a database behaves: a save stores a SNAPSHOT, so what
+    the engine leaves on its in-memory case is not mistaken for committed."""
+
+    def __init__(self, case):
+        self._row = case.model_copy(deep=True)
+
+    async def get(self, case_id):
+        return self._row.model_copy(deep=True)
+
+    async def save(self, case, *, reports=()):
+        self._row = case.model_copy(deep=True)
+        return case
+
+    def row(self):
+        return self._row
+
+
+@pytest.mark.unit
+class TestTheLinkedNeedCommitsWithItsTurn:
+    """Linking and the inferred-need sweep write the case's ``evidence_needs``,
+    and must happen before the turn commits or the created needs and the ask
+    history are lost. Pinned by behaviour, not by a string anchor on a save:
+    the engine performs no save (#1882), so it returns the linked case and the
+    turn's one commit (``commit_turn_plan``, as the service runs it) carries
+    it."""
+
+    async def test_the_need_is_on_the_returned_case_and_in_the_commit(self):
+        from datetime import UTC, datetime
+        from unittest.mock import AsyncMock, MagicMock
+
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
+        from faultmaven.core.investigation.milestone_engine.turn_commit import (
+            commit_turn_plan,
+        )
+        from faultmaven.core.investigation.schemas import (
+            InvestigationResponse_Diagnosis,
+            SuggestedFollowUp,
+        )
+        from faultmaven.modules.case.domain.models.case import Case
+        from faultmaven.modules.case.domain.models.lifecycle import CaseState
+        from faultmaven.modules.case.domain.models.problem import (
+            ProblemVerification,
+        )
+        from faultmaven.modules.case.domain.models.progress import (
+            InvestigationProgress,
+        )
+
+        case = Case(
+            case_id="case_1079aaaaaaaa",
+            title="Checkout 503s",
+            state=CaseState.INQUIRY,
+            user_id="user_1079",
+            enterprise_id="org_1079",
+            description="checkout 503s",
+            problem_verification=ProblemVerification(
+                symptom_statement="checkout returns 503",
+                severity="HIGH",
+                temporal_state="ongoing",
+                urgency_level="high",
+            ),
+        )
+        case.inquiry.proposed_problem_statement = "checkout returns 503"
+        case.inquiry.problem_statement_confirmed = True
+        case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
+        case.state = CaseState.INVESTIGATING
+        case.progress = InvestigationProgress()
+        case.current_turn = 4
+        store = _SnapshotStore(case)
+
+        ask = "Share the connection pool metrics for the 09:00 window."
+        engine = MilestoneEngine(MagicMock(), store, investigation_tools=MagicMock())
+        engine.generator.generate_structured_output = AsyncMock(
+            return_value=InvestigationResponse_Diagnosis(
+                agent_response="The 503s line up with pool saturation.",
+                state_updates={},
+                suggested_follow_ups=[
+                    SuggestedFollowUp(
+                        label="Pool metrics", action_type="EVIDENCE", body=ask
+                    )
+                ],
+            )
+        )
+
+        case.current_turn = 5  # the service advances the clock
+        result = await engine.process_turn(case, "what should I check next?")
+
+        returned = result["case_updated"]
+        linked = [n for n in returned.evidence_needs if ask in n.request_text]
+        assert linked, "the linker created no need on the turn's case"
+        assert not store.row().evidence_needs, "the engine committed mid-turn"
+
+        await commit_turn_plan(store, returned, result["commit_plan"])
+        committed = [
+            n for n in store.row().evidence_needs if n.need_id == linked[0].need_id
+        ]
+        assert committed and committed[0].surfaced_turns == [5]

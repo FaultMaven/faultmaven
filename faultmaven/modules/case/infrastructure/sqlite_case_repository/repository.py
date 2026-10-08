@@ -33,7 +33,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseCheckpoint,
     CaseEntity,
     CaseReport,
     CaseState,
@@ -63,13 +62,11 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository.loading impor
 )
 from faultmaven.modules.case.infrastructure.sqlite_case_repository.rows import (
     _row_to_case,
-    _row_to_case_checkpoint,
     _row_to_evidence,
     _row_to_report,
 )
 from faultmaven.modules.case.infrastructure.sqlite_case_repository.saving import (
     _append_case_actions,
-    _insert_checkpoint,
     _insert_report,
     _reconcile_causal_graph,
     _upsert_case_record,
@@ -143,7 +140,6 @@ class SQLiteCaseRepository(CaseRepository):
         case: Case,
         *,
         reports: Sequence[CaseReport] = (),
-        checkpoints: Sequence[CaseCheckpoint] = (),
     ) -> Case:
         """Save case using hybrid schema with transactions.
 
@@ -154,11 +150,11 @@ class SQLiteCaseRepository(CaseRepository):
         the new version and returned — callers can use either the
         return value or the passed-in object.
 
-        ``reports`` and ``checkpoints`` are written in the same transaction,
-        after the case rows and before the commit, so they commit with the
-        case or not at all (#1882).
+        ``reports`` are written in the same transaction, after the case rows
+        and before the commit, so they commit with the case or not at all
+        (#1882).
         """
-        self.check_turn_rows(case, reports, checkpoints)
+        self.check_turn_rows(case, reports)
         # Restored if the save does not commit: see SAVE_STAMPED_FIELDS.
         stamps = self.save_stamps(case)
         # Self-heal any turn-sequence anomaly into consecutive history (with
@@ -254,8 +250,6 @@ class SQLiteCaseRepository(CaseRepository):
             # the commit (they commit with it or not at all).
             for report in reports:
                 await _insert_report(self.db, report)
-            for checkpoint in checkpoints:
-                await _insert_checkpoint(self.db, checkpoint)
 
             await self.db.commit()
             return case
@@ -944,67 +938,6 @@ class SQLiteCaseRepository(CaseRepository):
             await self.db.rollback()
             raise RepositoryException(
                 f"Failed to add message to case {case_id}: {e}"
-            ) from e
-
-    # ========================================================================
-    # Checkpoint Operations (TASK-028)
-    # ========================================================================
-
-    async def create_checkpoint(self, checkpoint: CaseCheckpoint) -> CaseCheckpoint:
-        """Create a new case checkpoint in its own transaction (SQLite-compatible)."""
-        try:
-            await _insert_checkpoint(self.db, checkpoint)
-            await self.db.commit()
-            return checkpoint
-
-        except Exception as e:
-            await self.db.rollback()
-            raise RepositoryException(
-                f"Failed to create checkpoint for case {checkpoint.case_id}: {e}"
-            ) from e
-
-    async def get_checkpoint(self, checkpoint_id: str) -> Optional[CaseCheckpoint]:
-        """Get a checkpoint by ID (SQLite-compatible)."""
-        try:
-            query = text("""
-                SELECT checkpoint_id, case_id, turn_number, case_snapshot,
-                       snapshot_hash, trigger, created_at, metadata
-                FROM case_checkpoints
-                WHERE checkpoint_id = :checkpoint_id
-            """)
-
-            result = await self.db.execute(query, {"checkpoint_id": checkpoint_id})
-            row = result.fetchone()
-
-            if not row:
-                return None
-
-            return _row_to_case_checkpoint(row)
-
-        except Exception as e:
-            raise RepositoryException(
-                f"Failed to get checkpoint {checkpoint_id}: {e}"
-            ) from e
-
-    async def get_checkpoints(self, case_id: str) -> List[CaseCheckpoint]:
-        """Get all checkpoints for a case (SQLite-compatible)."""
-        try:
-            query = text("""
-                SELECT checkpoint_id, case_id, turn_number, case_snapshot,
-                       snapshot_hash, trigger, created_at, metadata
-                FROM case_checkpoints
-                WHERE case_id = :case_id
-                ORDER BY turn_number ASC
-            """)
-
-            result = await self.db.execute(query, {"case_id": case_id})
-            rows = result.fetchall()
-
-            return [_row_to_case_checkpoint(row) for row in rows]
-
-        except Exception as e:
-            raise RepositoryException(
-                f"Failed to get checkpoints for case {case_id}: {e}"
             ) from e
 
     async def get_messages(

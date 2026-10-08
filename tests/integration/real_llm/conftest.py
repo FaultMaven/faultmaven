@@ -81,7 +81,7 @@ def stub_repo():
     that tests can override if needed.
     """
     repo = MagicMock()
-    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.save = AsyncMock(side_effect=lambda c, **_: c)
     repo.get = AsyncMock()
     return repo
 

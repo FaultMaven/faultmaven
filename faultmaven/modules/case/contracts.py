@@ -47,9 +47,6 @@ if TYPE_CHECKING:
 
 # Case-owned Agent Execution models (Case module owns agent audit data per module-organization-design.md)
 
-# Case-owned Checkpoint models (Case module owns checkpoints table)
-from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
-
 # Case-owned Evidence DTOs (Case module owns evidence table per module-organization-design.md)
 from faultmaven.modules.case.domain.owned_models.evidence import (
     EvidenceArtifactType,
@@ -113,17 +110,14 @@ class ICaseRepository(Protocol):
         case: "Case",
         *,
         reports: Sequence[CaseReport] = (),
-        checkpoints: Sequence[CaseCheckpoint] = (),
     ) -> "Case":
         """Save case to persistence layer.
 
-        ``reports`` and ``checkpoints`` are written in the SAME transaction as
-        the case, after it and before the commit: all of them commit, or none
-        does (#1882). A ``StaleCaseException`` writes nothing, and a checkpoint
-        id already stored raises rather than being skipped. Under PostgreSQL
-        RLS the rows are written under the tenant the transaction's BEGIN
-        bound, the case's own. Every row must name ``case`` (``ValueError``
-        otherwise).
+        ``reports`` are written in the SAME transaction as the case, after it
+        and before the commit: all of them commit, or none does (#1882). A
+        ``StaleCaseException`` writes nothing. Under PostgreSQL RLS the rows
+        are written under the tenant the transaction's BEGIN bound, the case's
+        own. Every row must name ``case`` (``ValueError`` otherwise).
 
         MUTATES ``case.messages``: a row missing ``message_id`` or
         ``created_at`` is completed in place, so the in-memory list carries
@@ -377,18 +371,6 @@ class ICaseRepository(Protocol):
     # Standalone evidence path is deleted; evidence is case-tied only and
     # accessed via `case.evidence` loaded by the case repository.
 
-    async def create_checkpoint(self, checkpoint: CaseCheckpoint) -> CaseCheckpoint:
-        """Create a new case checkpoint."""
-        ...
-
-    async def get_checkpoint(self, checkpoint_id: str) -> Optional[CaseCheckpoint]:
-        """Get a checkpoint by ID."""
-        ...
-
-    async def get_checkpoints(self, case_id: str) -> List[CaseCheckpoint]:
-        """Get all checkpoints for a case."""
-        ...
-
 
 # ============================================================
 # DTOs (Data Transfer Objects) for Cross-Module Use
@@ -621,8 +603,6 @@ __all__ = [
     "CaseClosureRequest",
     "CaseClosureResponse",
     # Case-owned Agent Execution models (per module-organization-design.md)
-    # Case-owned Checkpoint models
-    "CaseCheckpoint",
     # Investigation models from Agent module (shared for investigation coordination)
     # Case domain models
     "Case",

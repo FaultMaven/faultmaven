@@ -1035,7 +1035,7 @@ def _engine_for_incident(emission: dict):
     llm.provider_name = "test-provider"
     llm.config.default_model = "test-model"
     repo = MagicMock()
-    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.save = AsyncMock(side_effect=lambda c, **_: c)
     repo.get = AsyncMock(side_effect=lambda cid: None)
     engine = MilestoneEngine(llm, repo, investigation_tools=MagicMock())
     engine.generator.generate_structured_output = AsyncMock(

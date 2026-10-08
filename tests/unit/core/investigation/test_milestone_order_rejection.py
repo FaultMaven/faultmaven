@@ -32,6 +32,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.turn_commit import commit_turn_plan
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
     StructuredOutputMode,
@@ -90,7 +91,7 @@ def mock_llm():
 @pytest.fixture
 def mock_repo():
     repo = MagicMock()
-    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.save = AsyncMock(side_effect=lambda c, **_: c)
     repo.get = AsyncMock()
     return repo
 
@@ -266,12 +267,14 @@ class TestRejectionWhenPrerequisiteMissing:
         mock_llm.generate.return_value = _llm_response_setting_milestones(
             {"mitigation_verified": True}
         )
-        # The fixture mock_repo.save would surface a ValidationError if the
-        # case were invalid (the real SQLite repo calls Case.model_validate).
-        # Here we just ensure no exception bubbles up from process_turn.
+        # The engine commits nothing itself (#1882); the turn's one commit runs
+        # the repository's own re-validation (the real SQLite repo calls
+        # Case.model_validate), which is what used to 500.
         result = await engine.process_turn(case, "test message")
-        assert mock_repo.save.called  # save did get attempted
-        assert "case_updated" in result
+        mock_repo.save.assert_not_called()
+        await commit_turn_plan(mock_repo, result["case_updated"], result["commit_plan"])
+        assert mock_repo.save.called
+        Case.model_validate(result["case_updated"].model_dump(mode="python"))
 
 
 # ---------------------------------------------------------------------------

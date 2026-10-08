@@ -78,7 +78,7 @@ if PROMETHEUS_AVAILABLE:
         "faultmaven_evidence_mark_linked_failures_total",
         "Number of times the best-effort sidecar mark_linked step failed after "
         "an upload was already persisted, leaving the sidecar stale at "
-        "linked=False. Labeled by outcome (returned_false | raised). Since "
+        "linked=False. Labeled by outcome (returned_false | raised | timed_out). Since "
         "#1232 the stale flag is harmless — the sweep asks the database, and "
         "the row's ON DELETE CASCADE lifetime makes it self-healing — so this "
         "counts the CAUSE (a failed storage write) rather than a data-loss "

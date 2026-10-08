@@ -53,9 +53,10 @@ from faultmaven.core.investigation.milestone_engine.transitions import Transitio
 from faultmaven.core.investigation.milestone_engine.turn_application import (
     _apply_turn_response,
 )
+from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.core.investigation.milestone_engine.turn_completion import (
     _compose_turn_reply,
-    _persist_turn,
+    _finalize_turn,
 )
 from faultmaven.core.investigation.milestone_engine.turn_generation import (
     _generate_turn_response,
@@ -93,7 +94,6 @@ from faultmaven.modules.case.contracts import (
 from faultmaven.modules.case.domain.services.case_action_manager import (
     earned_edge_refusal,
 )
-from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.knowledge.contracts import IKnowledgeService
 
 from .affordances import _gate1_is_pending, gate1_statement_is_confirmable
@@ -242,7 +242,6 @@ class MilestoneEngine:
         repository: Any,  # Case repository abstraction (duck typing)
         investigation_tools: Any,
         knowledge_service: IKnowledgeService | None = None,
-        checkpoint_service: Any | None = None,
         da_provider: Any | None = None,
         da_model: str | None = None,
         sanitizer: Any | None = None,
@@ -262,7 +261,6 @@ class MilestoneEngine:
                 (search_file, deep_analysis, etc.). Required — DA turns use
                 these for evidence searching during generation.
             knowledge_service: Optional knowledge service for KB searches
-            checkpoint_service: Optional CheckpointService for state snapshots
             da_provider: Dedicated provider for DA (directed analysis) turns
                 (configured via DA_PROVIDER in .env).
                 When None, falls back to llm_provider.
@@ -273,9 +271,10 @@ class MilestoneEngine:
             redis_client: Async Redis client for persisting redaction
                 registries across turns. When None, registries are
                 in-memory only (consistent within turn).
-            report_service: Optional ReportGenerationService for auto-generating
-                reports on terminal transitions. Fire-and-forget — failure
-                does not block the transition.
+            report_service: Optional ReportGenerationService that renders the
+                terminal summary on a terminal transition. The row commits with
+                the turn (#1882); a render failure does not block the
+                transition.
             team_service: Optional team-membership resolver used by the KB
                 pre-fetch to widen the case OWNER's KB read scope with
                 the owner's team-shared runbooks (ADR-013 §D4). None in
@@ -299,7 +298,6 @@ class MilestoneEngine:
             llm_provider=llm_provider,
             repository=repository,
             knowledge_service=knowledge_service,
-            checkpoint_service=checkpoint_service,
             investigation_tools=investigation_tools,
             da_provider=da_provider,
             da_model=da_model,
@@ -376,10 +374,20 @@ class MilestoneEngine:
                 filled from the client's intent payload, and server facts never
                 ride in it (the same reason ``user_id`` is kept out).
 
+        Writes nothing the turn owns (#1882). The case is mutated in memory
+        and returned; the rows the turn produced (report rows)
+        and the work that must wait for its commit (gates) are collected in
+        the returned ``commit_plan``. The caller commits both in one
+        transaction (``turn_commit.commit_turn_plan``) or not at all. The
+        writes that remain here do not depend on the turn committing (class C
+        in the #1882 design): the LLM spend ledger (``flush_turn``), the
+        redaction registry, and the evidence vectorization tasks.
+
         Returns:
             {
                 "agent_response": str,        # Natural language response to user
-                "case_updated": Case,         # Updated case object
+                "case_updated": Case,         # Updated case object, uncommitted
+                "commit_plan": TurnCommitPlan,  # What commits with it
                 "metadata": {
                     "turn_number": int,
                     "milestones_completed": List[str],
@@ -421,6 +429,9 @@ class MilestoneEngine:
                 investigation_turn = 0
                 warn_attribution_error(exc)
             token = active_token_tracker.set(tracker)
+            # The turn's commit plan (#1882). Every site that used to commit
+            # mid-turn adds to it instead; the caller commits it with the case.
+            plan = TurnCommitPlan()
             try:
                 result = await self._process_turn_impl(
                     case,
@@ -428,9 +439,16 @@ class MilestoneEngine:
                     attachments,
                     intent_type,
                     intent_data,
+                    plan=plan,
                     user_id=user_id,
                     typed=typed,
                 )
+                result["commit_plan"] = plan
+            except BaseException:
+                # The plan never reaches a commit: nothing waiting on it may
+                # start (a spawned runbook conversion ends at its gate).
+                plan.cancel_gates()
+                raise
             finally:
                 active_token_tracker.reset(token)
                 try:
@@ -492,6 +510,8 @@ class MilestoneEngine:
         attachments: list[dict[str, Any]] | None = None,
         intent_type: str | None = None,
         intent_data: dict[str, Any] | None = None,
+        *,
+        plan: TurnCommitPlan,
         user_id: str | None = None,
         typed: bool = False,
     ) -> dict[str, Any]:
@@ -588,7 +608,7 @@ class MilestoneEngine:
             # 0a. Terminal case handling — Q&A and report regeneration only
             if case.is_terminal:
                 return await self.terminal.process_terminal_turn(
-                    case, user_message, metadata, user_id=user_id
+                    case, user_message, metadata, plan=plan, user_id=user_id
                 )
 
             # Set when section 0b answered this turn's confirmation click: it
@@ -710,8 +730,7 @@ class MilestoneEngine:
                             intent_data, terminal_offer_key(case.pending_transition)
                         )
                         if refusal is not None:
-                            return await _refuse_offer_click(
-                                self.deps.repository,
+                            return _refuse_offer_click(
                                 case=case,
                                 upload_report=upload_report,
                                 user_message=user_message,
@@ -746,11 +765,11 @@ class MilestoneEngine:
 
                     if verdict == "confirm":
                         return await _confirm_pending_transition(
-                            self.deps.checkpoint_service,
                             self.deps.report_service,
                             self.deps.repository,
                             self.terminal,
                             case=case,
+                            plan=plan,
                             upload_report=upload_report,
                             user_message=user_message,
                             confirmed_via=confirmed_via,
@@ -778,8 +797,7 @@ class MilestoneEngine:
                             )
                             # Fall through to normal processing (section 0c)
                         else:
-                            return await _decline_bare_reply(
-                                self.deps.repository,
+                            return _decline_bare_reply(
                                 case=case,
                                 upload_report=upload_report,
                                 user_message=user_message,
@@ -853,8 +871,7 @@ class MilestoneEngine:
                             )
                             # Fall through to normal processing (section 0c)
                         else:
-                            return await _represent_pending_transition(
-                                self.deps.repository,
+                            return _represent_pending_transition(
                                 case=case,
                                 upload_report=upload_report,
                                 user_message=user_message,
@@ -886,8 +903,7 @@ class MilestoneEngine:
                     if not typed:
                         refusal = offer_click_refusal(intent_data, revision_offer(case))
                         if refusal is not None:
-                            return await _refuse_offer_click(
-                                self.deps.repository,
+                            return _refuse_offer_click(
                                 case=case,
                                 upload_report=upload_report,
                                 user_message=user_message,
@@ -899,7 +915,7 @@ class MilestoneEngine:
                     user_message, None, intent_value=revision_intent, typed=typed
                 )
                 if revision_verdict == "confirm":
-                    await confirm_revision(self.responses, self.deps, case, metadata)
+                    await confirm_revision(self.responses, case, metadata)
                 elif revision_verdict == "decline":
                     declined = decline_revision(case)
                     discarded = staged_work_summary(declined)
@@ -973,8 +989,7 @@ class MilestoneEngine:
                     # re-confirmation: it is cancelled, not declined.
                     if revision_pending(case):
                         cancel_revision(case)
-                    return await _close_on_explicit_intent(
-                        self.deps.repository,
+                    return _close_on_explicit_intent(
                         assess_closure_readiness=assess_closure_readiness,
                         case=case,
                         propose_transition=propose_transition,
@@ -1044,8 +1059,7 @@ class MilestoneEngine:
                         ),
                     )
                     if refusal is not None:
-                        return await _refuse_offer_click(
-                            self.deps.repository,
+                        return _refuse_offer_click(
                             case=case,
                             upload_report=upload_report,
                             user_message=user_message,
@@ -1230,12 +1244,13 @@ class MilestoneEngine:
                 )
             )
 
-            # Step 7: Save case (only if changes made, but turn history always updates)
-            follow_ups, summary_failed, summary_payload = await _persist_turn(
-                self.deps.repository,
+            # Step 7: finish the turn in memory. No save: the case commits
+            # once, at the service, with the plan's rows (#1882).
+            follow_ups, summary_failed, summary_payload = await _finalize_turn(
                 self.terminal,
                 case_updated=case_updated,
                 metadata=metadata,
+                plan=plan,
                 redaction_ctx=redaction_ctx,
                 response_obj=response_obj,
             )
@@ -1253,6 +1268,7 @@ class MilestoneEngine:
                 case_updated=case_updated,
                 follow_ups=follow_ups,
                 metadata=metadata,
+                plan=plan,
                 redaction_ctx=redaction_ctx,
                 response_obj=response_obj,
                 stagnation_str=stagnation_str,
@@ -1261,11 +1277,6 @@ class MilestoneEngine:
                 validation_repairs=validation_repairs,
             )
 
-        except StaleCaseException:
-            # OCC conflict on the case row — the route handler maps this
-            # to HTTP 409. Do NOT wrap in MilestoneEngineError, or the
-            # type identity is lost and the handler falls through to 500.
-            raise
         except Exception as e:
             # Use LLMErrorHandler's classification instead of duplicating patterns
             is_external = self.deps.llm_error_handler.is_retryable_error(e)

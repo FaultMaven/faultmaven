@@ -56,7 +56,6 @@ TABLE_DOMAIN = {
     "case_messages": "case",
     "case_actions": "case",
     "case_tags": "case",
-    "case_checkpoints": "case",
     "case_entities": "case",
     "causal_nodes": "case",
     "causal_edges": "case",

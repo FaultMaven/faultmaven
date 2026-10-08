@@ -23,6 +23,7 @@ from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngin
 from faultmaven.core.investigation.milestone_engine.response_application import (
     ResponseApplier,
 )
+from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.core.investigation.terminal_transitions import (
     _execute_resolved_transition,
     cancel_pending_transition,
@@ -679,7 +680,7 @@ class TestINV06_KBResolutionUsesPendingTransition:
         consent to the irreversible RESOLVED transition (INV-26).
         """
         repo = MagicMock()
-        repo.save = AsyncMock(side_effect=lambda c: c)
+        repo.save = AsyncMock(side_effect=lambda c, **_: c)
         engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
 
         case = _make_investigating_case()
@@ -729,7 +730,7 @@ class TestINV06_KBResolutionUsesPendingTransition:
         every same-turn proposal site.
         """
         repo = MagicMock()
-        repo.save = AsyncMock(side_effect=lambda c: c)
+        repo.save = AsyncMock(side_effect=lambda c, **_: c)
         engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
 
         case = _make_investigating_case()
@@ -851,7 +852,7 @@ class TestINV14_DropdownUsesStandardHandshake:
     @staticmethod
     def _engine_and_repo() -> tuple[MilestoneEngine, MagicMock]:
         repo = MagicMock()
-        repo.save = AsyncMock(side_effect=lambda c: c)
+        repo.save = AsyncMock(side_effect=lambda c, **_: c)
         repo.get = AsyncMock(side_effect=lambda cid: None)
         engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
         return engine, repo
@@ -1377,7 +1378,7 @@ class TestINV12_FreeTextRoutesToQA:
         """The precomposed regen payload routes to
         ``_handle_report_regeneration``, NOT Q&A."""
         repo = MagicMock()
-        repo.save = AsyncMock(side_effect=lambda c: c)
+        repo.save = AsyncMock(side_effect=lambda c, **_: c)
         engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
 
         case = _make_investigating_case()
@@ -1400,6 +1401,7 @@ class TestINV12_FreeTextRoutesToQA:
             case,
             "Regenerate the resolution summary report for this case",
             {},
+            plan=TurnCommitPlan(),
         )
 
         engine.terminal._handle_report_regeneration.assert_called_once()
@@ -1411,7 +1413,7 @@ class TestINV12_FreeTextRoutesToQA:
         """Free-typed paraphrases like 'give me a recap' route to Q&A —
         NOT regen. No persisted Report side effect."""
         repo = MagicMock()
-        repo.save = AsyncMock(side_effect=lambda c: c)
+        repo.save = AsyncMock(side_effect=lambda c, **_: c)
         engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
 
         case = _make_investigating_case()
@@ -1441,7 +1443,9 @@ class TestINV12_FreeTextRoutesToQA:
         for msg in paraphrases:
             engine.terminal._handle_report_regeneration.reset_mock()
             engine.terminal._process_terminal_qa.reset_mock()
-            await engine.terminal.process_terminal_turn(case, msg, {})
+            await engine.terminal.process_terminal_turn(
+                case, msg, {}, plan=TurnCommitPlan()
+            )
             engine.terminal._handle_report_regeneration.assert_not_called()
             engine.terminal._process_terminal_qa.assert_called_once()
 
@@ -1450,7 +1454,7 @@ class TestINV12_FreeTextRoutesToQA:
         """Runbook-creation paraphrases route to Q&A — only the exact
         DECIDE payload triggers the persisted runbook side effect."""
         repo = MagicMock()
-        repo.save = AsyncMock(side_effect=lambda c: c)
+        repo.save = AsyncMock(side_effect=lambda c, **_: c)
         engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
 
         case = _make_investigating_case()
@@ -1476,7 +1480,9 @@ class TestINV12_FreeTextRoutesToQA:
         for msg in paraphrases:
             engine.runbooks.handle_runbook_creation.reset_mock()
             engine.terminal._process_terminal_qa.reset_mock()
-            await engine.terminal.process_terminal_turn(case, msg, {})
+            await engine.terminal.process_terminal_turn(
+                case, msg, {}, plan=TurnCommitPlan()
+            )
             engine.runbooks.handle_runbook_creation.assert_not_called()
             engine.terminal._process_terminal_qa.assert_called_once()
 
@@ -1941,7 +1947,7 @@ class TestINV18_RunbookEligibilityResolvedOnly:
         )
 
         repo = MagicMock()
-        repo.save = AsyncMock(side_effect=lambda c: c)
+        repo.save = AsyncMock(side_effect=lambda c, **_: c)
         engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
 
         case = _make_investigating_case()
@@ -1958,7 +1964,9 @@ class TestINV18_RunbookEligibilityResolvedOnly:
         )
 
         # Submit the exact DECIDE runbook payload on a CLOSED case
-        await engine.terminal.process_terminal_turn(case, GENERATE_RUNBOOK_PAYLOAD, {})
+        await engine.terminal.process_terminal_turn(
+            case, GENERATE_RUNBOOK_PAYLOAD, {}, plan=TurnCommitPlan()
+        )
 
         # Runbook handler NOT called — eligibility gate refused the dispatch
         engine.runbooks.handle_runbook_creation.assert_not_called()
@@ -1976,7 +1984,7 @@ class TestINV18_RunbookEligibilityResolvedOnly:
         )
 
         repo = MagicMock()
-        repo.save = AsyncMock(side_effect=lambda c: c)
+        repo.save = AsyncMock(side_effect=lambda c, **_: c)
         engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
 
         case = _make_investigating_case()
@@ -1992,7 +2000,9 @@ class TestINV18_RunbookEligibilityResolvedOnly:
         )
         engine.terminal._process_terminal_qa = AsyncMock()
 
-        await engine.terminal.process_terminal_turn(case, GENERATE_RUNBOOK_PAYLOAD, {})
+        await engine.terminal.process_terminal_turn(
+            case, GENERATE_RUNBOOK_PAYLOAD, {}, plan=TurnCommitPlan()
+        )
 
         engine.runbooks.handle_runbook_creation.assert_called_once()
         engine.terminal._process_terminal_qa.assert_not_called()
@@ -2112,7 +2122,7 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
         rejects it, no pending transition is set, no pivot to CLOSED
         happens. The case stays in INQUIRY."""
         repo = MagicMock()
-        repo.save = AsyncMock(side_effect=lambda c: c)
+        repo.save = AsyncMock(side_effect=lambda c, **_: c)
         engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
 
         case = self._make_inquiry_case()
@@ -2140,7 +2150,7 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
         """The rejection is also surfaced in ``validation_repairs``
         alongside the system_feedback, for telemetry / debugging."""
         repo = MagicMock()
-        repo.save = AsyncMock(side_effect=lambda c: c)
+        repo.save = AsyncMock(side_effect=lambda c, **_: c)
         engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
 
         case = self._make_inquiry_case()
@@ -2160,7 +2170,7 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
         edge (the only valid proposed_transition from INQUIRY). The
         guard must not over-reach and block legitimate emissions."""
         repo = MagicMock()
-        repo.save = AsyncMock(side_effect=lambda c: c)
+        repo.save = AsyncMock(side_effect=lambda c, **_: c)
         engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
 
         case = self._make_inquiry_case()
@@ -2185,7 +2195,7 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
         that the guard reads ``ALLOWED_ACTIONS[case.state]``, not a
         hard-coded blocklist."""
         repo = MagicMock()
-        repo.save = AsyncMock(side_effect=lambda c: c)
+        repo.save = AsyncMock(side_effect=lambda c, **_: c)
         engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
 
         case = _make_investigating_case()

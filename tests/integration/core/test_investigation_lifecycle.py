@@ -5,7 +5,7 @@ InMemoryCaseRepository and mocked LLM responses, validating:
 - Multi-turn INQUIRY → INVESTIGATING → RESOLVED lifecycle
 - Concurrent process_turn locking
 - Evidence accumulation across turns
-- Checkpoint creation at state transitions
+- State transitions recorded in ``case_actions``, committed with their turn
 - Explicit state transitions via intent_type
 - Terminal transitions via User-Agent Handshake
 
@@ -22,8 +22,8 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.core.investigation.checkpoint_service import CheckpointService
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.turn_commit import commit_turn_plan
 from faultmaven.core.investigation.schemas import (
     EvidenceToAdd,
     EvidenceTrail,
@@ -375,23 +375,17 @@ def case_repo() -> InMemoryCaseRepository:
 
 
 @pytest.fixture
-def checkpoint_service(case_repo) -> CheckpointService:
-    return CheckpointService(case_repo=case_repo)
-
-
-@pytest.fixture
 def mock_llm() -> AsyncMock:
     return _mock_llm_provider()
 
 
 @pytest.fixture
-def engine(mock_llm, case_repo, checkpoint_service) -> MilestoneEngine:
+def engine(mock_llm, case_repo) -> MilestoneEngine:
     return MilestoneEngine(
         llm_provider=mock_llm,
         repository=case_repo,
         investigation_tools=MagicMock(),
         knowledge_service=None,
-        checkpoint_service=checkpoint_service,
     )
 
 
@@ -731,29 +725,28 @@ class TestInvestigationLifecycle:
 
 
 # ============================================================
-# Test: Checkpointing
+# Test: Transitions are recorded, and commit with their turn
 # ============================================================
 
 
 @pytest.mark.asyncio
-class TestCheckpointing:
-    """Verify checkpoint creation at state transitions."""
+class TestTransitionsAreRecorded:
+    """Every state transition is recorded in ``case_actions`` (from, to, who,
+    when) and commits with the turn that made it (#1882). That record — with
+    ``turn_history`` and ``statement_history`` — is what a pre-transition
+    snapshot was meant to preserve; case checkpoints, which nothing ever read,
+    are retired (#1882)."""
 
-    async def test_checkpoint_created_on_transition_to_investigating(
-        self, engine, case_repo, checkpoint_service
+    async def test_the_transition_to_investigating_commits_with_its_record(
+        self, engine, case_repo
     ):
-        """Checkpoint created before INQUIRY → INVESTIGATING transition.
-
-        The transition fires on the Gate 1 turn (problem statement
-        confirmation). The checkpoint is created at the chokepoint
-        (``_transition_to_investigating``).
-        """
+        """The transition fires on the Gate 1 turn (problem statement
+        confirmation)."""
         case = _make_inquiry_case(current_turn=2)
         case.inquiry.proposed_problem_statement = "API latency spike"
         await case_repo.save(case)
 
-        # Turn 1: Gate 1 close via dropdown intent → transition fires;
-        # checkpoint is created inside _transition_to_investigating.
+        # Turn 1: Gate 1 consent → the transition fires.
         with patch.object(
             engine.generator,
             "generate_structured_output",
@@ -766,25 +759,26 @@ class TestCheckpointing:
             )
 
         assert result["case_updated"].state == CaseState.INVESTIGATING
+        version = case.version
+        await commit_turn_plan(case_repo, result["case_updated"], result["commit_plan"])
 
-        # Verify checkpoint was created
-        checkpoints = await case_repo.get_checkpoints(case.case_id)
-        pre_change_cps = [cp for cp in checkpoints if cp.trigger == "pre_case_action"]
-        assert len(pre_change_cps) >= 1
-        cp = pre_change_cps[0]
-        assert cp.case_id == case.case_id
-        assert cp.metadata["from_state"] == "inquiry"
-        assert cp.metadata["to_state"] == "investigating"
+        persisted = await case_repo.get(case.case_id)
+        assert persisted.version == version + 1
+        [action] = persisted.action_history
+        assert (action.from_state, action.to_state) == (
+            CaseState.INQUIRY,
+            CaseState.INVESTIGATING,
+        )
 
-    async def test_agent_proposed_resolve_then_confirm_is_checkpointed(
-        self, engine, case_repo, checkpoint_service
+    async def test_agent_proposed_resolve_then_confirm_commits_with_its_record(
+        self, engine, case_repo
     ):
-        """A proposed resolution is checkpointed before the confirm executes it.
+        """A proposed resolution executes on the confirm, recorded with it.
 
         Was "explicit UI resolve via status_transition": first Resolve click
         proposes, second confirms. RESOLVED is no longer a menu pick, so the
         two turns are the ones that actually happen — the agent proposes, the
-        user clicks the DECIDE pair — and the checkpoint boundary this test
+        user clicks the DECIDE pair — and the transition boundary this test
         exists for is unchanged.
         """
         from faultmaven.modules.case.contracts import (
@@ -825,6 +819,7 @@ class TestCheckpointing:
                 case, "I applied the config change and latency is back to normal"
             )
 
+        await commit_turn_plan(case_repo, result["case_updated"], result["commit_plan"])
         case = result["case_updated"]
         assert case.state == CaseState.INVESTIGATING  # NOT resolved yet
         assert case.pending_transition is not None
@@ -840,23 +835,16 @@ class TestCheckpointing:
         )
 
         assert result["case_updated"].state == CaseState.RESOLVED
+        await commit_turn_plan(case_repo, result["case_updated"], result["commit_plan"])
         persisted = await case_repo.get(case.case_id)
         assert persisted.state == CaseState.RESOLVED
 
-        # The checkpoint this test is NAMED for. It asserted only the state
-        # change, so deleting the ``create_checkpoint`` call in section 0b's
-        # confirm arm left it green while its name claimed to cover it — and
-        # `checkpoint_service` was injected and never read. Asserted the way
-        # its sibling above does, against the persisted record.
-        checkpoints = await case_repo.get_checkpoints(case.case_id)
-        pre_change_cps = [cp for cp in checkpoints if cp.trigger == "pre_case_action"]
-        assert pre_change_cps, (
-            "no pre_case_action checkpoint was taken before the terminal "
-            "transition — the confirm arm's checkpoint is the point of this test"
-        )
-        cp = pre_change_cps[-1]
-        assert cp.case_id == case.case_id
-        assert cp.metadata["to_state"] == "resolved"
+        # The record this test is named for, against the persisted case.
+        resolved = [
+            a for a in persisted.action_history if a.to_state == CaseState.RESOLVED
+        ]
+        assert resolved, "the terminal transition left no case_actions record"
+        assert resolved[-1].from_state == CaseState.INVESTIGATING
 
 
 # ============================================================
@@ -1094,10 +1082,15 @@ class TestTurnHistoryAndProgress:
         assert result["metadata"]["progress_made"] is False
         assert updated.turns_without_progress >= 1
 
-    async def test_case_saved_to_repository_after_turn(self, engine, case_repo):
-        """Case is persisted to repository after each turn."""
+    async def test_the_engine_saves_nothing_and_the_turn_commits_once(
+        self, engine, case_repo
+    ):
+        """The engine returns the case and its commit plan and saves nothing;
+        the turn's one commit (``commit_turn_plan``, as the service runs it)
+        persists it (#1882)."""
         case = _make_inquiry_case(current_turn=1)
         await case_repo.save(case)
+        version = case.version
         original_updated_at = case.updated_at
 
         with patch.object(
@@ -1107,8 +1100,11 @@ class TestTurnHistoryAndProgress:
         ):
             result = await engine.process_turn(case, "Our API is having issues")
 
+        assert case.version == version, "the engine committed mid-turn"
+        await commit_turn_plan(case_repo, result["case_updated"], result["commit_plan"])
         persisted = await case_repo.get(case.case_id)
         assert persisted is not None
+        assert persisted.version == version + 1
         assert persisted.updated_at >= original_updated_at
 
 

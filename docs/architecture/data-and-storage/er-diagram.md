@@ -1,17 +1,16 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-09-29 00:51 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-10-08 06:45 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
 ## Summary
 
-**44 tables** in the schema.
+**43 tables** in the schema.
 
 | Table | Columns | Primary Key | Foreign Keys |
 |-------|---------|-------------|--------------|
 | `case_actions` | 10 | `transition_id` | cases, enterprises, organizations |
-| `case_checkpoints` | 10 | `checkpoint_id` | cases, enterprises, organizations |
 | `case_entities` | 9 | `case_id, entity_type, entity_value, evidence_id` | cases, enterprises, evidence, organizations |
 | `case_messages` | 11 | `message_id` | cases, enterprises, organizations |
 | `case_tags` | 6 | `tag_id` | cases, enterprises, organizations |
@@ -70,18 +69,6 @@ erDiagram
         VARCHAR triggered_by
         TEXT metadata
         DATETIME transitioned_at
-    }
-    case_checkpoints {
-        VARCHAR checkpoint_id PK
-        VARCHAR enterprise_id FK
-        VARCHAR organization_id FK
-        VARCHAR case_id FK
-        INTEGER turn_number
-        JSON case_snapshot
-        VARCHAR snapshot_hash
-        VARCHAR trigger
-        TEXT metadata
-        DATETIME created_at
     }
     case_entities {
         VARCHAR case_id PK
@@ -738,7 +725,6 @@ erDiagram
         VARCHAR service_channel
     }
     cases ||--o{ case_actions : ""
-    cases ||--o{ case_checkpoints : ""
     cases ||--o{ case_entities : ""
     cases ||--o{ case_messages : ""
     cases ||--o{ case_tags : ""
@@ -760,7 +746,6 @@ erDiagram
     causal_nodes ||--o{ solutions : ""
     conversion_jobs ||--o{ conversion_drafts : ""
     enterprises ||--o{ case_actions : ""
-    enterprises ||--o{ case_checkpoints : ""
     enterprises ||--o{ case_entities : ""
     enterprises ||--o{ case_messages : ""
     enterprises ||--o{ case_tags : ""
@@ -804,7 +789,6 @@ erDiagram
     knowledge_items ||--o{ conversion_drafts : ""
     knowledge_items ||--o{ knowledge_suggestions : ""
     organizations ||--o{ case_actions : ""
-    organizations ||--o{ case_checkpoints : ""
     organizations ||--o{ case_entities : ""
     organizations ||--o{ case_messages : ""
     organizations ||--o{ case_tags : ""

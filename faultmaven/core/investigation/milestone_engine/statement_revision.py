@@ -11,8 +11,8 @@ is answered as an ordinary turn with the revision still standing.
 
 Confirmation runs BEFORE the turn's LLM call (section 0b of the engine), so the
 model works the turn on the revised statement. The commit writes the statement
-into every store that holds it (``problem_status.commit_revision``), takes a
-checkpoint, re-runs the KB pre-fetch on the new wording, and replays the cause
+into every store that holds it (``problem_status.commit_revision``), re-runs the
+KB pre-fetch on the new wording, and replays the cause
 work staged while the revision waited — through the normal apply path, with the
 evidence ids each staged turn resolved against. So the confirmation turn can
 verify the revised problem, form its hypotheses, ground the chain and identify
@@ -144,7 +144,9 @@ def revision_confirmation_suggestions(case: "Case") -> list:
 
 
 async def confirm_revision(
-    responses: Any, deps: Any, case: "Case", metadata: dict
+    responses: Any,
+    case: "Case",
+    metadata: dict,
 ) -> None:
     """The user re-confirmed the revision: commit it and replay what was staged.
 
@@ -153,12 +155,6 @@ async def confirm_revision(
     one staged turn at a time, each with a fresh metadata seeded with the
     evidence ids that turn's refs resolve against.
     """
-    if deps.checkpoint_service:
-        await deps.checkpoint_service.create_checkpoint(
-            case,
-            trigger="pre_case_action",
-            metadata={"action": "problem_statement_revised"},
-        )
     pending = commit_revision(case)
     await responses.kb_prefetcher.prefetch_kb_context(case, pending.text, "symptom")
 

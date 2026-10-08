@@ -26,6 +26,7 @@ from faultmaven.core.investigation.milestone_engine.tool_messages import (
     _build_assistant_message,
     _build_da_system_instruction,
 )
+from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.infrastructure.llm.providers.base import LLMResponse, ToolCall
 from faultmaven.models.interfaces import ToolResult
 
@@ -2604,7 +2605,9 @@ class TestBothCallSitesWireTheBaseBuilder:
         # do: only the state the Q&A prompt renders from matters here.
         object.__setattr__(case, "state", CaseState.RESOLVED)
 
-        await engine.terminal._process_terminal_qa(case, "what fixed it?", metadata={})
+        await engine.terminal._process_terminal_qa(
+            case, "what fixed it?", metadata={}, plan=TurnCommitPlan()
+        )
 
         kwargs = engine.generator.generate_structured_output.call_args.kwargs
         assert kwargs.get("investigation_tools") is not None

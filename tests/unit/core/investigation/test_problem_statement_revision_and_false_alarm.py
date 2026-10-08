@@ -30,6 +30,7 @@ from faultmaven.core.investigation.milestone_engine.progress import (
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     revision_offer_key,
 )
+from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.core.investigation.problem_status import (
     FALSE_ALARM_CLOSURE_REASON,
     cancel_revision,
@@ -207,7 +208,7 @@ class _NoKb:
 
 def _engine(agent_response: str = "Noted.") -> MilestoneEngine:
     repo = MagicMock()
-    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.save = AsyncMock(side_effect=lambda c, **_: c)
     repo.get = AsyncMock(side_effect=lambda cid: None)
     engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
     engine.generator.generate_structured_output = AsyncMock(

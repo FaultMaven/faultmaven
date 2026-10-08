@@ -8,8 +8,8 @@ dropdown INQUIRY -> INVESTIGATING that did not transition) cannot occur:
 ``earned_edge_refusal`` refuses any other ``status_transition`` at engine entry.
 
 The channel is written onto the confirming turn's record, and BOTH counters are
-read from the saved records by the investigation service after its save
-(``turn_messages._save_and_emit_turn``). So everything that decides a count is
+read from the committed records by the investigation service after the turn's
+one commit (``turn_messages._emit_committed_turn``, #1882). So everything that decides a count is
 driven here through ``InvestigationService.process_turn`` — the path a click or
 a typed reply actually takes — with only the LLM and the database doubled.
 
@@ -669,7 +669,7 @@ class _Store:
         row = self._rows.get(case_id)
         return row.model_copy(deep=True) if row is not None else None
 
-    async def save(self, case: Case) -> Case:
+    async def save(self, case: Case, *, reports=()) -> Case:
         for armed in list(self._failures):
             when, exc = armed
             if when(case):
@@ -792,46 +792,36 @@ class TestTheConfirmationCounter:
         confirmation.labels.assert_not_called()
         followup.labels.assert_not_called()
 
-    async def test_a_confirming_turn_whose_final_save_fails_is_not_counted(
-        self, counters
-    ):
-        """Review F12, pinning what the metrics doc says. The gate commits the
-        transition at the engine's own saves; the service's final save then
-        conflicts. The confirmation is never counted — and stays lost: the
-        user's retry resubmits the same "ok", which is not a follow-up either
-        (review F1 of e98382937), although the engine already saved the
-        confirming turn's channel record."""
+    async def test_a_confirming_turn_whose_commit_fails_is_not_counted(self, counters):
+        """Review F12, pinning what the metrics doc says, under #1882's single
+        commit. The gate's transition commits in the turn's one commit, so when
+        that commit conflicts nothing of the turn is stored: the case is still
+        INVESTIGATING with the offer standing, no record carries a channel, and
+        nothing is counted. The user's retry of the same "ok" is therefore the
+        confirmation, not a duplicate of one — it executes and is counted once.
+        (Before #1882 the engine had already saved the transition, so the retry
+        landed on a RESOLVED case and the confirmation was never counted.)"""
         confirmation, followup = counters
         store = _Store(_investigating_case())
         svc = _service(store)
-        store.fail_next_save(
-            StaleCaseException(CASE_ID, 3, 4),
-            # The service's final save is the only one made after the agent's
-            # reply row is appended.
-            when=lambda case: case.messages[-1]["role"] == "assistant",
-        )
+        store.fail_next_save(StaleCaseException(CASE_ID, 3, 4))
 
         with pytest.raises(StaleCaseException):
             await _turn(svc, "ok")
 
-        assert store.row().state == CaseState.RESOLVED
-        assert store.row().turn_history[-1].terminal_confirmed_via == "weak_token"
+        assert store.row().state == CaseState.INVESTIGATING
+        assert store.row().pending_transition
+        assert not any(t.terminal_confirmed_via for t in store.row().turn_history)
         confirmation.labels.assert_not_called()
         followup.labels.assert_not_called()
 
-        # The retry finds a RESOLVED case: its "ok" is a terminal Q&A turn.
-        answered = AsyncMock(
-            side_effect=lambda case, user_message, metadata, user_id=None: {
-                "agent_response": "It is resolved.",
-                "case_updated": case,
-                "metadata": metadata,
-            }
-        )
-        with patch.object(TerminalTurnHandler, "_process_terminal_qa", new=answered):
-            await _turn(svc, "ok")
+        await _turn(svc, "ok")
 
-        answered.assert_awaited_once()
-        confirmation.labels.assert_not_called()
+        assert store.row().state == CaseState.RESOLVED
+        assert store.row().turn_history[-1].terminal_confirmed_via == "weak_token"
+        confirmation.labels.assert_called_once_with(
+            via="weak_token", to_state="resolved"
+        )
         followup.labels.assert_not_called()
 
     async def test_an_ok_the_resolver_minted_into_an_intent_is_still_weak(
@@ -1135,7 +1125,7 @@ class TestTheFollowUpCounter:
         _, followup = counters
         store, svc = await self._resolved_on_ok(counters)
         answered = AsyncMock(
-            side_effect=lambda case, user_message, metadata, user_id=None: {
+            side_effect=lambda case, user_message, metadata, *, plan, user_id=None: {
                 "agent_response": "It is resolved.",
                 "case_updated": case,
                 "metadata": metadata,
@@ -1156,7 +1146,7 @@ class TestTheFollowUpCounter:
         _, followup = counters
         store, svc = await self._resolved_on_ok(counters)
         created = AsyncMock(
-            side_effect=lambda case, metadata, dedup_confirmed=False: {
+            side_effect=lambda case, metadata, *, plan, dedup_confirmed=False: {
                 "agent_response": "Creating your runbook draft.",
                 "case_updated": case,
                 "metadata": metadata,
@@ -1179,7 +1169,7 @@ class TestTheFollowUpCounter:
         _, followup = counters
         store, svc = await self._resolved_on_ok(counters)
         regenerated = AsyncMock(
-            side_effect=lambda case, metadata: {
+            side_effect=lambda case, metadata, *, plan: {
                 "agent_response": "Regenerated.",
                 "case_updated": case,
                 "metadata": metadata,
@@ -1219,7 +1209,7 @@ class TestTheFollowUpCounter:
         await _turn(svc, "yes")
         assert store.row().state == CaseState.CLOSED
         answered = AsyncMock(
-            side_effect=lambda case, user_message, metadata, user_id=None: {
+            side_effect=lambda case, user_message, metadata, *, plan, user_id=None: {
                 "agent_response": "Runbooks need a resolved case.",
                 "case_updated": case,
                 "metadata": metadata,
@@ -1234,7 +1224,7 @@ class TestTheFollowUpCounter:
 
     async def _answered_on_terminal(self, svc, message):
         answered = AsyncMock(
-            side_effect=lambda case, user_message, metadata, user_id=None: {
+            side_effect=lambda case, user_message, metadata, *, plan, user_id=None: {
                 "agent_response": "It is resolved.",
                 "case_updated": case,
                 "metadata": metadata,

@@ -9,6 +9,7 @@ per-attachment dict handed to ``engine.process_turn``, and the processing-mode
 reroute a turn carrying evidence forces.
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -369,13 +370,11 @@ async def _preprocess_attachment(
 
         Nothing is committed here (#1878). A new row is appended to
         ``case.uploaded_files`` in memory, stamped with ``turn_number``,
-        and becomes durable only in the commit that creates that turn —
-        so a turn that fails before its first commit leaves no row, and
+        and becomes durable only in the turn's one commit (#1882) — so a
+        turn that fails, at its commit or before it, leaves no row, and
         the file is listed, searchable and turn-attributed together or
-        not at all. (A failure after the engine's Step-7 save is the
-        #1882 half turn; see the note above the return.) The sidecar is
-        flipped to linked only after the turn's final save
-        (``_mark_turn_uploads_linked``).
+        not at all. The sidecar is flipped to linked only after that
+        commit (``_mark_turn_uploads_linked``).
 
     Raises:
         ServiceException: If preprocessing or storage fails
@@ -615,17 +614,17 @@ async def _preprocess_attachment(
             preprocessing_result.extraction_metadata.get("suggested_types") or []
         )
 
-    # No commit here (#1878). The row rides the end-of-turn aggregate
-    # ``save(case)`` — the same transaction that writes the turn's
-    # ``current_turn`` and user message — so it exists only once the turn that
-    # carried it exists. Every file-reading tool (``search_file``,
-    # ``read_file``, ``deep_analysis``, ``vectorize_file``) and the file list
-    # resolve through ``case.uploaded_files``, so a file is listed, searchable
-    # and attributed to a committed turn together, or none of these. A turn
-    # that fails before its first commit (the LLM call, a version conflict at
-    # the engine's Step-7 save) leaves no row: the user is told the turn failed
-    # and sends the file again, and that retry is a fresh upload rather than a
-    # "duplicate" of its own failed attempt.
+    # No commit here (#1878). The row rides the turn's one commit (#1882) —
+    # the same transaction that writes the turn's ``current_turn``, its user
+    # message and its reply — so it exists only once the turn that carried it
+    # exists. Every file-reading tool (``search_file``, ``read_file``,
+    # ``deep_analysis``, ``vectorize_file``) and the file list resolve through
+    # ``case.uploaded_files``, so a file is listed, searchable and attributed
+    # to a committed turn together, or none of these. A turn that fails at any
+    # point, its commit included (a version conflict there), leaves no row:
+    # the user is told the turn failed and sends the file again, and that
+    # retry is a fresh upload rather than a "duplicate" of its own failed
+    # attempt.
     #
     # A scoped commit used to live here (#1013): ``mark_linked`` ran at intake,
     # BEFORE any row existed, so a failed turn left stored bytes exempt from
@@ -637,15 +636,9 @@ async def _preprocess_attachment(
     # when it has no ``uploaded_files`` row AND its sidecar still says
     # ``linked: false`` past the TTL (#1232). So the bytes a failed turn stored
     # are an ordinary orphan the sweep reclaims, and no early commit is needed
-    # to keep anything safe.
-    #
-    # What remains: on an engine-routed turn the engine commits the aggregate
-    # at its Step 7, before the service's final save, so a failure between the
-    # two — a version conflict at the final save included — leaves a half turn
-    # whose row IS committed and whose sidecar is never flipped (#1882). The
-    # row is then attributed to a turn that did commit its user message, which
-    # is the invariant here, and a retry of that turn is reported as its
-    # duplicate; the half turn itself is #1882's to close.
+    # to keep anything safe. There is no half turn left to commit a row
+    # without its reply: the engine's Step-7 save and the deterministic
+    # branches' saves are gone, and the turn commits once (#1882).
     return _PreprocessedAttachment(
         uploaded_file=uploaded_file,
         newly_stored_ref=storage_ref,
@@ -656,12 +649,22 @@ async def _preprocess_attachment(
     )
 
 
+#: The most one ``mark_linked`` call may take after a turn has committed
+#: (#1882). The calls run in a background task the turn's response does not
+#: wait for (``turn_settlement._spawn_post_commit``); the timeout bounds that
+#: task, so a storage backend that hangs cannot pile up work: a call cut short
+#: is counted ``timed_out`` and left to the orphan sweep, exactly as a call
+#: that failed.
+MARK_LINKED_TIMEOUT_SECONDS = 5.0
+
+
 async def _mark_turn_uploads_linked(
     file_storage_service, preprocess_results: List[_PreprocessedAttachment]
 ) -> None:
     """Flip the sidecar of every blob this turn stored, AFTER its commit.
 
-    Called once the turn's final save has returned, with the turn's own
+    Run in a background task spawned once the turn's one commit has returned
+    (``turn_settlement._spawn_post_commit``), with the turn's own
     ``preprocess_results`` — the explicit record of which attachments were
     stored this turn (``newly_stored_ref``); a duplicate stored nothing and is
     skipped. Before #1878 this ran at intake, so a turn that failed left a blob
@@ -693,7 +696,10 @@ async def _mark_turn_uploads_linked(
             # failure by returning False rather than raising, so without
             # this neither the warning nor the counter below could fire and
             # the drift would be entirely invisible.
-            if not await mark_linked(storage_ref):
+            linked = await asyncio.wait_for(
+                mark_linked(storage_ref), timeout=MARK_LINKED_TIMEOUT_SECONDS
+            )
+            if not linked:
                 _record_mark_linked_failure("returned_false")
                 logger.warning(
                     "mark_linked returned False for %s (non-fatal; the "
@@ -701,6 +707,15 @@ async def _mark_turn_uploads_linked(
                     "— but a sidecar write just failed)",
                     storage_ref,
                 )
+        except asyncio.TimeoutError:
+            _record_mark_linked_failure("timed_out")
+            logger.warning(
+                "mark_linked timed out after %ss for %s (non-fatal; the "
+                "orphan sweep asks the database, so the file is safe — but a "
+                "sidecar write did not finish)",
+                MARK_LINKED_TIMEOUT_SECONDS,
+                storage_ref,
+            )
         except Exception as e:
             _record_mark_linked_failure("raised")
             logger.warning(

@@ -65,17 +65,6 @@ class TransitionManager:
         """
         logger.info(f"Transitioning case {case.case_id} to INVESTIGATING")
 
-        # Gap #6: Checkpoint before status change
-        if self.deps.checkpoint_service:
-            await self.deps.checkpoint_service.create_checkpoint(
-                case,
-                trigger="pre_case_action",
-                metadata={
-                    "from_state": case.state.value,
-                    "to_state": "investigating",
-                },
-            )
-
         # Copy confirmed problem statement to description BEFORE changing status
         # (Pydantic validation requires description to be set before INVESTIGATING status)
         if case.inquiry.proposed_problem_statement:
@@ -139,7 +128,10 @@ class TransitionManager:
         await self.kb_prefetcher.prefetch_kb_context(case, case.description, "symptom")
 
     async def check_automatic_transitions(
-        self, case: Case, metadata: dict[str, Any], user_message: str = ""
+        self,
+        case: Case,
+        metadata: dict[str, Any],
+        user_message: str = "",
     ) -> Case:
         """
         Check if case should automatically transition status.
@@ -298,17 +290,6 @@ class TransitionManager:
                     typed=True,
                 )
                 if verdict == "confirm":
-                    # Gap #6: Checkpoint before terminal transition
-                    if self.deps.checkpoint_service:
-                        to_state = case.pending_transition.get("to_state", "unknown")
-                        await self.deps.checkpoint_service.create_checkpoint(
-                            case,
-                            trigger="pre_case_action",
-                            metadata={
-                                "from_state": case.state.value,
-                                "to_state": to_state,
-                            },
-                        )
                     executed = confirm_pending_transition(case, case.user_id)
                     if executed:
                         metadata["status_transitioned"] = True

@@ -33,7 +33,10 @@ from faultmaven.api.exception_handlers import llm_service_error_http_exception
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.api.v1.dependencies import get_investigation_service
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
-from faultmaven.core.investigation.turn_budget import bind_turn_deadline
+from faultmaven.core.investigation.turn_budget import (
+    TurnDeadlineExceeded,
+    bind_turn_deadline,
+)
 from faultmaven.exceptions import (
     NotFoundError,
     PermissionDeniedException,
@@ -569,16 +572,28 @@ async def submit_turn(
             # that would otherwise cut it mid-attempt (#1278, #1292). This is the
             # only site that knows both the ceiling and the instant it starts;
             # deriving either independently downstream is exactly the drift the
-            # two settings already have between them. Scoped to the wait_for and
+            # two settings already have between them. Scoped to the turn and
             # nothing else — auto-titling below has its own timeout and must not
             # be charged to the turn budget.
+            #
+            # The ``wait_for`` bounds the PREPARATION only, which commits
+            # nothing; the commit runs outside it (#1882). A cancellation that
+            # lands inside a commit leaves its outcome unknown, and one that
+            # lands after it answers 504 for a turn that committed. Instead
+            # ``commit_turn`` checks, before it starts, that the budget still
+            # holds the commit's reserve (``TURN_COMMIT_RESERVE_SECONDS``, which
+            # every LLM step leaves unspent) and answers the same 504 when it
+            # does not, with nothing committed; once started, the commit runs
+            # to its end. So a 2xx means the whole turn committed and a non-2xx
+            # means none of it did.
             with bind_turn_deadline(agent_timeout):
-                response = await asyncio.wait_for(
-                    investigation_service.process_turn(
+                prepared = await asyncio.wait_for(
+                    investigation_service.prepare_turn(
                         case_id=case_id, user_id=current_user.user_id, payload=payload
                     ),
                     timeout=agent_timeout,
                 )
+                response = await investigation_service.commit_turn(prepared)
 
             # Name the case from its own content. Called unconditionally: whether
             # the case is *titleable* is decided inside, against the case as it
@@ -599,13 +614,23 @@ async def submit_turn(
 
             return response
 
-        except asyncio.TimeoutError:
+        except (asyncio.TimeoutError, TurnDeadlineExceeded) as timed_out:
+            # Both mean the same thing to the client, and are answered the
+            # same way: the turn ran out of time and NOTHING of it was
+            # committed, so the retry is safe. ``TurnDeadlineExceeded`` is the
+            # preparation finishing with less than the commit's reserve left
+            # (#1882).
             from faultmaven.config.settings import get_settings
 
             agent_timeout, provider_name = _resolve_agent_timeout(get_settings())
             logger.error(
                 f"Turn processing timed out for case {case_id} after {agent_timeout}s "
                 f"(provider={provider_name})"
+                + (
+                    f": {timed_out}"
+                    if isinstance(timed_out, TurnDeadlineExceeded)
+                    else ""
+                )
             )
             raise HTTPException(
                 status_code=504,

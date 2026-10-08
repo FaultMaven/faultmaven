@@ -58,7 +58,6 @@ from faultmaven.modules.case.domain.models.hypothesis import (
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.problem import InquiryData
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
-from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
 from faultmaven.modules.case.domain.owned_models.report import (
     CaseReport,
     ReportStatus,
@@ -520,38 +519,6 @@ async def test_add_report_roundtrip_with_timestamptz(pg_repo):
     assert fetched is not None
     assert fetched.title == "Resolution summary"
     assert fetched.generation_status == ReportStatus.COMPLETED
-
-
-@pytest.mark.asyncio
-async def test_create_checkpoint_roundtrip_with_timestamptz(pg_repo):
-    """create_checkpoint() exercises case_snapshot + metadata (JSONB) AND
-    created_at (TIMESTAMPTZ) casts."""
-    session = pg_repo.db
-    enterprise_id = f"ent_{uuid4().hex[:8]}"
-    user_id = f"user_{uuid4().hex[:8]}"
-    await seed_enterprises(session, [enterprise_id])
-    await seed_users(session, [user_id])
-    case = _make_case(enterprise_id, user_id)
-    await pg_repo.save(case)
-
-    from datetime import datetime, timezone
-
-    checkpoint = CaseCheckpoint(
-        checkpoint_id=f"{case.case_id}:turn:1",
-        case_id=case.case_id,
-        turn_number=1,
-        case_snapshot={"state": "investigating", "turn": 1},
-        snapshot_hash="0" * 64,
-        trigger="turn_complete",
-        created_at=datetime.now(timezone.utc),
-        metadata={"reason": "test"},
-    )
-    saved = await pg_repo.create_checkpoint(checkpoint)
-    assert saved.checkpoint_id == checkpoint.checkpoint_id
-
-    fetched = await pg_repo.get_checkpoint(checkpoint.checkpoint_id)
-    assert fetched is not None
-    assert fetched.case_snapshot == {"state": "investigating", "turn": 1}
 
 
 @pytest.mark.asyncio

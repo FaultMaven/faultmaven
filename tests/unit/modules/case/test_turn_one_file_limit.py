@@ -81,7 +81,7 @@ def _make_turn_response() -> TurnResponse:
 def _app() -> tuple[FastAPI, AsyncMock]:
     """An app wired so a turn actually succeeds, with the real error handlers.
 
-    Returns the app and the ``process_turn`` mock, so a test can assert on the
+    Returns the app and the ``prepare_turn`` mock, so a test can assert on the
     payload the route built as well as on the status code.
     """
     app = FastAPI()
@@ -103,20 +103,23 @@ def _app() -> tuple[FastAPI, AsyncMock]:
     case_service = MagicMock()
     case_service.get_case = AsyncMock(return_value=_make_case())
 
-    process_turn = AsyncMock(return_value=_make_turn_response())
+    prepare_turn = AsyncMock(return_value=_make_turn_response())
     investigation_service = MagicMock()
-    investigation_service.process_turn = process_turn
+    # The route prepares the turn under its deadline and commits it after
+    # (#1882); the prepared stand-in is the response, handed back by the commit.
+    investigation_service.prepare_turn = prepare_turn
+    investigation_service.commit_turn = AsyncMock(side_effect=lambda prepared: prepared)
 
     app.dependency_overrides[require_authentication] = lambda: user
     app.dependency_overrides[_di_get_case_service_dependency] = lambda: case_service
     app.dependency_overrides[get_investigation_service] = lambda: investigation_service
 
-    return app, process_turn
+    return app, prepare_turn
 
 
 def _client() -> tuple[TestClient, AsyncMock]:
-    app, process_turn = _app()
-    return TestClient(app, raise_server_exceptions=False), process_turn
+    app, prepare_turn = _app()
+    return TestClient(app, raise_server_exceptions=False), prepare_turn
 
 
 @pytest.mark.unit
@@ -125,11 +128,11 @@ class TestTurnOneFileLimit:
 
     def test_query_only_turn_is_accepted(self):
         """Zero files: the cap must not fire on a text-only turn."""
-        client, process_turn = _client()
+        client, prepare_turn = _client()
         response = client.post(TURNS_URL, data={"query": "why is checkout slow?"})
 
         assert response.status_code == 200, response.text
-        assert process_turn.await_count == 1
+        assert prepare_turn.await_count == 1
 
     def test_single_file_is_accepted(self):
         """One file: the supported shape, and the success pin for this file.
@@ -137,14 +140,14 @@ class TestTurnOneFileLimit:
         If the fixture ever stops reaching the route body, this fails loudly
         rather than letting the error assertions below pass vacuously.
         """
-        client, process_turn = _client()
+        client, prepare_turn = _client()
         response = client.post(
             TURNS_URL,
             files={"files": ("app.log", b"ERROR connection refused", "text/plain")},
         )
 
         assert response.status_code == 200, response.text
-        payload = process_turn.await_args.kwargs["payload"]
+        payload = prepare_turn.await_args.kwargs["payload"]
         assert [a.filename for a in payload.attachments] == ["app.log"]
 
     def test_single_file_plus_pasted_content_is_accepted(self):
@@ -154,7 +157,7 @@ class TestTurnOneFileLimit:
         against the cap — this is the combination the cap is most likely to
         break, and it is a shipped path.
         """
-        client, process_turn = _client()
+        client, prepare_turn = _client()
         response = client.post(
             TURNS_URL,
             files={"files": ("app.log", b"ERROR connection refused", "text/plain")},
@@ -162,7 +165,7 @@ class TestTurnOneFileLimit:
         )
 
         assert response.status_code == 200, response.text
-        payload = process_turn.await_args.kwargs["payload"]
+        payload = prepare_turn.await_args.kwargs["payload"]
         assert len(payload.attachments) == 2
         assert payload.attachments[0].filename == "app.log"
         # The paste keeps its own minted name and its paste provenance.
@@ -171,7 +174,7 @@ class TestTurnOneFileLimit:
 
     @pytest.mark.parametrize("count", [2, 5])
     def test_more_than_one_file_is_rejected_with_422(self, count):
-        client, process_turn = _client()
+        client, prepare_turn = _client()
         response = client.post(
             TURNS_URL,
             files=[
@@ -183,7 +186,7 @@ class TestTurnOneFileLimit:
         assert response.status_code == 422, response.text
         # The turn is refused, not half-processed. (It IS fully parsed and
         # spooled first — the cap is correctness, not cost.)
-        assert process_turn.await_count == 0
+        assert prepare_turn.await_count == 0
 
     def test_rejection_uses_the_apps_validation_envelope(self):
         """The normalized envelope from `request_validation_exception_handler`,
