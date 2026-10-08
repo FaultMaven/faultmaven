@@ -7,9 +7,10 @@ re-proposes RESOLVED every turn the user confirms, and the LLM-proposal
 block's ``propose_transition`` overwrote that CLOSE with a fresh
 RESOLVED+needs_info, looping forever to max_turns.
 
-Fix: when the handshake block has already pivoted to CLOSE this turn
-(``metadata['resolution_suggest_close']``), the LLM's same-turn
-``proposed_transition`` is ignored so it can't clobber the escape.
+Fix: the engine's same-turn offer stands (INV-43, #1885). When the handshake
+block has already pivoted to CLOSE this turn (``transition_proposed_this_turn``
+with the CLOSE pending), the LLM's same-turn ``proposed_transition`` is ignored
+so it can't clobber the escape.
 """
 
 from datetime import datetime, timezone

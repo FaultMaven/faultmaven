@@ -13,11 +13,22 @@ unreachable (declared via rca_infeasible + rationale), which outranks the
 mitigation_verified, so both always apply and the more informative label wins.
 """
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _apply_stage_gate_side_effects,
     _close_confirmation_suggestions,
+)
+from faultmaven.core.investigation.schemas import (
+    EvidenceToAdd,
+    EvidenceTrail,
+    InvestigationResponse_Mitigation,
+    MilestoneJustifications,
+    MilestoneUpdates,
+    ProposedTransition,
 )
 from faultmaven.core.investigation.terminal_transitions import (
     cancel_pending_transition,
@@ -26,9 +37,12 @@ from faultmaven.core.investigation.terminal_transitions import (
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
+    EvidenceCategory,
+    EvidenceSourceType,
     InquiryData,
     InvestigationProgress,
     MitigationRecord,
+    ProblemStatus,
     ProblemVerification,
 )
 
@@ -186,3 +200,55 @@ def test_closure_message_uses_rationale_or_fallback(rationale, expected_phrase):
     )
 
     assert expected_phrase in metadata["rca_infeasible_closure_message"]
+
+
+@pytest.mark.parametrize("model_proposes", ["closed", "resolved"])
+async def test_the_models_same_turn_proposal_leaves_the_engines_close(model_proposes):
+    """#1885, through a real turn: the engine's stabilized-close offer is what
+    the user answers, whatever the model proposed beside it. Replaced, the
+    offer the user confirmed was the model's, not the one whose reason the
+    reply shows."""
+    case = _make_case(rca_infeasible=True, mitigation_verified=False)
+    case.progress.problem_status = ProblemStatus.VERIFIED
+    repo = MagicMock()
+    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.get = AsyncMock(side_effect=lambda cid: None)
+    engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
+    engine.kb_prefetcher.prefetch_kb_context = AsyncMock(return_value=None)
+    engine.generator.generate_structured_output = AsyncMock(
+        return_value=InvestigationResponse_Mitigation(
+            agent_response="The failover held.",
+            state_updates={
+                "milestones": MilestoneUpdates(mitigation_verified=True),
+                "evidence_to_add": [
+                    EvidenceToAdd(
+                        summary="error rate 0% for 30 minutes after failover",
+                        extract="gateway 5xx rate: 0.0 at 14:30-15:00",
+                        category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+                        source_type=EvidenceSourceType.USER_DESCRIPTION,
+                    )
+                ],
+                "proposed_transition": ProposedTransition(to_state=model_proposes),
+            },
+            evidence_trail=EvidenceTrail(
+                evidence_analyzed=[],
+                milestone_justifications=MilestoneJustifications(
+                    mitigation_verified="error rate back to 0 after the failover"
+                ),
+            ),
+        )
+    )
+
+    result = await engine.process_turn(
+        case=case, user_message="the failover held, error rate is 0"
+    )
+
+    assert case.progress.mitigation.verified is True
+    pending = case.pending_transition
+    assert pending["to_state"] == "closed"
+    assert pending["closure_reason"] == "closed_rca_infeasible"
+    assert pending["summary"] == (
+        "The mitigation is verified and stable. Since third-party API outage, "
+        "shall we close this case as stabilized?"
+    )
+    assert pending["summary"] in result["agent_response"]

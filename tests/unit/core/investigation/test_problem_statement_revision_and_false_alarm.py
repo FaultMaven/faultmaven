@@ -1533,6 +1533,24 @@ class TestFalseAlarmCloseFollowsItsFinding:
         # The engine's own close is still withdrawn by a revision:
         # TestApplyStep.test_a_revision_from_a_false_alarm_withdraws_the_engine_close
 
+    async def test_the_status_menu_close_is_the_third_proposer(self):
+        """The user's own close from the status menu on a false alarm derives
+        the same reason, unsigned, and is taken back the same way."""
+        engine, case = _engine(), _case()
+        absent = _with(case, _evidence(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, "a"))
+        invalidate_problem(case, evidence_ids=absent, basis="the alert misfired")
+        await engine.process_turn(
+            case=case,
+            user_message="",
+            intent_type="status_transition",
+            intent_data={"to_state": "closed"},
+        )
+        pending = case.pending_transition
+        assert pending["closure_reason"] == FALSE_ALARM_CLOSURE_REASON
+        assert "justifying_signature" not in pending
+        edit_statement(case, "The checkout page returns 502 at peak")
+        assert case.pending_transition is None
+
     async def test_dispute_then_yes_never_closes_on_a_withdrawn_finding(self):
         """The issue's repro: invalidate, the model proposes the close, the
         user disputes the finding, then answers yes."""
@@ -1547,3 +1565,139 @@ class TestFalseAlarmCloseFollowsItsFinding:
             reason == FALSE_ALARM_CLOSURE_REASON
             and updated.progress.problem_status != ProblemStatus.INVALIDATED
         )
+
+
+# ---------------------------------------------------------------------------
+# The engine's same-turn offer stands against the model's proposal (#1885)
+# ---------------------------------------------------------------------------
+
+_SIGNED = "justifying_signature"
+
+
+def _respond(engine: MilestoneEngine, dsu: _DSU) -> None:
+    engine.generator.generate_structured_output = AsyncMock(
+        return_value=InvestigationResponse_Diagnosis(
+            agent_response="Noted.", state_updates=dsu
+        )
+    )
+
+
+def _finding(*, model_proposes: str | None) -> _DSU:
+    """The false-alarm finding, with the model's own transition beside it."""
+    return _DSU(
+        evidence_to_add=[_row(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, "a1")],
+        verification_updates=ProblemVerificationUpdate(
+            problem_invalidated=True,
+            invalidation_evidence_ids=["new_index_0"],
+            invalidation_basis="no 5xx in the gateway log for the window",
+        ),
+        proposed_transition=(
+            ProposedTransition(to_state=model_proposes) if model_proposes else None
+        ),
+    )
+
+
+async def _finding_turn(*, model_proposes: str | None) -> tuple:
+    engine, case = _engine(), _case()
+    _respond(engine, _finding(model_proposes=model_proposes))
+    result = await engine.process_turn(
+        case=case, user_message="the gateway log shows no errors at 14:00"
+    )
+    case = result["case_updated"]
+    assert case.progress.problem_status == ProblemStatus.INVALIDATED
+    return engine, case, result
+
+
+class TestTheEnginesFalseAlarmOfferStands:
+    """On the turn the finding is made, the engine's signed close is what the
+    user answers, whatever the model proposed beside it. Real ``process_turn``,
+    stubbed generator."""
+
+    @pytest.mark.parametrize("model_proposes", ["closed", "resolved"])
+    async def test_the_models_same_turn_proposal_leaves_the_signed_offer(
+        self, model_proposes
+    ):
+        _, case, result = await _finding_turn(model_proposes=model_proposes)
+        pending = case.pending_transition
+        assert pending["to_state"] == "closed"
+        assert pending["closure_reason"] == FALSE_ALARM_CLOSURE_REASON
+        assert pending[_SIGNED] == f"{FALSE_ALARM_CLOSURE_REASON}|4"
+        # The card the user is shown names the offer that is standing.
+        keys = {
+            (f.get("intent") or {}).get("proposal_id")
+            for f in result["suggested_follow_ups"]
+        }
+        assert keys == {pending["proposed_at"]}
+        assert "false alarm" in result["agent_response"]
+
+    async def test_a_bare_no_then_records_the_decline(self):
+        engine, case, _ = await _finding_turn(model_proposes="closed")
+        case.current_turn += 1
+        _respond(engine, _DSU())
+        await engine.process_turn(case=case, user_message="no")
+        assert case.pending_transition is None
+        assert case.progress.deferred_disposition_declined_signatures == [
+            f"{FALSE_ALARM_CLOSURE_REASON}|4"
+        ]
+
+    async def test_a_revision_then_withdraws_the_close(self):
+        """INV-45: a revision may withdraw the ENGINE's false-alarm close.
+
+        On a chat turn section 0b withdraws a pending close before the model is
+        called, so the apply step's gate is the backstop for any path that
+        reaches it with the close standing; it is driven directly here. On
+        main the model's same-turn close had replaced the signed offer, so the
+        gate read it as the model's and refused the revision."""
+        engine, case, _ = await _finding_turn(model_proposes="closed")
+        case.current_turn += 1
+        meta = await _apply(
+            engine,
+            case,
+            _DSU(
+                evidence_to_add=[_row(EvidenceCategory.SYMPTOM_EVIDENCE, "s1")],
+                verification_updates=_revision_update("new_index_0"),
+            ),
+        )
+        assert "STATEMENT REVISION NOT ACCEPTED" not in (
+            meta.get("system_feedback") or ""
+        )
+        assert case.pending_transition is None
+        assert case.progress.problem_status == ProblemStatus.REVISION_PENDING
+        assert case.problem_verification.pending_revision.prior_status == (
+            ProblemStatus.INVALIDATED
+        )
+
+    async def test_a_revision_on_the_chat_turn_is_accepted(self):
+        """The reachable path: 0b withdraws the signed close (the substantive
+        reply is a refusal, recorded), and the model's revision is accepted."""
+        engine, case, _ = await _finding_turn(model_proposes="closed")
+        case.current_turn += 1
+        _respond(
+            engine,
+            _DSU(
+                evidence_to_add=[_row(EvidenceCategory.SYMPTOM_EVIDENCE, "s1")],
+                verification_updates=_revision_update("new_index_0"),
+            ),
+        )
+        await engine.process_turn(
+            case=case,
+            user_message="The /orders API times out after 30s; the database is fine",
+        )
+        assert case.pending_transition is None
+        assert case.progress.problem_status == ProblemStatus.REVISION_PENDING
+
+    async def test_without_a_model_proposal_the_offer_is_signed(self):
+        _, case, _ = await _finding_turn(model_proposes=None)
+        assert case.pending_transition[_SIGNED] == f"{FALSE_ALARM_CLOSURE_REASON}|4"
+
+    async def test_with_no_engine_offer_the_models_proposal_lands(self):
+        """Negative control: the rule is about the engine's SAME-turn offer,
+        not about the model's proposals in general."""
+        engine, case = _engine(), _case(ProblemStatus.VERIFIED)
+        _respond(
+            engine, _DSU(proposed_transition=ProposedTransition(to_state="closed"))
+        )
+        result = await engine.process_turn(case=case, user_message="let's stop here")
+        pending = result["case_updated"].pending_transition
+        assert pending["to_state"] == "closed"
+        assert _SIGNED not in pending
