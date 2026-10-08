@@ -38,8 +38,8 @@ TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 # the 001-053 chain) plus additive revisions on top of it, so the seed
 # assertions below reverse the whole schema with "downgrade base" and each
 # additive revision is stepped over on its own.
-#: 008_runbook_severity_admits_info
-HEAD_REVISION = "1e713f2d0e74"  # pragma: allowlist secret
+#: 010_turn_receipts
+HEAD_REVISION = "afdd293ca6ab"  # pragma: allowlist secret
 #: The baseline, which every additive revision parents onto.
 BASELINE_REVISION = "a1e0c17bd001"  # 001_enterprise_baseline
 #: The first additive revision.
@@ -61,6 +61,8 @@ PROBLEM_STATUS_REVISION = "497ae8900ae2"
 #: admits the spec's severity vocabulary, ``info`` included (#1886).
 RUNBOOK_SEVERITY_REVISION = "558d7f3cfed1"  # pragma: allowlist secret
 DROP_CASE_CHECKPOINTS_REVISION = "1e713f2d0e74"  # pragma: allowlist secret
+#: ``010_turn_receipts``: one row per committed keyed turn (#1888).
+TURN_RECEIPTS_REVISION = "afdd293ca6ab"  # pragma: allowlist secret
 #: The tables 002_llm_usage_ledger adds (#640).
 LLM_USAGE_TABLES = ["llm_turn_spend", "llm_usage_daily"]
 
@@ -185,7 +187,8 @@ def get_current_revision(database_url: str) -> str:
 # ``sso_personal_orgs``, and ``team_invitations`` is new: the consent record a
 # team forms by. ``token_revocations`` (#828) is where revocation state lives
 # when the cache does not outlive the process. ``case_checkpoints`` is gone:
-# 009 retired case checkpoints (#1882).
+# 009 retired case checkpoints (#1882). ``turn_receipts`` is 010's: one row per
+# committed keyed turn (#1888).
 EXPECTED_TABLES = [
     "alembic_version",
     "case_actions",
@@ -227,6 +230,7 @@ EXPECTED_TABLES = [
     "team_members",
     "teams",
     "token_revocations",
+    "turn_receipts",
     "turn_usage",
     "uploaded_files",
     "user_audit_log",
@@ -419,10 +423,11 @@ class TestLlmUsageLedgerRevision:
         result = run_alembic(f"downgrade {BASELINE_REVISION}", database_url)
         assert result.returncode == 0, result.stderr
         assert get_current_revision(database_url) == BASELINE_REVISION
-        # Less the ledger; plus the table the baseline creates and 009 drops,
-        # which stepping down over 009 restores.
+        # Less the ledger and 010's receipts; plus the table the baseline
+        # creates and 009 drops, which stepping down over 009 restores.
         assert get_tables(TEST_DB) == sorted(
-            (set(before) - set(LLM_USAGE_TABLES)) | {"case_checkpoints"}
+            (set(before) - set(LLM_USAGE_TABLES) - {"turn_receipts"})
+            | {"case_checkpoints"}
         )
 
         result = run_alembic("upgrade head", database_url)
@@ -1156,6 +1161,76 @@ class TestDropCaseCheckpointsRevision:
         assert 'ALTER TABLE "case_checkpoints" ENABLE ROW LEVEL SECURITY' in sql
         assert (
             'CREATE POLICY "case_checkpoints_tenant_isolation" ON "case_checkpoints" '
+            "USING (enterprise_id = current_setting('app.current_enterprise_id', "
+            "true))"
+        ) in sql
+
+
+class TestTurnReceiptsRevision:
+    """010 adds ``turn_receipts`` (#1888): one table, its index, and on
+    PostgreSQL the plain tenant policy; its downgrade removes exactly that."""
+
+    @staticmethod
+    def _schema() -> list:
+        return query_rows(
+            TEST_DB,
+            "SELECT type, name FROM sqlite_master "
+            "WHERE tbl_name = 'turn_receipts' ORDER BY type, name",
+        )
+
+    def test_upgrade_adds_the_table_and_downgrade_removes_only_it(
+        self, clean_database, database_url
+    ):
+        result = run_alembic(f"upgrade {DROP_CASE_CHECKPOINTS_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        parent = get_tables(TEST_DB)
+        assert self._schema() == []
+
+        result = run_alembic(f"upgrade {TURN_RECEIPTS_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        assert get_tables(TEST_DB) == sorted(set(parent) | {"turn_receipts"})
+        assert self._schema() == [
+            ("index", "ix_turn_receipts_case"),
+            ("index", "sqlite_autoindex_turn_receipts_1"),  # the primary key
+            ("table", "turn_receipts"),
+        ]
+
+        result = run_alembic(
+            f"downgrade {DROP_CASE_CHECKPOINTS_REVISION}", database_url
+        )
+        assert result.returncode == 0, result.stderr
+        assert get_current_revision(database_url) == DROP_CASE_CHECKPOINTS_REVISION
+        assert get_tables(TEST_DB) == parent
+
+    def test_the_key_leads_with_the_enterprise(self, clean_database, database_url):
+        """RLS scopes the table on the enterprise, so the unique key leads with
+        it (the ``turn_usage`` lesson, data-model.md)."""
+        assert run_alembic("upgrade head", database_url).returncode == 0
+        pk = sorted(
+            (row[5], row[1])
+            for row in query_rows(TEST_DB, 'PRAGMA table_info("turn_receipts")')
+            if row[5]
+        )
+        assert [name for _, name in pk] == [
+            "enterprise_id",
+            "case_id",
+            "author_id",
+            "idempotency_key",
+        ]
+
+    def test_the_postgresql_upgrade_enrols_the_table_in_row_level_security(self):
+        pg = "postgresql://offline@localhost/offline"
+        up = run_alembic(
+            f"upgrade {DROP_CASE_CHECKPOINTS_REVISION}:{TURN_RECEIPTS_REVISION} --sql",
+            pg,
+        )
+        assert up.returncode == 0, up.stderr
+        sql = up.stdout
+        assert "CREATE TABLE turn_receipts" in sql
+        assert "response JSON NOT NULL" in sql, "json, not jsonb: keys keep order"
+        assert 'ALTER TABLE "turn_receipts" ENABLE ROW LEVEL SECURITY' in sql
+        assert (
+            'CREATE POLICY "turn_receipts_tenant_isolation" ON "turn_receipts" '
             "USING (enterprise_id = current_setting('app.current_enterprise_id', "
             "true))"
         ) in sql

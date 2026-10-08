@@ -39,6 +39,7 @@ from faultmaven.modules.case.contracts import (
     EntityType,
     Evidence,
     ReportType,
+    TurnReceipt,
     UploadedFile,
 )
 from faultmaven.modules.case.exceptions import StaleCaseException
@@ -68,6 +69,7 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository.rows import (
 from faultmaven.modules.case.infrastructure.sqlite_case_repository.saving import (
     _append_case_actions,
     _insert_report,
+    _insert_turn_receipt,
     _reconcile_causal_graph,
     _upsert_case_record,
     _upsert_causal_edges,
@@ -140,6 +142,7 @@ class SQLiteCaseRepository(CaseRepository):
         case: Case,
         *,
         reports: Sequence[CaseReport] = (),
+        receipt: Optional[TurnReceipt] = None,
     ) -> Case:
         """Save case using hybrid schema with transactions.
 
@@ -150,11 +153,11 @@ class SQLiteCaseRepository(CaseRepository):
         the new version and returned — callers can use either the
         return value or the passed-in object.
 
-        ``reports`` are written in the same transaction, after the case rows
-        and before the commit, so they commit with the case or not at all
-        (#1882).
+        ``reports`` and ``receipt`` are written in the same transaction, after
+        the case rows and before the commit, so they commit with the case or
+        not at all (#1882, #1888).
         """
-        self.check_turn_rows(case, reports)
+        self.check_turn_rows(case, reports, receipt)
         # Restored if the save does not commit: see SAVE_STAMPED_FIELDS.
         stamps = self.save_stamps(case)
         # Self-heal any turn-sequence anomaly into consecutive history (with
@@ -250,6 +253,8 @@ class SQLiteCaseRepository(CaseRepository):
             # the commit (they commit with it or not at all).
             for report in reports:
                 await _insert_report(self.db, report)
+            if receipt is not None:
+                await _insert_turn_receipt(self.db, case, receipt)
 
             await self.db.commit()
             return case
@@ -264,6 +269,60 @@ class SQLiteCaseRepository(CaseRepository):
             await self.db.rollback()
             self.restore_save_stamps(case, stamps)
             raise RepositoryException(f"Failed to save case {case.case_id}: {e}") from e
+
+    async def get_turn_receipt(
+        self,
+        *,
+        enterprise_id: str,
+        case_id: str,
+        author_id: str,
+        idempotency_key: str,
+    ) -> TurnReceipt | None:
+        """The receipt a committed keyed turn left, or ``None`` (#1888).
+
+        By the table's full primary key, enterprise first, so the read is one
+        index probe.
+        """
+        try:
+            row = (
+                await self.db.execute(
+                    text("""
+                        SELECT case_id, author_id, idempotency_key,
+                               request_fingerprint, turn_number, response,
+                               created_at
+                        FROM turn_receipts
+                        WHERE enterprise_id = :enterprise_id
+                          AND case_id = :case_id
+                          AND author_id = :author_id
+                          AND idempotency_key = :idempotency_key
+                    """),
+                    {
+                        "enterprise_id": enterprise_id,
+                        "case_id": case_id,
+                        "author_id": author_id,
+                        "idempotency_key": idempotency_key,
+                    },
+                )
+            ).fetchone()
+        except Exception as e:
+            raise RepositoryException(
+                f"Failed to read the turn receipt for case {case_id}: {e}"
+            ) from e
+        if row is None:
+            return None
+        return TurnReceipt(
+            case_id=row[0],
+            author_id=row[1],
+            idempotency_key=row[2],
+            request_fingerprint=row[3],
+            turn_number=row[4],
+            response=json.loads(row[5]),
+            created_at=(
+                row[6]
+                if isinstance(row[6], datetime)
+                else datetime.fromisoformat(row[6])
+            ),
+        )
 
     async def get(self, case_id: str) -> Case | None:
         """Retrieve case by ID using separate queries for normalized tables."""

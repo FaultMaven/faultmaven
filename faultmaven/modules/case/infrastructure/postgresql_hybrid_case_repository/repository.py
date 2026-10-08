@@ -38,6 +38,7 @@ from faultmaven.modules.case.domain.models.lifecycle import (
 
 # Case-owned models (per module-organization-design.md)
 from faultmaven.modules.case.domain.owned_models.report import CaseReport, ReportType
+from faultmaven.modules.case.domain.owned_models.turn_receipt import TurnReceipt
 from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.modules.case.infrastructure.case_scope import case_scope_where
@@ -58,6 +59,7 @@ from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.ro
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.saving import (
     _append_case_actions,
     _insert_report,
+    _insert_turn_receipt,
     _org_lookup_case_id,
     _reconcile_causal_graph,
     _upsert_case_record,
@@ -164,6 +166,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         case: Case,
         *,
         reports: Sequence[CaseReport] = (),
+        receipt: Optional[TurnReceipt] = None,
     ) -> Case:
         """
         Save case using hybrid schema with transactions.
@@ -172,7 +175,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         1. Upsert cases table (main record + JSONB)
         2. Upsert normalized tables (evidence, hypotheses, solutions)
         3. Append-only tables (messages, case_actions)
-        4. Insert the turn's reports (#1882)
+        4. Insert the turn's reports (#1882) and its receipt (#1888)
 
         One transaction: the RLS tenant is bound once, at its BEGIN, by the
         engine's ``begin`` listener, so step 4's rows are written under the same
@@ -181,6 +184,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         Args:
             case: Case domain object
             reports: Report rows to commit with the case
+            receipt: The keyed turn's receipt, committed with the case
 
         Returns:
             Saved case with updated timestamps
@@ -189,7 +193,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             StaleCaseException: The case changed since it was read
             RepositoryException: If save fails
         """
-        self.check_turn_rows(case, reports)
+        self.check_turn_rows(case, reports, receipt)
         # Restored if the save does not commit: see SAVE_STAMPED_FIELDS.
         stamps = self.save_stamps(case)
         try:
@@ -309,6 +313,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             # the commit (they commit with it or not at all).
             for report in reports:
                 await _insert_report(self._is_pg, self.db, report)
+            if receipt is not None:
+                await _insert_turn_receipt(self._is_pg, self.db, case, receipt)
 
             await self.db.commit()
             return case
@@ -323,6 +329,62 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             await self.db.rollback()
             self.restore_save_stamps(case, stamps)
             raise RepositoryException(f"Failed to save case {case.case_id}: {e}") from e
+
+    async def get_turn_receipt(
+        self,
+        *,
+        enterprise_id: str,
+        case_id: str,
+        author_id: str,
+        idempotency_key: str,
+    ) -> Optional[TurnReceipt]:
+        """The receipt a committed keyed turn left, or ``None`` (#1888).
+
+        By the table's full primary key, enterprise first. Under RLS the policy
+        adds the session's enterprise as well, so another tenant's receipt is
+        invisible whatever is passed here.
+        """
+        try:
+            row = (
+                await self.db.execute(
+                    text("""
+                        SELECT case_id, author_id, idempotency_key,
+                               request_fingerprint, turn_number, response,
+                               created_at
+                        FROM turn_receipts
+                        WHERE enterprise_id = :enterprise_id
+                          AND case_id = :case_id
+                          AND author_id = :author_id
+                          AND idempotency_key = :idempotency_key
+                    """),
+                    {
+                        "enterprise_id": enterprise_id,
+                        "case_id": case_id,
+                        "author_id": author_id,
+                        "idempotency_key": idempotency_key,
+                    },
+                )
+            ).fetchone()
+        except Exception as e:
+            raise RepositoryException(
+                f"Failed to read the turn receipt for case {case_id}: {e}"
+            ) from e
+        if row is None:
+            return None
+        # ``json`` comes back from asyncpg as its text, and SQLite's as TEXT.
+        response = json.loads(row[5]) if isinstance(row[5], str) else row[5]
+        created_at = (
+            row[6] if isinstance(row[6], datetime) else datetime.fromisoformat(row[6])
+        )
+        return TurnReceipt(
+            case_id=row[0],
+            author_id=row[1],
+            idempotency_key=row[2],
+            request_fingerprint=row[3],
+            turn_number=row[4],
+            response=response,
+            created_at=created_at,
+        )
 
     async def get(self, case_id: str) -> Optional[Case]:
         """

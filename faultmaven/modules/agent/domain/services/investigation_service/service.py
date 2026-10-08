@@ -105,6 +105,8 @@ from faultmaven.modules.agent.domain.services.query_classifier import (
 from faultmaven.modules.case.contracts import (
     Case,
     TurnOutcome,
+    TurnReceipt,
+    TurnReceiptKey,
 )
 from faultmaven.modules.case.contracts import ICaseRepository as CaseRepository
 from faultmaven.modules.case.domain.models.evidence import (
@@ -286,6 +288,10 @@ class InvestigationService:
         halves itself, because its deadline bounds the preparation and never
         the commit (#1882): a cancellation inside a commit leaves its outcome
         unknown.
+
+        Never keyed (#1888): the turn route alone owns the ``Idempotency-Key``
+        step (claim, receipt lookup, replay), and it calls ``commit_turn``
+        with the key itself. No production code calls this method.
 
         Raises:
             Everything ``prepare_turn`` and ``commit_turn`` raise.
@@ -587,8 +593,19 @@ class InvestigationService:
             ) from e
 
     @trace("investigation_service_commit_turn")
-    async def commit_turn(self, prepared: PreparedTurn) -> TurnResponse:
+    async def commit_turn(
+        self,
+        prepared: PreparedTurn,
+        *,
+        receipt_key: Optional[TurnReceiptKey] = None,
+    ) -> TurnResponse:
         """Commit a prepared turn, once, and return its response (#1882).
+
+        ``receipt_key`` is a keyed turn's request identity (#1888). It becomes
+        the turn's ``TurnReceipt`` here, from the response built before the
+        commit, and rides the plan into the same transaction as the case: the
+        receipt exists exactly when the turn committed, and holds exactly what
+        the client is sent.
 
         Before the commit starts: if the turn's deadline leaves less than
         ``TURN_COMMIT_RESERVE_SECONDS``, ``TurnDeadlineExceeded`` is raised and
@@ -620,6 +637,16 @@ class InvestigationService:
             prepared.plan.cancel_gates()
             prepared.emit_error_row()
             raise
+
+        if receipt_key is not None:
+            prepared.plan.receipt = TurnReceipt(
+                case_id=prepared.case.case_id,
+                author_id=receipt_key.author_id,
+                idempotency_key=receipt_key.idempotency_key,
+                request_fingerprint=receipt_key.request_fingerprint,
+                turn_number=prepared.case.current_turn,
+                response=prepared.response.model_dump(mode="json"),
+            )
 
         try:
             await run_settlement_shielded(
@@ -654,8 +681,11 @@ class InvestigationService:
         # has already run: the route's own validation (oversize → 413,
         # unknown intent → 422, a closed case → 409; an EMPTY turn is
         # accepted since #1343 and charged like any other — it is answered
-        # with an orientation), the route's case lookup, and the two refusals
-        # immediately above. So a malformed turn, a probe at another
+        # with an orientation), the route's case lookup, the route's
+        # ``Idempotency-Key`` step (#1888: a duplicate of a turn still in flight
+        # is refused 409 and a retry of a committed one is replayed from its
+        # receipt, and neither reaches this method), and the two refusals
+        # immediately above. So a malformed turn, a retried one, a probe at another
         # tenant's case id, and a turn to a case that does not exist all
         # cost the tenant nothing — where a route-level guard charged them
         # a unit each, and a cross-tenant probe charged the *prober*.

@@ -36,6 +36,7 @@ from faultmaven.modules.case.domain.models.problem import (
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import Solution
 from faultmaven.modules.case.domain.models.turn import TurnProgress
+from faultmaven.modules.case.domain.owned_models.turn_receipt import TurnReceipt
 
 if TYPE_CHECKING:
     # Report models now owned by Case module - import from case domain models
@@ -242,14 +243,19 @@ class CaseRepository(ABC):
             object.__setattr__(case, name, value)
 
     @staticmethod
-    def check_turn_rows(case: Case, reports: Sequence["CaseReport"]) -> None:
-        """Refuse a report that belongs to another case.
+    def check_turn_rows(
+        case: Case,
+        reports: Sequence["CaseReport"],
+        receipt: Optional[TurnReceipt] = None,
+    ) -> None:
+        """Refuse a report or receipt that belongs to another case.
 
-        ``save(case, reports=...)`` commits these rows with ``case`` and derives
-        their enterprise from it, so a row naming another case is a caller
-        defect, refused before anything is written.
+        ``save(case, reports=..., receipt=...)`` commits these rows with
+        ``case`` and derives their enterprise from it, so a row naming another
+        case is a caller defect, refused before anything is written.
         """
-        strays = [row.case_id for row in reports if row.case_id != case.case_id]
+        rows = [*reports, *([receipt] if receipt is not None else [])]
+        strays = [row.case_id for row in rows if row.case_id != case.case_id]
         if strays:
             raise ValueError(
                 f"save({case.case_id}) was handed rows for other cases: "
@@ -262,6 +268,7 @@ class CaseRepository(ABC):
         case: Case,
         *,
         reports: Sequence["CaseReport"] = (),
+        receipt: Optional[TurnReceipt] = None,
     ) -> Case:
         """
         Save case to persistence layer.
@@ -269,6 +276,8 @@ class CaseRepository(ABC):
         Args:
             case: Case domain object
             reports: Report rows to write in the same transaction as the case
+            receipt: The keyed turn's receipt, written in the same transaction
+                (#1888)
 
         Returns:
             Saved case (may have updated timestamps)
@@ -278,6 +287,18 @@ class CaseRepository(ABC):
                 rows included, is written.
             RepositoryException: If save fails. Nothing is written.
         """
+        pass
+
+    @abstractmethod
+    async def get_turn_receipt(
+        self,
+        *,
+        enterprise_id: str,
+        case_id: str,
+        author_id: str,
+        idempotency_key: str,
+    ) -> Optional[TurnReceipt]:
+        """The receipt a committed keyed turn left, or ``None`` (#1888)."""
         pass
 
     @abstractmethod
@@ -956,6 +977,9 @@ class InMemoryCaseRepository(CaseRepository):
         """Initialize empty in-memory store."""
         self._cases: Dict[str, Case] = {}
         self._reports: Dict[str, "CaseReport"] = {}  # report_id -> CaseReport
+        # (enterprise_id, case_id, author_id, idempotency_key) -> TurnReceipt:
+        # the table's unique key.
+        self._receipts: Dict[tuple[str, str, str, str], TurnReceipt] = {}
         # Phase 4 — case entity registry. Keyed by (case_id, evidence_id)
         # for O(1) delete-before-insert on re-extraction, with the
         # composite (case, type, value, evidence) tuple preserved
@@ -967,6 +991,7 @@ class InMemoryCaseRepository(CaseRepository):
         case: Case,
         *,
         reports: Sequence["CaseReport"] = (),
+        receipt: Optional[TurnReceipt] = None,
     ) -> Case:
         """Save case to memory with optimistic concurrency control.
 
@@ -979,10 +1004,11 @@ class InMemoryCaseRepository(CaseRepository):
           version is bumped and the case is stored.
         - Existing case, version mismatch: raises StaleCaseException.
 
-        ``reports`` are stored with the case or not at all: every check that
-        can refuse the save runs before anything is stored (#1882).
+        ``reports`` and ``receipt`` are stored with the case or not at all:
+        every check that can refuse the save runs before anything is stored
+        (#1882, #1888), the receipt's unique key included.
         """
-        self.check_turn_rows(case, reports)
+        self.check_turn_rows(case, reports, receipt)
         stamps = self.save_stamps(case)
         from faultmaven.core.investigation.terminal_transitions import (
             derive_disposition_eligibility,
@@ -1012,12 +1038,29 @@ class InMemoryCaseRepository(CaseRepository):
         case.disposition_eligibility = derive_disposition_eligibility(case)
 
         existing = self._cases.get(case.case_id)
+        receipt_key = (
+            None
+            if receipt is None
+            else (
+                case.enterprise_id,
+                case.case_id,
+                receipt.author_id,
+                receipt.idempotency_key,
+            )
+        )
         try:
             if existing is not None and existing.version != case.version:
                 raise StaleCaseException(
                     case_id=case.case_id,
                     expected_version=case.version,
                     actual_version=existing.version,
+                )
+            if receipt_key is not None and receipt_key in self._receipts:
+                # The SQL repositories' unique-key violation, refused before
+                # anything is stored, as theirs rolls the whole save back.
+                raise ValueError(
+                    f"turn receipt for key {receipt.idempotency_key!r} already "
+                    f"exists on case {case.case_id}"
                 )
         except Exception:
             self.restore_save_stamps(case, stamps)
@@ -1027,7 +1070,20 @@ class InMemoryCaseRepository(CaseRepository):
         self._cases[case.case_id] = case
         for report in reports:
             self._store_report(report)
+        if receipt_key is not None:
+            self._receipts[receipt_key] = receipt
         return case
+
+    async def get_turn_receipt(
+        self,
+        *,
+        enterprise_id: str,
+        case_id: str,
+        author_id: str,
+        idempotency_key: str,
+    ) -> Optional[TurnReceipt]:
+        """The receipt stored under the table's unique key, or ``None``."""
+        return self._receipts.get((enterprise_id, case_id, author_id, idempotency_key))
 
     async def get(self, case_id: str) -> Optional[Case]:
         """Get case from memory.
@@ -1169,9 +1225,15 @@ class InMemoryCaseRepository(CaseRepository):
         return count
 
     async def delete(self, case_id: str) -> bool:
-        """Delete case from memory."""
+        """Delete case from memory, and its receipts with it (the table's
+        ``ON DELETE CASCADE``)."""
         if case_id in self._cases:
             del self._cases[case_id]
+            self._receipts = {
+                key: receipt
+                for key, receipt in self._receipts.items()
+                if key[1] != case_id
+            }
             return True
         return False
 

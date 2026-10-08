@@ -12,7 +12,7 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 
 from fastapi import (
     APIRouter,
@@ -20,6 +20,7 @@ from fastapi import (
     Depends,
     File,
     Form,
+    Header,
     HTTPException,
     Query,
     Request,
@@ -32,6 +33,13 @@ from pydantic import ValidationError
 from faultmaven.api.exception_handlers import llm_service_error_http_exception
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.api.v1.dependencies import get_investigation_service
+from faultmaven.config.idempotency_key import (
+    IDEMPOTENCY_KEY_MAX_LENGTH,
+    IDEMPOTENCY_KEY_MIN_LENGTH,
+    IDEMPOTENCY_KEY_PATTERN,
+    IDEMPOTENCY_KEY_REUSE,
+    IDEMPOTENCY_REPLAYED_HEADER,
+)
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.core.investigation.turn_budget import (
     TurnDeadlineExceeded,
@@ -62,6 +70,13 @@ from faultmaven.modules.case.api.routes.dependencies import (
     resolve_paste_source_meta,
 )
 from faultmaven.modules.case.api.title_generation import _auto_title_case_if_default
+from faultmaven.modules.case.api.turn_idempotency import (
+    IDEMPOTENCY_REPLAY_UNAVAILABLE,
+    TURN_IN_PROGRESS,
+    KeyedTurn,
+    open_keyed_turn,
+    request_fingerprint,
+)
 from faultmaven.modules.case.exceptions import StaleCaseException
 
 router = APIRouter(prefix="/cases", tags=["cases"])
@@ -310,9 +325,77 @@ async def resume_case_in_session(
         )
 
 
+#: The turn route's documented non-2xx answers that a client branches on by
+#: ``x-error-code`` (#1888). Declared so the contract describes what the route
+#: does: an undocumented response is invisible to every client generator and
+#: to every contract differ.
+_TURN_RESPONSES: Dict[int | str, Dict[str, Any]] = {
+    200: {
+        "description": (
+            "The turn's response. A retry of a committed turn under the same "
+            f"`Idempotency-Key` is answered with that turn's response, and "
+            f"carries `{IDEMPOTENCY_REPLAYED_HEADER}: true`."
+        ),
+        "headers": {
+            IDEMPOTENCY_REPLAYED_HEADER: {
+                "description": (
+                    "`true` when this response replays a turn that already "
+                    "committed under this `Idempotency-Key`; absent otherwise."
+                ),
+                "schema": {"type": "string", "enum": ["true"]},
+            }
+        },
+    },
+    409: {
+        "description": (
+            "Conflict. Told apart by `x-error-code`: "
+            f"`{TURN_IN_PROGRESS}` (a turn with this `Idempotency-Key` is still "
+            "running: retry with the same key after `Retry-After` seconds); "
+            f"`{IDEMPOTENCY_KEY_REUSE}` (the key was used for a different "
+            "turn); "
+            f"`{IDEMPOTENCY_REPLAY_UNAVAILABLE}` (the turn committed but its "
+            "response can no longer be replayed: reload the case); "
+            "`CASE_VERSION_CONFLICT` (another writer changed the case while "
+            "this turn ran; nothing committed). Unlabelled: the case is "
+            "resolved or closed and refuses new data, a status change or a "
+            "file reclassification."
+        ),
+        "headers": {
+            "x-error-code": {
+                "description": "Which conflict; absent for a terminal case.",
+                "schema": {
+                    "type": "string",
+                    "enum": [
+                        TURN_IN_PROGRESS,
+                        IDEMPOTENCY_KEY_REUSE,
+                        IDEMPOTENCY_REPLAY_UNAVAILABLE,
+                        "CASE_VERSION_CONFLICT",
+                    ],
+                },
+            },
+            "Retry-After": {
+                "description": f"Seconds, on `{TURN_IN_PROGRESS}` only.",
+                "schema": {"type": "integer"},
+            },
+        },
+    },
+    504: {
+        "description": (
+            "`x-error-code: REQUEST_TIMEOUT`: the turn ran out of time and "
+            "nothing of it committed, so a retry is safe."
+        ),
+        "headers": {
+            "x-error-code": {"schema": {"type": "string", "enum": ["REQUEST_TIMEOUT"]}},
+            "Retry-After": {"schema": {"type": "integer"}},
+        },
+    },
+}
+
+
 @router.post(
     "/{case_id}/turns",
     response_model=TurnResponse,
+    responses=_TURN_RESPONSES,
     dependencies=[Depends(require_authentication)],
 )
 @trace("api_submit_turn")
@@ -358,6 +441,26 @@ async def submit_turn(
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     investigation_service=Depends(get_investigation_service),
     current_user: UserDTO = Depends(require_authentication),
+    # Injected by FastAPI; the default only serves direct calls.
+    http_response: Response = None,
+    # ``Annotated`` so the Python default is a real ``None`` for direct calls.
+    # The grammar is the one every layer reads (``config.idempotency_key``), so a
+    # bad key is a published 422 here.
+    idempotency_key: Annotated[
+        Optional[str],
+        Header(
+            alias="Idempotency-Key",
+            min_length=IDEMPOTENCY_KEY_MIN_LENGTH,
+            max_length=IDEMPOTENCY_KEY_MAX_LENGTH,
+            pattern=IDEMPOTENCY_KEY_PATTERN,
+            description=(
+                "Optional. Identifies this turn across retries: a retry under "
+                "the same key returns the committed turn instead of running it "
+                "again. Stable per turn (the client's message id), new for "
+                "every new turn."
+            ),
+        ),
+    ] = None,
 ) -> TurnResponse:
     """Submit a turn to a case investigation.
 
@@ -378,11 +481,29 @@ async def submit_turn(
     auto-titled at most once — the moment a real title lands, later turns leave
     it alone. Naming is best-effort and time-bounded: it can never fail or
     delay the turn itself.
+
+    **Retries (`Idempotency-Key`).** A turn sent with an `Idempotency-Key`
+    commits a receipt with the turn, in the same transaction. A request with a
+    key this caller already used on this case:
+
+    - for the same turn (same fields, same file content), once it committed →
+      **200** with that turn's response, unchanged, and
+      `X-Idempotency-Replayed: true`. Nothing runs and nothing is charged.
+    - for a different turn → **409** `x-error-code: IDEMPOTENCY_KEY_REUSE`.
+    - while the first is still running → **409** `x-error-code:
+      TURN_IN_PROGRESS` with `Retry-After`; retry with the same key after it.
+
+    A response lost after the commit (a disconnect, a timeout on the client's
+    side) is recovered by retrying with the same key. Without a key, every
+    request runs as a new turn.
     """
     import json
 
     case_service = check_case_service_available(case_service)
     correlation_id = str(uuid.uuid4())
+    # The keyed turn's claim, held from the idempotency step until the turn is
+    # fully answered (released in ``finally``, #1888).
+    keyed: Optional[KeyedTurn] = None
 
     try:
         # An EMPTY turn — no query, no file, no paste — is accepted: it is a
@@ -447,6 +568,44 @@ async def submit_turn(
                 headers={"x-correlation-id": correlation_id},
             )
 
+        # Each file's bytes, read ONCE: the idempotency step fingerprints them
+        # and the attachment build below reuses them (#1888). A fingerprint of
+        # ``UploadFile`` metadata alone would let two different files of one
+        # name and size share a key.
+        file_contents = [(f, await f.read()) for f in files]
+
+        # The idempotency step (#1888): after the case lookup (a case the
+        # caller cannot see stays a 404) and BEFORE the terminal-case gates,
+        # so a retried closing turn replays instead of meeting the closed case
+        # its own first attempt made. Order and rationale:
+        # ``modules/case/api/turn_idempotency.py``.
+        if idempotency_key:
+            from faultmaven.config.settings import get_settings
+
+            keyed = await open_keyed_turn(
+                redis=getattr(request.app.state, "redis_client", None),
+                case=case,
+                author_id=current_user.user_id,
+                idempotency_key=idempotency_key,
+                fingerprint=request_fingerprint(
+                    query=query,
+                    pasted_content=pasted_content,
+                    intent_type=intent_type,
+                    intent_data=intent_data,
+                    input_type=input_type,
+                    source_url=source_url,
+                    observed_at=observed_at,
+                    files=[(f.filename or "", content) for f, content in file_contents],
+                ),
+                case_service=case_service,
+                agent_timeout=_resolve_agent_timeout(get_settings())[0],
+                correlation_id=correlation_id,
+            )
+            if keyed.replay is not None:
+                if http_response is not None:
+                    http_response.headers[IDEMPOTENCY_REPLAYED_HEADER] = "true"
+                return keyed.replay
+
         # Terminal cases: allow text-only Q&A, block evidence and state transitions
         if case.is_terminal:
             if files or pasted_content:
@@ -475,8 +634,7 @@ async def submit_turn(
         #   text_paste   → user pasted raw text into the scratchpad
         #   page_capture → browser extension captured a web page (has source URL)
         attachments = []
-        for f in files:
-            content = await f.read()
+        for f, content in file_contents:
             attachments.append(
                 Attachment(
                     content=content,
@@ -593,7 +751,10 @@ async def submit_turn(
                     ),
                     timeout=agent_timeout,
                 )
-                response = await investigation_service.commit_turn(prepared)
+                response = await investigation_service.commit_turn(
+                    prepared,
+                    receipt_key=keyed.receipt_key if keyed is not None else None,
+                )
 
             # Name the case from its own content. Called unconditionally: whether
             # the case is *titleable* is decided inside, against the case as it
@@ -742,6 +903,13 @@ async def submit_turn(
                 "Retry-After": "10",
             },
         )
+    finally:
+        # Only now is the turn fully answered: the settlement has returned
+        # and the auto-title has landed, so a duplicate let in from here on
+        # finds the receipt. Released any earlier, it could miss the receipt
+        # and run the turn again (#1888).
+        if keyed is not None:
+            await keyed.release()
 
 
 @router.post("/{case_id}/queries")

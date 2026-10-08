@@ -25,6 +25,12 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
+from faultmaven.config.idempotency_key import (
+    IDEMPOTENCY_KEY_REUSE,
+    IDEMPOTENCY_REPLAYED_HEADER,
+    is_valid_idempotency_key,
+)
+
 from .route_policy import (
     APP_STATE_POLICY_ATTR as APP_STATE_POLICY_ATTR_INTERNAL,
 )
@@ -174,7 +180,9 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         # hands the first caller's credential to the next one. The same applies
         # to any minting route a composed deployment declares — the rule is
         # about what the response body is, not about which repository serves it.
-        if self._is_excluded_path(request.url.path, self._declared_exclusions(request)):
+        if self._is_excluded_path(
+            request.url.path, self._declared_exclusions(request)
+        ) or self._is_templated_exclusion(request):
             return await call_next(request)
 
         # Check for idempotency key
@@ -240,10 +248,13 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                 #   both unfingerprinted         -> replay (equal sentinels)
                 #   different, or only one       -> 409, do not execute
                 #
-                # The both-unfingerprinted case is load-bearing, not a
-                # loophole: the copilot's hot retry path (multipart turn
-                # submission) is never fingerprinted, so refusing it would
-                # break this feature's main consumer.
+                # The both-unfingerprinted case is what a keyed multipart or
+                # oversized request gets: its body is never buffered, so the
+                # key alone identifies it. Turn submission, the copilot's hot
+                # retry path, no longer reaches here at all: its replay is the
+                # turn receipt committed with the turn (#1888), which does
+                # fingerprint the turn's inputs, and the route is declared
+                # ``never_replayed`` so this cache cannot answer it differently.
                 if cached_response.get("body_fingerprint") != body_fingerprint:
                     logger.warning(
                         f"Idempotency key reused with a different request body: "
@@ -263,7 +274,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                         # recognize falls through to its generic 4xx handling,
                         # which is the honest answer for a conflict it does not
                         # model — so labelling can only narrow the damage.
-                        headers={"x-error-code": "IDEMPOTENCY_KEY_REUSE"},
+                        headers={"x-error-code": IDEMPOTENCY_KEY_REUSE},
                         content={
                             "detail": (
                                 "This Idempotency-Key was already used with a "
@@ -272,7 +283,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                                 "request unchanged."
                             ),
                             "error_type": "IdempotencyKeyReuse",
-                            "error_code": "IDEMPOTENCY_KEY_REUSE",
+                            "error_code": IDEMPOTENCY_KEY_REUSE,
                             "correlation_id": str(uuid4()),
                             "timestamp": self._get_timestamp(),
                         },
@@ -308,15 +319,9 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
     def _is_valid_idempotency_key(self, key: str) -> bool:
-        """Validate idempotency key format."""
-        if not key or len(key) < 8 or len(key) > 255:
-            return False
-
-        # Allow UUID-like strings, alphanumeric with hyphens/underscores
-        import re
-
-        pattern = r"^[a-zA-Z0-9_-]+$"
-        return bool(re.match(pattern, key))
+        """Validate idempotency key format: the one grammar every layer reads
+        (``faultmaven.config.idempotency_key``)."""
+        return is_valid_idempotency_key(key)
 
     def _declared_exclusions(self, request: Request) -> frozenset:
         """Paths the composition root withheld from replay, for this app.
@@ -336,6 +341,16 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         )
         self._replay_exclusions = (policy, excluded)
         return excluded
+
+    def _is_templated_exclusion(self, request: Request) -> bool:
+        """Whether a route TEMPLATE the composition root declared withholds
+        this request from replay (``route_policy``'s templated tier, #1888).
+
+        Separate from ``_is_excluded_path`` because a template is matched by
+        the regex Starlette compiles for it, which only the policy map holds;
+        the exact tiers stay string comparisons.
+        """
+        return policy_for(request).templated(request.url.path).never_replayed
 
     def _is_excluded_path(self, path: str, declared: frozenset = frozenset()) -> bool:
         """Whether this path is structurally excluded from idempotency.
@@ -727,7 +742,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         headers = cached_data.get("headers", {})
 
         # Add cache indicator header
-        headers["X-Idempotency-Replayed"] = "true"
+        headers[IDEMPOTENCY_REPLAYED_HEADER] = "true"
 
         # Create appropriate response type
         content_type = cached_data.get("content_type", "application/json")

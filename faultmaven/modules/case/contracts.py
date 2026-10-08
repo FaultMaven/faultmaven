@@ -89,6 +89,13 @@ from faultmaven.modules.case.domain.owned_models.report import (
     RunbookSource,
 )
 
+# The turn receipt (#1888): the row a keyed turn commits with itself, so a
+# retry under the same Idempotency-Key is answered with the committed turn.
+from faultmaven.modules.case.domain.owned_models.turn_receipt import (
+    TurnReceipt,
+    TurnReceiptKey,
+)
+
 # ============================================================
 # Repository Contract
 # ============================================================
@@ -110,14 +117,18 @@ class ICaseRepository(Protocol):
         case: "Case",
         *,
         reports: Sequence[CaseReport] = (),
+        receipt: Optional[TurnReceipt] = None,
     ) -> "Case":
         """Save case to persistence layer.
 
-        ``reports`` are written in the SAME transaction as the case, after it
-        and before the commit: all of them commit, or none does (#1882). A
-        ``StaleCaseException`` writes nothing. Under PostgreSQL RLS the rows
-        are written under the tenant the transaction's BEGIN bound, the case's
-        own. Every row must name ``case`` (``ValueError`` otherwise).
+        ``reports`` and ``receipt`` are written in the SAME transaction as the
+        case, after it and before the commit: all of them commit, or none does
+        (#1882, #1888). A ``StaleCaseException`` writes nothing. Under
+        PostgreSQL RLS the rows are written under the tenant the transaction's
+        BEGIN bound, the case's own, and carry the case's enterprise. Every row
+        must name ``case`` (``ValueError`` otherwise). A receipt whose key the
+        case already holds is refused by the table's unique key, and the whole
+        save with it.
 
         MUTATES ``case.messages``: a row missing ``message_id`` or
         ``created_at`` is completed in place, so the in-memory list carries
@@ -132,6 +143,23 @@ class ICaseRepository(Protocol):
 
     async def get(self, case_id: str) -> Optional["Case"]:
         """Retrieve case by ID."""
+        ...
+
+    async def get_turn_receipt(
+        self,
+        *,
+        enterprise_id: str,
+        case_id: str,
+        author_id: str,
+        idempotency_key: str,
+    ) -> Optional[TurnReceipt]:
+        """The receipt a committed keyed turn left, or ``None`` (#1888).
+
+        Keyed exactly as the table's unique key, enterprise first: that is the
+        index this reads, and under RLS the enterprise the session is bound to.
+        ``author_id`` is the CALLER, so a principal can only ever read back its
+        own receipts.
+        """
         ...
 
     async def list_all_case_ids(self) -> List[str]:
@@ -602,6 +630,9 @@ __all__ = [
     "ReportGenerationResponse",
     "CaseClosureRequest",
     "CaseClosureResponse",
+    # Case-owned turn receipts (#1888)
+    "TurnReceipt",
+    "TurnReceiptKey",
     # Case-owned Agent Execution models (per module-organization-design.md)
     # Investigation models from Agent module (shared for investigation coordination)
     # Case domain models

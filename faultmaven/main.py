@@ -174,6 +174,32 @@ logger.info("✅ Team invitation endpoints added")
 app.include_router(case_router, prefix="/api/v1")
 logger.info("✅ Case endpoints added")
 
+# Turn replay is owned by the turn receipt committed with the turn (#1888).
+# ONE owner: the idempotency middleware's cache is lossy (written only after
+# the route returns, a one-hour TTL, per replica under FakeRedis, and not
+# installed at all under SKIP_SERVICE_CHECKS), so it must not answer a turn the
+# receipt would answer differently. ``never_replayed`` implies
+# ``never_collapsed``; deduplication never saw a turn anyway (the copilot posts
+# multipart, the Slack agent sends no session id). Declared by the route's
+# TEMPLATE, read off the mounted app (prefix included), so the declaration
+# cannot drift from the route.
+from .api.middleware.route_policy import declare_route_policy
+from .modules.case.api.routes.conversation import submit_turn
+
+_TURN_ROUTE_PATHS = [
+    route.path
+    for route in app.routes
+    if getattr(route, "endpoint", None) is submit_turn
+]
+if len(_TURN_ROUTE_PATHS) != 1:
+    # Declaring nothing would leave the turn route replayable from the
+    # middleware's cache with nothing to say so; refuse to compose instead.
+    raise RuntimeError(
+        f"expected exactly one turn route on the case router, found "
+        f"{_TURN_ROUTE_PATHS}"
+    )
+declare_route_policy(app, *_TURN_ROUTE_PATHS, never_replayed=True)
+
 app.include_router(
     investigation_sessions_router
 )  # No prefix - router already has /api/v1/cases/{case_id}/sessions

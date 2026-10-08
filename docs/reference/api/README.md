@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 12.1.0
+**Version:** 12.2.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -2725,6 +2725,21 @@ auto-titled at most once — the moment a real title lands, later turns leave
 it alone. Naming is best-effort and time-bounded: it can never fail or
 delay the turn itself.
 
+**Retries (`Idempotency-Key`).** A turn sent with an `Idempotency-Key`
+commits a receipt with the turn, in the same transaction. A request with a
+key this caller already used on this case:
+
+- for the same turn (same fields, same file content), once it committed →
+  **200** with that turn's response, unchanged, and
+  `X-Idempotency-Replayed: true`. Nothing runs and nothing is charged.
+- for a different turn → **409** `x-error-code: IDEMPOTENCY_KEY_REUSE`.
+- while the first is still running → **409** `x-error-code:
+  TURN_IN_PROGRESS` with `Retry-After`; retry with the same key after it.
+
+A response lost after the commit (a disconnect, a timeout on the client's
+side) is recovered by retrying with the same key. Without a key, every
+request runs as a new turn.
+
 **Tags:** `cases`
 
 **Auth:** `HTTPBearer`
@@ -2732,6 +2747,7 @@ delay the turn itself.
 **Parameters:**
 
 - `case_id` (path, required)
+- `Idempotency-Key` (header, optional) — Optional. Identifies this turn across retries: a retry under the same key returns the committed turn instead of running it again. Stable per turn (the client's message id), new for every new turn.
 
 **Request body** (optional):
 
@@ -2739,8 +2755,10 @@ delay the turn itself.
 
 **Responses:**
 
-- `200` — Successful Response ([`TurnResponse`](#turnresponse))
+- `200` — The turn's response. A retry of a committed turn under the same `Idempotency-Key` is answered with that turn's response, and carries `X-Idempotency-Replayed: true`. ([`TurnResponse`](#turnresponse))
+- `409` — Conflict. Told apart by `x-error-code`: `TURN_IN_PROGRESS` (a turn with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different turn); `IDEMPOTENCY_REPLAY_UNAVAILABLE` (the turn committed but its response can no longer be replayed: reload the case); `CASE_VERSION_CONFLICT` (another writer changed the case while this turn ran; nothing committed). Unlabelled: the case is resolved or closed and refuses new data, a status change or a file reclassification.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `504` — `x-error-code: REQUEST_TIMEOUT`: the turn ran out of time and nothing of it committed, so a retry is safe.
 
 ---
 

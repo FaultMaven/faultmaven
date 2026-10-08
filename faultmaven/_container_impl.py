@@ -962,6 +962,13 @@ class DIContainer(BaseDIContainer):
                     return None
                 return case
 
+            async def get_turn_receipt(
+                self, *, enterprise_id, case_id, author_id, idempotency_key
+            ):
+                # No repository behind this stand-in, so no turn ever
+                # committed a receipt here (#1888): every keyed turn is new.
+                return None
+
             def _active_session_cases(self, session_id):
                 """Non-terminal, non-empty cases for a session.
 

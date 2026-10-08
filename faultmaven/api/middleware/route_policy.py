@@ -37,6 +37,17 @@ good as the run that reaches it.
 ``assert_policy_coherent`` therefore exists for what the constructor cannot
 reach: a declaration assigned straight onto ``app.state`` by hand, which bypasses
 the helper and can express exactly the half this module refuses to build.
+
+Two tiers: exact paths and route templates
+------------------------------------------
+A declaration names either an exact path (``/api/v1/sessions``) or a route
+TEMPLATE (``/api/v1/cases/{case_id}/turns``, #1888). A template cannot equal the
+concrete path a request carries, so it is matched the way Starlette routes it:
+with the regex ``starlette.routing.compile_path`` builds for that template,
+never one written here, against ``normalize_path`` of the request path (the
+same normalisation the exact tier compares in; ``compile_path`` does not match
+a trailing slash). ``_PolicyMap.templated`` is the read; both middlewares make
+it beside their exact lookup, through ``policy_for``.
 """
 
 import logging
@@ -44,6 +55,8 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Dict, Mapping, NamedTuple, Optional
+
+from starlette.routing import compile_path
 
 try:  # pragma: no cover - exercised on FastAPI >= 0.139; see _flattened_post_paths
     from fastapi.routing import iter_route_contexts
@@ -230,9 +243,11 @@ def declare_route_policy(
     matches nothing does not fail — it simply leaves the route unprotected, which
     looks exactly like a working exclusion from the outside. So a path that names
     no POST route is a ``ValueError`` at composition time, not a hole discovered
-    in production. Templated paths are refused for the same reason:
-    ``/orgs/{org_id}/tokens`` can never equal the concrete path a request
-    carries.
+    in production. A templated path (``/orgs/{org_id}/tokens``) is held to the
+    same rule as written: it must be the template of a served POST route, and
+    is then matched against request paths by the regex Starlette compiles for
+    it (see the module docstring). A template that names no route is refused
+    exactly as an exact path is.
 
     ``never_replayed`` implies ``never_collapsed``. Deduplication sits further
     out and would answer the retry with a 409, blocking the same operation
@@ -261,11 +276,9 @@ def declare_route_policy(
                 f"route policy must name an absolute path string, got {path!r}"
             )
         candidate = normalize_path(path)
-        if "{" in candidate:
-            raise ValueError(
-                f"route policy {path!r} is templated; an exact-path declaration "
-                "can never equal the concrete path a request carries"
-            )
+        # A template is checked against the route table as written: the table
+        # holds each route's own template (``route.path``), so a declaration
+        # spelling the parameter differently names no route and is refused.
         if candidate not in table.post_paths:
             if not table.complete:
                 # Refusing here is what fm#1305 cost: the validator could not
@@ -319,13 +332,40 @@ def declare_credential_mint(app, *paths: str) -> Mapping[str, RoutePolicy]:
     return declare_route_policy(app, *paths, never_replayed=True)
 
 
+#: What an undeclared route gets: withholding nothing.
+_NO_POLICY = RoutePolicy()
+
+
 class _PolicyMap(Dict[str, RoutePolicy]):
     """A policy map this module built and has already normalised.
 
-    Marker only. It lets the per-request read hand the map back directly instead
-    of rebuilding it, while a value assigned to ``app.state`` by hand still takes
-    the defensive read below.
+    It lets the per-request read hand the map back directly instead of
+    rebuilding it, while a value assigned to ``app.state`` by hand still takes
+    the defensive read below. It also carries the templated tier, compiled once
+    here, so a request never compiles a regex: the map is built whole and not
+    mutated afterwards (every builder below constructs it from a finished dict).
     """
+
+    def __init__(self, entries: Mapping[str, RoutePolicy] = MappingProxyType({})):
+        super().__init__(entries)
+        self._templates = tuple(
+            (compile_path(path)[0], policy)
+            for path, policy in self.items()
+            if "{" in path
+        )
+
+    def templated(self, path: str) -> RoutePolicy:
+        """The union of every templated declaration ``path`` matches.
+
+        ``path`` is normalised here, as the exact tier's is, so ``/x/1/turns/``
+        cannot slip past a ``/x/{id}/turns`` declaration by its trailing slash.
+        """
+        normalized = normalize_path(path)
+        found = _NO_POLICY
+        for pattern, policy in self._templates:
+            if pattern.match(normalized):
+                found = found.merged_with(policy)
+        return found
 
 
 #: Composition-time mistakes already reported. The policy is read on every POST,
@@ -343,7 +383,7 @@ def _report_once(key: str, message: str, *args) -> None:
     logger.error(message, *args)
 
 
-def _read_policy_map(declared) -> Mapping[str, RoutePolicy]:
+def _read_policy_map(declared) -> _PolicyMap:
     """Read a policy declaration defensively into a normalised map.
 
     ``app.state`` is assignable by hand, so everything this refuses, it refuses
@@ -359,7 +399,7 @@ def _read_policy_map(declared) -> Mapping[str, RoutePolicy]:
     if isinstance(declared, _PolicyMap):
         return declared
     if declared is None:
-        return {}
+        return _PolicyMap()
     if not isinstance(declared, Mapping):
         _report_once(
             f"policy-type:{type(declared).__name__}",
@@ -368,7 +408,7 @@ def _read_policy_map(declared) -> Mapping[str, RoutePolicy]:
             APP_STATE_POLICY_ATTR,
             type(declared).__name__,
         )
-        return {}
+        return _PolicyMap()
     try:
         items = list(declared.items())
     except Exception as exc:  # a declaration must never break the request path
@@ -379,7 +419,7 @@ def _read_policy_map(declared) -> Mapping[str, RoutePolicy]:
             type(exc).__name__,
             exc,
         )
-        return {}
+        return _PolicyMap()
 
     usable: Dict[str, RoutePolicy] = {}
     unusable = []
@@ -397,7 +437,7 @@ def _read_policy_map(declared) -> Mapping[str, RoutePolicy]:
             len(unusable),
             unusable,
         )
-    return usable
+    return _PolicyMap(usable)
 
 
 def _read_legacy_exclusions(declared) -> frozenset:
@@ -447,7 +487,7 @@ def _read_legacy_exclusions(declared) -> frozenset:
     return frozenset(normalize_path(e) for e in entries if isinstance(e, str))
 
 
-def policy_for(request) -> Mapping[str, RoutePolicy]:
+def policy_for(request) -> _PolicyMap:
     """The declared policy for the app serving this request.
 
     The app is read off the raw scope rather than through ``request.app``, which
@@ -473,11 +513,12 @@ def policy_for(request) -> Mapping[str, RoutePolicy]:
         return cached[2]
 
     legacy = _read_legacy_exclusions(raw_legacy)
-    merged = _PolicyMap(policy)
+    entries = dict(policy)
     for path in legacy:
-        merged[path] = merged.get(path, RoutePolicy()).merged_with(
+        entries[path] = entries.get(path, RoutePolicy()).merged_with(
             RoutePolicy(never_replayed=True, never_collapsed=True)
         )
+    merged = _PolicyMap(entries)
     if state is not None:
         setattr(state, _MERGED_CACHE_ATTR, (raw_policy, raw_legacy, merged))
     return merged

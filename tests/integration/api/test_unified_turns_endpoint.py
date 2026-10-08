@@ -533,7 +533,7 @@ class TestSubmitTurnBillingExhaustion:
         # The route prepares under its deadline and commits after (#1882);
         # the prepared stand-in is the response, handed back by the commit.
         investigation_service.commit_turn = AsyncMock(
-            side_effect=lambda prepared: prepared
+            side_effect=lambda prepared, **_: prepared
         )
         investigation_service.prepare_turn = AsyncMock(side_effect=service_error)
         current_user = MagicMock()
