@@ -294,9 +294,9 @@ class TestNoConversionResponseCarriesAPath:
                 f"{API}/runbooks/create",
                 json={
                     "title": "Disk Full On The Ingest Nodes",
-                    "domain": "infrastructure",
+                    "domain": "compute",
                     "service": "ingest",
-                    "symptom_class": ["availability"],
+                    "symptom_class": ["service_unavailable"],
                     "severity": "high",
                     "scope": "personal",
                     "symptom_recognition": "Writes fail with ENOSPC on every node.",
@@ -396,9 +396,9 @@ class TestNoConversionResponseCarriesAPath:
 #: ``_FAILURE_MODE`` below mints too, so the two collide on purpose.
 _CREATE_BODY = {
     "title": "Disk Full On The Ingest Nodes",
-    "domain": "infrastructure",
+    "domain": "compute",
     "service": "ingest",
-    "symptom_class": ["availability"],
+    "symptom_class": ["service_unavailable"],
     "severity": "high",
     "scope": "personal",
     "symptom_recognition": "Writes fail with ENOSPC on every node.",
@@ -411,9 +411,9 @@ _CREATE_BODY = {
 _FAILURE_MODE = {
     "id": "fm-disk-full",
     "title": "Disk Full On The Ingest Nodes",
-    "domain": "infrastructure",
+    "domain": "compute",
     "service": "ingest",
-    "symptom_class": ["availability"],
+    "symptom_class": ["service_unavailable"],
     "severity": "high",
     "symptoms_summary": "Writes fail with ENOSPC.",
     "resolution_summary": "Free the spool.",
