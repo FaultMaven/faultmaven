@@ -935,3 +935,51 @@ def _close_confirmation_suggestions(case) -> list:
             "intent": {"type": "confirmation", "confirmation_value": False, **offer},
         },
     ]
+
+
+#: The two closes a user can decline from the engine and still want later, by
+#: the side ``transitions.declined_close_reask`` names: (label, payload, body).
+_DECLINED_CLOSE_CARDS = {
+    "false_alarm": (
+        "Close as false alarm",
+        "Close this case as a false alarm.",
+        "Close the case on the finding that the reported problem was not "
+        "present. You confirm on the next step; closing is irreversible.",
+    ),
+    "deferred": (
+        "Close with the solution documented",
+        "Close this case with the solution documented for my team to apply.",
+        "Close the case with the root cause and the fix documented for the "
+        "out-of-band change. You confirm on the next step; closing is "
+        "irreversible.",
+    ),
+}
+
+
+def declined_close_card(side: str) -> dict:
+    """The one card that keeps a declined close one step away (#1889).
+
+    A close the user declined is not asked again, by the engine or the model,
+    until its premise moves. A user who later does want it still needs a
+    deterministic path on every client: the status menu is that path on the
+    dashboard and the extension, but Slack renders only the server's
+    suggestions. So the turn that refuses a re-proposal (and the bare reply to
+    the decline itself) carries this card: the same ``status_transition``
+    intent the status menu sends, executed by ``_close_on_explicit_intent``,
+    with the usual confirm pair after it.
+
+    It names a STATE, not an offer: no ``pending_transition`` stands behind it
+    and it carries no ``proposal_id`` (``offer_intent_fields`` is not called;
+    the #1812 census of confirmation builders does not include it). It is
+    APPENDED to the turn's follow-ups, never substituted for them: a refusal
+    that replaced the model's suggestions with a single close button would be
+    the re-ask in disguise.
+    """
+    label, payload, body = _DECLINED_CLOSE_CARDS[side]
+    return {
+        "label": label,
+        "action_type": "DECIDE",
+        "payload": payload,
+        "body": body,
+        "intent": {"type": "status_transition", "to_state": "closed"},
+    }

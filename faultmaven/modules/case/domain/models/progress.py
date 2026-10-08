@@ -262,7 +262,9 @@ class InvestigationProgress(BaseModel):
        the diagnostic machinery runs. The section also holds state that is not
        recomputed: the LLM-set ``solution_feasible``, the ``work_gate_crossed``
        latch (set once, never reset), the
-       ``deferred_disposition_declined_signatures`` refusal log and the
+       ``deferred_disposition_declined_signatures`` refusal log (deferred and
+       resolve offers; a false-alarm close's decline is recorded on the
+       finding, ``ProblemInvalidation.close_declined_at_turn``) and the
        ``last_anti_anchoring_turn`` cooldown stamp.
 
     Root-cause metadata and milestone completion timestamps follow them.
@@ -420,7 +422,9 @@ class InvestigationProgress(BaseModel):
             "IDENTIFIED, ``rcc`` while it is not), so a single slot re-arms "
             "the offer on every oscillation between two states the user has "
             "already refused in. Bounded by "
-            "``_MAX_DECLINED_DISPOSITION_SIGNATURES``, oldest dropped first."
+            "``_MAX_DECLINED_DISPOSITION_SIGNATURES``, oldest dropped first. "
+            "No false-alarm entry: that decline is recorded on the finding "
+            "(``ProblemInvalidation.close_declined_at_turn``, #1889)."
         ),
     )
 

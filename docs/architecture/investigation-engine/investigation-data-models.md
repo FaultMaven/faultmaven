@@ -186,7 +186,9 @@ class InvestigationProgress(BaseModel):
     # statement_history (confirmed / revised / edited / invalidated /
     # invalidation_withdrawn records), pending_revision (text, evidence, basis,
     # prior_status, offer_key, staged cause work per turn), invalidation
-    # (rationale, evidence, turn) and declined_revision_keys.
+    # (rationale, evidence, turn, prior_status, close_declined_at_turn — the
+    # turn the user declined closing on the finding, #1889) and
+    # declined_revision_keys.
     # investigation-lifecycle-logic.md §1.4.1.
 
     solution_proposed: bool = Field(

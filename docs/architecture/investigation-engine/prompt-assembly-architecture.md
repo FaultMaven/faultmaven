@@ -194,12 +194,12 @@ The `{adaptive_instructions}` placeholder is filled by `_select_diagnosis_block(
 
 `_RCA_DIAGNOSIS_BLOCK` is composed from a shared vocabulary of sub-blocks (`_DIAGNOSIS_ZONES_PREAMBLE`, `_EVIDENCE_REQUEST_FORMAT_BLOCK`, `_URGENCY_RECOGNITION_BLOCK`). The hypothesis-creation mandate (`_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`) is contained inside it and reached on every DIAGNOSIS turn — the former path-conditional blocks (`_SYMPTOM_VALIDATION_BLOCK`, `_GATE3_PENDING_BLOCK`, `_POST_MITIGATION_RCA_PREFIX`) and their pre-mitigation emission ban were removed. See `agent-stage-playbook.md` for the current DIAGNOSIS routing.
 
-`_get_diagnosis_focus_emphasis(progress, case)` computes a Zone-aware progress signal. It renders as its own placeholder, `{focus_emphasis}`, at the top of the per-turn tail, right after `CACHE_BOUNDARY`, on DIAGNOSIS turns only (empty on every other stage and mode). It is not part of the stage instructions because it moves with the progress milestones and, in Zone 2, with the wall clock: the stale variant appears once the symptom's last observation is more than `symptom_currency.STALE_AFTER` (30 min) old. Kept in the prefix, it would re-write the cache on every such flip (#613).
+`_get_diagnosis_focus_emphasis(progress, case)` computes a Zone-aware progress signal. It renders as its own placeholder, `{focus_emphasis}`, at the top of the per-turn tail, right after `CACHE_BOUNDARY`, on DIAGNOSIS turns only. The two problem holds come first and render from `_problem_hold_emphasis(case)` on **every** stage (#1889): a false alarm found while a fix was accepted (TREATMENT) or a mitigation was in flight holds the same way, and those stages' instructions would otherwise tell the model to propose a transition on stabilisation. The slot is empty on a knowledge_query or agent_meta turn. It is not part of the stage instructions because it moves with the progress milestones and, in Zone 2, with the wall clock: the stale variant appears once the symptom's last observation is more than `symptom_currency.STALE_AFTER` (30 min) old. Kept in the prefix, it would re-write the cache on every such flip (#613).
 
 | Zone | Condition | Focus emphasis |
 | --- | --- | --- |
-| Revision hold | `problem_status=revision_pending` | "Revised problem statement awaiting confirmation — answer the user; cause work is held until they confirm; no transitions" |
-| False-alarm hold | `problem_status=invalidated` | "Reported problem not present — nothing to diagnose; exits are a revision naming a different problem, or the user's dispute" |
+| Revision hold (every stage) | `problem_status=revision_pending` | "Revised problem statement awaiting confirmation — answer the user; cause work is held until they confirm; no transitions" |
+| False-alarm hold (every stage) | `problem_status=invalidated` | "Reported problem not present — nothing to diagnose; exits are a revision naming a different problem, or the user's dispute; propose a transition only when the user directs it". Once the user declined the close: "declined at turn N; propose a close only if the user directs it (the engine then attaches the Close action); not unprompted" |
 | Zone 1 | `symptom_verified=False` | "Symptom verification pending — reach one of three verdicts: verified, revised (inaccurate statement), or invalidated (false alarm); cause work waits for verification" |
 | Zone 2 | `symptom_verified=True`, `cause_state != IDENTIFIED` | "Root cause analysis — form hypotheses, search for causal evidence" |
 | Zone 3 | `cause_state == IDENTIFIED`, `solution_proposed=False` | "Solution needed — propose a concrete, executable fix" |
@@ -219,7 +219,7 @@ Provider prompt caches match on a **byte-identical prefix**. Anthropic caches up
 | `{page_capture_hint}` | `case.source`, stamped at creation | prefix |
 | `{evidence_grounding}`, `{diagnostic_reasoning}` | processing mode (`knowledge_query` and `agent_meta` waive them) | prefix; a mode turn misses the cache, which is correct |
 | `{adaptive_instructions}` | stage and processing mode, a few times a case | **last** in the prefix |
-| `{focus_emphasis}` | DIAGNOSIS focus zone (milestones) and, in Zone 2, the wall clock | **first** in the tail |
+| `{focus_emphasis}` | the problem hold (any stage), else the DIAGNOSIS focus zone (milestones) and, in Zone 2, the wall clock | **first** in the tail |
 | `STATE` + `{identity}`, `{core_context}` (holds the fence token) and every section down to `{user_message}` | per turn | tail, in their old relative order |
 | The output-shaping pointer, `<security_constraints>`, the anti-padding closer | nothing | after `{user_message}`: the prompt's end, read last |
 

@@ -3330,6 +3330,12 @@ class TestATerminalCaseAnswersNothingStored:
                 "core/investigation/milestone_engine/statement_revision.py",
                 "revision_confirmation_suggestions",
             ),
+            # The close card a declined close leaves (#1889): a
+            # ``status_transition`` intent, appended only on an open case — the
+            # bare reply to a declined false-alarm close, and a turn whose
+            # model re-proposal of a declined close step 2 refused (the append
+            # is guarded on ``not is_terminal``). Never on a terminal case.
+            (engine_stage_gates, "declined_close_card"),
             # Not producers. ``_stored_suggestions`` re-materialises this
             # turn's clarification choices as stored entries, and
             # ``_clarification_suggestions_for_failed`` mints those choices —

@@ -374,11 +374,14 @@ def _maybe_propose_false_alarm_close(case: "Case", metadata: dict) -> None:
     """Offer to close a case whose evidence showed the reported symptom was
     never present — the one close the engine offers on a finding.
 
-    Offered once, on the turn the finding is made: a decline is recorded
-    (``justifying_signature``, fm#1122) and the case then holds, with the close
-    still on the status menu, until new evidence names a different problem or
-    the user disputes the finding. RESOLVED is never offered — there was
-    nothing to fix.
+    Offered once, on the turn the finding is made. A decline is recorded on
+    the finding (``ProblemInvalidation.close_declined_at_turn``, #1889), as it
+    is for a close the model or the user opened, and the case then holds until
+    new evidence names a different problem or the user disputes the finding:
+    the model's re-proposals are refused with the close card appended, and the
+    close stays on the status menu. ``justifying_signature`` marks this offer
+    as the engine's (INV-45's revision gate reads it); it is not the decline
+    record. RESOLVED is never offered — there was nothing to fix.
     """
     if not metadata.get("problem_invalidated_this_turn"):
         return

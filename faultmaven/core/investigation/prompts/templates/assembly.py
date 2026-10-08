@@ -4,6 +4,7 @@ import dataclasses
 import logging
 from typing import Any, Dict, List, Optional, Sequence
 
+from faultmaven.core.investigation.problem_status import false_alarm_close_declined_at
 from faultmaven.core.investigation.prompts.context_builder.assembly import (
     build_investigation_context,
 )
@@ -64,6 +65,66 @@ def _symptom_verification_is_stale(case) -> bool:
     return assess_symptom_currency(case) == SymptomCurrency.STALE
 
 
+def _false_alarm_declined_line(turn: int) -> str:
+    """The false-alarm hold's closing rule once the user has declined the
+    close. Conditional, never a flat ban (#1889): a model that obeys a ban
+    never proposes, so the engine never attaches the close card, and a user
+    who later says "ok, close it" on a client with no status menu has no way
+    to close."""
+    return (
+        f"The user declined closing on this finding at turn {turn}; the case "
+        "holds on their answer. Propose a close only if the user directs it; "
+        "the engine then attaches the Close action to your reply. Do not "
+        "propose it unprompted."
+    )
+
+
+def _problem_hold_emphasis(case) -> str:
+    """The focus block for a case whose problem statement itself is in
+    question, or "" when none is. Rendered as ``{focus_emphasis}`` on EVERY
+    stage, not only DIAGNOSIS (#1889): a false alarm found while a fix was
+    accepted (TREATMENT) or a mitigation was in flight (MITIGATION) holds just
+    the same, and those stages' own instructions tell the model to propose a
+    transition on stabilisation, which the hold has to override.
+
+    - REVISION_PENDING: a revised statement awaits the user's re-confirmation.
+    - INVALIDATED: the evidence showed the reported symptom was never present.
+      The engine offered the close; the model proposes a transition only when
+      the user directs it, the rule every stage carries for a close. Once the
+      user declined it, the block says so and when.
+    """
+    status = case.progress.problem_status
+    if status == ProblemStatus.REVISION_PENDING:
+        return """
+**INVESTIGATION PROGRESS: Revised problem statement awaiting confirmation**
+The evidence showed a different problem than the one the user confirmed, and
+the revised statement is waiting for their answer (the engine shows it to them
+below your reply). Answer what they asked. Cause work you send now is held and
+applied when they confirm; if they correct the revision, send a better
+revised_problem_statement. Do not propose a transition until they answer.
+"""
+    if status == ProblemStatus.INVALIDATED:
+        declined_at = false_alarm_close_declined_at(case)
+        closing = (
+            "The engine has offered the user the close. Propose a transition "
+            "only when the user directs it."
+            if declined_at is None
+            else _false_alarm_declined_line(declined_at)
+        )
+        return f"""
+**INVESTIGATION PROGRESS: Reported problem not present (false alarm)**
+The evidence showed the reported symptom was not present where and when it was
+reported. There is nothing to diagnose or fix, and hypotheses, solutions and
+mitigations are not accepted. Two things move the case:
+- New evidence of a DIFFERENT problem: send it with revised_problem_statement
+  (describing what is observed) for the user to confirm.
+- The user disputes the finding with new information: set
+  invalidation_withdrawn with withdrawal_basis, and verification starts again.
+{closing}
+"""
+    return ""
+
+
 def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress", case=None) -> str:
     """Compute focus zone from progress milestones (Framework §8.5).
 
@@ -72,11 +133,11 @@ def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress", case=None) 
     on DIAGNOSIS turns. Informs the agent where the investigation stands and
     what would advance it, WITHOUT overriding the user's question.
 
-    Two holds come first — the problem statement itself is in question:
-    - REVISION_PENDING: a revised statement awaits the user's re-confirmation
-    - INVALIDATED: the evidence showed the reported symptom was never present
+    Called only when no problem hold stands: the two holds (a revision
+    awaiting re-confirmation, a false alarm) render from
+    ``_problem_hold_emphasis`` on every stage, above this dispatch.
 
-    Then four states based on progress milestone state:
+    Four states based on progress milestone state:
     - Zone 1: symptom_verified=False — a three-way verdict: verified, revised
       (inaccurate statement) or invalidated (false alarm)
     - Zone 2: symptom_verified=True, cause_state != IDENTIFIED — root cause analysis
@@ -91,27 +152,6 @@ def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress", case=None) 
     the failure mode in which an investigation queries the last 30 minutes for
     a symptom observed two hours earlier.
     """
-    if progress.problem_status == ProblemStatus.REVISION_PENDING:
-        return """
-**INVESTIGATION PROGRESS: Revised problem statement awaiting confirmation**
-The evidence showed a different problem than the one the user confirmed, and
-the revised statement is waiting for their answer (the engine shows it to them
-below your reply). Answer what they asked. Cause work you send now is held and
-applied when they confirm; if they correct the revision, send a better
-revised_problem_statement. Do not propose a transition until they answer.
-"""
-    if progress.problem_status == ProblemStatus.INVALIDATED:
-        return """
-**INVESTIGATION PROGRESS: Reported problem not present (false alarm)**
-The evidence showed the reported symptom was not present where and when it was
-reported. There is nothing to diagnose or fix, and hypotheses, solutions and
-mitigations are not accepted. Two things move the case:
-- New evidence of a DIFFERENT problem: send it with revised_problem_statement
-  (describing what is observed) for the user to confirm.
-- The user disputes the finding with new information: set
-  invalidation_withdrawn with withdrawal_basis, and verification starts again.
-Otherwise the right outcome is closing the case.
-"""
     if not progress.symptom_verified:
         return """
 **INVESTIGATION PROGRESS: Symptom verification pending**
@@ -432,20 +472,25 @@ def get_prompt_for_case(
             # GROUNDING and DIAGNOSTIC REASONING REQUIREMENTS from forcing the
             # LLM to cite case evidence for general knowledge questions, or
             # for questions about FaultMaven itself (#1328).
-            # The DIAGNOSIS focus emphasis renders in the per-turn tail, not in
-            # the stage instructions: it moves with the milestones and the wall
-            # clock, and the stage instructions close the cached prefix (#613).
-            # Empty on every turn that does not take the DIAGNOSIS branch.
+            # The focus emphasis renders in the per-turn tail, not in the stage
+            # instructions: it moves with the milestones and the wall clock,
+            # and the stage instructions close the cached prefix (#613). A
+            # problem hold renders on every stage (#1889); the zone emphasis
+            # only on DIAGNOSIS. Empty on a knowledge_query or agent_meta turn.
             focus_emphasis = ""
             if processing_mode == "knowledge_query":
                 adaptive_instr = KNOWLEDGE_QUERY_INSTRUCTIONS
             elif is_agent_meta:
                 adaptive_instr = AGENT_META_INSTRUCTIONS
             else:
+                focus_emphasis = _problem_hold_emphasis(case)
                 # Dispatch to stage instructions (derived display stage)
                 if stage == InvestigationStage.DIAGNOSIS:
                     adaptive_instr = _select_diagnosis_block(case)
-                    focus_emphasis = _get_diagnosis_focus_emphasis(case.progress, case)
+                    if not focus_emphasis:
+                        focus_emphasis = _get_diagnosis_focus_emphasis(
+                            case.progress, case
+                        )
                 elif stage == InvestigationStage.MITIGATION:
                     adaptive_instr = MITIGATION_INSTRUCTIONS
                 elif stage == InvestigationStage.TREATMENT:

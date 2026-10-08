@@ -402,6 +402,14 @@ class ProblemInvalidation(BaseModel):
     #: Where the problem stood when the finding was recorded. A withdrawn
     #: finding returns there: a verification it overrode was never refuted.
     prior_status: ProblemStatus = ProblemStatus.UNVERIFIED
+    #: The turn the user last declined closing the case on this finding, or
+    #: None. A fact about the finding, so it lives on it: whoever opened the
+    #: close (the engine, the model, the user's own status-menu pick), the
+    #: close rests on this finding, and no one asks it again while the finding
+    #: stands. A finding is replaced only after it is cleared (withdrawn,
+    #: revised away, edited away), so the record lives exactly as long as the
+    #: premise it is about (#1889). Written by ``problem_status`` only.
+    close_declined_at_turn: Optional[int] = None
     recorded_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

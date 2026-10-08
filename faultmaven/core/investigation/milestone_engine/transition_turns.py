@@ -18,6 +18,7 @@ from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommi
 from faultmaven.core.investigation.milestone_engine.turn_records import (
     _finish_deterministic_turn,
 )
+from faultmaven.core.investigation.problem_status import false_alarm_close_declined_at
 from faultmaven.modules.case.contracts import CaseState
 
 from .cause_state import (
@@ -26,7 +27,7 @@ from .cause_state import (
     _investigation_confirmation_suggestions,
 )
 from .progress import confirmed_transition_arms
-from .stage_gates import _close_confirmation_suggestions
+from .stage_gates import _close_confirmation_suggestions, declined_close_card
 from .statement_revision import (
     revision_confirmation_suggestions,
     revision_presentation,
@@ -142,9 +143,33 @@ async def _confirm_pending_transition(
     }
 
 
+#: The reply to a bare "no" to closing on a false-alarm finding. "Remains open
+#: for further investigation" would be untrue there: nothing is investigated on
+#: a false alarm, the case holds until one of two things moves it, and a user
+#: on a client with no status menu needs to be told the close is still theirs.
+FALSE_ALARM_HOLD_REPLY = (
+    "Understood, the case stays open. It holds on the finding that the "
+    "reported problem was not present, so nothing more is investigated unless "
+    "one of two things moves it: new evidence of a different problem, or "
+    "information showing the reported problem was real (that disputes the "
+    "finding). I won't ask about closing again on this finding; the close "
+    "stays available whenever you want it."
+)
+
+
 def _decline_bare_reply(*, case, upload_report, user_message):
-    """Reply to a bare (non-substantive) decline of a pending transition, leaving the case open."""
-    agent_response = "Understood. The case remains open for further investigation."
+    """Reply to a bare (non-substantive) decline of a pending transition, leaving the case open.
+
+    On a false-alarm close the decline was just recorded on the finding, and
+    the reply says what the hold is and how it moves, with the close card
+    (``declined_close_card``) as its one follow-up (#1889).
+    """
+    follow_ups: list = []
+    if false_alarm_close_declined_at(case) is not None:
+        agent_response = FALSE_ALARM_HOLD_REPLY
+        follow_ups = [declined_close_card("false_alarm")]
+    else:
+        agent_response = "Understood. The case remains open for further investigation."
     turn_metadata = _finish_deterministic_turn(
         case,
         user_message or "",
@@ -155,7 +180,7 @@ def _decline_bare_reply(*, case, upload_report, user_message):
 
     return {
         "agent_response": agent_response,
-        "suggested_follow_ups": [],
+        "suggested_follow_ups": follow_ups,
         "case_updated": case,
         "metadata": turn_metadata,
     }
