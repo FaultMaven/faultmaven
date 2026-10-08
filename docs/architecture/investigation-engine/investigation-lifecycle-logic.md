@@ -1231,8 +1231,13 @@ Based on our discussion, the problem is:
 'Database queries timing out in production, affecting 50% of requests
 since 3 hours ago'
 
-Let me start by verifying the scope and impact. What services are affected?"
+Let me start by checking that against the evidence. Can you share the
+timeout errors from the application logs?"
 ```
+
+The next step asks for the evidence that verifies the symptom. It does not ask
+for the scope: which services and users are affected are facts the agent picks
+up from the evidence as they appear, and it never waits on them (#1880).
 
 **Backend updates**:
 

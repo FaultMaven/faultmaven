@@ -148,7 +148,11 @@ Both sources use the same downstream pipeline (LLM generation with canonical tem
 
 The `ConversionService.convert_from_case()` method constructs a `FailureModeAnalysis` from the case data and calls `_convert_single_failure_mode()` — the same method used for document-driven conversion. This ensures identical template compliance, validation, and quality scoring.
 
-**Case-data extraction is single-sourced**: the chat-side dispatcher (`RunbookCreator.handle_runbook_creation`, `milestone_engine/runbook_creation.py` — the only live case→runbook trigger) builds the `CaseConversionRequest` via the `CaseConversionRequest.from_case(case, scope=...)` factory in `faultmaven/modules/knowledge/domain/models/conversion.py`, never via inline extraction. A static guard test (`TestCaseConversionUsesFactory`) pins this so a future regression can't reintroduce a parallel extraction path.
+**A case is authored under the case policy, not the document's (#1880).** A case names an incident in its title and statement. A runbook is reusable knowledge. A case also records no technology: what it holds is the user's own service ("checkout"), and a runbook's `service` is the technology ("postgresql"). So the case path supplies no `service`, no `symptom_class` and no title. `_convert_single_failure_mode(case_id=…)` tells the model to write a de-identified failure-mode title and to infer `service` and `symptom_class` from the source material. The id is minted after the write, from the frontmatter the model produced (§5.3), and the draft is named by the produced title. The rules come from `faultmaven/modules/knowledge/domain/case_authoring.py` (`CASE_ID_RULE`, `TECHNOLOGY_RULE`, `DE_IDENTIFICATION_RULES`). The extraction path below renders the same constants and calls the same mint.
+
+**Case-data extraction for this path is single-sourced**: the chat-side dispatcher (`RunbookCreator.handle_runbook_creation`, `milestone_engine/runbook_creation.py`) builds the `CaseConversionRequest` via the `CaseConversionRequest.from_case(case, scope=...)` factory in `faultmaven/modules/knowledge/domain/models/conversion.py`, never via inline extraction. A static guard test (`TestCaseConversionUsesFactory`) pins this so a future regression can't reintroduce a parallel extraction path.
+
+It is not the only case→runbook writer. `POST /cases/{case_id}/extract-knowledge` (`SuggestionService.extract_knowledge_from_case`) also turns a case into a runbook, a global-scope suggestion for review. The route is mounted, but no first-party client calls it. The two writers share the case authoring policy above. Whether the second one should exist is a separate question (#1897).
 
 **One trigger path for the Case Source — chat-initiated (Copilot) only.** On the RESOLVED ack-turn, the agent emits a DECIDE *"Generate runbook from this case"* suggestion (shown iff `runbook_conversion_ready`, §1.1). Clicking submits the precomposed payload, which routes via exact-match dispatch in `_process_terminal_turn` to `_handle_runbook_creation`. That handler runs the pre-flight gates (content readiness + existing-draft idempotence + similarity dedup) synchronously, then kicks off the conversion pipeline as a fire-and-forget background task (`asyncio.create_task` wrapping `_run_runbook_conversion`). The agent reply returns immediately ("Creating your runbook draft…"). When the background task finishes (success, no-drafts, or exception), it appends a `role="system"` completion message to `case.messages` with the outcome — naming the draft on success, or stating that nothing was saved and pointing at manual authoring in the Dashboard Knowledge Base on no-drafts or exception. The append acquires the per-case lock to avoid interleaving with a concurrent Q&A turn, and notification-write failures are logged but never propagate. Note the asymmetry: the trigger is Copilot-only, but the Copilot drops `role="system"` rows, so the Dashboard is the notification's only reader and the notices are written for that surface. See `investigation-lifecycle-logic.md §1.7.3` for the chat-side flow in full.
 
@@ -621,29 +625,38 @@ RULES:
    **Risk** and **Duration**.
 8. If source material lacks enough information for a field, write
    "[INSUFFICIENT SOURCE DATA -- manual completion required]".
-9. Use the taxonomy values provided. Do not change domain, service, or
-   symptom_class.
+9. Use the `domain` and `service` values provided; do not change them.
+   `symptom_class` MUST be one or more values from the controlled vocabulary,
+   usually one; never invent a value (a long-tail symptom goes in `tags`).
 ````
 
-**User message:**
+**User message** (document path):
 
 ```
 Convert the following source material into a runbook for this specific
 failure mode:
 
+RUNBOOK_ID: {runbook_id}
 FAILURE MODE: {failure_mode.title}
 DOMAIN: {failure_mode.domain}
 SERVICE: {failure_mode.service}
-SYMPTOM_CLASS: {failure_mode.symptom_class}
+SYMPTOM_CLASS: {failure_mode.symptom_class or '(none supplied — classify from the controlled vocabulary in rule 9)'}
 SEVERITY: {failure_mode.severity or '(not assessed — choose one of <the severity vocabulary> from the source material)'}
 SCOPE: {scope}
 SOURCE FILENAME: {original_filename}
 TODAY: {iso_date}
 
+The frontmatter `id` field MUST be exactly: {runbook_id}
+(lowercase, kebab-case; do not derive a different id from the title).
+
 --- SOURCE MATERIAL ---
 {relevant_excerpt_or_full_text}
 --- END SOURCE MATERIAL ---
 ```
+
+Rule 9 constrains the values; the instruction to classify when no `symptom_class` is supplied is not in rule 9 but in the user message's `SYMPTOM_CLASS` line above.
+
+On the case path (§1), no `RUNBOOK_ID` is sent. `FAILURE MODE` and `SERVICE` say that they are not supplied for a case: the model writes the title and infers the technology. The `id` instruction is replaced by the three `case_authoring` rules: the id rule, the technology rule and the de-identification rules. Rule 9 still reads "the values provided", and on this path no `service` value is provided.
 
 `<the severity vocabulary>` is rendered from `RunbookSeverity` (`faultmaven/modules/knowledge/taxonomy.py`), whose values are the spec's: [runbook-content-architecture.md §Taxonomy Schema](./runbook-content-architecture.md#taxonomy-schema).
 
@@ -742,10 +755,13 @@ There is no section-header pre-chunking step: because the preprocessor hard-reje
 
 ### 5.3 ID Generation
 
-Runbook IDs are minted deterministically from a failure mode's service and title. There is one mint point, `runbook_id_from_parts(service, title)` in `faultmaven/utils/runbook_id.py`, and both paths that write an id use it:
+Runbook IDs are minted deterministically from a failure mode's service and title. There is one mint point, `runbook_id_from_parts(service, title)` in `faultmaven/utils/runbook_id.py`, and all three groups of paths that write an id use it:
 
-- the LLM conversion path, through `generate_runbook_id(failure_mode)` in `faultmaven/modules/knowledge/domain/models/conversion.py`;
+- the LLM conversion path from a document, through `generate_runbook_id(failure_mode)` in `faultmaven/modules/knowledge/domain/models/conversion.py`, before the LLM call;
+- the LLM conversion path from a case, and the extraction path, through `mint_case_runbook_id(content, case_id)` in `faultmaven/modules/knowledge/domain/case_authoring.py`. This runs after the model writes the draft and reads the `service` and `title` the model produced, never the case title, which names the incident. A draft with no usable title falls back to `case-<case_id>`. `usable_title` decides what is usable, for this mint and for the draft's title alike: not blank, not the rule-8 `[INSUFFICIENT SOURCE DATA ...]` placeholder, and not a title with no character the slug keeps (`!!!`);
 - the manual path, `ConversionService.create_runbook_from_template`.
+
+Because a case-built id comes from what the model wrote, two different cases about the same failure can mint the same id, and the slot is enterprise-wide, so the holder can be another user's personal draft. On the case path only, `claim_case_draft_slot` (`conversion_service/draft_slots.py`) re-mints once, as `runbook_id_from_parts(<minted id>, case-<case_id>)`, when the minted id's slot is held. The file, the forced frontmatter `id` and the row all use the id it returns. When the re-minted id is held too, or the minted id already is the case stem, the conversion is refused with the usual 409. With today's `case_<12 hex>` ids the stem is 22 characters, so a minted id over 37 characters leaves no room for it, and the stem then shows only through the over-length hash below. The extraction path has no draft slot and does not re-mint.
 
 The rules:
 

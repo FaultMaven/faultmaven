@@ -426,12 +426,8 @@ class ProblemVerification(BaseModel):
     )
 
     # ============================================================
-    # Scope
+    # Severity
     # ============================================================
-    affected_services: List[str] = Field(
-        default_factory=list, description="Services/components affected"
-    )
-
     severity: Optional[str] = Field(
         default=None,
         description=(

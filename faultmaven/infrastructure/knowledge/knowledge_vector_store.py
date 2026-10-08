@@ -633,9 +633,9 @@ class KnowledgeVectorStore(BaseExternalClient):
             query: Search query text.
             k: Number of results to return.
             where: ChromaDB metadata filters (scope filter required for KB).
-            context_metadata: Optional case context (domain, service) for
+            context_metadata: Optional context (domain, service) for
                 metadata-aware reranking. When provided, chunks matching
-                the case's domain/service score higher.
+                that domain/service score higher.
             filter_mode: How to apply context_metadata:
                 "soft" (default) — boost matching chunks in reranker only.
                 "hard" — add domain/service to the ChromaDB where clause
@@ -1170,16 +1170,18 @@ class KnowledgeVectorStore(BaseExternalClient):
         """Score based on metadata alignment and runbook lifecycle status.
 
         Components:
-          - Domain match: +0.3 if chunk domain matches case context domain
-          - Service match: +0.3 if chunk service matches case context service
+          - Domain match: +0.3 if chunk domain matches the context domain
+          - Service match: +0.3 if chunk service matches the context service
           - Status boost/penalty (frontmatter lifecycle values):
               verified → +0.4, in-review → +0.1
               stale → -0.2, draft → -0.1, deprecated → -0.3
 
         Domain/service matching is case-insensitive and whitespace-trimmed:
-        the case-side value is free-text (e.g. the LLM's ``affected_services``
-        entry "PostgreSQL"), while chunk frontmatter is curated ("postgresql").
-        A raw ``==`` would miss the most common real-world alignment.
+        the caller's value is free text (a page context reading "PostgreSQL"),
+        while chunk frontmatter is curated ("postgresql"). A raw ``==`` would
+        miss the most common real-world alignment. No live caller supplies
+        ``context_metadata`` today (#1880); the source the retrieval design
+        names is the copilot's page context, which is not built.
 
         The components sum on [-0.3, 1.0] and are mapped onto [0, 1] rather than
         truncated at zero. Truncation destroyed the demotion half of the signal

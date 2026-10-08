@@ -128,6 +128,9 @@ def test_a_record_saved_before_the_removal_still_loads():
                 "symptom_statement": "Checkout returns 500s",
                 "severity": "MEDIUM",
                 "symptom_indicators": ["Error rate: 15%"],
+                # Removed by #1880: a blast-radius fact whose readers wanted
+                # the technology, not the user's own service.
+                "affected_services": ["checkout", "payment-api"],
                 "affected_users": "all users",
                 "affected_regions": ["eu-west-1"],
                 "user_impact": "cannot pay",
@@ -151,6 +154,8 @@ def test_a_record_saved_before_the_removal_still_loads():
     assert pv.urgency_level == UrgencyLevel.HIGH
     assert not hasattr(pv, "affected_users")
     assert "affected_users" not in pv.model_dump()
+    assert "affected_services" not in ProblemVerification.model_fields
+    assert "affected_services" not in pv.model_dump()
 
 
 def test_a_record_with_no_severity_loads():

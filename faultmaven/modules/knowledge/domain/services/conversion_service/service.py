@@ -30,6 +30,13 @@ from faultmaven.infrastructure.persistence.models import (
     UploadedFileModel,
 )
 from faultmaven.modules.auth.contracts import is_team_member
+from faultmaven.modules.knowledge.domain.case_authoring import (
+    CASE_ID_RULE,
+    DE_IDENTIFICATION_RULES,
+    TECHNOLOGY_RULE,
+    draft_title,
+    mint_case_runbook_id,
+)
 from faultmaven.modules.knowledge.domain.global_authoring import (
     ensure_global_authoring_allowed,
 )
@@ -55,6 +62,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.draft_slots import (
     _refuse_modes_whose_id_is_taken,
+    claim_case_draft_slot,
     refuse_if_draft_slot_taken,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.errors import (
@@ -482,7 +490,11 @@ class ConversionService:
             id=f"case-{request.case_id}",
             title=request.title,
             domain=request.domain,
-            service=request.service,
+            # A case supplies no technology (#1880): the model infers it from
+            # the source material, and the id is minted from what it wrote
+            # (``_convert_single_failure_mode``'s case branch). Empty, never a
+            # placeholder like ``unknown``, which the id would carry.
+            service="",
             # A case carries no symptom_class taxonomy, so leave it empty when the
             # request omits it — the conversion prompt classifies into the
             # controlled vocabulary (rule 9). Never inject an off-vocab placeholder
@@ -531,7 +543,6 @@ class ConversionService:
                 "conversion_id": conversion_id,
                 "case_id": request.case_id,
                 "domain": request.domain,
-                "service": request.service,
             },
         )
 
@@ -545,6 +556,7 @@ class ConversionService:
             user_id=user_id,
             team_id=team_id,
             enterprise_id=enterprise_id,
+            case_id=request.case_id,
         )
 
         drafts: List[ConversionDraft] = []
@@ -589,9 +601,13 @@ class ConversionService:
         # ``ConflictError`` is caught alongside ``IntegrityError`` because
         # migration 046 made the two indistinguishable at the commit:
         # ``_persist_job`` re-reads on any IntegrityError and, in exactly this
-        # race, FINDS the winner's drafts — two replicas converting one case
-        # mint the same ``(service, title)`` ids — so it reports a runbook_id
-        # duplicate for what is really the live-case race. Catching only
+        # race, can FIND the winner's drafts — two replicas converting one case
+        # mint their ids from what each model wrote, which can coincide. Ids
+        # from DIFFERENT cases can coincide too, and ``claim_case_draft_slot``
+        # separates those with the case stem; one case's two replicas share the
+        # stem, so it cannot separate them — and ``_persist_job`` then reports
+        # a runbook_id duplicate for what is really the live-case
+        # race. Catching only
         # IntegrityError would have handed the loser a 409 instead of the
         # winner's conversion. The re-read below is the discriminator that does
         # tell them apart; anything it cannot confirm is re-raised unchanged,
@@ -774,33 +790,64 @@ class ConversionService:
         user_id: str,
         enterprise_id: Optional[str],
         team_id: Optional[str] = None,
+        case_id: Optional[str] = None,
     ) -> ConversionDraft | ConversionError:
-        """Convert a single failure mode to a runbook draft."""
+        """Convert a single failure mode to a runbook draft.
+
+        ``case_id`` selects the case authoring policy (#1880): a case names
+        an incident, so the model writes a de-identified title and infers the
+        technology, and the id and the draft's title are read from the
+        frontmatter it produced. Without it, the failure mode came from a
+        document's analysis pass and its ``(service, title)`` is the id.
+        """
         try:
             knowledge_model = self._settings.llm.get_knowledge_model()
             today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-            # Pre-compute the runbook_id so we can pass the exact kebab-case
-            # value to the LLM. Without this, the LLM is left to derive `id`
-            # from the failure-mode title and routinely uses the title verbatim
-            # (e.g. "Case-260526-4"), which fails the kebab-case validator.
-            runbook_id = generate_runbook_id(failure_mode)
+            if case_id is None:
+                # Pre-compute the runbook_id so we can pass the exact kebab-case
+                # value to the LLM. Without this, the LLM is left to derive `id`
+                # from the failure-mode title and routinely uses the title verbatim
+                # (e.g. "Case-260526-4"), which fails the kebab-case validator.
+                runbook_id = generate_runbook_id(failure_mode)
+                identity = (
+                    f"RUNBOOK_ID: {runbook_id}\n"
+                    f"FAILURE MODE: {failure_mode.title}\n"
+                )
+                service = failure_mode.service
+                id_rules = (
+                    f"The frontmatter `id` field MUST be exactly: {runbook_id}\n"
+                    f"(lowercase, kebab-case; do not derive a different id from "
+                    f"the title)."
+                )
+            else:
+                # Nothing to pre-compute: the case title names the incident, so
+                # neither it nor an id minted from it may reach the runbook. The
+                # id is minted after the write, from the produced frontmatter.
+                runbook_id = None
+                identity = (
+                    "FAILURE MODE: (not supplied for a case — write the title "
+                    "yourself, under the rules below)\n"
+                )
+                service = (
+                    "(not supplied for a case — infer it from the source material)"
+                )
+                id_rules = "\n\n".join(
+                    [CASE_ID_RULE, TECHNOLOGY_RULE, DE_IDENTIFICATION_RULES]
+                )
 
             user_message = (
                 f"Convert the following source material into a runbook for this specific "
                 f"failure mode:\n\n"
-                f"RUNBOOK_ID: {runbook_id}\n"
-                f"FAILURE MODE: {failure_mode.title}\n"
+                f"{identity}"
                 f"DOMAIN: {failure_mode.domain}\n"
-                f"SERVICE: {failure_mode.service}\n"
+                f"SERVICE: {service}\n"
                 f"SYMPTOM_CLASS: {', '.join(failure_mode.symptom_class) or '(none supplied — classify from the controlled vocabulary in rule 9)'}\n"
                 f"SEVERITY: {failure_mode.severity or f'(not assessed — choose one of {render_vocabulary(RunbookSeverity)} from the source material)'}\n"
                 f"SCOPE: {scope}\n"
                 f"SOURCE FILENAME: {filename}\n"
                 f"TODAY: {today_iso}\n\n"
-                f"The frontmatter `id` field MUST be exactly: {runbook_id}\n"
-                f"(lowercase, kebab-case; do not derive a different id from "
-                f"the title).\n\n"
+                f"{id_rules}\n\n"
                 f"--- SOURCE MATERIAL ---\n{text}\n--- END SOURCE MATERIAL ---"
             )
 
@@ -876,16 +923,33 @@ class ConversionService:
                     retryable=True,
                 )
 
+            scope_dir = _scope_dir(self._data_dir, scope, team_id, user_id)
+
+            if case_id is not None:
+                # The case path's id, minted now from the frontmatter the model
+                # wrote — the extraction path's mint, shared (#1880) — and
+                # claimed here, BEFORE the write, for the reason on
+                # ``refuse_if_draft_slot_taken`` below: a slot another case
+                # holds gets this case's stem appended. Everything below keys
+                # on the id this returns: the frontmatter, the file, the row.
+                runbook_id = await claim_case_draft_slot(
+                    self._db_session_factory,
+                    enterprise_id,
+                    mint_case_runbook_id(runbook_content, case_id),
+                    case_id,
+                    lambda rid: scope_dir / draft_filename(rid),
+                )
+
             # Belt-and-suspenders: prompt instructions don't fully constrain
             # the LLM, so rewrite the frontmatter `id` to the kebab-case
             # value we computed. The filename + DB row + frontmatter all
             # share this single source of truth.
             runbook_content = _force_frontmatter_id(runbook_content, runbook_id)
 
-            # `runbook_id` was computed before the LLM call so it could be
-            # passed in the prompt; re-using it here keeps the on-disk
-            # filename, the prompt-injected `id`, and the row's runbook_id
-            # in sync.
+            # On the document path `runbook_id` was computed before the LLM
+            # call so it could be passed in the prompt; re-using it here keeps
+            # the on-disk filename, the prompt-injected `id`, and the row's
+            # runbook_id in sync.
             draft_id = generate_draft_id()
 
             # Write draft to disk. Through the shared helper: it validates
@@ -894,17 +958,17 @@ class ConversionService:
             # from an allowlist so an escape is unconstructible today — the
             # guard is what keeps that true if the mint rule is loosened or a
             # new caller assembles its own name (#1213 follow-up).
-            draft_path = _scope_dir(
-                self._data_dir, scope, team_id, user_id
-            ) / draft_filename(runbook_id)
+            draft_path = scope_dir / draft_filename(runbook_id)
 
-            # BEFORE the write. The path is derived from ``runbook_id``, so a
-            # duplicate lands on the EXISTING draft's file and would replace
-            # its content on the way to an INSERT migration 046 rejects. See
-            # ``refuse_if_draft_slot_taken``.
-            await refuse_if_draft_slot_taken(
-                self._db_session_factory, enterprise_id, runbook_id, str(draft_path)
-            )
+            if case_id is None:
+                # BEFORE the write. The path is derived from ``runbook_id``, so
+                # a duplicate lands on the EXISTING draft's file and would
+                # replace its content on the way to an INSERT migration 046
+                # rejects. See ``refuse_if_draft_slot_taken``. The case path
+                # made the same check above, in ``claim_case_draft_slot``.
+                await refuse_if_draft_slot_taken(
+                    self._db_session_factory, enterprise_id, runbook_id, str(draft_path)
+                )
 
             write_runbook_file(
                 draft_path,
@@ -930,7 +994,14 @@ class ConversionService:
             return ConversionDraft(
                 draft_id=draft_id,
                 runbook_id=runbook_id,
-                title=failure_mode.title,
+                # A case-built draft is named by the title the model wrote, not
+                # the case's, which names the incident; the minted id stands in
+                # when the draft carries no usable title.
+                title=(
+                    failure_mode.title
+                    if case_id is None
+                    else draft_title(runbook_content) or runbook_id
+                ),
                 scope=scope,
                 status=DraftStatus.DRAFT,
                 validation=validation,

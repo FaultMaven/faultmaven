@@ -130,7 +130,7 @@ _EMPTY_SLUG_STEM = "runbook"
 _EMPTY_SLUG_HASH_CHARS = 8
 
 #: Recognises an id minted by that branch. Used by callers that want a more
-#: informative fallback than a bare hash (``SuggestionService._mint_id`` prefers
+#: informative fallback than a bare hash (``mint_case_runbook_id`` prefers
 #: the case's own stem when the draft's title carried nothing readable).
 _HASH_ONLY_ID_RE = re.compile(
     rf"^{_EMPTY_SLUG_STEM}-[0-9a-f]{{{_EMPTY_SLUG_HASH_CHARS}}}$"
@@ -376,7 +376,7 @@ def is_hash_only_runbook_id(runbook_id: str | None) -> bool:
     ``runbook_id_from_parts`` emits ``runbook-<8 hex>`` when the
     ``(service, title)`` pair filters to nothing (#1230). The id is valid and
     unique, but it says nothing about what the runbook is, so a caller holding
-    a better name can prefer that instead. ``SuggestionService._mint_id`` does:
+    a better name can prefer that instead. ``mint_case_runbook_id`` does:
     it falls back to the case's own stem, which is opaque but at least
     traceable to the incident.
 

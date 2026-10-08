@@ -367,8 +367,8 @@ The earlier per-tier `GlobalKBConfig` / `TeamKBConfig` / `UserKBConfig` design (
 The full hybrid pipeline (parallel vector + keyword recall, four-signal reranker, hard pre-filter mode, dynamic weights, scope tiebreaking) lives in `infrastructure/knowledge/knowledge_vector_store.py`. See [vector-retrieval-architecture.md §3](./vector-retrieval-architecture.md#3-two-stage-retrieval-and-reranking-pipeline) for the full pipeline definition. KB-specific behaviour worth flagging here:
 
 - The taxonomy fields (`domain`, `service`, `symptom_class`, `severity`) propagated at ingestion drive the metadata-match signal in the reranker and the optional `filter_mode="hard"` pre-filter.
-- Filter values come from the case context (the investigation engine's `ProblemVerification` step identifies `affected_services`) — not from the user.
-- When no filter context is available (e.g., early INQUIRY phase), the search runs unfiltered.
+- No live caller supplies filter values today. The source the retrieval design names is the copilot's page context (copilot → API → `ToolContext` → `KBToolAdapter`), which is not built. A case-derived soft boost, reading `ProblemVerification.affected_services`, was removed with that field in #1880: the field recorded the user's own service ("checkout"), while a runbook's `service` is the technology ("postgresql"), so the two never matched. Nothing wrote the field anyway.
+- With no filter context, the search runs unfiltered and the metadata signal scores lifecycle status alone.
 
 ### Staleness-Aware Synthesis
 
@@ -612,7 +612,6 @@ During investigation, the agent has two retrieval tools — one for knowledge, o
 | Question Type | Tool | Example |
 |---------------|------|---------|
 | Remediation knowledge | `answer_from_kb` | "How to fix PostgreSQL connection pool exhaustion?" |
-| Remediation with context | `answer_from_kb` (with case context metadata) | Same question, but `context_metadata={"domain": "database", "service": "postgresql"}` derived from the case's `affected_services` |
 | Case-specific evidence | `answer_from_case_evidence` | "What errors are on line 1045 of the uploaded server.log?" |
 
 The agent does not decide which KB tier to search — the federated search layer handles that automatically based on the user's authorization context. The agent focuses on *what to ask*, not *where to look*.

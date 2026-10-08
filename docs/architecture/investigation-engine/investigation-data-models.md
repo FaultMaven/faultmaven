@@ -792,10 +792,6 @@ class ProblemVerification(BaseModel):
         description="User's description of the problem"
     )
 
-    affected_services: List[str] = Field(
-        default_factory=list,
-        description="Services/components affected by problem"
-    )
     severity: Optional[str] = Field(
         default=None,
         description=(
@@ -849,14 +845,18 @@ explicit `"medium"` is kept as `MEDIUM`. The API serves both lowercase, null
 when not assessed (`urgency_level` serves null for `UNKNOWN`).
 
 **Fields the record does not carry.** Scope and timeline facts beyond Gate 1's
-`temporal_state` (affected users and regions, user impact, start/notice/resolve
-times, duration), change correlations (`recent_changes`, `correlations`,
+`temporal_state` (affected services, users and regions, user impact,
+start/notice/resolve times, duration), change correlations (`recent_changes`, `correlations`,
 `correlation_confidence`), `symptom_indicators`, `urgency_factors` and
 `verified_at`/`verification_confidence` were once designed here and never had a
 writer or a reader, so they were removed rather than left to be mistaken for
 data. Old stored records that still carry those keys load unchanged (the model
-ignores unknown keys). `affected_services` is kept: it is read by the knowledge
-rerank context and by case-to-runbook conversion, though nothing writes it yet.
+ignores unknown keys). `affected_services` went last (#1880). It had two
+readers, the KB rerank boost and case-to-runbook conversion, and both wanted a
+runbook's `service`, the technology. The field meant the user's own service.
+The user names that in INQUIRY, and it lives in the problem statement.
+Conversion now infers the technology from the source material, and the rerank
+boost's designed source is the copilot page context.
 
 **Design Decision: `rca_infeasible` as Advisory Signal**
 

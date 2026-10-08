@@ -265,9 +265,10 @@ class TestThePromptAsksForV4:
         assert suggestion.validation_passed is True
 
     async def test_the_id_is_never_minted_from_the_case_title(self):
-        """Measured, not reasoned about (see ``_mint_id``): the first cut minted
-        from the case title, and the eval's noisy fixture produced a body the
-        model had de-identified perfectly beside a frontmatter line reading
+        """Measured, not reasoned about (see ``mint_case_runbook_id``): the
+        first cut minted from the case title, and the eval's noisy fixture
+        produced a body the model had de-identified perfectly beside a
+        frontmatter line reading
         ``id: case-inc-48213-prod-web-07-returning-502-for-customer-c-…``. The
         id sits inside the content, so it is chunked, embedded and retrieved."""
         svc = SuggestionService(

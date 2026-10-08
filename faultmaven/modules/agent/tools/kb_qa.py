@@ -68,7 +68,6 @@ global documentation, your personal runbooks, and your team's shared procedures.
         user_id: str,
         shared_kb_ids: Optional[List[str]] = None,
         k: int = 5,
-        context_metadata: Optional[Dict[str, str]] = None,
     ) -> str:
         """
         Query knowledge base with automatic scope filtering.
@@ -80,8 +79,6 @@ global documentation, your personal runbooks, and your team's shared procedures.
                 pre-resolved from the share table by the orchestrator — the team
                 arm of the read allowlist
             k: Number of chunks to retrieve (default: 5)
-            context_metadata: Optional case context (e.g. affected service) for
-                metadata-aware reranking (soft boost only; see DocumentQATool)
 
         Returns:
             Relevant documentation with citations from all accessible scopes
@@ -94,5 +91,4 @@ global documentation, your personal runbooks, and your team's shared procedures.
             scope_id=None,
             k=k,
             filters=filters,
-            context_metadata=context_metadata,
         )

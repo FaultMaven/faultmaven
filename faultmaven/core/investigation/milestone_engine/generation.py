@@ -1246,10 +1246,7 @@ class StructuredOutputGenerator:
         ``None`` (engine-internal turn, no principal) keeps the historical
         ``"system"`` sentinel, which matches no owner and resolves no teams.
         """
-        from faultmaven.modules.agent.tools.base import (
-            ToolContext,
-            derive_kb_context_metadata,
-        )
+        from faultmaven.modules.agent.tools.base import ToolContext
 
         user_id = user_id or "system"
         enterprise_id = getattr(case, "enterprise_id", "")
@@ -1276,7 +1273,6 @@ class StructuredOutputGenerator:
             case_repository=self.deps.repository,
             metadata=metadata,
             in_memory_case=case,
-            kb_context_metadata=derive_kb_context_metadata(case),
         )
 
     @classmethod

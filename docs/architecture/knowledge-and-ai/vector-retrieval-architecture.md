@@ -30,9 +30,9 @@ Both domains share the same embedding model and ChromaDB instance, but diverge o
 
 FaultMaven's browser extension provides rich implicit context that most RAG systems lack. When an SRE investigates a Kubernetes pod crash, they don't type "show me runbooks for namespace=production, service=payment-gateway." They paste the error and expect the system to figure it out. The extension knows the page, the service, the error class, the technology stack.
 
-**Pre-retrieval filtering on this context should be the default path, not an optimization.** Every design decision should be evaluated through the lens of "does this exploit the context we uniquely have access to?" The `context_metadata` parameter in `hybrid_search()` exists for this purpose. Case-derived context (the affected service from the case's problem verification) is wired end-to-end today as a **soft** rerank boost: the engine derives it (`derive_kb_context_metadata()`), carries it on `ToolContext.kb_context_metadata`, and `KBToolAdapter` threads it through `AnswerFromKB` → `DocumentQATool` → `hybrid_search(context_metadata=…, filter_mode="soft")`. The remaining, higher-confidence integration is the copilot page-comprehension → API request body → `ToolContext` path that would justify the **hard** pre-filter (`filter_mode="hard"`); that cross-repo wiring is deferred.
+**Pre-retrieval filtering on this context should be the default path, not an optimization.** Every design decision should be evaluated through the lens of "does this exploit the context we uniquely have access to?" The `context_metadata` parameter in `hybrid_search()` exists for this purpose. Its designed source (#188) is the copilot's page context (copilot page-comprehension → API request body → `ToolContext` → `KBToolAdapter`). That source would justify the **hard** pre-filter (`filter_mode="hard"`) as well as the soft boost, and its cross-repo wiring is deferred. No live caller passes `context_metadata` today. A case-derived soft boost (#709) read `ProblemVerification.affected_services`. It never fired, because nothing wrote that field, and it would not have matched if it had: the field recorded the user's own service ("checkout"), while a runbook's `service` is the technology ("postgresql"). It was removed in #1880, along with `ToolContext.kb_context_metadata` and its pass-through. The copilot path wires the agent side when it is built.
 
-The service-metadata signal (`context_metadata`) rides **only** on the agent QA tools path, which is the sole caller that passes case context into `hybrid_search()`. The engine's own KB pre-fetch — `_prefetch_kb_context` — calls `KnowledgeService.search_knowledge(use_hybrid=True)` and so takes the same two-stage hybrid route (keyword recall + IDF reranker, #1272) but with no `context_metadata`: it has no case-context domain/service to pass at the transition, so it gets the reranker's vector/term/status/freshness blend without the metadata-match boost.
+Neither live hybrid caller passes `context_metadata`. The agent QA tools path (`kb_qa`) and the engine's own KB pre-fetch (`_prefetch_kb_context`, through `KnowledgeService.search_knowledge(use_hybrid=True)`) take the same two-stage hybrid route (keyword recall + IDF reranker, #1272). Both get the reranker's vector/term/status/freshness blend, and the metadata signal scores lifecycle status alone.
 
 ```text
 ChromaDB Instance
@@ -134,7 +134,7 @@ The weights have **not** been retuned on the corrected scale, deliberately. Pick
 
 The components sum on `[-0.3, 1.0]` and are mapped **affinely** onto `[0, 1]`, not truncated at zero. Truncation destroyed the demotion half of the signal outright: with no case context (the shipped state — every pack runbook is `draft`) `draft`, `stale` and `deprecated` all clamped to `0.0`, so a runbook its author had marked DEPRECATED scored exactly as well as an unreviewed one, and the lifecycle ordering this table documents held only above zero (#1272). The map preserves every relative gap above; only the floor moves.
 
-**Context metadata: hard filter vs soft boost.** When the extension provides high-confidence context (e.g., the user is on a PostgreSQL dashboard), domain/service should be applied as a **hard pre-filter** in the ChromaDB `where` clause — like scope filtering. Irrelevant chunks (Kubernetes runbooks for a PostgreSQL issue) should never enter Stage 1. When confidence is low or context is ambiguous, fall back to the soft rerank boost (+0.30) described above. The `filter_mode` parameter on `hybrid_search()` is implemented — `"hard"` adds domain/service to the `where` clause (`_apply_hard_metadata_filter`), `"soft"` (default) applies the rerank boost only. The **soft** path is wired end-to-end: the engine feeds the case's affected service into `hybrid_search(context_metadata=…, filter_mode="soft")` on every KB retrieval, so the metadata-match signal fires on service alignment rather than status alone. What remains is the **hard** path — threading *high-confidence* context from copilot → API → `KBToolAdapter` so a caller can safely select `"hard"` and drop irrelevant chunks pre-retrieval. Today every live caller uses the soft rerank path. (Domain is not yet supplied by the engine: the case model has no domain field, and a fabricated default would create false exact-matches; only `service` is currently derived.)
+**Context metadata: hard filter vs soft boost.** When the extension provides high-confidence context (e.g., the user is on a PostgreSQL dashboard), domain/service should be applied as a **hard pre-filter** in the ChromaDB `where` clause — like scope filtering. Irrelevant chunks (Kubernetes runbooks for a PostgreSQL issue) should never enter Stage 1. When confidence is low or context is ambiguous, fall back to the soft rerank boost (+0.30) described above. The `filter_mode` parameter on `hybrid_search()` is implemented — `"hard"` adds domain/service to the `where` clause (`_apply_hard_metadata_filter`), `"soft"` (default) applies the rerank boost only. Neither mode has a live caller. The case-derived soft boost was removed (#1880), and the copilot context that would feed both modes (copilot → API → `KBToolAdapter`) is not built. Once it is, a caller can select `"soft"` for ambiguous context, or `"hard"` for high-confidence context to drop irrelevant chunks pre-retrieval.
 
 **Tiebreaking:** When two chunks produce the same weighted score, scope priority breaks the tie: personal > team > global. This ensures a user's own runbook surfaces above a generic global procedure when both are equally relevant.
 
@@ -203,7 +203,7 @@ The full list of fields stored on each chunk is canonical in [knowledge-base-arc
 | ----- | ------- | ------- |
 | `scope`, `owner_id`, `parent_document_id` | `where` clause | Scope filter (built by `build_kb_scope_filter`; team arm is a `parent_document_id` `$in` allowlist resolved from `resource_shares`, not a `team_id` metadata match) |
 | `enterprise_id` | Nothing yet | Stamped on every KB chunk since #1168 (the row's tenant; `add_documents` refuses a KB chunk without it). #1775 conjuncts it onto the scope filter, outside the `$or`, once the backfill (#1777) reports no unstamped chunk |
-| `domain`, `service` | Reranker metadata-match signal (soft boost, wired) + hard pre-filter (`filter_mode="hard"`, mechanism only) | `service` fed from the case's `problem_verification.affected_services[0]` as a soft boost; `domain` not yet supplied by the engine |
+| `domain`, `service` | Reranker metadata-match signal + hard pre-filter (`filter_mode="hard"`); both mechanism only | Matched against `context_metadata`, which no live caller supplies: the case-derived boost was removed (#1880), and the copilot page context is not built |
 | `symptom_class`, `severity` | Reranker metadata-match signal | Boost chunks whose taxonomy aligns with the query's failure-mode classification |
 | `status` | Reranker status weighting | `verified` +0.40, `in-review` +0.10, `draft` -0.10, `stale` -0.20, `deprecated` -0.30 |
 | `last_updated` | Reranker freshness signal + synthesis prompt | Half-life decay; `format_chunk_metadata()` injects age warnings into LLM context |
@@ -245,17 +245,17 @@ wrong ones on `dashboard`).
 Agent calls: answer_from_kb(question)
   │
   ├── KBToolAdapter.execute_with_context()
-  │     Extracts user_id, team_ids, and kb_context_metadata from ToolContext
+  │     Extracts user_id and shared_kb_ids from ToolContext
   │
-  ├── AnswerFromKB._arun(question, user_id, team_ids, context_metadata)  # kb_qa.py
+  ├── AnswerFromKB._arun(question, user_id, shared_kb_ids)  # kb_qa.py
   │     Builds combined $or scope filter
   │
-  ├── DocumentQATool.answer_question(..., context_metadata)
+  ├── DocumentQATool.answer_question(...)
   │     Detects search_mode="hybrid" from UnifiedKBConfig
   │
-  ├── KnowledgeVectorStore.hybrid_search(context_metadata, filter_mode="soft")
+  ├── KnowledgeVectorStore.hybrid_search(where=scope filter)
   │     Stage 1: vector + keyword recall
-  │     Stage 2: rerank with 4-signal scoring (metadata match uses context)
+  │     Stage 2: rerank with 4-signal scoring (no context: metadata scores status)
   │
   ├── Relevance gate: refuse synthesis if max chunk score < 0.5 (cosine)
   │     Returns "searched, nothing close enough" WITHOUT calling the LLM
@@ -269,7 +269,7 @@ Agent calls: answer_from_kb(question)
         Returns answer with source citations
 ```
 
-**Engine pre-fetch path (hybrid, no context boost).** `_prefetch_kb_context` — the symptom-verification KB pull and the cause_state→IDENTIFIED remediation pull — reaches `hybrid_search()` through `search_knowledge(use_hybrid=True)` since #1272 (before that it was single-pass pure vector, which put the runbook covering #1272's incident at rank 70 of 91). It passes no `context_metadata`, so it carries every reranker signal except the service-metadata soft boost, and it applies its admission floor (`KB_PREFETCH_RELEVANCE_THRESHOLD`) on the raw cosine `score`, never on `rerank_score`.
+**Engine pre-fetch path (hybrid, no context boost).** `_prefetch_kb_context` — the symptom-verification KB pull and the cause_state→IDENTIFIED remediation pull — reaches `hybrid_search()` through `search_knowledge(use_hybrid=True)` since #1272 (before that it was single-pass pure vector, which put the runbook covering #1272's incident at rank 70 of 91). Like the tool path, it passes no `context_metadata`, so its metadata signal scores lifecycle status alone, and it applies its admission floor (`KB_PREFETCH_RELEVANCE_THRESHOLD`) on the raw cosine `score`, never on `rerank_score`.
 
 **Admission is runbook-aware (#1379).** The ranked pool is not sliced flat. A chunk is a `### Cause` and a runbook carries 3-10 of them, so a flat `relevant[:KB_CONTEXT_MAX_ENTRIES]` routinely rendered several causes of ONE runbook while a *different* runbook the query also needed sat in the pool unrendered. Measured over `tests/eval/kb_retrieval/`: the median query drew **7 of 10** pool slots from a single runbook, 5 of 16 drew all 10, and **22 of 23 expected runbooks reached the pool while only 17 reached the prompt** — a selection failure, not a retrieval one.
 
@@ -472,7 +472,7 @@ This maps onto FaultMaven's existing hypothesis lifecycle (ACTIVE → VALIDATED/
 | Scope tiebreaking | **Implemented** | personal > team > global secondary sort in `_rerank()` |
 | Staleness-aware synthesis | **Implemented** | `_staleness_note()` + system prompt: "provide step-by-step instructions when procedures are available" (the "preserve procedural detail" instruction is in the synthesis prompt — see §4 "Relay vs synthesis") |
 | Scope filtering (pre-filtering) | **Implemented** | ChromaDB `where` clause pre-filters before ANN search. `_require_kb_filter_present()` raises `ValueError` when the clause names no scope key — a presence check, not a tenant check. The tenant key is stamped on write (#1168); the read conjunct is #1775. |
-| Case context → KB soft rerank boost | **Implemented** | Engine derives the affected service (`derive_kb_context_metadata()`) onto `ToolContext.kb_context_metadata`; threaded through `KBToolAdapter` → `AnswerFromKB` → `DocumentQATool` → `hybrid_search(context_metadata=…, filter_mode="soft")`. `service` only; `domain` not yet supplied by the case model. |
+| Case context → KB soft rerank boost | **Removed** (#1880) | Case-derived boost removed: it read `ProblemVerification.affected_services`, which nothing wrote and which named the user's service, not the technology a runbook's `service` carries. `ToolContext.kb_context_metadata` and its pass-through went with it. Copilot page context not built. |
 | Copilot high-confidence context → hard pre-filter | **Deferred** | `hybrid_search()` accepts `context_metadata` + `filter_mode="hard"`, but no live caller selects `"hard"`. Requires copilot page-comprehension → API → `KBToolAdapter` cross-repo wiring. |
 | True BM25 | **Partial** | The IDF half now exists (`CorpusTermStats`, weighting the reranker's overlap signal). There is still no term-frequency or length-normalisation component, and ChromaDB exposes no BM25 index — a full implementation would need `rank_bm25` or a separate index. |
 | Title in the embedded text | **Not done** | The chunker strips YAML front matter and splits at every `#{1,4}` heading, so only 16 of the shipped pack's 1297 chunks contain their own runbook's title. A query that IS a title therefore matches nothing lexically and competes on section prose alone: `"Linux Disk Full"` returns that runbook 3rd on the pure-vector path, behind `MySQL Replication Broken` §"Cause F: Disk full on replica" and `Kafka Broker Failure` §"Cause B: Disk Full or I/O Error" — both of which are, literally, more about a full disk than its own `Cause Z: Unidentified` chunk. Fixing it means prepending a contextual header to each chunk at index time, which changes what is embedded and so requires a pack rebuild in `faultmaven-kb-toolkit`. Measured in #1272; the grounding gate reads the title from metadata, so the *seeding* path already uses it. |

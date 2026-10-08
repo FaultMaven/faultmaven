@@ -26,6 +26,14 @@ from faultmaven.modules.case.contracts import (
     is_server_written_user_row,
 )
 from faultmaven.modules.knowledge.contracts import ISuggestionRepository
+from faultmaven.modules.knowledge.domain.case_authoring import (
+    CASE_ID_RULE,
+    DE_IDENTIFICATION_RULES,
+    TECHNOLOGY_RULE,
+    case_stem_runbook_id,
+    draft_title,
+    mint_case_runbook_id,
+)
 from faultmaven.modules.knowledge.domain.models.conversion import ValidationResult
 from faultmaven.modules.knowledge.domain.models.suggestion import (
     KnowledgeSuggestion,
@@ -46,7 +54,6 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.prompts imp
     RUNBOOK_MAX_TOKENS_CEILING,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
-    RunbookValidator,
     avalidate_content,
 )
 from faultmaven.modules.knowledge.exceptions import SuggestionConcurrencyError
@@ -56,10 +63,6 @@ from faultmaven.modules.knowledge.taxonomy import (
     render_vocabulary,
 )
 from faultmaven.utils.line_endings import normalize_line_endings
-from faultmaven.utils.runbook_id import (
-    is_hash_only_runbook_id,
-    runbook_id_from_parts,
-)
 from faultmaven.utils.serialization import to_json_compatible
 
 #: Statuses that mean "a reviewer has not dealt with this yet". The store's
@@ -183,7 +186,12 @@ class SuggestionService:
     # of the six required sections missing — so approving an extraction without a
     # human reshape was ALWAYS a 422. The extractor moves to meet the gate; the
     # gate does not move (that is the product decision recorded on #1214).
-    EXTRACTION_PROMPT = """
+    #
+    # The id, technology and de-identification rules are the case authoring
+    # policy's (#1880), rendered here and in the live conversion path from the
+    # one copy in ``case_authoring``.
+    EXTRACTION_PROMPT = (
+        """
 --- CONVERSION REQUEST ---
 The source material below is a RESOLVED INCIDENT CASE — its transcript and
 evidence summaries — not a document. Convert it into ONE runbook covering the
@@ -195,30 +203,25 @@ TODAY: {today_iso}
 SOURCE FILENAME: {source_label}
 
 The frontmatter `scope` field MUST be exactly: global
-The frontmatter `id` field is kebab-case derived from the DE-IDENTIFIED title
-you write below — NEVER from the case title, which names an incident. It is
-normalised after you write it, so spend your care on the title.
+"""
+        + CASE_ID_RULE
+        + """
 `domain`, `service`, `severity` and `symptom_class` are NOT supplied for a case:
 infer each one from the case content, using only the controlled vocabularies.
 `domain` MUST be one of: {domain_vocab}. It is a coarse system-layer label, not
 the technology — a Kubernetes scheduling failure is `compute`, a cache eviction
 is `database`, a resolver timeout is `networking`, a web tier is `application`.
-Put the technology in `service` and `tags`, where it is free text.
+"""
+        + TECHNOLOGY_RULE
+        + """
 `severity` MUST be one of: {severity_vocab}.
 
 Each Indicator carries exactly ONE `[Step N]` token. To cite two steps, write
 two Indicator entries — `[Step 2, Step 3]` is not a token and is rejected.
 
-DE-IDENTIFICATION — mandatory, and applied to every section including code
-blocks. A runbook is reusable knowledge, not an incident record. Remove:
-- absolute timestamps and dates (write relative time: "after ~2 hours")
-- user names, email addresses and account identifiers
-- hostnames, IP addresses, internal URLs, cluster and namespace names
-- customer and enterprise names
-- ticket, incident and case identifiers
-Replace each with a generic placeholder (`<hostname>`, `<namespace>`) or with a
-description of the role it played. KEEP product names, versions, error strings
-and command shapes — those are what make the runbook usable.
+"""
+        + DE_IDENTIFICATION_RULES
+        + """
 
 Emit the runbook and nothing else: no preamble, no closing commentary, no
 markdown code fence around the document. The first characters of your output are
@@ -233,6 +236,7 @@ Description: {case_description}
 {evidence_section}
 --- END SOURCE MATERIAL ---
 """
+    )
 
     #: Appended to the extraction prompt when the previous attempt failed the
     #: gate. The validator's errors are STRUCTURED
@@ -378,7 +382,6 @@ corrected runbook, starting at the opening `---`, and output nothing else.
                 else max_extraction_attempts
             ),
         )
-        self._validator = RunbookValidator()
 
         # The store. Durable and worker-shared when it is the database
         # repository the composition root builds; a process-local double
@@ -504,7 +507,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         # incident, which is what a corpus entry should be called.
         suggested_title = (
             title_suggestion
-            or self._title_from_draft(suggested_content)
+            or draft_title(suggested_content)
             or await self._generate_title(case_title, suggested_content)
         )
 
@@ -738,7 +741,9 @@ corrected runbook, starting at the opening `---`, and output nothing else.
                 # nothing to repair — stop and fall through.
                 break
 
-            content = _force_frontmatter_id(content, self._mint_id(content, case_id))
+            content = _force_frontmatter_id(
+                content, mint_case_runbook_id(content, case_id)
+            )
             # Off the event loop (#1417). Inside the repair loop, so the cost is
             # paid once PER TURN — the one site here where the blocking time is
             # multiplied rather than incurred once.
@@ -797,65 +802,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
             )
             return best
 
-        return self.fallback_template(self._case_stem_id(case_id))
-
-    @staticmethod
-    def _case_stem_id(case_id: str) -> str:
-        """The last-resort runbook id: the case's own identifier, slugged.
-
-        Opaque, but an internal case identifier and therefore safe to publish —
-        unlike the case TITLE, which names an incident (see :meth:`_mint_id`).
-
-        No local kebab repair and no ``or "extracted-runbook-draft"`` fallback:
-        since #1230/#1243 ``runbook_id_from_parts`` guarantees a non-empty
-        kebab id itself, and the literal fallback was the worse of the two
-        anyway — every case with a degenerate id would have shared it, which is
-        the collision this pair of issues exists to remove.
-        """
-        return runbook_id_from_parts("case", case_id)
-
-    def _mint_id(self, content: str, case_id: str) -> str:
-        """The kebab-case ``id`` to force onto a draft's frontmatter.
-
-        Minted from the draft's OWN ``service`` + ``title`` — the same
-        ``(service, title)`` mint the conversion path uses — and deliberately
-        NOT from the case title.
-
-        That distinction was measured, not reasoned about. The first cut minted
-        from the case title, and the eval's deliberately-noisy fixture
-        ("INC-48213: prod-web-07 returning 502 for customer Contoso from
-        2026-03-14 02:11 UTC") produced a body the model had de-identified
-        perfectly and a frontmatter line reading
-        ``id: case-inc-48213-prod-web-07-returning-502-for-customer-c-fd3a``.
-        The id is inside the content, so it is chunked, embedded and retrieved:
-        a ticket number, a hostname and a customer name would have entered the
-        global corpus through the one field the extractor writes itself.
-
-        The emitted title is de-identified because the prompt says so; the mint
-        is normalisation only, so a title that slipped is a prompt failure, not
-        one this can catch. Falls back to the case stem when the draft carries
-        no usable title (an empty slug would otherwise mean no ``id`` at all).
-        """
-        try:
-            # The validator's frontmatter parse, reused so "what the id is
-            # derived from" is the same text the gate will read it as.
-            metadata = self._validator._extract_metadata(content) or {}
-        except Exception:
-            metadata = {}
-        title = metadata.get("title") if isinstance(metadata, dict) else None
-        service = metadata.get("service") if isinstance(metadata, dict) else None
-        if isinstance(title, str) and title.strip():
-            minted = runbook_id_from_parts(
-                service if isinstance(service, str) else "", title
-            )
-            # The mint no longer returns ``""`` for a title that filters to
-            # nothing — it returns ``runbook-<hash>`` (#1230). That is a valid
-            # id but a nameless one, and the case stem is strictly more
-            # traceable, so the "no usable title" fallback below is preserved
-            # by asking the mint which branch it took.
-            if not is_hash_only_runbook_id(minted):
-                return minted
-        return self._case_stem_id(case_id)
+        return self.fallback_template(case_stem_runbook_id(case_id))
 
     async def _generate_once(
         self, prompt: str, redaction: CaseRedactionContext
@@ -1117,28 +1064,6 @@ level, and the tools needed.]
             warnings=result.warnings,
         )
 
-    def _title_from_draft(self, content: str) -> Optional[str]:
-        """The draft's own frontmatter ``title``, when it has a usable one.
-
-        ``None`` for a draft with no frontmatter, no title, or the rule-8
-        ``[INSUFFICIENT SOURCE DATA]`` placeholder the skeleton carries — that
-        last one is a form, not a name, and putting it in the review inbox as a
-        heading would say less than the case title does.
-        """
-        try:
-            metadata = self._validator._extract_metadata(content) or {}
-        except Exception:
-            return None
-        if not isinstance(metadata, dict):
-            return None
-        title = metadata.get("title")
-        if not isinstance(title, str):
-            return None
-        title = title.strip()
-        if not title or "INSUFFICIENT SOURCE DATA" in title:
-            return None
-        return title
-
     async def _generate_title(self, case_title: str, content: str) -> str:
         """Generate a knowledge article title.
 
@@ -1211,7 +1136,7 @@ level, and the tools needed.]
                 #      ``upload_document(title=...)`` — the published knowledge
                 #      item's name AND, through ``runbook_filename``, its
                 #      filename on disk. The same leak class the frontmatter
-                #      ``id`` had (see ``_mint_id``), one field over.
+                #      ``id`` had (see ``mint_case_runbook_id``), one field over.
                 #
                 # Two calls rather than one concatenation: a title and a runbook
                 # are separate documents, and the only thing the concatenation
