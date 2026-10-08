@@ -1,8 +1,9 @@
 """What a turn commits besides the case, and the one call that commits it (#1882).
 
 A turn's writes are one commit: the case (its messages, files, clock and state)
-plus the report rows the turn produced, written by
-``ICaseRepository.save(case, reports=...)`` in one transaction.
+plus the report rows the turn produced and, for a keyed turn, its receipt
+(#1888), written by ``ICaseRepository.save(case, reports=..., receipt=...)`` in
+one transaction.
 Work that may only start once that commit has landed (the runbook conversion)
 waits on a gate future in ``on_commit``: released after the commit, cancelled
 when the commit fails, so it never runs for a turn that did not commit.
@@ -20,13 +21,14 @@ engine-only test commits the same way, through the same function.
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 
 from faultmaven.modules.case.contracts import (
     Case,
     CaseReport,
     ICaseRepository,
     ReportType,
+    TurnReceipt,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,6 +40,10 @@ class TurnCommitPlan:
 
     reports: List[CaseReport] = field(default_factory=list)
     on_commit: List["asyncio.Future[Any]"] = field(default_factory=list)
+    receipt: Optional[TurnReceipt] = None
+    """The keyed turn's receipt (#1888), set by
+    ``InvestigationService.commit_turn`` once the response it records exists;
+    ``None`` for an unkeyed turn and for every engine-only commit."""
 
     def add_reports(self, reports: Iterable[CaseReport]) -> None:
         """Carry rendered ``reports`` to the commit, in render order."""
@@ -94,7 +100,9 @@ async def commit_turn_plan(
     sees is one the commit really raised.
     """
     try:
-        saved = await repository.save(case, reports=tuple(plan.reports))
+        saved = await repository.save(
+            case, reports=tuple(plan.reports), receipt=plan.receipt
+        )
     except BaseException:
         plan.cancel_gates()
         raise

@@ -108,7 +108,9 @@ def _app() -> tuple[FastAPI, AsyncMock]:
     # The route prepares the turn under its deadline and commits it after
     # (#1882); the prepared stand-in is the response, handed back by the commit.
     investigation_service.prepare_turn = prepare_turn
-    investigation_service.commit_turn = AsyncMock(side_effect=lambda prepared: prepared)
+    investigation_service.commit_turn = AsyncMock(
+        side_effect=lambda prepared, **_: prepared
+    )
 
     app.dependency_overrides[require_authentication] = lambda: user
     app.dependency_overrides[_di_get_case_service_dependency] = lambda: case_service

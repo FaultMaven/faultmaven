@@ -66,6 +66,7 @@ from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import func
 from sqlalchemy.types import JSON, TypeDecorator
 
+from faultmaven.config.idempotency_key import IDEMPOTENCY_KEY_MAX_LENGTH
 from faultmaven.modules.knowledge.taxonomy import (
     KnowledgeScope,
     RunbookSeverity,
@@ -2784,6 +2785,67 @@ class ReportModel(Base):
             "generation_time_ms >= 0 AND generation_time_ms <= 120000",
             name="reports_gen_time_check",
         ),
+    )
+
+
+class TurnReceiptModel(Base):
+    """One committed keyed turn: its request identity and its answer (#1888).
+
+    Written by ``ICaseRepository.save(case, reports=..., receipt=...)`` in the
+    turn's ONE transaction (#1882), after the case and before the commit, so a
+    receipt exists exactly when its turn committed. A retry carrying the same
+    ``Idempotency-Key`` is answered from ``response`` instead of running the
+    turn again; a commit whose acknowledgement was lost is recognised as
+    committed by reading the receipt back.
+
+    A table rather than a field on a row the turn already writes:
+    ``case_messages.metadata`` is served verbatim by ``GET /cases/{id}/messages``
+    and carries no unique constraint, and ``cases.metadata`` is rewritten by
+    every save. A dedicated column on the user's message row would not leak,
+    but the table wins on the three things a receipt needs: a unique key, a
+    lifecycle of its own, and one concern (the request's identity and its
+    acknowledgement), as ``reports`` already ride the same save.
+
+    The key is ``(enterprise_id, case_id, author_id, idempotency_key)``. The
+    enterprise LEADS because RLS scopes the table on it (the ``turn_usage``
+    lesson, ``.claude/rules/data-model.md``). The author is in it because a
+    shared case has several principals and client keys are not UUID-grade, and
+    it matches the idempotency middleware's per-principal scope. ``author_id``
+    has no foreign key, as ``case_messages.author_id`` has none: the receipt
+    goes with its case, not with the account.
+
+    ``response`` is ``JSON``, not ``JsonBlob``: PostgreSQL's ``jsonb`` reorders
+    object keys, and the replay must be the bytes the client was sent;
+    ``json`` stores the text as given (``TEXT`` on SQLite).
+
+    Lifecycle: deleted with the case (``ON DELETE CASCADE``) and with the
+    enterprise; no retention job. A receipt is one small row per keyed turn
+    and lives exactly as long as the messages it acknowledges.
+    """
+
+    __tablename__ = "turn_receipts"
+
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    case_id = Column(
+        String(36),
+        ForeignKey("cases.case_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    author_id = Column(String(36), primary_key=True)
+    idempotency_key = Column(String(IDEMPOTENCY_KEY_MAX_LENGTH), primary_key=True)
+    # sha256 hex of the turn's semantic inputs.
+    request_fingerprint = Column(String(64), nullable=False)
+    turn_number = Column(Integer, nullable=False)
+    response = Column(JSON, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("turn_number >= 0", name="turn_receipts_turn_nonnegative"),
+        Index("ix_turn_receipts_case", "case_id"),
     )
 
 

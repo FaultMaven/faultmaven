@@ -482,6 +482,8 @@ async def test_rls_enabled_and_policy_present(superuser_engine):
             # the LLM usage ledger, revision 002 (#640)
             "llm_usage_daily",
             "llm_turn_spend",
+            # the turn receipt, revision 010 (#1888)
+            "turn_receipts",
             # no enterprise_id of its own: one hop through teams
             "team_members",
         ):

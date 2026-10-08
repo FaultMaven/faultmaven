@@ -67,7 +67,7 @@ async def _submit(prepare_turn, commit_turn=None) -> TurnResponse:
     investigation_service.prepare_turn = prepare_turn
     # The prepared stand-in is the response itself; the commit hands it back.
     investigation_service.commit_turn = commit_turn or AsyncMock(
-        side_effect=lambda prepared: prepared
+        side_effect=lambda prepared, **_: prepared
     )
 
     request = MagicMock()
@@ -176,7 +176,7 @@ class TestTheTurnEndpointBindsItsDeadline:
             seen["prepare"] = remaining_turn_budget()
             return _ok()
 
-        async def commit_turn(prepared):
+        async def commit_turn(prepared, **_):
             seen["commit"] = remaining_turn_budget()
             return prepared
 

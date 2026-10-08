@@ -35,8 +35,11 @@ from faultmaven.modules.case.contracts import (
     Evidence,
     Hypothesis,
     Solution,
+    TurnReceipt,
+    TurnReceiptExistsError,
     UploadedFile,
 )
+from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 
 if TYPE_CHECKING:
@@ -110,16 +113,118 @@ class SessionlessCaseRepository(CaseRepository):
         case: Case,
         *,
         reports: Sequence["CaseReport"] = (),
+        receipt: Optional[TurnReceipt] = None,
     ) -> Case:
         """Save case with new session per operation.
 
-        One session, so one transaction: the case and ``reports`` commit
-        together or not at all (#1882), under the tenant the session's BEGIN
-        bound.
+        One session, so one transaction: the case, ``reports`` and ``receipt``
+        commit together or not at all (#1882, #1888), under the tenant the
+        session's BEGIN bound.
+
+        Two failures here are not failures of the save, and are answered as
+        what they are (#1888 A3). The caller, ``commit_turn_plan``, releases a
+        turn's gates when this returns and cancels them when it raises, so
+        what this returns decides whether a committed turn's follow-up work
+        (the runbook conversion) runs:
+
+        1. **After the commit.** The dialect repository's ``save`` commits and
+           returns; leaving ``get_db_session`` then commits an empty
+           transaction and closes the session, and either can raise (a
+           connection dropped once the COMMIT was acknowledged). That raise is
+           post-commit: it is logged and the saved case returned. This holds
+           for keyed and unkeyed turns alike: lost-ack window 2.
+        2. **Inside the commit.** A raise from the dialect repository's own
+           ``db.commit()`` (PostgreSQL's connection lost mid-COMMIT) leaves
+           the outcome unknown. For a keyed turn the receipt answers it: it is
+           read back in a FRESH session, and if it is there under this key AND
+           this ``turn_number`` the turn committed, so this returns normally.
+           The enterprise contextvar is task-local and the settlement copies
+           the request's context, so the probe runs under the turn's own RLS
+           scope. Anything else re-raises. The probe never runs for an unkeyed
+           turn: ``cases.version`` cannot answer the question under a
+           concurrent writer, so an unkeyed in-commit failure stays ambiguous
+           (a named residual).
+
+        A ``StaleCaseException`` or ``TurnReceiptExistsError`` is never
+        probed: either is the database's own answer that nothing of this save
+        committed.
+
+        Not closed here: a shutdown cancellation inside ``db.commit()``
+        (window 1). ``CancelledError`` is not an ``Exception``, nothing can
+        run in a dying loop, and the gate is cancelled; a retry after the
+        restart replays the committed reply from its receipt.
         """
+        saved: Optional[Case] = None
+        try:
+            async with get_db_session() as session:
+                repo = get_repository_for_session(session)
+                saved = await repo.save(case, reports=reports, receipt=receipt)
+        except (StaleCaseException, TurnReceiptExistsError):
+            raise
+        except Exception as exc:
+            if saved is not None:
+                logger.warning(
+                    "Case %s committed; closing its session then failed (%r). "
+                    "The save stands.",
+                    case.case_id,
+                    exc,
+                )
+                return saved
+            if receipt is not None and await self._receipt_committed(case, receipt):
+                logger.warning(
+                    "Case %s: the commit raised (%r) but the turn's receipt is "
+                    "in the database under its key and turn %d, so the turn "
+                    "committed.",
+                    case.case_id,
+                    exc,
+                    receipt.turn_number,
+                )
+                return case
+            raise
+        return saved
+
+    async def _receipt_committed(self, case: Case, receipt: TurnReceipt) -> bool:
+        """Whether ``receipt``'s turn committed, read back in a fresh session.
+
+        A receipt under the same key is THIS turn's only when its
+        ``turn_number`` matches too: the key alone could name an older turn
+        whose receipt a retry missed. A probe that cannot answer is "no", so
+        the caller re-raises the commit's own error.
+        """
+        try:
+            stored = await self.get_turn_receipt(
+                enterprise_id=case.enterprise_id,
+                case_id=case.case_id,
+                author_id=receipt.author_id,
+                idempotency_key=receipt.idempotency_key,
+            )
+        except Exception as probe_error:  # noqa: BLE001 - the commit's error wins
+            logger.warning(
+                "Case %s: could not read the turn receipt back after a failed "
+                "commit (%r)",
+                case.case_id,
+                probe_error,
+            )
+            return False
+        return stored is not None and stored.turn_number == receipt.turn_number
+
+    async def get_turn_receipt(
+        self,
+        *,
+        enterprise_id: str,
+        case_id: str,
+        author_id: str,
+        idempotency_key: str,
+    ) -> Optional[TurnReceipt]:
+        """The receipt a committed keyed turn left, read in a new session."""
         async with get_db_session() as session:
             repo = get_repository_for_session(session)
-            return await repo.save(case, reports=reports)
+            return await repo.get_turn_receipt(
+                enterprise_id=enterprise_id,
+                case_id=case_id,
+                author_id=author_id,
+                idempotency_key=idempotency_key,
+            )
 
     async def get(self, case_id: str) -> Case | None:
         """Get case with new session per operation."""

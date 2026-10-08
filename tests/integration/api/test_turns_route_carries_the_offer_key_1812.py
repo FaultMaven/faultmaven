@@ -84,7 +84,7 @@ class _Store:
     async def get(self, case_id: str):
         return self._row.model_copy(deep=True) if case_id == CASE_ID else None
 
-    async def save(self, case: Case, *, reports=()) -> Case:
+    async def save(self, case: Case, *, reports=(), receipt=None) -> Case:
         self._row = case.model_copy(deep=True)
         return case
 

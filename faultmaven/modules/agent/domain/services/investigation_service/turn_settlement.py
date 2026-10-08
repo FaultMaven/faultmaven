@@ -100,6 +100,25 @@ async def settle_turn(
     ``BaseHTTPMiddleware``, probed on #1882), and no ``wait_for`` covers the
     commit, so the shield is belt and braces rather than the mechanism.
 
+    A failure that is NOT the save's own (#1888 A3): a raise from closing the
+    session after the repository committed, or, for a keyed turn, a raise
+    inside the commit whose receipt then reads back, is resolved inside
+    ``SessionlessCaseRepository.save``, which returns normally, so the gates
+    are released and the committed telemetry emitted, not the error row. One
+    window stays open: a shutdown that cancels the loop inside ``db.commit()``
+    (window 1). Nothing can run in a dying loop; a gate whose turn did commit
+    is cancelled (e.g. a runbook conversion whose "started" reply committed)
+    and is not re-fired on replay. A retry after the restart replays the
+    committed reply from its receipt instead of running the turn again.
+
+    Beside it, for a keyed turn: when the HANDLER is cancelled (a client
+    disconnect, a shutdown) while this settlement is shielded and still
+    committing, the route's ``finally`` releases the turn's in-flight claim
+    before the commit has landed. A duplicate arriving in that gap misses the
+    receipt and runs the turn; OCC or the receipt's unique key still lets only
+    one commit, and the route replays the committed one
+    (``turn_idempotency``'s degraded mode). Named, not restructured.
+
     Post-commit steps, in order, none of which can turn the committed turn into
     an error, and none of which the response waits on beyond its own CPU:
 

@@ -89,7 +89,7 @@ class MockCaseRepository:
         # we want to track mutations
         return self._storage.get(case_id)
 
-    async def _save(self, case: Case, *, reports=()) -> Case:
+    async def _save(self, case: Case, *, reports=(), receipt=None) -> Case:
         """Save case - store it (service passes the updated case), with the
         report rows the turn commits alongside it."""
         # Store the case object directly - service passes the updated case after mutations
@@ -207,7 +207,7 @@ class RecordingCaseRepository(MockCaseRepository):
     them does not build a third copy.
     """
 
-    async def _save(self, case: Case, *, reports=()) -> Case:
+    async def _save(self, case: Case, *, reports=(), receipt=None) -> Case:
         self._storage[case.case_id] = case.model_copy(
             update={"current_turn": case.effective_current_turn}
         )

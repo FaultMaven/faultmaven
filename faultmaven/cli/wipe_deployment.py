@@ -148,6 +148,9 @@ MUST_BE_EMPTY = frozenset(
         "knowledge_suggestions",
         "reports",
         "solutions",
+        # Turn receipts (#1888): deleted with their case, so a surviving row
+        # means a case survived too.
+        "turn_receipts",
         "uploaded_files",
         # Identity / tenancy. ``sso_org_mappings`` and
         # ``sso_personal_enterprises`` are deliberately untenanted (the callback

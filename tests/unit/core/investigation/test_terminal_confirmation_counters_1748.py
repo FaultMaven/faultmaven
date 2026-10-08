@@ -669,7 +669,7 @@ class _Store:
         row = self._rows.get(case_id)
         return row.model_copy(deep=True) if row is not None else None
 
-    async def save(self, case: Case, *, reports=()) -> Case:
+    async def save(self, case: Case, *, reports=(), receipt=None) -> Case:
         for armed in list(self._failures):
             when, exc = armed
             if when(case):

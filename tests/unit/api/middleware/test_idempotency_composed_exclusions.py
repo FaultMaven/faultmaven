@@ -311,16 +311,21 @@ def test_a_path_naming_no_post_route_is_refused():
     assert not getattr(app.state, APP_STATE_POLICY_ATTR, None)
 
 
-def test_a_templated_path_is_refused():
-    """``/orgs/{org_id}/tokens`` can never equal a concrete request path."""
+def test_a_templated_path_is_declared_by_its_route_template():
+    """``/orgs/{org_id}/tokens`` never equals a concrete request path, so it is
+    held as a template and matched by the regex Starlette compiles for it
+    (#1888); a template naming no served route is refused, as a path is."""
     app, _ = _build_app()
 
     @app.post("/api/v1/orgs/{org_id}/tokens")
     async def mint(org_id: str):
         return {"token": "t"}
 
-    with pytest.raises(ValueError, match="templated"):
-        exclude_from_idempotency(app, "/api/v1/orgs/{org_id}/tokens")
+    assert exclude_from_idempotency(app, "/api/v1/orgs/{org_id}/tokens") == (
+        frozenset({"/api/v1/orgs/{org_id}/tokens"})
+    )
+    with pytest.raises(ValueError, match="names no POST route"):
+        exclude_from_idempotency(app, "/api/v1/orgs/{org_id}/keys")
 
 
 def test_a_relative_path_is_refused():

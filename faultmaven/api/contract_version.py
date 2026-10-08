@@ -1801,4 +1801,38 @@ asked to accept, and it belongs to a person.
 # Clients: faultmaven-dashboard's `CreateRunbookForm` reads the generated enums
 # instead of its hand-kept lists when it adopts this version.
 # faultmaven-copilot and faultmaven-slack-agent only regenerate.
-API_CONTRACT_VERSION = "12.1.0"
+
+# 12.2.0 — MINOR. `POST /cases/{case_id}/turns` publishes its retry semantics
+# (#1888). The turn's one commit records the request's `Idempotency-Key` in a
+# turn receipt, and a retry with that key is answered with the committed turn
+# instead of running a new one. Added to the operation:
+#
+# * an optional `Idempotency-Key` header parameter, with the grammar every
+#   layer reads (8–255 of `[A-Za-z0-9_-]`); a key outside it is a 422;
+# * `X-Idempotency-Replayed: true` on a 200 that replays a committed turn
+#   (also added to the CORS-exposed headers);
+# * three labelled 409s that only a keyed duplicate can produce:
+#   `TURN_IN_PROGRESS` (with `Retry-After`, the seconds left on the first
+#   request's claim), `IDEMPOTENCY_KEY_REUSE` (the code the idempotency
+#   middleware already answers for the same condition) and
+#   `IDEMPOTENCY_REPLAY_UNAVAILABLE` (the turn committed, its stored response
+#   no longer validates: reload the case);
+# * the 409s and the 504 the route already raised, declared: an undocumented
+#   response is invisible to every client generator and contract differ.
+#
+# MINOR because no existing request changes outcome: an unkeyed turn runs
+# exactly as before, and the keys first-party clients already send (the
+# copilot's `opt_msg_<ms>_<n>`, stable across its retries) are inside the
+# grammar, so those retries now replay where they used to run a second turn
+# whenever the middleware's cache missed. The middleware no longer answers this
+# route at all (declared `never_replayed`). The terminal-case 409s stay
+# UNLABELLED: the Slack agent reads an unlabelled 409 as "this case is closed",
+# so labelling them `CASE_TERMINAL` waits for it to map that code first.
+# Requiring a key would be MAJOR, and waits for the Slack agent to send one.
+#
+# Clients: faultmaven-copilot (copilot-ui) can map `TURN_IN_PROGRESS` to an
+# automatic retry honouring `Retry-After` with the same key; the Slack agent
+# (sa#90) sends a key derived from the Slack message identity and maps both
+# codes. faultmaven-dashboard follows its copilot-ui pin. Until then every
+# client survives this unchanged.
+API_CONTRACT_VERSION = "12.2.0"
