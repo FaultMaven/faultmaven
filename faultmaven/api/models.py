@@ -3,7 +3,7 @@
 Purpose: Pydantic models for FastAPI request validation and response serialization.
 
 This module provides:
-- Request models for case, session, and evidence operations
+- Request models for session and evidence operations
 - Response models for API responses
 - Error response models for consistent error handling
 
@@ -19,118 +19,8 @@ from faultmaven.models.investigation_session import SessionState
 
 # Import from contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.case.contracts import (
-    CaseSeverity,
-    CaseState,
     EvidenceArtifactType,
-    InvestigationProgress,
 )
-
-# ============================================================
-# Case Models
-# ============================================================
-
-
-class CaseCreateRequest(BaseModel):
-    """Request model for creating a case."""
-
-    title: str = Field(..., min_length=1, max_length=512)
-    description: str = Field(..., min_length=1)
-    severity: CaseSeverity
-    metadata: Optional[Dict[str, Any]] = None
-
-
-class CaseUpdateRequest(BaseModel):
-    """Request model for updating a case."""
-
-    title: Optional[str] = Field(None, min_length=1, max_length=512)
-    description: Optional[str] = Field(None, min_length=1)
-    severity: Optional[CaseSeverity] = None
-    state: Optional[CaseState] = None
-    assigned_to: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
-
-
-class CaseResponse(BaseModel):
-    """Response model for a case."""
-
-    case_id: str
-    enterprise_id: str
-    reporter_user_id: str
-    title: str
-    description: str
-    severity: CaseSeverity
-    state: CaseState
-    progress: Optional[InvestigationProgress] = None
-    assigned_to: Optional[str] = None
-    created_at: datetime
-    updated_at: datetime
-    closed_at: Optional[datetime] = None
-    resolution: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
-
-    model_config = ConfigDict(from_attributes=True)
-
-    @classmethod
-    def from_domain(
-        cls, case: Any, severity: Optional[CaseSeverity] = None
-    ) -> "CaseResponse":
-        """Create CaseResponse from domain Case model.
-
-        Args:
-            case: Domain Case object
-            severity: Optional severity override (extracted from metadata)
-
-        Returns:
-            CaseResponse instance
-        """
-        # Extract severity from problem_verification or metadata
-        case_severity = severity
-        if case_severity is None:
-            if (
-                hasattr(case, "problem_verification")
-                and case.problem_verification
-                and case.problem_verification.severity
-            ):
-                try:
-                    case_severity = CaseSeverity.from_string(
-                        case.problem_verification.severity
-                    )
-                except (ValueError, AttributeError):
-                    case_severity = CaseSeverity.MEDIUM
-            else:
-                case_severity = CaseSeverity.MEDIUM
-
-        # Get resolution from closure_reason if available
-        resolution = None
-        if hasattr(case, "closure_reason") and case.closure_reason:
-            resolution = case.closure_reason
-
-        return cls(
-            case_id=case.case_id,
-            enterprise_id=case.enterprise_id,
-            reporter_user_id=case.user_id,
-            title=case.title,
-            description=case.description,
-            severity=case_severity,
-            state=case.state,
-            progress=getattr(case, "progress", None),
-            assigned_to=getattr(case, "assigned_to", None),
-            created_at=case.created_at,
-            updated_at=case.updated_at,
-            closed_at=getattr(case, "closed_at", None),
-            resolution=resolution,
-            metadata=getattr(case, "metadata", None),
-        )
-
-
-class CaseListResponse(BaseModel):
-    """Response model for case list."""
-
-    items: List[CaseResponse]
-    total: int
-    limit: int
-    offset: int
-
 
 # ============================================================
 # Session Models

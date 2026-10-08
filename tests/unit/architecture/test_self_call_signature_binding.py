@@ -91,7 +91,6 @@ _MODULES_UNDER_GUARD = {
         "APIInvestigationSessionService"
     ),
     "faultmaven.modules.auth.domain.services.sso_login_service": "SSOLoginService",
-    "faultmaven.modules.case.domain.services.api_case_service": "APICaseService",
     "faultmaven.modules.case.domain.services.case_service": "CaseService",
     "faultmaven.modules.knowledge.domain.services.suggestion_service": (
         "SuggestionService"

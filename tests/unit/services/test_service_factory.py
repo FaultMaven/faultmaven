@@ -20,7 +20,6 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
     InvestigationSessionRepository,
 )
 from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.modules.case.domain.services.api_case_service import APICaseService
 from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
 )
@@ -126,33 +125,6 @@ class TestServiceFactoryInitialization:
 class TestServiceCreation:
     """Test service creation methods."""
 
-    def test_create_case_service_returns_api_case_service(self, mock_session):
-        """Test that create_case_service returns APICaseService."""
-        factory = ServiceFactory(mock_session)
-
-        service = factory.create_case_service()
-
-        assert service is not None
-        assert isinstance(service, APICaseService)
-
-    def test_create_case_service_injects_case_repo(self, mock_session):
-        """Test that case service has case_repo injected."""
-        factory = ServiceFactory(mock_session)
-
-        service = factory.create_case_service()
-
-        assert service.case_repo is not None
-        assert service.case_repo is factory.case_repo
-
-    def test_create_case_service_injects_session_repo(self, mock_session):
-        """Test that case service has session_repo injected."""
-        factory = ServiceFactory(mock_session)
-
-        service = factory.create_case_service()
-
-        assert service.session_repo is not None
-        assert service.session_repo is factory.session_repo
-
     # Note: evidence_repo and execution_repo removed - evidence and agent executions
     # are now handled by case_repo (ICaseRepository) as part of TD-001 migration
 
@@ -227,12 +199,12 @@ class TestInvestigationSessionServiceCreation:
 class TestMultipleServiceCreation:
     """Test creating multiple services."""
 
-    def test_multiple_case_service_instances(self, mock_session):
-        """Test creating multiple case service instances."""
+    def test_multiple_session_service_instances(self, mock_session):
+        """Test creating multiple session service instances."""
         factory = ServiceFactory(mock_session)
 
-        service1 = factory.create_case_service()
-        service2 = factory.create_case_service()
+        service1 = factory.create_investigation_session_service()
+        service2 = factory.create_investigation_session_service()
 
         # Each call creates a new instance
         assert service1 is not service2
@@ -241,8 +213,8 @@ class TestMultipleServiceCreation:
         """Test that multiple services share the same repositories."""
         factory = ServiceFactory(mock_session)
 
-        service1 = factory.create_case_service()
-        service2 = factory.create_case_service()
+        service1 = factory.create_investigation_session_service()
+        service2 = factory.create_investigation_session_service()
 
         # Repositories are shared
         assert service1.case_repo is service2.case_repo
@@ -265,26 +237,6 @@ class TestServiceFactoryIntegration:
 
         assert factory.db_session is async_session
         assert factory.case_repo is not None
-
-    @pytest.mark.asyncio
-    async def test_case_service_with_real_session(self, async_session):
-        """Test case service works with real session."""
-        factory = ServiceFactory(async_session)
-        service = factory.create_case_service()
-
-        # Service should be functional
-        assert service is not None
-        assert service.service_name == "api_case_service"
-
-    @pytest.mark.asyncio
-    async def test_case_service_can_list_cases(self, async_session):
-        """Test case service can list cases (empty db)."""
-        factory = ServiceFactory(async_session)
-        service = factory.create_case_service()
-
-        # Should not raise, returns empty list
-        cases = await service.list_cases("test_org")
-        assert cases == []
 
     @pytest.mark.asyncio
     async def test_investigation_session_service_with_real_session(self, async_session):

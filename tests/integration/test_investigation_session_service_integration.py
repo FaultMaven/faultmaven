@@ -39,7 +39,6 @@ from faultmaven.modules.case.domain.models.lifecycle import (
     CaseState,
     InvestigationStrategy,
 )
-from faultmaven.modules.case.domain.services.api_case_service import APICaseService
 from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
 )

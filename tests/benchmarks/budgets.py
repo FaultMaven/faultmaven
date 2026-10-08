@@ -112,51 +112,6 @@ CASE_SEARCH = LatencyBudget(
     reference=0.148755,
 )
 
-# --- tests/benchmarks/test_case_service_operations.py ------------------------
-
-CASE_SERVICE_CREATE = LatencyBudget(
-    "test_create_case_performance",
-    regression=0.015,
-    product_target=0.200,
-    reference=0.006977,
-)
-CASE_SERVICE_GET = LatencyBudget(
-    "test_get_case_performance",
-    regression=0.050,
-    product_target=0.100,
-    reference=0.018838,
-)
-CASE_SERVICE_UPDATE = LatencyBudget(
-    "test_update_case_performance",
-    regression=0.060,
-    product_target=0.150,
-    reference=0.022254,
-)
-CASE_SERVICE_LIST = LatencyBudget(
-    "test_list_cases_performance",
-    regression=0.080,
-    product_target=0.300,
-    reference=0.030911,
-)
-CASE_SERVICE_GET_WITH_DETAILS = LatencyBudget(
-    "test_get_case_with_details_performance",
-    regression=0.050,
-    product_target=0.250,
-    reference=0.019836,
-)
-CASE_SERVICE_STATISTICS = LatencyBudget(
-    "test_get_statistics_performance",
-    regression=0.500,
-    product_target=1.000,
-    reference=0.192949,
-)
-CASE_SERVICE_CLOSE = LatencyBudget(
-    "test_close_case_performance",
-    regression=0.060,
-    product_target=0.200,
-    reference=0.022393,
-)
-
 # --- tests/benchmarks/test_investigation_session_operations.py ---------------
 
 SESSION_CREATE = LatencyBudget(

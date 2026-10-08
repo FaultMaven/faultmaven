@@ -9,7 +9,6 @@ database session management to ensure proper transaction handling.
 Usage:
     async with get_db_session() as session:
         factory = ServiceFactory(session)
-        case_service = factory.create_case_service()
         session_service = factory.create_investigation_session_service()
         # Use services for operations...
 """
@@ -27,7 +26,6 @@ from faultmaven.infrastructure.persistence.repository_factory import (
     get_investigation_session_repository,
     get_knowledge_item_repository,
 )
-from faultmaven.modules.case.domain.services.api_case_service import APICaseService
 from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
 )
@@ -68,8 +66,7 @@ class ServiceFactory:
     Example:
         async with get_db_session() as session:
             factory = ServiceFactory(session)
-            case_service = factory.create_case_service()
-            case = await case_service.get_case(case_id, organization_id)
+                case = await case_service.get_case(case_id, organization_id)
     """
 
     def __init__(
@@ -101,18 +98,6 @@ class ServiceFactory:
         self.knowledge_repo: KnowledgeItemRepository = get_knowledge_item_repository(
             storage_type=STORAGE_TYPE_DATABASE,
             session=db_session,
-        )
-
-    def create_case_service(self) -> APICaseService:
-        """Create API case service with dependencies.
-
-        Returns:
-            APICaseService instance with injected repositories
-        """
-        return APICaseService(
-            case_repo=self.case_repo,
-            session_repo=self.session_repo,
-            tenant_provider=self.tenant_provider,
         )
 
     def create_investigation_session_service(self) -> APIInvestigationSessionService:

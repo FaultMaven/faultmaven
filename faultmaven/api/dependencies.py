@@ -6,14 +6,16 @@ This module provides dependency injection functions for FastAPI endpoints,
 integrating with the service factory and database session management.
 
 Usage:
-    from faultmaven.api.dependencies import get_api_case_service
+    from faultmaven.api.dependencies import get_investigation_session_service
 
-    @app.get("/cases/{case_id}")
-    async def get_case(
-        case_id: str,
-        case_service: APICaseService = Depends(get_api_case_service)
+    @app.get("/sessions/{session_id}")
+    async def get_session(
+        session_id: str,
+        session_service: APIInvestigationSessionService = Depends(
+            get_investigation_session_service
+        ),
     ):
-        return await case_service.get_case(case_id, organization_id)
+        ...
 
 Note: get_evidence_artifact_service was removed in storage redesign 2026-04
 phase 2 along with the standalone evidence path. Evidence is now created
@@ -31,7 +33,6 @@ from faultmaven.infrastructure.persistence.database import (
     get_db_session,
 )
 from faultmaven.infrastructure.redis_client import is_fakeredis
-from faultmaven.modules.case.domain.services.api_case_service import APICaseService
 from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
 )
@@ -54,7 +55,6 @@ __all__ = [
     # Service Factory Dependencies (TASK-011/012/013)
     "get_async_db_session",
     "get_service_factory",
-    "get_api_case_service",
     "get_investigation_session_service",
     "get_file_storage_service",
     "database_backend_name",
@@ -171,8 +171,8 @@ async def get_service_factory(
         async def get_stats(
             factory: ServiceFactory = Depends(get_service_factory)
         ):
-            case_service = factory.create_case_service()
-            return await case_service.get_case_statistics(organization_id)
+            session_service = factory.create_investigation_session_service()
+            return await session_service.list_sessions(case_id)
     """
     # Get tenant_provider from app.state if request is available
     tenant_provider = None
@@ -185,35 +185,6 @@ async def get_service_factory(
 # ============================================================
 # Service Dependencies
 # ============================================================
-
-
-async def get_api_case_service(
-    factory: ServiceFactory = Depends(get_service_factory),
-) -> APICaseService:
-    """Get API case service for request.
-
-    Creates an APICaseService with all required repository dependencies
-    from the service factory.
-
-    Args:
-        factory: Service factory from get_service_factory
-
-    Returns:
-        APICaseService instance
-
-    Example:
-        @app.get("/cases/{case_id}")
-        async def get_case(
-            case_id: str,
-            organization_id: str,
-            case_service: APICaseService = Depends(get_api_case_service)
-        ):
-            case = await case_service.get_case(case_id, organization_id)
-            if not case:
-                raise HTTPException(404, "Case not found")
-            return case
-    """
-    return factory.create_case_service()
 
 
 async def get_investigation_session_service(

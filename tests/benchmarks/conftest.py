@@ -308,13 +308,12 @@ def warm_repository_paths():
     adds ~50MB here, comfortably inside that test's 1500MB assertion (~432MB is
     already resident from `tests/conftest.py`'s own imports).
 
-    Coverage caveat: `test_case_service_operations.py` and
-    `test_investigation_session_service_operations.py` define their own
-    repository fixtures that do NOT request this one. Under the full-suite
+    Coverage caveat: `test_investigation_session_service_operations.py`
+    defines its own repository fixtures that do NOT request this one. Under the full-suite
     invocation CI uses, alphabetical collection runs the warmed
-    `test_case_operations.py` first, so they are warm by the time they execute.
-    Run standalone they are not, and the cold import lands in the first
-    iteration of their timed loops — absorbed by their p95 assertions rather
+    `test_case_operations.py` first, so it is warm by the time it executes.
+    Run standalone it is not, and the cold import lands in the first
+    iteration of its timed loop — absorbed by its p95 assertion rather
     than failing. Point those fixtures here too if that ever stops holding.
 
     This warms the import chain and SQLAlchemy/aiosqlite statement setup on a
