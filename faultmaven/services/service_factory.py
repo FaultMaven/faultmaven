@@ -39,7 +39,6 @@ from faultmaven.modules.evidence.domain.services.file_storage_service import (
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     KnowledgeItemRepository,
 )
-from faultmaven.providers.tenancy.base import TenantProvider
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
@@ -66,20 +65,17 @@ class ServiceFactory:
     Example:
         async with get_db_session() as session:
             factory = ServiceFactory(session)
-                case = await case_service.get_case(case_id, organization_id)
+            session_service = factory.create_investigation_session_service()
+            sessions = await session_service.list_sessions(case_id, enterprise_id)
     """
 
-    def __init__(
-        self, db_session: AsyncSession, tenant_provider: Optional[TenantProvider] = None
-    ):
+    def __init__(self, db_session: AsyncSession):
         """Initialize service factory.
 
         Args:
             db_session: Database session for repositories
-            tenant_provider: Optional tenant provider for org resolution
         """
         self.db_session = db_session
-        self.tenant_provider = tenant_provider
 
         # Create repositories with the provided session.
         # `get_repository_for_session` returns the dialect-appropriate

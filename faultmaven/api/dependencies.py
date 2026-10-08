@@ -151,7 +151,6 @@ async def get_async_db_session() -> AsyncGenerator[AsyncSession, None]:
 
 async def get_service_factory(
     db_session: AsyncSession = Depends(get_async_db_session),
-    request: Request = None,
 ) -> ServiceFactory:
     """Get service factory for request.
 
@@ -161,7 +160,6 @@ async def get_service_factory(
 
     Args:
         db_session: Database session from get_async_db_session
-        request: FastAPI request (optional, for tenant_provider access)
 
     Returns:
         ServiceFactory instance
@@ -172,14 +170,9 @@ async def get_service_factory(
             factory: ServiceFactory = Depends(get_service_factory)
         ):
             session_service = factory.create_investigation_session_service()
-            return await session_service.list_sessions(case_id)
+            return await session_service.list_sessions(case_id, enterprise_id)
     """
-    # Get tenant_provider from app.state if request is available
-    tenant_provider = None
-    if request is not None:
-        tenant_provider = getattr(request.app.state, "tenant_provider", None)
-
-    return ServiceFactory(db_session, tenant_provider=tenant_provider)
+    return ServiceFactory(db_session)
 
 
 # ============================================================

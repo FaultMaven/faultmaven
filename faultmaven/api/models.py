@@ -3,9 +3,8 @@
 Purpose: Pydantic models for FastAPI request validation and response serialization.
 
 This module provides:
-- Request models for session and evidence operations
-- Response models for API responses
-- Error response models for consistent error handling
+- Request and response models for investigation sessions
+- Admin user, LLM configuration and config-status models
 
 Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 """
@@ -16,11 +15,6 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from faultmaven.models.investigation_session import SessionState
-
-# Import from contracts (Principle 2: Vertical Modules with Contracts)
-from faultmaven.modules.case.contracts import (
-    EvidenceArtifactType,
-)
 
 # ============================================================
 # Session Models
@@ -102,62 +96,6 @@ class SessionListResponse(BaseModel):
     total: int
     limit: int
     offset: int
-
-
-# ============================================================
-# Evidence Models
-# ============================================================
-
-
-class EvidenceUploadRequest(BaseModel):
-    """Request model for evidence upload (multipart form).
-
-    Note: This model is used for documentation purposes.
-    The actual upload uses FastAPI Form parameters.
-    """
-
-    evidence_type: EvidenceArtifactType
-    description: Optional[str] = None
-    is_primary: bool = False
-    metadata: Optional[Dict[str, Any]] = None
-
-
-class EvidenceUpdateRequest(BaseModel):
-    """Request model for updating evidence."""
-
-    description: Optional[str] = None
-    is_primary: Optional[bool] = None
-    metadata: Optional[Dict[str, Any]] = None
-
-
-# EvidenceResponse / EvidenceListResponse removed (2026-05): both classes
-# were dead code referencing dropped Evidence attributes (original_filename,
-# evidence_type, mime_type, file_size, user_id) — none of which survive on
-# the post-redesign Evidence model. Verified by grep: no consumer imported
-# either class. Evidence is exposed to the API via the case-detail aggregate
-# (case_ui_adapter), not via a standalone evidence-list endpoint.
-
-
-# ============================================================
-# Error Models
-# ============================================================
-
-
-class ErrorResponse(BaseModel):
-    """Standard error response."""
-
-    error: str
-    detail: Optional[str] = None
-    status_code: int
-
-
-class ValidationErrorResponse(BaseModel):
-    """Validation error response with field-level details."""
-
-    error: str = "Validation Error"
-    detail: Optional[str] = None
-    status_code: int = 400
-    errors: Optional[List[Dict[str, Any]]] = None
 
 
 # ============================================================

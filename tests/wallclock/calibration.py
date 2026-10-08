@@ -159,11 +159,11 @@ before/after.
 What it corrects well, and what only partly
 -------------------------------------------
 
-Two thirds of the suite compares ``measure_min_latency``'s MINIMUM, which
+Most of the suite compares ``measure_min_latency``'s MINIMUM, which
 is a clean-window estimate like the calibration's own, so the two measure
-the same quantity. The other third
+the same quantity. The rest
 (``test_investigation_session_service_operations``)
-compares a **p95** over 50-100 iterations, which absorbs contention a
+compare a **p95** over 50-100 iterations, which absorbs contention a
 minimum rejects; there the scale moves the budget the right way but cannot
 be expected to cancel exactly.
 

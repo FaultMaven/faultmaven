@@ -1381,8 +1381,9 @@ class TestEveryMeasurementIsJudged:
     def test_the_search_follows_a_wrapper(self):
         """‼ The property the first draft of this check got wrong.
 
-        `tests/benchmarks/test_case_service_operations.py` calls
-        `report_p95`, which calls `assert_latency_within`. A one-level
+        `report_benchmark` in
+        `tests/benchmarks/test_investigation_session_service_operations.py`
+        calls `assert_latency_within`. A one-level
         search reported it as unjudged — a false positive that, had it been
         allowlisted instead of read, would have left a real benchmark
         exempt from the guard forever.

@@ -3,7 +3,6 @@
 Tests:
 - SessionCreateRequest validation
 - InvestigationSessionResponse serialization
-- EvidenceResponse serialization
 - Pydantic validation errors (min_length, ge constraints)
 """
 
@@ -15,16 +14,12 @@ import pytest
 from pydantic import ValidationError
 
 from faultmaven.api.models import (
-    ErrorResponse,
-    EvidenceUpdateRequest,
     InvestigationSessionResponse,
     SessionCreateRequest,
     SessionListResponse,
     SessionUpdateRequest,
-    ValidationErrorResponse,
 )
 from faultmaven.models.investigation_session import SessionState
-from faultmaven.modules.case.domain.models.lifecycle import CaseSeverity, CaseState
 
 # ============================================================
 # SessionCreateRequest Tests
@@ -145,89 +140,6 @@ class TestSessionResponse:
         assert response.session_id == "session_123"
         assert response.state == SessionState.PAUSED
         assert response.total_duration_ms == 60000
-
-
-# ============================================================
-# EvidenceUpdateRequest Tests
-# ============================================================
-
-
-class TestEvidenceUpdateRequest:
-    """Tests for EvidenceUpdateRequest model."""
-
-    def test_evidence_update_all_optional(self):
-        """Test all fields are optional."""
-        request = EvidenceUpdateRequest()
-        assert request.description is None
-        assert request.is_primary is None
-        assert request.metadata is None
-
-    def test_evidence_update_description(self):
-        """Test update with description."""
-        request = EvidenceUpdateRequest(description="Updated description")
-        assert request.description == "Updated description"
-
-    def test_evidence_update_is_primary(self):
-        """Test update is_primary flag."""
-        request = EvidenceUpdateRequest(is_primary=True)
-        assert request.is_primary is True
-
-
-# EvidenceResponse / EvidenceListResponse tests removed in 2026-05 cleanup
-# — both classes were deleted from faultmaven/api/models.py because they
-# referenced dropped Evidence attributes (original_filename, evidence_type,
-# mime_type, file_size, user_id) and were never imported by any consumer.
-# Evidence is now exposed via the case-detail aggregate (case_ui_adapter).
-
-
-# ============================================================
-# ErrorResponse Tests
-# ============================================================
-
-
-class TestErrorResponse:
-    """Tests for ErrorResponse model."""
-
-    def test_error_response_basic(self):
-        """Test basic error response."""
-        response = ErrorResponse(
-            error="Not Found",
-            detail="Case not found: case_123",
-            status_code=404,
-        )
-        assert response.error == "Not Found"
-        assert response.detail == "Case not found: case_123"
-        assert response.status_code == 404
-
-    def test_error_response_no_detail(self):
-        """Test error response without detail."""
-        response = ErrorResponse(
-            error="Internal Server Error",
-            status_code=500,
-        )
-        assert response.error == "Internal Server Error"
-        assert response.detail is None
-        assert response.status_code == 500
-
-
-class TestValidationErrorResponse:
-    """Tests for ValidationErrorResponse model."""
-
-    def test_validation_error_response(self):
-        """Test validation error response."""
-        response = ValidationErrorResponse(
-            detail="Invalid input",
-            errors=[
-                {
-                    "loc": ["body", "title"],
-                    "msg": "field required",
-                    "type": "value_error.missing",
-                },
-            ],
-        )
-        assert response.error == "Validation Error"
-        assert response.status_code == 400
-        assert len(response.errors) == 1
 
 
 # ============================================================
