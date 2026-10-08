@@ -715,7 +715,7 @@ class ResolutionReadiness:
     # Verdict values:
     #   "ready"          — Root cause + solution present → propose RESOLVED transition
     #   "needs_info"     — One missing (e.g., root cause but no solution) → propose with needs_info=True
-    #   "suggest_close"  — No root cause, no solution, no evidence → pivot to CLOSED (both UI-dropdown and LLM-emit paths)
+    #   "suggest_close"  — No root cause, no solution, no evidence → pivot to CLOSED (the LLM-emit path; RESOLVED is not a menu pick)
     verdict: str
     message: str        # Human-facing explanation
     missing: List[str]  # Field names that need to be filled before READY
@@ -725,7 +725,7 @@ Checks: `root_cause_conclusion` (or `working_conclusion` with likelihood ≥0.6)
 
 For `NEEDS_INFO`, the system stores the pending transition with `needs_info=True`. This remembers the user's intent to resolve. On subsequent turns, `_check_automatic_transitions` re-evaluates readiness. When the case becomes READY, the LLM response is overridden with a deterministic confirmation prompt.
 
-For `SUGGEST_CLOSE`, the engine pivots the pending proposal to CLOSED immediately (both UI-dropdown and LLM-emit paths). The user sees the close confirmation pair rather than a resolve prompt.
+For `SUGGEST_CLOSE`, the engine pivots the pending proposal to CLOSED immediately (the LLM-emit path; RESOLVED is not a menu pick). The user sees the close confirmation pair rather than a resolve prompt.
 
 **RunbookReadiness** (`assess_runbook_readiness(case)`) — higher bar for quality runbook generation.
 

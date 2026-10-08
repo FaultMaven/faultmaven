@@ -349,9 +349,11 @@ class TestINV04_NoDirectInquiryToResolved:
 
         These used to be pinned EQUAL, which encoded the assumption that
         anything the state machine permits is something a user may pick. That
-        is false for INQUIRY → INVESTIGATING: the edge is legal and Gate 1
-        performs it, but it is earned by a confirmed problem statement, so a
-        menu cannot honour it on demand.
+        is false for two edges, both earned rather than picked: INQUIRY →
+        INVESTIGATING (legal, performed by Gate 1, earned by a confirmed problem
+        statement) and INVESTIGATING → RESOLVED (earned by the readiness bar and
+        offered by the engine or the model). A menu cannot honour either on
+        demand.
 
         What must still hold is the containment — a menu may never offer an
         edge the machine would reject — plus agreement between the legality

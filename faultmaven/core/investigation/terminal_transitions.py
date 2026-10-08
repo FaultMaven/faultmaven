@@ -602,7 +602,7 @@ def derive_closure_reason(case: "Case") -> str:
 # ============================================================
 
 # Per-disposition eligibility verdicts surfaced to the frontend so the
-# UI can gate the case-action dropdown affordances (Resolve / Close) on
+# UI can gate the case-action dropdown affordance (Close) on
 # actual case state, not just the structural action graph. The values
 # mirror what ``assess_resolution_readiness`` and
 # ``assess_closure_readiness`` already compute at action time; this
