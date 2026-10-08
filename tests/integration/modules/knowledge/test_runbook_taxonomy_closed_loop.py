@@ -152,9 +152,72 @@ def migrated_template(tmp_path_factory) -> Path:
     return path
 
 
-@pytest.fixture(params=["orm", "migrated"])
+#: A PostgreSQL to run the loop against too, when the suite is pointed at one
+#: (CI's PostgreSQL job, or a local container): ``DATABASE_URL=postgresql...``.
+POSTGRES_URL = os.environ.get("DATABASE_URL", "")
+ON_POSTGRES = POSTGRES_URL.startswith("postgresql")
+_postgres = pytest.param(
+    "postgres",
+    marks=[
+        pytest.mark.postgres,
+        pytest.mark.skipif(
+            not ON_POSTGRES,
+            reason="PostgreSQL-only; set DATABASE_URL to a PG instance to run.",
+        ),
+    ],
+)
+
+#: What one test writes, cleared before the next on the shared PG database.
+_WRITTEN_TABLES = (
+    "resource_shares, knowledge_items, conversion_drafts, conversion_jobs, "
+    "uploaded_files"
+)
+
+
+def _async_url(url: str) -> str:
+    return url.replace("postgresql://", "postgresql+asyncpg://", 1).replace(
+        "postgresql+psycopg2://", "postgresql+asyncpg://", 1
+    )
+
+
+@pytest.fixture(scope="module")
+def migrated_postgres():
+    """Migrate the PostgreSQL database to head once for the module."""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        p for p in (str(PROJECT_ROOT), env.get("PYTHONPATH")) if p
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=PROJECT_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return _async_url(POSTGRES_URL)
+
+
+@pytest.fixture(params=["orm", "migrated", _postgres])
 async def session_factory(request, tmp_path, migrated_template):
-    if request.param == "migrated":
+    if request.param == "postgres":
+        from sqlalchemy import text
+
+        engine = create_async_engine(request.getfixturevalue("migrated_postgres"))
+        async with engine.begin() as conn:
+            await conn.execute(text(f"TRUNCATE {_WRITTEN_TABLES} CASCADE"))
+            # PostgreSQL enforces the foreign keys SQLite leaves off: the
+            # author the drafts and items name must exist.
+            await conn.execute(
+                text(
+                    "INSERT INTO users (user_id, enterprise_id, username, email, "
+                    "display_name, created_at, updated_at) VALUES ('u1', :e, "
+                    "'author', 'author@example.com', 'Author', now(), now()) "
+                    "ON CONFLICT DO NOTHING"
+                ),
+                {"e": STANDALONE_ENTERPRISE_ID},
+            )
+    elif request.param == "migrated":
         db = tmp_path / "db.sqlite"
         db.write_bytes(migrated_template.read_bytes())
         engine = create_async_engine(f"sqlite+aiosqlite:///{db}")
@@ -344,3 +407,38 @@ async def test_a_scanned_file_with_an_off_vocabulary_severity_is_recorded(
     assert rows["sample-runbook"].severity is None
     assert rows["sample-runbook"].validation_passed is False
     assert rows["other-runbook"].severity == "high"
+
+
+@pytest.mark.postgres
+@pytest.mark.skipif(
+    not ON_POSTGRES,
+    reason="PostgreSQL-only; set DATABASE_URL to a PG instance to run.",
+)
+@pytest.mark.parametrize(
+    "table,name,column,enum_cls", CONSTRAINED_COLUMNS, ids=lambda x: str(x)
+)
+async def test_postgres_check_admits_exactly_the_vocabulary(
+    migrated_postgres, table, name, column, enum_cls
+):
+    """The PostgreSQL half of the migrated-CHECK pin: 008 alters the
+    constraint in place there, so its definition is read back from the
+    catalogue rather than from DDL text."""
+    from sqlalchemy import text
+
+    engine = create_async_engine(migrated_postgres)
+    try:
+        async with engine.connect() as conn:
+            definition = (
+                await conn.execute(
+                    text(
+                        "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                        "WHERE conname = :name"
+                    ),
+                    {"name": name},
+                )
+            ).scalar_one()
+    finally:
+        await engine.dispose()
+    assert set(re.findall(r"'([^']*)'::", definition)) == set(
+        vocabulary(enum_cls)
+    ), definition

@@ -55,6 +55,7 @@ from faultmaven.modules.knowledge.domain.services.suggestion_service import (
 from faultmaven.modules.knowledge.taxonomy import (
     TAXONOMY_FIELDS,
     KnowledgeScope,
+    RunbookDifficulty,
     RunbookDomain,
     RunbookSeverity,
     RunbookStatus,
@@ -345,3 +346,24 @@ def test_the_create_request_schema_publishes_the_vocabularies():
 
 def test_the_reranker_weights_every_lifecycle_status():
     assert set(_STATUS_WEIGHTS) == set(RunbookStatus)
+
+
+def test_the_published_contract_carries_every_vocabulary_the_request_uses():
+    """What the clients generate from: ``openapi.json`` (regenerated, never
+    hand-edited) publishes each enum with the owner's values in its order."""
+    import json
+
+    spec = json.loads(
+        (
+            Path(__file__).resolve().parents[4] / "docs/reference/api/openapi.json"
+        ).read_text(encoding="utf-8")
+    )
+    schemas = spec["components"]["schemas"]
+    for name, enum_cls in (
+        ("RunbookDomain", RunbookDomain),
+        ("SymptomClass", SymptomClass),
+        ("RunbookSeverity", RunbookSeverity),
+        ("KnowledgeScope", KnowledgeScope),
+        ("RunbookDifficulty", RunbookDifficulty),
+    ):
+        assert schemas[name]["enum"] == list(vocabulary(enum_cls)), name

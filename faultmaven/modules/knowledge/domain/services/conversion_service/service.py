@@ -89,6 +89,7 @@ from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     avalidate_and_score,
 )
+from faultmaven.modules.knowledge.taxonomy import RunbookSeverity, render_vocabulary
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 from faultmaven.utils.frontmatter import match_frontmatter
 from faultmaven.utils.line_endings import normalize_line_endings
@@ -793,7 +794,7 @@ class ConversionService:
                 f"DOMAIN: {failure_mode.domain}\n"
                 f"SERVICE: {failure_mode.service}\n"
                 f"SYMPTOM_CLASS: {', '.join(failure_mode.symptom_class) or '(none supplied — classify from the controlled vocabulary in rule 9)'}\n"
-                f"SEVERITY: {failure_mode.severity or '(not assessed — choose one of critical, high, medium, low from the source material)'}\n"
+                f"SEVERITY: {failure_mode.severity or f'(not assessed — choose one of {render_vocabulary(RunbookSeverity)} from the source material)'}\n"
                 f"SCOPE: {scope}\n"
                 f"SOURCE FILENAME: {filename}\n"
                 f"TODAY: {today_iso}\n\n"

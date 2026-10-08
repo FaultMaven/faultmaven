@@ -1778,4 +1778,23 @@ asked to accept, and it belongs to a person.
 #
 # Clients: regenerate only; a value that read as `medium` or `unknown` for a
 # case that carried no assessment now reads null.
-API_CONTRACT_VERSION = "12.0.0"
+# 12.1.0 — MINOR. The runbook taxonomy is published. `RunbookCreateRequest`
+# (`POST /knowledge/runbooks/create`) types `domain`, `symptom_class` items,
+# `severity`, `scope` and `difficulty` with the new `RunbookDomain`,
+# `SymptomClass`, `RunbookSeverity`, `KnowledgeScope` and `RunbookDifficulty`
+# enums instead of free strings, and `POST /knowledge/documents` types its
+# `scope` form field with `KnowledgeScope` (the same three values its literal
+# enum listed). The values are the runbook spec's (runbook-content-
+# architecture.md §Taxonomy Schema), defined once in
+# `faultmaven/modules/knowledge/taxonomy.py` (#1886).
+#
+# MINOR: an off-vocabulary value in the create request is now a 422 where it
+# used to be accepted into a draft that then failed validation, and a value the
+# validator passed with `severity: info` failed verify on a database CHECK that
+# had lost `info`; it now verifies. No client sends a value outside the lists:
+# faultmaven-dashboard's `CreateRunbookForm` offers exactly these.
+#
+# Clients: faultmaven-dashboard's `CreateRunbookForm` reads the generated enums
+# instead of its hand-kept lists when it adopts this version.
+# faultmaven-copilot and faultmaven-slack-agent only regenerate.
+API_CONTRACT_VERSION = "12.1.0"

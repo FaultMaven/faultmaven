@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 12.0.0
+**Version:** 12.1.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -5192,7 +5192,7 @@ Knowledge-base scopes the calling user may publish to.
 - `description` (object, optional)
 - `document_type` (string, required)
 - `file` (string, required)
-- `scope` (string, optional)
+- `scope` (object, optional)
 - `source_url` (object, optional)
 - `tags` (object, optional)
 - `team_id` (object, optional)
@@ -5888,6 +5888,26 @@ Response model for knowledge base document operations.
 
 ---
 
+### KnowledgeScope
+
+``scope``: the KB tier, which is also a knowledge item's visibility.
+
+One vocabulary, not two: a runbook's frontmatter ``scope`` is the tier its
+knowledge item is published at. Stored in ``knowledge_items.scope`` and
+``conversion_jobs.scope``, whose CHECKs are built from this. Compare
+against members (``KnowledgeScope.PERSONAL``), not string literals.
+
+Values:
+    GLOBAL: Platform-wide built-in runbooks (FaultMaven-shipped only).
+    TEAM: Shared to one or more teams via the share table (``resource_shares``
+        rows; the scope enum is the derived convenience — ``team`` ⟺ at least
+        one share row, maintained by the KB write path). ADR-013 §D4.
+    PERSONAL: Visible only to one user (requires owner_id).
+
+**Values:** `global`, `team`, `personal`
+
+---
+
 ### LLMConfigResponse
 
 LLM configuration and provider status response.
@@ -6482,22 +6502,44 @@ Root cause information for RESOLVED phase.
 
 ### RunbookCreateRequest
 
+A runbook authored field by field (the dashboard's Create form).
+
+The closed vocabularies are typed with the taxonomy enums, so the request
+schema publishes the allowed values and an off-vocabulary value is a 422
+here rather than a draft that fails validation (#1886).
+
 **Properties:**
 
 - `applicability` (string, required)
 - `causes` (string, required) — Pre-formatted markdown with ### Cause N subsections (one ROOT each). Each cause needs Statement, an optional Chain (root->D rungs), Indicators (per-rung, [Step N]-anchored), and quadrant-tagged Interventions (remediation/defensive_fix/mitigation/loop_break). Include ### Cause Z: Unidentified with a [Default] indicator as fallback.
 - `diagnostic_steps` (string, required)
-- `difficulty` (string, optional)
-- `domain` (string, required)
+- `difficulty` (object, optional)
+- `domain` (object, required)
 - `prevention` (string, required)
-- `scope` (string, required)
+- `scope` (object, required)
 - `service` (string, required)
-- `severity` (string, required)
+- `severity` (object, required)
 - `symptom_class` (array, required)
 - `symptom_recognition` (string, required)
 - `tags` (array, optional)
 - `team_id` (object, optional)
 - `title` (string, required)
+
+---
+
+### RunbookDifficulty
+
+``difficulty`` (optional): the expertise a runbook assumes.
+
+**Values:** `beginner`, `intermediate`, `advanced`, `expert`
+
+---
+
+### RunbookDomain
+
+``domain``: the engineering vertical a runbook belongs to.
+
+**Values:** `database`, `networking`, `compute`, `application`, `security`, `storage`, `messaging`
 
 ---
 
@@ -6516,6 +6558,16 @@ Tracks origin (incident vs document) for transparency.
 - `original_document_id` (object, optional) — Reference to uploaded document (document-driven only)
 - `source` (object, required) — Origin of runbook
 - `tags` (array, optional) — Classification tags
+
+---
+
+### RunbookSeverity
+
+``severity``: the impact level a runbook addresses.
+
+Stored in ``conversion_drafts.severity``, whose CHECK is built from this.
+
+**Values:** `critical`, `high`, `medium`, `low`, `info`
 
 ---
 
@@ -6680,6 +6732,17 @@ A follow-up suggestion returned with agent responses.
 - `label` (string, required)
 - `payload` (object, optional)
 - `type` (string, required)
+
+---
+
+### SymptomClass
+
+``symptom_class``: the controlled failure-mode vocabulary.
+
+A list field in frontmatter; every item must be one of these. Long-tail
+symptoms go in the free-text ``tags`` instead (spec §Taxonomy Design Rules).
+
+**Values:** `auth_failure`, `connection_refused`, `cpu_saturation`, `crash_loop`, `data_loss`, `deployment_failure`, `disk_full`, `image_pull_failure`, `latency`, `node_failure`, `oom`, `replication_lag`, `scheduling_failure`, `service_unavailable`, `throughput_degradation`, `timeout`
 
 ---
 
