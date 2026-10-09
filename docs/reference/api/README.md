@@ -1695,7 +1695,8 @@ and completion percentage.
 Update case details
 
 Updates case metadata such as title, description, state, priority, and tags.
-Requires edit permissions on the case.
+Only the case's OWNER may update it: a team share is read-only, and a
+teammate gets the answer an absent case gets.
 
 **Tags:** `cases`
 
@@ -1731,8 +1732,8 @@ The operation is idempotent - subsequent requests will return
 request naming a case the caller cannot see.
 
 Only the OWNER may delete. A teammate who can read the case through a team
-share is refused with 403 (ADR-017 D4: a share is read visibility, not
-ownership).
+share is refused with 403 (ADR-013 D4, as amended 2026-10-09: a share is
+read-only until hand-off ships).
 
 Returns 204 No Content on success.
 
@@ -1898,6 +1899,8 @@ Get specific data file details for a case.
 **Delete Case Data**
 
 Remove data file from a case. Returns 204 No Content on success.
+
+Only the case's OWNER may call it; anyone else gets 404.
 
 **Tags:** `cases`
 
@@ -2674,6 +2677,9 @@ Generate a concise, case-specific title from case messages and metadata.
 
 **Returns:**
 - 200: TitleResponse with X-Correlation-ID header
+- 404: the case does not exist or the caller does not own it. Naming a
+  case writes it, and a team share is read-only, so a teammate is refused
+  here before any title is generated.
 - 422: ValidationException body — see ``api/exception_handlers.py``
   and ``docs/architecture/specifications/exception-contract.md``.
   Raised when there is insufficient meaningful context to generate

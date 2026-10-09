@@ -198,6 +198,34 @@ choice of resolver by request method)               teammate's PATCH answers
                                                     only the case row itself,
                                                     which this gate does not
                                                     guard.
+``InvestigationService._verify_access_and_reserve`` 1: ``test_a_teammates_turn_
+drops its ``case.user_id != user_id`` refusal       is_refused_by_the_service_
+(the turn's owner check, #1898)                     and_costs_nothing``. The
+                                                    teammate's turn runs into the
+                                                    engine instead of a 403.
+The resume route's case lookup drops                1: ``test_a_teammate_cannot_
+``owner_only=True`` (#1898)                         resume_the_owners_case_in_a_
+                                                    session`` — still a 404, but
+                                                    from the service's gate, not
+                                                    the route's, which is why the
+                                                    test pins the ``detail``.
+``link_session_to_case`` drops ``owner_only=True``  **nothing** here: the route's
+(the resume's service-side gate, #1898)             gate refuses first. Pinned
+                                                    by ``TestTheLinkGatesTheCase
+                                                    ::test_a_teammate_holding_a_
+                                                    share_is_refused`` (unit).
+                                                    Both dropped together: the
+                                                    teammate's resume is a 200.
+``POST /cases/{id}/title`` drops ``owner_only``     1: ``..._cannot_name_the_
+(#1898)                                             owners_case_or_spend_a_model_
+                                                    call``. A model call, then a
+                                                    500 from ``update_case``.
+``PUT /cases/{id}`` drops ``owner_only`` (#1898)    1: ``..._put_is_refused_as_an_
+                                                    absent_case_even_when_
+                                                    terminal`` — 409
+                                                    CASE_TERMINAL, not 404.
+``DELETE /cases/{id}/data/{id}`` drops              1: ``..._cannot_delete_the_
+``owner_only`` (#1898)                              owners_case_data`` — 204.
 ==================================================  ============================
 """
 
@@ -4575,8 +4603,9 @@ async def test_a_share_grants_read_not_write(shared_world):
 async def test_a_share_grants_read_not_write_on_the_derived_surfaces(shared_world):
     """The other half of the battery: everything that hangs OFF the case.
 
-    A share is read visibility (ADR-017 D4), and the surfaces above are the ones
-    that name the case row itself. These name something derived from it — an
+    A share is read visibility (ADR-013 D4, as amended 2026-10-09), and the
+    surfaces above are the ones that name the case row itself. These name
+    something derived from it — an
     investigation session, the case's report set, a knowledge suggestion — and
     every one of them was reachable to a teammate, because the gate they
     resolved through was the READ allowlist:
@@ -4762,6 +4791,428 @@ async def test_a_share_grants_read_not_write_on_the_derived_surfaces(shared_worl
         "control: the owner's extraction wrote no suggestion, so the zero "
         "asserted above is not evidence about the teammate"
     )
+
+
+# -----------------------------------------------------------------------------
+# The writes a share used to be thought to grant (#1898)
+# -----------------------------------------------------------------------------
+#
+# A share is read-only until hand-off ships (ADR-013 D4, amended 2026-10-09).
+# The four surfaces below were the ones a teammate still reached: the turn (the
+# route admits them and the SERVICE refuses), and three routes that resolved the
+# case through the READ allowlist — resume, ``/title`` and ``PUT`` — plus the
+# ``DELETE /data/{id}`` stub. Each test drives the teammate first and asserts
+# the rows, then drives the OWNER through the same call as the positive control,
+# so "refused" cannot be satisfied by a route that refuses everybody.
+
+
+class _RecordingTitleModel:
+    """The title model, as a double that RECORDS every call.
+
+    Never a live provider (the owner's no-live-LLM rule), and never a tripwire
+    either: the owner's control has to be able to name the case, so this answers
+    with a fixed title, and the assertion is on ``calls``. A teammate's
+    ``/title`` must be refused before ANY call — the defect was a teammate
+    spending a model call and then meeting ``update_case``'s owner check as a
+    500.
+    """
+
+    TITLE = "Connection Pool Saturation Under Load"
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def generate(self, **kwargs: Any):
+        from faultmaven.infrastructure.llm.providers.base import (
+            LLMResponse,
+            StopReason,
+        )
+
+        self.calls.append(kwargs)
+        return LLMResponse(
+            content=self.TITLE,
+            confidence=1.0,
+            provider="probe-double",
+            model="probe-double",
+            tokens_used=0,
+            response_time_ms=0,
+            stop_reason=StopReason.STOP,
+        )
+
+
+class _DictSessionStore:
+    """The case service's session store, as a dict.
+
+    The probe app's ``CaseService`` is built with NO session store, which makes
+    every resume — the owner's included — fail its link with 500. A resume
+    battery whose control cannot pass measures nothing, so this test installs a
+    store whose contents it can read back: the ``session:{id}:current_case_id``
+    pointer IS the link.
+    """
+
+    def __init__(self) -> None:
+        self.data: dict[str, Any] = {}
+
+    async def set(self, key: str, value: Any, ttl: Any = None) -> None:
+        self.data[key] = value
+
+
+@asynccontextmanager
+async def _app_state(app, **overrides):
+    """Swap ``app.state`` attributes for one test, and put them back.
+
+    The app is MODULE-scoped, so a swap that outlived its test would rewire
+    every later test in the file. Absent attributes are deleted again rather
+    than left set to ``None``: a route reading ``getattr(state, name, None)``
+    cannot tell the two apart, but a later fixture assigning to it could.
+    """
+    missing = object()
+    saved = {name: getattr(app.state, name, missing) for name in overrides}
+    for name, value in overrides.items():
+        setattr(app.state, name, value)
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is missing:
+                delattr(app.state, name)
+            else:
+                setattr(app.state, name, value)
+
+
+async def _case_row(world, case_id):
+    async with world.superuser_engine.connect() as conn:
+        return (
+            await conn.execute(
+                text(
+                    "SELECT title, state, current_turn, last_activity_at, version "
+                    "FROM cases WHERE case_id = :c"
+                ),
+                {"c": case_id},
+            )
+        ).first()
+
+
+async def test_a_teammates_turn_is_refused_by_the_service_and_costs_nothing(
+    shared_world,
+):
+    """The turn: admitted by the route, refused 403 by the SERVICE (#1898).
+
+    The route resolves the case through the READ allowlist ON PURPOSE: the
+    owner check lives in ``InvestigationService._verify_access_and_reserve``,
+    AFTER the ``Idempotency-Key`` replay (#1888), because receipts are keyed on
+    the caller and a gate ahead of the replay would refuse the retry of a turn
+    the caller did commit. So this is the one write whose refusal is a 403, and
+    the one whose gate is in the service rather than at the route.
+
+    The rest of this module wires a tripwire as the investigation service, which
+    refuses NOTHING by itself — so here the real service is installed, over the
+    real case repository and the turn cap as the composition root builds it
+    (the SQL ledger). Its engine is a namespace whose model is a tripwire: the
+    teammate must never get far enough to touch it, and the owner's control
+    stops there.
+
+    Asserted against the rows: no message, no turn advance, and — the part a
+    gate in the wrong place gets wrong — no unit on ANYONE's daily allowance.
+    The control is the owner's identical turn, which IS charged one unit to the
+    owner's billing subject (organization X): that is what makes the teammate's
+    zero a measurement rather than a ledger nothing writes to.
+    """
+    from faultmaven.container.providers.services import _build_turn_cap_service
+    from faultmaven.modules.agent.domain.services.investigation_service.service import (  # noqa: E501
+        InvestigationService,
+    )
+    from faultmaven.modules.case.infrastructure.sessionless_case_repository import (
+        SessionlessCaseRepository,
+    )
+
+    world = shared_world
+    case_id = world.shared_case.case_id
+    path = f"/api/v1/cases/{case_id}/turns"
+
+    service = InvestigationService(
+        milestone_engine=SimpleNamespace(
+            deps=SimpleNamespace(llm_provider=_Tripwire("llm_provider"))
+        ),
+        case_repository=SessionlessCaseRepository(),
+        preprocessing_service=_Tripwire("preprocessing_service"),
+        file_storage_service=_Tripwire("file_storage_service"),
+        turn_cap=_build_turn_cap_service(),
+    )
+
+    async def _usage():
+        async with world.superuser_engine.connect() as conn:
+            return {
+                (row[0], row[1]): row[2]
+                for row in (
+                    await conn.execute(
+                        text(
+                            "SELECT billing_subject_kind, billing_subject_id, "
+                            "turn_count FROM turn_usage WHERE enterprise_id = :e"
+                        ),
+                        {"e": world.enterprise_id},
+                    )
+                ).all()
+            }
+
+    async def _messages():
+        async with world.superuser_engine.connect() as conn:
+            return (
+                await conn.execute(
+                    text("SELECT count(*) FROM case_messages WHERE case_id = :c"),
+                    {"c": case_id},
+                )
+            ).scalar()
+
+    before_case = await _case_row(world, case_id)
+    before_messages = await _messages()
+    assert await _usage() == {}, "the world started with a charged allowance"
+
+    async with _app_state(world.app, investigation_service=service):
+        refused = await as_teammate(
+            world,
+            "POST",
+            path,
+            data={"query": "PWNED"},
+            headers={"Idempotency-Key": f"probe-teammate-{_RUN}-0001"},
+        )
+
+        assert refused.status_code == 403, (
+            "a teammate's turn into a case they can READ was not refused by the "
+            f"service's owner check ({refused.status_code}): {refused.text[:300]}"
+        )
+        assert_no_private_content(refused, f"POST {path}")
+        assert await _usage() == {}, (
+            "a refused teammate turn charged a daily-allowance unit — the cap "
+            "ran before the owner check"
+        )
+        assert await _messages() == before_messages, "a refused turn wrote a row"
+        assert (
+            await _case_row(world, case_id) == before_case
+        ), "a refused teammate turn moved the owner's case"
+
+        # The control: the owner's identical turn passes the owner check and is
+        # charged. What it does after that is the unwired engine's business
+        # (the tripwire answers it), and is deliberately not pinned.
+        owner = await as_owner(world, "POST", path, data={"query": "probe"})
+        assert owner.status_code not in (403, 404), (
+            "control: the owner's own turn was refused as a non-owner, so the "
+            f"teammate's 403 is not attributable to ownership: {owner.text[:300]}"
+        )
+    assert await _usage() == {("organization", world.org_x): 1}, (
+        "control: the owner's turn was not charged to the owner's billing "
+        "subject, so the teammate's empty ledger proves nothing"
+    )
+
+
+async def test_a_teammate_cannot_resume_the_owners_case_in_a_session(shared_world):
+    """``POST /cases/sessions/{sid}/resume/{case_id}`` is OWNER only (#1898).
+
+    It writes ``cases.last_activity_at`` and points the session's
+    ``current_case_id`` at the case, and it used to admit a teammate "matching
+    ``submit_turn``" — on the premise that a teammate may post turns into a
+    shared case, which the turn service has never allowed.
+
+    The teammate names a session of THEIR OWN, so the session half of the route
+    passes and only the case half can refuse. Two gates guard the case — the
+    route's early check and the one inside ``link_session_to_case`` — and they
+    answer in different shapes, so the ``detail`` is asserted: it is the
+    route's own refusal, issued before any session lookup, that is under test
+    here. The service's half is pinned by ``TestTheLinkGatesTheCase``.
+    """
+    world = shared_world
+    case_id = world.shared_case.case_id
+    store = _DictSessionStore()
+
+    minted_b = await as_teammate(world, "POST", "/api/v1/sessions", json={})
+    minted_a = await as_owner(world, "POST", "/api/v1/sessions", json={})
+    assert minted_b.status_code == 201, minted_b.text
+    assert minted_a.status_code == 201, minted_a.text
+    b_session = minted_b.json()["session_id"]
+    a_session = minted_a.json()["session_id"]
+
+    case_service = world.app.state.case_service
+    saved_store = case_service.session_store
+    case_service.session_store = store
+    try:
+        before = await _case_row(world, case_id)
+        refused = await as_teammate(
+            world, "POST", f"/api/v1/cases/sessions/{b_session}/resume/{case_id}"
+        )
+        assert refused.status_code == 404, (
+            "a teammate resumed the owner's case in their session "
+            f"({refused.status_code}): {refused.text[:300]}"
+        )
+        assert refused.json().get("detail") == (
+            "Case not found or resume not permitted"
+        ), (
+            "the refusal did not come from the route's own case gate: "
+            f"{refused.text[:300]}"
+        )
+        assert_no_private_content(refused, "POST .../resume/{case_id}")
+        assert store.data == {}, "a refused resume moved a session pointer"
+        assert (
+            await _case_row(world, case_id) == before
+        ), "a refused resume wrote the owner's case (last_activity_at)"
+
+        owner = await as_owner(
+            world, "POST", f"/api/v1/cases/sessions/{a_session}/resume/{case_id}"
+        )
+        assert owner.status_code == 200, (
+            "control: the owner cannot resume their own case, so the teammate's "
+            f"404 is not attributable to ownership: {owner.text[:300]}"
+        )
+        assert store.data == {f"session:{a_session}:current_case_id": case_id}
+    finally:
+        case_service.session_store = saved_store
+        await as_teammate(world, "DELETE", f"/api/v1/sessions/{b_session}")
+        await as_owner(world, "DELETE", f"/api/v1/sessions/{a_session}")
+
+
+async def test_a_teammate_cannot_name_the_owners_case_or_spend_a_model_call(
+    shared_world,
+):
+    """``POST /cases/{id}/title`` refuses a teammate BEFORE any model call (#1898).
+
+    Through the READ allowlist a teammate was admitted, the title was generated
+    — on this case's evidence that is the model path, since the transcript holds
+    no user line to extract from — and only then did ``update_case``'s owner
+    check refuse the write, as a 500. One model call spent per attempt, by
+    somebody who could never have saved the result.
+    """
+    from faultmaven.modules.case.api.title_generation import (
+        EXTRACTIVE_MAX_CONTENT_LENGTH,
+    )
+    from faultmaven.modules.case.infrastructure.sessionless_case_repository import (
+        SessionlessCaseRepository,
+    )
+
+    world = shared_world
+    case_id = world.shared_case.case_id
+    path = f"/api/v1/cases/{case_id}/title"
+    model = _RecordingTitleModel()
+
+    # Enough of the OWNER's chat to put the case on the model path. Below
+    # ``EXTRACTIVE_MAX_CONTENT_LENGTH`` the title is extracted without a model
+    # call, and a "no call was made" assertion would hold whoever asked. The
+    # newest row is the "current query" the context builder leaves out, so the
+    # long line goes first.
+    long_line = (
+        "the payments api starts timing out a few minutes after every deploy, "
+        "the connection pool on the primary saturates, retries pile up behind "
+        "it, and a restart of the api pods clears it for roughly ten minutes "
+        "before the timeouts come back and the checkout error rate climbs "
+        "again, which is what we need to explain before the next release "
+        "window opens on thursday"
+    )
+    assert len(long_line) >= EXTRACTIVE_MAX_CONTENT_LENGTH
+    repository = SessionlessCaseRepository()
+    async with _as_enterprise(world.enterprise_id):
+        for turn, content in ((2, long_line), (3, "any ideas on where to look")):
+            await repository.add_message(
+                case_id, {"role": "user", "content": content, "turn_number": turn}
+            )
+
+    async with _app_state(world.app, llm_provider=model):
+        refused = await as_teammate(world, "POST", path, json={})
+        assert refused.status_code == 404, (
+            "a teammate's /title on a case they can READ was not refused as an "
+            f"absent case ({refused.status_code}): {refused.text[:300]}"
+        )
+        assert_no_private_content(refused, f"POST {path}")
+        assert model.calls == [], (
+            f"a refused teammate spent {len(model.calls)} model call(s) naming "
+            "the owner's case"
+        )
+        assert (await _case_row(world, case_id))[0] == SHARED_TITLE
+
+        owner = await as_owner(world, "POST", path, json={})
+        assert owner.status_code == 200, (
+            "control: the owner cannot name their own case, so the teammate's "
+            f"404 is not attributable to ownership: {owner.text[:300]}"
+        )
+    assert len(model.calls) == 1, (
+        "control: the owner's call did not reach the model, so the teammate's "
+        f"zero calls prove nothing: {model.calls}"
+    )
+    assert (await _case_row(world, case_id))[0] == _RecordingTitleModel.TITLE
+
+
+async def test_a_teammate_put_is_refused_as_an_absent_case_even_when_terminal(
+    shared_world,
+):
+    """``PUT /cases/{id}`` resolves the case through OWNERSHIP at the route (#1898).
+
+    The service's own ``update_case`` was already owner-only, so on an ACTIVE
+    case a teammate's PUT was refused either way (``test_a_share_grants_read_
+    not_write`` pins that). What the route's read-arm lookup still did was
+    answer a teammate's PUT on a TERMINAL case with **409 CASE_TERMINAL** — a
+    write refused for the case's state rather than for who asked, telling a
+    non-owner the case's lifecycle. Owner-only at the route, the teammate gets
+    the 404 an absent case gets, and the OWNER still gets the 409.
+    """
+    world = shared_world
+    case_id = world.shared_case.case_id
+    path = f"/api/v1/cases/{case_id}"
+
+    # Control on the active case: the owner's PUT lands.
+    owner_edit = await as_owner(
+        world, "PUT", path, json={"title": f"{SHARED}-owner-rename"}
+    )
+    assert (
+        owner_edit.status_code == 200
+    ), f"control: the owner cannot update their own case: {owner_edit.text[:300]}"
+
+    closed = await as_owner(world, "POST", f"{path}/close", json={})
+    assert (
+        closed.status_code == 200
+    ), f"control: the owner cannot close their own case: {closed.text[:300]}"
+    before = await _case_row(world, case_id)
+    assert before[1] == "closed"
+
+    refused = await as_teammate(world, "PUT", path, json={"title": "PWNED"})
+    assert refused.status_code == 404, (
+        "a teammate's PUT on the owner's terminal case was answered as a state "
+        f"conflict rather than as an absent case ({refused.status_code}): "
+        f"{refused.text[:300]}"
+    )
+    assert refused.headers.get("x-error-code") != "CASE_TERMINAL"
+    assert_no_private_content(refused, f"PUT {path}")
+    assert await _case_row(world, case_id) == before
+
+    owner_terminal = await as_owner(world, "PUT", path, json={"title": "late"})
+    assert owner_terminal.status_code == 409, (
+        "control: the owner's PUT on their own closed case no longer reaches the "
+        f"terminal gate, so the teammate's 404 distinguishes nothing: "
+        f"{owner_terminal.text[:300]}"
+    )
+    assert owner_terminal.headers.get("x-error-code") == "CASE_TERMINAL"
+
+
+async def test_a_teammate_cannot_delete_the_owners_case_data(shared_world):
+    """``DELETE /cases/{id}/data/{data_id}`` is OWNER only (#1898).
+
+    The route is a stub: it deletes nothing and answers 204. Through the read
+    allowlist it told a teammate "deleted"; owner-only, the teammate gets the
+    404 an absent case gets and the owner keeps the stub's 204.
+    """
+    world = shared_world
+    path = (
+        f"/api/v1/cases/{world.shared_case.case_id}/data/"
+        f"{world.shared_case.file_id}"
+    )
+
+    refused = await as_teammate(world, "DELETE", path)
+    assert refused.status_code == 404, (
+        "a teammate's DELETE of the owner's case data was not refused "
+        f"({refused.status_code}): {refused.text[:300]}"
+    )
+    assert_no_private_content(refused, f"DELETE {path}")
+
+    owner = await as_owner(world, "DELETE", path)
+    assert (
+        owner.status_code == 204
+    ), f"control: the owner's own DELETE was refused: {owner.text[:300]}"
 
 
 # =============================================================================

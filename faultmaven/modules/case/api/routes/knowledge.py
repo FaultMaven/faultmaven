@@ -80,7 +80,8 @@ async def extract_knowledge_from_case(
         # Verify case exists and the caller OWNS it. Extraction mints a
         # knowledge suggestion out of the case's transcript and evidence and
         # attributes it to the extractor, so it is a write on the owner's
-        # material: a read share does not authorise it (ADR-017 D4).
+        # material: a read share does not authorise it (ADR-013 D4, as amended
+        # 2026-10-09).
         case = await case_service.get_case(
             case_id, current_user.user_id, owner_only=True
         )

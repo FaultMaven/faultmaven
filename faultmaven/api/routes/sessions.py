@@ -69,10 +69,11 @@ async def require_case_access(
     enterprise check stays where it is — this is an additional predicate, not a
     replacement.
 
-    **A share grants read visibility, not the right to write** (ADR-017 D4). The
-    read allowlist is the wrong resolver for a mutation: a teammate holding a read
-    share on the owner's case could create, patch, pause, resume and complete the
-    owner's sessions, because the only predicate left downstream is
+    **A share grants read visibility, not the right to write** (ADR-013 D4, as
+    amended 2026-10-09: read-only until hand-off ships). The read allowlist is
+    the wrong resolver for a mutation: a teammate holding a read share on the
+    owner's case could create, patch, pause, resume and complete the owner's
+    sessions, because the only predicate left downstream is
     ``case.enterprise_id`` and inside one enterprise that admits both parties. So
     the resolver is chosen from the request METHOD — reads resolve through
     owner ∪ shared, writes through ``owner_only`` — and it is chosen HERE, in the

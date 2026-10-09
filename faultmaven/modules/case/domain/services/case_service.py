@@ -360,11 +360,11 @@ class CaseService(ICaseService):
             case_id: Case identifier
             user_id: Optional user ID for access control
             owner_only: Resolve through OWNERSHIP alone, ignoring team shares.
-                A share is read visibility, not ownership (ADR-013 §D4 /
-                ADR-017 D4): a teammate may see the case and must not be able
-                to rewrite, close or delete it, nor withdraw the owner's
-                consent. Every mutating caller passes ``True``; every read
-                passes the default.
+                A share is read visibility, not ownership (ADR-013 D4, as
+                amended 2026-10-09: read-only until hand-off ships): a teammate
+                may see the case and must not be able to rewrite, close or
+                delete it, nor withdraw the owner's consent. Every mutating
+                caller passes ``True``; every read passes the default.
 
         Returns:
             Case object if found and accessible, None otherwise
@@ -407,7 +407,7 @@ class CaseService(ICaseService):
         Extracted from :meth:`get_case` so a caller that must NOT swallow
         infrastructure failures can apply the same rule (see
         :meth:`_resolve_case_for_access`). One predicate, so the two cannot
-        drift apart on the question ADR-013 §D4 / ADR-017 D4 answer.
+        drift apart on the question ADR-013 D4 (as amended 2026-10-09) answers.
         """
         if not user_id or case.user_id == user_id:
             return True
@@ -423,7 +423,7 @@ class CaseService(ICaseService):
         return False
 
     async def _resolve_case_for_access(
-        self, case_id: str, user_id: Optional[str]
+        self, case_id: str, user_id: Optional[str], *, owner_only: bool = False
     ) -> Case:
         """Resolve a case for a gate, raising rather than answering ``None``.
 
@@ -434,6 +434,9 @@ class CaseService(ICaseService):
         database blips, which is the half-success-as-absence shape #1390 was
         about: the client abandons a case that is fine instead of retrying.
 
+        ``owner_only`` means what it means on :meth:`get_case`: resolve through
+        ownership alone, for a caller that WRITES.
+
         Raises:
             NotFoundError: the case does not exist, or ``user_id`` cannot reach
                 it. Only these two.
@@ -441,7 +444,7 @@ class CaseService(ICaseService):
                 answers 5xx for an infrastructure failure rather than 404.
         """
         case = await self.repository.get(case_id)
-        if not case or not await self._may_access(case, user_id):
+        if not case or not await self._may_access(case, user_id, owner_only=owner_only):
             raise NotFoundError("Case", case_id)
         return case
 
@@ -492,7 +495,8 @@ class CaseService(ICaseService):
             # the check once up front; no privilege escalation window
             # exists because the user_id doesn't change between attempts.
             # ``owner_only``: a share grants read visibility, not the right to
-            # rewrite the row or move its state (ADR-017 D4).
+            # rewrite the row or move its state (ADR-013 D4, as amended
+            # 2026-10-09: read-only until hand-off ships).
             existing = await self.get_case(case_id, user_id, owner_only=True)
             if not existing:
                 return False
@@ -639,12 +643,12 @@ class CaseService(ICaseService):
             True if the link was made and persisted
 
         Raises:
-            NotFoundError: the case does not exist, or ``user_id`` cannot reach
-                it (owner ∪ shared-to-my-teams). Raised rather than returned as
-                ``False`` so a caller can tell "you may not have this" from
-                "the link failed", which are a 404 and a 500 respectively;
-                conflating them is what made this endpoint report a working
-                resume as an absence (#1390).
+            NotFoundError: the case does not exist, or ``user_id`` does not own
+                it — a teammate holding a share included. Raised rather than
+                returned as ``False`` so a caller can tell "you may not have
+                this" from "the link failed", which are a 404 and a 500
+                respectively; conflating them is what made this endpoint report
+                a working resume as an absence (#1390).
         """
         if not session_id or not case_id:
             raise ValidationException("Session ID and Case ID are required")
@@ -664,14 +668,17 @@ class CaseService(ICaseService):
             # ``get_case`` loads the case and answers both questions, so the
             # pair used to be two full loads of the same row per resume.
             #
-            # Owner ∪ shared-to-my-teams, matching ``submit_turn``: a teammate
-            # who may POST a turn into a shared case must be able to attach a
-            # session to it.
+            # OWNER only. The link writes ``cases.last_activity`` and moves the
+            # session's current-case pointer, and a share is read-only until
+            # hand-off ships (ADR-013 D4, amended 2026-10-09, #1898). This used
+            # to admit owner ∪ shared "matching ``submit_turn``", on the
+            # premise that a teammate may post a turn into a shared case; the
+            # turn service has never admitted one.
             #
             # NOT via ``get_case``: that swallows every exception into ``None``,
             # so a repository outage would raise ``NotFoundError`` here and the
             # route would answer 404 for a case that exists and is reachable.
-            await self._resolve_case_for_access(case_id, user_id)
+            await self._resolve_case_for_access(case_id, user_id, owner_only=True)
 
             # Update last activity timestamp via repository
             await self.repository.update_activity_timestamp(case_id)
@@ -811,7 +818,7 @@ class CaseService(ICaseService):
             True if the case was resumed
 
         Raises:
-            NotFoundError: the case does not exist or the caller cannot reach
+            NotFoundError: the case does not exist or the caller does not own
                 it (raised by ``link_session_to_case``).
         """
         if not case_id or not session_id:

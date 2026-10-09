@@ -216,21 +216,21 @@ async def resume_case_in_session(
         # returns False and is a 500 below. Keeping those apart is the point —
         # conflating them reported a working resume as an absence (#1390).
         #
-        # Owner ∪ shared-to-my-teams, matching `submit_turn` and the service's
-        # own gate. That is a deliberate departure from the method-based rule
-        # in `sessions.py`, which picks `owner_only` from the HTTP method
-        # because "a share grants read visibility, not the right to write"
-        # (ADR-017 D4) — and this is a POST that writes `cases.last_activity`
-        # through `update_activity_timestamp`.
+        # OWNER only (`owner_only=True`), like every other write on a case: a
+        # share is read-only until hand-off ships (ADR-013 D4, amended
+        # 2026-10-09, #1898). This is a POST that writes `cases.last_activity`
+        # through `update_activity_timestamp` and moves the session's
+        # current-case pointer, so it resolves through ownership — the same
+        # rule `sessions.py` picks by HTTP method. A teammate holding a share
+        # gets the answer an absent case gets.
         #
-        # The exception is bounded: a teammate who may POST a turn into a
-        # shared case already writes messages, turn history AND that same
-        # activity stamp, so refusing the resume while admitting the turn would
-        # leave the extension able to read and write a case it cannot open. The
-        # only row this path touches that a read share does not already cover
-        # is `last_activity`, which is bookkeeping about access rather than
-        # case content, and the teammate's own turn bumps it moments later.
-        case = await case_service.get_case(case_id, current_user.user_id)
+        # This used to admit owner ∪ shared "matching `submit_turn`", on the
+        # premise that a teammate may post a turn into a shared case. They may
+        # not: the turn service has refused every non-owner since before team
+        # sharing existed (`InvestigationService._verify_access_and_reserve`).
+        case = await case_service.get_case(
+            case_id, current_user.user_id, owner_only=True
+        )
         if case is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -597,7 +597,19 @@ async def submit_turn(
                     headers={"x-correlation-id": correlation_id},
                 )
 
-        # Verify case exists and user has access
+        # Verify case exists and user has access.
+        #
+        # The READ resolver (owner ∪ shared), deliberately NOT `owner_only`,
+        # although a share is read-only until hand-off ships (ADR-013 D4,
+        # amended 2026-10-09). Only the owner may submit a turn, and the gate
+        # that says so is `InvestigationService._verify_access_and_reserve`,
+        # which this request reaches only AFTER the idempotency step below
+        # (#1888). Receipts are keyed on the caller, and a retry of a turn that
+        # committed must get that turn back from its receipt; an ownership gate
+        # here, ahead of the replay, would refuse that retry once the caller no
+        # longer owned (or, with hand-off, drove) the case. A teammate is
+        # therefore admitted here and refused with 403 in the service, before
+        # the turn cap is charged or anything is written (#1898).
         case = await case_service.get_case(case_id, current_user.user_id)
         if not case:
             raise HTTPException(

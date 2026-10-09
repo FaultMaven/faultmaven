@@ -818,8 +818,10 @@ async def test_message_authorship_round_trips_on_both_read_paths(pg_repo):
     case = _make_case(enterprise_id, owner_id)
     await pg_repo.save(case)
 
-    # The three author states a team-shared transcript produces: the owner, a
-    # teammate reaching the case through a share, and an unauthored assistant turn.
+    # The three author states a transcript can hold: the owner, a second account
+    # (a former owner after ``fm-reassign-cases``, or a driver once hand-off
+    # ships — a share alone is read-only, ADR-013 D4 as amended 2026-10-09), and
+    # an unauthored assistant turn.
     for idx, (role, content, author_id) in enumerate(
         [
             ("user", "owner asks", owner_id),
