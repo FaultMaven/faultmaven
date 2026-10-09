@@ -1,8 +1,9 @@
 """The engine's KB prefetch (``_prefetch_kb_context``): what it owes.
 
 Hybrid retrieval with the floor at admission (#1272), the floor's parity with
-the QA tool's (#1072), owner-keyed scope (global ∪ the case owner's personal KB
-∪ the owner's team shares), stale-context clearing, fetch depth versus the
+the QA tool's (#1072), the unshared case's scope (global ∪ the creator's
+personal KB ∪ the creator's team shares; the shared-case scope is pinned in
+``test_case_retrieval_scope.py``), stale-context clearing, fetch depth versus the
 prompt surface, and the remediation-time edge in the turn pipeline. Several of
 these invariants were pinned only in the KB cause seeder's seam tests until
 fm#1295 removed the seeder; they are live behaviour and moved here.
@@ -230,9 +231,9 @@ class TestPrefetchFloorAndScope:
 
     @pytest.mark.asyncio
     async def test_prefetch_scope_is_global_union_owner(self):
-        # global PLUS the case owner's own KB — otherwise personal
-        # (case-generated) runbooks never reach the prompt. The team arm is
-        # wired but resolves empty with no team_service/share_repository.
+        # global PLUS the case creator's own KB — otherwise personal
+        # (case-generated) runbooks never reach the prompt. Standalone: no
+        # team_service, so no case is shared and there is no team arm.
         ks = _SearchRecordingStub([_search_hit()])
         engine = _engine(ks)
         await engine.kb_prefetcher.prefetch_kb_context(_case(), "X fails", "symptom")
@@ -240,16 +241,17 @@ class TestPrefetchFloorAndScope:
 
     @pytest.mark.asyncio
     async def test_prefetch_team_arm_uses_owner_shared_runbooks(self):
-        # With team_service + share_repository attached (Cloud), the OWNER's
-        # scope widens with runbooks shared to the OWNER's teams — keyed on
-        # case.user_id, NOT the session user, and on the case's tenant (#879).
+        # Cloud, an UNSHARED case: its one reader is the creator, so the scope
+        # widens with runbooks shared to the creator's teams — keyed on
+        # case.user_id and on the case's tenant (#879).
         ks = _SearchRecordingStub([_search_hit()])
         engine = _engine(ks)
         engine.deps.team_service = SimpleNamespace(
             list_all_user_team_ids=AsyncMock(return_value=["team_1"])
         )
         engine.deps.share_repository = SimpleNamespace(
-            list_resource_ids=AsyncMock(return_value=["rb_team_a"])
+            list_scopes_for_resource=AsyncMock(return_value=[]),
+            list_resource_ids=AsyncMock(return_value=["rb_team_a"]),
         )
         case = _case()
         case.user_id = "owner_b"

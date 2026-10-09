@@ -40,8 +40,11 @@ the same allowlist as every other KB read) is the only isolation on the path.
 - **The API route scopes on the requester** (`current_user`): the
   recommendation answers "should *you* generate a runbook?", covering what the
   requester can read.
-- **The engine scopes on the case owner** (`case.user_id`): the terminal-turn
-  suggestion points at the owner's Dashboard and personal corpus.
+- **The engine scopes on the case's audience** (`case_retrieval_scope`,
+  #1919): the terminal-turn suggestion lands in the case transcript, which
+  every reader of the case reads. An unshared case searches global ∪ the
+  creator's personal and team runbooks; a shared case searches global ∪ the
+  runbooks of the teams it is shared with, and nobody's personal KB.
 
 Accepted consequence: the two call sites may legitimately disagree on the same
 case.
@@ -51,7 +54,8 @@ Invariants:
 - `search_runbooks`/`search_by_text` **refuse a falsy scope filter with a
   typed error** (`RUNBOOK_SEARCH_UNSCOPED`) rather than querying unscoped.
 - A scope that cannot be **resolved** is a failed dedup, not a narrowed one.
-  The engine's resolver does not swallow a team-arm failure (deliberate
+  The engine's resolver does not swallow a share or team-arm lookup failure
+  (`raise_on_failure=True`; deliberate
   divergence from the engine KB pre-fetch, which degrades — correct for
   seeding, wrong for a "checked, nothing similar" claim); the route raises
   `RUNBOOK_SCOPE_RESOLUTION_FAILED`, rendered as its 503 refusal.

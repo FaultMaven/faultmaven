@@ -89,10 +89,11 @@ class ToolContext:
     case_id: str
     enterprise_id: str
     user_id: str
-    # KB item ids shared to the user's teams (ADR-013 §D4) — the shared arm of
-    # the KB read allowlist, pre-resolved by the orchestrator from the share
-    # table. Empty in standalone / for users with no team-shared items.
-    shared_kb_ids: List[str] = field(default_factory=list)
+    # The KB read filter for this case (``case_retrieval_scope``, #1919): the
+    # case's audience, not this turn's user, because kb_qa's answer lands in
+    # the transcript every reader of the case reads. Built by the orchestrator;
+    # ``None`` means no scope was resolved, and kb_qa then refuses to search.
+    kb_scope_filter: Optional[Dict[str, Any]] = None
     case_repository: Optional[Any] = None
     execution_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -105,7 +106,7 @@ class ToolContext:
             case_id=self.case_id,
             enterprise_id=self.enterprise_id,
             user_id=self.user_id,
-            shared_kb_ids=self.shared_kb_ids,
+            kb_scope_filter=self.kb_scope_filter,
             case_repository=self.case_repository,
             execution_id=execution_id,
             metadata=self.metadata,

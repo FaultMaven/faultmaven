@@ -3,6 +3,9 @@
 import logging
 import re
 
+from faultmaven.core.investigation.milestone_engine.retrieval_scope import (
+    case_retrieval_scope,
+)
 from faultmaven.modules.case.contracts import (
     Case,
 )
@@ -190,48 +193,21 @@ class KbPrefetcher:
             return None
 
         try:
-            # Owner-aware scope. The pre-fetch may
-            # read only what the case OWNER can read: global (platform-curated)
-            # plus the owner's own personal KB. This completes the flywheel
-            # loop — a user's resolved cases, converted to personal runbooks,
-            # seed that user's own future investigations — while preserving
-            # strict cross-user isolation: the personal condition is keyed on
-            # the owner's user_id, so user B's case can never surface user A's
-            # personal runbooks. Without this filter search_knowledge defaults
-            # to global-only, so personal (case-generated) runbooks never seed.
-            #
-            # The team arm resolves the case OWNER's shared-kb-id allowlist —
-            # keyed on case.user_id, NOT the session user, so user B's case can
-            # never surface user A's runbooks — via the same share table → id
-            # allowlist the QA path uses (resolve_shared_kb_ids, ADR-013 §D4),
-            # passed as the second arg to build_kb_scope_filter. It is inert in
-            # practice until case→runbook conversion emits team-shared runbooks
-            # (there are none to seed yet), and in standalone: team_service is
-            # None, so the owner resolves an empty shared set and the scope
-            # collapses to global ∪ owner-personal.
-            from faultmaven.modules.knowledge.domain.services.knowledge_service import (
-                build_kb_scope_filter,
-                resolve_shared_kb_ids,
+            # The case's audience scope (#1919): excerpts rendered from this
+            # search land in the transcript every reader of the case reads, so
+            # it may search only what all of them may read. An unshared case
+            # searches global ∪ the creator's personal KB ∪ the runbooks shared
+            # to the creator's teams; a shared case searches global ∪ the
+            # runbooks shared to the teams the case is shared with, and nobody's
+            # personal KB. Team-scoped runbooks exist today: KB uploads, the
+            # convert and runbook-create routes and the KB pack can all write
+            # them, so the team arm is live in Cloud. In standalone team_service
+            # is None and the scope is global ∪ the creator's personal KB.
+            scope_filter = await case_retrieval_scope(
+                case,
+                team_service=self.deps.team_service,
+                share_repository=self.deps.share_repository,
             )
-
-            owner_id = getattr(case, "user_id", None)
-            # team_service/share_repository are wired post-construction; use
-            # None in standalone: the team arm then resolves empty.
-            team_service = self.deps.team_service
-            share_repository = self.deps.share_repository
-            shared_kb_ids: list[str] = []
-            if owner_id and team_service and share_repository:
-                try:
-                    owner_team_ids = await team_service.list_all_user_team_ids(owner_id)
-                    shared_kb_ids = await resolve_shared_kb_ids(
-                        share_repository,
-                        owner_team_ids,
-                        getattr(case, "enterprise_id", None),
-                    )
-                except Exception:  # noqa: BLE001
-                    # Graceful degradation — global ∪ owner-personal still apply.
-                    shared_kb_ids = []
-            scope_filter = build_kb_scope_filter(owner_id, shared_kb_ids)
             # Fetch KB_PREFETCH_FETCH_LIMIT chunks — the reranker's candidate
             # pool, see the constant — and render only the top
             # KB_CONTEXT_MAX_ENTRIES into the prompt.

@@ -4,7 +4,7 @@ Wraps DocumentQATool-based KB tools into the AgentTool interface so they
 can participate in the investigation pipeline's directed analysis tool loop.
 
 Two adapters:
-- KBToolAdapter: unified KB search (all scopes the user can access)
+- KBToolAdapter: unified KB search (every scope the case may draw on)
 - CaseEvidenceQAAdapter: case-specific evidence forensic search
 """
 
@@ -23,8 +23,9 @@ class KBToolAdapter(AgentTool):
     """Adapter: AnswerFromKB -> AgentTool interface.
 
     Queries the knowledge base for runbooks, best practices, and documented
-    procedures. Automatically filters by the user's accessible scopes
-    (global + personal + team).
+    procedures, under the case's scope filter from ``ToolContext`` (the case's
+    audience, #1919). Never under anything the model supplies: the only
+    parameter is the question.
     """
 
     def __init__(self, wrapped_tool: Any):
@@ -38,9 +39,9 @@ class KBToolAdapter(AgentTool):
     def description(self) -> str:
         return (
             "Search the knowledge base for runbooks, best practices, and documented "
-            "procedures. Returns the most relevant results from all sources you have "
-            "access to: global documentation, your personal runbooks, and your team's "
-            "shared procedures."
+            "procedures. Returns the most relevant results from every source this "
+            "case may draw on: global documentation, plus the personal and team "
+            "runbooks the case's readers can see."
         )
 
     @property
@@ -68,11 +69,26 @@ class KBToolAdapter(AgentTool):
         if not question:
             return ToolResult(success=False, data=None, error="No question provided")
 
+        if context.kb_scope_filter is None:
+            # No scope was resolved for this case. Searching anyway would need a
+            # scope invented here, and the only safe one to invent is narrower
+            # than the case's — the same silent narrowing the model would then
+            # read as "the KB holds nothing on this". Refuse, and say so.
+            return ToolResult(
+                success=False,
+                data=None,
+                error=(
+                    "Knowledge base query refused: no retrieval scope was "
+                    "resolved for this case. This is a retrieval failure, not a "
+                    "statement about the knowledge base's contents — draw no "
+                    "conclusion about what it holds."
+                ),
+            )
+
         try:
             result = await self._wrapped._arun(
                 question=question,
-                user_id=context.user_id,
-                shared_kb_ids=context.shared_kb_ids,
+                scope_filter=context.kb_scope_filter,
                 k=5,
             )
             return ToolResult(success=True, data=result, error=None)
