@@ -2014,6 +2014,13 @@ def test_every_reader_of_a_stored_entry_tolerates_any_shape():
         (turn_response, "_build_turn_response"),
         # The clarification friendly-names table.
         (clarification, "_clarification_suggestions_for_failed"),
+        # THIS turn's follow-ups checked for a duplicate of the "Mark it
+        # resolved" chip (#1895) before it is appended; shape-tolerant anyway
+        # (``isinstance(follow_up, dict)``, ``str(label)``).
+        (
+            "core/investigation/milestone_engine/turn_completion.py",
+            "_is_resolve_chip",
+        ),
         # A tool result's own label.
         (generation, "StructuredOutputGenerator._format_tool_result"),
         # HTTP request/response bodies, unrelated to this seam.
@@ -3336,6 +3343,12 @@ class TestATerminalCaseAnswersNothingStored:
             # model re-proposal of a declined close step 2 refused (the append
             # is guarded on ``not is_terminal``). Never on a terminal case.
             (engine_stage_gates, "declined_close_card"),
+            # The "Mark it resolved" chip a declined resolution leaves (#1895):
+            # a ``status_transition`` intent carrying the reopen key, built
+            # only while the decline stands on an INVESTIGATING case
+            # (``declined_resolve_entry`` returns None on any other state).
+            # Never on a terminal case.
+            (engine_stage_gates, "declined_resolve_card"),
             # Not producers. ``_stored_suggestions`` re-materialises this
             # turn's clarification choices as stored entries, and
             # ``_clarification_suggestions_for_failed`` mints those choices —

@@ -22,6 +22,7 @@ Flow:
 Reference: investigation-lifecycle-logic.md Section 1.4
 """
 
+import hashlib
 import logging
 from datetime import UTC, datetime
 from typing import Any, Optional
@@ -37,6 +38,7 @@ from faultmaven.core.investigation.cause_assurance import (
     has_problem_definition,
     has_resolution_confirmation,
     has_root_cause_record,
+    resolution_confirmation_rows,
 )
 from faultmaven.core.investigation.lifecycle_metrics import (
     close_pivoted_to_resolve_total,
@@ -758,15 +760,26 @@ def derive_disposition_eligibility(case: "Case") -> dict[str, str]:
 
 
 def deferred_disposition_signature(case: Case, closure_verdict: str) -> str:
-    """The state that JUSTIFIES the deferred-implementation offer, as a
-    comparable string.
+    """The state that JUSTIFIES a deferred-disposition or resolve offer, as a
+    comparable string: ``verdict|solutions|cause leg|confirmation ids``.
 
     A refusal is recorded against this, so the offer returns exactly when one
     of its premises moves — a new or withdrawn solution, a change in which
     disposition is warranted (e.g. a gone=>gone row arriving flips the verdict
-    to SUGGEST_RESOLVE), or the cause being re-established on a different leg.
-    Deliberately NOT turn-based: a cooldown would re-nag on a case where
-    nothing changed, which is the behaviour being fixed.
+    to SUGGEST_RESOLVE), the cause being re-established on a different leg, or
+    a NEW confirmation that the fix held (#1895). Deliberately NOT turn-based:
+    a cooldown would re-nag on a case where nothing changed, which is the
+    behaviour being fixed.
+
+    The fourth part names the confirmation evidence a resolve offer stands on:
+    the sorted ids of ``resolution_confirmation_rows``, comma-joined, empty when
+    none qualifies (always so below SUGGEST_RESOLVE, so the deferred close's
+    entries are unaffected). It is state, not a count — elapsed turns and
+    repeated declines leave it alone — and it is matched by a subset rule
+    (``covering_declined_signature``), not by equality, so only a genuinely
+    new confirmation row moves a decline. The full id set rather than the
+    newest id: a disconfirmation can disqualify the newest row while an older
+    one still qualifies.
 
     Lives here rather than in ``milestone_engine`` because the INV-37 pivot in
     ``confirm_pending_transition`` has to RECOMPUTE it: the pivot replaces the
@@ -780,8 +793,122 @@ def deferred_disposition_signature(case: Case, closure_verdict: str) -> str:
             str(closure_verdict),
             str(len(case.solutions or [])),
             str(cause_identification_leg(case)),
+            ",".join(sorted(e.evidence_id for e in resolution_confirmation_rows(case))),
         )
     )
+
+
+def _signature_parts(signature: str) -> tuple[str, frozenset]:
+    """``(prefix, confirmation ids)`` of a signature: the one parse.
+
+    ``rpartition`` on the last ``|``. An entry recorded before the fourth part
+    existed (three parts) parses to a two-part prefix, which no current
+    signature's prefix equals, so it never covers anything: one re-offer on
+    such a case, and no compatibility path (pre-user).
+    """
+    prefix, _, ids = signature.rpartition("|")
+    return prefix, frozenset(i for i in ids.split(",") if i)
+
+
+def covering_declined_signature(declined: list, signature: str) -> Optional[str]:
+    """The declined entry that covers ``signature``, or None (#1895).
+
+    An entry covers when its prefix (verdict, solutions, cause leg) equals the
+    signature's AND the signature's confirmation ids are a subset of the
+    entry's. A decline covers every confirmation on record when it was given,
+    so it stands until a confirmation row it never saw arrives: a row that
+    stops qualifying (a later failed fix) shrinks the set and leaves it
+    covered, and so does a row pruned and re-entered. When several entries
+    cover, the NEWEST in the list wins — the reopen key is derived from the
+    entry this returns, so the chip's builder and the boundary's verifier must
+    make the same choice.
+
+    The ONE reader of the declined list: every proposer, the model's refusals,
+    the reopen chip and its admission, and the writer's dedupe all go through
+    it.
+    """
+    prefix, ids = _signature_parts(signature)
+    for entry in reversed(declined or []):
+        entry_prefix, entry_ids = _signature_parts(entry)
+        if entry_prefix == prefix and ids <= entry_ids:
+            return entry
+    return None
+
+
+def covering_declined_entry(case: Case, verdict: str) -> Optional[str]:
+    """The declined entry covering the case's CURRENT justifying state under
+    ``verdict``, or None. See ``covering_declined_signature``."""
+    progress = getattr(case, "progress", None)
+    if progress is None:
+        return None
+    return covering_declined_signature(
+        progress.deferred_disposition_declined_signatures,
+        deferred_disposition_signature(case, verdict),
+    )
+
+
+def declined_resolve_entry(case: Case) -> Optional[str]:
+    """The declined entry a resolve decline stands on, or None (#1895).
+
+    A resolve decline stands while the case is INVESTIGATING, the closure
+    verdict is SUGGEST_RESOLVE (a qualifying confirmation is on the case, so a
+    resolve is what would be offered) and a declined entry covers the current
+    state: no confirmation the user had not seen when they said "not yet" has
+    been recorded since.
+    """
+    if case.state != CaseState.INVESTIGATING:
+        return None
+    verdict = closure_verdict(case)
+    if verdict != ClosureReadiness.SUGGEST_RESOLVE:
+        return None
+    return covering_declined_entry(case, verdict)
+
+
+#: What binds the model while a resolve decline stands (#1895): the ONE rule the
+#: step-2 refusal's feedback and the prompt line both state. The model never
+#: proposes on a request; a user who changes their mind has the engine's chip.
+RESOLVE_DECLINED_RULE = (
+    "Do not propose resolved on the evidence already on record. If the user "
+    "reports a NEW verification that the fix held, record it as "
+    "causal_absence_evidence and propose resolved in the same turn. A user who "
+    "changes their mind without one uses the engine's 'Mark it resolved' "
+    "action: point them to it, and never record a confirmation row from a "
+    "request."
+)
+
+
+def resolve_reopen_key(entry: str) -> str:
+    """The reopen key the "Mark it resolved" chip carries as its
+    ``proposal_id``: a digest of the covering declined ENTRY (#1895).
+
+    The entry, not the current signature: the entry is canonical (sorted ids)
+    and persisted, so the chip's builder and the boundary's verifier derive the
+    same key from the same stored string, and a shrink of the current id set
+    (which leaves the decline standing) does not invalidate a chip already on
+    screen. A new confirmation moves the state out from under the entry, the
+    decline no longer stands and the key no longer admits — but then the
+    engine is offering the resolution itself.
+    """
+    return hashlib.sha256(entry.encode()).hexdigest()[:16]
+
+
+def resolve_reopen_admitted(
+    case: Case, to_state: Any, proposal_id: Optional[str]
+) -> bool:
+    """Whether a ``status_transition`` to RESOLVED is the reopen chip for the
+    resolve decline standing now (#1895).
+
+    RESOLVED is not user-selectable (``earned_edge_refusal``), and this does
+    not make it so: it admits exactly one request, the engine's own
+    re-presentation of the offer the user declined, named by the key of the
+    entry that decline stands on. Any other key, or no decline standing, is
+    refused as before. The admitted request only PROPOSES; the user confirms
+    (INV-03).
+    """
+    if not proposal_id or str(getattr(to_state, "value", to_state)) != "resolved":
+        return False
+    entry = declined_resolve_entry(case)
+    return entry is not None and resolve_reopen_key(entry) == proposal_id
 
 
 def propose_transition(

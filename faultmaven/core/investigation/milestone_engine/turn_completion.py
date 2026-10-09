@@ -47,7 +47,11 @@ from .response_synthesis import (
     _prose_with_gate_notice,
     is_agent_response_synthesized,
 )
-from .stage_gates import _close_confirmation_suggestions, declined_close_card
+from .stage_gates import (
+    _close_confirmation_suggestions,
+    declined_close_card,
+    declined_resolve_card,
+)
 from .statement_revision import revision_presentation
 from .terminal_replies import (
     _build_resolution_confirmation,
@@ -56,6 +60,19 @@ from .terminal_replies import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _is_resolve_chip(follow_up: Any, resolve_card: dict) -> bool:
+    """Whether ``follow_up`` duplicates the "Mark it resolved" chip: the same
+    intent, or the same label (a model suggestion naming it, which would
+    render as a second, unclickable copy)."""
+    if not isinstance(follow_up, dict):
+        return False
+    label = str(follow_up.get("label") or "").strip().lower()
+    return (
+        follow_up.get("intent") == resolve_card["intent"]
+        or label == resolve_card["label"].lower()
+    )
 
 
 def _narration_overclaim_notice(
@@ -438,6 +455,22 @@ async def _compose_turn_reply(
     declined_side = metadata.get("declined_close_card")
     if declined_side:
         follow_ups = [*follow_ups, declined_close_card(declined_side)]
+    # The resolve side (#1895): the "Mark it resolved" chip is on screen on
+    # EVERY turn a resolve decline stands, whatever the model did. The model
+    # never proposes on a request (``RESOLVE_DECLINED_RULE``) and points a user
+    # who changes their mind at this chip, so the chip cannot depend on a
+    # refusal having happened. One predicate, the builder's: the decline
+    # covers the current state, no offer is pending, the problem is not on
+    # hold. A new confirmation (the offer returns with its own pair) or a
+    # pending offer leaves it off. Appended once: any follow-up already
+    # carrying its label or its intent is dropped first, so the turn shows
+    # exactly one.
+    resolve_card = declined_resolve_card(case_updated)
+    if resolve_card is not None:
+        follow_ups = [
+            *(f for f in follow_ups if not _is_resolve_chip(f, resolve_card)),
+            resolve_card,
+        ]
 
     # Append the synthesized summary (or skip / failure note) so it
     # appears in chat at the moment of generation. The composed reply
@@ -578,9 +611,13 @@ async def _compose_turn_reply(
             "engine_effective_to_status": _engine_to_status,
             "transition_pivoted": _transition_pivoted,
             "transition_superseded_by_engine": _transition_superseded,
-            # The model's proposal re-asked a close the user declined and was
-            # refused (#1889): ``false_alarm`` or ``deferred``, else None.
-            "transition_refused_as_declined": metadata.get("declined_close_card"),
+            # The model's proposal re-asked a disposition the user declined
+            # and was refused: ``false_alarm`` or ``deferred`` (#1889),
+            # ``resolve`` (#1895), else None.
+            "transition_refused_as_declined": (
+                metadata.get("declined_close_card")
+                or ("resolve" if metadata.get("declined_resolve_card") else None)
+            ),
             "user_confirmed_investigation_emitted": bool(
                 getattr(
                     getattr(response_obj, "state_updates", None),

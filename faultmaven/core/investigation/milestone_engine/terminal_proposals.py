@@ -101,6 +101,7 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
 
     from faultmaven.core.investigation.terminal_transitions import (
         assess_closure_readiness,
+        covering_declined_signature,
         deferred_disposition_signature,
         propose_transition,
     )
@@ -149,8 +150,12 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     # on a decline count: counting declines and giving up would be the engine
     # steering toward abandonment (D4 soft-collapse), and it would also strand
     # a case whose situation later genuinely warrants the offer again.
+    # Matched by the covering rule, not equality (#1895): only a confirmation
+    # the decline never saw moves its fourth part.
     signature = deferred_disposition_signature(case, closure.verdict)
-    if signature in p.deferred_disposition_declined_signatures:
+    if covering_declined_signature(
+        p.deferred_disposition_declined_signatures, signature
+    ):
         return
 
     if closure.verdict == closure.SUGGEST_RESOLVE:
@@ -283,6 +288,7 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
         assess_resolution_readiness,
         cause_identification_leg,
         closure_verdict,
+        covering_declined_signature,
         deferred_disposition_signature,
         propose_transition,
     )
@@ -302,8 +308,12 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
     # drift if either gate is re-scoped, and taken through ``closure_verdict``
     # so the user-facing message this call would otherwise build and throw away
     # is not built at all.
+    # Covered, not equal (#1895): the decline stands until a confirmation it
+    # never saw is recorded, and on that turn this offers again.
     signature = deferred_disposition_signature(case, closure_verdict(case))
-    if signature in case.progress.deferred_disposition_declined_signatures:
+    if covering_declined_signature(
+        case.progress.deferred_disposition_declined_signatures, signature
+    ):
         return
 
     # The "still open until you confirm" clause is load-bearing, not padding.

@@ -62,11 +62,8 @@ def declined_close_reask(
       derives the same ``solution_deferred`` reason from the same state, so it
       is the question the user just answered.
 
-    The RESOLVE side is not read here (#1895). A resolution is earned, not
-    requested: after a decline the offer is due back when the state that earned
-    it moves, and the signature does not yet see the move a user most often
-    brings (a fresh confirmation that the fix held), so refusing the model on
-    it could withhold an offer the case has re-earned.
+    The RESOLVE side is ``declined_resolution_reask`` (#1895): its refusal
+    carries the "Mark it resolved" chip rather than a close card.
     """
     declined_at = false_alarm_close_declined_at(case)
     if declined_at is not None:
@@ -79,11 +76,10 @@ def declined_close_reask(
     if closure_verdict is None:
         return None
     from faultmaven.core.investigation.terminal_transitions import (
-        deferred_disposition_signature,
+        covering_declined_entry,
     )
 
-    signature = deferred_disposition_signature(case, closure_verdict)
-    if signature in case.progress.deferred_disposition_declined_signatures:
+    if covering_declined_entry(case, closure_verdict):
         return (
             "deferred",
             "TRANSITION NOT PROPOSED: the user declined closing this case with "
@@ -92,6 +88,46 @@ def declined_close_reask(
             + _DIRECTED_ONLY.format(what="that close"),
         )
     return None
+
+
+#: The feedback when step 2 refuses a resolution the user declined (#1895).
+#: The rule is ``RESOLVE_DECLINED_RULE``, the same text the prompt line states;
+#: the chip is on this turn's reply, as on every turn the decline stands.
+def _declined_resolve_feedback() -> str:
+    from faultmaven.core.investigation.terminal_transitions import (
+        RESOLVE_DECLINED_RULE,
+    )
+
+    return (
+        "TRANSITION NOT PROPOSED: the user declined marking this case resolved, "
+        "and no new confirmation that the fix held has been recorded since. "
+        "The engine has attached its 'Mark it resolved' action to this reply. "
+        + RESOLVE_DECLINED_RULE
+    )
+
+
+DECLINED_RESOLVE_FEEDBACK = _declined_resolve_feedback()
+
+
+def declined_resolution_reask(case: Case) -> str | None:
+    """The feedback refusing a resolution the model proposes while the user's
+    decline of it stands, or None (#1895).
+
+    A resolution is earned, never requested. After a decline it is due back
+    when the state that earned it moves: a NEW confirmation that the fix held
+    (``terminal_transitions.declined_resolve_entry``, whose covering rule
+    ignores elapsed turns, repeated declines and a shrinking set of rows).
+    Until then the model's re-proposal is the question the user just answered.
+    The model is not left as the only way back: the refused turn carries the
+    "Mark it resolved" chip (``stage_gates.declined_resolve_card``).
+    """
+    from faultmaven.core.investigation.terminal_transitions import (
+        declined_resolve_entry,
+    )
+
+    if declined_resolve_entry(case) is None:
+        return None
+    return DECLINED_RESOLVE_FEEDBACK
 
 
 def _refuse_declined_reask(metadata: dict[str, Any], side: str, feedback: str) -> None:
@@ -268,7 +304,29 @@ class TransitionManager:
                 metadata["resolution_readiness_verdict"] = readiness.verdict
                 metadata["resolution_readiness_missing"] = readiness.missing
 
-                if readiness.verdict == readiness.READY:
+                reask = (
+                    declined_resolution_reask(case)
+                    if readiness.verdict == readiness.READY
+                    else None
+                )
+                if reask is not None:
+                    # Nothing re-offers while a resolve decline stands (#1895).
+                    # A ``needs_info`` resolve opened on a state the decline
+                    # did not cover (a failed fix had disqualified its row)
+                    # turns READY again on the SAME rows the user declined —
+                    # a pruned refutation re-admits one — so promoting it here
+                    # would re-ask the question they answered. Withdrawn
+                    # instead, with the feedback and the chip, as step 2
+                    # refuses the model's own re-proposal.
+                    cancel_pending_transition(case)
+                    _add_system_feedback(metadata, reask)
+                    metadata["declined_resolve_card"] = True
+                    logger.info(
+                        f"Case {case.case_id}: needs_info resolve turned READY "
+                        f"on a state the user's decline covers — withdrawn, "
+                        f"not promoted."
+                    )
+                elif readiness.verdict == readiness.READY:
                     # Requirements met — the READY offer is a new offer, so it
                     # is re-proposed rather than flipped in place (#1812). A
                     # card shipped while the offer was unconfirmable names the
@@ -649,6 +707,39 @@ class TransitionManager:
                             f"Case {case.case_id}: model proposed CLOSED at "
                             f"the state the user declined the deferred close "
                             f"against — refused."
+                        )
+                        return case
+
+                # The resolve side (#1895): the model's ``resolved`` on a
+                # READY case, and its ``closed`` the closure check pivots to
+                # RESOLVED (INV-37), are one question — the resolution the
+                # user declined. While that decline stands (no confirmation
+                # recorded since), both are refused, with feedback and the
+                # "Mark it resolved" chip on the turn. The user's own close
+                # pick still pivots (``_close_on_explicit_intent``): this
+                # binds the model, never the user.
+                model_resolves_ready = (
+                    proposed.to_state == "resolved"
+                    and effective_to_status == "resolved"
+                    and needs_info_message is None
+                )
+                model_close_pivots = (
+                    proposed.to_state == "closed" and effective_to_status == "resolved"
+                )
+                if model_resolves_ready or model_close_pivots:
+                    feedback = declined_resolution_reask(case)
+                    if feedback is not None:
+                        _add_system_feedback(metadata, feedback)
+                        # Read by ``transition_compliance``, which reports the
+                        # refusal. The chip itself is on every turn the
+                        # decline stands (``turn_completion``), this one
+                        # included.
+                        metadata["declined_resolve_card"] = True
+                        logger.info(
+                            f"Case {case.case_id}: model proposed "
+                            f"{proposed.to_state!r} (effective RESOLVED) while "
+                            f"the user's decline of the resolution stands — "
+                            f"refused."
                         )
                         return case
 

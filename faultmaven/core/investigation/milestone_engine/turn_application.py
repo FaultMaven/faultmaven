@@ -25,7 +25,11 @@ from faultmaven.modules.case.contracts import TurnOutcome
 
 from .affordances import engine_owned_affordances
 from .progress import score_progress
-from .response_synthesis import is_agent_response_synthesized
+from .response_synthesis import (
+    is_agent_response_synthesized,
+    restamp_resolve_decline,
+    turn_markers,
+)
 from .stage_gates import _refresh_working_conclusion
 from .statement_revision import merge_statement_commit
 from .terminal_proposals import (
@@ -51,8 +55,16 @@ async def _apply_turn_response(
     user_message,
 ):
     """Apply the generated response to the case: structured updates, automatic transitions, progress scoring and validation."""
+    # Section 0b's turn-scoped markers cross into the apply step by name
+    # (``TURN_MARKER_KEYS``): its proposers must see a withdrawal or a decline
+    # made before the model ran (#1895).
     case_updated, response_metadata = await responses.process_response_structured(
-        case, user_message, response_obj, attachments, upload_report
+        case,
+        user_message,
+        response_obj,
+        attachments,
+        upload_report,
+        turn_markers=turn_markers(metadata),
     )
     # Merge response metadata with early metadata (which may have
     # transition_proposed_this_turn). The two accumulators written before the
@@ -108,6 +120,12 @@ async def _apply_turn_response(
     # block's other statements stay where they are, and deleting a dead
     # call touches less than keeping it.
     # Outcome is already set by _process_response_structured (default) or applied updates (LLM choice)
+
+    # 3b. A resolve declined on THIS turn covers the confirmations the turn
+    # just recorded (#1895). Before step 4, so step 2 reads the re-stamped
+    # decline and refuses a same-turn resolve proposal on the user's "not
+    # yet", and the backstop does not re-offer on the next turn.
+    restamp_resolve_decline(case_updated, metadata)
 
     # 4. Check for automatic status transitions
     case_updated = await transitions.check_automatic_transitions(

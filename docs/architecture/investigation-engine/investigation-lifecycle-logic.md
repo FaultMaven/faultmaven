@@ -336,7 +336,7 @@ Step 1 has four openers, and the fourth is the engine's own. Three of them are
 | Opener | Fires when |
 |---|---|
 | The model's `proposed_transition` | COMPLETION's co-emit rule: the fix is verified and the model emits the transition beside its backing `causal_absence_evidence` row |
-| The user, *through the model* | Natural language ("mark this resolved", "the fix worked") reaches the state machine only by the model emitting `proposed_transition` — so this is not a fourth mechanism, it is opener 1 with a different trigger. There is no NL detector: `IntentResolver` matches typed text against suggestions already on screen, and with nothing standing it has nothing to match. NOT the status menu either — RESOLVED is not user-selectable, and a `status_transition` request for it is refused at the service boundary and again in the engine |
+| The user, *through the model* | Natural language ("mark this resolved", "the fix worked") reaches the state machine only by the model emitting `proposed_transition` — so this is not a fourth mechanism, it is opener 1 with a different trigger. There is no NL detector: `IntentResolver` matches typed text against suggestions already on screen, and with nothing standing it has nothing to match. NOT the status menu either — RESOLVED is not user-selectable, and a `status_transition` request for it is refused at the service boundary and again in the engine. The one exception is the engine's own declined offer re-presented: the **Mark it resolved** chip (#1895, below) |
 | `_maybe_propose_deferred_close` | `solution_feasible == DEFERRED` — and on a confirmed case its SUGGEST_RESOLVE pivot offers RESOLVED rather than CLOSED |
 | `_maybe_propose_confirmed_resolution` | **Backstop.** The case is resolution-READY and none of the above opened the handshake |
 
@@ -371,13 +371,55 @@ signature stands, a model `closed` proposal that the closure check keeps at
 CLOSED is refused (one it pivots to RESOLVED on a resolvable case is not), with
 feedback saying the model may propose it only when the user directs it, and a
 **Close with the solution documented** card appended to the turn's follow-ups.
-The model's re-proposal of a declined RESOLVE is not refused this way (#1895). A
-resolution is earned, not requested: after a decline the offer is due back when
-the state that earned it moves, and the signature does not yet see the move a
-user most often brings (a fresh confirmation that the fix held), so refusing the
-model on it could withhold an offer the case has re-earned. (A
-false-alarm close is not in this signature space at all; its decline is
+(A false-alarm close is not in this signature space at all; its decline is
 recorded on the finding, §1.4.1.)
+
+**A declined RESOLVE binds the model too, until a NEW confirmation (#1895).** A
+resolution is earned, not requested, so after a decline it is due back exactly
+when the state that earned it moves — and the move a user most often brings
+after "not yet" is a fresh confirmation that the fix held. The signature names
+it: `verdict | solutions | cause leg | confirmation ids`, the fourth part the
+sorted ids of the qualifying `causal_absence_evidence` rows. A decline stands
+while an entry with the same first three parts holds every id that qualifies
+now (a subset rule, read in one place, `covering_declined_signature`): a row
+that stops qualifying, or is pruned and re-enters, moves nothing; elapsed turns
+and repeated declines never do; one row the decline never saw does.
+
+- **The decline turn covers what it records.** A deflection ("not yet, it has
+  only been clean for an hour") falls through to the model, which may record the
+  user's words as a confirmation row that same turn. Section 0b marks the turn,
+  and the signature is re-stamped against the turn's rows immediately before
+  `check_automatic_transitions`, on a SUGGEST_RESOLVE verdict only.
+- **The model is refused.** While the decline stands, step 2 refuses a model
+  `resolved` on a READY case and a model `closed` that the closure check pivots
+  to RESOLVED (INV-37), with feedback, and step 0 withdraws a `needs_info`
+  resolve that turns READY on the rows the decline covers rather than promoting
+  it. Nothing re-offers while the decline stands. The user's own close pick
+  still pivots to the resolve offer: this binds the model, never the user.
+- **It returns on the turn it is earned.** A turn that records a new
+  confirmation moves the signature before step 2 and the backstop, so the offer
+  comes back on that turn, from the model or the backstop.
+- **A user who changes their mind** is not asked to manufacture evidence (a
+  request is never a confirmation row). Every turn on which the decline stands
+  (no offer pending, the problem not on hold) carries the engine's **Mark it
+  resolved** chip, whatever the model did, exactly once: a `status_transition` to `resolved` whose `proposal_id` is the reopen
+  key, a digest of the declined entry the decline stands on. The service
+  boundary and the engine admit that one request while the entry still covers
+  the case; the engine then proposes on a READY case with the usual pair, and
+  the user confirms (INV-03). A stale key (a new confirmation has since moved
+  the state) keeps the 422, and by then the engine is offering the resolution
+  itself. The bare "no" is answered with what brings the offer back and the
+  chip. While the decline stands the prompt and the refusal's feedback state one
+  rule (`RESOLVE_DECLINED_RULE`): do not propose on the evidence on record;
+  record a NEW verification as evidence and propose in the same turn; point a
+  user who changes their mind at the **Mark it resolved** action, never
+  proposing on, or recording a row from, a request.
+- **The decline turn's markers reach the apply step.** Section 0b's turn-scoped
+  markers (the handshake-answered and offer-withdrawn guards, and the resolve
+  decline) cross into the apply step's metadata through one named channel
+  (`TURN_MARKER_KEYS`), so the deferred proposer that runs there honours them: a
+  question about a standing deferred offer withdraws it for the turn, and a
+  deflection's decline is not re-offered on its own turn.
 
 **Why RESOLVED left the status menu.** It was listed in `USER_SELECTABLE_ACTIONS`
 until the engine could see the readiness bar for itself, and the listing was
@@ -390,7 +432,9 @@ arguing with a pick already taken, which also retired the arm that could confirm
 a `needs_info` proposal without re-reading readiness.
 
 One consequence worth stating plainly: on a resolution-ready case the status menu
-is **empty**, and that is correct rather than a gap. `closed` reads
+is **empty**, and that is correct rather than a gap. The reopen chip (#1895) does
+not change that: it is a follow-up the engine attaches after a decline, not a
+menu entry, and `USER_SELECTABLE_ACTIONS` still lists only dispositions. `closed` reads
 `suggests_alternative` there, which holds exactly when a qualifying
 `causal_absence_evidence` row is on the case — so INV-37 pivots any close back to
 a resolve proposal. A Close control on such a case could only ever produce "shall

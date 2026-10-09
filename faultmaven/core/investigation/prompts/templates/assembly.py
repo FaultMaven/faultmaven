@@ -11,6 +11,7 @@ from faultmaven.core.investigation.prompts.context_builder.assembly import (
 from faultmaven.core.investigation.prompts.context_builder.entity_highlights import (
     EntityHighlightGroup,
 )
+from faultmaven.core.investigation.terminal_transitions import RESOLVE_DECLINED_RULE
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
@@ -77,6 +78,30 @@ def _false_alarm_declined_line(turn: int) -> str:
         "the engine then attaches the Close action to your reply. Do not "
         "propose it unprompted."
     )
+
+
+#: The line the prompt carries while the user's decline of the resolution
+#: stands (#1895): ``RESOLVE_DECLINED_RULE``, the same rule the step-2
+#: refusal's feedback states. A NEW verification is evidence, recorded and
+#: then proposed on; a request is not, and a user who changes their mind is
+#: pointed at the engine's "Mark it resolved" action.
+RESOLVE_DECLINED_LINE = (
+    "**THE USER DECLINED MARKING THIS CASE RESOLVED.** It stays open on their "
+    "answer. " + RESOLVE_DECLINED_RULE + " Do not narrate the case as resolved."
+)
+
+
+def _resolve_declined_emphasis(case) -> str:
+    """``RESOLVE_DECLINED_LINE`` while the user's decline of the resolution
+    stands (``terminal_transitions.declined_resolve_entry``), else "".
+    Appended to the focus block on every stage, never replacing it."""
+    from faultmaven.core.investigation.terminal_transitions import (
+        declined_resolve_entry,
+    )
+
+    if declined_resolve_entry(case) is None:
+        return ""
+    return f"\n{RESOLVE_DECLINED_LINE}\n"
 
 
 def _problem_hold_emphasis(case) -> str:
@@ -476,7 +501,9 @@ def get_prompt_for_case(
             # instructions: it moves with the milestones and the wall clock,
             # and the stage instructions close the cached prefix (#613). A
             # problem hold renders on every stage (#1889); the zone emphasis
-            # only on DIAGNOSIS. Empty on a knowledge_query or agent_meta turn.
+            # only on DIAGNOSIS; a standing resolve decline is appended on
+            # every stage (#1895). Empty on a knowledge_query or agent_meta
+            # turn.
             focus_emphasis = ""
             if processing_mode == "knowledge_query":
                 adaptive_instr = KNOWLEDGE_QUERY_INSTRUCTIONS
@@ -497,6 +524,7 @@ def get_prompt_for_case(
                     adaptive_instr = TREATMENT_INSTRUCTIONS
                 else:
                     adaptive_instr = _RCA_DIAGNOSIS_BLOCK
+                focus_emphasis += _resolve_declined_emphasis(case)
 
             # Add stage to context for schema reference
             ctx["stage"] = stage.value if stage else "diagnosis"

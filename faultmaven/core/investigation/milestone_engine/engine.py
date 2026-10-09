@@ -48,6 +48,7 @@ from faultmaven.core.investigation.milestone_engine.transition_turns import (
     _decline_bare_reply,
     _refuse_offer_click,
     _represent_pending_transition,
+    _resolve_on_reopen_chip,
 )
 from faultmaven.core.investigation.milestone_engine.transitions import TransitionManager
 from faultmaven.core.investigation.milestone_engine.turn_application import (
@@ -73,7 +74,10 @@ from faultmaven.core.investigation.problem_status import (
 )
 from faultmaven.core.investigation.progress_monitor import ProgressMonitor
 from faultmaven.core.investigation.state_validator import StateValidator
-from faultmaven.core.investigation.terminal_transitions import is_question
+from faultmaven.core.investigation.terminal_transitions import (
+    is_question,
+    resolve_reopen_admitted,
+)
 from faultmaven.infrastructure.llm.metering import (
     TurnTokenTracker,
     active_token_tracker,
@@ -539,11 +543,21 @@ class MilestoneEngine:
         # the Gate-1 refusal entirely left all 58 lifecycle-invariant tests
         # green. Verified by mutation. One guard, one anchor, and the refusal
         # now moves with the dict instead of alongside it.
+        #
+        # One admission, and it does not make RESOLVED selectable (#1895): the
+        # "Mark it resolved" chip re-presents the resolution the user declined,
+        # named by the key of the declined entry that decline stands on, and
+        # is let through only while that entry still covers the case. The
+        # service boundary applies the same rule; this is its backstop.
         if intent_type == "status_transition":
             _refusal = earned_edge_refusal(
                 case.state, (intent_data or {}).get("to_state") or ""
             )
-            if _refusal:
+            if _refusal and not resolve_reopen_admitted(
+                case,
+                (intent_data or {}).get("to_state"),
+                (intent_data or {}).get("proposal_id"),
+            ):
                 raise ValueError(_refusal)
 
         # Add intent information to logger for tracing
@@ -678,7 +692,9 @@ class MilestoneEngine:
                     # the provenance (fm#1122) — otherwise the engine's
                     # deferred disposition re-fires next turn from state the
                     # user just contradicted.
-                    _record_deferred_disposition_decline(case, superseded_by=new_target)
+                    _record_deferred_disposition_decline(
+                        case, superseded_by=new_target, metadata=metadata
+                    )
                     _note_engine_disposition_withdrawn(case, metadata)
                     cancel_pending_transition(case)
                     logger.info(
@@ -777,7 +793,7 @@ class MilestoneEngine:
                     elif verdict == "decline":
                         # Record the refusal BEFORE cancelling: the cancel is
                         # what erases the provenance this reads (fm#1122).
-                        _record_deferred_disposition_decline(case)
+                        _record_deferred_disposition_decline(case, metadata=metadata)
                         _note_engine_disposition_withdrawn(case, metadata)
                         cancel_pending_transition(case)
 
@@ -858,7 +874,9 @@ class MilestoneEngine:
                                 and not is_question(stripped_message)
                                 and not opens_with_consent_loosely(stripped_message)
                             ):
-                                _record_deferred_disposition_decline(case)
+                                _record_deferred_disposition_decline(
+                                    case, metadata=metadata
+                                )
                             _note_engine_disposition_withdrawn(case, metadata)
                             cancel_pending_transition(case)
                             logger.info(
@@ -997,15 +1015,24 @@ class MilestoneEngine:
                         user_message=user_message,
                     )
 
-                # ``resolved`` never reaches here either — the same guard
-                # refuses it. The branch that used to live here ran the
-                # readiness check AFTER the pick and then argued with it
-                # (propose / pivot to close / ask for what is missing), and
-                # one of its arms confirmed a standing ``needs_info``
-                # proposal without re-reading readiness — executing RESOLVED
-                # on a case carrying no qualifying ``causal_absence_evidence``
-                # row. Deciding whether to OFFER retires the argument and the
-                # bypass together.
+                # ``resolved`` reaches here only as the reopen chip (#1895):
+                # the guard at the top of this method refuses every other
+                # RESOLVED pick. The chip re-presents the resolution the user
+                # declined; it proposes on a READY case and never confirms.
+                # The branch that used to live here took ANY pick, ran the
+                # readiness check AFTER it and then argued with it (propose /
+                # pivot to close / ask for what is missing), and one of its
+                # arms confirmed a standing ``needs_info`` proposal without
+                # re-reading readiness — executing RESOLVED on a case carrying
+                # no qualifying ``causal_absence_evidence`` row. Deciding
+                # whether to OFFER retires the argument and the bypass
+                # together.
+                elif to_status_str == "resolved":
+                    return _resolve_on_reopen_chip(
+                        case=case,
+                        upload_report=upload_report,
+                        user_message=user_message,
+                    )
 
                 # ``investigating`` never reaches here — the guard at the top
                 # of this method refuses it before any state is touched. The

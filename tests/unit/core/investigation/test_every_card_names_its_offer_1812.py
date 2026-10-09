@@ -34,6 +34,7 @@ from faultmaven.core.investigation.milestone_engine.affordances import (
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _apply_stage_gate_side_effects,
+    declined_resolve_card,
 )
 from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
     _maybe_propose_false_alarm_close,
@@ -104,17 +105,19 @@ def _census() -> dict[tuple[str, int], int]:
     return sites
 
 
-def test_the_census_finds_the_twenty_one_sites_and_each_passes_the_case():
-    """State N: 21. The plan's 17 sites, plus the one #1812 added —
+def test_the_census_finds_the_twenty_two_sites_and_each_passes_the_case():
+    """State N: 22. The plan's 17 sites, plus the one #1812 added —
     ``transition_turns._refuse_offer_click`` re-shows the Gate 1 pair beside
-    its "earlier offer" line — and the three the statement-revision handshake
+    its "earlier offer" line — the three the statement-revision handshake
     adds: its pair served by ``engine_owned_affordances`` and re-shown by
-    ``_refuse_offer_click``, and the false-alarm close the engine offers. A
-    builder takes the case (no default), because its key is the case's
-    standing offer; a zero-argument call could name none.
+    ``_refuse_offer_click``, and the false-alarm close the engine offers — and
+    the resolve pair ``transition_turns._resolve_on_reopen_chip`` serves once
+    the "Mark it resolved" chip has proposed (#1895). A builder takes the case
+    (no default), because its key is the case's standing offer; a zero-argument
+    call could name none.
     """
     sites = _census()
-    assert len(sites) == 21, sorted(sites)
+    assert len(sites) == 22, sorted(sites)
     assert all(n == 1 for n in sites.values()), sorted(sites.items())
 
 
@@ -382,6 +385,26 @@ async def _typed_yes_on_a_pending_close_pivots():
     _served_the_standing_offer(reply, case)
 
 
+async def _reopen_chip_click():
+    """transition_turns.py: the "Mark it resolved" chip proposes, and the pair
+    names the offer it just made (#1895)."""
+    case = _investigating(cause=True, absence=True)
+    case.progress.deferred_disposition_declined_signatures = [
+        terminal_transitions.deferred_disposition_signature(
+            case, terminal_transitions.ClosureReadiness.SUGGEST_RESOLVE
+        )
+    ]
+    chip = declined_resolve_card(case)
+    result = await _engine().process_turn(
+        case=case,
+        user_message=chip["payload"],
+        intent_type="status_transition",
+        intent_data=dict(chip["intent"]),
+    )
+    assert case.pending_transition["to_state"] == "resolved"
+    _served_the_standing_offer(result, case)
+
+
 async def _llm_proposes_a_transition():
     """transitions.py: the model's proposed_transition, both targets."""
     for to_state, case in (
@@ -489,6 +512,7 @@ DRIVERS = [
     _gate_re_asks,
     _click_close_on_a_resolvable_case,
     _close_picked_from_the_menu,
+    _reopen_chip_click,
     _typed_yes_on_a_pending_close_pivots,
     _llm_proposes_a_transition,
     _needs_info_answered,
