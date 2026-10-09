@@ -10,6 +10,7 @@ Pipeline:
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -29,6 +30,7 @@ from faultmaven.infrastructure.persistence.models import (
     ConversionJobModel,
     UploadedFileModel,
 )
+from faultmaven.infrastructure.security.case_redaction import model_boundary_redaction
 from faultmaven.modules.auth.contracts import is_team_member
 from faultmaven.modules.knowledge.domain.case_authoring import (
     CASE_ID_RULE,
@@ -112,6 +114,26 @@ from faultmaven.utils.runbook_id import (
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class _PreparedConversion:
+    """One failure mode's generation request, built and REDACTED, not yet sent.
+
+    Only :meth:`ConversionService._prepare_conversion` constructs one, and
+    ``redacted_messages`` is what came back from the model-boundary redaction — the send
+    step takes nothing else, so it cannot reach the router with unredacted text
+    (#1901). Preparing every mode before sending any is what makes a refusal
+    fail the whole conversion with nothing sent and nothing written.
+    """
+
+    knowledge_model: str
+    #: Named for what they are — and not ``messages``, which the #1660 census
+    #: reads as a case's message rows.
+    redacted_messages: List[dict]
+    #: The document path's pre-computed id; None on the case path, whose id is
+    #: minted from the frontmatter the model writes.
+    runbook_id: Optional[str]
+
+
 # =============================================================================
 # ConversionService
 # =============================================================================
@@ -128,9 +150,17 @@ class ConversionService:
         knowledge_service=None,
         share_repository=None,
         team_service=None,
+        sanitizer=None,
     ):
         self._llm_router = llm_router
         self._settings = settings
+        # The SAME sanitizer instance the investigation engine is handed (the
+        # container gives both one). Every model call this service makes —
+        # triage, analysis, conversion — redacts what it sends with it at this
+        # layer, under ``should_redact`` (#1901): the router's own pass is a
+        # property of the default router, which ``LLM_ROUTER_CLASS`` can
+        # substitute. None → redaction disabled at DI level, as on the engine.
+        self._sanitizer = sanitizer
         self._db_session_factory = db_session_factory
         self._knowledge_service = knowledge_service
         # Source of truth for team visibility (ADR-013 §D4). A team publish
@@ -142,7 +172,7 @@ class ConversionService:
         # teams don't exist in this deployment, so a team-scoped publish is
         # refused rather than silently minting an unresolvable share target.
         self._team_service = team_service
-        self._preprocessor = DocumentPreprocessor(llm_router, settings)
+        self._preprocessor = DocumentPreprocessor(llm_router, settings, sanitizer)
         self._scan_lock = asyncio.Lock()
         # In-flight case-conversion dedup. Keyed by case_id; the value is
         # the running asyncio.Task that other concurrent callers can await.
@@ -270,7 +300,11 @@ class ConversionService:
             },
         )
 
-        preprocessing = await self._preprocessor.preprocess(file_path, content_type)
+        # An uploaded document has no case: its text is redacted at the model
+        # boundary under this conversion's id, by the same rule as a case's.
+        preprocessing = await self._preprocessor.preprocess(
+            file_path, content_type, scope_id=conversion_id
+        )
 
         if preprocessing.is_rejected:
             raise ConversionRejectedError(
@@ -294,6 +328,7 @@ class ConversionService:
             self._settings,
             preprocessing.extracted_text,
             original_filename,
+            model_boundary_redaction(conversion_id, self._sanitizer),
         )
 
         if not analysis.is_actionable or len(analysis.failure_modes) == 0:
@@ -536,13 +571,19 @@ class ConversionService:
             },
         )
 
-        # Convert using the same pipeline as document-driven
-        draft_or_error = await self._convert_single_failure_mode(
+        # Convert using the same pipeline as document-driven: redact, then send.
+        prepared = await self._prepare_conversion(
             text=source_text,
             failure_mode=failure_mode,
             scope=request.scope,
             filename=source_filename,
             conversion_id=conversion_id,
+            case_id=request.case_id,
+        )
+        draft_or_error = await self._convert_single_failure_mode(
+            prepared=prepared,
+            failure_mode=failure_mode,
+            scope=request.scope,
             user_id=user_id,
             team_id=team_id,
             enterprise_id=enterprise_id,
@@ -700,6 +741,26 @@ class ConversionService:
         )
         errors.extend(taken_errors)
 
+        # Every survivor's request is built and REDACTED before any is sent
+        # (#1901). A redaction that is required and cannot run is a refusal to
+        # send: raised here, before the first generation, it fails the whole
+        # conversion with nothing sent to the model and nothing written to disk
+        # — not after the earlier modes went out in their redacted form and
+        # left draft files behind with no job row to own them. Sequential, as
+        # the work is the sanitizer's, not the provider's. Failures AFTER this
+        # point (the router, the write) keep their per-mode ``ConversionError``
+        # and the PARTIAL status.
+        prepared = [
+            await self._prepare_conversion(
+                text=text,
+                failure_mode=fm,
+                scope=scope,
+                filename=filename,
+                conversion_id=conversion_id,
+            )
+            for fm in unique_modes
+        ]
+
         # The concurrency decision is a property of the DOCUMENT — how many
         # failure modes it analysed into — not of how many of them turned out to
         # be duplicates. Keying it on the survivor count let a collision flip a
@@ -713,16 +774,14 @@ class ConversionService:
             # Parallel conversion
             tasks = [
                 self._convert_single_failure_mode(
-                    text=text,
+                    prepared=request,
                     failure_mode=fm,
                     scope=scope,
-                    filename=filename,
-                    conversion_id=conversion_id,
                     user_id=user_id,
                     enterprise_id=enterprise_id,
                     team_id=team_id,
                 )
-                for fm in unique_modes
+                for fm, request in zip(unique_modes, prepared)
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for i, result in enumerate(results):
@@ -752,13 +811,11 @@ class ConversionService:
                     drafts.append(result)
         else:
             # Sequential conversion (avoid rate limits)
-            for fm in unique_modes:
+            for fm, request in zip(unique_modes, prepared):
                 result = await self._convert_single_failure_mode(
-                    text=text,
+                    prepared=request,
                     failure_mode=fm,
                     scope=scope,
-                    filename=filename,
-                    conversion_id=conversion_id,
                     user_id=user_id,
                     enterprise_id=enterprise_id,
                     team_id=team_id,
@@ -770,83 +827,124 @@ class ConversionService:
 
         return drafts, errors
 
-    async def _convert_single_failure_mode(
+    async def _prepare_conversion(
         self,
         text: str,
         failure_mode: FailureModeAnalysis,
         scope: str,
         filename: str,
         conversion_id: str,
-        user_id: str,
-        enterprise_id: Optional[str],
-        team_id: Optional[str] = None,
         case_id: Optional[str] = None,
-    ) -> ConversionDraft | ConversionError:
-        """Convert a single failure mode to a runbook draft.
+    ) -> _PreparedConversion:
+        """Build one failure mode's generation request and redact it.
+
+        Nothing is sent. Split from :meth:`_convert_single_failure_mode` so a
+        multi-mode conversion redacts every mode before it sends any (#1901).
 
         ``case_id`` selects the case authoring policy (#1880): a case names
         an incident, so the model writes a de-identified title and infers the
         technology, and the id and the draft's title are read from the
         frontmatter it produced. Without it, the failure mode came from a
         document's analysis pass and its ``(service, title)`` is the id.
+
+        Raises:
+            RedactionUnavailableError: redaction is required and could not
+                run. Nothing has been sent.
         """
-        try:
-            knowledge_model = self._settings.llm.get_knowledge_model()
-            today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        knowledge_model = self._settings.llm.get_knowledge_model()
+        today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-            if case_id is None:
-                # Pre-compute the runbook_id so we can pass the exact kebab-case
-                # value to the LLM. Without this, the LLM is left to derive `id`
-                # from the failure-mode title and routinely uses the title verbatim
-                # (e.g. "Case-260526-4"), which fails the kebab-case validator.
-                runbook_id = generate_runbook_id(failure_mode)
-                identity = (
-                    f"RUNBOOK_ID: {runbook_id}\n"
-                    f"FAILURE MODE: {failure_mode.title}\n"
-                )
-                service = failure_mode.service
-                id_rules = (
-                    f"The frontmatter `id` field MUST be exactly: {runbook_id}\n"
-                    f"(lowercase, kebab-case; do not derive a different id from "
-                    f"the title)."
-                )
-            else:
-                # Nothing to pre-compute: the case title names the incident, so
-                # neither it nor an id minted from it may reach the runbook. The
-                # id is minted after the write, from the produced frontmatter.
-                runbook_id = None
-                identity = (
-                    "FAILURE MODE: (not supplied for a case — write the title "
-                    "yourself, under the rules below)\n"
-                )
-                service = (
-                    "(not supplied for a case — infer it from the source material)"
-                )
-                id_rules = "\n\n".join(
-                    [CASE_ID_RULE, TECHNOLOGY_RULE, DE_IDENTIFICATION_RULES]
-                )
-
-            user_message = (
-                f"Convert the following source material into a runbook for this specific "
-                f"failure mode:\n\n"
-                f"{identity}"
-                f"DOMAIN: {failure_mode.domain}\n"
-                f"SERVICE: {service}\n"
-                f"SYMPTOM_CLASS: {', '.join(failure_mode.symptom_class) or '(none supplied — classify from the controlled vocabulary in rule 9)'}\n"
-                f"SEVERITY: {failure_mode.severity or f'(not assessed — choose one of {render_vocabulary(RunbookSeverity)} from the source material)'}\n"
-                f"SCOPE: {scope}\n"
-                f"SOURCE FILENAME: {filename}\n"
-                f"TODAY: {today_iso}\n\n"
-                f"{id_rules}\n\n"
-                f"--- SOURCE MATERIAL ---\n{text}\n--- END SOURCE MATERIAL ---"
+        if case_id is None:
+            # Pre-compute the runbook_id so we can pass the exact kebab-case
+            # value to the LLM. Without this, the LLM is left to derive `id`
+            # from the failure-mode title and routinely uses the title verbatim
+            # (e.g. "Case-260526-4"), which fails the kebab-case validator.
+            runbook_id = generate_runbook_id(failure_mode)
+            identity = f"RUNBOOK_ID: {runbook_id}\nFAILURE MODE: {failure_mode.title}\n"
+            service = failure_mode.service
+            id_rules = (
+                f"The frontmatter `id` field MUST be exactly: {runbook_id}\n"
+                f"(lowercase, kebab-case; do not derive a different id from "
+                f"the title)."
             )
+        else:
+            # Nothing to pre-compute: the case title names the incident, so
+            # neither it nor an id minted from it may reach the runbook. The
+            # id is minted after the write, from the produced frontmatter.
+            runbook_id = None
+            identity = (
+                "FAILURE MODE: (not supplied for a case — write the title "
+                "yourself, under the rules below)\n"
+            )
+            service = "(not supplied for a case — infer it from the source material)"
+            id_rules = "\n\n".join(
+                [CASE_ID_RULE, TECHNOLOGY_RULE, DE_IDENTIFICATION_RULES]
+            )
+
+        user_message = (
+            f"Convert the following source material into a runbook for this specific "
+            f"failure mode:\n\n"
+            f"{identity}"
+            f"DOMAIN: {failure_mode.domain}\n"
+            f"SERVICE: {service}\n"
+            f"SYMPTOM_CLASS: {', '.join(failure_mode.symptom_class) or '(none supplied — classify from the controlled vocabulary in rule 9)'}\n"
+            f"SEVERITY: {failure_mode.severity or f'(not assessed — choose one of {render_vocabulary(RunbookSeverity)} from the source material)'}\n"
+            f"SCOPE: {scope}\n"
+            f"SOURCE FILENAME: {filename}\n"
+            f"TODAY: {today_iso}\n\n"
+            f"{id_rules}\n\n"
+            f"--- SOURCE MATERIAL ---\n{text}\n--- END SOURCE MATERIAL ---"
+        )
+
+        # Redacted at the model boundary, under the investigation path's rule
+        # (#1901): a case's text keyed on its case id, a document's on this
+        # conversion's. Here, outside the send step's ``try`` and its retry
+        # closure, so the truncation retry resends the redacted messages and a
+        # ``RedactionUnavailableError`` keeps its class — the broad ``except``
+        # there would launder it into one failure mode's ``ConversionError``.
+        # The output is never reversed: the runbook is meant to be
+        # de-identified, so the placeholders the model writes are what is
+        # persisted, as on the extraction path.
+        messages = await model_boundary_redaction(
+            case_id if case_id is not None else conversion_id, self._sanitizer
+        ).asanitize_messages(
+            [
+                {"role": "system", "content": CONVERSION_SYSTEM_PROMPT},
+                {"role": "user", "content": user_message},
+            ]
+        )
+
+        return _PreparedConversion(
+            knowledge_model=knowledge_model,
+            redacted_messages=messages,
+            runbook_id=runbook_id,
+        )
+
+    async def _convert_single_failure_mode(
+        self,
+        prepared: _PreparedConversion,
+        failure_mode: FailureModeAnalysis,
+        scope: str,
+        user_id: str,
+        enterprise_id: Optional[str],
+        team_id: Optional[str] = None,
+        case_id: Optional[str] = None,
+    ) -> ConversionDraft | ConversionError:
+        """Send one prepared failure mode and turn the answer into a draft.
+
+        ``prepared`` comes from :meth:`_prepare_conversion` — the redacted
+        messages are the only thing this sends. ``case_id`` selects the case
+        branch of the id mint and the draft's title (see there).
+        """
+        knowledge_model = prepared.knowledge_model
+        messages = prepared.redacted_messages
+        runbook_id = prepared.runbook_id
+
+        try:
 
             async def _convert(cap: int):
                 return await self._llm_router.route(
-                    messages=[
-                        {"role": "system", "content": CONVERSION_SYSTEM_PROMPT},
-                        {"role": "user", "content": user_message},
-                    ],
+                    messages=messages,
                     model=knowledge_model,
                     max_tokens=cap,
                     temperature=0.3,

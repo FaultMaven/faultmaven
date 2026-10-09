@@ -33,6 +33,7 @@ from faultmaven.infrastructure.persistence.models import (
     EnterpriseModel,
     UploadedFileModel,
 )
+from faultmaven.infrastructure.security.case_redaction import model_boundary_redaction
 from faultmaven.modules.knowledge.domain.models.conversion import (
     AnalysisResult,
     CaseConversionRequest,
@@ -436,7 +437,11 @@ class TestAnalysisPhase:
         mock_llm_router.route.return_value = _make_llm_response(mock_analysis_response)
 
         result = await _analyze_document(
-            service._llm_router, service._settings, "sample text", "test.md"
+            service._llm_router,
+            service._settings,
+            "sample text",
+            "test.md",
+            model_boundary_redaction("conv_test", None),
         )
 
         assert isinstance(result, AnalysisResult)
@@ -461,7 +466,11 @@ class TestAnalysisPhase:
         mock_llm_router.route.return_value = _make_llm_response(mock_analysis_response)
 
         result = await _analyze_document(
-            service._llm_router, service._settings, "sample text", "test.md"
+            service._llm_router,
+            service._settings,
+            "sample text",
+            "test.md",
+            model_boundary_redaction("conv_test", None),
         )
 
         assert result.source_assessment.content_type == "troubleshooting_guide"
@@ -480,7 +489,11 @@ class TestAnalysisPhase:
             match="LLM analysis response could not be parsed",
         ) as exc:
             await _analyze_document(
-                service._llm_router, service._settings, "sample text", "test.md"
+                service._llm_router,
+                service._settings,
+                "sample text",
+                "test.md",
+                model_boundary_redaction("conv_test", None),
             )
 
         assert exc.value.error_code == ConversionErrorCode.LLM_PARSE_ERROR
@@ -2369,12 +2382,17 @@ class TestSymptomClassProducePath:
             "_data_dir",
             new_callable=lambda: property(lambda self: tmp_path),
         ):
-            draft = await service._convert_single_failure_mode(
+            prepared = await service._prepare_conversion(
                 text="SOURCE MATERIAL",
                 failure_mode=failure_mode,
                 scope="personal",
                 filename="case-derived",
                 conversion_id="conv_test",
+            )
+            draft = await service._convert_single_failure_mode(
+                prepared=prepared,
+                failure_mode=failure_mode,
+                scope="personal",
                 user_id="user-123",
                 enterprise_id=None,
             )

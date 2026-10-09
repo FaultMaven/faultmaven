@@ -5,7 +5,6 @@ from enum import Enum
 from typing import Any, Optional
 
 from faultmaven.core.investigation.lifecycle_metrics import terminal_summary_total
-from faultmaven.core.investigation.milestone_engine.redaction import _should_redact
 from faultmaven.core.investigation.milestone_engine.regeneration import (
     _remaining_regens_for,
 )
@@ -391,6 +390,7 @@ class TerminalTurnHandler:
         from faultmaven.config.settings import get_settings
         from faultmaven.infrastructure.security.case_redaction import (
             CaseRedactionContext,
+            should_redact,
         )
 
         redaction_settings = get_settings()
@@ -398,7 +398,7 @@ class TerminalTurnHandler:
             case_id=case.case_id,
             sanitizer=self.deps.sanitizer,
             redis_client=self.deps.redis_client,
-            enabled=_should_redact(self.deps.sanitizer),
+            enabled=should_redact(self.deps.sanitizer),
             ttl_hours=redaction_settings.protection.redaction_registry_ttl_hours,
         )
         await redaction_ctx.load()

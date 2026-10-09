@@ -19,7 +19,10 @@ from faultmaven.exceptions import (
     ServiceUnavailableException,
 )
 from faultmaven.infrastructure.llm.truncation import generate_with_truncation_retry
-from faultmaven.infrastructure.security.case_redaction import CaseRedactionContext
+from faultmaven.infrastructure.security.case_redaction import (
+    CaseRedactionContext,
+    model_boundary_redaction,
+)
 from faultmaven.modules.case.contracts import (
     ICaseRepository,
     is_server_written_assistant_row,
@@ -334,7 +337,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
             sanitizer: ISanitizer for PII detection/redaction — the SAME
                 instance the investigation engine is handed, used for the
                 extraction prompt exactly as the engine uses it for its own
-                (:meth:`_model_boundary_redaction`) and for the PII scan of the
+                (``model_boundary_redaction``) and for the PII scan of the
                 generated draft.
             llm_provider: LLM provider for extraction
             max_unreviewed_suggestions: Cap on how many UNREVIEWED suggestions one
@@ -489,7 +492,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         # the first draft is refused (#1226). Every prompt it sends passes the
         # investigation path's redaction first (``_generate_once``).
         suggested_content = await self._generate_runbook_draft(
-            prompt, case_id, self._model_boundary_redaction(case_id)
+            prompt, case_id, model_boundary_redaction(case_id, self._sanitizer)
         )
 
         # Title, in preference order: the caller's, then the DRAFT'S OWN
@@ -597,39 +600,6 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         if case is None:
             raise NotFoundError("Case", case_id)
         return case
-
-    def _model_boundary_redaction(self, case_id: str) -> CaseRedactionContext:
-        """The redaction the investigation path applies to what it sends a model.
-
-        The milestone engine builds a ``CaseRedactionContext`` over the injected
-        sanitizer for every turn, enabled by ``_should_redact`` — a sanitizer is
-        configured AND ``SANITIZE_PII`` is on — and passes the whole prompt
-        through ``asanitize`` before any provider call. This is that mechanism,
-        not a second one: the same class, over the same sanitizer instance (the
-        container hands both services one), decided by the same two conditions,
-        so the extraction prompt is never less protected than an investigation
-        turn. ``test_it_redacts_exactly_when_the_investigation_path_does`` pins
-        the decision to the engine's across the whole truth table.
-
-        It matters independently of the router. ``LLMRouter`` runs its own
-        sanitizer pass under the same flag, but that is a property of the
-        default router — a deployment may substitute its own
-        (``LLM_ROUTER_CLASS``) — and it is the engine's layer, not the
-        router's, that the investigation path relies on.
-
-        No Redis registry is loaded or saved. The engine persists its registry
-        so it can REVERSE placeholders in the reply it shows the user;
-        extraction never reverses — the runbook is meant to be de-identified —
-        and the placeholders themselves are a keyed function of the value
-        (#971), so they match the investigation's without the registry.
-        """
-        from faultmaven.config.settings import get_settings
-
-        return CaseRedactionContext(
-            case_id=case_id,
-            sanitizer=self._sanitizer,
-            enabled=bool(self._sanitizer) and get_settings().protection.sanitize_pii,
-        )
 
     async def _refuse_if_review_queue_full(self, enterprise_id: str) -> None:
         """Refuse a new extraction when ``enterprise_id``'s inbox is full.

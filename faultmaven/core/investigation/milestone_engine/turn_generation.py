@@ -6,7 +6,6 @@ from typing import Optional
 from faultmaven.core.investigation.milestone_engine.generation import (
     TOOLLESS_INFERENCE_OUTPUT_FLOOR,
 )
-from faultmaven.core.investigation.milestone_engine.redaction import _should_redact
 from faultmaven.core.investigation.prompts.templates.assembly import get_prompt_for_case
 from faultmaven.core.investigation.schemas import (
     InquiryResponse,
@@ -49,6 +48,7 @@ async def _generate_turn_response(
     from faultmaven.config.settings import get_settings
     from faultmaven.infrastructure.security.case_redaction import (
         CaseRedactionContext,
+        should_redact,
     )
 
     redaction_settings = get_settings()
@@ -56,7 +56,7 @@ async def _generate_turn_response(
         case_id=case.case_id,
         sanitizer=sanitizer,
         redis_client=redis_client,
-        enabled=_should_redact(sanitizer),
+        enabled=should_redact(sanitizer),
         ttl_hours=redaction_settings.protection.redaction_registry_ttl_hours,
     )
     await redaction_ctx.load()
