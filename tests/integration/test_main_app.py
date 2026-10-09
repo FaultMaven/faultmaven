@@ -907,3 +907,52 @@ class TestPhase3MainApplicationValidation:
             assert (
                 endpoint_type not in paths_str
             ), f"Migration endpoint type '{endpoint_type}' found in OpenAPI schema"
+
+
+def test_capabilities_publish_the_turn_ceiling_for_the_chat_provider(
+    booted_app_client, monkeypatch
+):
+    """``limits`` carries the turn's ceiling and response bound (#1905), resolved
+    per request for the chat provider in force: an operator's provider switch
+    (the dashboard override writes ``settings.llm.provider`` in place) moves
+    them on the next read, on both paths."""
+    from faultmaven.config.settings import LLMProvider, get_settings
+    from faultmaven.core.investigation.turn_budget import (
+        AUTO_TITLE_TIMEOUT_SECONDS,
+        TURN_COMMIT_RESERVE_SECONDS,
+    )
+
+    settings = get_settings()
+    monkeypatch.setattr(
+        settings.agent, "provider_timeout_overrides", {"groq": 300, "gemini": 200}
+    )
+    after_ceiling = TURN_COMMIT_RESERVE_SECONDS + AUTO_TITLE_TIMEOUT_SECONDS
+
+    seen = {}
+    for provider in (LLMProvider.GROQ, LLMProvider.GEMINI):
+        monkeypatch.setattr(settings.llm, "provider", provider)
+        for path in ("/api/v1/meta/capabilities", "/v1/meta/capabilities"):
+            response = booted_app_client.get(path)
+            assert response.status_code == 200
+            limits = response.json()["limits"]
+            seen[(provider.value, path)] = (
+                limits["turnCeilingSeconds"],
+                limits["turnResponseBoundSeconds"],
+            )
+
+    for path in ("/api/v1/meta/capabilities", "/v1/meta/capabilities"):
+        assert seen[("groq", path)] == (300.0, 300.0 + after_ceiling)
+        assert seen[("gemini", path)] == (200.0, 200.0 + after_ceiling)
+
+
+def test_capabilities_response_is_exactly_its_published_model(booted_app_client):
+    """The response model declares the whole served shape: nothing it filters
+    out, nothing it declares that the handler fails to send."""
+    from faultmaven.api.models import BackendCapabilities
+
+    body = booted_app_client.get("/api/v1/meta/capabilities").json()
+
+    assert set(body) == set(BackendCapabilities.model_fields)
+    for section in ("features", "limits", "branding"):
+        model = BackendCapabilities.model_fields[section].annotation
+        assert set(body[section]) == set(model.model_fields)

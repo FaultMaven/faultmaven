@@ -807,6 +807,140 @@
         "title": "AvailableScopesResponse",
         "type": "object"
       },
+      "BackendBranding": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "supportUrl": {
+            "title": "Supporturl",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "supportUrl"
+        ],
+        "title": "BackendBranding",
+        "type": "object"
+      },
+      "BackendCapabilities": {
+        "description": "What this backend offers, for the browser extension and the Dashboard.",
+        "properties": {
+          "branding": {
+            "$ref": "#/components/schemas/BackendBranding"
+          },
+          "dashboardUrl": {
+            "title": "Dashboardurl",
+            "type": "string"
+          },
+          "deploymentMode": {
+            "enum": [
+              "cloud",
+              "self-hosted"
+            ],
+            "title": "Deploymentmode",
+            "type": "string"
+          },
+          "features": {
+            "$ref": "#/components/schemas/BackendCapabilityFeatures"
+          },
+          "kbManagement": {
+            "title": "Kbmanagement",
+            "type": "string"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/BackendCapabilityLimits"
+          }
+        },
+        "required": [
+          "deploymentMode",
+          "kbManagement",
+          "dashboardUrl",
+          "features",
+          "limits",
+          "branding"
+        ],
+        "title": "BackendCapabilities",
+        "type": "object"
+      },
+      "BackendCapabilityFeatures": {
+        "description": "Feature gates a client reads to show or hide surfaces.",
+        "properties": {
+          "adminKB": {
+            "title": "Adminkb",
+            "type": "boolean"
+          },
+          "caseHistory": {
+            "title": "Casehistory",
+            "type": "boolean"
+          },
+          "extensionKB": {
+            "description": "Always false: the extension KB was removed.",
+            "title": "Extensionkb",
+            "type": "boolean"
+          },
+          "managementConsole": {
+            "description": "The org/team management console; same signal as teamSharing.",
+            "title": "Managementconsole",
+            "type": "boolean"
+          },
+          "sso": {
+            "title": "Sso",
+            "type": "boolean"
+          },
+          "teamSharing": {
+            "description": "Team-based KB/case sharing; true only when team management is live.",
+            "title": "Teamsharing",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "extensionKB",
+          "adminKB",
+          "teamSharing",
+          "managementConsole",
+          "caseHistory",
+          "sso"
+        ],
+        "title": "BackendCapabilityFeatures",
+        "type": "object"
+      },
+      "BackendCapabilityLimits": {
+        "description": "Limits a client applies before sending, and the turn's time bounds.",
+        "properties": {
+          "allowedExtensions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowedextensions",
+            "type": "array"
+          },
+          "maxFileBytes": {
+            "title": "Maxfilebytes",
+            "type": "integer"
+          },
+          "turnCeilingSeconds": {
+            "description": "The turn ceiling for the chat provider in force: a turn that uses all of it is answered 504 REQUEST_TIMEOUT, nothing committed.",
+            "title": "Turnceilingseconds",
+            "type": "number"
+          },
+          "turnResponseBoundSeconds": {
+            "description": "The longest POST /cases/{case_id}/turns takes to answer: the ceiling plus the commit and auto-title steps after it. Size a client timeout as this plus a network margin. Both values are resolved per request and change when an operator switches the chat provider, so re-read them per session.",
+            "title": "Turnresponseboundseconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "maxFileBytes",
+          "allowedExtensions",
+          "turnCeilingSeconds",
+          "turnResponseBoundSeconds"
+        ],
+        "title": "BackendCapabilityLimits",
+        "type": "object"
+      },
       "BatchDraftRef": {
         "properties": {
           "conversion_id": {
@@ -2711,6 +2845,10 @@
             "title": "Timestamp",
             "type": "string"
           },
+          "turn_timing": {
+            "$ref": "#/components/schemas/TurnTimingStatus",
+            "description": "The resolved turn ceiling and response bound for the chat provider in force, as clients read them on GET /api/v1/meta/capabilities."
+          },
           "vector_storage": {
             "description": "What the running process's KB and evidence ChromaDB clients talk to: 'chromadb (server)', 'chromadb (persistent, split: kb + evidence)', 'disabled' when neither was built, or a per-client breakdown when they differ",
             "title": "Vector Storage",
@@ -2726,6 +2864,7 @@
           "llm_provider",
           "pii_redaction_enabled",
           "rate_limit_enabled",
+          "turn_timing",
           "personal_tenant_limits",
           "timestamp"
         ],
@@ -6296,6 +6435,40 @@
         "title": "TurnResponse",
         "type": "object"
       },
+      "TurnTimingStatus": {
+        "description": "The turn's time bounds for the chat provider in force (#1905).\n\nThe same two numbers ``GET /api/v1/meta/capabilities`` publishes to clients,\nresolved by ``config/turn_ceiling.resolve_turn_ceiling`` on every request,\nso a dashboard provider switch shows here on the next read.",
+        "properties": {
+          "chat_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The chat provider the ceiling was resolved for; null when none is configured and AGENT_REQUEST_TIMEOUT applies.",
+            "title": "Chat Provider"
+          },
+          "turn_ceiling_seconds": {
+            "description": "AGENT_REQUEST_TIMEOUT, or this provider's AGENT_PROVIDER_TIMEOUT_OVERRIDES entry: the bound on a turn's preparation and the deadline its LLM calls budget against.",
+            "title": "Turn Ceiling Seconds",
+            "type": "number"
+          },
+          "turn_response_bound_seconds": {
+            "description": "The longest the turn route can take to answer: the ceiling plus the commit reserve and the auto-title bound. Clients size their timeout from it (plus a network margin).",
+            "title": "Turn Response Bound Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "chat_provider",
+          "turn_ceiling_seconds",
+          "turn_response_bound_seconds"
+        ],
+        "title": "TurnTimingStatus",
+        "type": "object"
+      },
       "UploadedFileDetailsResponse": {
         "description": "Detailed information about an uploaded file with evidence linkage.",
         "properties": {
@@ -6893,7 +7066,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "12.3.0"
+    "version": "12.4.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -11525,7 +11698,7 @@
     },
     "/api/v1/cases/{case_id}/turns": {
       "post": {
-        "description": "Submit a turn to a case investigation.\n\nA turn consists of an optional query and/or optional attachments.\nAttachments are preprocessed through Tier 0+1 before the LLM sees them.\nIf no query is provided with attachments, an implicit query is generated.\n\n**One file per turn.** `files` accepts at most one item (`maxItems: 1`);\nmore than one is rejected with 422. Submit each additional file as its own\nturn. `pasted_content` is a separate field and does not count against this\nlimit, so a turn may legitimately carry one file *and* a paste.\n\n**Auto-titling:** a case still carrying its auto-generated `Case-YYMMDD-N`\nplaceholder is named from its own content as part of processing the turn, if\nit now has enough substance to name \u2014 so the name is already in place when\nthis responds. Clients do not need to call `POST /cases/{case_id}/title` for\nthis; that endpoint remains for user-initiated (re)naming. A case is\nauto-titled at most once \u2014 the moment a real title lands, later turns leave\nit alone. Naming is best-effort and time-bounded: it can never fail or\ndelay the turn itself.\n\n**Retries (`Idempotency-Key`).** A turn sent with an `Idempotency-Key`\ncommits a receipt with the turn, in the same transaction. A request with a\nkey this caller already used on this case:\n\n- for the same turn (same fields, same file content), once it committed \u2192\n  **200** with that turn's response, unchanged, and\n  `X-Idempotency-Replayed: true`. Nothing runs and nothing is charged.\n- for a different turn \u2192 **409** `x-error-code: IDEMPOTENCY_KEY_REUSE`.\n- while the first is still running \u2192 **409** `x-error-code:\n  TURN_IN_PROGRESS` with `Retry-After`; retry with the same key after it.\n\nA response lost after the commit (a disconnect, a timeout on the client's\nside) is recovered by retrying with the same key. Without a key, every\nrequest runs as a new turn.",
+        "description": "Submit a turn to a case investigation.\n\nA turn consists of an optional query and/or optional attachments.\nAttachments are preprocessed through Tier 0+1 before the LLM sees them.\nIf no query is provided with attachments, an implicit query is generated.\n\n**One file per turn.** `files` accepts at most one item (`maxItems: 1`);\nmore than one is rejected with 422. Submit each additional file as its own\nturn. `pasted_content` is a separate field and does not count against this\nlimit, so a turn may legitimately carry one file *and* a paste.\n\n**Auto-titling:** a case still carrying its auto-generated `Case-YYMMDD-N`\nplaceholder is named from its own content as part of processing the turn, if\nit now has enough substance to name \u2014 so the name is already in place when\nthis responds. Clients do not need to call `POST /cases/{case_id}/title` for\nthis; that endpoint remains for user-initiated (re)naming. A case is\nauto-titled at most once \u2014 the moment a real title lands, later turns leave\nit alone. Naming is best-effort and time-bounded: it can never fail or\ndelay the turn itself.\n\n**Retries (`Idempotency-Key`).** A turn sent with an `Idempotency-Key`\ncommits a receipt with the turn, in the same transaction. A request with a\nkey this caller already used on this case:\n\n- for the same turn (same fields, same file content), once it committed \u2192\n  **200** with that turn's response, unchanged, and\n  `X-Idempotency-Replayed: true`. Nothing runs and nothing is charged.\n- for a different turn \u2192 **409** `x-error-code: IDEMPOTENCY_KEY_REUSE`.\n- while the first is still running \u2192 **409** `x-error-code:\n  TURN_IN_PROGRESS` with `Retry-After`; retry with the same key after it.\n  `Retry-After` is the longest the first can still hold its claim, an upper\n  bound, not when it finishes.\n\nA response lost after the commit (a disconnect, a timeout on the client's\nside) is recovered by retrying with the same key. Without a key, every\nrequest runs as a new turn.\n\n**Timing.** No turn is answered later than `limits.turnResponseBoundSeconds`\non `GET /api/v1/meta/capabilities` (the turn ceiling plus the commit and\nauto-title steps after it); size a client timeout as that plus a network\nmargin, and re-read it per session, because an operator can switch the chat\nprovider and with it the ceiling. A **504** commits nothing:\n`REQUEST_TIMEOUT` means the turn used its whole ceiling on this input and is\nlikely to do so again, so retry at most once (it carries no `Retry-After`);\n`LLM_TIMEOUT` is a transient provider timeout, retried after `Retry-After`.",
         "operationId": "submit_turn_api_v1_cases__case_id__turns_post",
         "parameters": [
           {
@@ -11591,10 +11764,10 @@
             }
           },
           "409": {
-            "description": "Conflict. Told apart by `x-error-code`: `TURN_IN_PROGRESS` (a turn with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different turn); `IDEMPOTENCY_REPLAY_UNAVAILABLE` (the turn committed but its response can no longer be replayed: reload the case); `CASE_VERSION_CONFLICT` (another writer changed the case while this turn ran; nothing committed); `CASE_TERMINAL` (the case is resolved or closed and refuses new data, a status change or a file reclassification; a text-only question is still answered).",
+            "description": "Conflict. Told apart by `x-error-code`: `TURN_IN_PROGRESS` (a turn with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds, the longest the running turn can still hold its claim \u2014 an upper bound, not when it finishes; it may finish sooner); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different turn); `IDEMPOTENCY_REPLAY_UNAVAILABLE` (the turn committed but its response can no longer be replayed: reload the case); `CASE_VERSION_CONFLICT` (another writer changed the case while this turn ran; nothing committed); `CASE_TERMINAL` (the case is resolved or closed and refuses new data, a status change or a file reclassification; a text-only question is still answered).",
             "headers": {
               "Retry-After": {
-                "description": "Seconds, on `TURN_IN_PROGRESS` only.",
+                "description": "Seconds, on `TURN_IN_PROGRESS` only: the longest the running turn can still hold its claim (an upper bound, not when it finishes).",
                 "schema": {
                   "type": "integer"
                 }
@@ -11625,17 +11798,20 @@
             "description": "Validation Error"
           },
           "504": {
-            "description": "`x-error-code: REQUEST_TIMEOUT`: the turn ran out of time and nothing of it committed, so a retry is safe.",
+            "description": "Timeout; nothing of the turn committed. Told apart by `x-error-code`: `REQUEST_TIMEOUT` (the turn used its whole ceiling, `limits.turnCeilingSeconds` on `GET /api/v1/meta/capabilities`, on this input; the same input is likely to exhaust it again, so a client retries at most once, and no `Retry-After` is sent); `LLM_TIMEOUT` (the AI provider timed out: transient, retry after `Retry-After` seconds).",
             "headers": {
               "Retry-After": {
+                "description": "Seconds, on `LLM_TIMEOUT` only.",
                 "schema": {
                   "type": "integer"
                 }
               },
               "x-error-code": {
+                "description": "Which timeout.",
                 "schema": {
                   "enum": [
-                    "REQUEST_TIMEOUT"
+                    "REQUEST_TIMEOUT",
+                    "LLM_TIMEOUT"
                   ],
                   "type": "string"
                 }
@@ -13551,13 +13727,15 @@
     },
     "/api/v1/meta/capabilities": {
       "get": {
-        "description": "Return backend capabilities for browser extension configuration.\n\nThis endpoint is called by the FaultMaven Copilot browser extension\nand the Dashboard to detect the deployment mode and gate features\n(e.g. team sharing, the org/team management console) accordingly.\n\nServed at two paths for one handler, so both answer byte-identically.\n``/api/v1/meta/capabilities`` is the canonical one: every other\nclient-facing route lives under ``/api``, and that is the only prefix the\nKubernetes ingress forwards here \u2014 a same-origin Dashboard\n(``VITE_API_URL=\"\"``, the deployed default) asking for the bare ``/v1``\npath receives the SPA's own HTML and degrades its capabilities silently.\nThe bare ``/v1`` path stays as a deprecated alias because extensions\nalready installed are pinned to it.\n\nReturns:\n    Backend capabilities including deployment mode, dashboard URL, and feature flags",
+        "description": "Return backend capabilities for browser extension configuration.\n\nThis endpoint is called by the FaultMaven Copilot browser extension\nand the Dashboard to detect the deployment mode and gate features\n(e.g. team sharing, the org/team management console) accordingly.\n\nServed at two paths for one handler, so both answer byte-identically.\n``/api/v1/meta/capabilities`` is the canonical one: every other\nclient-facing route lives under ``/api``, and that is the only prefix the\nKubernetes ingress forwards here \u2014 a same-origin Dashboard\n(``VITE_API_URL=\"\"``, the deployed default) asking for the bare ``/v1``\npath receives the SPA's own HTML and degrades its capabilities silently.\nThe bare ``/v1`` path stays as a deprecated alias because extensions\nalready installed are pinned to it.\n\n``limits.turnCeilingSeconds`` and ``limits.turnResponseBoundSeconds`` are\nthe turn's time bounds for the chat provider in force (#1905), resolved on\nevery request: an operator who switches the chat provider changes which\nper-provider ceiling applies, so a client re-reads them per session rather\nthan caching them for the life of an install.\n\nReturns:\n    Backend capabilities including deployment mode, dashboard URL, and feature flags",
         "operationId": "get_capabilities_api_v1_meta_capabilities_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/BackendCapabilities"
+                }
               }
             },
             "description": "Successful Response"
@@ -15032,7 +15210,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/BackendCapabilities"
+                }
               }
             },
             "description": "Successful Response"

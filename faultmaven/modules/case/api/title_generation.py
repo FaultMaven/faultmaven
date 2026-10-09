@@ -14,6 +14,7 @@ from typing import List, Optional
 
 from fastapi import HTTPException, status
 
+from faultmaven.core.investigation.turn_budget import AUTO_TITLE_TIMEOUT_SECONDS
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.models.interfaces_case import ICaseService
 
@@ -910,13 +911,6 @@ async def _generate_and_persist_title(
         )
 
     return generated_title, title_source, len(user_message_content or "")
-
-
-# Ceiling on the auto-titling attempt. It sits on the turn's critical path (see
-# _auto_title_case_if_default for why), so it must never be able to hold a turn's
-# answer open: the extractive path is ~1ms and the LLM path ~0.5-1.2s, and a
-# titler that has stopped answering has to lose rather than delay the reply.
-AUTO_TITLE_TIMEOUT_SECONDS = 15.0
 
 
 async def _auto_title_case_if_default(

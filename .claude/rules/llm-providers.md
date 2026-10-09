@@ -224,7 +224,7 @@ commit (`commit_turn`) runs outside the `wait_for`, because a cancellation that
 lands inside a commit leaves its outcome unknown and one that lands after it
 answers 504 for a committed turn (#1882). Before it starts, `commit_turn` checks
 that at least `TURN_COMMIT_RESERVE_SECONDS` of the deadline is left and answers
-the same 504 + `Retry-After` when it is not, with nothing committed; once
+the same 504 `REQUEST_TIMEOUT` when it is not, with nothing committed; once
 started, the commit runs to its end. The reserve (3.5 s) is sized from the
 measured p99 of the commit on SQLite and PostgreSQL times a safety factor of
 10, and **the LLM steps pay for it**: `spendable_turn_budget` and
@@ -235,8 +235,14 @@ otherwise write the placeholder back) and is bounded by
 `AUTO_TITLE_TIMEOUT_SECONDS` (15 s, and only while the case still carries its
 placeholder title); the upload links (`mark_linked`) run in a background task
 the response does not wait for. So a client's own timeout must exceed
-`AGENT_REQUEST_TIMEOUT` + the commit reserve + 15 s + its network margin —
-about `AGENT_REQUEST_TIMEOUT` + 18.5 s + margin. The ladder
+the ceiling + the commit reserve + 15 s + its network margin; the server
+publishes that sum as `limits.turnResponseBoundSeconds` on
+`GET /api/v1/meta/capabilities` (`config/turn_ceiling.resolve_turn_ceiling`,
+resolved per request for the chat provider in force), and clients size their
+timeout from it rather than restating the arithmetic (#1905). Every
+`AGENT_PROVIDER_TIMEOUT_OVERRIDES` value is held to `AGENT_REQUEST_TIMEOUT`'s
+30–600 s (#1905), so the published ceiling is at most 600 s whatever the
+provider. The ladder
 inside the preparation (`LLMErrorHandler.with_retry`, `max_retries=3`)
 costs `3T + 14s` against a hung provider, where `T` is the resolved per-call
 ceiling — `max(LLM_REQUEST_TIMEOUT, LLM_PROVIDER_TIMEOUT_OVERRIDES[provider])`,

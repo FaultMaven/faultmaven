@@ -3011,6 +3011,13 @@ class DeepAnalysisSettings(BaseSettings):
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
+#: Bounds on a turn's timeout, in seconds: ``AGENT_REQUEST_TIMEOUT`` and every
+#: ``AGENT_PROVIDER_TIMEOUT_OVERRIDES`` value alike (#1905). The upper one is the
+#: longest ceiling ``GET /api/v1/meta/capabilities`` can ever publish.
+MIN_AGENT_TIMEOUT_SECONDS = 30
+MAX_AGENT_TIMEOUT_SECONDS = 600
+
+
 class AgentSettings(BaseSettings):
     """Agent orchestration configuration (TASK-015).
 
@@ -3025,8 +3032,8 @@ class AgentSettings(BaseSettings):
 
     agent_request_timeout: int = Field(
         default=120,
-        ge=30,
-        le=600,
+        ge=MIN_AGENT_TIMEOUT_SECONDS,
+        le=MAX_AGENT_TIMEOUT_SECONDS,
         description="Request timeout for LLM calls (seconds)",
     )
 
@@ -3037,10 +3044,15 @@ class AgentSettings(BaseSettings):
     # Fireworks DeepSeek V4 Pro on log-heavy cases, local Ollama on CPU)
     # need more headroom but raising the global default hurts faster
     # providers. Mirrors LLMSettings.provider_timeout_overrides; resolved
-    # at call time in modules/case/api/routes/dependencies.py.
+    # per request by ``config/turn_ceiling.resolve_turn_ceiling``.
+    #
+    # Every value is held to the same bounds as ``agent_request_timeout``
+    # (#1905): the resolved ceiling is published to clients on
+    # ``GET /api/v1/meta/capabilities``, and an override is not a way past the
+    # longest turn a client is told to wait for.
     #
     # Set via env as JSON, e.g.:
-    #   AGENT_PROVIDER_TIMEOUT_OVERRIDES='{"fireworks": 300, "ollama": 900}'
+    #   AGENT_PROVIDER_TIMEOUT_OVERRIDES='{"fireworks": 300, "ollama": 600}'
     #
     # Surfaced by ISS-058 — DeepSeek run on logs-windows q3 hit the 120s
     # ceiling. Pairs stylistically with ISS-054 (LLM-router timeout).
@@ -3048,12 +3060,35 @@ class AgentSettings(BaseSettings):
         default_factory=dict,
         validation_alias="AGENT_PROVIDER_TIMEOUT_OVERRIDES",
         description=(
-            "Per-provider agent-level timeout overrides in seconds. JSON "
-            "object keyed by provider name (e.g. 'fireworks', 'gemini', "
-            "'ollama'). Empty default — providers fall back to "
-            "agent_request_timeout."
+            "Per-provider agent-level timeout overrides in seconds, each "
+            f"{MIN_AGENT_TIMEOUT_SECONDS}-{MAX_AGENT_TIMEOUT_SECONDS} like "
+            "agent_request_timeout. JSON object keyed by provider name (e.g. "
+            "'fireworks', 'gemini', 'ollama'). Empty default — providers fall "
+            "back to agent_request_timeout."
         ),
     )
+
+    @field_validator("provider_timeout_overrides")
+    @classmethod
+    def _overrides_within_the_turn_bounds(cls, v: Dict[str, int]) -> Dict[str, int]:
+        """Hold every override to ``agent_request_timeout``'s own bounds (#1905).
+
+        Out of range refuses the boot, as the global value does, naming each
+        provider and the bound it broke.
+        """
+        out_of_range = [
+            f"{provider}={seconds}"
+            for provider, seconds in v.items()
+            if not MIN_AGENT_TIMEOUT_SECONDS <= seconds <= MAX_AGENT_TIMEOUT_SECONDS
+        ]
+        if out_of_range:
+            raise ValueError(
+                "AGENT_PROVIDER_TIMEOUT_OVERRIDES must keep every provider's turn "
+                f"timeout within {MIN_AGENT_TIMEOUT_SECONDS}-"
+                f"{MAX_AGENT_TIMEOUT_SECONDS} seconds, the AGENT_REQUEST_TIMEOUT "
+                f"bounds; out of range: {', '.join(out_of_range)}"
+            )
+        return v
 
     def timeout_for_provider(self, provider_name: Optional[str]) -> int:
         """Return the per-provider agent timeout if set, else the global default.

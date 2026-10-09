@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from faultmaven.config.settings import AgentSettings
 
@@ -53,10 +54,10 @@ class TestAgentProviderTimeoutOverrides:
         s = _mk_settings(
             monkeypatch,
             agent_request_timeout=120,
-            overrides={"fireworks": 300, "ollama": 900},
+            overrides={"fireworks": 300, "ollama": 600},
         )
         assert s.timeout_for_provider("fireworks") == 300
-        assert s.timeout_for_provider("ollama") == 900
+        assert s.timeout_for_provider("ollama") == 600
 
     def test_unknown_provider_falls_back_to_base(self, monkeypatch):
         """Providers not in overrides take ``agent_request_timeout``."""
@@ -75,3 +76,65 @@ class TestAgentProviderTimeoutOverrides:
         )
         assert s.timeout_for_provider(None) == 180
         assert s.timeout_for_provider("") == 180
+
+
+@pytest.mark.unit
+class TestEveryOverrideIsBoundedLikeTheGlobalTimeout:
+    """Each override is held to ``agent_request_timeout``'s 30-600 s (#1905).
+
+    The resolved ceiling is published to clients, so an override must not be a
+    way past the longest turn a client is told to wait for; an out-of-range
+    value refuses the boot, as an out-of-range global value does.
+    """
+
+    @pytest.mark.parametrize("seconds", [30, 600])
+    def test_the_bounds_are_inclusive(self, monkeypatch, seconds):
+        s = _mk_settings(
+            monkeypatch, agent_request_timeout=120, overrides={"ollama": seconds}
+        )
+        assert s.timeout_for_provider("ollama") == seconds
+
+    @pytest.mark.parametrize("seconds", [29, 601, 900, 0, -1])
+    def test_an_override_outside_the_bounds_refuses_to_load(self, monkeypatch, seconds):
+        with pytest.raises(ValidationError) as refused:
+            _mk_settings(
+                monkeypatch, agent_request_timeout=120, overrides={"ollama": seconds}
+            )
+        message = str(refused.value)
+        assert "AGENT_PROVIDER_TIMEOUT_OVERRIDES" in message
+        assert f"ollama={seconds}" in message
+        assert "30-600 seconds" in message
+
+    def test_the_message_names_every_offending_provider_and_only_those(
+        self, monkeypatch
+    ):
+        with pytest.raises(ValidationError) as refused:
+            _mk_settings(
+                monkeypatch,
+                agent_request_timeout=120,
+                overrides={"ollama": 900, "groq": 29, "gemini": 300},
+            )
+        message = str(refused.value)
+        assert "ollama=900" in message
+        assert "groq=29" in message
+        assert "gemini" not in message.split("out of range:")[1].split("[")[0]
+
+    def test_a_non_integer_override_refuses_to_load(self, monkeypatch):
+        with pytest.raises(ValidationError) as refused:
+            _mk_settings(
+                monkeypatch, agent_request_timeout=120, overrides={"ollama": "slow"}
+            )
+        assert "ollama" in str(refused.value)
+
+    def test_the_global_timeout_and_the_overrides_share_one_pair_of_bounds(self):
+        """A bound moved on one field and not the other is what #1905 closed."""
+        from faultmaven.config.settings import (
+            MAX_AGENT_TIMEOUT_SECONDS,
+            MIN_AGENT_TIMEOUT_SECONDS,
+        )
+
+        metadata = AgentSettings.model_fields["agent_request_timeout"].metadata
+        ge = next(m.ge for m in metadata if hasattr(m, "ge"))
+        le = next(m.le for m in metadata if hasattr(m, "le"))
+        assert (ge, le) == (MIN_AGENT_TIMEOUT_SECONDS, MAX_AGENT_TIMEOUT_SECONDS)
+        assert (MIN_AGENT_TIMEOUT_SECONDS, MAX_AGENT_TIMEOUT_SECONDS) == (30, 600)

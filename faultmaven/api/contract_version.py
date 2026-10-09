@@ -1860,4 +1860,40 @@ asked to accept, and it belongs to a person.
 # maps every 409 it does not name (this one included) to the version-conflict
 # error it gave the unlabelled one, and faultmaven-dashboard handles no 409 on
 # these routes directly; both survive this unchanged and only regenerate.
-API_CONTRACT_VERSION = "12.3.0"
+
+# 12.4.0 — MINOR. The turn's time bounds are published, and the turn route's
+# 504 says which timeout it is (#1905):
+#
+# * `GET /api/v1/meta/capabilities` (and its deprecated `/v1` alias) has a
+#   typed response, `BackendCapabilities`, where it published `{}`. The model
+#   declares the shape already served, and adds two numbers to `limits`:
+#   `turnCeilingSeconds` (`AGENT_REQUEST_TIMEOUT`, or the chat provider's
+#   `AGENT_PROVIDER_TIMEOUT_OVERRIDES` entry) and `turnResponseBoundSeconds`
+#   (that plus the commit reserve and the auto-title bound: the longest the
+#   turn route takes to answer). Resolved per request for the chat provider in
+#   force, so they move when an operator switches it.
+# * `POST /cases/{case_id}/turns` documents `LLM_TIMEOUT` beside
+#   `REQUEST_TIMEOUT` in its 504 `x-error-code` enum. Both commit nothing.
+#   `REQUEST_TIMEOUT` no longer sends `Retry-After`: the turn used its whole
+#   ceiling on this input and the same input is likely to again, so a client
+#   retries at most once. `LLM_TIMEOUT` keeps `Retry-After: 30`.
+# * `TURN_IN_PROGRESS`'s `Retry-After` is described as the longest the running
+#   turn can still hold its claim, an upper bound (prose; no structural change).
+# * `GET /admin/config/status` reports `turn_timing`, the same two numbers.
+#
+# Server-side and not on the wire: every `AGENT_PROVIDER_TIMEOUT_OVERRIDES`
+# value is now held to 30–600 s like `AGENT_REQUEST_TIMEOUT`, and an
+# out-of-range value refuses the boot, so the published ceiling has a known
+# maximum.
+#
+# MINOR because every existing client survives it: the capabilities fields
+# are additions to a response clients already parse, the 504 status and body
+# are unchanged, and neither copilot nor the Slack agent reads `Retry-After` on
+# a 504 today, so dropping it from `REQUEST_TIMEOUT` changes nothing they do.
+#
+# Clients adopt in a later hop: the Slack agent maps the coded `LLM_TIMEOUT`
+# 504 as nothing-committed (today it reads it as "may still complete") and
+# sizes its attempts from `turnResponseBoundSeconds`; copilot likewise replaces
+# its policy recovery bound with the published one. faultmaven-dashboard only
+# regenerates.
+API_CONTRACT_VERSION = "12.4.0"
