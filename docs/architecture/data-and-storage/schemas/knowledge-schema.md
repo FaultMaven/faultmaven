@@ -346,7 +346,7 @@ The `source_type` field distinguishes the two conversion pipelines:
 | Value | Source | Entry Point | Notes |
 | --- | --- | --- | --- |
 | `document` | Uploaded file (PDF, DOCX, MD, etc.) | `POST /knowledge/convert` | Default. Multi-failure-mode analysis. |
-| `case` | Resolved investigation case | `POST /knowledge/convert-from-case` | Single failure mode from case data. `case_id` populated. |
+| `case` | Resolved investigation case | Chat-triggered at resolution (`ConversionService.convert_from_case`; no HTTP endpoint) | Single failure mode from case data, into the owner's personal KB. `case_id` populated. |
 
 Both produce drafts with the canonical runbook template and enter the same review workflow (edit → verify → ingest).
 

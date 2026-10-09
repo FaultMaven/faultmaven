@@ -729,10 +729,12 @@ RESOLVED case
     ├──► Auto: Resolution Summary (immediate, SYNTHESIS LLM)
     │         Root cause, solution, confirming evidence, timeline
     │
-    └──► User-initiated: Runbook Generation (Dashboard)
-              POST /api/v1/knowledge/convert-from-case
+    └──► Chat-triggered at resolution: Runbook Generation (Copilot)
+              "Generate runbook from this case", offered and acted on only
+              when runbook_conversion_ready(case) holds
+              ConversionService.convert_from_case → owner's personal KB
               Canonical template (YAML frontmatter + 7 sections)
-              Draft → Edit → Verify → Ingest into ChromaDB
+              Owner-verified draft: Edit → Verify → Ingest into ChromaDB
               Indexed for similarity search (BGE-M3, 1024 dims)
 ```
 

@@ -2985,7 +2985,8 @@ class KnowledgeItemModel(Base):
 
 class ConversionJobModel(Base):
     """Document-to-runbook conversion job. `case_id` is nullable: most
-    conversions are case-less doc uploads; `convert-from-case` flow sets case_id."""
+    conversions are case-less doc uploads; the chat-triggered case conversion
+    (`ConversionService.convert_from_case`) sets case_id."""
 
     __tablename__ = "conversion_jobs"
 
