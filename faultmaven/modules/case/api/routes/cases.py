@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse
 
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.exceptions import (
+    CASE_TERMINAL,
     AuthorizationError,
     FaultMavenException,
     NotFoundError,
@@ -794,6 +795,20 @@ async def get_case_ui(
 @router.put(
     "/{case_id}",
     status_code=status.HTTP_200_OK,
+    responses={
+        409: {
+            "description": (
+                f"`x-error-code: {CASE_TERMINAL}`: the case is resolved or "
+                "closed and read-only."
+            ),
+            "headers": {
+                "x-error-code": {
+                    "description": "Which conflict.",
+                    "schema": {"type": "string", "enum": [CASE_TERMINAL]},
+                }
+            },
+        }
+    },
     dependencies=[Depends(require_authentication)],
 )
 @trace("api_update_case")

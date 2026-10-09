@@ -567,6 +567,12 @@ async def conflict_exception_handler(
     vs ``duplicate_email`` vs ``already_verified``) programmatically
     without parsing the ``detail`` string.
 
+    The response carries ``x-error-code`` when the raiser named one
+    (``ConflictError.error_code``): a terminal case's refusal is
+    ``CASE_TERMINAL`` (#1907). The rest go out without the header and are
+    told apart by ``conflict_reason`` — none is raised on the turn route,
+    where a client reads the header first.
+
     Args:
         request: FastAPI request object
         exc: ConflictError exception
@@ -595,6 +601,12 @@ async def conflict_exception_handler(
     if exc.conflict_reason is not None:
         body["conflict_reason"] = exc.conflict_reason
 
+    if exc.error_code is not None:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content=body,
+            headers={"x-error-code": exc.error_code},
+        )
     return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=body)
 
 

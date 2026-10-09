@@ -6893,7 +6893,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "12.2.0"
+    "version": "12.3.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -9819,6 +9819,20 @@
             },
             "description": "Successful Response"
           },
+          "409": {
+            "description": "`x-error-code: CASE_TERMINAL`: the case is resolved or closed and read-only.",
+            "headers": {
+              "x-error-code": {
+                "description": "Which conflict.",
+                "schema": {
+                  "enum": [
+                    "CASE_TERMINAL"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {
@@ -9932,6 +9946,20 @@
               }
             },
             "description": "Successful Response"
+          },
+          "409": {
+            "description": "`x-error-code: CASE_TERMINAL`: the case is already resolved or closed. Unlabelled, with `conflict_reason: concurrent_update`: the case changed while closing; reload and retry.",
+            "headers": {
+              "x-error-code": {
+                "description": "Which conflict; absent for a concurrent update.",
+                "schema": {
+                  "enum": [
+                    "CASE_TERMINAL"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "422": {
             "content": {
@@ -11563,7 +11591,7 @@
             }
           },
           "409": {
-            "description": "Conflict. Told apart by `x-error-code`: `TURN_IN_PROGRESS` (a turn with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different turn); `IDEMPOTENCY_REPLAY_UNAVAILABLE` (the turn committed but its response can no longer be replayed: reload the case); `CASE_VERSION_CONFLICT` (another writer changed the case while this turn ran; nothing committed). Unlabelled: the case is resolved or closed and refuses new data, a status change or a file reclassification.",
+            "description": "Conflict. Told apart by `x-error-code`: `TURN_IN_PROGRESS` (a turn with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different turn); `IDEMPOTENCY_REPLAY_UNAVAILABLE` (the turn committed but its response can no longer be replayed: reload the case); `CASE_VERSION_CONFLICT` (another writer changed the case while this turn ran; nothing committed); `CASE_TERMINAL` (the case is resolved or closed and refuses new data, a status change or a file reclassification; a text-only question is still answered).",
             "headers": {
               "Retry-After": {
                 "description": "Seconds, on `TURN_IN_PROGRESS` only.",
@@ -11572,13 +11600,14 @@
                 }
               },
               "x-error-code": {
-                "description": "Which conflict; absent for a terminal case.",
+                "description": "Which conflict.",
                 "schema": {
                   "enum": [
                     "TURN_IN_PROGRESS",
                     "IDEMPOTENCY_KEY_REUSE",
                     "IDEMPOTENCY_REPLAY_UNAVAILABLE",
-                    "CASE_VERSION_CONFLICT"
+                    "CASE_VERSION_CONFLICT",
+                    "CASE_TERMINAL"
                   ],
                   "type": "string"
                 }

@@ -46,6 +46,7 @@ from faultmaven.core.investigation.turn_budget import (
     bind_turn_deadline,
 )
 from faultmaven.exceptions import (
+    CASE_TERMINAL,
     NotFoundError,
     PermissionDeniedException,
     ServiceException,
@@ -358,13 +359,14 @@ _TURN_RESPONSES: Dict[int | str, Dict[str, Any]] = {
             f"`{IDEMPOTENCY_REPLAY_UNAVAILABLE}` (the turn committed but its "
             "response can no longer be replayed: reload the case); "
             "`CASE_VERSION_CONFLICT` (another writer changed the case while "
-            "this turn ran; nothing committed). Unlabelled: the case is "
-            "resolved or closed and refuses new data, a status change or a "
-            "file reclassification."
+            "this turn ran; nothing committed); "
+            f"`{CASE_TERMINAL}` (the case is resolved or closed and refuses "
+            "new data, a status change or a file reclassification; a "
+            "text-only question is still answered)."
         ),
         "headers": {
             "x-error-code": {
-                "description": "Which conflict; absent for a terminal case.",
+                "description": "Which conflict.",
                 "schema": {
                     "type": "string",
                     "enum": [
@@ -372,6 +374,7 @@ _TURN_RESPONSES: Dict[int | str, Dict[str, Any]] = {
                         IDEMPOTENCY_KEY_REUSE,
                         IDEMPOTENCY_REPLAY_UNAVAILABLE,
                         "CASE_VERSION_CONFLICT",
+                        CASE_TERMINAL,
                     ],
                 },
             },
@@ -608,25 +611,35 @@ async def submit_turn(
                     http_response.headers[IDEMPOTENCY_REPLAYED_HEADER] = "true"
                 return keyed.replay
 
-        # Terminal cases: allow text-only Q&A, block evidence and state transitions
+        # Terminal cases: allow text-only Q&A, block evidence and state
+        # transitions. Each refusal is labelled `CASE_TERMINAL` (#1907).
         if case.is_terminal:
             if files or pasted_content:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Cannot submit new data to a closed case. Only questions about the case are allowed.",
-                    headers={"x-correlation-id": correlation_id},
+                    headers={
+                        "x-correlation-id": correlation_id,
+                        "x-error-code": CASE_TERMINAL,
+                    },
                 )
             if intent_type == "status_transition":
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Cannot change status of a closed case.",
-                    headers={"x-correlation-id": correlation_id},
+                    headers={
+                        "x-correlation-id": correlation_id,
+                        "x-error-code": CASE_TERMINAL,
+                    },
                 )
             if intent_type == "file_reclassification":
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Cannot reclassify files on a closed case.",
-                    headers={"x-correlation-id": correlation_id},
+                    headers={
+                        "x-correlation-id": correlation_id,
+                        "x-error-code": CASE_TERMINAL,
+                    },
                 )
 
         # Build attachments list

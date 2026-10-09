@@ -15,6 +15,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.api.v1.dependencies import get_case_repository
 from faultmaven.config.tenant_context import get_current_enterprise_id
+from faultmaven.exceptions import CASE_TERMINAL
 from faultmaven.infrastructure.base_client import CircuitBreakerError
 from faultmaven.infrastructure.knowledge.runbook_kb import RESULTS_UNREADABLE_CODE
 from faultmaven.infrastructure.observability.tracing import trace
@@ -493,7 +494,26 @@ async def download_case_report(
         raise HTTPException(status_code=500, detail="Failed to download report")
 
 
-@router.post("/{case_id}/close", dependencies=[Depends(require_authentication)])
+@router.post(
+    "/{case_id}/close",
+    responses={
+        409: {
+            "description": (
+                f"`x-error-code: {CASE_TERMINAL}`: the case is already "
+                "resolved or closed. Unlabelled, with `conflict_reason: "
+                "concurrent_update`: the case changed while closing; reload "
+                "and retry."
+            ),
+            "headers": {
+                "x-error-code": {
+                    "description": "Which conflict; absent for a concurrent update.",
+                    "schema": {"type": "string", "enum": [CASE_TERMINAL]},
+                }
+            },
+        }
+    },
+    dependencies=[Depends(require_authentication)],
+)
 @trace("api_close_case")
 async def close_case(
     case_id: str,

@@ -460,8 +460,9 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
     # **no** ``x-error-code`` header, and the Slack agent reads an unlabelled
     # 409 on the turn POST as "this case is terminal" — so had anything ever
     # raised ``DuplicateRequestError``, a user with a live case would have been
-    # told their investigation was closed. The guarantee that no non-terminal
-    # 409 is unlabelled is now pinned by
+    # told their investigation was closed. The guarantee that no 409 goes out
+    # unlabelled unless it is classified (the terminal-case refusals carry
+    # ``CASE_TERMINAL`` since #1907) is now pinned by
     # ``tests/unit/api/middleware/test_conflict_labelling.py``.
 
     def _update_metrics(self, check_duration: float, duplicate_found: bool) -> None:

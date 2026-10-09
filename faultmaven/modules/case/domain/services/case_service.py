@@ -978,7 +978,7 @@ class CaseService(ICaseService):
         from faultmaven.core.investigation.terminal_transitions import (
             execute_user_closure,
         )
-        from faultmaven.exceptions import ConflictError, NotFoundError
+        from faultmaven.exceptions import CASE_TERMINAL, ConflictError, NotFoundError
         from faultmaven.modules.case.exceptions import (
             CaseNotFoundError,
             StaleCaseException,
@@ -995,6 +995,7 @@ class CaseService(ICaseService):
                 resource_type="Case",
                 resource_id=case_id,
                 conflict_reason="already_closed",
+                error_code=CASE_TERMINAL,
             )
 
         if case.state.is_terminal:

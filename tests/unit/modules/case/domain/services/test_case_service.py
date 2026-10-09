@@ -1689,21 +1689,24 @@ class TestCloseCase:
 
     @pytest.mark.asyncio
     async def test_already_terminal_case_conflicts(self, service, mock_repo):
-        from faultmaven.exceptions import ConflictError
+        """Labelled ``CASE_TERMINAL``: the handler sends the raiser's code as
+        ``x-error-code`` (#1907)."""
+        from faultmaven.exceptions import CASE_TERMINAL, ConflictError
 
         for terminal in (CaseState.CLOSED, CaseState.RESOLVED):
             case = _make_case(user_id="user_123", state=terminal)
             mock_repo.get.return_value = case
 
-            with pytest.raises(ConflictError):
+            with pytest.raises(ConflictError) as exc_info:
                 await service.close_case(case.case_id, "user_123")
+            assert exc_info.value.error_code == CASE_TERMINAL
 
     @pytest.mark.asyncio
     async def test_concurrent_terminal_transition_conflicts(self, service, mock_repo):
         """The retry mutator re-checks terminal state on each fresh load: a
         close that lost the race to another terminal transition conflicts
         instead of silently re-closing."""
-        from faultmaven.exceptions import ConflictError
+        from faultmaven.exceptions import CASE_TERMINAL, ConflictError
 
         open_case = _make_case(user_id="user_123", state=CaseState.INQUIRY)
         closed_meanwhile = _make_case(user_id="user_123", state=CaseState.CLOSED)
@@ -1711,8 +1714,9 @@ class TestCloseCase:
         # update_case_with_retry's fresh load.
         mock_repo.get.side_effect = [open_case, closed_meanwhile]
 
-        with pytest.raises(ConflictError):
+        with pytest.raises(ConflictError) as exc_info:
             await service.close_case(open_case.case_id, "user_123")
+        assert exc_info.value.error_code == CASE_TERMINAL
         mock_repo.save.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1767,3 +1771,4 @@ class TestCloseCase:
         with pytest.raises(ConflictError) as exc_info:
             await service.close_case("case_x", "user_123")
         assert exc_info.value.conflict_reason == "concurrent_update"
+        assert exc_info.value.error_code is None, "not a terminal case"

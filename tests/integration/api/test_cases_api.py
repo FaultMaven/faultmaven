@@ -835,9 +835,10 @@ class TestCloseCase:
     async def test_close_already_terminal_returns_409(
         self, app, client, mock_case_service, headers
     ):
-        """Closing an already-terminal case conflicts (409 via handler)."""
+        """Closing an already-terminal case conflicts (409 via handler),
+        labelled ``CASE_TERMINAL`` (#1907)."""
         from faultmaven.api.v1.dependencies import get_case_repository
-        from faultmaven.exceptions import ConflictError
+        from faultmaven.exceptions import CASE_TERMINAL, ConflictError
 
         mock_case_service.close_case = AsyncMock(
             side_effect=ConflictError(
@@ -845,6 +846,7 @@ class TestCloseCase:
                 resource_type="Case",
                 resource_id="case_123abc",
                 conflict_reason="already_closed",
+                error_code=CASE_TERMINAL,
             )
         )
         app.dependency_overrides[get_case_repository] = lambda: None
@@ -855,6 +857,7 @@ class TestCloseCase:
 
         assert response.status_code == status.HTTP_409_CONFLICT
         assert "already closed" in response.json()["detail"].lower()
+        assert response.headers["x-error-code"] == CASE_TERMINAL
 
     async def test_close_unknown_or_unowned_returns_404(
         self, app, client, mock_case_service, headers
