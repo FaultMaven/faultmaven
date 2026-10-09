@@ -394,6 +394,12 @@ jobs:
             --durations-min=1.0 \
             -v
         env:
+          # Record every timed comparison (#1910). The per-PR logs hide a
+          # passing test's stdout, so the per-row statistics never reach them;
+          # the rows are written where they are computed and uploaded below.
+          # A trailing slash = a directory, one file per xdist worker.
+          FM_WALLCLOCK_RECORD: ${{ runner.temp }}/wallclock-rows/
+          FM_WALLCLOCK_PROFILE: standalone
           # Standalone configuration - optional (cloud) features disabled
           SKIP_SERVICE_CHECKS: "true"
           OPIK_ENABLED: "false"
@@ -405,6 +411,18 @@ jobs:
           USER_STORAGE_TYPE: "inmemory"
           CASE_STORAGE_TYPE: "inmemory"
           VECTOR_STORAGE_TYPE: "inmemory"
+
+      - name: Upload wall-clock rows (standalone)
+        # `always()`: a red run is recorded too. `error` on no files: a job
+        # that ran tests/performance/ and recorded nothing is the defect
+        # this artifact exists to catch (#1910), not a case to tolerate.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: wallclock-rows-standalone
+          path: ${{ runner.temp }}/wallclock-rows/
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Check Coverage Threshold
         run: |
@@ -575,6 +593,9 @@ jobs:
             --durations-min=1.0 \
             -v
         env:
+          # Record every timed comparison (#1910); see Test Standalone.
+          FM_WALLCLOCK_RECORD: ${{ runner.temp }}/wallclock-rows/
+          FM_WALLCLOCK_PROFILE: cloud
           # Cloud configuration - optional features enabled (external services mocked)
           SKIP_SERVICE_CHECKS: "true"
           # Both switches off. Unit tests call the real
@@ -604,6 +625,18 @@ jobs:
           USER_STORAGE_TYPE: "inmemory"
           CASE_STORAGE_TYPE: "inmemory"
           VECTOR_STORAGE_TYPE: "inmemory"
+
+      - name: Upload wall-clock rows (cloud)
+        # `always()`: a red run is recorded too. `error` on no files: a job
+        # that ran tests/performance/ and recorded nothing is the defect
+        # this artifact exists to catch (#1910), not a case to tolerate.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: wallclock-rows-cloud
+          path: ${{ runner.temp }}/wallclock-rows/
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Check Coverage Threshold
         run: |

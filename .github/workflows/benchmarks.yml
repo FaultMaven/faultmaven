@@ -220,6 +220,9 @@ jobs:
           SKIP_SERVICE_CHECKS: 'true'
           # The one thing that makes this job different from the other one.
           FM_BENCHMARK_ABSOLUTE: '1'
+          # Row-level record for a re-anchor (#1910); see tests/wallclock/collect.py.
+          FM_WALLCLOCK_RECORD: ${{ runner.temp }}/wallclock-rows/
+          FM_WALLCLOCK_PROFILE: nightly
 
       # ‼ tests/performance/ carries product targets too (#1557) and is
       # NOT marked `benchmark`, so the step above does not collect it. It
@@ -244,6 +247,9 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
           SKIP_SERVICE_CHECKS: 'true'
           FM_BENCHMARK_ABSOLUTE: '1'
+          # Row-level record for a re-anchor (#1910); see tests/wallclock/collect.py.
+          FM_WALLCLOCK_RECORD: ${{ runner.temp }}/wallclock-rows/
+          FM_WALLCLOCK_PROFILE: nightly
 
       - name: Upload absolute-target results
         uses: actions/upload-artifact@v7
@@ -255,6 +261,17 @@ jobs:
             benchmark_output_absolute.txt
             performance_results_absolute.json
             performance_output_absolute.txt
+          retention-days: 90
+
+      # A step of its own: a multi-path artifact is rooted at the paths' common
+      # ancestor, which would re-nest the four files above (#1910).
+      - name: Upload wall-clock rows (nightly)
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: wallclock-rows-nightly
+          path: ${{ runner.temp }}/wallclock-rows/
+          if-no-files-found: error
           retention-days: 90
 
   ab-regression:

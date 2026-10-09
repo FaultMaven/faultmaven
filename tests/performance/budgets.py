@@ -44,16 +44,25 @@ must pass.
 
 Two things about that measurement, stated rather than implied:
 
-* **It is a development box, not CI.** ``tests/performance/`` emits nothing
-  to a CI artifact, so there was no runner-side number to join against the
-  way #1556 joined ``benchmark-results``. The box measured **3.53x** slower
+* **It is a development box, not CI.** The box measured **3.53x** slower
   than ``CALIBRATION_REFERENCE_SECONDS`` while these runs were taken, and
   it was running several other pytest processes throughout — so for the
   CPU-bound rows the reference is roughly 3.5x above what a healthy runner
   would report, and every anchor is correspondingly conservative. The error
   is one-sided toward relief, which is the direction #1555's own reference
-  constant chose. Every test below now prints its statistic, so a later
-  re-anchor from CI logs is a join rather than a re-measurement.
+  constant chose.
+  **How a re-anchor gets CI numbers (#1910).** This table's statistics are
+  NOT recoverable from the per-PR job logs: ``Test Standalone`` and ``Test
+  Cloud`` run ``pytest -n logical`` without ``-s``, which hides a passing
+  test's stdout, so the printed statistic never reaches them. Instead every
+  timed comparison is written, where it is computed
+  (``tests/wallclock/record.py``), to ``$FM_WALLCLOCK_RECORD`` — one file
+  per xdist worker — with the calibration scale applied, the unfloored
+  ``raw_ratio``, the job profile and the commit SHA. Both per-PR jobs and
+  the nightly upload them as ``wallclock-rows-{standalone,cloud,nightly}``
+  (90 days). ``python -I tests/wallclock/collect.py <downloaded dirs>``
+  prints each row's normalised min / median / p90 / max per profile; its
+  docstring has the ``gh run download`` commands.
 * **Every anchor also clears the WORST of the 29 runs**, not just their
   p95 — by 1.40x to 2.65x, except ``DEDUPLICATION_OP`` at 1.23x, the
   thinnest margin in the table and the one worth watching. Its 100-

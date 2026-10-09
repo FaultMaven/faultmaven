@@ -99,7 +99,7 @@ THROUGHPUT_METRIC = "throughput_per_second"
 #: spends a benchmark run, and ``load`` refuses an unreadable row as a
 #: backstop. Add the old version here when a bump is backward-readable;
 #: leave it out when it is not.
-SUPPORTED_RECORD_VERSIONS = frozenset({1})
+SUPPORTED_RECORD_VERSIONS = frozenset({1, 2})
 
 #: The share of the BASE's benchmarks the comparison has to cover before
 #: its median means anything.

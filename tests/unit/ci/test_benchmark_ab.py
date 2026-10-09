@@ -220,6 +220,7 @@ class TestTheRecorder:
                 budget=1.0,
                 kind="regression budget",
                 scale=1.0,
+                raw_ratio=1.0,
             )
         finally:
             monkeypatch.setattr(builtins, "open", real_open)
