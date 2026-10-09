@@ -5,7 +5,8 @@ The three mutating report endpoints (edit, delete, link-case) already pass
 is a write too: it mints report rows against the owner's case and flips which
 one is current. A teammate holding a read share on the case could therefore
 overwrite the owner's report set through this route while being refused on every
-other one — a share is read visibility, not ownership (ADR-017 D4).
+other one — a share is read visibility, not ownership (ADR-013 D4, as amended
+2026-10-09).
 """
 
 from types import SimpleNamespace

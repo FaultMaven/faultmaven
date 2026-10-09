@@ -122,7 +122,7 @@ def test_every_session_route_carries_the_gate():
 
 
 # ---------------------------------------------------------------------------
-# A share grants READ, not WRITE — on the session surface too (ADR-017 D4)
+# A share grants READ, not WRITE — on the session surface too (ADR-013 D4, amended)
 # ---------------------------------------------------------------------------
 #
 # The gate above resolves the case through the READ allowlist, which is right

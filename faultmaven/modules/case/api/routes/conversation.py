@@ -606,8 +606,9 @@ async def submit_turn(
         # which this request reaches only AFTER the idempotency step below
         # (#1888). Receipts are keyed on the caller, and a retry of a turn that
         # committed must get that turn back from its receipt; an ownership gate
-        # here, ahead of the replay, would refuse that retry once the caller no
-        # longer owned (or, with hand-off, drove) the case. A teammate is
+        # here, ahead of the replay, would refuse that retry once the caller
+        # stopped owning (with hand-off, driving) the case while they can still
+        # read it — chiefly once hand-off lets the driver change. A teammate is
         # therefore admitted here and refused with 403 in the service, before
         # the turn cap is charged or anything is written (#1898).
         case = await case_service.get_case(case_id, current_user.user_id)
