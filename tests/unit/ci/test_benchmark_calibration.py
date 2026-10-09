@@ -149,6 +149,9 @@ def _clean_calibration():
     """
     state = calibration.calibration_state()
     previous_env = os.environ.pop(calibration.ABSOLUTE_MODE_ENV, None)
+    # CI sets FM_WALLCLOCK_RECORD for the whole run (#1910); recording
+    # measures the raw ratio, which these tests must not see happen.
+    previous_record = os.environ.pop("FM_WALLCLOCK_RECORD", None)
     calibration.reset_calibration_cache()
     try:
         yield
@@ -159,6 +162,8 @@ def _clean_calibration():
             os.environ.pop(calibration.ABSOLUTE_MODE_ENV, None)
         else:
             os.environ[calibration.ABSOLUTE_MODE_ENV] = previous_env
+        if previous_record is not None:
+            os.environ["FM_WALLCLOCK_RECORD"] = previous_record
 
 
 def _pin_calibration(monkeypatch, seconds: float) -> None:

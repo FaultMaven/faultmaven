@@ -60,8 +60,19 @@ import os
 import threading
 from typing import Dict, Tuple
 
-#: Names the JSONL file each comparison is appended to. Unset = inert.
+#: Names where each comparison is appended. Unset = inert.
+#:
+#: A path ending in a path separator, or naming an existing directory, is a
+#: DIRECTORY: each pytest process appends to its own ``rows-<worker>.jsonl``
+#: inside it (``main`` outside xdist). That is how ``pytest -n`` runs record
+#: (#1910): appends from several processes to one file are only atomic by
+#: the filesystem's grace, so no two processes share a file. Any other
+#: value is a single file, as the A/B job uses it.
 RECORD_ENV = "FM_WALLCLOCK_RECORD"
+
+#: Names the job profile (``standalone``, ``cloud``, ``nightly``) written
+#: into every row, so rows from different jobs are never pooled by accident.
+PROFILE_ENV = "FM_WALLCLOCK_PROFILE"
 
 #: The row schema's version, written into every record as ``v``.
 #:
@@ -76,7 +87,12 @@ RECORD_ENV = "FM_WALLCLOCK_RECORD"
 #: schema change costs a few skipped comparisons instead of a red wall.
 #: ``tests/wallclock/ab.py``'s ``SUPPORTED_RECORD_VERSIONS`` is the other
 #: half, and a test pins them to each other.
-RECORD_FORMAT_VERSION = 1
+#:
+#: v2 (#1910) adds ``raw_ratio``, ``profile``, ``sha``, ``run_id`` and
+#: ``run_attempt`` so a re-anchor can
+#: normalise rows collected on CI. The A/B comparator reads none of them, so
+#: it still reads v1 rows from an older base tree.
+RECORD_FORMAT_VERSION = 2
 
 #: ``observed`` is a duration in seconds; smaller is better.
 LATENCY_METRIC = "latency_seconds"
@@ -118,6 +134,25 @@ def reset_for_testing() -> None:
         _occurrences.clear()
 
 
+def recording_enabled() -> bool:
+    """True when ``$FM_WALLCLOCK_RECORD`` asks for rows.
+
+    Lets a caller skip work that only the recording needs (the raw
+    calibration ratio is a measurement in absolute mode, where the scale
+    itself deliberately never measures).
+    """
+    return bool(os.environ.get(RECORD_ENV))
+
+
+def _target_file(path: str) -> str:
+    """The file this process appends to, creating a directory if asked."""
+    if path.endswith(("/", os.sep)) or os.path.isdir(path):
+        os.makedirs(path, exist_ok=True)
+        worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
+        return os.path.join(path, f"rows-{worker}.jsonl")
+    return path
+
+
 def record_comparison(
     *,
     metric: str,
@@ -126,6 +161,7 @@ def record_comparison(
     budget: float,
     kind: str,
     scale: float,
+    raw_ratio: float,
 ) -> None:
     """Append one comparison to ``$FM_WALLCLOCK_RECORD``, if it is set.
 
@@ -141,6 +177,9 @@ def record_comparison(
         budget: The threshold it was compared against, BEFORE calibration.
         kind: Which of the budget's two numbers that was.
         scale: The calibration applied to it on this machine.
+        raw_ratio: The machine's measured calibration over the reference,
+            unfloored and whether or not ``scale`` applied it (absolute
+            mode pins ``scale`` at 1.0).
     """
     path = os.environ.get(RECORD_ENV)
     if not path:
@@ -161,8 +200,13 @@ def record_comparison(
             "budget": budget,
             "kind": kind,
             "scale": scale,
+            "raw_ratio": raw_ratio,
+            "profile": os.environ.get(PROFILE_ENV, "unknown"),
+            "sha": os.environ.get("GITHUB_SHA", "unknown"),
+            "run_id": os.environ.get("GITHUB_RUN_ID"),
+            "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
         }
         # Opened per row rather than held: the suite runs for minutes and a
         # crash mid-run should still leave every comparison made so far.
-        with open(path, "a", encoding="utf-8") as handle:
+        with open(_target_file(path), "a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, sort_keys=True) + "\n")

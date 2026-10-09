@@ -220,6 +220,7 @@ class TestTheRecorder:
                 budget=1.0,
                 kind="regression budget",
                 scale=1.0,
+                raw_ratio=1.0,
             )
         finally:
             monkeypatch.setattr(builtins, "open", real_open)
@@ -686,6 +687,18 @@ def test_the_comparator_reads_what_the_recorder_writes():
     discoverable from either file alone.
     """
     assert record.RECORD_FORMAT_VERSION in ab.SUPPORTED_RECORD_VERSIONS
+
+
+def test_the_comparator_reads_a_literal_v1_row(tmp_path):
+    """A base tree older than #1910 still writes v1; the head must read it."""
+    path = tmp_path / "base.jsonl"
+    path.write_text(
+        '{"budget": 1.0, "kind": "regression budget", "label": "l", '
+        '"metric": "latency_seconds", "nodeid": "t.py::test_a", '
+        '"observed": 0.01, "occurrence": 0, "scale": 1.0, "v": 1}\n'
+    )
+    (row,) = ab.load([path]).values()
+    assert row.observed == 0.01
 
 
 def test_the_metric_names_are_the_same_on_both_sides():

@@ -364,6 +364,17 @@ def measured_calibration() -> float:
     return _measured
 
 
+def raw_ratio() -> float:
+    """This machine's measured calibration over the reference, UNfloored.
+
+    ``calibration_scale`` floors at 1.0 and pins to 1.0 in absolute mode, so
+    the number it returns is not the number the machine measured. A re-anchor
+    from recorded rows (#1910) needs the raw ratio on every row, including
+    the ones whose scale was clamped or pinned.
+    """
+    return measured_calibration() / CALIBRATION_REFERENCE_SECONDS
+
+
 def reset_calibration_cache() -> None:
     """Drop the cached measurement. For this module's own tests only.
 

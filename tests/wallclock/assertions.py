@@ -31,8 +31,13 @@ experiment measured at 50 benchmarks a side.
 from typing import Tuple
 
 from .budgets import Budget, LatencyBudget, ThroughputBudget, asserted_target
-from .calibration import calibration_scale
-from .record import LATENCY_METRIC, THROUGHPUT_METRIC, record_comparison
+from .calibration import calibration_scale, raw_ratio
+from .record import (
+    LATENCY_METRIC,
+    THROUGHPUT_METRIC,
+    record_comparison,
+    recording_enabled,
+)
 
 
 def _threshold(budget: Budget, expected: type) -> Tuple[float, str, float]:
@@ -103,6 +108,7 @@ def assert_latency_within(
         budget=target_seconds,
         kind=kind,
         scale=scale,
+        raw_ratio=raw_ratio() if recording_enabled() else float("nan"),
     )
     assert observed_seconds < limit, (
         f"{label}: {observed_seconds * 1000:.1f}ms exceeds "
@@ -139,6 +145,7 @@ def assert_throughput_at_least(
         budget=target_per_second,
         kind=kind,
         scale=scale,
+        raw_ratio=raw_ratio() if recording_enabled() else float("nan"),
     )
     assert observed_per_second > floor, (
         f"{label}: {observed_per_second:.1f}/s below "
