@@ -1001,7 +1001,13 @@ async def submit_case_query_gone(case_id: str):
     )
 
 
-@router.patch("/{case_id}/evidence/{evidence_id}/classification")
+@router.patch(
+    "/{case_id}/evidence/{evidence_id}/classification",
+    # Route-level, ahead of every provider (#1494's shape): the handler also
+    # resolves the case service now (ADR-020 D2), and an anonymous caller must
+    # be refused before any collaborator resolves.
+    dependencies=[Depends(require_authentication)],
+)
 @trace("api_reclassify_evidence")
 async def reclassify_evidence(
     case_id: str,

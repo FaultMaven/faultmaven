@@ -268,6 +268,31 @@ class TestTheWriteSplit:
         title = (await world.repository.get(CASE_ID)).title
         assert title == ("Checkout latency" if flip else "Renamed")
 
+    @pytest.mark.parametrize("flip", [False, True], ids=["control", "flipped"])
+    async def test_close_rechecks_the_driver_on_the_fresh_load(self, world, flip):
+        """The close's retry reloads the case; a hand-back that lands between
+        the gate and the write must refuse the close, not close a case the
+        caller no longer drives."""
+        await _case(world.repository, driver_id=DRIVER)
+        gate = world.service.get_case
+
+        async def gate_then_hand_back(case_id, user_id=None, **kw):
+            found = await gate(case_id, user_id, **kw)
+            if flip:
+                await world.repository.release_driver(
+                    case_id, driver_id=DRIVER, change=SimpleNamespace()
+                )
+            return found
+
+        world.service.get_case = gate_then_hand_back
+        if flip:
+            with pytest.raises(NotFoundError):
+                await world.service.close_case(CASE_ID, DRIVER)
+            assert (await world.repository.get(CASE_ID)).state == CaseState.INQUIRY
+        else:
+            closed = await world.service.close_case(CASE_ID, DRIVER)
+            assert closed.state == CaseState.CLOSED
+
     async def test_close_is_the_drivers(self, world):
         await _case(world.repository, driver_id=DRIVER)
 

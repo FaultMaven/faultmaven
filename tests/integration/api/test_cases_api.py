@@ -64,6 +64,10 @@ def mock_case():
     mock.enterprise_id = "ent_456"
     mock.organization_id = "org_456"
     mock.user_id = "user_789"
+    # The creator drives (ADR-020 D1): no driver assigned, so the effective
+    # driver is the creator — both read as plain values, not MagicMocks.
+    mock.driver_id = None
+    mock.effective_driver_id = "user_789"
     mock.source = "copilot"
     mock.title = "Test Case"
     mock.description = "Test Description"
