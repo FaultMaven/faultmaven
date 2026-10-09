@@ -30,6 +30,26 @@ _ENGINE_DISPOSITION_WITHDRAWN_KEY = "engine_disposition_withdrawn_this_turn"
 #: the turn.
 _RESOLVE_DECLINED_THIS_TURN_KEY = "resolve_declined_this_turn"
 
+#: The turn-scoped markers section 0b writes BEFORE the model runs that the
+#: apply step must read (#1895 review). ``process_response_structured`` builds
+#: its own metadata dict, so without an explicit hand-over its engine proposers
+#: (``_maybe_propose_deferred_close`` above all) never saw them: a question
+#: about a standing deferred offer withdrew it and the proposer re-offered it
+#: in the same turn, and a deflection's decline was invisible to it. These keys,
+#: and only these, cross into the apply step through ``turn_markers``.
+TURN_MARKER_KEYS = (
+    _DISPOSITION_GATE_ANSWERED_KEY,
+    _ENGINE_DISPOSITION_WITHDRAWN_KEY,
+    _RESOLVE_DECLINED_THIS_TURN_KEY,
+)
+
+
+def turn_markers(metadata: dict) -> dict:
+    """The ``TURN_MARKER_KEYS`` set on ``metadata``: the one channel by which
+    section 0b's turn-scoped markers reach the apply step's metadata."""
+    return {key: metadata[key] for key in TURN_MARKER_KEYS if key in metadata}
+
+
 #: How many refused deferred-disposition signatures a case carries. Bounds the
 #: progress blob; large enough that an oscillation between a handful of
 #: justifying states cannot evict a signature the user is still refusing.

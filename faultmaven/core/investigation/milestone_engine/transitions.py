@@ -91,15 +91,22 @@ def declined_close_reask(
 
 
 #: The feedback when step 2 refuses a resolution the user declined (#1895).
-DECLINED_RESOLVE_FEEDBACK = (
-    "TRANSITION NOT PROPOSED: the user declined marking this case resolved, and "
-    "no new confirmation that the fix held has been recorded since. The engine "
-    "has attached a 'Mark it resolved' action to your reply for a user who has "
-    "changed their mind; do not re-propose on the evidence already on record, "
-    "and do not fabricate a confirmation row from a request. If the user "
-    "reports a NEW verification, record it as causal_absence_evidence and "
-    "propose resolved in the same turn."
-)
+#: The rule is ``RESOLVE_DECLINED_RULE``, the same text the prompt line states;
+#: the engine has attached the chip to this turn's reply.
+def _declined_resolve_feedback() -> str:
+    from faultmaven.core.investigation.terminal_transitions import (
+        RESOLVE_DECLINED_RULE,
+    )
+
+    return (
+        "TRANSITION NOT PROPOSED: the user declined marking this case resolved, "
+        "and no new confirmation that the fix held has been recorded since. "
+        "The engine has attached its 'Mark it resolved' action to this reply. "
+        + RESOLVE_DECLINED_RULE
+    )
+
+
+DECLINED_RESOLVE_FEEDBACK = _declined_resolve_feedback()
 
 
 def declined_resolution_reask(case: Case) -> str | None:
@@ -297,7 +304,29 @@ class TransitionManager:
                 metadata["resolution_readiness_verdict"] = readiness.verdict
                 metadata["resolution_readiness_missing"] = readiness.missing
 
-                if readiness.verdict == readiness.READY:
+                reask = (
+                    declined_resolution_reask(case)
+                    if readiness.verdict == readiness.READY
+                    else None
+                )
+                if reask is not None:
+                    # Nothing re-offers while a resolve decline stands (#1895).
+                    # A ``needs_info`` resolve opened on a state the decline
+                    # did not cover (a failed fix had disqualified its row)
+                    # turns READY again on the SAME rows the user declined —
+                    # a pruned refutation re-admits one — so promoting it here
+                    # would re-ask the question they answered. Withdrawn
+                    # instead, with the feedback and the chip, as step 2
+                    # refuses the model's own re-proposal.
+                    cancel_pending_transition(case)
+                    _add_system_feedback(metadata, reask)
+                    metadata["declined_resolve_card"] = True
+                    logger.info(
+                        f"Case {case.case_id}: needs_info resolve turned READY "
+                        f"on a state the user's decline covers — withdrawn, "
+                        f"not promoted."
+                    )
+                elif readiness.verdict == readiness.READY:
                     # Requirements met — the READY offer is a new offer, so it
                     # is re-proposed rather than flipped in place (#1812). A
                     # card shipped while the offer was unconfirmable names the

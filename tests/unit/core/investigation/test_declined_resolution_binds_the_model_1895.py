@@ -48,6 +48,7 @@ from faultmaven.core.investigation.schemas import (
     SuggestedFollowUp,
 )
 from faultmaven.core.investigation.terminal_transitions import (
+    RESOLVE_DECLINED_RULE,
     ClosureReadiness,
     ResolutionReadiness,
     closure_verdict,
@@ -56,6 +57,7 @@ from faultmaven.core.investigation.terminal_transitions import (
     deferred_disposition_signature,
     derive_disposition_eligibility,
     propose_transition,
+    resolve_reopen_admitted,
     resolve_reopen_key,
 )
 from faultmaven.exceptions import ValidationException
@@ -70,6 +72,7 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     InvestigationStage,
     MitigationRecord,
+    ProblemStatus,
 )
 from faultmaven.modules.case.domain.models.causal import (
     CausalNode,
@@ -861,7 +864,153 @@ class TestThePromptLine:
         case.evidence.append(_user_confirmation(turn=4))
         assert RESOLVE_DECLINED_LINE not in get_prompt_for_case(case, "what now?")
 
-    def test_the_line_is_conditional_and_names_the_chip(self):
-        assert "If the user asks to mark it resolved" in RESOLVE_DECLINED_LINE
-        assert "'Mark it resolved'" in RESOLVE_DECLINED_LINE
-        assert "never record a confirmation row from a request" in RESOLVE_DECLINED_LINE
+    def test_the_line_and_the_refusal_state_one_rule_and_name_the_chip(self):
+        """A NEW verification is evidence: record it, then propose. A request
+        is not: the model points the user at the chip and never proposes on it
+        (A1/A6), so the prompt and the step-2 feedback cannot disagree."""
+        assert RESOLVE_DECLINED_RULE in RESOLVE_DECLINED_LINE
+        assert RESOLVE_DECLINED_RULE in DECLINED_RESOLVE_FEEDBACK
+        assert "'Mark it resolved'" in RESOLVE_DECLINED_RULE
+        assert "point them to it" in RESOLVE_DECLINED_RULE
+        assert "never record a confirmation row from a request" in RESOLVE_DECLINED_RULE
+        assert "propose resolved in the same turn" in RESOLVE_DECLINED_RULE
+        for text in (RESOLVE_DECLINED_LINE, DECLINED_RESOLVE_FEEDBACK):
+            assert "asks to mark it resolved" not in text
+            assert "if the user asks" not in text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Review round (#1915): the decline turn's markers reach the apply step, and
+# nothing re-offers while a decline stands
+# ---------------------------------------------------------------------------
+
+
+async def _deferred_offer(*, resolvable: bool):
+    """The deferred proposer's offer on turn 1: a resolve on a confirmed case,
+    the documented close otherwise."""
+    case = _deferred_case(causal_absence=resolvable)
+    engine = _engine()
+    engine.generator.generate_structured_output = AsyncMock(
+        return_value=_deferred_response()
+    )
+    await engine.process_turn(case=case, user_message="the platform team ships it")
+    assert case.pending_transition["to_state"] == (
+        "resolved" if resolvable else "closed"
+    )
+    assert "justifying_signature" in case.pending_transition
+    return engine, case
+
+
+class TestTheDeclineTurnReachesTheApplyStep:
+    @pytest.mark.parametrize("model_proposes", [None, "resolved"])
+    async def test_a_deflection_on_a_deferred_resolve_offer_is_not_re_offered(
+        self, model_proposes
+    ):
+        """F1: the deferred proposer runs inside the apply step, which builds
+        its own metadata. Unless 0b's markers cross into it, the row the model
+        records from the user's "not yet" moves the signature and the proposer
+        re-offers the resolution on the very turn it was declined."""
+        engine, case = await _deferred_offer(resolvable=True)
+        result = await _turn(
+            engine,
+            case,
+            _DEFLECTION,
+            row=True,
+            propose=model_proposes,
+            follow_ups=_MODEL_FOLLOW_UPS,
+        )
+        assert case.pending_transition is None
+        assert _declined(case)[-1] == deferred_disposition_signature(case, _SR)
+        assert _labels(result)[-1] == DECLINED_RESOLVE_CARD_LABEL
+
+        case.current_turn += 1
+        engine.generator.generate_structured_output = AsyncMock(
+            return_value=_deferred_response()
+        )
+        await engine.process_turn(case=case, user_message="anything else?")
+        assert case.pending_transition is None
+
+    @pytest.mark.parametrize("resolvable", [False, True])
+    async def test_a_question_withdraws_a_deferred_offer_for_the_turn(self, resolvable):
+        """A question is a user deciding, not declining: the offer is withdrawn
+        unrecorded and must not be re-offered on the same turn (it used to be,
+        by the deferred proposer, which never saw the withdrawal). It is back
+        on the next turn."""
+        engine, case = await _deferred_offer(resolvable=resolvable)
+        flavour = "resolve" if resolvable else "close"
+        case.current_turn += 1
+        await engine.process_turn(
+            case=case, user_message=f"what happens to the runbook if I {flavour} this?"
+        )
+        assert case.pending_transition is None
+        assert _declined(case) == []
+
+        case.current_turn += 1
+        await engine.process_turn(case=case, user_message="ok, makes sense")
+        assert case.pending_transition is not None, "the offer returns next turn"
+
+
+class TestNothingReOffersWhileTheDeclineStands:
+    async def test_step_zero_does_not_promote_a_needs_info_resolve_on_covered_rows(
+        self,
+    ):
+        """F2: decline at {a}; a failed fix disqualifies a, so the model's
+        resolve is a needs_info offer; the refuting node is pruned and a
+        qualifies again. Step 0 used to promote that to a READY offer on the
+        very rows the user declined."""
+        engine, case, _ = await _offered_then_declined()
+        node_id = _refute(case, _qualifying(case))
+        assert closure_verdict(case) != _SR
+        await _turn(engine, case, "can we resolve it", propose="resolved")
+        assert case.pending_transition["needs_info"] is True
+
+        del case.causal_nodes[node_id]
+        result = await _turn(engine, case, "here is more context about the fix")
+        assert case.pending_transition is None
+        assert DECLINED_RESOLVE_FEEDBACK in _feedback(result)
+        assert _labels(result)[-1] == DECLINED_RESOLVE_CARD_LABEL
+
+
+class TestDefenceInDepthGuards:
+    """Unreachable today (a decline does not stand while the problem is on
+    hold, since the closure verdict is not SUGGEST_RESOLVE then), so each is
+    pinned with the state patched past the guard in front of it."""
+
+    def test_no_chip_while_the_problem_is_on_hold(self):
+        case = _confirmed_case()
+        with patch(
+            "faultmaven.core.investigation.terminal_transitions."
+            "declined_resolve_entry",
+            return_value="suggest_resolve|1|rcc|ev_000000000000",
+        ):
+            assert declined_resolve_card(case) is not None, "control"
+            case.progress.problem_status = ProblemStatus.REVISION_PENDING
+            assert declined_resolve_card(case) is None
+
+    async def test_the_chip_handler_proposes_nothing_while_on_hold(self):
+        engine, case, _ = await _offered_then_declined()
+        intent = _chip_intent(case)
+        case.progress.problem_status = ProblemStatus.REVISION_PENDING
+        with patch(
+            "faultmaven.core.investigation.milestone_engine.engine."
+            "resolve_reopen_admitted",
+            return_value=True,
+        ):
+            result = await _turn(
+                engine, case, "", intent_type="status_transition", intent_data=intent
+            )
+        assert case.pending_transition is None
+        assert "while its problem statement is in question" in result["agent_response"]
+
+    def test_a_reopen_key_admits_only_a_transition_to_resolved(self):
+        """Reachable in principle: the reopen path admits nothing but RESOLVED,
+        whatever key a request to another state carries."""
+        case = _confirmed_case()
+        case.progress.deferred_disposition_declined_signatures = [
+            deferred_disposition_signature(case, _SR)
+        ]
+        key = declined_resolve_card(case)["intent"]["proposal_id"]
+        assert resolve_reopen_admitted(case, "resolved", key)
+        assert resolve_reopen_admitted(case, CaseState.RESOLVED, key)
+        for other in ("closed", CaseState.CLOSED, "investigating"):
+            assert not resolve_reopen_admitted(case, other, key)

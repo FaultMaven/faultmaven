@@ -864,6 +864,19 @@ def declined_resolve_entry(case: Case) -> Optional[str]:
     return covering_declined_entry(case, verdict)
 
 
+#: What binds the model while a resolve decline stands (#1895): the ONE rule the
+#: step-2 refusal's feedback and the prompt line both state. The model never
+#: proposes on a request; a user who changes their mind has the engine's chip.
+RESOLVE_DECLINED_RULE = (
+    "Do not propose resolved on the evidence already on record. If the user "
+    "reports a NEW verification that the fix held, record it as "
+    "causal_absence_evidence and propose resolved in the same turn. A user who "
+    "changes their mind without one uses the engine's 'Mark it resolved' "
+    "action: point them to it, and never record a confirmation row from a "
+    "request."
+)
+
+
 def resolve_reopen_key(entry: str) -> str:
     """The reopen key the "Mark it resolved" chip carries as its
     ``proposal_id``: a digest of the covering declined ENTRY (#1895).

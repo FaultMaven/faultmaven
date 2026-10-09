@@ -196,8 +196,15 @@ class ResponseApplier:
         response_obj: BaseInteractionResponse,
         attachments: list[dict[str, Any]] | None = None,
         upload_report: dict[str, list[str]] | None = None,
+        turn_markers: dict[str, Any] | None = None,
     ) -> tuple[Case, dict[str, Any]]:
         """Process structured response and update case state.
+
+        ``turn_markers`` are section 0b's turn-scoped markers
+        (``response_synthesis.TURN_MARKER_KEYS``, read off the turn's metadata
+        by ``response_synthesis.turn_markers``). They seed this step's metadata
+        so the proposers here honour a withdrawal or a decline made earlier in
+        the same turn.
 
         ``upload_report`` is the turn's already-derived upload reading (see
         ``_report_turn_uploads``). ``_process_turn_impl`` derives it once, for
@@ -220,6 +227,7 @@ class ResponseApplier:
             "status_transitioned": False,
             "outcome": TurnOutcome.CONVERSATION,
         }
+        metadata.update(turn_markers or {})
         metadata.update(
             upload_report
             if upload_report is not None

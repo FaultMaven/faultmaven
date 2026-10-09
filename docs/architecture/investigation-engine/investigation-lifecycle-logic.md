@@ -392,8 +392,10 @@ and repeated declines never do; one row the decline never saw does.
   `check_automatic_transitions`, on a SUGGEST_RESOLVE verdict only.
 - **The model is refused.** While the decline stands, step 2 refuses a model
   `resolved` on a READY case and a model `closed` that the closure check pivots
-  to RESOLVED (INV-37), with feedback. The user's own close pick still pivots to
-  the resolve offer: this binds the model, never the user.
+  to RESOLVED (INV-37), with feedback, and step 0 withdraws a `needs_info`
+  resolve that turns READY on the rows the decline covers rather than promoting
+  it. Nothing re-offers while the decline stands. The user's own close pick
+  still pivots to the resolve offer: this binds the model, never the user.
 - **It returns on the turn it is earned.** A turn that records a new
   confirmation moves the signature before step 2 and the backstop, so the offer
   comes back on that turn, from the model or the backstop.
@@ -407,9 +409,17 @@ and repeated declines never do; one row the decline never saw does.
   the user confirms (INV-03). A stale key (a new confirmation has since moved
   the state) keeps the 422, and by then the engine is offering the resolution
   itself. The bare "no" is answered with what brings the offer back and the
-  chip. The prompt carries a conditional line while the decline stands: propose
-  on a new verification, or when the user asks (the engine then attaches the
-  chip), never unprompted.
+  chip. While the decline stands the prompt and the refusal's feedback state one
+  rule (`RESOLVE_DECLINED_RULE`): do not propose on the evidence on record;
+  record a NEW verification as evidence and propose in the same turn; point a
+  user who changes their mind at the **Mark it resolved** action, never
+  proposing on, or recording a row from, a request.
+- **The decline turn's markers reach the apply step.** Section 0b's turn-scoped
+  markers (the handshake-answered and offer-withdrawn guards, and the resolve
+  decline) cross into the apply step's metadata through one named channel
+  (`TURN_MARKER_KEYS`), so the deferred proposer that runs there honours them: a
+  question about a standing deferred offer withdraws it for the turn, and a
+  deflection's decline is not re-offered on its own turn.
 
 **Why RESOLVED left the status menu.** It was listed in `USER_SELECTABLE_ACTIONS`
 until the engine could see the readiness bar for itself, and the listing was

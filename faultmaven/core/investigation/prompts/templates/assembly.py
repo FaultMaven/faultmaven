@@ -11,6 +11,7 @@ from faultmaven.core.investigation.prompts.context_builder.assembly import (
 from faultmaven.core.investigation.prompts.context_builder.entity_highlights import (
     EntityHighlightGroup,
 )
+from faultmaven.core.investigation.terminal_transitions import RESOLVE_DECLINED_RULE
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
@@ -80,20 +81,13 @@ def _false_alarm_declined_line(turn: int) -> str:
 
 
 #: The line the prompt carries while the user's decline of the resolution
-#: stands (#1895). Conditional, never a flat ban: a model that obeys a ban
-#: never proposes, so a user who says "ok, mark it resolved" on a client with
-#: no chip on screen would get no refusal and so no chip.
+#: stands (#1895): ``RESOLVE_DECLINED_RULE``, the same rule the step-2
+#: refusal's feedback states. A NEW verification is evidence, recorded and
+#: then proposed on; a request is not, and a user who changes their mind is
+#: pointed at the engine's "Mark it resolved" action.
 RESOLVE_DECLINED_LINE = (
     "**THE USER DECLINED MARKING THIS CASE RESOLVED.** It stays open on their "
-    "answer, and the engine will not offer the resolution again on the "
-    "confirmation already on record. The offer returns when a NEW confirmation "
-    "that the fix held is recorded: if the user reports a new verification "
-    "(not a request), record it as causal_absence_evidence and propose "
-    "resolved in the same turn. If the user asks to mark it resolved without "
-    "a new verification, propose resolved: the engine attaches its 'Mark it "
-    "resolved' action to your reply for them to use. Do not propose it "
-    "unprompted, never record a confirmation row from a request, and do not "
-    "narrate the case as resolved."
+    "answer. " + RESOLVE_DECLINED_RULE + " Do not narrate the case as resolved."
 )
 
 

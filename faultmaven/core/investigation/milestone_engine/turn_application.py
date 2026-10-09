@@ -28,6 +28,7 @@ from .progress import score_progress
 from .response_synthesis import (
     is_agent_response_synthesized,
     restamp_resolve_decline,
+    turn_markers,
 )
 from .stage_gates import _refresh_working_conclusion
 from .statement_revision import merge_statement_commit
@@ -54,8 +55,16 @@ async def _apply_turn_response(
     user_message,
 ):
     """Apply the generated response to the case: structured updates, automatic transitions, progress scoring and validation."""
+    # Section 0b's turn-scoped markers cross into the apply step by name
+    # (``TURN_MARKER_KEYS``): its proposers must see a withdrawal or a decline
+    # made before the model ran (#1895).
     case_updated, response_metadata = await responses.process_response_structured(
-        case, user_message, response_obj, attachments, upload_report
+        case,
+        user_message,
+        response_obj,
+        attachments,
+        upload_report,
+        turn_markers=turn_markers(metadata),
     )
     # Merge response metadata with early metadata (which may have
     # transition_proposed_this_turn). The two accumulators written before the
