@@ -26,11 +26,75 @@ def _row(**overrides):
     return row
 
 
-def test_latency_is_divided_and_throughput_multiplied_by_the_applied_scale():
+def test_latency_is_divided_and_throughput_multiplied_by_the_raw_ratio():
     assert collect.normalised(_row()) == pytest.approx(0.10)
     assert collect.normalised(
-        _row(metric=collect.THROUGHPUT, observed=100.0, scale=2.0)
+        _row(metric=collect.THROUGHPUT, observed=100.0, scale=2.0, raw_ratio=2.0)
     ) == pytest.approx(200.0)
+
+
+def test_nightly_and_per_pr_rows_of_the_same_true_speed_agree():
+    # Same code, same 4x-slow machine: the per-PR row applied scale 4.0, the
+    # nightly (absolute mode) pinned scale at 1.0 -- raw seconds, 4x larger
+    # than the reference-machine figure.
+    per_pr = _row(observed=0.40, scale=4.0, raw_ratio=4.0, profile="standalone")
+    nightly = _row(observed=0.40, scale=1.0, raw_ratio=4.0, profile="nightly")
+    assert collect.normalised(nightly) == pytest.approx(0.10)
+    assert collect.normalised(nightly) == pytest.approx(collect.normalised(per_pr))
+    # A per-PR row on a runner FASTER than the reference: scale clamped at 1.0.
+    fast = _row(observed=0.05, scale=1.0, raw_ratio=0.5)
+    assert collect.normalised(fast) == pytest.approx(0.10)
+
+
+def test_a_v1_row_falls_back_to_the_applied_scale():
+    old = _row(scale=2.0)
+    del old["raw_ratio"]
+    assert collect.normalised(old) == pytest.approx(0.20)
+    assert collect.normalised(_row(scale=2.0, raw_ratio=float("nan"))) == (
+        pytest.approx(0.20)
+    )
+
+
+@pytest.mark.parametrize("n,rank", [(10, 9), (30, 27), (50, 45)])
+def test_p90_is_the_nearest_rank(n, rank):
+    assert collect.percentile(list(range(1, n + 1)), 0.90) == rank
+
+
+def test_distinct_runs_are_counted_per_group():
+    rows = [
+        _row(run_id="1", run_attempt="1"),
+        _row(run_id="1", run_attempt="1", occurrence=1),
+        _row(run_id="2", run_attempt="1"),
+        _row(run_id="2", run_attempt="2"),
+    ]
+    (stats,) = collect.summarise(rows).values()
+    assert (stats["n"], stats["runs"]) == (4, 3)
+
+
+def test_an_existing_directory_without_a_trailing_slash_is_a_directory(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv(record.RECORD_ENV, str(tmp_path))
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw1")
+    monkeypatch.setenv("GITHUB_RUN_ID", "77")
+    monkeypatch.delenv("GITHUB_RUN_ATTEMPT", raising=False)
+    record.reset_for_testing()
+    try:
+        record.record_comparison(
+            metric=record.LATENCY_METRIC,
+            label="x",
+            observed=0.1,
+            budget=1.0,
+            kind="regression budget",
+            scale=1.0,
+            raw_ratio=1.0,
+        )
+    finally:
+        record.reset_for_testing()
+    (row,) = [
+        json.loads(x) for x in (tmp_path / "rows-gw1.jsonl").read_text().splitlines()
+    ]
+    assert (row["run_id"], row["run_attempt"]) == ("77", None)
 
 
 def test_summary_is_per_profile_and_never_pools_profiles():

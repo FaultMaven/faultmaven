@@ -88,7 +88,8 @@ PROFILE_ENV = "FM_WALLCLOCK_PROFILE"
 #: ``tests/wallclock/ab.py``'s ``SUPPORTED_RECORD_VERSIONS`` is the other
 #: half, and a test pins them to each other.
 #:
-#: v2 (#1910) adds ``raw_ratio``, ``profile`` and ``sha`` so a re-anchor can
+#: v2 (#1910) adds ``raw_ratio``, ``profile``, ``sha``, ``run_id`` and
+#: ``run_attempt`` so a re-anchor can
 #: normalise rows collected on CI. The A/B comparator reads none of them, so
 #: it still reads v1 rows from an older base tree.
 RECORD_FORMAT_VERSION = 2
@@ -202,6 +203,8 @@ def record_comparison(
             "raw_ratio": raw_ratio,
             "profile": os.environ.get(PROFILE_ENV, "unknown"),
             "sha": os.environ.get("GITHUB_SHA", "unknown"),
+            "run_id": os.environ.get("GITHUB_RUN_ID"),
+            "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
         }
         # Opened per row rather than held: the suite runs for minutes and a
         # crash mid-run should still leave every comparison made so far.
