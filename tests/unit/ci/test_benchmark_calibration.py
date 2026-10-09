@@ -442,7 +442,9 @@ class TestTheBudgetTable:
         # two disabled-shim call costs, vocabulary and timestamp extraction,
         # and extraction beside a hostile line against the Tier-1 timeout.
         #
-        # +1 in #1882: the p99 of a turn's one commit against its reserve.
+        # +1 in #1882: a turn's one commit — its p50 against a regression
+        # anchor per pull request, its p99 against the commit reserve in the
+        # nightly (#1902). One row: the two statistics are of one window.
         assert len(performance_table.ALL_BUDGETS) == 29
 
     @pytest.mark.parametrize("name", sorted(ALL_ANCHORS))
@@ -1986,7 +1988,7 @@ TREE_UNJUDGED_TIMED_TESTS = {
         "tests/integration/test_turn_rows_commit_with_case_postgres_1882.py",
         "test_the_postgresql_turn_commit_is_measured",
     ): "prints the PostgreSQL commit latency the #1882 commit reserve is sized "
-    "from and judges no clock; its SQLite twin is judged by TURN_COMMIT_P99 in "
+    "from and judges no clock; its SQLite twin is judged by TURN_COMMIT in "
     "tests/performance/",
     (
         "tests/unit/modules/knowledge/test_gate_stays_off_the_event_loop.py",

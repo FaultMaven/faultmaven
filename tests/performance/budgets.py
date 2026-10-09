@@ -383,18 +383,46 @@ ADVERSARIAL_LINE_EXTRACTION = LatencyBudget(
 )
 
 
-# tests/performance/test_turn_commit_latency.py (#1882)
-#: The p99 of a turn's ONE commit on SQLite, through the production wrapper,
-#: over three cases grown to 60 turns (``tests/turn_commit_latency.py``).
-#: ``reference`` from three runs on the development box (p99 176.7, 184.3,
-#: 187.1 ms). The product target is the commit reserve itself: the commit must
-#: fit in the end of the turn budget kept back for it. The reserve was sized
-#: from this measurement and its PostgreSQL twin at p99 x 10.
-TURN_COMMIT_P99 = LatencyBudget(
+# tests/performance/test_turn_commit_latency.py (#1882, #1902)
+#: A turn's ONE commit on SQLite, through the production wrapper, over three
+#: cases grown to 60 turns (``tests/turn_commit_latency.py``). ‼ The only row
+#: whose two numbers judge two different statistics of the same 180 samples,
+#: chosen by mode in the test:
+#:
+#: * per pull request, the **p50** against ``regression``. A commit-cost
+#:   regression (more rows re-upserted per save, an O(n) path) moves the
+#:   median; a neighbouring xdist worker's fsync or a scheduler stall moves
+#:   only the tail, and the calibration (#1555) measures CPU throughput, so it
+#:   cannot see either. Test Standalone failed on the p99 of three pull
+#:   requests that did not touch the commit (#1902): p50 180.8 / 218.2 /
+#:   143.4 ms, p99 2089.7 / 3349.1 / 2284.7 ms (max 42.4 s) against limits of
+#:   2024 / 2750 / 1887 ms (0.5 s x 4.05 / 5.50 / 3.77 calibration; runs
+#:   37867131425, 37774700908, 37775185302).
+#: * in the ``FM_BENCHMARK_ABSOLUTE`` nightly, the **p99** against
+#:   ``product_target``, the commit reserve itself: the commit must fit in the
+#:   end of the turn budget kept back for it. That job runs this directory on
+#:   its own, without xdist, so the tail it reads is the commit's.
+#:
+#: So, unlike every other row, a green pull request does not imply this row's
+#: product target held; the nightly is the only place the reserve is judged.
+#:
+#: Anchored 2026-10-09 from **28 runs** on the development box (48 cores, load
+#: average 9-31 from other lanes throughout). ``reference`` is the p95 of the
+#: per-run p50, 97.7 ms; ``regression`` is 2.55x it and clears the worst run
+#: (98.5 ms) by 2.54x. The runs: 12 alone (8 on tmpfs, 4 with the database on
+#: the root disk), 9 beside a 16-worker ``tests/unit`` run and a 64 KB
+#: write+fsync loop on the root disk, and 7 pinned to four cores shared with a
+#: 4-worker ``tests/unit`` run, the nearest this box comes to a contended
+#: runner. Per-run p50 across them: 54.8-98.5 ms, median 74.5 ms; the p99 over
+#: the same runs: 146.2-457.6 ms. Pinned, the p99 rose 2-3x and the p50 at
+#: most 1.3x, which is the split this row is built on. The reserve was sized
+#: from the p99 of this measurement and its PostgreSQL twin at x10
+#: (``turn_budget.py``, R8).
+TURN_COMMIT = LatencyBudget(
     "test_the_turn_commit_fits_its_reserve",
-    regression=0.5,
+    regression=0.25,
     product_target=TURN_COMMIT_RESERVE_SECONDS,
-    reference=0.19,
+    reference=0.098,
 )
 
 

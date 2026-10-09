@@ -3,10 +3,20 @@
 ``TURN_COMMIT_RESERVE_SECONDS`` is the end of the turn budget kept back for the
 commit, sized from the measured p99 of that commit times a safety factor. This
 measures the commit on a file-backed SQLite through the production wrapper
-(``SessionlessCaseRepository``: one session per call, commit on exit) and prints
-the numbers. The p99 is judged against ``TURN_COMMIT_P99`` in ``budgets.py``: a
-pull request asserts its regression anchor, the ``FM_BENCHMARK_ABSOLUTE`` nightly
-the product target, which is the reserve itself. The PostgreSQL measurement is in
+(``SessionlessCaseRepository``: one session per call, commit on exit), prints
+the numbers, and judges them against ``TURN_COMMIT`` in ``budgets.py`` — one
+statistic per mode, because the two modes ask two questions (#1902):
+
+* a pull request asks "did the commit get more expensive?", and judges the
+  **p50** against the row's regression anchor. In Test Standalone this runs
+  beside the whole suite under xdist, where a neighbour's fsync puts seconds
+  into a p99 that the CPU calibration cannot see (#1902's three red runs);
+  the median does not move for that and does move for a costlier commit.
+* the ``FM_BENCHMARK_ABSOLUTE`` nightly asks "does the commit fit its
+  reserve?", and judges the **p99** against the reserve itself. That job runs
+  ``tests/performance/`` alone, without xdist, so the tail is the commit's.
+
+The PostgreSQL measurement is in
 ``tests/integration/test_turn_rows_commit_with_case_postgres_1882.py``.
 
 ‼ Every comparison goes through ``assert_latency_within`` (#1557).
@@ -34,9 +44,9 @@ from tests.turn_commit_latency import (
     summarize,
 )
 from tests.utils import seed_enterprises
-from tests.wallclock import assert_latency_within
+from tests.wallclock import absolute_mode, assert_latency_within
 
-from .budgets import TURN_COMMIT_P99
+from .budgets import TURN_COMMIT
 
 ENTERPRISE = "ent_1882_latency"
 
@@ -85,9 +95,13 @@ async def test_the_turn_commit_fits_its_reserve(sessionless):
         timings += await measure_turn_commits(sessionless, case)
 
     print(f"\nSQLite turn commit: {summarize(timings)}")
+    # The mode picks the statistic; ``asserted_target`` picks the number it is
+    # held to (the reserve under absolute mode, the regression anchor
+    # otherwise). Both halves are in the module docstring and the row's.
+    pct = 99 if absolute_mode() else 50
     assert_latency_within(
-        percentile(timings, 99),
-        TURN_COMMIT_P99,
-        "p99 of a turn's one commit (SQLite)",
+        percentile(timings, pct),
+        TURN_COMMIT,
+        f"p{pct} of a turn's one commit (SQLite)",
         detail=summarize(timings),
     )
