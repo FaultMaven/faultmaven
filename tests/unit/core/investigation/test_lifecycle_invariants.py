@@ -1348,6 +1348,12 @@ class TestINV10_SubmitTurnRejectionRules:
             "INV-10 violation: the terminal guard holds an unconditional "
             "statement; text Q&A must be allowed."
         )
+        # Nor an `else:` on any of them: `else: raise` would refuse every
+        # turn the earlier conditions let through, the text question included.
+        assert all(not stmt.orelse for stmt in branches), (
+            "INV-10 violation: a terminal-guard branch has an `else`; text "
+            "Q&A must be allowed."
+        )
         tests = [ast.unparse(stmt.test) for stmt in branches]
         assert "files or pasted_content" in tests
         assert "intent_type == 'status_transition'" in tests
