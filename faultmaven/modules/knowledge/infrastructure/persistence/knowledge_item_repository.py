@@ -330,7 +330,6 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 verification_reason=item.verification_reason,
                 verified_by=item.verified_by,
                 verified_at=item.verified_at,
-                source_suggestion_id=item.source_suggestion_id,
                 created_at=item.created_at,
                 updated_at=item.updated_at,
                 knowledge_metadata=json.dumps(item.metadata) if item.metadata else "{}",
@@ -421,7 +420,6 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                     verification_reason=item.verification_reason,
                     verified_by=item.verified_by,
                     verified_at=item.verified_at,
-                    source_suggestion_id=item.source_suggestion_id,
                     updated_at=item.updated_at,
                     knowledge_metadata=(
                         json.dumps(item.metadata) if item.metadata else "{}"
@@ -783,7 +781,6 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             verification_reason=model.verification_reason,
             verified_by=model.verified_by,
             verified_at=self._ensure_tz_aware(model.verified_at),
-            source_suggestion_id=model.source_suggestion_id,
             created_at=self._ensure_tz_aware(model.created_at),
             updated_at=self._ensure_tz_aware(model.updated_at),
             metadata=metadata,

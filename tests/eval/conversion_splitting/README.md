@@ -99,7 +99,7 @@ analysis = await _analyze_document(
     get_settings(),
     path.read_text(),
     path.name,
-    model_boundary_redaction("eval", None),
+    model_boundary_redaction(None),
 )
 ```
 

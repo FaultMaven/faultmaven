@@ -38,7 +38,6 @@ from faultmaven.infrastructure.persistence.models import (
     HypothesisModel,
     InvestigationSessionModel,
     KnowledgeItemModel,
-    KnowledgeSuggestionModel,
     SolutionModel,
     UploadedFileModel,
 )
@@ -124,7 +123,6 @@ class SchemaValidator:
         "case_tags": CaseTagModel,
         "investigation_sessions": InvestigationSessionModel,
         "knowledge_items": KnowledgeItemModel,
-        "knowledge_suggestions": KnowledgeSuggestionModel,
     }
 
     # Critical columns that caused the P0 incident

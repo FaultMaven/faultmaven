@@ -729,17 +729,15 @@ RESOLVED case
     ├──► Auto: Resolution Summary (immediate, SYNTHESIS LLM)
     │         Root cause, solution, confirming evidence, timeline
     │
-    ├──► User-initiated: Runbook Generation (Dashboard)
-    │         POST /api/v1/knowledge/convert-from-case
-    │         Canonical template (YAML frontmatter + 7 sections)
-    │         Draft → Edit → Verify → Ingest into ChromaDB
-    │         Indexed for similarity search (BGE-M3, 1024 dims)
-    │
-    └──► User-initiated: Knowledge Article Extraction (Dashboard)
-              POST /api/v1/knowledge/suggestions/extract
-              Structured article (Problem, Root Cause, Solution, Prevention)
-              PII scan → Admin review → Approve → KnowledgeItem
+    └──► User-initiated: Runbook Generation (Dashboard)
+              POST /api/v1/knowledge/convert-from-case
+              Canonical template (YAML frontmatter + 7 sections)
+              Draft → Edit → Verify → Ingest into ChromaDB
+              Indexed for similarity search (BGE-M3, 1024 dims)
 ```
+
+Runbook generation is the only case→knowledge path: the separate knowledge-article
+extraction and its admin review queue were removed in #1897.
 
 **Only RESOLVED cases are runbook-eligible.** Runbooks codify a complete root-cause-to-solution chain. CLOSED cases — including those closed after a verified mitigation (`closure_reason=mitigation_sufficient`) — lack a confirmed root cause, so they do not qualify. The auto-generated Closure Summary captures what was learned without risking low-quality knowledge base entries.
 

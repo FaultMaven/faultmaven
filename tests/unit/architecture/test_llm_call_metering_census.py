@@ -91,7 +91,6 @@ CHOKEPOINT = "CHOKEPOINT"
 UNMETERED = "UNMETERED"
 
 _GENERATION = "faultmaven/core/investigation/milestone_engine/generation.py"
-_SUGGESTION = "faultmaven/modules/knowledge/domain/services/suggestion_service.py"
 _TIER2 = "faultmaven/core/preprocessing/tier2/local_service.py"
 
 #: (file, function) -> (sites, classification, reason). The reason is required
@@ -128,16 +127,6 @@ SITES: dict[tuple[str, str], tuple[int, str, str]] = {
         1,
         ROUTER,
         "app.state.llm_provider",
-    ),
-    (_SUGGESTION, "SuggestionService._generate_once"): (
-        1,
-        ROUTER,
-        "retry helper over _call",
-    ),
-    (_SUGGESTION, "SuggestionService._generate_once._call"): (
-        1,
-        ROUTER,
-        "self._llm_provider",
     ),
     (
         "faultmaven/modules/knowledge/domain/services/conversion_service/pipeline.py",

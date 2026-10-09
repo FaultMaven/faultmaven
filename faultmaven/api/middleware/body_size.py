@@ -17,12 +17,11 @@ been authenticated. A guard that runs after the cost it exists to avoid is not a
 guard.
 
 **And the enumeration would have been wrong again.** The issue that asked for
-this named two routes. There are four — ``PUT /knowledge/conversions/{id}/drafts/{id}``,
-``POST /knowledge/runbooks/create``, ``PUT /knowledge/suggestions/{id}`` and
-``PUT /knowledge/documents/{id}`` — the last two taking an untyped ``dict`` body,
-so they have no request model a field bound could even attach to. The gate is
-not the worst consumer either: on the suggestion route Presidio scans the body
-BEFORE the gate sees it, and on the document route a ``content`` key re-chunks
+this named two routes. There were more — among them
+``PUT /knowledge/conversions/{id}/drafts/{id}``, ``POST /knowledge/runbooks/create``
+and ``PUT /knowledge/documents/{id}`` — the last taking an untyped ``dict`` body,
+so it has no request model a field bound could even attach to. The gate is not
+the worst consumer either: on the document route a ``content`` key re-chunks
 and re-embeds through BGE-M3, which costs minutes rather than seconds and runs
 for any authenticated user.
 

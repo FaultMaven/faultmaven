@@ -173,15 +173,10 @@ def mock_settings():
     # ``debug_endpoints`` a constant True and its arm unable to discriminate.
     # False is also the shipped default (``Field(default=False)``).
     settings.server.enable_debug_endpoints = False
-    # A real int, not a MagicMock: the endpoint compares it (#1214 reports
-    # whether the per-worker suggestion store is worker-safe), and a bare
-    # MagicMock attribute would make every test here fail on the comparison
-    # rather than on what it is about.
-    settings.server.workers = 1
-    # Real numbers for the same reason as ``workers`` above: the endpoint models
-    # the LLM retry ladder against the turn deadline (#1278/#1292) and does
-    # arithmetic on both, so MagicMock attributes would fail every test here on
-    # a TypeError rather than on what it is about. These are the shipped code
+    # Real numbers, not MagicMocks: the endpoint models the LLM retry ladder
+    # against the turn deadline (#1278/#1292) and does arithmetic on both, so
+    # MagicMock attributes would fail every test here on a TypeError rather
+    # than on what it is about. These are the shipped code
     # defaults, which is a FITTING configuration — 3x30 + 14 = 104s inside 120s.
     settings.llm.request_timeout = 30
     settings.llm.timeout_for_provider.return_value = 30
@@ -189,7 +184,7 @@ def mock_settings():
     settings.agent.timeout_for_provider.return_value = 120
     # The self-service sign-up bounds (#1320, #1324), reported as VALUES
     # rather than as ``features`` entries. Real values for the same reason as
-    # ``workers`` above and then some: the response model types two of them as
+    # the timeouts above and then some: the response model types two of them as
     # ``int``, so a MagicMock attribute would fail every test in this file on a
     # ValidationError rather than on what it is about. These are the shipped
     # defaults, which is the state an operator who has set nothing is in.
@@ -1604,93 +1599,6 @@ class TestGetEnvConfigStatus:
         assert stripped.features["first_party_consent_skip"].enabled is False
         assert _is_first_party("faultmaven-copilot", redirect, mock_settings) is False
 
-    async def _suggestion_store_feature(
-        self, mock_admin_user, mock_settings, app, repository
-    ):
-        """Compose ``app.state.suggestion_service`` over ``repository`` and read
-        the reported feature back."""
-        from faultmaven.modules.knowledge.domain.services.suggestion_service import (
-            SuggestionService,
-        )
-
-        if repository is not None:
-            app.state.suggestion_service = SuggestionService(
-                knowledge_service=MagicMock(), suggestion_repository=repository
-            )
-
-        with patch(SETTINGS_PATCH, return_value=mock_settings):
-            result = await get_env_config_status(
-                request=_request_for(app), current_user=mock_admin_user
-            )
-        return result.features["suggestion_store_worker_safe"]
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("workers", [1, 4])
-    async def test_the_database_backed_store_reports_safe_at_any_worker_count(
-        self, mock_admin_user, mock_settings, rate_limited_app, workers
-    ):
-        """Since #1227 the store is ``knowledge_suggestions``, so extract and
-        approve reach the same rows from any worker or pod.
-
-        Swept over WORKERS deliberately. The field used to BE
-        ``settings.server.workers <= 1``, and that proxy stopped being one the
-        moment the store could be a database: the parametrisation is what makes
-        this test fail against the old implementation rather than agree with it
-        by coincidence at ``workers == 1``.
-        """
-        from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
-            DatabaseSuggestionRepository,
-        )
-
-        mock_settings.server.workers = workers
-
-        feature = await self._suggestion_store_feature(
-            mock_admin_user,
-            mock_settings,
-            rate_limited_app,
-            DatabaseSuggestionRepository(session_factory=MagicMock()),
-        )
-
-        assert feature.enabled is True
-
-    @pytest.mark.asyncio
-    async def test_the_in_memory_double_reports_unsafe_even_on_one_worker(
-        self, mock_admin_user, mock_settings, rate_limited_app
-    ):
-        """The other half of the same point: a single worker over a dict is
-        still a process that loses every pending review on restart, and
-        ``WORKERS=1`` cannot see that."""
-        from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
-            InMemorySuggestionRepository,
-        )
-
-        mock_settings.server.workers = 1
-
-        feature = await self._suggestion_store_feature(
-            mock_admin_user,
-            mock_settings,
-            rate_limited_app,
-            InMemorySuggestionRepository(),
-        )
-
-        assert feature.enabled is False
-
-    @pytest.mark.asyncio
-    async def test_no_composed_suggestion_service_reports_unsafe(
-        self, mock_admin_user, mock_settings, rate_limited_app
-    ):
-        """Composition failed, so the suggestion routes answer 503 — reported
-        as not-safe rather than as an unqualified True, since there is no store
-        at all to be safe."""
-        mock_settings.server.workers = 1
-
-        feature = await self._suggestion_store_feature(
-            mock_admin_user, mock_settings, rate_limited_app, None
-        )
-
-        assert feature.enabled is False
-        assert "database-backed" in feature.config_hint
-
     @pytest.mark.asyncio
     async def test_rate_limit_enabled_is_false_when_middleware_absent(
         self, mock_admin_user, mock_settings, unprotected_app
@@ -2010,7 +1918,7 @@ def _pure_settings_answer(feature: str, settings) -> bool:
     The shape the population rule forbids — each entry is the most plausible
     version someone would write from configuration alone, including the two
     this endpoint actually shipped (``opik_enabled``; ``enable_web_search and
-    <a key>``) and the historical ``WORKERS`` proxy #1227 replaced.
+    <a key>``).
 
     Used to measure that each scenario's OFF arm can discriminate, rather than
     trusting that it does.
@@ -2031,8 +1939,6 @@ def _pure_settings_answer(feature: str, settings) -> bool:
                 set(auth.oauth_allowed_clients)
             )
         )
-    if feature == "suggestion_store_worker_safe":
-        return settings.server.workers <= 1
     if feature == "kb_prefetch":
         # The obvious version: echo the knob. It is what this entry was first
         # written as, and it reports True on a process that composed no
@@ -2573,7 +2479,6 @@ class TestPersonalTenantLimitsAreReported:
 #   llm_tracing                  the recorded outcome of init_opik_tracing
 #   web_search                   the composed tool on app.state
 #   first_party_consent_skip     the mounted OAuth authorize route
-#   suggestion_store_worker_safe the composed suggestion repository
 #
 # ONE registry, and the sweep parametrises off it, so a scenario cannot be
 # added and left unexercised.
@@ -2598,28 +2503,6 @@ def _scenario_first_party_consent_skip(settings, app, monkeypatch, reality):
     _pin_first_party(settings)
     if reality:
         _mount_oauth_router(app)
-
-
-def _scenario_suggestion_store_worker_safe(settings, app, monkeypatch, reality):
-    from faultmaven.modules.knowledge.domain.services.suggestion_service import (
-        SuggestionService,
-    )
-    from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
-        DatabaseSuggestionRepository,
-        InMemorySuggestionRepository,
-    )
-
-    # WORKERS=1 — the knob operators used to reach for — is set in both arms
-    # precisely to show it buys nothing.
-    settings.server.workers = 1
-    repository = (
-        DatabaseSuggestionRepository(session_factory=MagicMock())
-        if reality
-        else InMemorySuggestionRepository()
-    )
-    app.state.suggestion_service = SuggestionService(
-        knowledge_service=MagicMock(), suggestion_repository=repository
-    )
 
 
 def _scenario_kb_prefetch(settings, app, monkeypatch, reality):
@@ -2774,7 +2657,6 @@ FEATURE_SCENARIOS = {
     "web_search": _scenario_web_search,
     "llm_tracing": _scenario_llm_tracing,
     "first_party_consent_skip": _scenario_first_party_consent_skip,
-    "suggestion_store_worker_safe": _scenario_suggestion_store_worker_safe,
     "token_revocation_durable": _scenario_token_revocation_durable,
     "request_protection_hardened": _scenario_request_protection_hardened,
     "request_protection_fails_open": _scenario_request_protection_fails_open,
@@ -2965,13 +2847,7 @@ class TestEveryFeatureReportsEffectNotIntent:
         while proving nothing — the same vacuity the sweep itself was guilty
         of. So each stand-in is shown to report False on settings that
         configure nothing.
-
-        ``workers`` is raised because the suggestion store's historical proxy
-        was ``WORKERS <= 1``, which the fixture's default of 1 satisfies: its
-        unconfigured state is many workers, not few.
         """
-        mock_settings.server.workers = 4
-
         assert _pure_settings_answer(feature, mock_settings) is False
 
     @pytest.mark.asyncio

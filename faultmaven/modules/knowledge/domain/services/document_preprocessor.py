@@ -567,13 +567,8 @@ class DocumentPreprocessor:
         self,
         file_path: Path,
         content_type: str,
-        scope_id: str,
     ) -> PreprocessingResult:
-        """Run the full preprocessing pipeline.
-
-        ``scope_id`` keys the model-boundary redaction of the triage call — the
-        conversion's id, since an uploaded document has no case.
-        """
+        """Run the full preprocessing pipeline."""
         warnings: list[str] = []
 
         # Stage 0: File integrity
@@ -731,7 +726,7 @@ class DocumentPreprocessor:
         source_metadata["token_count"] = token_count
 
         # Stage 6: Content triage (classifier LLM)
-        triage_result = await self._run_content_triage(extracted_text, scope_id)
+        triage_result = await self._run_content_triage(extracted_text)
         if triage_result:
             if (
                 not triage_result.is_actionable
@@ -769,9 +764,7 @@ class DocumentPreprocessor:
             token_count=token_count,
         )
 
-    async def _run_content_triage(
-        self, text: str, scope_id: str
-    ) -> Optional[TriageResult]:
+    async def _run_content_triage(self, text: str) -> Optional[TriageResult]:
         """Stage 6: Send first 2K tokens to classifier to determine if actionable.
 
         Triage is advisory and fails OPEN — a document that cannot be
@@ -801,9 +794,7 @@ class DocumentPreprocessor:
             logger.warning(f"Content triage failed, proceeding anyway: {e}")
             return None
 
-        messages = await model_boundary_redaction(
-            scope_id, self._sanitizer
-        ).asanitize_messages(
+        messages = await model_boundary_redaction(self._sanitizer).asanitize_messages(
             [
                 {"role": "system", "content": TRIAGE_SYSTEM_PROMPT},
                 {

@@ -509,12 +509,10 @@ class RunbookValidator:
         ``\\r`` of a CRLF line ending, so a Windows-authored runbook reported all
         six required sections missing while carrying every one of them.
 
-        Normalised here and not only at the request boundaries because this
-        method has ten call sites and seven of them never pass through one —
-        including ``SuggestionService`` reviewing content BEFORE approval, where
-        a CRLF edit would show the reviewer six errors that are not about the
-        document. The boundaries own what gets STORED; this owns what the gate
-        SEES, and the two are different contracts.
+        Normalised here and not only at the request boundaries because most of
+        this method's call sites never pass through one. The boundaries own what
+        gets STORED; this owns what the gate SEES, and the two are different
+        contracts.
         """
         content = normalize_line_endings(content)
         errors: List[str] = []
@@ -1194,16 +1192,13 @@ class RunbookValidator:
 # ROUTE. Everything published to the KB becomes a
 # ``KnowledgeItemType.RUNBOOK`` (``ingest_runbook`` hard-codes it) and
 # ``upload_document`` writes a ``ConversionDraftModel`` with
-# ``validation_passed=True`` — a claim the method itself never checked. The
-# suggestion-approval path calls the service directly, so LLM-extracted
-# markdown shaped ``## Problem / ## Root Cause / ## Solution / ## Prevention``
-# would have been published as a runbook with the claim attached and none of
-# the frontmatter the retrieval side filters on.
+# ``validation_passed=True`` — a claim the method itself never checked, and a
+# caller that reached the service directly would have published markdown with
+# the claim attached and none of the frontmatter the retrieval side filters on.
 #
-# So the gate moves DOWN to the service, where both callers meet, and the
-# route keeps its own richer 422 (errors + warnings + authoring help). The
-# route's copy is now a better message for the same decision rather than the
-# only place the decision is made.
+# So the gate moves DOWN to the service, and the route keeps its own richer 422
+# (errors + warnings + authoring help). The route's copy is now a better message
+# for the same decision rather than the only place the decision is made.
 
 
 class RunbookQualityError(ValidationException):
@@ -1232,9 +1227,9 @@ class RunbookQualityError(ValidationException):
 def enforce_runbook_quality(content: str) -> None:
     """Refuse content that would not pass the runbook quality gate.
 
-    The single enforcement point for the two callers of
-    :meth:`KnowledgeService.upload_document` — the ``POST /knowledge/documents``
-    upload route and suggestion approval. It is deliberately NOT the gate for
+    The single enforcement point for :meth:`KnowledgeService.upload_document`,
+    whose caller is the ``POST /knowledge/documents`` upload route. It is
+    deliberately NOT the gate for
     the whole knowledge base: ``ingest_runbook`` sits one level below and is the
     real convergence point, reached by three other paths that each bring their
     own guarantee — the KB pack bootstrap and the ``kb_seed`` maintenance job
@@ -1242,7 +1237,7 @@ def enforce_runbook_quality(content: str) -> None:
     pre-chunked vectors, so re-validating 91 runbooks on every boot would be
     paid for nothing) and conversion ``verify_draft`` (which validates the draft
     before promoting it). Moving the gate down would tax those three to cover
-    two callers that are already covered here.
+    a caller that is already covered here.
 
     Raises:
         RunbookQualityError: the content fails structural validation. Nothing is

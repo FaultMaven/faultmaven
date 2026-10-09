@@ -441,26 +441,6 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
             "bootstrap/seeding cannot run."
         )
 
-    # Knowledge suggestion service — the case → KB write side (#1214).
-    #
-    # This slot was READ by two routes and WRITTEN by none, so both silently
-    # built a fresh, collaborator-less SuggestionService per request: the
-    # suggestion an extract created lived in that instance's private store and
-    # was gone by the time approve looked for it (404). Wired here, next to the
-    # knowledge service it depends on.
-    #
-    # Follows knowledge_service's precedent for the empty case: logged, not
-    # raised, and the routes answer 503. Composing one without a knowledge
-    # service is impossible by construction — the factory takes it — so this is
-    # empty only when the knowledge service itself is.
-    app.state.suggestion_service = container.get_suggestion_service()
-    if app.state.suggestion_service is None:
-        logger.error(
-            "No knowledge suggestion service was composed — extracting "
-            "knowledge from a case and approving a suggestion will both answer "
-            "503 for this process."
-        )
-
     # Document-to-runbook conversion service. Composed in the container,
     # before the engine that calls it (#1722); the lifespan only ensures its
     # tables exist (a no-op when the baseline migration created them). A
@@ -496,9 +476,8 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
     # one (disabled by ENABLE_WEB_SEARCH, no provider key, or construction
     # raised). Published so /admin/config/status can report the tool THIS
     # PROCESS actually holds rather than re-deriving from settings whether one
-    # would compose — the same reason `suggestion_service` is reachable here
-    # (#1227, #1234). A settings-derived answer reports a capability the model
-    # does not have whenever startup composition failed.
+    # would compose (#1234). A settings-derived answer reports a capability the
+    # model does not have whenever startup composition failed.
     app.state.web_search_tool = getattr(container, "web_search_tool", None)
     app.state.preprocessing_service = container.get_preprocessing_service()
     app.state.enhanced_agent_service = container.get_enhanced_agent_service()

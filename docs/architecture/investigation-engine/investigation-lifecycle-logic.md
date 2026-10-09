@@ -1560,7 +1560,7 @@ When a case reaches a disposition (RESOLVED or CLOSED), the investigation engine
  Milestones ✓                  Q&A over case data ✓            Not in default list
  Agent turns ✓                 View/download reports ✓         Reports: viewable if
  Full investigation            Regenerate summary ✓              unarchived
-                               Knowledge extraction ✓
+                               Runbook generation ✓
                                  (RESOLVED only)
 ```
 
@@ -2357,30 +2357,13 @@ Maps case data to the 7 canonical runbook sections and checks coverage.
 - `POST /api/v1/knowledge/conversions/{id}/drafts/{draft_id}/verify` — Verify → ingest into vector DB
 - `DELETE /api/v1/knowledge/conversions/{id}/drafts/{draft_id}` — Soft delete draft
 
-#### 4.5.2 Knowledge Suggestion Extraction
+#### 4.5.2 Knowledge Suggestion Extraction — Removed (#1897)
 
-**Eligibility**: RESOLVED cases only. This is a separate workflow from runbook generation — it produces structured knowledge articles (Problem, Root Cause, Solution, Prevention) rather than step-by-step runbooks.
-
-**Trigger point**: Backend extraction API (`POST /knowledge/suggestions/extract`). Previously had a dedicated KnowledgeTab on the Dashboard; now managed through the KB page workflow.
-
-**Workflow:**
-
-1. User clicks "Extract Knowledge" → `POST /api/v1/knowledge/suggestions/extract`
-2. LLM extracts structured article with automatic PII removal
-3. Suggestion created in `PENDING_REVIEW` status with PII scan
-4. Admin reviews: edit title/content, verify PII scan, approve or reject
-5. On approval: creates `KnowledgeItem` in the knowledge base
-
-**PII scan pipeline**: `NOT_SCANNED` → `SCANNING` → `CLEAN` | `PII_DETECTED` → `REMEDIATED`
-
-**API endpoints:**
-
-- `POST /api/v1/knowledge/suggestions/extract` — Extract from case
-- `GET /api/v1/knowledge/suggestions?case_id={id}` — Get suggestion for case
-- `PUT /api/v1/knowledge/suggestions/{id}` — Update title/content
-- `POST /api/v1/knowledge/suggestions/{id}/approve` — Approve → create KnowledgeItem
-- `POST /api/v1/knowledge/suggestions/{id}/reject` — Reject with reason
-- `POST /api/v1/knowledge/suggestions/{id}/remediate-pii` — Auto-remediate PII
+There is no second case→knowledge workflow. The knowledge-suggestion extraction
+(`POST /cases/{case_id}/extract-knowledge` into a platform-admin review queue
+that published at global scope) was removed whole, with no replacement: a
+resolved case becomes knowledge only through runbook generation (§4.5.1), into
+the owner's personal scope.
 
 #### 4.5.3 Cross-Frontend Linking
 
@@ -2389,7 +2372,6 @@ The copilot links to dashboard for operations that require richer UI:
 | Copilot Action                                | Dashboard URL                                      |
 |-----------------------------------------------|----------------------------------------------------|
 | "View in Dashboard" (after report generated)  | `{DASHBOARD_URL}/cases/{caseId}?tab=report`        |
-| "Extract as knowledge article" nudge          | `{DASHBOARD_URL}/cases/{caseId}?tab=knowledge`     |
 
 Dashboard `CaseTabs` reads the `tab` query parameter to auto-select the correct tab on load.
 

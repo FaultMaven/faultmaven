@@ -103,7 +103,6 @@ _KNOWN_RESPONSE_PRODUCERS = frozenset(
         "faultmaven/modules/case/api/routes/data.py",
         "faultmaven/modules/case/api/routes/dependencies.py",
         "faultmaven/modules/case/api/routes/evidence.py",
-        "faultmaven/modules/case/api/routes/knowledge.py",
         "faultmaven/modules/case/api/routes/reports.py",
         "faultmaven/modules/case/api/routes/sharing.py",
         "faultmaven/modules/case/api/title_generation.py",

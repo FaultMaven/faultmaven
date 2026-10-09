@@ -122,9 +122,6 @@ class KnowledgeItem:
     verified_by: Optional[str] = None  # User ID who verified
     verified_at: Optional[datetime] = None  # When verification occurred
 
-    # Lineage tracking (for suggestions that became knowledge items)
-    source_suggestion_id: Optional[str] = None  # Link back to original suggestion
-
     # Usage tracking
     view_count: int = 0
     helpful_count: int = 0

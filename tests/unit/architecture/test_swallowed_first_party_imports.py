@@ -117,7 +117,9 @@ _MIN_FILES_EXPECTED = 600
 # nothing" failure the floor exists to prevent. Two of the six live in
 # tests/conftest.py alone, so one file's cleanup would have crossed it
 # invisibly. If a legitimate change moves this number, move it deliberately.
-_GUARDED_IMPORTS_EXPECTED = 6
+# 6 -> 5 (#1897): the suggestion-extraction eval harness, which held one, was
+# removed with the knowledge-suggestion subsystem.
+_GUARDED_IMPORTS_EXPECTED = 5
 
 # Repo-root packages whose absence is a defect rather than an uninstalled
 # dependency. `alembic` is deliberately absent: it is also the name of the

@@ -16,9 +16,9 @@ The paths, one test each:
   it would couple this module to prompt behaviour it does not care about;
 * the DA direct call — a dedicated concrete DA provider, driven through the
   real tool loop, which meters it at its own call site;
-* an out-of-band aside, title generation (through the real route, so the actor
-  comes from ``require_authentication``) and a KB suggestion — calls made
-  outside any turn, each a row of its own;
+* an out-of-band aside and title generation (through the real route, so the
+  actor comes from ``require_authentication``) — calls made outside any turn,
+  each a row of its own;
 * the runbook conversion a turn spawns and does not await — metered after the
   turn has flushed, it must land as its OWN row, never be lost and never be
   added to a turn total already written;
@@ -663,38 +663,6 @@ class TestOutsideATurn:
             "account",
             USER,
         )
-
-    async def test_a_kb_suggestion(self, usage_db, router, provider):
-        from faultmaven.modules.case.infrastructure.case_repository import (
-            InMemoryCaseRepository,
-        )
-        from faultmaven.modules.knowledge.domain.services.suggestion_service import (
-            SuggestionService,
-        )
-        from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
-            InMemorySuggestionRepository,
-        )
-        from tests.runbook_samples import valid_runbook
-
-        provider.content = valid_runbook()
-        repository = InMemoryCaseRepository()
-        await repository.save(_case())
-        service = SuggestionService(
-            case_repository=repository,
-            knowledge_service=None,
-            sanitizer=None,
-            llm_provider=router,
-            suggestion_repository=InMemorySuggestionRepository(),
-        )
-        set_current_actor_user_id(USER)
-        await service.extract_knowledge_from_case(
-            case_id=CASE_ID, enterprise_id=ENTERPRISE, extracted_by=USER
-        )
-        await drain_pending_usage_writes()
-
-        (row,) = await _daily(usage_db)
-        assert row["calls"] == provider.calls >= 1
-        assert row["actor_user_id"] == USER
 
     async def test_no_turn_and_no_actor(self, usage_db, router):
         await _route(router)

@@ -32,8 +32,7 @@ def should_redact(sanitizer) -> bool:
     """Whether what is sent to a model is redacted at the engine layer.
 
     The one decision every model-calling path makes — an investigation turn,
-    the terminal Q&A turn, case→runbook extraction and conversion, document
-    conversion: a sanitizer is configured (the DI container hands one out; a
+    the terminal Q&A turn, case and document conversion: a sanitizer is configured (the DI container hands one out; a
     ``None`` means redaction is disabled at DI level) AND ``SANITIZE_PII`` is
     on. One copy, so no path can drift from the others (#1901).
     """
@@ -45,7 +44,13 @@ def should_redact(sanitizer) -> bool:
     return get_settings().protection.sanitize_pii
 
 
-def model_boundary_redaction(scope_id: str, sanitizer) -> "CaseRedactionContext":
+#: The key a model-boundary context is built under. A persisted registry is
+#: keyed by its case; this context never loads, saves or cleans one up, so
+#: nothing ever reads its key, and no caller is asked for one.
+MODEL_BOUNDARY_SCOPE = "model-boundary"
+
+
+def model_boundary_redaction(sanitizer) -> "CaseRedactionContext":
     """The redaction a knowledge-authoring path applies to what it sends a model.
 
     The investigation path's mechanism, not a second one: the same class, over
@@ -55,17 +60,17 @@ def model_boundary_redaction(scope_id: str, sanitizer) -> "CaseRedactionContext"
     deployment may substitute its own via ``LLM_ROUTER_CLASS``), and it is the
     engine's layer, not the router's, that the investigation path relies on.
 
-    ``scope_id`` keys the context: the case id when the text is a case's, a
-    per-conversion id when it is an uploaded document's. No Redis registry is
-    loaded or saved and nothing is ever reversed: the investigation path
-    persists its registry so it can put real values back into the reply it
-    shows the user, but a runbook is meant to be de-identified, so the
-    placeholders the model writes are what is persisted. Placeholders are a
-    keyed function of the value (#971), so they match the investigation's
-    without the registry.
+    No Redis registry is loaded or saved and nothing is ever reversed: the
+    investigation path persists its registry so it can put real values back
+    into the reply it shows the user, but a runbook is meant to be
+    de-identified, so the placeholders the model writes are what is persisted.
+    Placeholders are a keyed function of the value (#971), so they match the
+    investigation's without the registry — and so the context takes no case or
+    conversion id: with no registry, an id would key nothing
+    (:data:`MODEL_BOUNDARY_SCOPE`).
     """
     return CaseRedactionContext(
-        case_id=scope_id,
+        case_id=MODEL_BOUNDARY_SCOPE,
         sanitizer=sanitizer,
         enabled=should_redact(sanitizer),
     )
