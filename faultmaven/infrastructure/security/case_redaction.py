@@ -214,12 +214,32 @@ class CaseRedactionContext:
         """:meth:`asanitize` over each message's ``content``, in order.
 
         For a chat-shaped call (``router.route(messages=...)``): every message
-        is redacted, the system prompt included, which is what the router's own
-        pass covers and what the engine does with its whole prompt. Returns new
-        dicts; the input list is not mutated.
+        is redacted, the system prompt included. Returns new dicts; the input
+        list is not mutated, and keys other than ``content`` ride through.
+
+        Text content only. ``asanitize`` passes anything that is not a ``str``
+        through unchanged, so a message carrying structured content (a list of
+        parts, a dict) would leave in clear — where the router's own pass,
+        ``DataSanitizer.asanitize``, walks lists and dicts. Rather than send it,
+        an enabled context refuses: ``TypeError`` names the shape. No caller
+        sends structured content today; one that starts to must redact it
+        first. A disabled context redacts nothing, so it checks nothing.
+
+        Raises:
+            TypeError: enabled, and a message's ``content`` is not a ``str``.
         """
+        if not self.enabled:
+            return [dict(message) for message in messages]
+        for index, message in enumerate(messages):
+            content = message.get("content")
+            if not isinstance(content, str):
+                raise TypeError(
+                    f"cannot redact message {index} "
+                    f"(role={message.get('role')!r}): content is "
+                    f"{type(content).__name__}, not str"
+                )
         return [
-            {**message, "content": await self.asanitize(message.get("content"))}
+            {**message, "content": await self.asanitize(message["content"])}
             for message in messages
         ]
 

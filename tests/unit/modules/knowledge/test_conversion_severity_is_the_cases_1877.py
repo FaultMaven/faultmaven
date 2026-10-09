@@ -85,12 +85,18 @@ async def _user_message_for(severity) -> str:
         db_session_factory=None,
         knowledge_service=None,
     )
-    await service._convert_single_failure_mode(
+    prepared = await service._prepare_conversion(
         text="source",
         failure_mode=failure_mode,
         scope="personal",
         filename="case.md",
         conversion_id="conv_1",
+        case_id=request.case_id,
+    )
+    await service._convert_single_failure_mode(
+        prepared=prepared,
+        failure_mode=failure_mode,
+        scope="personal",
         user_id="u",
         enterprise_id="o",
         case_id=request.case_id,

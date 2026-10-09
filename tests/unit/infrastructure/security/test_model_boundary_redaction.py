@@ -99,6 +99,29 @@ async def test_asanitize_messages_redacts_every_message(redaction_arm, sanitizer
         assert sent == messages
 
 
+@pytest.mark.parametrize(
+    "content", [[{"type": "text", "text": f"at {PII_IP}"}], {"text": PII_IP}, None]
+)
+async def test_structured_content_is_refused_not_sent_in_clear(
+    redaction_arm, sanitizer, content
+):
+    """``asanitize`` passes non-text through unchanged; the router's own pass
+    walks lists and dicts. So an enabled context refuses a message it cannot
+    redact rather than send it in clear. A disabled one redacts nothing and
+    checks nothing."""
+    ctx = model_boundary_redaction("conv_1901", sanitizer)
+    messages = [
+        {"role": "system", "content": "fixed"},
+        {"role": "user", "content": content},
+    ]
+
+    if redaction_arm:
+        with pytest.raises(TypeError, match=type(content).__name__):
+            await ctx.asanitize_messages(messages)
+    else:
+        assert await ctx.asanitize_messages(messages) == messages
+
+
 def _redaction_context_constructions():
     """Every ``CaseRedactionContext(...)`` call in the package, with the
     function it sits in."""

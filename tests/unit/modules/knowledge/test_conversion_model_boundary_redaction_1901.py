@@ -120,7 +120,9 @@ def _analysis_json(modes: int) -> str:
                     "title": f"PostgreSQL Replica Refusal Variant {i}",
                     "domain": "database",
                     "service": "postgresql",
-                    "symptom_class": ["connection_refused"],
+                    # Distinct per mode, or the job collapses them into one
+                    # (``_partition_failure_modes``, key 1).
+                    "symptom_class": [f"connection_refused_{i}"],
                     "severity": "high",
                     "symptoms_summary": "Replica refuses connections",
                     "resolution_summary": "Restart the replica",
@@ -145,10 +147,18 @@ class RecordingRouter:
     the draft.
     """
 
-    def __init__(self, modes: int = 1, truncate_first_conversion: bool = False):
+    def __init__(
+        self,
+        modes: int = 1,
+        truncate_first_conversion: bool = False,
+        fail_conversion: int | None = None,
+    ):
         self.calls: list[tuple[str, list[dict]]] = []
         self._modes = modes
         self._truncate_next_conversion = truncate_first_conversion
+        #: The 1-based generation call that fails AT THE ROUTER (a provider
+        #: error), which is per-mode and must stay so.
+        self._fail_conversion = fail_conversion
 
     async def route(self, **kwargs) -> LLMResponse:
         assert "prompt" not in kwargs, "every conversion call is chat-shaped"
@@ -161,6 +171,8 @@ class RecordingRouter:
             )
         if stage == "analysis":
             return _response(_analysis_json(self._modes))
+        if self._fail_conversion == len(self.sent_text("conversion")) // 2:
+            raise RuntimeError("provider unavailable")
         if self._truncate_next_conversion:
             self._truncate_next_conversion = False
             return _response("---\ntitle: cut", StopReason.MAX_TOKENS)
@@ -179,6 +191,28 @@ class RecordingRouter:
             if stage is None or s == stage
             for m in messages
         ]
+
+
+class _RefusingNthGeneration(DataSanitizer):
+    """Presidio fails on the Nth failure mode's generation request only.
+
+    Counts the redactions of a generation user message (one per mode); every
+    other text is redacted normally. With the old shape — each mode redacted
+    just before it was sent — modes 1..N-1 had already gone out by the time
+    this refused.
+    """
+
+    def __init__(self, n: int):
+        super().__init__()
+        self._n = n
+        self._seen = 0
+
+    def sanitize_text_with_registry(self, text, entity_registry):
+        if STAGE_MARKERS["conversion"] in text:
+            self._seen += 1
+            if self._seen == self._n:
+                raise RedactionUnavailableError("Presidio analyzer failed")
+        return super().sanitize_text_with_registry(text, entity_registry)
 
 
 class _RefusingAt(DataSanitizer):
@@ -414,6 +448,45 @@ class TestARedactionThatCannotRunStopsTheSend:
         order = ["triage", "analysis", "conversion"]
         assert router.stages() == order[: order.index(stage)]
 
+    @pytest.mark.parametrize(
+        ("modes", "n"),
+        [(2, 2), (5, 3), (PARALLEL_THRESHOLD, 2), (PARALLEL_THRESHOLD, 3)],
+        ids=["parallel-2of2", "parallel-3of5", "sequential-2of6", "sequential-3of6"],
+    )
+    async def test_a_refusal_on_a_later_mode_sends_and_writes_nothing(
+        self, tmp_path, redaction_on, modes, n
+    ):
+        """Every mode is redacted before any is sent. A refusal on the Nth
+        mode fails the whole conversion — not after modes 1..N-1 went out and
+        left draft files on disk with no job row to own them, for a later
+        ``/scan`` to adopt."""
+        router = RecordingRouter(modes=modes)
+
+        with pytest.raises(RedactionUnavailableError):
+            await _convert_document(tmp_path, router, _RefusingNthGeneration(n))
+
+        assert router.stages() == ["triage", "analysis"], "no generation was sent"
+        knowledge = tmp_path / "knowledge"
+        written = list(knowledge.rglob("*.md")) if knowledge.exists() else []
+        assert written == [], written
+
+    @pytest.mark.parametrize(
+        "modes", [2, PARALLEL_THRESHOLD], ids=["parallel", "sequential"]
+    )
+    async def test_a_router_failure_stays_one_modes_error(
+        self, tmp_path, redaction_on, sanitizer, modes
+    ):
+        """The other side of the line: a failure AT THE ROUTER, after the
+        redaction, is one failure mode's ``ConversionError`` and the rest still
+        convert — PARTIAL, as before #1901."""
+        router = RecordingRouter(modes=modes, fail_conversion=2)
+
+        response = await _convert_document(tmp_path, router, sanitizer)
+
+        assert response.status == ConversionStatus.PARTIAL
+        assert len(response.drafts) == modes - 1
+        assert router.stages().count("conversion") == modes
+
 
 # ---------------------------------------------------------------------------
 # 5. Structural: every router call is handed redacted messages
@@ -440,20 +513,40 @@ def _is_router(node: ast.AST) -> bool:
     )
 
 
-def _redacted_names(func: ast.AST) -> set[str]:
-    """Names ``func`` binds to ``await <redaction>.asanitize_messages(...)``,
-    where ``<redaction>`` is ``model_boundary_redaction(...)`` or a parameter
-    annotated ``CaseRedactionContext``."""
-    params = {
+def _params_annotated(func: ast.AST, annotation: str) -> set[str]:
+    return {
         a.arg
         for a in func.args.args + func.args.kwonlyargs
-        if getattr(a.annotation, "id", None) == "CaseRedactionContext"
+        if getattr(a.annotation, "id", None) == annotation
     }
+
+
+def _redacted_names(func: ast.AST) -> set[str]:
+    """Names ``func`` binds to redacted messages: to
+    ``await <redaction>.asanitize_messages(...)``, where ``<redaction>`` is
+    ``model_boundary_redaction(...)`` or a parameter annotated
+    ``CaseRedactionContext``; or to ``<prepared>.redacted_messages``, where
+    ``<prepared>`` is a parameter annotated ``_PreparedConversion`` (whose one
+    construction is checked to hold redacted messages)."""
+    params = _params_annotated(func, "CaseRedactionContext")
+    prepared = _params_annotated(func, "_PreparedConversion")
     names = set()
     for node in ast.walk(func):
-        if not (isinstance(node, ast.Assign) and isinstance(node.value, ast.Await)):
+        if not isinstance(node, ast.Assign):
             continue
-        call = node.value.value
+        targets = {t.id for t in node.targets if isinstance(t, ast.Name)}
+        value = node.value
+        if (
+            isinstance(value, ast.Attribute)
+            and value.attr == "redacted_messages"
+            and isinstance(value.value, ast.Name)
+            and value.value.id in prepared
+        ):
+            names |= targets
+            continue
+        if not isinstance(value, ast.Await):
+            continue
+        call = value.value
         if not (
             isinstance(call, ast.Call)
             and isinstance(call.func, ast.Attribute)
@@ -465,7 +558,7 @@ def _redacted_names(func: ast.AST) -> set[str]:
             isinstance(source, ast.Call)
             and getattr(source.func, "id", None) == "model_boundary_redaction"
         ) or (isinstance(source, ast.Name) and source.id in params):
-            names |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+            names |= targets
     return names
 
 
@@ -473,13 +566,15 @@ def test_every_router_call_is_handed_redacted_messages():
     """Enumerates every call ON a router handle in the conversion code — not
     a substring of the source — and requires each to be a ``route`` whose
     ``messages`` is a name its enclosing top-level function bound to a
-    model-boundary redaction. A new call site, or one that builds its messages
+    model-boundary redaction — directly, or through the ``_PreparedConversion``
+    the send step is handed, whose one construction is checked the same way. A new call site, or one that builds its messages
     inline, fails here with its location.
 
     Not seen: a router reached through a name other than ``llm_router`` /
     ``self._llm_router``. Neither module stores it under another.
     """
     sites: list[tuple[str, bool]] = []
+    preparations: list[tuple[str, bool]] = []
     for path in _CONVERSION_MODULES:
         tree = ast.parse(path.read_text())
         scopes = [
@@ -496,6 +591,24 @@ def test_every_router_call_is_handed_redacted_messages():
         for name, func in scopes:
             redacted = _redacted_names(func)
             for node in ast.walk(func):
+                if (
+                    isinstance(node, ast.Call)
+                    and getattr(node.func, "id", None) == "_PreparedConversion"
+                ):
+                    held = next(
+                        (
+                            k.value
+                            for k in node.keywords
+                            if k.arg == "redacted_messages"
+                        ),
+                        None,
+                    )
+                    preparations.append(
+                        (
+                            f"{path.name}:{name}",
+                            isinstance(held, ast.Name) and held.id in redacted,
+                        )
+                    )
                 if not (
                     isinstance(node, ast.Call)
                     and isinstance(node.func, ast.Attribute)
@@ -522,3 +635,8 @@ def test_every_router_call_is_handed_redacted_messages():
         "service.py:ConversionService._convert_single_failure_mode",
     ], sites
     assert all(ok for _, ok in sites), sites
+    # The send step takes a ``_PreparedConversion``; its one construction holds
+    # messages that came back from the redaction.
+    assert preparations == [
+        ("service.py:ConversionService._prepare_conversion", True)
+    ], preparations

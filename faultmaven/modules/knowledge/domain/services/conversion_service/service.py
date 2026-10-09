@@ -10,6 +10,7 @@ Pipeline:
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -30,7 +31,6 @@ from faultmaven.infrastructure.persistence.models import (
     UploadedFileModel,
 )
 from faultmaven.infrastructure.security.case_redaction import model_boundary_redaction
-from faultmaven.infrastructure.security.redaction import RedactionUnavailableError
 from faultmaven.modules.auth.contracts import is_team_member
 from faultmaven.modules.knowledge.domain.case_authoring import (
     CASE_ID_RULE,
@@ -112,6 +112,26 @@ from faultmaven.utils.runbook_id import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _PreparedConversion:
+    """One failure mode's generation request, built and REDACTED, not yet sent.
+
+    Only :meth:`ConversionService._prepare_conversion` constructs one, and
+    ``redacted_messages`` is what came back from the model-boundary redaction — the send
+    step takes nothing else, so it cannot reach the router with unredacted text
+    (#1901). Preparing every mode before sending any is what makes a refusal
+    fail the whole conversion with nothing sent and nothing written.
+    """
+
+    knowledge_model: str
+    #: Named for what they are — and not ``messages``, which the #1660 census
+    #: reads as a case's message rows.
+    redacted_messages: List[dict]
+    #: The document path's pre-computed id; None on the case path, whose id is
+    #: minted from the frontmatter the model writes.
+    runbook_id: Optional[str]
 
 
 # =============================================================================
@@ -551,13 +571,19 @@ class ConversionService:
             },
         )
 
-        # Convert using the same pipeline as document-driven
-        draft_or_error = await self._convert_single_failure_mode(
+        # Convert using the same pipeline as document-driven: redact, then send.
+        prepared = await self._prepare_conversion(
             text=source_text,
             failure_mode=failure_mode,
             scope=request.scope,
             filename=source_filename,
             conversion_id=conversion_id,
+            case_id=request.case_id,
+        )
+        draft_or_error = await self._convert_single_failure_mode(
+            prepared=prepared,
+            failure_mode=failure_mode,
+            scope=request.scope,
             user_id=user_id,
             team_id=team_id,
             enterprise_id=enterprise_id,
@@ -715,6 +741,26 @@ class ConversionService:
         )
         errors.extend(taken_errors)
 
+        # Every survivor's request is built and REDACTED before any is sent
+        # (#1901). A redaction that is required and cannot run is a refusal to
+        # send: raised here, before the first generation, it fails the whole
+        # conversion with nothing sent to the model and nothing written to disk
+        # — not after the earlier modes went out in their redacted form and
+        # left draft files behind with no job row to own them. Sequential, as
+        # the work is the sanitizer's, not the provider's. Failures AFTER this
+        # point (the router, the write) keep their per-mode ``ConversionError``
+        # and the PARTIAL status.
+        prepared = [
+            await self._prepare_conversion(
+                text=text,
+                failure_mode=fm,
+                scope=scope,
+                filename=filename,
+                conversion_id=conversion_id,
+            )
+            for fm in unique_modes
+        ]
+
         # The concurrency decision is a property of the DOCUMENT — how many
         # failure modes it analysed into — not of how many of them turned out to
         # be duplicates. Keying it on the survivor count let a collision flip a
@@ -728,16 +774,14 @@ class ConversionService:
             # Parallel conversion
             tasks = [
                 self._convert_single_failure_mode(
-                    text=text,
+                    prepared=request,
                     failure_mode=fm,
                     scope=scope,
-                    filename=filename,
-                    conversion_id=conversion_id,
                     user_id=user_id,
                     enterprise_id=enterprise_id,
                     team_id=team_id,
                 )
-                for fm in unique_modes
+                for fm, request in zip(unique_modes, prepared)
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for i, result in enumerate(results):
@@ -753,13 +797,6 @@ class ConversionService:
                     # below propagates it, so without this the same event
                     # behaved differently purely on failure-mode count.
                     raise result
-                if isinstance(result, RedactionUnavailableError):
-                    # Re-raised for the same reason: a redaction that is
-                    # required and cannot run is a refusal to send, and it
-                    # stops the conversion — as the sequential branch below
-                    # does by propagating it — rather than being reported as
-                    # one failure mode's error (#1901).
-                    raise result
                 if isinstance(result, Exception):
                     errors.append(
                         ConversionError(
@@ -774,13 +811,11 @@ class ConversionService:
                     drafts.append(result)
         else:
             # Sequential conversion (avoid rate limits)
-            for fm in unique_modes:
+            for fm, request in zip(unique_modes, prepared):
                 result = await self._convert_single_failure_mode(
-                    text=text,
+                    prepared=request,
                     failure_mode=fm,
                     scope=scope,
-                    filename=filename,
-                    conversion_id=conversion_id,
                     user_id=user_id,
                     enterprise_id=enterprise_id,
                     team_id=team_id,
@@ -792,25 +827,29 @@ class ConversionService:
 
         return drafts, errors
 
-    async def _convert_single_failure_mode(
+    async def _prepare_conversion(
         self,
         text: str,
         failure_mode: FailureModeAnalysis,
         scope: str,
         filename: str,
         conversion_id: str,
-        user_id: str,
-        enterprise_id: Optional[str],
-        team_id: Optional[str] = None,
         case_id: Optional[str] = None,
-    ) -> ConversionDraft | ConversionError:
-        """Convert a single failure mode to a runbook draft.
+    ) -> _PreparedConversion:
+        """Build one failure mode's generation request and redact it.
+
+        Nothing is sent. Split from :meth:`_convert_single_failure_mode` so a
+        multi-mode conversion redacts every mode before it sends any (#1901).
 
         ``case_id`` selects the case authoring policy (#1880): a case names
         an incident, so the model writes a de-identified title and infers the
         technology, and the id and the draft's title are read from the
         frontmatter it produced. Without it, the failure mode came from a
         document's analysis pass and its ``(service, title)`` is the id.
+
+        Raises:
+            RedactionUnavailableError: redaction is required and could not
+                run. Nothing has been sent.
         """
         knowledge_model = self._settings.llm.get_knowledge_model()
         today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -859,13 +898,13 @@ class ConversionService:
 
         # Redacted at the model boundary, under the investigation path's rule
         # (#1901): a case's text keyed on its case id, a document's on this
-        # conversion's. BEFORE the ``try`` and outside the retry closure, so the
-        # truncation retry resends the redacted messages and a
+        # conversion's. Here, outside the send step's ``try`` and its retry
+        # closure, so the truncation retry resends the redacted messages and a
         # ``RedactionUnavailableError`` keeps its class — the broad ``except``
-        # below would launder it into one failure mode's ``ConversionError``
-        # — and nothing is sent. The output is never reversed: the runbook is
-        # meant to be de-identified, so the placeholders the model writes are
-        # what is persisted, as on the extraction path.
+        # there would launder it into one failure mode's ``ConversionError``.
+        # The output is never reversed: the runbook is meant to be
+        # de-identified, so the placeholders the model writes are what is
+        # persisted, as on the extraction path.
         messages = await model_boundary_redaction(
             case_id if case_id is not None else conversion_id, self._sanitizer
         ).asanitize_messages(
@@ -874,6 +913,32 @@ class ConversionService:
                 {"role": "user", "content": user_message},
             ]
         )
+
+        return _PreparedConversion(
+            knowledge_model=knowledge_model,
+            redacted_messages=messages,
+            runbook_id=runbook_id,
+        )
+
+    async def _convert_single_failure_mode(
+        self,
+        prepared: _PreparedConversion,
+        failure_mode: FailureModeAnalysis,
+        scope: str,
+        user_id: str,
+        enterprise_id: Optional[str],
+        team_id: Optional[str] = None,
+        case_id: Optional[str] = None,
+    ) -> ConversionDraft | ConversionError:
+        """Send one prepared failure mode and turn the answer into a draft.
+
+        ``prepared`` comes from :meth:`_prepare_conversion` — the redacted
+        messages are the only thing this sends. ``case_id`` selects the case
+        branch of the id mint and the draft's title (see there).
+        """
+        knowledge_model = prepared.knowledge_model
+        messages = prepared.redacted_messages
+        runbook_id = prepared.runbook_id
 
         try:
 

@@ -711,7 +711,14 @@ score two of three and look like a fix.
 The splitting logic is:
 
 ```python
-async def _analyze_document(self, text: str, filename: str) -> AnalysisResult:
+# conversion_service/pipeline.py
+async def _analyze_document(
+    llm_router,
+    settings,
+    text: str,
+    filename: str,
+    redaction: CaseRedactionContext,
+) -> AnalysisResult:
     """Analyze document for failure modes using KNOWLEDGE_PROVIDER.
 
     Returns AnalysisResult with failure_modes:
@@ -720,20 +727,25 @@ async def _analyze_document(self, text: str, filename: str) -> AnalysisResult:
                  with several causes, however many causes it lists (§5.1)
       - N modes: N separate runbook conversions, one per observable symptom
     """
-    knowledge_model = self._settings.llm.get_knowledge_model()
+    knowledge_model = settings.llm.get_knowledge_model()
+
+    # Redacted once at the model boundary, before the retry closure (#1901).
+    messages = await redaction.asanitize_messages(
+        [
+            {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
+            {"role": "user", "content": f"Analyze this document:\n\n{text}"},
+        ]
+    )
 
     async def _analyze(cap: int):
-        return await self._llm_router.route(
-            messages=[
-                {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
-                {"role": "user", "content": f"Analyze this document:\n\n{text}"},
-            ],
+        return await llm_router.route(
+            messages=messages,
             model=knowledge_model,
             max_tokens=cap,
             temperature=0.2,
             response_format={"type": "json_object"},
             # Lands on KNOWLEDGE_PROVIDER when the operator set one.
-            **self._knowledge_route_kwargs(),
+            **_knowledge_route_kwargs(settings),
         )
 
     # A document with many failure modes can outgrow the budget; raise the cap

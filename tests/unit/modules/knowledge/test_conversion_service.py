@@ -2382,12 +2382,17 @@ class TestSymptomClassProducePath:
             "_data_dir",
             new_callable=lambda: property(lambda self: tmp_path),
         ):
-            draft = await service._convert_single_failure_mode(
+            prepared = await service._prepare_conversion(
                 text="SOURCE MATERIAL",
                 failure_mode=failure_mode,
                 scope="personal",
                 filename="case-derived",
                 conversion_id="conv_test",
+            )
+            draft = await service._convert_single_failure_mode(
+                prepared=prepared,
+                failure_mode=failure_mode,
+                scope="personal",
                 user_id="user-123",
                 enterprise_id=None,
             )
