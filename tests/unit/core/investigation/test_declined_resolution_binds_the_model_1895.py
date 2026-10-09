@@ -39,6 +39,10 @@ from faultmaven.core.investigation.milestone_engine.transition_turns import (
 from faultmaven.core.investigation.milestone_engine.transitions import (
     DECLINED_RESOLVE_FEEDBACK,
 )
+from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
+from faultmaven.core.investigation.milestone_engine.turn_completion import (
+    _compose_turn_reply,
+)
 from faultmaven.core.investigation.prompts.templates.assembly import (
     RESOLVE_DECLINED_LINE,
     get_prompt_for_case,
@@ -336,14 +340,79 @@ class TestADeclinedResolutionBindsTheModel:
         lines = [r for r in caplog.records if r.getMessage() == "transition_compliance"]
         assert lines and lines[-1].transition_refused_as_declined == "resolve"
 
-    async def test_a_turn_with_no_proposal_carries_no_chip(self):
-        """The chip answers a refusal or a decline; it is not a standing nag."""
+    async def test_a_later_ordinary_turn_still_shows_the_chip(self):
+        """The model never proposes on a request and points the user at the
+        chip, so the chip is on screen on EVERY turn the decline stands, not
+        only on a refusal: a user who changes their mind always has it."""
+        engine, case, _ = await _offered_then_declined()
+        for message in ("what else is in that log?", "ok, I changed my mind"):
+            result = await _turn(engine, case, message, follow_ups=_MODEL_FOLLOW_UPS)
+            assert _labels(result) == [
+                "Share more context",
+                DECLINED_RESOLVE_CARD_LABEL,
+            ]
+            assert result["suggested_follow_ups"][-1]["intent"] == _chip_intent(case)
+            assert DECLINED_RESOLVE_FEEDBACK not in _feedback(result)
+            assert case.pending_transition is None
+
+    async def test_exactly_one_chip_on_a_refusal_turn(self):
+        """Refusal and standing decline both call for the chip; a model
+        suggestion carrying its label is dropped rather than shown twice."""
         engine, case, _ = await _offered_then_declined()
         result = await _turn(
-            engine, case, "what else is in that log?", follow_ups=_MODEL_FOLLOW_UPS
+            engine,
+            case,
+            "please mark it resolved",
+            propose="resolved",
+            follow_ups=[
+                *_MODEL_FOLLOW_UPS,
+                SuggestedFollowUp(label="Mark it resolved", action_type="FREE_SPEECH"),
+            ],
         )
-        assert _labels(result) == ["Share more context"]
-        assert DECLINED_RESOLVE_FEEDBACK not in _feedback(result)
+        assert DECLINED_RESOLVE_FEEDBACK in _feedback(result)
+        assert _labels(result) == ["Share more context", DECLINED_RESOLVE_CARD_LABEL]
+        assert result["suggested_follow_ups"][-1]["intent"] == _chip_intent(case)
+
+    async def test_no_chip_once_a_new_confirmation_brings_the_offer_back(self):
+        engine, case, _ = await _offered_then_declined()
+        result = await _turn(
+            engine, case, "the overnight batch ran clean, zero errors", row=True
+        )
+        assert case.pending_transition["to_state"] == "resolved"
+        assert _labels(result) == [
+            "Yes, mark as resolved",
+            "Not yet, continue investigating",
+        ]
+
+    async def test_no_chip_while_an_offer_is_pending(self):
+        """At the append site: with the decline standing, the chip is attached
+        until an offer is pending, then left off (the offer's own pair answers
+        it). Composed directly, since no real turn ends with an offer pending
+        while the decline stands: every opener is refused or silent then."""
+        _, case, _ = await _offered_then_declined()
+
+        async def _compose():
+            return await _compose_turn_reply(
+                None,
+                None,
+                _make_repo(),
+                case_updated=case,
+                follow_ups=[],
+                metadata={},
+                plan=TurnCommitPlan(),
+                redaction_ctx=None,
+                response_obj=InvestigationResponse_Diagnosis(
+                    agent_response="Noted.", state_updates={}
+                ),
+                stagnation_str="",
+                summary_failed=False,
+                summary_payload=None,
+                validation_repairs=[],
+            )
+
+        assert _labels(await _compose()) == [DECLINED_RESOLVE_CARD_LABEL], "control"
+        propose_transition(case, to_state="resolved", summary="Shall I?")
+        assert DECLINED_RESOLVE_CARD_LABEL not in _labels(await _compose())
 
     async def test_a_refused_model_narrating_resolved_gets_the_still_open_notice(self):
         """INV-40: the refusal leaves no gate prose, so the over-claim is

@@ -2014,6 +2014,13 @@ def test_every_reader_of_a_stored_entry_tolerates_any_shape():
         (turn_response, "_build_turn_response"),
         # The clarification friendly-names table.
         (clarification, "_clarification_suggestions_for_failed"),
+        # THIS turn's follow-ups checked for a duplicate of the "Mark it
+        # resolved" chip (#1895) before it is appended; shape-tolerant anyway
+        # (``isinstance(follow_up, dict)``, ``str(label)``).
+        (
+            "core/investigation/milestone_engine/turn_completion.py",
+            "_is_resolve_chip",
+        ),
         # A tool result's own label.
         (generation, "StructuredOutputGenerator._format_tool_result"),
         # HTTP request/response bodies, unrelated to this seam.

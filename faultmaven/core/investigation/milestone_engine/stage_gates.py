@@ -1020,8 +1020,11 @@ def declined_resolve_card(case) -> Optional[dict]:
 
     It names no standing offer (no ``pending_transition`` stands behind it, so
     ``offer_intent_fields`` is not called and the #1812 census of confirmation
-    builders does not include it). It is APPENDED to the turn's follow-ups,
-    never substituted for them. Not built while any offer stands (the chip
+    builders does not include it). ``turn_completion`` APPENDS it to the
+    follow-ups of EVERY turn this returns a card for, never substituting it
+    for them and never twice: the model points a user who changes their mind
+    at it and never proposes on a request, so it must be on screen whatever
+    the model did. Not built while any offer stands (the chip
     re-opens a declined offer, it does not compete with a live one) or while
     the problem statement is on hold (no transition is proposed then).
     """

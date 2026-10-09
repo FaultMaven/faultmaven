@@ -43,7 +43,6 @@ from .progress import summarize_for_turn_record
 from .response_synthesis import (
     _NARRATION_OVERCLAIM_NOTICE,
     _NARRATION_OVERCLAIM_NOTICE_PENDING,
-    _RESOLVE_DECLINED_THIS_TURN_KEY,
     _narration_asserts_disposition,
     _prose_with_gate_notice,
     is_agent_response_synthesized,
@@ -61,6 +60,19 @@ from .terminal_replies import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _is_resolve_chip(follow_up: Any, resolve_card: dict) -> bool:
+    """Whether ``follow_up`` duplicates the "Mark it resolved" chip: the same
+    intent, or the same label (a model suggestion naming it, which would
+    render as a second, unclickable copy)."""
+    if not isinstance(follow_up, dict):
+        return False
+    label = str(follow_up.get("label") or "").strip().lower()
+    return (
+        follow_up.get("intent") == resolve_card["intent"]
+        or label == resolve_card["label"].lower()
+    )
 
 
 def _narration_overclaim_notice(
@@ -443,18 +455,22 @@ async def _compose_turn_reply(
     declined_side = metadata.get("declined_close_card")
     if declined_side:
         follow_ups = [*follow_ups, declined_close_card(declined_side)]
-    # The resolve side (#1895): the "Mark it resolved" chip, appended the same
-    # way, on a turn whose model re-proposal of a declined resolution step 2
-    # refused, and on every turn that recorded a resolve decline and reached
-    # the model (the long deflection; the bare "no" has its own reply). The
-    # builder returns None unless the decline still stands with no offer
-    # standing.
-    if metadata.get("declined_resolve_card") or metadata.get(
-        _RESOLVE_DECLINED_THIS_TURN_KEY
-    ):
-        resolve_card = declined_resolve_card(case_updated)
-        if resolve_card is not None:
-            follow_ups = [*follow_ups, resolve_card]
+    # The resolve side (#1895): the "Mark it resolved" chip is on screen on
+    # EVERY turn a resolve decline stands, whatever the model did. The model
+    # never proposes on a request (``RESOLVE_DECLINED_RULE``) and points a user
+    # who changes their mind at this chip, so the chip cannot depend on a
+    # refusal having happened. One predicate, the builder's: the decline
+    # covers the current state, no offer is pending, the problem is not on
+    # hold. A new confirmation (the offer returns with its own pair) or a
+    # pending offer leaves it off. Appended once: any follow-up already
+    # carrying its label or its intent is dropped first, so the turn shows
+    # exactly one.
+    resolve_card = declined_resolve_card(case_updated)
+    if resolve_card is not None:
+        follow_ups = [
+            *(f for f in follow_ups if not _is_resolve_chip(f, resolve_card)),
+            resolve_card,
+        ]
 
     # Append the synthesized summary (or skip / failure note) so it
     # appears in chat at the moment of generation. The composed reply

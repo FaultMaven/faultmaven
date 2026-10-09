@@ -400,9 +400,9 @@ and repeated declines never do; one row the decline never saw does.
   confirmation moves the signature before step 2 and the backstop, so the offer
   comes back on that turn, from the model or the backstop.
 - **A user who changes their mind** is not asked to manufacture evidence (a
-  request is never a confirmation row). Every turn that records a resolve
-  decline, or refuses a re-proposal, carries the engine's **Mark it resolved**
-  chip: a `status_transition` to `resolved` whose `proposal_id` is the reopen
+  request is never a confirmation row). Every turn on which the decline stands
+  (no offer pending, the problem not on hold) carries the engine's **Mark it
+  resolved** chip, whatever the model did, exactly once: a `status_transition` to `resolved` whose `proposal_id` is the reopen
   key, a digest of the declined entry the decline stands on. The service
   boundary and the engine admit that one request while the entry still covers
   the case; the engine then proposes on a READY case with the usual pair, and

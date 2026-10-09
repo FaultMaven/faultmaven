@@ -92,7 +92,7 @@ def declined_close_reask(
 
 #: The feedback when step 2 refuses a resolution the user declined (#1895).
 #: The rule is ``RESOLVE_DECLINED_RULE``, the same text the prompt line states;
-#: the engine has attached the chip to this turn's reply.
+#: the chip is on this turn's reply, as on every turn the decline stands.
 def _declined_resolve_feedback() -> str:
     from faultmaven.core.investigation.terminal_transitions import (
         RESOLVE_DECLINED_RULE,
@@ -730,9 +730,10 @@ class TransitionManager:
                     feedback = declined_resolution_reask(case)
                     if feedback is not None:
                         _add_system_feedback(metadata, feedback)
-                        # Read at the end of the turn: the chip is appended
-                        # once the follow-up list is settled, and
-                        # ``transition_compliance`` reports the refusal.
+                        # Read by ``transition_compliance``, which reports the
+                        # refusal. The chip itself is on every turn the
+                        # decline stands (``turn_completion``), this one
+                        # included.
                         metadata["declined_resolve_card"] = True
                         logger.info(
                             f"Case {case.case_id}: model proposed "

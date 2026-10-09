@@ -26,8 +26,7 @@ _ENGINE_DISPOSITION_WITHDRAWN_KEY = "engine_disposition_withdrawn_this_turn"
 #: Turn-scoped and never persisted. Its own key, not
 #: ``_DISPOSITION_GATE_ANSWERED_KEY`` (which a question about the offer sets
 #: too): it drives the decline-turn re-stamp before step 2
-#: (``restamp_resolve_decline``) and the "Mark it resolved" chip at the end of
-#: the turn.
+#: (``restamp_resolve_decline``).
 _RESOLVE_DECLINED_THIS_TURN_KEY = "resolve_declined_this_turn"
 
 #: The turn-scoped markers section 0b writes BEFORE the model runs that the
@@ -210,10 +209,10 @@ def _record_deferred_disposition_decline(
 
     **A declined RESOLVE marks the turn** (``metadata``, #1895): the marker
     re-stamps the decline against the confirmations this turn records
-    (``restamp_resolve_decline``) and puts the "Mark it resolved" chip on the
-    turn's reply, on every path that records one — the bare "no", the long
-    deflection that falls through to the model, and a contradicting status
-    pick.
+    (``restamp_resolve_decline``) on every path that records one — the bare
+    "no", the long deflection that falls through to the model, and a
+    contradicting status pick. (The "Mark it resolved" chip needs no marker: it
+    is on every turn the decline stands, ``declined_resolve_card``.)
     """
     pending = getattr(case, "pending_transition", None) or {}
     if not getattr(case, "progress", None):
