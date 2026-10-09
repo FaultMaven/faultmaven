@@ -56,6 +56,7 @@ logger = get_logger(__name__)
 # ``bootstrap.composition`` with the other code that reads it (fm#1707 wave 2)
 # — imported rather than redeclared, so there is still exactly one. See the
 # comment beside it there.
+from .api.models import BackendCapabilities
 from .api.route_enumeration import iter_served_routes
 
 # Admin routes
@@ -727,9 +728,10 @@ async def root():
     }
 
 
-@app.get("/api/v1/meta/capabilities")
+@app.get("/api/v1/meta/capabilities", response_model=BackendCapabilities)
 @app.get(
     "/v1/meta/capabilities",
+    response_model=BackendCapabilities,
     deprecated=True,
     description=(
         "Deprecated: use `GET /api/v1/meta/capabilities`, which serves the "
@@ -757,12 +759,21 @@ async def get_capabilities(request: Request):
     The bare ``/v1`` path stays as a deprecated alias because extensions
     already installed are pinned to it.
 
+    ``limits.turnCeilingSeconds`` and ``limits.turnResponseBoundSeconds`` are
+    the turn's ceiling and its NOMINAL response bound (clients add a network
+    margin) for the chat provider in force (#1905), resolved on
+    every request: an operator who switches the chat provider changes which
+    per-provider ceiling applies, so a client re-reads them per session rather
+    than caching them for the life of an install.
+
     Returns:
         Backend capabilities including deployment mode, dashboard URL, and feature flags
     """
     from .config.settings import get_settings
+    from .config.turn_ceiling import resolve_turn_ceiling
 
     settings = get_settings()
+    turn_ceiling = resolve_turn_ceiling(settings)
 
     # Determine deployment mode based on dashboard URL
     # Cloud: https://app.faultmaven.ai (managed SaaS)
@@ -808,6 +819,8 @@ async def get_capabilities(request: Request):
                 ".yaml",
                 ".yml",
             ],
+            "turnCeilingSeconds": turn_ceiling.ceiling_seconds,
+            "turnResponseBoundSeconds": turn_ceiling.response_bound_seconds,
         },
         "branding": {
             "name": "FaultMaven",

@@ -799,7 +799,7 @@ class TestTheClaimIsOwnerTokened:
                 idempotency_key=KEY,
                 fingerprint="f" * 64,
                 case_service=case_service,
-                agent_timeout=120.0,
+                response_bound_seconds=138.5,
                 correlation_id="c",
             )
 
@@ -816,20 +816,11 @@ class TestTheClaimIsOwnerTokened:
         await b.release()
         assert await redis.exists(claim_name(case, OWNER, KEY)) == 0
 
-    def test_the_ttl_is_the_turns_whole_bound(self):
-        from faultmaven.core.investigation.turn_budget import (
-            TURN_COMMIT_RESERVE_SECONDS,
-        )
-        from faultmaven.modules.case.api.title_generation import (
-            AUTO_TITLE_TIMEOUT_SECONDS,
-        )
-
-        assert turn_idempotency.claim_ttl_seconds(120.0) == pytest.approx(
-            120.0
-            + TURN_COMMIT_RESERVE_SECONDS
-            + AUTO_TITLE_TIMEOUT_SECONDS
-            + turn_idempotency.CLAIM_MARGIN_SECONDS,
-            abs=1,
+    def test_the_ttl_is_the_turns_response_bound_plus_the_margin(self):
+        """The TTL adds only the claim's margin to the response bound the route
+        hands it; the bound itself is ``resolve_turn_ceiling``'s (#1905)."""
+        assert turn_idempotency.claim_ttl_seconds(138.5) == math.ceil(
+            138.5 + turn_idempotency.CLAIM_MARGIN_SECONDS
         )
 
 
@@ -838,7 +829,7 @@ class TestTheClaimIsOwnerTokened:
 # ---------------------------------------------------------------------------
 
 
-def _opener(redis, case_service=None, *, agent_timeout: float = 120.0):
+def _opener(redis, case_service=None, *, response_bound_seconds: float = 138.5):
     case = _investigating_case()
     if case_service is None:
         case_service = MagicMock()
@@ -852,7 +843,7 @@ def _opener(redis, case_service=None, *, agent_timeout: float = 120.0):
             idempotency_key=KEY,
             fingerprint="f" * 64,
             case_service=case_service,
-            agent_timeout=agent_timeout,
+            response_bound_seconds=response_bound_seconds,
             correlation_id="c",
         )
 
@@ -869,7 +860,7 @@ class TestTheClaimsLifetime:
         keyed = await _open()
 
         remaining_ms = await redis.pttl(claim_name(case, OWNER, KEY))
-        expected_ms = turn_idempotency.claim_ttl_seconds(120.0) * 1000
+        expected_ms = turn_idempotency.claim_ttl_seconds(138.5) * 1000
         assert expected_ms - 1000 <= remaining_ms <= expected_ms
         await keyed.release()
 

@@ -6,8 +6,7 @@ request-scoped case/session services and the runbook-dedup KB off the
 container (patchable at test time), the case-state guards
 (``check_case_service_available``, ``require_case_not_terminal``), and a
 handful of pure parsing/formatting helpers (``_safe_enum_value``,
-``resolve_paste_source_meta``, ``_parse_observed_at``,
-``_resolve_agent_timeout``). Every sub-router in this package imports what it
+``resolve_paste_source_meta``, ``_parse_observed_at``). Every sub-router in this package imports what it
 needs from here; this module imports nothing from its siblings.
 """
 
@@ -19,7 +18,6 @@ from fastapi import Depends, HTTPException, Request, status
 
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.exceptions import CASE_TERMINAL
-from faultmaven.infrastructure.llm.router import resolve_chat_provider_name
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.auth.contracts import ISessionService, UserDTO
 from faultmaven.modules.case.domain.models.evidence import is_default_case_title
@@ -115,27 +113,6 @@ def _parse_observed_at(raw: Optional[str], correlation_id: str) -> Optional[date
         )
         return None
     return parsed
-
-
-def _resolve_agent_timeout(settings) -> tuple[float, str]:
-    """Resolve the per-provider agent-level timeout for the active CHAT_PROVIDER.
-
-    Mirrors the LLM-router's ``_resolve_timeout`` shape (ISS-054) but applies to
-    the agent-level (turn-wide) ceiling enforced via ``asyncio.wait_for``.
-
-    Returns a ``(timeout_seconds, provider_name_for_logging)`` tuple. The
-    returned name is the resolved provider string (or ``"default"`` when the
-    setting is missing entirely) so log lines can attribute timeouts.
-
-    See ISS-058.
-    """
-    # Resolved by the SAME helper the LLM router uses for its own per-provider
-    # timeout lookup. The two sides of the turn budget must agree on which
-    # provider they are talking about, or a comparison between them compares
-    # two different providers' timeouts.
-    provider_name = resolve_chat_provider_name(settings)
-    timeout = float(settings.agent.timeout_for_provider(provider_name))
-    return timeout, provider_name or "default"
 
 
 async def _di_get_case_service_dependency(request: Request) -> Optional[ICaseService]:

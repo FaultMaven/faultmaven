@@ -1530,6 +1530,37 @@ class TestGetEnvConfigStatus:
 
         assert result.features["llm_retry_ladder_fits_turn_budget"].enabled is False
 
+    @pytest.mark.asyncio
+    async def test_turn_timing_reports_the_ceiling_clients_are_told(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        """``turn_timing`` is the ceiling and response bound for the chat
+        provider in force (#1905), from the resolver the turn route and
+        ``/meta/capabilities`` read, and it follows a provider switch."""
+        from faultmaven.core.investigation.turn_budget import (
+            AUTO_TITLE_TIMEOUT_SECONDS,
+            TURN_COMMIT_RESERVE_SECONDS,
+        )
+
+        overrides = {"groq": 300}
+        mock_settings.agent.timeout_for_provider = lambda name: overrides.get(name, 120)
+        reports = {}
+        for provider in ("groq", "openai"):
+            mock_settings.llm.provider = MagicMock(value=provider)
+            with patch(SETTINGS_PATCH, return_value=mock_settings):
+                result = await get_env_config_status(
+                    request=_request_for(rate_limited_app),
+                    current_user=mock_admin_user,
+                )
+            reports[provider] = result.turn_timing
+
+        after_ceiling = TURN_COMMIT_RESERVE_SECONDS + AUTO_TITLE_TIMEOUT_SECONDS
+        assert reports["groq"].chat_provider == "groq"
+        assert reports["groq"].turn_ceiling_seconds == 300.0
+        assert reports["groq"].turn_response_bound_seconds == 300.0 + after_ceiling
+        assert reports["openai"].turn_ceiling_seconds == 120.0
+        assert reports["openai"].turn_response_bound_seconds == 120.0 + after_ceiling
+
     def test_the_ladder_report_runs_against_the_real_settings_object(self):
         """The other three tests drive a ``MagicMock``, which answers any
         attribute name — including a misspelled one. This one asks the real

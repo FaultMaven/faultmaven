@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
+from faultmaven.config.turn_ceiling import TurnCeiling
 from faultmaven.core.investigation.case_telemetry import (
     TELEMETRY_LOGGER_NAME,
     TurnPath,
@@ -487,8 +488,12 @@ async def _submit(sessions, monkeypatch, *, agent_timeout: float, generate=None)
     service, with the turn ceiling forced to ``agent_timeout``."""
     monkeypatch.setattr(
         conversation_module,
-        "_resolve_agent_timeout",
-        lambda _settings: (agent_timeout, "test"),
+        "resolve_turn_ceiling",
+        lambda _settings: TurnCeiling(
+            provider="test",
+            ceiling_seconds=agent_timeout,
+            response_bound_seconds=agent_timeout,
+        ),
     )
     async with sessions() as session:
         repository = _Repository(session, sessions)
@@ -542,7 +547,9 @@ class TestTheDeadline:
                 )
 
         assert refused.value.status_code == 504
-        assert refused.value.headers["Retry-After"] == "30"
+        assert refused.value.headers["x-error-code"] == "REQUEST_TIMEOUT"
+        # The same input would most likely exhaust the ceiling again (#1905).
+        assert "Retry-After" not in refused.value.headers
         committed = (await _committed(sessions))["case"]
         assert committed.version == 1
         assert committed.current_turn == 4
@@ -567,6 +574,7 @@ class TestTheDeadline:
 
         assert refused.value.status_code == 504
         assert refused.value.headers["x-error-code"] == "REQUEST_TIMEOUT"
+        assert "Retry-After" not in refused.value.headers
         committed = (await _committed(sessions))["case"]
         assert committed.version == 1
         assert committed.messages == []

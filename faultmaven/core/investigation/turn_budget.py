@@ -89,12 +89,13 @@ TURN_BUDGET_RESERVE_SECONDS = 1.0
 # The time a turn keeps back, at the end of its budget, for its ONE commit
 # (#1882). The route's ``wait_for`` bounds only the preparation, and
 # ``commit_turn`` checks what is left before it starts: with less than this,
-# the turn answers the same 504 + ``Retry-After`` a timeout does, with nothing
+# the turn answers the same 504 ``REQUEST_TIMEOUT`` a timeout does, with nothing
 # committed. Started, the commit runs to completion whatever the clock says.
 # After it the response still awaits the route's auto-title (bounded by
 # ``AUTO_TITLE_TIMEOUT_SECONDS``, only while the case carries its placeholder
-# title), so a client's own timeout must exceed ``AGENT_REQUEST_TIMEOUT`` +
-# this + that + its network margin (``.claude/rules/llm-providers.md``).
+# title), so a client's own timeout must exceed the ceiling + this + that + its
+# network margin: the sum is ``config/turn_ceiling``'s nominal response bound,
+# published as ``turnResponseBoundSeconds`` (#1905).
 #
 # Paid for by the LLM steps, not by the commit: ``spendable_turn_budget`` and
 # ``backstop_turn_budget`` both subtract it, so a ladder that runs the budget
@@ -114,12 +115,22 @@ TURN_BUDGET_RESERVE_SECONDS = 1.0
 TURN_COMMIT_RESERVE_SECONDS = 3.5
 
 
+# Ceiling on the auto-titling attempt the turn route awaits after the commit.
+# It sits on the turn's critical path (see ``title_generation``'s
+# ``_auto_title_case_if_default`` for why), so it must never be able to hold a
+# turn's answer open: the extractive path is ~1ms and the LLM path ~0.5-1.2s, and
+# a titler that has stopped answering has to lose rather than delay the reply.
+# Defined here, beside the commit reserve, because the two are the parts of a
+# turn's response bound past its ceiling (``config/turn_ceiling``, #1905).
+AUTO_TITLE_TIMEOUT_SECONDS = 15.0
+
+
 class TurnDeadlineExceeded(Exception):
     """Too little of the turn's budget is left to start its commit (#1882).
 
     Raised by ``InvestigationService.commit_turn`` BEFORE the commit starts, so
     nothing of the turn is committed; the route answers it exactly as it
-    answers a timeout of the preparation (504 + ``Retry-After``).
+    answers a timeout of the preparation (504 ``REQUEST_TIMEOUT``).
     """
 
     def __init__(self, remaining: float, reserve: float) -> None:

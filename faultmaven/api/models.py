@@ -5,6 +5,7 @@ Purpose: Pydantic models for FastAPI request validation and response serializati
 This module provides:
 - Request and response models for investigation sessions
 - Admin user, LLM configuration and config-status models
+- The backend-capabilities response (``GET /api/v1/meta/capabilities``)
 
 Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 """
@@ -489,6 +490,38 @@ class PersonalTenantLimitsStatus(BaseModel):
     )
 
 
+class TurnTimingStatus(BaseModel):
+    """The turn's time bounds for the chat provider in force (#1905).
+
+    The same two numbers ``GET /api/v1/meta/capabilities`` publishes to clients,
+    resolved by ``config/turn_ceiling.resolve_turn_ceiling`` on every request,
+    so a dashboard provider switch shows here on the next read.
+    """
+
+    chat_provider: Optional[str] = Field(
+        description=(
+            "The chat provider the ceiling was resolved for; null when none is "
+            "configured and AGENT_REQUEST_TIMEOUT applies."
+        )
+    )
+    turn_ceiling_seconds: float = Field(
+        description=(
+            "AGENT_REQUEST_TIMEOUT, or this provider's "
+            "AGENT_PROVIDER_TIMEOUT_OVERRIDES entry: the bound on a turn's "
+            "preparation and the deadline its LLM calls budget against."
+        )
+    )
+    turn_response_bound_seconds: float = Field(
+        description=(
+            "The nominal bound on the turn route's answer: the ceiling plus "
+            "the commit reserve and the auto-title bound. Clients size their "
+            "timeout from it plus a network margin, which also covers the "
+            "short steps it leaves out (the case and receipt lookups before "
+            "the deadline starts, the commit's actual duration)."
+        )
+    )
+
+
 class EnvConfigStatusResponse(BaseModel):
     """Read-only environment configuration status for dashboard display."""
 
@@ -533,6 +566,12 @@ class EnvConfigStatusResponse(BaseModel):
         default_factory=dict,
         description="Optional features and their configuration status",
     )
+    turn_timing: TurnTimingStatus = Field(
+        description=(
+            "The resolved turn ceiling and response bound for the chat provider "
+            "in force, as clients read them on GET /api/v1/meta/capabilities."
+        )
+    )
     personal_tenant_limits: PersonalTenantLimitsStatus = Field(
         description=(
             "Effective values of the settings that bound self-service "
@@ -543,3 +582,66 @@ class EnvConfigStatusResponse(BaseModel):
         )
     )
     timestamp: datetime
+
+
+# ============================================================
+# Backend capabilities (GET /api/v1/meta/capabilities)
+# ============================================================
+# Field names are the wire's camelCase: the response predates its model, and
+# the model publishes the shape clients already read rather than renaming it.
+
+
+class BackendCapabilityFeatures(BaseModel):
+    """Feature gates a client reads to show or hide surfaces."""
+
+    extensionKB: bool = Field(description="Always false: the extension KB was removed.")
+    adminKB: bool
+    teamSharing: bool = Field(
+        description="Team-based KB/case sharing; true only when team management is live."
+    )
+    managementConsole: bool = Field(
+        description="The org/team management console; same signal as teamSharing."
+    )
+    caseHistory: bool
+    sso: bool
+
+
+class BackendCapabilityLimits(BaseModel):
+    """Limits a client applies before sending, and the turn's time bounds."""
+
+    maxFileBytes: int
+    allowedExtensions: List[str]
+    turnCeilingSeconds: float = Field(
+        description=(
+            "The turn ceiling for the chat provider in force: a turn that uses "
+            "all of it is answered 504 REQUEST_TIMEOUT, nothing committed."
+        )
+    )
+    turnResponseBoundSeconds: float = Field(
+        description=(
+            "The nominal bound on how long POST /cases/{case_id}/turns takes "
+            "to answer: the ceiling plus the commit reserve and the auto-title "
+            "bound after it. Not a hard guarantee: it leaves out short steps "
+            "(the case and receipt lookups before the deadline starts, the "
+            "commit's actual duration), so size a client timeout as this plus "
+            "a network margin that covers them. Both values are resolved per "
+            "request and change when an operator switches the chat provider, "
+            "so re-read them per session."
+        )
+    )
+
+
+class BackendBranding(BaseModel):
+    name: str
+    supportUrl: str
+
+
+class BackendCapabilities(BaseModel):
+    """What this backend offers, for the browser extension and the Dashboard."""
+
+    deploymentMode: Literal["cloud", "self-hosted"]
+    kbManagement: str
+    dashboardUrl: str
+    features: BackendCapabilityFeatures
+    limits: BackendCapabilityLimits
+    branding: BackendBranding

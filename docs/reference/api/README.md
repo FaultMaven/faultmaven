@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 12.3.0
+**Version:** 12.4.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -2737,10 +2737,23 @@ key this caller already used on this case:
 - for a different turn → **409** `x-error-code: IDEMPOTENCY_KEY_REUSE`.
 - while the first is still running → **409** `x-error-code:
   TURN_IN_PROGRESS` with `Retry-After`; retry with the same key after it.
+  `Retry-After` is the longest the first can still hold its claim, an upper
+  bound, not when it finishes.
 
 A response lost after the commit (a disconnect, a timeout on the client's
 side) is recovered by retrying with the same key. Without a key, every
 request runs as a new turn.
+
+**Timing.** `limits.turnResponseBoundSeconds` on
+`GET /api/v1/meta/capabilities` is the NOMINAL bound on this route's answer
+(the turn ceiling plus the commit reserve and the auto-title bound after
+it). It leaves out short steps (the case and receipt lookups before the
+deadline starts, the commit's actual duration), so size a client timeout as
+that plus a network margin that covers them, and re-read it per session,
+because an operator can switch the chat provider and with it the ceiling. A **504** commits nothing:
+`REQUEST_TIMEOUT` means the turn used its whole ceiling on this input and is
+likely to do so again, so retry at most once (it carries no `Retry-After`);
+`LLM_TIMEOUT` is a transient provider timeout, retried after `Retry-After`.
 
 **Tags:** `cases`
 
@@ -2758,9 +2771,9 @@ request runs as a new turn.
 **Responses:**
 
 - `200` — The turn's response. A retry of a committed turn under the same `Idempotency-Key` is answered with that turn's response, and carries `X-Idempotency-Replayed: true`. ([`TurnResponse`](#turnresponse))
-- `409` — Conflict. Told apart by `x-error-code`: `TURN_IN_PROGRESS` (a turn with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different turn); `IDEMPOTENCY_REPLAY_UNAVAILABLE` (the turn committed but its response can no longer be replayed: reload the case); `CASE_VERSION_CONFLICT` (another writer changed the case while this turn ran; nothing committed); `CASE_TERMINAL` (the case is resolved or closed and refuses new data, a status change or a file reclassification; a text-only question is still answered).
+- `409` — Conflict. Told apart by `x-error-code`: `TURN_IN_PROGRESS` (a turn with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds, the longest the running turn can still hold its claim — an upper bound, not when it finishes; it may finish sooner); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different turn); `IDEMPOTENCY_REPLAY_UNAVAILABLE` (the turn committed but its response can no longer be replayed: reload the case); `CASE_VERSION_CONFLICT` (another writer changed the case while this turn ran; nothing committed); `CASE_TERMINAL` (the case is resolved or closed and refuses new data, a status change or a file reclassification; a text-only question is still answered).
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
-- `504` — `x-error-code: REQUEST_TIMEOUT`: the turn ran out of time and nothing of it committed, so a retry is safe.
+- `504` — Timeout; nothing of the turn committed. Told apart by `x-error-code`: `REQUEST_TIMEOUT` (the turn used its whole ceiling, `limits.turnCeilingSeconds` on `GET /api/v1/meta/capabilities`, on this input; the same input is likely to exhaust it again, so a client retries at most once, and no `Retry-After` is sent); `LLM_TIMEOUT` (the AI provider timed out: transient, retry after `Retry-After` seconds).
 
 ---
 
@@ -3921,6 +3934,13 @@ path receives the SPA's own HTML and degrades its capabilities silently.
 The bare ``/v1`` path stays as a deprecated alias because extensions
 already installed are pinned to it.
 
+``limits.turnCeilingSeconds`` and ``limits.turnResponseBoundSeconds`` are
+the turn's ceiling and its NOMINAL response bound (clients add a network
+margin) for the chat provider in force (#1905), resolved on
+every request: an operator who switches the chat provider changes which
+per-provider ceiling applies, so a client re-reads them per session rather
+than caching them for the life of an install.
+
 Returns:
     Backend capabilities including deployment mode, dashboard URL, and feature flags
 
@@ -3928,7 +3948,7 @@ Returns:
 
 **Responses:**
 
-- `200` — Successful Response
+- `200` — Successful Response ([`BackendCapabilities`](#backendcapabilities))
 
 ---
 
@@ -4870,7 +4890,7 @@ Deprecated: use `GET /api/v1/meta/capabilities`, which serves the identical resp
 
 **Responses:**
 
-- `200` — Successful Response
+- `200` — Successful Response ([`BackendCapabilities`](#backendcapabilities))
 
 ---
 
@@ -5143,6 +5163,58 @@ Knowledge-base scopes the calling user may publish to.
 **Properties:**
 
 - `scopes` (array, required)
+
+---
+
+### BackendBranding
+
+**Properties:**
+
+- `name` (string, required)
+- `supportUrl` (string, required)
+
+---
+
+### BackendCapabilities
+
+What this backend offers, for the browser extension and the Dashboard.
+
+**Properties:**
+
+- `branding` (object, required)
+- `dashboardUrl` (string, required)
+- `deploymentMode` (string, required)
+- `features` (object, required)
+- `kbManagement` (string, required)
+- `limits` (object, required)
+
+---
+
+### BackendCapabilityFeatures
+
+Feature gates a client reads to show or hide surfaces.
+
+**Properties:**
+
+- `adminKB` (boolean, required)
+- `caseHistory` (boolean, required)
+- `extensionKB` (boolean, required) — Always false: the extension KB was removed.
+- `managementConsole` (boolean, required) — The org/team management console; same signal as teamSharing.
+- `sso` (boolean, required)
+- `teamSharing` (boolean, required) — Team-based KB/case sharing; true only when team management is live.
+
+---
+
+### BackendCapabilityLimits
+
+Limits a client applies before sending, and the turn's time bounds.
+
+**Properties:**
+
+- `allowedExtensions` (array, required)
+- `maxFileBytes` (integer, required)
+- `turnCeilingSeconds` (number, required) — The turn ceiling for the chat provider in force: a turn that uses all of it is answered 504 REQUEST_TIMEOUT, nothing committed.
+- `turnResponseBoundSeconds` (number, required) — The nominal bound on how long POST /cases/{case_id}/turns takes to answer: the ceiling plus the commit reserve and the auto-title bound after it. Not a hard guarantee: it leaves out short steps (the case and receipt lookups before the deadline starts, the commit's actual duration), so size a client timeout as this plus a network margin that covers them. Both values are resolved per request and change when an operator switches the chat provider, so re-read them per session.
 
 ---
 
@@ -5678,6 +5750,7 @@ Read-only environment configuration status for dashboard display.
 - `rate_limit_enabled` (boolean, required) — Rate limiting middleware is installed on this deployment. Read from the running middleware stack rather than from configuration: no rate-limit setting exists, the protection presets decide by environment name, and no environment variable turns it off. A deployment reports false here only if protection setup raised and the development carve-out let it boot anyway.
 - `session_storage` (string, required) — 'redis' or 'fakeredis (inmemory)' — the Redis client the session store actually uses, not the configured one; 'not initialized' before the composition root has set it
 - `timestamp` (string, required)
+- `turn_timing` (object, required) — The resolved turn ceiling and response bound for the chat provider in force, as clients read them on GET /api/v1/meta/capabilities.
 - `vector_storage` (string, required) — What the running process's KB and evidence ChromaDB clients talk to: 'chromadb (server)', 'chromadb (persistent, split: kb + evidence)', 'disabled' when neither was built, or a per-client breakdown when they differ
 
 ---
@@ -6883,6 +6956,22 @@ Response for POST /cases/{id}/turns.
 - `sources` (array, optional) — Knowledge the engine put in front of the model for this turn: the runbooks the KB pre-fetch admitted (the PUSH channel, governed by KB_PREFETCH_ENABLED) that the prompt the model answered from actually carried, after the section budget. A pre-fetch that fires while the turn's response is applied first reaches the NEXT turn's prompt, and is listed there. The context stands in every prompt until a pre-fetch replaces it, so it repeats turn to turn; `new_this_turn` marks the excerpts the previous turn's prompt did not carry. Each entry carries the matched excerpt as `content`, the retrieval score as `confidence`, and the runbook's `document_id`/`title` under `metadata` so a client can link to it. Empty when nothing was pre-fetched — including when the push is disabled. Runbooks the model fetched itself via the kb_qa tool are NOT represented: that tool returns a formatted answer string, so per-turn identity is not available at the tool boundary.
 - `suggested_actions` (array, optional)
 - `turn_number` (integer, required)
+
+---
+
+### TurnTimingStatus
+
+The turn's time bounds for the chat provider in force (#1905).
+
+The same two numbers ``GET /api/v1/meta/capabilities`` publishes to clients,
+resolved by ``config/turn_ceiling.resolve_turn_ceiling`` on every request,
+so a dashboard provider switch shows here on the next read.
+
+**Properties:**
+
+- `chat_provider` (object, required) — The chat provider the ceiling was resolved for; null when none is configured and AGENT_REQUEST_TIMEOUT applies.
+- `turn_ceiling_seconds` (number, required) — AGENT_REQUEST_TIMEOUT, or this provider's AGENT_PROVIDER_TIMEOUT_OVERRIDES entry: the bound on a turn's preparation and the deadline its LLM calls budget against.
+- `turn_response_bound_seconds` (number, required) — The nominal bound on the turn route's answer: the ceiling plus the commit reserve and the auto-title bound. Clients size their timeout from it plus a network margin, which also covers the short steps it leaves out (the case and receipt lookups before the deadline starts, the commit's actual duration).
 
 ---
 

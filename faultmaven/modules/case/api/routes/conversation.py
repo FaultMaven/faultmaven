@@ -40,6 +40,7 @@ from faultmaven.config.idempotency_key import (
     IDEMPOTENCY_KEY_REUSE,
     IDEMPOTENCY_REPLAYED_HEADER,
 )
+from faultmaven.config.turn_ceiling import resolve_turn_ceiling
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.core.investigation.turn_budget import (
     TurnDeadlineExceeded,
@@ -66,7 +67,6 @@ from faultmaven.modules.case.api.routes.dependencies import (
     _di_get_case_service_dependency,
     _di_get_session_service_dependency,
     _parse_observed_at,
-    _resolve_agent_timeout,
     check_case_service_available,
     resolve_paste_source_meta,
 )
@@ -353,7 +353,9 @@ _TURN_RESPONSES: Dict[int | str, Dict[str, Any]] = {
         "description": (
             "Conflict. Told apart by `x-error-code`: "
             f"`{TURN_IN_PROGRESS}` (a turn with this `Idempotency-Key` is still "
-            "running: retry with the same key after `Retry-After` seconds); "
+            "running: retry with the same key after `Retry-After` seconds, the "
+            "longest the running turn can still hold its claim — an upper "
+            "bound, not when it finishes; it may finish sooner); "
             f"`{IDEMPOTENCY_KEY_REUSE}` (the key was used for a different "
             "turn); "
             f"`{IDEMPOTENCY_REPLAY_UNAVAILABLE}` (the turn committed but its "
@@ -379,19 +381,37 @@ _TURN_RESPONSES: Dict[int | str, Dict[str, Any]] = {
                 },
             },
             "Retry-After": {
-                "description": f"Seconds, on `{TURN_IN_PROGRESS}` only.",
+                "description": (
+                    f"Seconds, on `{TURN_IN_PROGRESS}` only: the longest the "
+                    "running turn can still hold its claim (an upper bound, "
+                    "not when it finishes)."
+                ),
                 "schema": {"type": "integer"},
             },
         },
     },
     504: {
         "description": (
-            "`x-error-code: REQUEST_TIMEOUT`: the turn ran out of time and "
-            "nothing of it committed, so a retry is safe."
+            "Timeout; nothing of the turn committed. Told apart by "
+            "`x-error-code`: `REQUEST_TIMEOUT` (the turn used its whole ceiling, "
+            "`limits.turnCeilingSeconds` on `GET /api/v1/meta/capabilities`, on "
+            "this input; the same input is likely to exhaust it again, so a "
+            "client retries at most once, and no `Retry-After` is sent); "
+            "`LLM_TIMEOUT` (the AI provider timed out: transient, retry after "
+            "`Retry-After` seconds)."
         ),
         "headers": {
-            "x-error-code": {"schema": {"type": "string", "enum": ["REQUEST_TIMEOUT"]}},
-            "Retry-After": {"schema": {"type": "integer"}},
+            "x-error-code": {
+                "description": "Which timeout.",
+                "schema": {
+                    "type": "string",
+                    "enum": ["REQUEST_TIMEOUT", "LLM_TIMEOUT"],
+                },
+            },
+            "Retry-After": {
+                "description": "Seconds, on `LLM_TIMEOUT` only.",
+                "schema": {"type": "integer"},
+            },
         },
     },
 }
@@ -497,10 +517,23 @@ async def submit_turn(
     - for a different turn → **409** `x-error-code: IDEMPOTENCY_KEY_REUSE`.
     - while the first is still running → **409** `x-error-code:
       TURN_IN_PROGRESS` with `Retry-After`; retry with the same key after it.
+      `Retry-After` is the longest the first can still hold its claim, an upper
+      bound, not when it finishes.
 
     A response lost after the commit (a disconnect, a timeout on the client's
     side) is recovered by retrying with the same key. Without a key, every
     request runs as a new turn.
+
+    **Timing.** `limits.turnResponseBoundSeconds` on
+    `GET /api/v1/meta/capabilities` is the NOMINAL bound on this route's answer
+    (the turn ceiling plus the commit reserve and the auto-title bound after
+    it). It leaves out short steps (the case and receipt lookups before the
+    deadline starts, the commit's actual duration), so size a client timeout as
+    that plus a network margin that covers them, and re-read it per session,
+    because an operator can switch the chat provider and with it the ceiling. A **504** commits nothing:
+    `REQUEST_TIMEOUT` means the turn used its whole ceiling on this input and is
+    likely to do so again, so retry at most once (it carries no `Retry-After`);
+    `LLM_TIMEOUT` is a transient provider timeout, retried after `Retry-After`.
     """
     import json
 
@@ -579,14 +612,20 @@ async def submit_turn(
         # name and size share a key.
         file_contents = [(f, await f.read()) for f in files]
 
+        # The turn's ceiling and response bound, resolved ONCE for the chat
+        # provider in force (#1905): the in-flight claim, the deadline and the
+        # timeout's log line all read the same numbers, even if an operator
+        # switches the provider while this turn runs.
+        from faultmaven.config.settings import get_settings
+
+        turn_ceiling = resolve_turn_ceiling(get_settings())
+
         # The idempotency step (#1888): after the case lookup (a case the
         # caller cannot see stays a 404) and BEFORE the terminal-case gates,
         # so a retried closing turn replays instead of meeting the closed case
         # its own first attempt made. Order and rationale:
         # ``modules/case/api/turn_idempotency.py``.
         if idempotency_key:
-            from faultmaven.config.settings import get_settings
-
             keyed = await open_keyed_turn(
                 redis=getattr(request.app.state, "redis_client", None),
                 case=case,
@@ -603,7 +642,7 @@ async def submit_turn(
                     files=[(f.filename or "", content) for f, content in file_contents],
                 ),
                 case_service=case_service,
-                agent_timeout=_resolve_agent_timeout(get_settings())[0],
+                response_bound_seconds=turn_ceiling.response_bound_seconds,
                 correlation_id=correlation_id,
             )
             if keyed.replay is not None:
@@ -733,9 +772,8 @@ async def submit_turn(
 
         # Process turn with configurable timeout (provider-aware — see ISS-058).
         try:
-            from faultmaven.config.settings import get_settings
-
-            agent_timeout, provider_name = _resolve_agent_timeout(get_settings())
+            agent_timeout = turn_ceiling.ceiling_seconds
+            provider_name = turn_ceiling.provider or "default"
             logger.info(
                 f"Processing turn for case {case_id} with {agent_timeout}s timeout "
                 f"(provider={provider_name})"
@@ -808,15 +846,18 @@ async def submit_turn(
         except (asyncio.TimeoutError, TurnDeadlineExceeded) as timed_out:
             # Both mean the same thing to the client, and are answered the
             # same way: the turn ran out of time and NOTHING of it was
-            # committed, so the retry is safe. ``TurnDeadlineExceeded`` is the
-            # preparation finishing with less than the commit's reserve left
-            # (#1882).
-            from faultmaven.config.settings import get_settings
-
-            agent_timeout, provider_name = _resolve_agent_timeout(get_settings())
+            # committed. ``TurnDeadlineExceeded`` is the preparation finishing
+            # with less than the commit's reserve left (#1882).
+            #
+            # No ``Retry-After`` (#1905): the turn exhausted the ceiling on THIS
+            # input, so the same input is likely to exhaust it again, at full
+            # LLM cost. A retry is safe but rarely useful; the route documents
+            # "at most once", and a header inviting a timed re-run would say
+            # the opposite.
             logger.error(
-                f"Turn processing timed out for case {case_id} after {agent_timeout}s "
-                f"(provider={provider_name})"
+                f"Turn processing timed out for case {case_id} after "
+                f"{turn_ceiling.ceiling_seconds}s "
+                f"(provider={turn_ceiling.provider or 'default'})"
                 + (
                     f": {timed_out}"
                     if isinstance(timed_out, TurnDeadlineExceeded)
@@ -825,11 +866,13 @@ async def submit_turn(
             )
             raise HTTPException(
                 status_code=504,
-                detail="Request timeout - processing is taking longer than expected. Please try again.",
+                detail=(
+                    "The turn ran out of time and nothing was saved; the same "
+                    "request is likely to time out again."
+                ),
                 headers={
                     "x-correlation-id": correlation_id,
                     "x-error-code": "REQUEST_TIMEOUT",
-                    "Retry-After": "30",
                 },
             )
 

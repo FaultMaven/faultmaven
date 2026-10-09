@@ -56,6 +56,7 @@ def describe_retry_ladder_budget(settings) -> "LadderPlan":
     iteration. With the shipped values that is 3 paid attempts and all 4
     backoffs, so a hung provider costs ``3T + (2 + 4 + 8) = 3T + 14``.
     """
+    from faultmaven.config.turn_ceiling import resolve_turn_ceiling
     from faultmaven.core.investigation.llm_error_handler import (
         LLMErrorHandler,
         RetryConfig,
@@ -63,18 +64,16 @@ def describe_retry_ladder_budget(settings) -> "LadderPlan":
     from faultmaven.core.investigation.turn_budget import worst_case_ladder_plan
     from faultmaven.infrastructure.llm.router import (
         LLM_CIRCUIT_BREAKER_THRESHOLD,
-        resolve_chat_provider_name,
         resolve_request_timeout,
     )
 
-    provider = resolve_chat_provider_name(settings)
     config = RetryConfig()
     # One handler, not one per backoff: ``calculate_delay`` is a pure function
     # of the config, and the instance exists only to reach it.
     schedule = LLMErrorHandler(config)
     backoffs = [schedule.calculate_delay(n) for n in range(config.max_retries)]
     return worst_case_ladder_plan(
-        agent_timeout=float(settings.agent.timeout_for_provider(provider)),
+        agent_timeout=resolve_turn_ceiling(settings).ceiling_seconds,
         attempt_seconds=resolve_request_timeout(settings),
         paid_attempts=min(config.max_retries + 1, LLM_CIRCUIT_BREAKER_THRESHOLD),
         backoffs=backoffs,

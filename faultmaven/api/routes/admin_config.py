@@ -31,6 +31,7 @@ from faultmaven.api.models import (
     LLMProviderDetail,
     LLMRoleRouting,
     PersonalTenantLimitsStatus,
+    TurnTimingStatus,
 )
 from faultmaven.api.v1.dependencies import get_llm_provider
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
@@ -1353,6 +1354,18 @@ async def get_env_config_status(
             tenant_daily_turn_cap=settings.agent.tenant_daily_turn_cap,
         )
 
+        # The turn's time bounds, from the one resolver the turn route and
+        # ``GET /api/v1/meta/capabilities`` read (#1905), so the operator sees
+        # the numbers clients are told, for the chat provider in force now.
+        from faultmaven.config.turn_ceiling import resolve_turn_ceiling
+
+        turn_ceiling = resolve_turn_ceiling(settings)
+        turn_timing = TurnTimingStatus(
+            chat_provider=turn_ceiling.provider,
+            turn_ceiling_seconds=turn_ceiling.ceiling_seconds,
+            turn_response_bound_seconds=turn_ceiling.response_bound_seconds,
+        )
+
         # Storage backends: each read from the live object this process serves
         # with, never from settings — a setting is only a claim about what was
         # built, and every one of these has a path where the two differ.
@@ -1401,6 +1414,7 @@ async def get_env_config_status(
             pii_redaction_enabled=settings.protection.protection_enabled,
             rate_limit_enabled=_rate_limiting_installed(request.app),
             features=features,
+            turn_timing=turn_timing,
             personal_tenant_limits=personal_tenant_limits,
             timestamp=datetime.now(timezone.utc),
         )

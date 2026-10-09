@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from faultmaven.config.turn_ceiling import resolve_turn_ceiling
 from faultmaven.core.investigation.turn_budget import (
     TURN_BUDGET_RESERVE_SECONDS,
     TURN_COMMIT_RESERVE_SECONDS,
@@ -28,7 +29,6 @@ from faultmaven.core.investigation.turn_budget import (
 from faultmaven.models.api_models import TurnResponse
 from faultmaven.modules.auth.contracts import UserDTO
 from faultmaven.modules.case.api.routes.conversation import submit_turn
-from faultmaven.modules.case.api.routes.dependencies import _resolve_agent_timeout
 from faultmaven.modules.case.contracts import CaseState
 from faultmaven.modules.case.domain.models.case import Case
 
@@ -121,14 +121,14 @@ class TestTheTurnEndpointBindsItsDeadline:
     async def test_the_deadline_is_the_ceiling_wait_for_will_enforce(self):
         """The binding and the cancellation must be the same number.
 
-        ``_resolve_agent_timeout`` applies the per-provider
+        ``resolve_turn_ceiling`` applies the per-provider
         ``AGENT_PROVIDER_TIMEOUT_OVERRIDES`` map; a binding that used the bare
         ``agent_request_timeout`` instead would budget a hung provider against a
         deadline that is not the one about to cancel it.
         """
         from faultmaven.config.settings import get_settings
 
-        expected, _provider = _resolve_agent_timeout(get_settings())
+        expected = resolve_turn_ceiling(get_settings()).ceiling_seconds
         seen = {}
 
         async def prepare_turn(**_):
@@ -212,6 +212,11 @@ class TestTheTurnEndpointBindsItsDeadline:
         assert remaining_turn_budget() is None
 
 
+def _ceiling_of(settings):
+    ceiling = resolve_turn_ceiling(settings)
+    return ceiling.ceiling_seconds, ceiling.provider
+
+
 def _settings(provider, overrides):
     """A settings double whose two timeout maps disagree, so a resolver that
     read the wrong one is visible in the number."""
@@ -226,7 +231,7 @@ def _settings(provider, overrides):
 
 @pytest.mark.unit
 class TestResolvingTheCeilingThatGetsBound:
-    """``_resolve_agent_timeout`` now shares the LLM router's provider resolver.
+    """``resolve_turn_ceiling`` shares the LLM router's provider resolver.
 
     It had no direct test before this change, and sharing is only safe if the
     shared helper resolves the name exactly as the inlined copy did. The three
@@ -238,23 +243,23 @@ class TestResolvingTheCeilingThatGetsBound:
 
     def test_a_str_enum_provider_reaches_the_override_map(self):
         settings = _settings(SimpleNamespace(value="gemini"), {"gemini": 240})
-        assert _resolve_agent_timeout(settings) == (240.0, "gemini")
+        assert _ceiling_of(settings) == (240.0, "gemini")
 
     def test_a_plain_string_provider_reaches_the_override_map(self):
         settings = _settings("openai", {"openai": 300})
-        assert _resolve_agent_timeout(settings) == (300.0, "openai")
+        assert _ceiling_of(settings) == (300.0, "openai")
 
     def test_an_unlisted_provider_takes_the_global_ceiling(self):
         settings = _settings("groq", {"gemini": 240})
-        assert _resolve_agent_timeout(settings) == (120.0, "groq")
+        assert _ceiling_of(settings) == (120.0, "groq")
 
     def test_the_env_var_is_the_fallback_when_the_field_is_unset(self, monkeypatch):
         """Settings doubles that lack the field are why the env fallback exists."""
         monkeypatch.setenv("CHAT_PROVIDER", "anthropic")
         settings = _settings(None, {"anthropic": 200})
-        assert _resolve_agent_timeout(settings) == (200.0, "anthropic")
+        assert _ceiling_of(settings) == (200.0, "anthropic")
 
-    def test_no_provider_anywhere_is_reported_as_default(self, monkeypatch):
+    def test_no_provider_anywhere_resolves_to_none(self, monkeypatch):
         monkeypatch.delenv("CHAT_PROVIDER", raising=False)
         settings = _settings(None, {})
-        assert _resolve_agent_timeout(settings) == (120.0, "default")
+        assert _ceiling_of(settings) == (120.0, None)

@@ -9,7 +9,8 @@ turn runs, it decides whether the request is
   telemetry turn;
 - a **key reused for a different turn** — 409 ``IDEMPOTENCY_KEY_REUSE``;
 - a **duplicate of a turn still in flight** — 409 ``TURN_IN_PROGRESS`` with a
-  ``Retry-After`` of the seconds left on the first one's claim;
+  ``Retry-After`` of the seconds left on the first one's claim: the longest the
+  first can still hold it, an upper bound, not when it finishes (#1905);
 - or **new** — it runs, holding the claim until it is fully answered.
 
 ORDER, and why each step sits where it does (the route calls this right after
@@ -68,10 +69,8 @@ from fastapi import HTTPException, status
 from pydantic import ValidationError
 
 from faultmaven.config.idempotency_key import IDEMPOTENCY_KEY_REUSE
-from faultmaven.core.investigation.turn_budget import TURN_COMMIT_RESERVE_SECONDS
 from faultmaven.models.api_models import TurnResponse
 from faultmaven.models.interfaces_case import ICaseService
-from faultmaven.modules.case.api.title_generation import AUTO_TITLE_TIMEOUT_SECONDS
 from faultmaven.modules.case.contracts import Case, TurnReceipt, TurnReceiptKey
 
 logger = logging.getLogger(__name__)
@@ -156,19 +155,14 @@ def request_fingerprint(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def claim_ttl_seconds(agent_timeout: float) -> int:
+def claim_ttl_seconds(response_bound_seconds: float) -> int:
     """How long a claim may live: the turn's whole bound, plus slack.
 
-    The same three numbers the route's own timing is built from, read from
-    where they are defined: the turn's ceiling (``agent_timeout``, resolved by
-    the route), the commit's reserve, and the auto-title's bound.
+    ``response_bound_seconds`` is the turn's response bound (ceiling + commit
+    reserve + auto-title), which ``config/turn_ceiling.resolve_turn_ceiling``
+    owns and the route passes in; this adds only the claim's own margin.
     """
-    return math.ceil(
-        agent_timeout
-        + TURN_COMMIT_RESERVE_SECONDS
-        + AUTO_TITLE_TIMEOUT_SECONDS
-        + CLAIM_MARGIN_SECONDS
-    )
+    return math.ceil(response_bound_seconds + CLAIM_MARGIN_SECONDS)
 
 
 def claim_name(case: Case, author_id: str, idempotency_key: str) -> str:
@@ -214,7 +208,7 @@ async def open_keyed_turn(
     idempotency_key: str,
     fingerprint: str,
     case_service: ICaseService,
-    agent_timeout: float,
+    response_bound_seconds: float,
     correlation_id: str,
 ) -> KeyedTurn:
     """Claim the key, then look its receipt up (the module docstring's order).
@@ -229,7 +223,7 @@ async def open_keyed_turn(
             request_fingerprint=fingerprint,
         )
     )
-    await _claim(keyed, redis, case, agent_timeout, correlation_id)
+    await _claim(keyed, redis, case, response_bound_seconds, correlation_id)
     try:
         receipt = await case_service.get_turn_receipt(
             enterprise_id=case.enterprise_id,
@@ -341,7 +335,7 @@ async def _claim(
     keyed: KeyedTurn,
     redis: Any,
     case: Case,
-    agent_timeout: float,
+    response_bound_seconds: float,
     correlation_id: str,
 ) -> None:
     """Take the in-flight claim, OWNER-TOKENED, or refuse with 409.
@@ -364,7 +358,7 @@ async def _claim(
     token = secrets.token_hex(16)
     try:
         acquired = await redis.set(
-            name, token, nx=True, ex=claim_ttl_seconds(agent_timeout)
+            name, token, nx=True, ex=claim_ttl_seconds(response_bound_seconds)
         )
     except Exception as exc:  # noqa: BLE001 - OCC is the backstop
         _report_once(
