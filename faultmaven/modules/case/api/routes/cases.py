@@ -107,8 +107,8 @@ async def delete_case(
     request naming a case the caller cannot see.
 
     Only the OWNER may delete. A teammate who can read the case through a team
-    share is refused with 403 (ADR-017 D4: a share is read visibility, not
-    ownership).
+    share is refused with 403 (ADR-013 D4, as amended 2026-10-09: a share is
+    read-only until hand-off ships).
 
     Returns 204 No Content on success.
     """
@@ -823,14 +823,24 @@ async def update_case(
     Update case details
 
     Updates case metadata such as title, description, state, priority, and tags.
-    Requires edit permissions on the case.
+    Only the case's OWNER may update it: a team share is read-only, and a
+    teammate gets the answer an absent case gets.
     """
     correlation_id = str(uuid.uuid4())
     response.headers["x-correlation-id"] = correlation_id
 
     try:
+        # OWNER only, at the route as well as in ``update_case``: a share is
+        # read-only until hand-off ships (ADR-013 D4, amended 2026-10-09,
+        # #1898). Resolved through ownership so a teammate is answered exactly
+        # as an absent case is (the 404 from ``update_case`` below). Through
+        # the read allowlist, a teammate's PUT on a terminal shared case was
+        # answered 409 CASE_TERMINAL instead — a write refused for the case's
+        # state rather than for who asked.
+        case = await case_service.get_case(
+            case_id, current_user.user_id, owner_only=True
+        )
         # Reject writes on terminal or archived cases
-        case = await case_service.get_case(case_id, current_user.user_id)
         if case:
             require_case_not_terminal(case)
 
@@ -969,6 +979,9 @@ async def generate_case_title(
 
     **Returns:**
     - 200: TitleResponse with X-Correlation-ID header
+    - 404: the case does not exist or the caller does not own it. Naming a
+      case writes it, and a team share is read-only, so a teammate is refused
+      here before any title is generated.
     - 422: ValidationException body — see ``api/exception_handlers.py``
       and ``docs/architecture/specifications/exception-contract.md``.
       Raised when there is insufficient meaningful context to generate
@@ -1011,8 +1024,14 @@ async def generate_case_title(
                 "effective_force": effective_force,
             },
         )
-        # Verify user has access to the case
-        case = await case_service.get_case(case_id, current_user.user_id)
+        # OWNER only, and BEFORE any title is generated: naming a case writes
+        # its title, and a share is read-only until hand-off ships (ADR-013 D4,
+        # amended 2026-10-09, #1898). Through the read allowlist a teammate was
+        # admitted here, could spend an LLM call generating a title, and was
+        # then refused by ``update_case``'s owner check — a 500 after the spend.
+        case = await case_service.get_case(
+            case_id, current_user.user_id, owner_only=True
+        )
         if not case:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

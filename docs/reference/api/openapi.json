@@ -9856,7 +9856,7 @@
     },
     "/api/v1/cases/{case_id}": {
       "delete": {
-        "description": "Permanently delete a case and all associated data.\n\nThis endpoint provides hard delete functionality. Once deleted,\nthe case and all associated data are permanently removed.\n\nThe operation is idempotent - subsequent requests will return\n204 No Content even if the case has already been deleted, and so does a\nrequest naming a case the caller cannot see.\n\nOnly the OWNER may delete. A teammate who can read the case through a team\nshare is refused with 403 (ADR-017 D4: a share is read visibility, not\nownership).\n\nReturns 204 No Content on success.",
+        "description": "Permanently delete a case and all associated data.\n\nThis endpoint provides hard delete functionality. Once deleted,\nthe case and all associated data are permanently removed.\n\nThe operation is idempotent - subsequent requests will return\n204 No Content even if the case has already been deleted, and so does a\nrequest naming a case the caller cannot see.\n\nOnly the OWNER may delete. A teammate who can read the case through a team\nshare is refused with 403 (ADR-013 D4, as amended 2026-10-09: a share is\nread-only until hand-off ships).\n\nReturns 204 No Content on success.",
         "operationId": "delete_case_api_v1_cases__case_id__delete",
         "parameters": [
           {
@@ -9949,7 +9949,7 @@
         ]
       },
       "put": {
-        "description": "Update case details\n\nUpdates case metadata such as title, description, state, priority, and tags.\nRequires edit permissions on the case.",
+        "description": "Update case details\n\nUpdates case metadata such as title, description, state, priority, and tags.\nOnly the case's OWNER may update it: a team share is read-only, and a\nteammate gets the answer an absent case gets.",
         "operationId": "update_case_api_v1_cases__case_id__put",
         "parameters": [
           {
@@ -10259,7 +10259,7 @@
     },
     "/api/v1/cases/{case_id}/data/{data_id}": {
       "delete": {
-        "description": "Remove data file from a case. Returns 204 No Content on success.",
+        "description": "Remove data file from a case. Returns 204 No Content on success.\n\nOnly the case's OWNER may call it; anyone else gets 404.",
         "operationId": "delete_case_data_api_v1_cases__case_id__data__data_id__delete",
         "parameters": [
           {
@@ -11538,7 +11538,7 @@
     },
     "/api/v1/cases/{case_id}/title": {
       "post": {
-        "description": "Generate a concise, case-specific title from case messages and metadata.\n\n**Request body (optional):**\n- `max_words`: integer (3\u201312, default 8) - Maximum words in generated title\n- `hint`: string - Optional hint to guide title generation\n- `force`: boolean (default false) - Only overwrite non-default titles when true\n\n**Returns:**\n- 200: TitleResponse with X-Correlation-ID header\n- 422: ValidationException body \u2014 see ``api/exception_handlers.py``\n  and ``docs/architecture/specifications/exception-contract.md``.\n  Raised when there is insufficient meaningful context to generate\n  a title (pre-LLM length gate, or LLM + fallback both fail).\n  Clients SHOULD keep the existing title unchanged and may retry\n  later.",
+        "description": "Generate a concise, case-specific title from case messages and metadata.\n\n**Request body (optional):**\n- `max_words`: integer (3\u201312, default 8) - Maximum words in generated title\n- `hint`: string - Optional hint to guide title generation\n- `force`: boolean (default false) - Only overwrite non-default titles when true\n\n**Returns:**\n- 200: TitleResponse with X-Correlation-ID header\n- 404: the case does not exist or the caller does not own it. Naming a\n  case writes it, and a team share is read-only, so a teammate is refused\n  here before any title is generated.\n- 422: ValidationException body \u2014 see ``api/exception_handlers.py``\n  and ``docs/architecture/specifications/exception-contract.md``.\n  Raised when there is insufficient meaningful context to generate\n  a title (pre-LLM length gate, or LLM + fallback both fail).\n  Clients SHOULD keep the existing title unchanged and may retry\n  later.",
         "operationId": "generate_case_title_api_v1_cases__case_id__title_post",
         "parameters": [
           {

@@ -673,6 +673,21 @@ class InvestigationService:
         if not case:
             raise NotFoundError("Case", case_id)
 
+        # Only the OWNER may submit a turn. A team share is read-only until
+        # hand-off ships (ADR-013 D4, amended 2026-10-09, #1898), so a teammate
+        # who can read this case is refused here with 403.
+        #
+        # The check sits HERE, after the route's ``Idempotency-Key`` step
+        # (#1888), and not as ``owner_only`` on the route's case lookup. A
+        # receipt is keyed on the caller, and a retry of a turn that committed
+        # is answered from its receipt without reaching this method; a gate
+        # ahead of that replay would refuse the retry of a turn the caller did
+        # commit once they stopped owning (with hand-off, driving) the case,
+        # though they can still read it — a hand-off is the main case; a
+        # reassignment leaves the former owner reading it only through one of
+        # the new owner's teams. After the replay, the
+        # check still runs before the turn cap is charged and before anything
+        # is written, so a refused teammate costs nobody a unit.
         if case.user_id != user_id:
             logger.warning(
                 f"User {user_id} denied access to case {case_id} (owner: {case.user_id})"

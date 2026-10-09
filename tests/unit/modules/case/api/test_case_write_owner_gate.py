@@ -1,4 +1,4 @@
-"""A share grants READ, not WRITE — on every case-addressed mutation (ADR-017 D4).
+"""A share grants READ, not WRITE, on every case mutation (ADR-013 D4, amended).
 
 The single-case gate has two halves and one flag: ``CaseService.get_case``
 resolves through ``owner ∪ shared-to-my-teams`` by default and through ownership

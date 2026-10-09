@@ -374,18 +374,19 @@ class ICaseService(ABC):
         Args:
             session_id: Session identifier
             case_id: Case identifier
-            user_id: The caller, resolved through the same owner ∪ shared gate
-                every other case read uses. REQUIRED — a gate whose
-                enforcement depends on a caller remembering a keyword is the
-                omission this member is being fixed for (#1393/#1398).
-                ``None`` means an internal caller with no user, passed
-                deliberately rather than by forgetting.
+            user_id: The caller, who must OWN the case: the link is a write,
+                and a team share is read-only until hand-off ships (ADR-013 D4,
+                amended 2026-10-09). REQUIRED — a gate whose enforcement
+                depends on a caller remembering a keyword is the omission this
+                member is being fixed for (#1393/#1398). ``None`` means an
+                internal caller with no user, passed deliberately rather than
+                by forgetting.
 
         Returns:
             True if the link was made and persisted
 
         Raises:
-            NotFoundError: the case does not exist, or the caller cannot reach
+            NotFoundError: the case does not exist, or the caller does not own
                 it. Distinct from returning False, which means the link itself
                 failed — a 404 and a 500 respectively.
         """
@@ -419,7 +420,7 @@ class ICaseService(ABC):
             True if the case was resumed
 
         Raises:
-            NotFoundError: the case does not exist or the caller cannot reach it
+            NotFoundError: the case does not exist or the caller does not own it
         """
         pass
 

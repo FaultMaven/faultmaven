@@ -251,7 +251,8 @@ async def authorize_case_access(
     ``owner_only`` drops the shared arm for the MUTATING endpoints. A report
     hangs off its case, so a teammate who may read the case may read its
     reports — and must not be able to rewrite, delete or close-link them
-    (ADR-017 D4: a share is read visibility, not ownership). Inside one
+    (ADR-013 D4, as amended 2026-10-09: a share is read-only until hand-off
+    ships). Inside one
     enterprise nothing else separates the two callers, so this flag is the whole
     of that boundary on this surface.
 
@@ -366,7 +367,7 @@ async def generate_report(
         # the case and moves which one is current — so it resolves through
         # ownership, like the edit/delete/link-case endpoints below. A read
         # share opens the reports; it does not authorise rewriting them
-        # (ADR-017 D4).
+        # (ADR-013 D4, as amended 2026-10-09).
         case = await authorize_case_access(
             case_id,
             current_user,
@@ -532,7 +533,8 @@ async def update_report(
             case_service,
             f"Report {report_id} not found",
             # A share grants READ, not the right to rewrite, delete
-            # or close-link the owner's report (ADR-017 D4).
+            # or close-link the owner's report (ADR-013 D4, as amended
+            # 2026-10-09).
             owner_only=True,
         )
 
@@ -636,7 +638,8 @@ async def delete_report(
             case_service,
             f"Report {report_id} not found",
             # A share grants READ, not the right to rewrite, delete
-            # or close-link the owner's report (ADR-017 D4).
+            # or close-link the owner's report (ADR-013 D4, as amended
+            # 2026-10-09).
             owner_only=True,
         )
 
@@ -892,7 +895,8 @@ async def link_report_to_case_closure(
             case_service,
             f"Report {report_id} not found",
             # A share grants READ, not the right to rewrite, delete
-            # or close-link the owner's report (ADR-017 D4).
+            # or close-link the owner's report (ADR-013 D4, as amended
+            # 2026-10-09).
             owner_only=True,
         )
 

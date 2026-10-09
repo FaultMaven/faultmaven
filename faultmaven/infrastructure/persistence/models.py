@@ -2524,9 +2524,12 @@ class CaseMessageModel(Base):
     turn_number = Column(Integer, nullable=False, server_default="0")
     role = Column(String(20), nullable=False)
     content = Column(Text, nullable=False)
-    # Who wrote this turn. Load-bearing once a case is shared to a team: every
-    # write endpoint admits the case's team members, so the owner is no longer
-    # the only possible author (ADR-013 D4, ADR-011 D5).
+    # Who wrote this turn (ADR-013 D4's per-turn authorship, ADR-011 D5). Only
+    # the case's owner can write a turn today — a team share is read-only until
+    # hand-off ships (ADR-013 D4, amended 2026-10-09, #1898) — but the owner is
+    # not a constant: ``fm-reassign-cases`` moves a case to another account,
+    # and hand-off will let a teammate drive it. So authorship is recorded on
+    # the row rather than read off ``cases.user_id`` afterwards.
     #
     # Nullable — assistant and system turns have no human author, and rows
     # predating migration 037 have one we do not know.
