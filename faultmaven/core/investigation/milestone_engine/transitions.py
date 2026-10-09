@@ -422,7 +422,11 @@ class TransitionManager:
                     typed=True,
                 )
                 if verdict == "confirm":
-                    executed = confirm_pending_transition(case, case.user_id)
+                    # The confirming ACTOR (ADR-020 D6): the turn's principal,
+                    # the case's effective driver.
+                    executed = confirm_pending_transition(
+                        case, case.effective_driver_id
+                    )
                     if executed:
                         metadata["status_transitioned"] = True
                     else:

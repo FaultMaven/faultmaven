@@ -29,8 +29,10 @@ from typing import TYPE_CHECKING, Any, Optional, Sequence
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.modules.case.contracts import (
     Case,
+    CaseDriverChange,
     CaseEntity,
     CaseState,
+    DrivenCase,
     EntityType,
     Evidence,
     Hypothesis,
@@ -226,6 +228,42 @@ class SessionlessCaseRepository(CaseRepository):
                 idempotency_key=idempotency_key,
             )
 
+    async def reassign_driver(
+        self,
+        case_id: str,
+        *,
+        driver_id: Optional[str],
+        expected_version: int,
+        change: CaseDriverChange,
+    ) -> Optional[int]:
+        """Versioned driver change plus its audit row, one session and so one
+        transaction (ADR-020 D4)."""
+        async with get_db_session() as session:
+            repo = get_repository_for_session(session)
+            return await repo.reassign_driver(
+                case_id,
+                driver_id=driver_id,
+                expected_version=expected_version,
+                change=change,
+            )
+
+    async def release_driver(
+        self, case_id: str, *, driver_id: str, change: CaseDriverChange
+    ) -> bool:
+        """Release plus its audit row, one session and so one transaction
+        (ADR-020 D3)."""
+        async with get_db_session() as session:
+            repo = get_repository_for_session(session)
+            return await repo.release_driver(
+                case_id, driver_id=driver_id, change=change
+            )
+
+    async def list_cases_driven_by(self, user_id: str) -> builtins.list[DrivenCase]:
+        """Every case ``user_id`` drives by assignment, in a new session."""
+        async with get_db_session() as session:
+            repo = get_repository_for_session(session)
+            return await repo.list_cases_driven_by(user_id)
+
     async def get(self, case_id: str) -> Case | None:
         """Get case with new session per operation."""
         async with get_db_session() as session:
@@ -360,6 +398,7 @@ class SessionlessCaseRepository(CaseRepository):
         include_empty: bool = True,
         created_after: datetime | None = None,
         created_before: datetime | None = None,
+        driven_only: bool = False,
     ) -> tuple[list[Case], int]:
         """List cases (filtered by user_id/state).
 
@@ -391,6 +430,7 @@ class SessionlessCaseRepository(CaseRepository):
                 include_empty=include_empty,
                 created_after=created_after,
                 created_before=created_before,
+                driven_only=driven_only,
             )
 
     async def search(
@@ -402,6 +442,7 @@ class SessionlessCaseRepository(CaseRepository):
         limit: int = 20,
         shared_case_ids: builtins.list[str] | None = None,
         restrict_case_ids: builtins.list[str] | None = None,
+        driven_only: bool = False,
     ) -> tuple[builtins.list[Case], int]:
         """Search cases by text query (scoped by user_id).
 
@@ -425,6 +466,7 @@ class SessionlessCaseRepository(CaseRepository):
                 limit=limit,
                 shared_case_ids=shared_case_ids,
                 restrict_case_ids=restrict_case_ids,
+                driven_only=driven_only,
             )
 
     async def add_message(self, case_id: str, message_dict: dict) -> bool:

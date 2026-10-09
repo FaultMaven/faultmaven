@@ -1412,7 +1412,7 @@ class TestCaseTeamShareEndpoints:
         svc, _, share_repo = _team_share_service(
             mock_repo, mock_session_store, teams=["team_a"]
         )
-        with pytest.raises(ValidationException, match="owner"):
+        with pytest.raises(ValidationException, match="creator"):
             await svc.share_case_with_team(case.case_id, "team_a", "intruder")
         share_repo.share.assert_not_awaited()
 
@@ -1482,7 +1482,7 @@ class TestCaseTeamShareEndpoints:
         svc, _, share_repo = _team_share_service(
             mock_repo, mock_session_store, teams=["team_a"]
         )
-        with pytest.raises(ValidationException, match="owner"):
+        with pytest.raises(ValidationException, match="creator"):
             await svc.unshare_case_from_team(case.case_id, "team_a", "intruder")
         share_repo.unshare.assert_not_awaited()
 

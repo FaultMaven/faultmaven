@@ -288,6 +288,13 @@ async def _apply(
     does not. Their share rows outlive the owner swap otherwise, and
     ``case_scope_where`` admits any team holding one — so the previous owner's
     teams would keep reading every case this command moved away from them.
+
+    **The driver goes with the creator** (ADR-020 D3): each moved case's
+    ``driver_id`` is cleared in the same UPDATE, so the new creator drives it,
+    and a ``case_driver_changed`` row is written for every case whose effective
+    driver actually changed. An assigned driver could otherwise keep writing a
+    case this command just moved out from under them, possibly through a share
+    it revokes.
     """
     import json
     import uuid
@@ -302,6 +309,10 @@ async def _apply(
         UserAuditLogModel,
     )
     from faultmaven.models.interfaces_user import AuditCategory, AuditEventType
+    from faultmaven.modules.case.contracts import (
+        CaseDriverChange,
+        CaseDriverChangeReason,
+    )
 
     # `enterprise_id` is in the predicate as well as bound into the RLS
     # scope, for the same reason the sweep carries it: this command also has to
@@ -313,8 +324,8 @@ async def _apply(
     # claiming it was not. `last_activity_at` is deliberately left alone: that
     # is the case's activity clock, and re-attribution is not activity.
     reassign = text(
-        "UPDATE cases SET user_id = :to_user_id, version = version + 1, "
-        "updated_at = :now "
+        "UPDATE cases SET user_id = :to_user_id, driver_id = NULL, "
+        "version = version + 1, updated_at = :now "
         "WHERE case_id = :case_id AND user_id = :from_user_id "
         "AND enterprise_id = :enterprise_id"
     )
@@ -322,6 +333,20 @@ async def _apply(
     moved_at = datetime.now(timezone.utc)
 
     async with get_db_session() as session:
+        # Each case's EFFECTIVE driver before the move, read in this
+        # transaction: the audit row names who handed the case on.
+        drivers = dict(
+            (
+                await session.execute(
+                    text(
+                        "SELECT case_id, COALESCE(driver_id, user_id) FROM cases "
+                        "WHERE enterprise_id = :enterprise_id "
+                        "AND case_id IN :case_ids"
+                    ).bindparams(bindparam("case_ids", expanding=True)),
+                    {"enterprise_id": enterprise_id, "case_ids": case_ids},
+                )
+            ).all()
+        )
         for case_id in case_ids:
             result = await session.execute(
                 reassign,
@@ -427,6 +452,29 @@ async def _apply(
                     created_at=moved_at,
                 )
             )
+            # The driver went with the creator (ADR-020 D3): its own row, under
+            # its own indexed event type, whenever the effective driver moved.
+            if drivers.get(case_id) != to_user_id:
+                session.add(
+                    UserAuditLogModel(
+                        user_id=None,
+                        enterprise_id=enterprise_id,
+                        event_type=AuditEventType.CASE_DRIVER_CHANGED.value,
+                        event_category=AuditCategory.AUTHORIZATION.value,
+                        resource_type="case",
+                        resource_id=case_id,
+                        details=CaseDriverChange(
+                            case_id=case_id,
+                            enterprise_id=enterprise_id,
+                            from_driver_id=drivers.get(case_id),
+                            to_driver_id=to_user_id,
+                            reason=CaseDriverChangeReason.CREATOR_REASSIGNED,
+                            actor_user_id=None,
+                        ).audit_details(),
+                        success=True,
+                        created_at=moved_at,
+                    )
+                )
 
 
 async def reassign_cases(

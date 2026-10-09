@@ -615,7 +615,9 @@ class TestOutsideATurn:
         state = {"title": "Case-260929-1"}
 
         class _Cases:
-            async def get_case(self, case_id, user_id, *, owner_only=False):
+            async def get_case(
+                self, case_id, user_id, *, driver_only=False, creator_only=False
+            ):
                 # The caller owns this case, so both resolvers answer it; the
                 # keyword is the route's (a title is a write, #1898).
                 return SimpleNamespace(

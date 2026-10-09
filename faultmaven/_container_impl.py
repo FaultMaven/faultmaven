@@ -939,21 +939,27 @@ class DIContainer(BaseDIContainer):
 
                 return case
 
-            async def get_case(self, case_id, user_id=None, *, owner_only=False):
+            async def get_case(
+                self, case_id, user_id=None, *, driver_only=False, creator_only=False
+            ):
                 case = self.cases.get(case_id)
-                # Ownership is applied on BOTH arms, not just under
-                # ``owner_only``. The stand-in must honour the gate rather than
-                # merely accept it: a degraded path that widened a caller's
-                # reach would be worse than one that 500s.
+                # The creator is applied on EVERY arm — read, ``driver_only``
+                # and ``creator_only`` alike (ADR-020 D2). The stand-in must
+                # honour the gate rather than merely accept it: a degraded path
+                # that widened a caller's reach would be worse than one that
+                # 500s.
                 #
-                # The read arm of the real resolver is owner ∪ shared-to-my-
-                # teams, and this stand-in cannot consult the share allowlist —
-                # ``resource_shares`` lives in the repository it is standing in
-                # for, so in this mode no share can exist to honour. Refusing a
-                # non-owner is therefore the narrow answer AND the accurate
-                # one. Gating this on ``owner_only`` meant every read-arm
-                # caller — which is most of them, including the session resume
+                # The real resolver's read arm is creator ∪ shared-to-my-teams,
+                # and its driver arm the effective driver; this stand-in can
+                # consult neither shares nor a reassignment — both live in the
+                # repository it is standing in for — so in this mode the
+                # creator is the only reader AND the only driver. Refusing
+                # everyone else is therefore the narrow answer AND the accurate
+                # one. Gating this on a write flag meant every read-arm caller
+                # — which is most of them, including the session resume
                 # (#1393) — got any case from any caller.
+                if driver_only and creator_only:
+                    raise ValueError("driver_only and creator_only are exclusive")
                 # ``user_id`` truthiness, not ``is not None``: the real
                 # ``CaseService.get_case`` writes ``if user_id and ...``, so an
                 # empty-string caller id takes the unscoped path there. A
@@ -961,6 +967,58 @@ class DIContainer(BaseDIContainer):
                 if case is not None and user_id and case.user_id != user_id:
                     return None
                 return case
+
+            def _case_for_driver_governance(self, case_id, actor_user_id):
+                # No shares and no reassignment here (see ``get_case``): the
+                # creator is the only reader and the only driver, so the only
+                # caller who may move the driver is the creator, and anyone
+                # else is a non-reader (404), as on every case route.
+                from faultmaven.exceptions import NotFoundError
+
+                case = self.cases.get(case_id)
+                if not case or case.user_id != actor_user_id:
+                    raise NotFoundError("Case", case_id)
+                return case
+
+            async def list_driver_candidates(self, case_id, actor_user_id):
+                # The creator is the only candidate with no teams (ADR-020 D4),
+                # nameless: no account store stands behind this stand-in.
+                from faultmaven.modules.case.domain.services.case_driver import (
+                    DriverCandidate,
+                )
+
+                case = self._case_for_driver_governance(case_id, actor_user_id)
+                return [DriverCandidate(user_id=case.user_id, display_name=None)]
+
+            async def reassign_driver(self, case_id, actor_user_id, target_user_id):
+                # Mirrors CaseService's refusals; the one candidate is the
+                # creator, who already drives, so a valid call changes nothing.
+                from faultmaven.exceptions import (
+                    CASE_TERMINAL,
+                    ConflictError,
+                    ValidationException,
+                )
+
+                case = self._case_for_driver_governance(case_id, actor_user_id)
+                if case.state.is_terminal:
+                    raise ConflictError(
+                        f"Case {case_id} is {case.state.value}; its driver no "
+                        "longer changes",
+                        resource_type="Case",
+                        resource_id=case_id,
+                        conflict_reason="case_terminal",
+                        error_code=CASE_TERMINAL,
+                    )
+                if target_user_id != case.user_id:
+                    raise ValidationException(
+                        "driver_id: not a candidate for this case's driver"
+                    )
+                return case
+
+            async def fill_display_names(self, rows):
+                # No account store behind this stand-in: the names stay null,
+                # as the real service leaves them when it cannot resolve one.
+                return None
 
             async def get_turn_receipt(
                 self, *, enterprise_id, case_id, author_id, idempotency_key
@@ -1008,7 +1066,9 @@ class DIContainer(BaseDIContainer):
                 )
 
                 case = self.cases.get(case_id)
-                if not case or case.user_id != user_id:
+                # Driver-only (ADR-020 D2); no reassignment exists here, so the
+                # driver is the creator.
+                if not case or case.effective_driver_id != user_id:
                     raise NotFoundError("Case", case_id)
                 if case.state.is_terminal:
                     raise ConflictError(

@@ -32,6 +32,7 @@ def create_case_service(
     minimal_factory: callable,
     team_service: Any | None = None,
     share_repository: Any | None = None,
+    account_reader: Any | None = None,
 ) -> Any:
     """Create case service for case persistence and management."""
     if not case_repository:
@@ -48,6 +49,8 @@ def create_case_service(
             settings=settings,
             team_service=team_service,  # Team-membership resolution (None in standalone)
             share_repository=share_repository,  # Case read allowlist source (ADR-013 §D4)
+            # Display names and driver candidacy (ADR-020 D4/D5).
+            account_reader=account_reader,
         )
         logger.debug("Case service initialized with milestone-based repository")
         return service
@@ -1511,8 +1514,23 @@ def register_services(container: BaseDIContainer) -> None:
         container._create_minimal_case_service,
         team_service=team_service,  # Case read allowlist: team-membership resolution
         share_repository=share_repository,  # Case read allowlist: share source (§D4)
+        # The account store's directory read (ADR-020 D4/D5): driver
+        # candidates and the creator/driver display names.
+        account_reader=getattr(
+            getattr(container, "user_store", None), "user_repository", None
+        ),
     )
     container._register_service("case_service", case_service)
+
+    # The driver releases (ADR-020 D3): leaving a team and deactivation hand a
+    # driver's cases back to their creators through the case service. Bound
+    # here because both services are built before it.
+    if hasattr(case_service, "release_driver_before_team_leave"):
+        if team_service is not None:
+            team_service.bind_case_driver_release(case_service)
+        user_service = getattr(container, "user_service", None)
+        if user_service is not None:
+            user_service.bind_case_driver_release(case_service)
 
     # Knowledge Service — writes through KnowledgeVectorStore and nothing else:
     # its add_documents refuses a KB chunk with no tenant stamp (#1168). There

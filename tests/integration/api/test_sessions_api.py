@@ -81,21 +81,21 @@ def mock_case_service(mock_user):
     and ``None`` for anyone else — the same two meanings ``CaseService.get_case``
     collapses in production.
 
-    ``owner_only`` is accepted and HONOURED rather than swallowed: the gate now
+    ``driver_only`` is accepted and HONOURED rather than swallowed: the gate
     chooses the resolver from the request method, and a double that ignored the
     flag would let a route which asked for the wrong one still look correct here.
-    Every caller in this module is the owner, so both arms answer the same — what
-    the parameter has to do is exist.
+    Every caller in this module is the creator, who drives, so both arms answer
+    the same — what the parameter has to do is exist.
     """
     case = MagicMock()
     case.case_id = "case_456def"
     case.user_id = mock_user.user_id
     case.enterprise_id = mock_user.enterprise_id
 
-    async def get_case(case_id, user_id=None, *, owner_only=False):
+    async def get_case(case_id, user_id=None, *, driver_only=False, creator_only=False):
         if user_id != mock_user.user_id:
             return None
-        if owner_only and case.user_id != user_id:
+        if (driver_only or creator_only) and case.user_id != user_id:
             return None
         return case
 

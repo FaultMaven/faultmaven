@@ -117,6 +117,8 @@ def test_the_surviving_query_parameters_are_exactly_these():
         "limit",
         "offset",
         "include_empty",
+        # ADR-020 D8: the extension's list of cases the caller drives.
+        "access",
     }
 
 
@@ -148,7 +150,13 @@ def test_the_published_search_schema_no_longer_declares(field):
 def test_the_search_schema_still_declares_what_it_applies():
     """The other half of the pin: the removal took only the dead fields."""
     schema = _SPEC["components"]["schemas"]["CaseSearchRequest"]
-    assert set(schema["properties"]) == {"query", "state", "team_id", "limit"}
+    assert set(schema["properties"]) == {
+        "query",
+        "state",
+        "team_id",
+        "limit",
+        "access",
+    }
 
 
 @pytest.mark.unit
@@ -305,7 +313,13 @@ async def test_a_search_body_carrying_user_id_carries_no_second_principal(
     assert user_id == "user-1"
     assert not hasattr(search_request, "user_id")
     assert not hasattr(search_request, "organization_id")
-    assert set(search_request.model_dump()) == {"query", "state", "team_id", "limit"}
+    assert set(search_request.model_dump()) == {
+        "query",
+        "state",
+        "team_id",
+        "limit",
+        "access",
+    }
 
 
 @pytest.mark.unit

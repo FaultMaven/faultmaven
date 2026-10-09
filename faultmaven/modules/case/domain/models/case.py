@@ -140,6 +140,17 @@ class Case(BaseModel):
         max_length=36,
     )
 
+    driver_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Who holds the investigation writes (ADR-020 D1). NULL means the "
+            "creator (``user_id``) drives; read the effective driver from "
+            "``effective_driver_id``. Changed only by a versioned write "
+            "(reassignment or a release), and grants no visibility."
+        ),
+        max_length=36,
+    )
+
     enterprise_id: str = Field(
         description=(
             "Enterprise this case is isolated to (ADR-017 D1). The RLS key: "
@@ -548,6 +559,16 @@ class Case(BaseModel):
         if not self.turn_history:
             return None
         return self.turn_history[-1].momentum
+
+    @property
+    def effective_driver_id(self) -> Optional[str]:
+        """Who drives the case: ``COALESCE(driver_id, user_id)`` (ADR-020 D1).
+
+        The one place the NULL rule is applied in Python; the SQL list filter
+        applies the same rule in ``case_scope``. ``None`` only when the creator's
+        account is gone and nobody else drives.
+        """
+        return self.driver_id or self.user_id
 
     @property
     def is_terminal(self) -> bool:

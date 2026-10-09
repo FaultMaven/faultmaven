@@ -33,31 +33,56 @@ from faultmaven.modules.case.api.routes.router import router as case_router
 
 
 def _owner_or_shared_case_service(
-    *, owner: str, shared_to: tuple[str, ...] = (), case_id: str = "case-123", **members
+    *,
+    owner: str,
+    shared_to: tuple[str, ...] = (),
+    case_id: str = "case-123",
+    driver: str | None = None,
+    **members,
 ):
-    """A case service whose ``get_case`` answers owner ∪ shared-to-my-teams.
+    """A case service whose ``get_case`` answers ``CaseService``'s resolver.
 
     One resolver, shared by every module that asserts a case gate: it encodes
-    ADR-013 §D4 / ADR-017 D4, and two hand-written copies of it drift
+    ADR-013 §D4 and ADR-020 D2, and two hand-written copies of it drift
     independently — a change to the rule has to land in both, and the module
     whose copy was missed keeps passing against the old one.
 
-    It HONOURS ``owner_only`` rather than omitting it, so a handler narrowed to
-    the ownership arm asserts "the teammate was refused" instead of surfacing
-    as an incidental TypeError -> 500.
+    - read: ``owner`` (the creator) ∪ ``shared_to``;
+    - ``driver_only``: the effective driver (``driver``, default the creator),
+      who must also read the case;
+    - ``creator_only``: the creator.
+
+    It HONOURS both flags rather than omitting them, so a handler narrowed to
+    a write arm asserts "the reader was refused" instead of surfacing as an
+    incidental TypeError -> 500.
 
     ``members`` are attached as-is, for whatever else the route under test
     calls.
     """
     service = SimpleNamespace(**members)
+    effective_driver = driver or owner
 
-    async def get_case(requested_id, user_id=None, *, owner_only=False):
+    async def get_case(
+        requested_id, user_id=None, *, driver_only=False, creator_only=False
+    ):
         if requested_id != case_id:
             return None
-        if user_id and user_id != owner:
-            if owner_only or user_id not in shared_to:
+        if user_id:
+            reads = user_id == owner or user_id in shared_to
+            if creator_only:
+                admitted = user_id == owner
+            elif driver_only:
+                admitted = reads and user_id == effective_driver
+            else:
+                admitted = reads
+            if not admitted:
                 return None
-        return SimpleNamespace(case_id=case_id, user_id=owner)
+        return SimpleNamespace(
+            case_id=case_id,
+            user_id=owner,
+            driver_id=driver,
+            effective_driver_id=effective_driver,
+        )
 
     service.get_case = get_case
     return service
@@ -109,9 +134,11 @@ def build_app():
                 return case_service
 
             # Signatures mirror CaseService exactly (see module docstring).
-            async def get_case(case_id, user_id=None, *, owner_only=False):
-                # `owner_only` is on the real signature and two routes under
-                # this scaffolding pass it. Omitting it here raised TypeError
+            async def get_case(
+                case_id, user_id=None, *, driver_only=False, creator_only=False
+            ):
+                # The write flags are on the real signature and routes under
+                # this scaffolding pass them. Omitting it here raised TypeError
                 # inside the handler, which its bare `except` turned into a
                 # 500 — so a gate test would assert "not 200" and pass for the
                 # wrong reason, which is the failure this fake exists to avoid.

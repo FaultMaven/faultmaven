@@ -157,19 +157,18 @@ async def delete_case_data(
 ):
     """Remove data file from a case. Returns 204 No Content on success.
 
-    Only the case's OWNER may call it; anyone else gets 404.
+    Only the case's DRIVER may call it (ADR-020 D2); anyone else gets 404.
     """
     case_service = check_case_service_available(case_service)
 
     try:
-        # OWNER only: a delete is a write, and a team share is read-only until
-        # hand-off ships (ADR-013 D4, amended 2026-10-09, #1898). Through the
-        # read allowlist a teammate was answered 204 "deleted".
+        # DRIVER only: deleting case data is an investigation write (ADR-020
+        # D2). Through the read allowlist a reader was answered 204 "deleted".
         #
         # This route is still a STUB — it deletes nothing and answers 204 to
-        # the owner. The gate is only what it can honestly refuse today.
+        # the driver. The gate is only what it can honestly refuse today.
         case = await case_service.get_case(
-            case_id, current_user.user_id, owner_only=True
+            case_id, current_user.user_id, driver_only=True
         )
         if not case:
             raise HTTPException(

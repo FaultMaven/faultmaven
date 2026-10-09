@@ -472,6 +472,7 @@ async def _row_to_case(
     case_data: Dict[str, Any] = {
         "case_id": row.case_id,
         "user_id": row.user_id,
+        "driver_id": row.driver_id,
         "enterprise_id": row.enterprise_id,
         "organization_id": row.organization_id,
         "source": getattr(row, "source", "copilot"),

@@ -77,13 +77,13 @@ async def extract_knowledge_from_case(
     from faultmaven.utils.serialization import to_json_compatible
 
     try:
-        # Verify case exists and the caller OWNS it. Extraction mints a
+        # Verify case exists and the caller DRIVES it. Extraction mints a
         # knowledge suggestion out of the case's transcript and evidence and
-        # attributes it to the extractor, so it is a write on the owner's
-        # material: a read share does not authorise it (ADR-013 D4, as amended
-        # 2026-10-09).
+        # attributes it to the extractor, so it is a write on the case's
+        # investigation material: reading the case does not authorise it
+        # (ADR-020 D2).
         case = await case_service.get_case(
-            case_id, current_user.user_id, owner_only=True
+            case_id, current_user.user_id, driver_only=True
         )
         if not case:
             raise HTTPException(status_code=404, detail="Case not found")

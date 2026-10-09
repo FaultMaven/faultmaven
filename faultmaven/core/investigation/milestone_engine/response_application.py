@@ -1071,7 +1071,11 @@ class ResponseApplier:
                     source_type=source_type,
                     source_file_id=source_file_id,
                     collected_at=datetime.now(UTC),
-                    collected_by=case.user_id,
+                    # The ACTOR (ADR-020 D6): only the case's effective
+                    # driver may submit a turn (``_verify_access_and_reserve``),
+                    # so on this turn the driver is who supplied the evidence
+                    # — not the creator, once the two differ.
+                    collected_by=case.effective_driver_id,
                     collected_at_turn=case.current_turn,
                     advances_milestones=advances_milestones,
                     primary_purpose="Investigation context",

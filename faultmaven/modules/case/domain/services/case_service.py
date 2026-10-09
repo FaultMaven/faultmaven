@@ -35,6 +35,7 @@ from faultmaven.exceptions import (
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.api import Source
 from faultmaven.models.api_models import (
+    CaseAccess,
     CaseCreateRequest,
     CaseListFilter,
     CaseMessage,
@@ -48,6 +49,7 @@ from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.auth.contracts import is_team_member
 from faultmaven.modules.case.contracts import (
     MESSAGE_METADATA_KB_SOURCES,
+    ICaseAccountReader,
     MessageRowKind,
     TurnReceipt,
     append_message_row,
@@ -56,6 +58,7 @@ from faultmaven.modules.case.contracts import (
 )
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.services.case_driver import CaseDriverMixin
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.utils.datetime import parse_utc_timestamp
 from faultmaven.utils.serialization import to_json_compatible
@@ -116,7 +119,7 @@ def _published_sources(stored: Any, *, message_id: str) -> Optional[List[Source]
     return sources or None
 
 
-class CaseService(ICaseService):
+class CaseService(CaseDriverMixin, ICaseService):
     """Service for centralized case management and coordination"""
 
     def __init__(
@@ -128,6 +131,7 @@ class CaseService(ICaseService):
         max_cases_per_user: int = 100,
         team_service: Optional[Any] = None,
         share_repository: Optional[Any] = None,
+        account_reader: Optional[ICaseAccountReader] = None,
     ):
         """
         Initialize the Case Service
@@ -143,6 +147,10 @@ class CaseService(ICaseService):
             share_repository: Optional ``IShareRepository`` for the case read
                 allowlist (``owned ∪ shared-to-my-teams``, ADR-013 §D4). Both
                 degrade gracefully to owner-only when absent.
+            account_reader: The account store's ``get_many_in_enterprise``:
+                display names for the case rows and the facts that make an
+                account a driver candidate (ADR-020 D4/D5). Absent, names read
+                null and only the creator is a candidate.
         """
         self.repository = case_repository
         self.session_store = session_store
@@ -150,6 +158,7 @@ class CaseService(ICaseService):
         self._settings = settings
         self.team_service = team_service
         self.share_repository = share_repository
+        self.account_reader = account_reader
 
         # Use settings values if available, otherwise use parameter defaults
         if settings and hasattr(settings, "case"):
@@ -351,7 +360,12 @@ class CaseService(ICaseService):
 
     @trace("case_service_get_case")
     async def get_case(
-        self, case_id: str, user_id: Optional[str] = None, *, owner_only: bool = False
+        self,
+        case_id: str,
+        user_id: Optional[str] = None,
+        *,
+        driver_only: bool = False,
+        creator_only: bool = False,
     ) -> Optional[Case]:
         """
         Get a case with optional access control
@@ -359,12 +373,17 @@ class CaseService(ICaseService):
         Args:
             case_id: Case identifier
             user_id: Optional user ID for access control
-            owner_only: Resolve through OWNERSHIP alone, ignoring team shares.
-                A share is read visibility, not ownership (ADR-013 D4, as
-                amended 2026-10-09: read-only until hand-off ships): a teammate
-                may see the case and must not be able to rewrite, close or
-                delete it, nor withdraw the owner's consent. Every mutating
-                caller passes ``True``; every read passes the default.
+            driver_only: Admit only the case's EFFECTIVE DRIVER (ADR-020 D2):
+                the investigation writes — turns' companions, edits, title,
+                resume and session writes, close, reports, case data. The
+                driver must also still READ the case, so a driver who lost
+                every share is refused here even before a release reached
+                them.
+            creator_only: Admit only the CREATOR (``cases.user_id``): the
+                governance writes — delete, share, unshare (ADR-020 D2).
+
+            Every read passes neither. They are exclusive; passing both is a
+            programming error.
 
         Returns:
             Case object if found and accessible, None otherwise
@@ -377,20 +396,17 @@ class CaseService(ICaseService):
             if not case:
                 return None
 
-            # Access control: the requester must OWN the case or — on a READ —
-            # have it SHARED to one of their teams (owned ∪ shared-to-my-teams,
-            # ADR-013 §D4), the single-case gate transitively guarding reports,
-            # exports, analytics and messages.
-            #
-            # ``owner_only`` drops the shared arm. It exists because the two
-            # questions are genuinely different and were previously answered by
-            # one gate: a teammate B who can legitimately READ A's shared case
-            # could then PUT, close and DELETE it, because the mutation paths
-            # resolved the case through this same allowlist. Inside one
-            # enterprise there is nothing else standing between them — the
-            # tenant admits both rows — so this flag is the whole of the
-            # ownership boundary.
-            if not await self._may_access(case, user_id, owner_only=owner_only):
+            # Access control (ADR-020 D2, through the one resolver
+            # ``_may_access``): a READ admits the creator ∪ shared-to-my-teams
+            # (ADR-013 §D4), the single-case gate transitively guarding
+            # reports, exports, analytics and messages. A WRITE narrows it to
+            # the effective driver (investigation) or the creator
+            # (governance). Inside one enterprise nothing else stands between
+            # two accounts — the tenant admits both rows — so these flags are
+            # the whole of the write boundary.
+            if not await self._may_access(
+                case, user_id, driver_only=driver_only, creator_only=creator_only
+            ):
                 return None
 
             return case
@@ -400,30 +416,62 @@ class CaseService(ICaseService):
             return None
 
     async def _may_access(
-        self, case: Case, user_id: Optional[str], *, owner_only: bool = False
+        self,
+        case: Case,
+        user_id: Optional[str],
+        *,
+        driver_only: bool = False,
+        creator_only: bool = False,
     ) -> bool:
-        """Whether ``user_id`` may reach ``case`` — owner ∪ shared-to-my-teams.
+        """Whether ``user_id`` may reach ``case`` — THE resolver (ADR-020 D2).
 
-        Extracted from :meth:`get_case` so a caller that must NOT swallow
-        infrastructure failures can apply the same rule (see
-        :meth:`_resolve_case_for_access`). One predicate, so the two cannot
-        drift apart on the question ADR-013 D4 (as amended 2026-10-09) answers.
+        - read (no flag): creator ∪ shared-to-my-teams;
+        - ``creator_only``: the creator;
+        - ``driver_only``: the effective driver (``COALESCE(driver_id,
+          user_id)``), who must ALSO pass the read rule. Driving grants no
+          visibility (ADR-020 D1), so a driver who has lost every share is
+          refused here even if no release has reached the row yet: security
+          never depends on the release hooks (D3).
+
+        A falsy ``user_id`` admits (an internal caller with no principal); every
+        route passes the authenticated caller. Extracted from :meth:`get_case`
+        so a caller that must NOT swallow infrastructure failures can apply the
+        same rule (see :meth:`_resolve_case_for_access`).
         """
-        if not user_id or case.user_id == user_id:
+        if driver_only and creator_only:
+            raise ValueError("driver_only and creator_only are exclusive")
+        if not user_id:
             return True
-        shared_case_ids = (
-            [] if owner_only else await self._resolve_shared_case_ids(user_id)
-        )
-        if case.case_id in shared_case_ids:
-            return True
-        logger.warning(
-            f"User {user_id} denied access to case {case.case_id} "
-            f"(owner: {case.user_id})"
-        )
-        return False
+        if creator_only:
+            admitted = case.user_id == user_id
+        elif driver_only:
+            admitted = case.effective_driver_id == user_id and (
+                case.user_id == user_id
+                or case.case_id in await self._resolve_shared_case_ids(user_id)
+            )
+        else:
+            admitted = (
+                case.user_id == user_id
+                or case.case_id in await self._resolve_shared_case_ids(user_id)
+            )
+        if not admitted:
+            logger.warning(
+                "User %s denied %s access to case %s (creator: %s, driver: %s)",
+                user_id,
+                "creator" if creator_only else "driver" if driver_only else "read",
+                case.case_id,
+                case.user_id,
+                case.effective_driver_id,
+            )
+        return admitted
 
     async def _resolve_case_for_access(
-        self, case_id: str, user_id: Optional[str], *, owner_only: bool = False
+        self,
+        case_id: str,
+        user_id: Optional[str],
+        *,
+        driver_only: bool = False,
+        creator_only: bool = False,
     ) -> Case:
         """Resolve a case for a gate, raising rather than answering ``None``.
 
@@ -434,8 +482,8 @@ class CaseService(ICaseService):
         database blips, which is the half-success-as-absence shape #1390 was
         about: the client abandons a case that is fine instead of retrying.
 
-        ``owner_only`` means what it means on :meth:`get_case`: resolve through
-        ownership alone, for a caller that WRITES.
+        ``driver_only`` / ``creator_only`` mean what they mean on
+        :meth:`get_case`.
 
         Raises:
             NotFoundError: the case does not exist, or ``user_id`` cannot reach
@@ -444,7 +492,9 @@ class CaseService(ICaseService):
                 answers 5xx for an infrastructure failure rather than 404.
         """
         case = await self.repository.get(case_id)
-        if not case or not await self._may_access(case, user_id, owner_only=owner_only):
+        if not case or not await self._may_access(
+            case, user_id, driver_only=driver_only, creator_only=creator_only
+        ):
             raise NotFoundError("Case", case_id)
         return case
 
@@ -494,10 +544,10 @@ class CaseService(ICaseService):
             # repository.get(), which skips the access check. We enforce
             # the check once up front; no privilege escalation window
             # exists because the user_id doesn't change between attempts.
-            # ``owner_only``: a share grants read visibility, not the right to
-            # rewrite the row or move its state (ADR-013 D4, as amended
-            # 2026-10-09: read-only until hand-off ships).
-            existing = await self.get_case(case_id, user_id, owner_only=True)
+            # ``driver_only``: editing the case and moving its state are the
+            # driver's investigation writes (ADR-020 D2); a reader who does not
+            # drive gets the absent-case answer.
+            existing = await self.get_case(case_id, user_id, driver_only=True)
             if not existing:
                 return False
 
@@ -539,6 +589,12 @@ class CaseService(ICaseService):
                 from faultmaven.modules.case.utils import update_case_with_retry
 
                 async def apply(case: Case) -> None:
+                    # Re-checked on every fresh load: a reassignment that
+                    # landed after the gate above bumped ``version``, so the
+                    # retry reloads — and must not then write as a driver the
+                    # caller no longer is (ADR-020 D4).
+                    if user_id and case.effective_driver_id != user_id:
+                        raise NotFoundError("Case", case_id)
                     for key, value in safe_updates.items():
                         if (
                             key == "description"
@@ -562,6 +618,10 @@ class CaseService(ICaseService):
 
         except ValidationException:
             raise
+        except NotFoundError:
+            # The driver changed under the retry: the same answer as a caller
+            # the gate refused up front.
+            return False
         except Exception as e:
             logger.error(f"Failed to update case {case_id}: {e}")
             raise ServiceException(f"Case update failed: {str(e)}") from e
@@ -643,8 +703,8 @@ class CaseService(ICaseService):
             True if the link was made and persisted
 
         Raises:
-            NotFoundError: the case does not exist, or ``user_id`` does not own
-                it — a teammate holding a share included. Raised rather than
+            NotFoundError: the case does not exist, or ``user_id`` is not its
+                effective driver — a reader who does not drive included. Raised rather than
                 returned as ``False`` so a caller can tell "you may not have
                 this" from "the link failed", which are a 404 and a 500
                 respectively; conflating them is what made this endpoint report
@@ -668,17 +728,14 @@ class CaseService(ICaseService):
             # ``get_case`` loads the case and answers both questions, so the
             # pair used to be two full loads of the same row per resume.
             #
-            # OWNER only. The link writes ``cases.last_activity`` and moves the
-            # session's current-case pointer, and a share is read-only until
-            # hand-off ships (ADR-013 D4, amended 2026-10-09, #1898). This used
-            # to admit owner ∪ shared "matching ``submit_turn``", on the
-            # premise that a teammate may post a turn into a shared case; the
-            # turn service has never admitted one.
+            # DRIVER only. The link writes ``cases.last_activity`` and moves
+            # the session's current-case pointer: a resume is an investigation
+            # write, the driver's (ADR-020 D2), matching the turn's own gate.
             #
             # NOT via ``get_case``: that swallows every exception into ``None``,
             # so a repository outage would raise ``NotFoundError`` here and the
             # route would answer 404 for a case that exists and is reachable.
-            await self._resolve_case_for_access(case_id, user_id, owner_only=True)
+            await self._resolve_case_for_access(case_id, user_id, driver_only=True)
 
             # Update last activity timestamp via repository
             await self.repository.update_activity_timestamp(case_id)
@@ -818,8 +875,8 @@ class CaseService(ICaseService):
             True if the case was resumed
 
         Raises:
-            NotFoundError: the case does not exist or the caller does not own
-                it (raised by ``link_session_to_case``).
+            NotFoundError: the case does not exist or the caller is not its
+                driver (raised by ``link_session_to_case``).
         """
         if not case_id or not session_id:
             raise ValidationException("Case ID and Session ID are required")
@@ -898,10 +955,12 @@ class CaseService(ICaseService):
                     # Case not found or no access - idempotent behavior
                     return True
 
-                # Check if user can delete (only owner can delete)
+                # Delete is governance: the CREATOR's, whoever drives
+                # (ADR-020 D2). A reader — the driver included — is refused.
                 if case.user_id != user_id:
                     logger.warning(
-                        f"User {user_id} denied delete access to case {case_id} (not owner)"
+                        f"User {user_id} denied delete access to case {case_id} "
+                        "(not the creator)"
                     )
                     return False
 
@@ -968,10 +1027,13 @@ class CaseService(ICaseService):
         ``case.state`` directly, which the terminal-state validator rejects
         (#915).
 
-        Owner-only write: shared-to-team readers can view a case but not
-        close it, mirroring the delete posture. Denial surfaces as
-        NotFoundError (404-not-403 — existence is not disclosed to
-        non-owners).
+        Driver-only write (ADR-020 D2): closing is an investigation write, so a
+        reader who does not drive — the creator included, while someone else
+        drives — is refused. Denial surfaces as NotFoundError (the absent-case
+        answer every ``driver_only`` gate gives). The retry's mutator re-checks
+        the driver on every fresh load, so a reassignment that lands between
+        the pre-check and the write refuses the close instead of closing a
+        case the caller no longer drives.
 
         Wrapped in ``update_case_with_retry`` so a concurrent save reloads
         and re-applies the closure; the mutator re-checks terminal state on
@@ -979,7 +1041,7 @@ class CaseService(ICaseService):
         transition surfaces as a conflict instead of silently re-closing.
 
         Raises:
-            NotFoundError: Unknown case, or the caller is not the owner.
+            NotFoundError: Unknown case, or the caller is not its driver.
             ConflictError: Case is already resolved/closed.
         """
         from faultmaven.core.investigation.terminal_transitions import (
@@ -992,8 +1054,8 @@ class CaseService(ICaseService):
         )
         from faultmaven.modules.case.utils import update_case_with_retry
 
-        case = await self.get_case(case_id, user_id)
-        if not case or case.user_id != user_id:
+        case = await self.get_case(case_id, user_id, driver_only=True)
+        if not case:
             raise NotFoundError("Case", case_id)
 
         def _already_terminal(state: CaseState) -> ConflictError:
@@ -1009,6 +1071,8 @@ class CaseService(ICaseService):
             raise _already_terminal(case.state)
 
         async def apply(fresh: Case) -> None:
+            if fresh.effective_driver_id != user_id:
+                raise NotFoundError("Case", case_id)
             if fresh.state.is_terminal:
                 raise _already_terminal(fresh.state)
             execute_user_closure(fresh, user_id)
@@ -1237,6 +1301,9 @@ class CaseService(ICaseService):
             # the only thing standing between a caller and asyncpg.
             created_after = filters.created_after if filters else None
             created_before = filters.created_before if filters else None
+            # access=write (ADR-020 D8): the cases the caller drives, pushed into
+            # the same WHERE clause so ``total`` describes the same set.
+            driven_only = bool(filters and filters.access == CaseAccess.WRITE)
             # Resolve team membership once for both the facet and the allowlist.
             team_ids = await self._resolve_user_team_ids(user_id)
             # Filter-by-team facet (ADR-013 §D4): narrow to one Team's shares.
@@ -1266,6 +1333,7 @@ class CaseService(ICaseService):
                 include_empty=include_empty,
                 created_after=created_after,
                 created_before=created_before,
+                driven_only=driven_only,
             )
 
             # NOTE: include_empty is applied in the repository query (above), not
@@ -1294,6 +1362,7 @@ class CaseService(ICaseService):
             # Enrich with team shares (ADR-013 §D4) in one batched query — empty
             # in standalone (team sharing unwired).
             await self._enrich_summaries_with_team_shares(summaries)
+            await self.fill_display_names(summaries)
 
             if summaries:
                 logger.debug(
@@ -1359,6 +1428,7 @@ class CaseService(ICaseService):
         # Enrich with team shares (ADR-013 §D4) in one batched query, as the
         # per-user list does; empty where team sharing is unwired.
         await self._enrich_summaries_with_team_shares(summaries)
+        await self.fill_display_names(summaries)
 
         return summaries, total
 
@@ -1414,6 +1484,7 @@ class CaseService(ICaseService):
                 limit=search_request.limit,
                 shared_case_ids=shared_case_ids,
                 restrict_case_ids=restrict_case_ids,
+                driven_only=search_request.access == CaseAccess.WRITE,
             )
 
             # Convert to CaseSummary
@@ -1423,6 +1494,7 @@ class CaseService(ICaseService):
 
             # Enrich with team shares (ADR-013 §D4); empty in standalone.
             await self._enrich_summaries_with_team_shares(summaries)
+            await self.fill_display_names(summaries)
 
             return summaries
 
@@ -1960,7 +2032,9 @@ class CaseService(ICaseService):
         if not case:
             raise ValidationException(f"Case {case_id} not found")
         if case.user_id != actor_user_id:
-            raise ValidationException("Only the case owner can share it with a team")
+            raise ValidationException(
+                "Only the case's creator can share it with a team"
+            )
         if not await is_team_member(self.team_service, actor_user_id, team_id):
             raise ValidationException(
                 "You can only share a case with a team you belong to"
@@ -1980,7 +2054,7 @@ class CaseService(ICaseService):
     async def unshare_case_from_team(
         self, case_id: str, team_id: str, actor_user_id: str
     ) -> bool:
-        """Remove a case's share to a Team (ADR-013 §D4). Owner-only.
+        """Remove a case's share to a Team (ADR-013 §D4). Creator-only.
 
         Returns True if a share row was removed (False if it wasn't shared).
 
@@ -1996,7 +2070,15 @@ class CaseService(ICaseService):
         if not case:
             raise ValidationException(f"Case {case_id} not found")
         if case.user_id != actor_user_id:
-            raise ValidationException("Only the case owner can unshare it from a team")
+            raise ValidationException(
+                "Only the case's creator can unshare it from a team"
+            )
+        # Release FIRST (ADR-020 D3): the share row commits in its own store,
+        # so the driver is handed back before the write that would cost them
+        # their last read path, never after. If the unshare then fails, the
+        # case has gone back to its creator needlessly, audited, and the
+        # creator can reassign it again.
+        await self.release_driver_before_unshare(case, team_id, actor_user_id)
         removed = await self.share_repository.unshare(
             resource_type="case",
             resource_id=case_id,

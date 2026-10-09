@@ -475,7 +475,10 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
     # Extract solution from case (if solutions tracked)
     solution_desc = "Solution applied and verified"
     solution_applied_at = case.resolved_at if case.resolved_at else case.updated_at
-    solution_applied_by = case.user_id
+    # When the solution row does not name who applied it, the fallback is the
+    # case's driver — the account that holds the investigation writes — not
+    # its creator (ADR-020 D6).
+    solution_applied_by = case.effective_driver_id
 
     # Get solution description from solutions list if available
     if case.solutions:
@@ -488,7 +491,7 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
             elif latest_solution.longterm_fix:
                 solution_desc = latest_solution.longterm_fix
             solution_applied_at = latest_solution.applied_at
-            solution_applied_by = latest_solution.applied_by or case.user_id
+            solution_applied_by = latest_solution.applied_by or case.effective_driver_id
 
     solution_applied = SolutionSummary(
         description=solution_desc,

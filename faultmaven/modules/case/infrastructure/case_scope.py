@@ -28,6 +28,7 @@ def case_scope_where(
     *,
     col_prefix: str = "",
     restrict_case_ids: Optional[List[str]] = None,
+    driven_only: bool = False,
 ) -> Optional[str]:
     """Return the SQL predicate scoping ``cases`` reads to a principal, or ``None``.
 
@@ -51,6 +52,12 @@ def case_scope_where(
     Returns ``None`` only when no arm applies (admin path with no team facet);
     otherwise the arms are ANDed together.
 
+    ``driven_only`` is ``access=write`` (ADR-020 D8): the cases whose EFFECTIVE
+    driver is ``user_id`` — ``driver_id = :user_id``, or no driver assigned and
+    the caller created it — ANDed onto the visibility arm, so it narrows and
+    never widens. With no ``user_id`` there is nobody to drive, and it matches
+    nothing.
+
     ``col_prefix`` qualifies the columns for queries that alias the ``cases``
     table (e.g. ``"c."`` in the PostgreSQL full-text search).
     """
@@ -71,6 +78,17 @@ def case_scope_where(
             )
         else:
             clauses.append(owner_clause)
+
+    if driven_only:
+        if user_id:
+            # ``COALESCE(driver_id, user_id) = :user_id``, spelled as two arms so
+            # each can use its own index.
+            clauses.append(
+                f"({col_prefix}driver_id = :user_id OR "
+                f"({col_prefix}driver_id IS NULL AND {col_prefix}user_id = :user_id))"
+            )
+        else:
+            clauses.append("1 = 0")
 
     if restrict_case_ids is not None:
         if not restrict_case_ids:

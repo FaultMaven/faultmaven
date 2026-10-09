@@ -1554,6 +1554,7 @@ Creation-date bounds:
 - `limit` (query, optional) — Items per page
 - `offset` (query, optional) — Number of items to skip
 - `include_empty` (query, optional) — Include cases with current_turn == 0 (newly created)
+- `access` (query, optional) — `read` (default): every case the caller can read — created by them or shared with one of their teams. `write`: only the cases the caller can write, those whose effective `driver_id` is the caller (ADR-020 D8). Applied in the same query as every other filter, so `total_count` describes the same set as the page.
 
 **Responses:**
 
@@ -1695,8 +1696,8 @@ and completion percentage.
 Update case details
 
 Updates case metadata such as title, description, state, priority, and tags.
-Only the case's OWNER may update it: a team share is read-only, and a
-teammate gets the answer an absent case gets.
+Only the case's DRIVER may update it (ADR-020 D2); any other reader gets
+the answer an absent case gets.
 
 **Tags:** `cases`
 
@@ -1731,9 +1732,8 @@ The operation is idempotent - subsequent requests will return
 204 No Content even if the case has already been deleted, and so does a
 request naming a case the caller cannot see.
 
-Only the OWNER may delete. A teammate who can read the case through a team
-share is refused with 403 (ADR-013 D4, as amended 2026-10-09: a share is
-read-only until hand-off ships).
+Only the case's CREATOR may delete it: delete is governance (ADR-020 D2).
+Any other reader — the driver included — is refused with 403.
 
 Returns 204 No Content on success.
 
@@ -1900,7 +1900,7 @@ Get specific data file details for a case.
 
 Remove data file from a case. Returns 204 No Content on success.
 
-Only the case's OWNER may call it; anyone else gets 404.
+Only the case's DRIVER may call it (ADR-020 D2); anyone else gets 404.
 
 **Tags:** `cases`
 
@@ -1914,6 +1914,61 @@ Only the case's OWNER may call it; anyone else gets 404.
 **Responses:**
 
 - `204` — Data deleted successfully
+- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+
+---
+
+### `/api/v1/cases/{case_id}/driver`
+
+#### PUT
+
+**Reassign Case Driver**
+
+Hand the case's investigation writes to another account (ADR-020 D4). The caller must be the case's creator or its current driver; the target must be one of `GET /cases/{case_id}/driver-candidates`. Naming the creator hands the case back to them; naming the current driver changes nothing. A change bumps the case's version, so a turn in flight fails with 409 `CASE_VERSION_CONFLICT`, and is recorded in the audit log.
+
+**Tags:** `cases`
+
+**Auth:** `HTTPBearer`
+
+**Parameters:**
+
+- `case_id` (path, required) — Case ID
+
+**Request body** (required):
+
+- `application/json` — [`CaseDriverUpdateRequest`](#casedriverupdaterequest)
+
+**Responses:**
+
+- `200` — Successful Response ([`CaseSummary`](#casesummary))
+- `403` — The caller reads the case but neither created nor drives it
+- `404` — No such case, or the caller cannot read it
+- `409` — `CASE_TERMINAL`: the case is resolved or closed. `CASE_VERSION_CONFLICT`: the case kept changing; reload and retry
+- `422` — The target is not a candidate for this case
+
+---
+
+### `/api/v1/cases/{case_id}/driver-candidates`
+
+#### GET
+
+**List Case Driver Candidates**
+
+Who the case's driver may be handed to (ADR-020 D4): the creator, then the active individual members of the teams the case is shared with, in the case's enterprise. Display names only, never email addresses. Readable by the case's creator and its current driver.
+
+**Tags:** `cases`
+
+**Auth:** `HTTPBearer`
+
+**Parameters:**
+
+- `case_id` (path, required) — Case ID
+
+**Responses:**
+
+- `200` — Successful Response ([`CaseDriverCandidateList`](#casedrivercandidatelist))
+- `403` — The caller reads the case but neither created nor drives it
+- `404` — No such case, or the caller cannot read it
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -1987,7 +2042,8 @@ Error responses (dispatched by ``api/exception_handlers.py``):
   (``NotFoundError``).
 - ``409`` — evidence has no backing file (``ConflictError`` with
   ``conflict_reason="no_backing_file"``).
-- ``403`` — caller does not own the case (``AuthorizationError``).
+- ``403`` — caller does not drive the case, or drives it but can no
+  longer read it (``AuthorizationError``, ADR-020 D2).
 - ``422`` — invalid or missing ``data_type``, OR the case is terminal
   (both ``ValidationException``). A closed or resolved investigation
   accepts questions, not mutation; the terminal refusal is raised after
@@ -2617,7 +2673,7 @@ Raises:
 
 **Share Case With Team**
 
-Share a case with a Team (ADR-013 §D4). Owner-only; the Team must be one the caller belongs to. Idempotent.
+Share a case with a Team (ADR-013 §D4). Creator-only (ADR-020 D2); the Team must be one the caller belongs to. Idempotent.
 
 **Tags:** `cases`
 
@@ -2644,7 +2700,7 @@ Share a case with a Team (ADR-013 §D4). Owner-only; the Team must be one the ca
 
 **Unshare Case From Team**
 
-Remove a case's share to a Team (ADR-013 §D4). Owner-only.
+Remove a case's share to a Team (ADR-013 §D4). Creator-only (ADR-020 D2). If the share was the case's driver's last way to read it, the case is handed back to its creator first (ADR-020 D3).
 
 **Tags:** `cases`
 
@@ -2677,9 +2733,9 @@ Generate a concise, case-specific title from case messages and metadata.
 
 **Returns:**
 - 200: TitleResponse with X-Correlation-ID header
-- 404: the case does not exist or the caller does not own it. Naming a
-  case writes it, and a team share is read-only, so a teammate is refused
-  here before any title is generated.
+- 404: the case does not exist or the caller does not drive it. Naming a
+  case writes it, an investigation write that is the driver's (ADR-020
+  D2), so any other reader is refused here before any title is generated.
 - 422: ValidationException body — see ``api/exception_handlers.py``
   and ``docs/architecture/specifications/exception-contract.md``.
   Raised when there is insufficient meaningful context to generate
@@ -5359,6 +5415,17 @@ endpoint never has to become an existence oracle for other tenants' cases.
 
 ---
 
+### CaseAccess
+
+Which cases a listing returns, by the caller's ACCESS (ADR-020 D8).
+
+Named for access, not identity, so a later rule changes what ``write``
+resolves to without changing the contract.
+
+**Values:** `read`, `write`
+
+---
+
 ### CaseCreateRequest
 
 Request to create a new case (v2.0).
@@ -5385,9 +5452,12 @@ Detailed case information for single case view.
 - `closed_at` (object, required)
 - `closure_reason` (object, required)
 - `created_at` (string, required)
+- `creator_display_name` (object, optional)
 - `current_stage` (object, required)
 - `current_turn` (integer, required) — The MESSAGE clock: every persisted exchange advances it, asides included. It is what `Message.turn_number`, evidence `uploaded_at_turn` and the conversation anchors are keyed on, so keep using it to ADDRESS a turn — and prefer `investigation_turn` to DISPLAY one.
 - `description` (string, required)
+- `driver_display_name` (object, optional)
+- `driver_id` (object, optional)
 - `enterprise_id` (string, required)
 - `escalated` (boolean, required)
 - `evidence_count` (integer, required)
@@ -5408,6 +5478,38 @@ Detailed case information for single case view.
 - `updated_at` (string, required)
 - `user_id` (string, required)
 - `valid_next_states` (array, optional) — Case actions the USER may select from the status menu — selectability, not legality. Only CLOSED is ever listed, because closing is the one decision that needs no precondition. The two legal edges that never appear here are earned from case content and offered by the agent through a confirmation handshake: INQUIRY → INVESTIGATING by a confirmed problem statement (Gate 1), and INVESTIGATING → RESOLVED by a confirmed root-cause elimination. Requesting either is refused.
+
+---
+
+### CaseDriverCandidate
+
+An account a case's driver may be handed to. Never an email address.
+
+**Properties:**
+
+- `display_name` (object, optional) — The account's display name; null when it cannot be resolved.
+- `user_id` (string, required)
+
+---
+
+### CaseDriverCandidateList
+
+Who a case's driver may be handed to (ADR-020 D4): the creator first,
+then the active individual members of the teams the case is shared with.
+
+**Properties:**
+
+- `candidates` (array, required)
+
+---
+
+### CaseDriverUpdateRequest
+
+Hand a case's driving to another account (ADR-020 D4).
+
+**Properties:**
+
+- `driver_id` (string, required) — The new driver: one of `GET /cases/{case_id}/driver-candidates`. Naming the creator hands the case back to them.
 
 ---
 
@@ -5505,6 +5607,7 @@ query.
 
 **Properties:**
 
+- `access` (object, optional) — `read` (default): search every case the caller can read. `write`: only the cases the caller drives — whose effective `driver_id` is the caller (ADR-020 D8). Applied in the same query as the text search.
 - `limit` (integer, optional) — Maximum results
 - `query` (string, required) — Search query
 - `state` (object, optional) — Narrow the results to one lifecycle state. Applied in the same query as the text search, so it constrains what the `limit` returns rather than thinning an already-limited page.
@@ -5545,8 +5648,11 @@ Minimal case information for list views.
 - `closed_at` (object, required)
 - `closure_reason` (object, required)
 - `created_at` (string, required)
+- `creator_display_name` (object, optional)
 - `current_turn` (integer, required) — The MESSAGE clock: every persisted exchange advances it, asides included. It is what `Message.turn_number`, evidence `uploaded_at_turn` and the conversation anchors are keyed on, so keep using it to ADDRESS a turn — and prefer `investigation_turn` to DISPLAY one.
 - `description` (string, required)
+- `driver_display_name` (object, optional)
+- `driver_id` (object, optional)
 - `enterprise_id` (string, required)
 - `investigation_turn` (object, optional) — How many of this case's turns so far were investigation work (#1329/#1387) — the same quantity `TurnResponse.investigation_turn` and `CaseUIResponse.investigation_turn` report. Excludes out-of-band turns (small talk, trivia, questions about FaultMaven itself), which are answered outside the investigation: an aside advances `current_turn` and leaves this alone. Null when the server predates the field.
 - `is_terminal` (boolean, required)

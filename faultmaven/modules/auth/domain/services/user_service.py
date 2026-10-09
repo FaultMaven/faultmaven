@@ -57,6 +57,7 @@ from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     PasswordResetMint,
     capture_state_read_at,
 )
+from faultmaven.modules.case.contracts import ICaseDriverRelease
 from faultmaven.services.base import BaseService
 from faultmaven.utils.password import (
     hash_password,
@@ -199,6 +200,15 @@ class UserService(BaseService):
         self.redis_client = redis_client
         self.audit_log = audit_log
         self._settings = get_settings()
+        # Bound after composition, once the case service exists (ADR-020 D3).
+        self._case_driver_release: Optional[ICaseDriverRelease] = None
+
+    def bind_case_driver_release(self, release: ICaseDriverRelease) -> None:
+        """Wire the case module's release port (ADR-020 D3): a deactivated
+        account's driven cases go back to their creators. Bound by the
+        composition root, which builds this service before the case service.
+        """
+        self._case_driver_release = release
 
     async def _audit_role_change(
         self,
@@ -756,13 +766,29 @@ class UserService(BaseService):
     async def deactivate_user(
         self,
         user_id: str,
+        *,
+        actor_user_id: Optional[str] = None,
     ) -> RepositoryUser:
-        """Deactivate user account (soft delete)."""
+        """Deactivate user account (soft delete).
+
+        Every case the account drives is handed back to its creator FIRST
+        (ADR-020 D3): the account row commits in the account store, which the
+        case store cannot share a transaction with, and a release after it
+        could leave a deactivated driver pinned to cases nobody else can
+        write. If the deactivation then fails, those cases went back to their
+        creators needlessly, audited, and can be reassigned.
+        ``actor_user_id`` is the operator, recorded on the release audit rows.
+        """
         self.logger.info(f"Deactivating user: {user_id}")
 
         user = await self.user_repo.get(user_id)
         if not user:
             raise NotFoundError("User", user_id)
+
+        if self._case_driver_release is not None:
+            await self._case_driver_release.release_driver_before_deactivation(
+                user_id=user_id, actor_user_id=actor_user_id
+            )
 
         user.is_active = False
         user.deleted_at = datetime.now(timezone.utc)
@@ -791,7 +817,7 @@ class UserService(BaseService):
         if not user.is_active:
             raise ConflictError("User already deactivated")
 
-        return await self.deactivate_user(user_id)
+        return await self.deactivate_user(user_id, actor_user_id=admin_user_id)
 
     async def activate_user(
         self,

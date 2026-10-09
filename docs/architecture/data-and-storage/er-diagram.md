@@ -1,6 +1,6 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-10-08 12:11 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-10-09 23:37 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
@@ -14,7 +14,7 @@
 | `case_entities` | 9 | `case_id, entity_type, entity_value, evidence_id` | cases, enterprises, evidence, organizations |
 | `case_messages` | 11 | `message_id` | cases, enterprises, organizations |
 | `case_tags` | 6 | `tag_id` | cases, enterprises, organizations |
-| `cases` | 27 | `case_id` | enterprises, organizations, users |
+| `cases` | 28 | `case_id` | enterprises, organizations, users |
 | `causal_edges` | 10 | `edge_id` | cases, causal_nodes, enterprises, organizations |
 | `causal_node_evidence` | 9 | `node_id, evidence_id` | causal_nodes, enterprises, evidence, organizations |
 | `causal_nodes` | 22 | `node_id` | cases, enterprises, organizations |
@@ -108,6 +108,7 @@ erDiagram
         VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         VARCHAR user_id FK
+        VARCHAR driver_id FK
         VARCHAR title
         TEXT description
         VARCHAR state

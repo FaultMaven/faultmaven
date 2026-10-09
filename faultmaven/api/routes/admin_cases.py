@@ -379,6 +379,7 @@ async def open_case_content(
 
     detail = CaseDetail.from_case(case)
     detail.shared_team_ids = await case_service.get_case_team_ids(case_id)
+    await case_service.fill_display_names([detail])
     return AdminCaseContentResponse(
         access=access.access,
         grant=BreakGlassGrant.from_domain(access.grant) if access.grant else None,

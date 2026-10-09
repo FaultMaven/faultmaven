@@ -264,7 +264,8 @@ class Case(BaseModel):
     # Identity
     # ============================================================
     case_id: str                    # Primary key
-    user_id: Optional[str]          # FK to users (SET NULL on user delete)
+    user_id: Optional[str]          # FK to users (SET NULL on user delete) — the CREATOR (ADR-020)
+    driver_id: Optional[str]        # FK to users (SET NULL) — the DRIVER; NULL = the creator drives (ADR-020)
     enterprise_id: str              # FK to enterprises (CASCADE) — the isolation key (ADR-017)
     organization_id: Optional[str]  # FK to organizations (SET NULL) — billing attribution only
     title: str                      # Max 200 chars
@@ -324,8 +325,8 @@ class Case(BaseModel):
 > **One database**: the case tables live in the same database as the users, organizations and
 > enterprises tables (the one `DATABASE_URL` names), so the references between them are real
 > foreign keys: `cases.enterprise_id` → `enterprises` (`ON DELETE CASCADE`),
-> `cases.organization_id` → `organizations` (`ON DELETE SET NULL`) and `cases.user_id` → `users`
-> (`ON DELETE SET NULL`).
+> `cases.organization_id` → `organizations` (`ON DELETE SET NULL`), and `cases.user_id` (the
+> creator) and `cases.driver_id` (the driver, ADR-020) → `users` (`ON DELETE SET NULL`).
 
 ### 4.1 Table Design (case-domain tables)
 
@@ -379,6 +380,9 @@ CREATE TABLE cases (
     -- team_id column DROPPED in migration 028 (d0e1f2a3b4c5). Team visibility is
     -- now carried by the polymorphic `resource_shares` table, not a column here.
     user_id VARCHAR(36) REFERENCES users(user_id) ON DELETE SET NULL,
+    -- The DRIVER (ADR-020, migration 011): who holds the investigation writes.
+    -- NULL = the creator drives (effective driver = COALESCE(driver_id, user_id)).
+    driver_id VARCHAR(36) REFERENCES users(user_id) ON DELETE SET NULL,
     title VARCHAR(200) NOT NULL,
     description TEXT NOT NULL DEFAULT '',
 
@@ -449,6 +453,7 @@ CREATE TABLE cases (
 CREATE INDEX ix_cases_enterprise_id ON cases(enterprise_id);
 CREATE INDEX ix_cases_organization_id ON cases(organization_id);
 CREATE INDEX ix_cases_user_id ON cases(user_id);
+CREATE INDEX ix_cases_driver_id ON cases(driver_id);
 CREATE INDEX ix_cases_state ON cases(state);
 CREATE INDEX ix_cases_last_activity_at ON cases(last_activity_at);
 CREATE INDEX ix_cases_closed_at ON cases(closed_at);

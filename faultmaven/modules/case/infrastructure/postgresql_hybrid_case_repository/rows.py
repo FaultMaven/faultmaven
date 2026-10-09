@@ -331,6 +331,10 @@ def _case_record_params(case: Case, last_activity_at: datetime) -> Dict[str, Any
     return {
         "case_id": case.case_id,
         "user_id": case.user_id,
+        # ADR-020 D1: the stored driver, NULL = the creator drives. Carried on
+        # every full-row save so a save never writes back a stale driver; a
+        # concurrent reassignment bumps ``version`` and refuses the save.
+        "driver_id": case.driver_id,
         "enterprise_id": case.enterprise_id,
         "organization_id": case.organization_id,
         "title": case.title,

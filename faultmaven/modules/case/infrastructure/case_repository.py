@@ -21,6 +21,10 @@ from faultmaven.modules.case.domain.models.documentation import (
     DocumentationData,
     EscalationState,
 )
+from faultmaven.modules.case.domain.models.driver import (
+    CaseDriverChange,
+    DrivenCase,
+)
 from faultmaven.modules.case.domain.models.evidence import (
     CaseEntity,
     EntityType,
@@ -386,6 +390,7 @@ class CaseRepository(ABC):
         include_empty: bool = True,
         created_after: Optional[datetime] = None,
         created_before: Optional[datetime] = None,
+        driven_only: bool = False,
     ) -> tuple[List[Case], int]:
         """
         List cases with optional filters.
@@ -418,6 +423,8 @@ class CaseRepository(ABC):
             created_before: EXCLUSIVE upper bound on ``created_at``. The window
                 is ``[created_after, created_before)``; see created_bounds.py
                 for why the upper end is half-open.
+            driven_only: ``access=write`` (ADR-020 D8) — only the cases whose
+                effective driver is ``user_id``, ANDed with the read scope.
 
         Returns:
             Tuple of (cases, total_count)
@@ -602,6 +609,8 @@ class CaseRepository(ABC):
         state: Optional[CaseState] = None,
         limit: int = 20,
         shared_case_ids: Optional[List[str]] = None,
+        restrict_case_ids: Optional[List[str]] = None,
+        driven_only: bool = False,
     ) -> tuple[List[Case], int]:
         """
         Search cases by text query.
@@ -945,6 +954,32 @@ class CaseRepository(ABC):
         """
         pass
 
+    @abstractmethod
+    async def reassign_driver(
+        self,
+        case_id: str,
+        *,
+        driver_id: Optional[str],
+        expected_version: int,
+        change: CaseDriverChange,
+    ) -> Optional[int]:
+        """Versioned change of the stored driver plus its audit row, one
+        transaction (ADR-020 D4). See ``ICaseRepository.reassign_driver``."""
+        pass
+
+    @abstractmethod
+    async def release_driver(
+        self, case_id: str, *, driver_id: str, change: CaseDriverChange
+    ) -> bool:
+        """Hand the case back to its creator iff ``driver_id`` drives it by
+        assignment (ADR-020 D3). See ``ICaseRepository.release_driver``."""
+        pass
+
+    @abstractmethod
+    async def list_cases_driven_by(self, user_id: str) -> List[DrivenCase]:
+        """Every case ``user_id`` drives by assignment (ADR-020 D3)."""
+        pass
+
     async def begin_transaction(self):
         """
         Begin a transaction context (optional feature).
@@ -988,6 +1023,9 @@ class InMemoryCaseRepository(CaseRepository):
         # composite (case, type, value, evidence) tuple preserved
         # inside each row.
         self._case_entities: Dict[tuple[str, str], List[CaseEntity]] = {}
+        # The ``case_driver_changed`` audit rows the SQL repositories write
+        # with each driver change (ADR-020 D4), in write order.
+        self.driver_changes: List[CaseDriverChange] = []
 
     async def save(
         self,
@@ -1085,6 +1123,54 @@ class InMemoryCaseRepository(CaseRepository):
         """The receipt stored under the table's unique key, or ``None``."""
         return self._receipts.get((enterprise_id, case_id, author_id, idempotency_key))
 
+    def _store_driver(self, case: Case, driver_id: Optional[str]) -> None:
+        """Store a COPY carrying the new driver and the bumped version, so a
+        holder of the old object (an in-flight turn) gets the version conflict
+        on its next save, exactly as against the SQL repositories."""
+        self._cases[case.case_id] = case.model_copy(
+            update={"driver_id": driver_id, "version": case.version + 1}
+        )
+
+    async def reassign_driver(
+        self,
+        case_id: str,
+        *,
+        driver_id: Optional[str],
+        expected_version: int,
+        change: CaseDriverChange,
+    ) -> Optional[int]:
+        """Versioned change of the stored driver plus its audit row."""
+        case = self._cases.get(case_id)
+        if case is None or case.version != expected_version:
+            return None
+        self._store_driver(case, driver_id)
+        self.driver_changes.append(change)
+        return self._cases[case_id].version
+
+    async def release_driver(
+        self, case_id: str, *, driver_id: str, change: CaseDriverChange
+    ) -> bool:
+        """Hand the case back to its creator iff ``driver_id`` drives it."""
+        case = self._cases.get(case_id)
+        if case is None or case.driver_id != driver_id:
+            return False
+        self._store_driver(case, None)
+        self.driver_changes.append(change)
+        return True
+
+    async def list_cases_driven_by(self, user_id: str) -> List[DrivenCase]:
+        """Every case ``user_id`` drives by assignment."""
+        return [
+            DrivenCase(
+                case_id=case.case_id,
+                enterprise_id=case.enterprise_id,
+                creator_id=case.user_id,
+                driver_id=case.driver_id,
+            )
+            for case in sorted(self._cases.values(), key=lambda c: c.case_id)
+            if case.driver_id and case.driver_id == user_id
+        ]
+
     async def get(self, case_id: str) -> Optional[Case]:
         """Get case from memory.
 
@@ -1122,6 +1208,7 @@ class InMemoryCaseRepository(CaseRepository):
         include_empty: bool = True,
         created_after: Optional[datetime] = None,
         created_before: Optional[datetime] = None,
+        driven_only: bool = False,
     ) -> tuple[List[Case], int]:
         """List cases with filters."""
         # Filter cases
@@ -1133,6 +1220,13 @@ class InMemoryCaseRepository(CaseRepository):
             shared = set(shared_case_ids or ())
             filtered = [
                 c for c in filtered if c.user_id == user_id or c.case_id in shared
+            ]
+
+        # access=write (ADR-020 D8): the effective driver is the caller,
+        # narrowing the read scope above; nobody drives for no caller.
+        if driven_only:
+            filtered = [
+                c for c in filtered if user_id and c.effective_driver_id == user_id
             ]
 
         # Filter-by-team facet: narrow to an explicit case-id allowlist (one
@@ -1347,6 +1441,7 @@ class InMemoryCaseRepository(CaseRepository):
         limit: int = 20,
         shared_case_ids: Optional[List[str]] = None,
         restrict_case_ids: Optional[List[str]] = None,
+        driven_only: bool = False,
     ) -> tuple[List[Case], int]:
         """Search cases by text query (simple substring match)."""
         query_lower = query.lower()
@@ -1366,6 +1461,12 @@ class InMemoryCaseRepository(CaseRepository):
                 # Apply user filter: owned ∪ shared-to-my-teams (ADR-013 §D4).
                 # Empty shared set leaves owner-only (behavior-neutral until U10).
                 if user_id and case.user_id != user_id and case.case_id not in shared:
+                    continue
+
+                # access=write (ADR-020 D8): only what the caller drives.
+                if driven_only and not (
+                    user_id and case.effective_driver_id == user_id
+                ):
                     continue
 
                 # Filter-by-team facet: narrow to one team's shares.

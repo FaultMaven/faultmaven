@@ -198,6 +198,7 @@ class ICaseRepository(Protocol):
         include_empty: bool = True,
         created_after: Optional[datetime] = None,
         created_before: Optional[datetime] = None,
+        driven_only: bool = False,
     ) -> tuple[List["Case"], int]:
         """List cases with optional filters.
 
@@ -239,6 +240,11 @@ class ICaseRepository(Protocol):
         Like ``include_empty`` they belong in the query, not in a Python
         post-filter: a bound applied after pagination would drop rows from an
         already-sliced page and disagree with the total.
+
+        ``driven_only`` (``access=write``, ADR-020 D8) narrows the scope to the
+        cases whose EFFECTIVE driver is ``user_id``
+        (``COALESCE(driver_id, user_id)``), ANDed with the read scope, in the
+        same WHERE clause as the count.
         """
         ...
 
@@ -255,6 +261,7 @@ class ICaseRepository(Protocol):
         limit: int = 20,
         shared_case_ids: Optional[List[str]] = None,
         restrict_case_ids: Optional[List[str]] = None,
+        driven_only: bool = False,
     ) -> tuple[List["Case"], int]:
         """Search cases by text query.
 
@@ -267,7 +274,8 @@ class ICaseRepository(Protocol):
 
         ``shared_case_ids`` widens the owner-only scope to
         ``owned ∪ shared-to-my-teams`` (ADR-013 §D4); ``restrict_case_ids`` is the
-        filter-by-team facet that narrows to one team's shares. See ``list``.
+        filter-by-team facet that narrows to one team's shares;
+        ``driven_only`` narrows to the cases the caller drives. See ``list``.
 
         Returns ``(page, total_count)``, where the total is the count of ALL
         matches — computed from the same WHERE clause, before the ``limit``,
@@ -396,6 +404,44 @@ class ICaseRepository(Protocol):
         """Delete a report by ID."""
         ...
 
+    async def reassign_driver(
+        self,
+        case_id: str,
+        *,
+        driver_id: Optional[str],
+        expected_version: int,
+        change: "CaseDriverChange",
+    ) -> Optional[int]:
+        """Set the stored driver (ADR-020 D4), versioned: one compare-and-swap
+        on ``cases.version`` that bumps it, and the ``case_driver_changed``
+        audit row, in ONE transaction.
+
+        ``driver_id`` is the STORED value — ``None`` when the creator is to
+        drive. Returns the new version, or ``None`` when the row's version is
+        no longer ``expected_version`` (nothing written); the caller reloads
+        and re-decides. The bump is what makes an in-flight turn's save fail
+        with a version conflict.
+        """
+        ...
+
+    async def release_driver(
+        self, case_id: str, *, driver_id: str, change: "CaseDriverChange"
+    ) -> bool:
+        """Hand a case back to its creator (ADR-020 D3), iff ``driver_id`` still
+        drives it by assignment: ``driver_id`` set to NULL, ``version`` bumped,
+        and the audit row, in ONE transaction. Conditional on the stored driver
+        rather than on a version, so a concurrent turn's save cannot make a
+        release miss. Returns whether the row changed.
+        """
+        ...
+
+    async def list_cases_driven_by(self, user_id: str) -> List["DrivenCase"]:
+        """Every case ``user_id`` drives BY ASSIGNMENT (``driver_id = user_id``),
+        as the light rows a release decides on. A case its creator drives with
+        the column NULL is not one: there is nothing to release.
+        """
+        ...
+
     # Standalone evidence operations (create/get/list/delete/link/update,
     # set/get primary) were removed in storage redesign 2026-04 phase 2.
     # Standalone evidence path is deleted; evidence is case-tied only and
@@ -469,6 +515,11 @@ from faultmaven.modules.case.domain.models.documentation import (
     EscalationType,
     GeneratedDocument,
     JournalEntry,
+)
+from faultmaven.modules.case.domain.models.driver import (
+    CaseDriverChange,
+    CaseDriverChangeReason,
+    DrivenCase,
 )
 from faultmaven.modules.case.domain.models.evidence import (
     CaseEntity,
@@ -590,6 +641,63 @@ class ICaseMetadataReader(Protocol):
 
 
 # ============================================================
+# The case driver's ports (ADR-020)
+# ============================================================
+
+
+class ICaseDriverRelease(Protocol):
+    """Hand cases back to their creators BEFORE an operation outside the case
+    module takes a driver's read access away (ADR-020 D3).
+
+    Implemented by the case service, called by the auth module's team and
+    account services. Each method decides which of the account's driven cases
+    would lose their driver's read access once the caller's own write lands,
+    and releases exactly those — FIRST, in the same request, because the
+    caller's write commits in a store this module cannot share a transaction
+    with. Release-first fails safe: if the caller's write then fails or is
+    refused, the case has handed back to its creator needlessly, with an
+    audited reason, and the creator can reassign it again. Returns how many
+    cases were released.
+    """
+
+    async def release_driver_before_team_leave(
+        self, *, enterprise_id: str, team_id: str, user_id: str
+    ) -> int:
+        """``user_id`` is about to leave ``team_id``: release every case they
+        drive that is shared with ``team_id`` and with no other team of
+        theirs."""
+        ...
+
+    async def release_driver_before_deactivation(
+        self, *, user_id: str, actor_user_id: Optional[str]
+    ) -> int:
+        """``user_id`` is about to be deactivated: release every case they
+        drive."""
+        ...
+
+
+class CaseAccount(Protocol):
+    """The account fields the case module reads: names for the case rows
+    (ADR-020 D5) and the facts that make an account a driver candidate (D4).
+    Never an email address."""
+
+    user_id: str
+    display_name: str
+    is_active: bool
+    account_kind: str
+
+
+class ICaseAccountReader(Protocol):
+    """The accounts among ``user_ids`` anchored to ``enterprise_id``, in one
+    read; an id anchored elsewhere, or naming nobody, is absent. The user
+    repository satisfies it (``get_many_in_enterprise``)."""
+
+    async def get_many_in_enterprise(
+        self, enterprise_id: str, user_ids: Sequence[str]
+    ) -> List[CaseAccount]: ...
+
+
+# ============================================================
 # Module Exports
 # ============================================================
 
@@ -606,6 +714,9 @@ __all__ = [
     # Repository and Service Contracts
     "ICaseRepository",
     "ICaseMetadataReader",
+    "ICaseDriverRelease",
+    "ICaseAccountReader",
+    "CaseAccount",
     "CaseMetadataUnavailableError",
     "CaseMetadataNotGrantedError",
     "CaseMetadataRefusedError",
@@ -641,6 +752,8 @@ __all__ = [
     # Case domain models
     "Case",
     "CaseAction",
+    "CaseDriverChange",
+    "CaseDriverChangeReason",
     "CaseMetadata",
     "CaseSeverity",
     "CaseState",
@@ -652,6 +765,7 @@ __all__ = [
     "InquiryData",
     "DocumentationData",
     "DocumentType",
+    "DrivenCase",
     "EscalationState",
     "EscalationType",
     "Evidence",

@@ -36,7 +36,7 @@ enterprise" — carry a reason slug on ``TeamOperationRefused``.
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from faultmaven.exceptions import NotFoundError
 from faultmaven.infrastructure.persistence.user_repository import UserRepository
@@ -53,6 +53,7 @@ from faultmaven.models.interfaces_user import (
 )
 from faultmaven.modules.auth.domain.personal_tenant import email_domain
 from faultmaven.modules.auth.exceptions import TeamOperationRefused
+from faultmaven.modules.case.contracts import ICaseDriverRelease
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +177,20 @@ class TeamService:
         self._enterprises = enterprise_repository
         self._users = user_repository
         self._invitation_ttl_days = invitation_ttl_days
+        # Bound after composition: the case service is built after this one
+        # and reads team membership through it (ADR-020 D3).
+        self._case_driver_release: Optional[ICaseDriverRelease] = None
+
+    def bind_case_driver_release(self, release: ICaseDriverRelease) -> None:
+        """Wire the case module's release port (ADR-020 D3).
+
+        A setter rather than a constructor argument because the dependency is
+        circular at composition: the case service needs this service to
+        resolve membership, and this service needs the case service to hand a
+        leaver's driven cases back. The composition root binds it once both
+        exist.
+        """
+        self._case_driver_release = release
 
     # -- resolution: the KB read scope -------------------------------------- #
 
@@ -262,6 +277,27 @@ class TeamService:
         )
         return created
 
+    async def list_member_ids_of_teams(
+        self, *, enterprise_id: str, team_ids: List[str]
+    ) -> Dict[str, List[str]]:
+        """``team_id`` → member ids, for the live teams of ``enterprise_id``.
+
+        NOT gated on the caller's own membership, unlike :meth:`list_members`:
+        its one caller is the case service resolving a case's driver
+        candidates (ADR-020 D4), which has already established that its caller
+        is the case's creator or driver, and a creator who has since left a
+        team must still be able to hand the case to its members. A retired
+        team, or one of another enterprise, contributes nothing.
+        """
+        rosters: Dict[str, List[str]] = {}
+        for team_id in team_ids:
+            team, roster = await self._team_repository.get_team_with_members(
+                enterprise_id, team_id
+            )
+            if team is not None:
+                rosters[team_id] = [member.user_id for member in roster]
+        return rosters
+
     async def list_members(
         self, *, enterprise_id: str, team_id: str, user_id: str
     ) -> List[TeamMember]:
@@ -289,7 +325,21 @@ class TeamService:
         go. The repository also revokes the retired team's pending invitations
         in that transaction: an offer to a team nobody can see can be neither
         accepted nor declined.
+
+        **The leaver's driven cases are released FIRST** (ADR-020 D3): every
+        case shared with this team that the leaver drives and could read only
+        through it goes back to its creator, before the membership write. The
+        membership commits under the team-row lock in the team repository's
+        own transaction, which the case store cannot join, and a release after
+        it could leave a driver pinned to a case they can no longer read.
+        Release-first fails safe: a leave then refused (the last admin) has
+        handed those cases back needlessly, audited, and the creator can
+        reassign them.
         """
+        if self._case_driver_release is not None:
+            await self._case_driver_release.release_driver_before_team_leave(
+                enterprise_id=enterprise_id, team_id=team_id, user_id=user_id
+            )
         outcome = await self._team_repository.leave_team(
             enterprise_id, team_id, user_id, TEAM_ROLE_ADMIN
         )

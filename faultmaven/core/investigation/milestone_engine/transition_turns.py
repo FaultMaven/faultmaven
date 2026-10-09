@@ -78,7 +78,9 @@ async def _confirm_pending_transition(
         confirm_pending_transition,
     )
 
-    executed = confirm_pending_transition(case, case.user_id)
+    # The confirming ACTOR (ADR-020 D6): the turn's principal, which is the
+    # case's effective driver — no one else may submit a turn.
+    executed = confirm_pending_transition(case, case.effective_driver_id)
     if not executed and (case.pending_transition or {}).get("to_state") == "resolved":
         # INV-37 resolve-preservation: the pending CLOSE
         # pivoted to a RESOLVED proposal (the case became

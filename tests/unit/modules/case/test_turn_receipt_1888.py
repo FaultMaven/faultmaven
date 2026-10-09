@@ -207,13 +207,20 @@ class _TeamCaseService(CaseService):
     """The real ``CaseService``; its read arm also admits ``TEAMMATE`` (a team
     share, which the standalone wiring has no resolver for)."""
 
-    async def get_case(self, case_id, user_id=None, *, owner_only=False):
+    async def get_case(
+        self, case_id, user_id=None, *, driver_only=False, creator_only=False
+    ):
         case = await self.repository.get(case_id)
         if case is None:
             return None
-        if user_id in (case.user_id, None) or (user_id == TEAMMATE and not owner_only):
+        if user_id is None:
             return case
-        return None
+        if creator_only:
+            return case if user_id == case.user_id else None
+        reads = user_id in (case.user_id, TEAMMATE)
+        if driver_only:
+            return case if reads and user_id == case.effective_driver_id else None
+        return case if reads else None
 
 
 @dataclass

@@ -84,7 +84,7 @@ async def test_an_account_in_no_organization_is_billed_to_nobody(service):
 class TestTheDegradedReadHonoursOwnership:
     """Ownership applies on BOTH arms of the stand-in's ``get_case`` (#1398).
 
-    It used to apply only under ``owner_only=True``, so every read-arm caller —
+    It used to apply only under a write flag, so every read-arm caller —
     which is most of them, including the session resume — got any case from any
     caller. That made a route-level gate resolving through this stand-in inert
     in exactly the mode where a working fallback is the point.
@@ -93,7 +93,9 @@ class TestTheDegradedReadHonoursOwnership:
     the real read arm is owner ∪ shared-to-my-teams, and this stand-in cannot
     consult the share allowlist because ``resource_shares`` lives in the
     repository it is standing in for — so in this mode no share can exist to
-    honour.
+    honour. Nor can it see a reassignment, so the creator is also the only
+    driver: every arm — read, ``driver_only``, ``creator_only`` — admits the
+    creator alone (ADR-020 D2).
     """
 
     async def _owned_case(self, service):
@@ -105,12 +107,21 @@ class TestTheDegradedReadHonoursOwnership:
         case = await self._owned_case(service)
 
         assert await service.get_case(case.case_id, OWNER) is not None
-        assert await service.get_case(case.case_id, OWNER, owner_only=True) is not None
+        assert await service.get_case(case.case_id, OWNER, driver_only=True) is not None
+        assert (
+            await service.get_case(case.case_id, OWNER, creator_only=True) is not None
+        )
+
+    async def test_a_stranger_is_refused_on_both_write_arms(self, service):
+        case = await self._owned_case(service)
+
+        assert await service.get_case(case.case_id, "u_x", driver_only=True) is None
+        assert await service.get_case(case.case_id, "u_x", creator_only=True) is None
 
     async def test_a_stranger_is_refused_on_the_READ_arm(self, service):
         case = await self._owned_case(service)
 
-        # The regression: `owner_only` defaults False, so this used to return
+        # The regression: the write flag defaults False, so this used to return
         # the owner's case to anyone who asked.
         assert await service.get_case(case.case_id, "user_stranger") is None
 

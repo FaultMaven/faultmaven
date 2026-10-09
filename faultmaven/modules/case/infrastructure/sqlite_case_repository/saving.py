@@ -55,6 +55,7 @@ async def _upsert_case_record(db, case: Case) -> None:
     update_query = text("""
             UPDATE cases SET
                 user_id = :user_id,
+                driver_id = :driver_id,
                 enterprise_id = :enterprise_id,
                 organization_id = :organization_id,
                 title = :title,
@@ -105,7 +106,7 @@ async def _upsert_case_record(db, case: Case) -> None:
         # New case — INSERT with version = 1.
         insert_query = text("""
                 INSERT INTO cases (
-                    case_id, user_id, enterprise_id, organization_id, title, description,
+                    case_id, user_id, driver_id, enterprise_id, organization_id, title, description,
                     state, source, investigation_strategy, current_turn,
                     turns_without_progress, created_at, updated_at,
                     closure_reason, last_activity_at, resolved_at, closed_at,
@@ -115,7 +116,7 @@ async def _upsert_case_record(db, case: Case) -> None:
                     escalation_state, documentation, progress, metadata,
                     version
                 ) VALUES (
-                    :case_id, :user_id, :enterprise_id, :organization_id, :title, :description,
+                    :case_id, :user_id, :driver_id, :enterprise_id, :organization_id, :title, :description,
                     :state, :source, :investigation_strategy, :current_turn,
                     :turns_without_progress, :created_at, :updated_at,
                     :closure_reason, :last_activity_at, :resolved_at, :closed_at,

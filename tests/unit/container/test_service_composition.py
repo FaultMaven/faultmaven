@@ -367,3 +367,54 @@ def test_the_resolver_is_wired_exactly_when_an_organization_can_exist(
     resolver = create_billing_organization_resolver(object())
 
     assert (resolver is not None) is wired
+
+
+# =============================================================================
+# The driver release port and the account reader (ADR-020 D3, D5)
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestTheDriverWiring:
+    """The case service is built after the team and user services, so the
+    release port is BOUND after it exists — nothing else connects a leave or a
+    deactivation to the cases it must hand back."""
+
+    def _composed(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from faultmaven.container.providers import services as providers
+        from faultmaven.modules.case.infrastructure.case_repository import (
+            InMemoryCaseRepository,
+        )
+
+        team_service = SimpleNamespace(bound=None)
+        team_service.bind_case_driver_release = lambda port: setattr(
+            team_service, "bound", port
+        )
+        monkeypatch.setattr(
+            providers, "create_team_service", lambda *a, **k: team_service
+        )
+        settings = _settings(monkeypatch, AUTH_MODE="local", JWT_SECRET_KEY="x" * 40)
+        container = _container(settings)
+        container.case_repository = InMemoryCaseRepository()
+        container.user_store = SimpleNamespace(user_repository=object())
+        register_services(container)
+        return container, team_service
+
+    def test_leave_and_deactivation_reach_the_case_service(self, monkeypatch):
+        container, team_service = self._composed(monkeypatch)
+        case_service = container.get_service("case_service")
+
+        assert team_service.bound is case_service
+        assert container.get_service("user_service")._case_driver_release is (
+            case_service
+        )
+
+    def test_the_case_service_reads_names_from_the_account_store(self, monkeypatch):
+        container, _ = self._composed(monkeypatch)
+
+        assert (
+            container.get_service("case_service").account_reader
+            is container.user_store.user_repository
+        )

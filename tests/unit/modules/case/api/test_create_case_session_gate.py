@@ -69,7 +69,12 @@ def _case_service():
             source=source,
         )
 
-    return SimpleNamespace(create_case=create_case, created=created)
+    async def fill_display_names(rows):
+        return None
+
+    return SimpleNamespace(
+        create_case=create_case, created=created, fill_display_names=fill_display_names
+    )
 
 
 def _session(user_id=CALLER):
