@@ -11,6 +11,7 @@ ARCHITECTURAL PRINCIPLES:
 - Frontend compatibility validation built-in
 """
 
+import json
 import logging
 import os
 import secrets
@@ -3068,16 +3069,19 @@ class AgentSettings(BaseSettings):
         ),
     )
 
-    @field_validator("provider_timeout_overrides")
+    @field_validator("provider_timeout_overrides", mode="wrap")
     @classmethod
-    def _overrides_within_the_turn_bounds(cls, v: Dict[str, int]) -> Dict[str, int]:
+    def _overrides_within_the_turn_bounds(cls, raw: Any, handler) -> Dict[str, int]:
         """Hold every override to ``agent_request_timeout``'s own bounds (#1905).
 
         Out of range refuses the boot, as the global value does, naming each
-        provider and the bound it broke.
+        provider and the bound it broke. A wrap validator so the message quotes
+        the value as configured (``true``, not the ``1`` it coerces to).
         """
+        v = handler(raw)
+        configured = raw if isinstance(raw, dict) else v
         out_of_range = [
-            f"{provider}={seconds}"
+            f"{provider}={json.dumps(configured.get(provider, seconds))}"
             for provider, seconds in v.items()
             if not MIN_AGENT_TIMEOUT_SECONDS <= seconds <= MAX_AGENT_TIMEOUT_SECONDS
         ]

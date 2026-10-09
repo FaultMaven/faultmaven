@@ -94,8 +94,8 @@ TURN_BUDGET_RESERVE_SECONDS = 1.0
 # After it the response still awaits the route's auto-title (bounded by
 # ``AUTO_TITLE_TIMEOUT_SECONDS``, only while the case carries its placeholder
 # title), so a client's own timeout must exceed the ceiling + this + that + its
-# network margin: the sum is ``config/turn_ceiling``'s response bound, published
-# as ``turnResponseBoundSeconds`` (#1905).
+# network margin: the sum is ``config/turn_ceiling``'s nominal response bound,
+# published as ``turnResponseBoundSeconds`` (#1905).
 #
 # Paid for by the LLM steps, not by the commit: ``spendable_turn_budget`` and
 # ``backstop_turn_budget`` both subtract it, so a ladder that runs the budget

@@ -6,11 +6,15 @@ The one owner of two numbers every reader of the turn's timing needs:
   ``AGENT_PROVIDER_TIMEOUT_OVERRIDES`` entry. The turn route bounds the turn's
   preparation at it and binds it as the deadline the retry ladder spends
   against (``core/investigation/turn_budget``).
-* **The response bound** — the ceiling plus the two steps that may still run
-  after it: the turn's commit (``TURN_COMMIT_RESERVE_SECONDS``, kept back from
-  the ceiling's own budget but run outside its ``wait_for``) and the auto-title
-  (``AUTO_TITLE_TIMEOUT_SECONDS``). No turn is answered later than this; a
-  client's own timeout is this plus its network margin.
+* **The response bound** — NOMINAL: the ceiling plus the two steps that may
+  still run after it, the turn's commit (``TURN_COMMIT_RESERVE_SECONDS``, kept
+  back from the ceiling's own budget but run outside its ``wait_for``) and the
+  auto-title (``AUTO_TITLE_TIMEOUT_SECONDS``). Not a hard guarantee: it leaves
+  out the work before the deadline is bound (case lookup, the in-flight claim,
+  the receipt lookup), the commit's actual duration (the reserve is a measured
+  p99 x 10, not a timeout) and the auto-title's case read before its own
+  ``wait_for``. A client's own timeout is this plus a network margin that also
+  covers those.
 
 Resolved per call, never cached: the chat provider is a dashboard override
 (``llm_config_overrides``' ``primary_provider``) that an operator can switch on
@@ -44,8 +48,8 @@ class TurnCeiling:
     provider: Optional[str]
     #: The bound on the turn's preparation, and the deadline bound for it.
     ceiling_seconds: float
-    #: The longest the turn route can take to answer: ceiling + commit reserve +
-    #: auto-title bound.
+    #: The NOMINAL bound on the turn route's answer: ceiling + commit reserve +
+    #: auto-title bound (the module docstring lists what it leaves out).
     response_bound_seconds: float
 
 

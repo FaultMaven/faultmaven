@@ -119,6 +119,14 @@ class TestEveryOverrideIsBoundedLikeTheGlobalTimeout:
         assert "groq=29" in message
         assert "gemini" not in message.split("out of range:")[1].split("[")[0]
 
+    def test_the_message_quotes_the_value_as_configured(self, monkeypatch):
+        """``true`` coerces to 1; the operator should read what they wrote."""
+        with pytest.raises(ValidationError) as refused:
+            _mk_settings(
+                monkeypatch, agent_request_timeout=120, overrides={"groq": True}
+            )
+        assert "groq=true" in str(refused.value)
+
     def test_a_non_integer_override_refuses_to_load(self, monkeypatch):
         with pytest.raises(ValidationError) as refused:
             _mk_settings(

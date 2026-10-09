@@ -2744,11 +2744,13 @@ A response lost after the commit (a disconnect, a timeout on the client's
 side) is recovered by retrying with the same key. Without a key, every
 request runs as a new turn.
 
-**Timing.** No turn is answered later than `limits.turnResponseBoundSeconds`
-on `GET /api/v1/meta/capabilities` (the turn ceiling plus the commit and
-auto-title steps after it); size a client timeout as that plus a network
-margin, and re-read it per session, because an operator can switch the chat
-provider and with it the ceiling. A **504** commits nothing:
+**Timing.** `limits.turnResponseBoundSeconds` on
+`GET /api/v1/meta/capabilities` is the NOMINAL bound on this route's answer
+(the turn ceiling plus the commit reserve and the auto-title bound after
+it). It leaves out short steps (the case and receipt lookups before the
+deadline starts, the commit's actual duration), so size a client timeout as
+that plus a network margin that covers them, and re-read it per session,
+because an operator can switch the chat provider and with it the ceiling. A **504** commits nothing:
 `REQUEST_TIMEOUT` means the turn used its whole ceiling on this input and is
 likely to do so again, so retry at most once (it carries no `Retry-After`);
 `LLM_TIMEOUT` is a transient provider timeout, retried after `Retry-After`.
@@ -3933,7 +3935,8 @@ The bare ``/v1`` path stays as a deprecated alias because extensions
 already installed are pinned to it.
 
 ``limits.turnCeilingSeconds`` and ``limits.turnResponseBoundSeconds`` are
-the turn's time bounds for the chat provider in force (#1905), resolved on
+the turn's ceiling and its NOMINAL response bound (clients add a network
+margin) for the chat provider in force (#1905), resolved on
 every request: an operator who switches the chat provider changes which
 per-provider ceiling applies, so a client re-reads them per session rather
 than caching them for the life of an install.
@@ -5211,7 +5214,7 @@ Limits a client applies before sending, and the turn's time bounds.
 - `allowedExtensions` (array, required)
 - `maxFileBytes` (integer, required)
 - `turnCeilingSeconds` (number, required) — The turn ceiling for the chat provider in force: a turn that uses all of it is answered 504 REQUEST_TIMEOUT, nothing committed.
-- `turnResponseBoundSeconds` (number, required) — The longest POST /cases/{case_id}/turns takes to answer: the ceiling plus the commit and auto-title steps after it. Size a client timeout as this plus a network margin. Both values are resolved per request and change when an operator switches the chat provider, so re-read them per session.
+- `turnResponseBoundSeconds` (number, required) — The nominal bound on how long POST /cases/{case_id}/turns takes to answer: the ceiling plus the commit reserve and the auto-title bound after it. Not a hard guarantee: it leaves out short steps (the case and receipt lookups before the deadline starts, the commit's actual duration), so size a client timeout as this plus a network margin that covers them. Both values are resolved per request and change when an operator switches the chat provider, so re-read them per session.
 
 ---
 
@@ -6968,7 +6971,7 @@ so a dashboard provider switch shows here on the next read.
 
 - `chat_provider` (object, required) — The chat provider the ceiling was resolved for; null when none is configured and AGENT_REQUEST_TIMEOUT applies.
 - `turn_ceiling_seconds` (number, required) — AGENT_REQUEST_TIMEOUT, or this provider's AGENT_PROVIDER_TIMEOUT_OVERRIDES entry: the bound on a turn's preparation and the deadline its LLM calls budget against.
-- `turn_response_bound_seconds` (number, required) — The longest the turn route can take to answer: the ceiling plus the commit reserve and the auto-title bound. Clients size their timeout from it (plus a network margin).
+- `turn_response_bound_seconds` (number, required) — The nominal bound on the turn route's answer: the ceiling plus the commit reserve and the auto-title bound. Clients size their timeout from it plus a network margin, which also covers the short steps it leaves out (the case and receipt lookups before the deadline starts, the commit's actual duration).
 
 ---
 

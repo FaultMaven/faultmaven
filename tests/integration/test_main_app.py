@@ -945,14 +945,32 @@ def test_capabilities_publish_the_turn_ceiling_for_the_chat_provider(
         assert seen[("gemini", path)] == (200.0, 200.0 + after_ceiling)
 
 
-def test_capabilities_response_is_exactly_its_published_model(booted_app_client):
-    """The response model declares the whole served shape: nothing it filters
-    out, nothing it declares that the handler fails to send."""
+async def test_capabilities_handler_returns_exactly_its_published_model():
+    """The model declares the handler's whole RAW shape, at every level.
+
+    Read from the handler's own return value, not from the served body: the
+    response model filters the served body, so a key the handler adds and the
+    model lacks would vanish there before any assertion saw it, and ship
+    undocumented. Both team-service states are exercised, so the comparison
+    covers whatever the handler builds either way.
+    """
+    from types import SimpleNamespace
+
     from faultmaven.api.models import BackendCapabilities
+    from faultmaven.main import get_capabilities
 
-    body = booted_app_client.get("/api/v1/meta/capabilities").json()
+    def _fields(model) -> set:
+        return set(model.model_fields)
 
-    assert set(body) == set(BackendCapabilities.model_fields)
-    for section in ("features", "limits", "branding"):
-        model = BackendCapabilities.model_fields[section].annotation
-        assert set(body[section]) == set(model.model_fields)
+    for team_service in (None, Mock()):
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(team_service=team_service))
+        )
+        raw = await get_capabilities(request)
+
+        assert set(raw) == _fields(BackendCapabilities)
+        for section in ("features", "limits", "branding"):
+            model = BackendCapabilities.model_fields[section].annotation
+            assert set(raw[section]) == _fields(model), section
+        # And the model accepts it as served: nothing coerced away.
+        assert BackendCapabilities.model_validate(raw).model_dump() == raw

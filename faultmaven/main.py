@@ -760,7 +760,8 @@ async def get_capabilities(request: Request):
     already installed are pinned to it.
 
     ``limits.turnCeilingSeconds`` and ``limits.turnResponseBoundSeconds`` are
-    the turn's time bounds for the chat provider in force (#1905), resolved on
+    the turn's ceiling and its NOMINAL response bound (clients add a network
+    margin) for the chat provider in force (#1905), resolved on
     every request: an operator who switches the chat provider changes which
     per-provider ceiling applies, so a client re-reads them per session rather
     than caching them for the life of an install.

@@ -513,9 +513,11 @@ class TurnTimingStatus(BaseModel):
     )
     turn_response_bound_seconds: float = Field(
         description=(
-            "The longest the turn route can take to answer: the ceiling plus "
+            "The nominal bound on the turn route's answer: the ceiling plus "
             "the commit reserve and the auto-title bound. Clients size their "
-            "timeout from it (plus a network margin)."
+            "timeout from it plus a network margin, which also covers the "
+            "short steps it leaves out (the case and receipt lookups before "
+            "the deadline starts, the commit's actual duration)."
         )
     )
 
@@ -617,11 +619,14 @@ class BackendCapabilityLimits(BaseModel):
     )
     turnResponseBoundSeconds: float = Field(
         description=(
-            "The longest POST /cases/{case_id}/turns takes to answer: the "
-            "ceiling plus the commit and auto-title steps after it. Size a "
-            "client timeout as this plus a network margin. Both values are "
-            "resolved per request and change when an operator switches the "
-            "chat provider, so re-read them per session."
+            "The nominal bound on how long POST /cases/{case_id}/turns takes "
+            "to answer: the ceiling plus the commit reserve and the auto-title "
+            "bound after it. Not a hard guarantee: it leaves out short steps "
+            "(the case and receipt lookups before the deadline starts, the "
+            "commit's actual duration), so size a client timeout as this plus "
+            "a network margin that covers them. Both values are resolved per "
+            "request and change when an operator switches the chat provider, "
+            "so re-read them per session."
         )
     )
 

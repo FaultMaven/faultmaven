@@ -524,11 +524,13 @@ async def submit_turn(
     side) is recovered by retrying with the same key. Without a key, every
     request runs as a new turn.
 
-    **Timing.** No turn is answered later than `limits.turnResponseBoundSeconds`
-    on `GET /api/v1/meta/capabilities` (the turn ceiling plus the commit and
-    auto-title steps after it); size a client timeout as that plus a network
-    margin, and re-read it per session, because an operator can switch the chat
-    provider and with it the ceiling. A **504** commits nothing:
+    **Timing.** `limits.turnResponseBoundSeconds` on
+    `GET /api/v1/meta/capabilities` is the NOMINAL bound on this route's answer
+    (the turn ceiling plus the commit reserve and the auto-title bound after
+    it). It leaves out short steps (the case and receipt lookups before the
+    deadline starts, the commit's actual duration), so size a client timeout as
+    that plus a network margin that covers them, and re-read it per session,
+    because an operator can switch the chat provider and with it the ceiling. A **504** commits nothing:
     `REQUEST_TIMEOUT` means the turn used its whole ceiling on this input and is
     likely to do so again, so retry at most once (it carries no `Retry-After`);
     `LLM_TIMEOUT` is a transient provider timeout, retried after `Retry-After`.
@@ -864,7 +866,10 @@ async def submit_turn(
             )
             raise HTTPException(
                 status_code=504,
-                detail="Request timeout - processing is taking longer than expected. Please try again.",
+                detail=(
+                    "The turn ran out of time and nothing was saved; the same "
+                    "request is likely to time out again."
+                ),
                 headers={
                     "x-correlation-id": correlation_id,
                     "x-error-code": "REQUEST_TIMEOUT",

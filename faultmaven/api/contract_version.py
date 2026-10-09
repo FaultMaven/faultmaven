@@ -1869,8 +1869,8 @@ asked to accept, and it belongs to a person.
 #   declares the shape already served, and adds two numbers to `limits`:
 #   `turnCeilingSeconds` (`AGENT_REQUEST_TIMEOUT`, or the chat provider's
 #   `AGENT_PROVIDER_TIMEOUT_OVERRIDES` entry) and `turnResponseBoundSeconds`
-#   (that plus the commit reserve and the auto-title bound: the longest the
-#   turn route takes to answer). Resolved per request for the chat provider in
+#   (that plus the commit reserve and the auto-title bound: the NOMINAL bound
+#   on the turn route's answer, to which a client adds its network margin). Resolved per request for the chat provider in
 #   force, so they move when an operator switches it.
 # * `POST /cases/{case_id}/turns` documents `LLM_TIMEOUT` beside
 #   `REQUEST_TIMEOUT` in its 504 `x-error-code` enum. Both commit nothing.

@@ -236,7 +236,9 @@ otherwise write the placeholder back) and is bounded by
 placeholder title); the upload links (`mark_linked`) run in a background task
 the response does not wait for. So a client's own timeout must exceed
 the ceiling + the commit reserve + 15 s + its network margin; the server
-publishes that sum as `limits.turnResponseBoundSeconds` on
+publishes that sum, a NOMINAL bound (it omits the pre-deadline lookups and
+the commit's actual duration, which the margin covers), as
+`limits.turnResponseBoundSeconds` on
 `GET /api/v1/meta/capabilities` (`config/turn_ceiling.resolve_turn_ceiling`,
 resolved per request for the chat provider in force), and clients size their
 timeout from it rather than restating the arithmetic (#1905). Every
