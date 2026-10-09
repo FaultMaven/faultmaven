@@ -6,7 +6,8 @@ with less than the reserve left. It must cover the commit's real latency with
 room to spare, so it is sized from measurement — the p99 of the commit, on
 SQLite and on PostgreSQL, times a safety factor — and these helpers are the
 measurement. ``tests/performance/test_turn_commit_latency.py`` runs it on
-SQLite and judges the p99 against its ``budgets.py`` row;
+SQLite and judges it against its ``budgets.py`` row — the p50 per pull request,
+the p99 against the reserve in the absolute nightly (#1902);
 ``tests/integration/test_turn_rows_commit_with_case_postgres_1882.py`` runs it
 on PostgreSQL under RLS and prints the numbers (integration tests judge no
 clock, #1579).

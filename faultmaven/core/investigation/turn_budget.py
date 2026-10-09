@@ -105,8 +105,12 @@ TURN_BUDGET_RESERVE_SECONDS = 1.0
 # through the production wrapper over cases grown to 60 turns with the rows a
 # turn carries (``tests/turn_commit_latency.py``), measured p99 185 ms on
 # SQLite and 270-315 ms on PostgreSQL 16 under RLS; the worse p99 times a
-# safety factor of 10 is 3.15 s, rounded up. The two tests that measure it fail
-# when a run's p99 exceeds a third of this. Re-measure before changing it.
+# safety factor of 10 is 3.15 s, rounded up. The SQLite measurement
+# (``tests/performance/test_turn_commit_latency.py``) fails the
+# ``FM_BENCHMARK_ABSOLUTE`` nightly when a run's p99 exceeds this reserve, and a
+# pull request when its p50 exceeds a calibrated regression anchor (#1902: under
+# xdist a neighbour's fsync owns the p99, not the commit); the PostgreSQL twin
+# prints its numbers and judges no clock. Re-measure before changing it.
 TURN_COMMIT_RESERVE_SECONDS = 3.5
 
 

@@ -122,7 +122,11 @@ class Budget:
         # than trusted. It is not only a swap detector: a regression anchor
         # that has grown LOOSER than the product target means the operation
         # no longer meets its commitment with 2-3x headroom, which is news
-        # and should stop the build rather than be absorbed.
+        # and should stop the build rather than be absorbed. That second
+        # reading holds only when both numbers judge one statistic; for a row
+        # in ``MIXED_STATISTIC_BUDGETS`` (``tests/unit/ci/
+        # test_benchmark_calibration.py``: p50 per PR, p99 nightly) the
+        # ordering is a swap check only.
         if not self._ordered():
             raise ValueError(
                 f"{self.test}: the regression anchor must be {direction} than "
