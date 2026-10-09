@@ -7,14 +7,22 @@ measures the commit on a file-backed SQLite through the production wrapper
 the numbers, and judges them against ``TURN_COMMIT`` in ``budgets.py`` — one
 statistic per mode, because the two modes ask two questions (#1902):
 
-* a pull request asks "did the commit get more expensive?", and judges the
-  **p50** against the row's regression anchor. In Test Standalone this runs
-  beside the whole suite under xdist, where a neighbour's fsync puts seconds
-  into a p99 that the CPU calibration cannot see (#1902's three red runs);
-  the median does not move for that and does move for a costlier commit.
+* a pull request asks "did the commit get grossly more expensive?", and
+  judges the **p50** against the row's regression anchor. The required gates
+  (Standalone and Cloud) run this beside the whole suite under xdist, where a
+  neighbour's fsync puts seconds into a p99 that the CPU calibration cannot
+  see (#1902's three red runs); the median does not move for that. It is a
+  gross-regression detector only: a commit must get about 12x slower on the
+  development box, about 6x on CI, to trip it, so it catches an O(n^2) path
+  or an N+1, not a commit doing twice the work (``budgets.py``, the row).
 * the ``FM_BENCHMARK_ABSOLUTE`` nightly asks "does the commit fit its
   reserve?", and judges the **p99** against the reserve itself. That job runs
   ``tests/performance/`` alone, without xdist, so the tail is the commit's.
+
+``judge_turn_commit`` makes that choice, and
+``tests/unit/ci/test_benchmark_calibration.py::TestTheTurnCommitJudge`` holds
+it to both columns with synthetic timings: picking one statistic for both
+modes would delete either #1882's reserve guard or #1902's fix silently.
 
 The PostgreSQL measurement is in
 ``tests/integration/test_turn_rows_commit_with_case_postgres_1882.py``.
@@ -25,6 +33,7 @@ The PostgreSQL measurement is in
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from typing import List
 
 import pytest
 from sqlalchemy import event
@@ -49,6 +58,23 @@ from tests.wallclock import absolute_mode, assert_latency_within
 from .budgets import TURN_COMMIT
 
 ENTERPRISE = "ent_1882_latency"
+
+
+def judge_turn_commit(timings: List[float]) -> None:
+    """Judge a run's commit timings: the p50 per pull request, the p99 nightly.
+
+    The mode picks the statistic here; ``asserted_target`` picks the number it
+    is held to (the regression anchor, calibrated, or the raw reserve under
+    ``FM_BENCHMARK_ABSOLUTE``). The two must agree, and a unit test with
+    synthetic timings is what holds them together (module docstring).
+    """
+    pct = 99 if absolute_mode() else 50
+    assert_latency_within(
+        percentile(timings, pct),
+        TURN_COMMIT,
+        f"p{pct} of a turn's one commit (SQLite)",
+        detail=summarize(timings),
+    )
 
 
 @pytest.fixture
@@ -95,13 +121,4 @@ async def test_the_turn_commit_fits_its_reserve(sessionless):
         timings += await measure_turn_commits(sessionless, case)
 
     print(f"\nSQLite turn commit: {summarize(timings)}")
-    # The mode picks the statistic; ``asserted_target`` picks the number it is
-    # held to (the reserve under absolute mode, the regression anchor
-    # otherwise). Both halves are in the module docstring and the row's.
-    pct = 99 if absolute_mode() else 50
-    assert_latency_within(
-        percentile(timings, pct),
-        TURN_COMMIT,
-        f"p{pct} of a turn's one commit (SQLite)",
-        detail=summarize(timings),
-    )
+    judge_turn_commit(timings)

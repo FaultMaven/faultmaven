@@ -465,6 +465,12 @@ class TestTheBudgetTable:
         # the product target, so a green pull request implies the product
         # target held too, and the nightly's job is the wall clock rather
         # than the regression.
+        #
+        # ‼ The implication needs both numbers to judge ONE statistic. A row
+        # in MIXED_STATISTIC_BUDGETS judges two, so it is skipped here by
+        # name rather than passed on a premise that is false for it.
+        if name in MIXED_STATISTIC_BUDGETS:
+            pytest.skip(f"{name}: {MIXED_STATISTIC_BUDGETS[name]}")
         budget = ALL_ANCHORS[name]
         if isinstance(budget, ThroughputBudget):
             assert budget.regression >= budget.product_target
@@ -514,6 +520,19 @@ class TestTheBudgetTable:
         assert name in _suite_sources(
             directory
         ), f"{name} is in the {directory.name} table but no test there uses it"
+
+    def test_every_mixed_statistic_entry_is_a_live_row(self):
+        """A stale entry would skip the implication guard for a name that may
+        one day be reused by a row that does judge one statistic."""
+        stale = sorted(set(MIXED_STATISTIC_BUDGETS) - set(ALL_ANCHORS))
+        assert not stale, f"no such budget: {stale}"
+        # The one entry is the row whose test picks its statistic by mode;
+        # this pins that the declaration and the row agree on which test.
+        assert MIXED_STATISTIC_BUDGETS.keys() == {"TURN_COMMIT"}
+        assert (
+            performance_table.TURN_COMMIT.test
+            == "test_the_turn_commit_fits_its_reserve"
+        )
 
     def test_no_test_carries_two_budgets_without_saying_why(self):
         """‼ Two budgets on one test are usually one budget twice.
@@ -607,6 +626,41 @@ class TestWhichNumberIsAsserted:
             assert_throughput_at_least(60.0, budget, "probe")  # under 80/s
         monkeypatch.setenv(calibration.ABSOLUTE_MODE_ENV, "1")
         assert_throughput_at_least(60.0, budget, "probe")  # over 50/s
+
+
+class TestTheTurnCommitJudge:
+    """``judge_turn_commit`` picks its statistic by mode (#1902), held to both
+    columns with synthetic timings: the reserve guard (#1882) in the nightly,
+    the median per pull request. Hard-coding either percentile fails one."""
+
+    #: A healthy median with a 2.2% tail past the 3.5 s reserve.
+    _STALLED_TAIL = [0.08] * 176 + [4.0] * 4
+
+    @staticmethod
+    def _judge():
+        from tests.performance.test_turn_commit_latency import judge_turn_commit
+
+        return judge_turn_commit
+
+    def test_the_nightly_fails_a_tail_past_the_reserve(self, monkeypatch):
+        monkeypatch.setenv(calibration.ABSOLUTE_MODE_ENV, "1")
+        with pytest.raises(AssertionError) as excinfo:
+            self._judge()(self._STALLED_TAIL)
+        assert "product target" in str(excinfo.value)
+        assert "p99" in str(excinfo.value)
+
+    def test_a_pull_request_does_not_judge_the_tail(self, monkeypatch):
+        # Calibration pinned at 1.0, so 4.0 s against the 0.25 s anchor would
+        # fail if the tail were judged here: this is what kills a hard-coded 99.
+        _pin_calibration(monkeypatch, calibration.CALIBRATION_REFERENCE_SECONDS)
+        self._judge()(self._STALLED_TAIL)
+
+    def test_a_pull_request_fails_a_slower_median(self, monkeypatch):
+        _pin_calibration(monkeypatch, calibration.CALIBRATION_REFERENCE_SECONDS)
+        with pytest.raises(AssertionError) as excinfo:
+            self._judge()([2.0] * 180)
+        assert "regression budget" in str(excinfo.value)
+        assert "p50" in str(excinfo.value)
 
 
 class TestDiscrimination:
@@ -928,6 +982,16 @@ INDEPENDENT_MEASUREMENTS = {
     "test_context_isolation_performance": (
         "the wall clock over the gather, and the spread between the "
         "per-task means each task measured for itself"
+    ),
+}
+
+#: Rows whose two numbers judge two DIFFERENT statistics of one timed window,
+#: chosen by mode in the test, and why. For these "a green pull request implies
+#: the product target held" is false, so the guard built on it skips them.
+MIXED_STATISTIC_BUDGETS = {
+    "TURN_COMMIT": (
+        "p50 per pull request, p99 in the absolute nightly; a green pull "
+        "request does not imply the commit reserve held (#1902)"
     ),
 }
 

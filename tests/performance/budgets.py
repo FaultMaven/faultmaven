@@ -389,15 +389,15 @@ ADVERSARIAL_LINE_EXTRACTION = LatencyBudget(
 #: whose two numbers judge two different statistics of the same 180 samples,
 #: chosen by mode in the test:
 #:
-#: * per pull request, the **p50** against ``regression``. A commit-cost
-#:   regression (more rows re-upserted per save, an O(n) path) moves the
-#:   median; a neighbouring xdist worker's fsync or a scheduler stall moves
-#:   only the tail, and the calibration (#1555) measures CPU throughput, so it
-#:   cannot see either. Test Standalone failed on the p99 of three pull
-#:   requests that did not touch the commit (#1902): p50 180.8 / 218.2 /
-#:   143.4 ms, p99 2089.7 / 3349.1 / 2284.7 ms (max 42.4 s) against limits of
-#:   2024 / 2750 / 1887 ms (0.5 s x 4.05 / 5.50 / 3.77 calibration; runs
-#:   37867131425, 37774700908, 37775185302).
+#: * per pull request, the **p50** against ``regression``. A neighbouring
+#:   xdist worker's fsync or a scheduler stall moves only the tail, and the
+#:   calibration (#1555) measures CPU throughput, so it cannot see either; a
+#:   costlier commit moves the median too. The required gates (Standalone and
+#:   Cloud) both collect this directory under xdist, and Test Standalone
+#:   failed on the p99 of three pull requests that did not touch the commit
+#:   (#1902): p50 180.8 / 218.2 / 143.4 ms, p99 2089.7 / 3349.1 / 2284.7 ms
+#:   (max 42.4 s) against limits of 2024 / 2750 / 1887 ms (0.5 s x 4.05 /
+#:   5.50 / 3.77 calibration; runs 37867131425, 37774700908, 37775185302).
 #: * in the ``FM_BENCHMARK_ABSOLUTE`` nightly, the **p99** against
 #:   ``product_target``, the commit reserve itself: the commit must fit in the
 #:   end of the turn budget kept back for it. That job runs this directory on
@@ -405,6 +405,18 @@ ADVERSARIAL_LINE_EXTRACTION = LatencyBudget(
 #:
 #: So, unlike every other row, a green pull request does not imply this row's
 #: product target held; the nightly is the only place the reserve is judged.
+#: ``MIXED_STATISTIC_BUDGETS`` in ``tests/unit/ci/test_benchmark_calibration.py``
+#: declares that, so the guard built on the implication skips this row by name.
+#:
+#: ‼ What the per-PR check catches, measured: only a GROSS regression. The
+#: limit is the anchor times the calibration, so a commit has to get about 12x
+#: slower to trip it on the development box (0.25 s x 3.5 against a 75 ms
+#: median) and about 6x on CI (x3.8-5.5 against 143-218 ms). In #1909's review
+#: a uniform 2.9x slowdown and a commit that upserts every message row twice
+#: both passed. It catches an O(n^2) path or an N+1 across the case's rows, not
+#: a commit that does twice the work. The looseness is the table's, not this
+#: row's: ``TURN_COMMIT_P99`` before it sat at the same multiple, and
+#: re-anchoring from CI-joined measurements is a follow-up of #1902.
 #:
 #: Anchored 2026-10-09 from **28 runs** on the development box (48 cores, load
 #: average 9-31 from other lanes throughout). ``reference`` is the p95 of the
