@@ -254,8 +254,8 @@ async def generate_case_reports(
 
     try:
         # ``owner_only``: regeneration flips ``is_current`` across the case's
-        # reports, so it is a WRITE on rows a read share never covered (ADR-017
-        # D4). Inside one enterprise nothing else separates a teammate from the
+        # reports, so it is a WRITE on rows a read share never covered (ADR-013
+        # D4, as amended 2026-10-09). Inside one enterprise nothing else separates a teammate from the
         # owner, so this flag is the whole of the boundary here.
         case = await case_service.get_case(
             case_id, current_user.user_id, owner_only=True

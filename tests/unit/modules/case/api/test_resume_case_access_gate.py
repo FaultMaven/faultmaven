@@ -92,10 +92,12 @@ async def test_forwards_the_caller_to_the_gate(
 
     assert response.status_code == 200, response.text
     service.resume_case_in_session.assert_awaited_once_with(CASE_ID, SESSION_ID, CALLER)
-    # …and the route's own early gate resolved against the CALLER, on the read
-    # arm. Without this an unscoped `get_case(case_id)` passes every test here.
+    # …and the route's own early gate resolved against the CALLER, through
+    # OWNERSHIP: a resume writes the case, and a share is read-only (ADR-013
+    # D4, amended 2026-10-09, #1898). Without this an unscoped
+    # `get_case(case_id)` passes every test here.
     assert service.calls == [
-        {"case_id": CASE_ID, "user_id": CALLER, "owner_only": False}
+        {"case_id": CASE_ID, "user_id": CALLER, "owner_only": True}
     ]
 
 
@@ -118,13 +120,15 @@ async def test_a_case_the_caller_cannot_reach_is_a_404(
     service.resume_case_in_session.assert_not_awaited()
 
 
-async def test_admits_a_teammate_holding_a_share(
+async def test_refuses_a_teammate_holding_a_share(
     build_app, call_api, owner_or_shared_case_service
 ):
-    """Owner ∪ shared, deliberately — see the handler's comment.
+    """Owner only — a share is read-only until hand-off ships (#1898).
 
-    Narrowing the early gate to `owner_only=True` fails here rather than
-    silently refusing every teammate who may already post turns to the case.
+    This route used to admit a teammate "matching `submit_turn`", on the false
+    premise that a teammate may post turns into a shared case; the turn service
+    has always refused one. The teammate gets exactly the answer an absent case
+    gets, and neither the session nor the link is reached.
     """
     service = _make_case_service(
         owner_or_shared_case_service, owner="user-owner", shared_to=(CALLER,)
@@ -133,7 +137,9 @@ async def test_admits_a_teammate_holding_a_share(
 
     response = await call_api(app, "POST", PATH)
 
-    assert response.status_code == 200, response.text
+    assert response.status_code == 404, response.text
+    assert response.json()["detail"] == "Case not found or resume not permitted"
+    service.resume_case_in_session.assert_not_awaited()
 
 
 async def test_the_services_access_verdict_is_a_404_not_a_500(

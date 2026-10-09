@@ -76,7 +76,7 @@ def mock_case_service(mock_user):
 
     Session routes are gated on the parent case (#1044): on a READ the caller
     must own the case or have it shared to one of their teams, and on a WRITE
-    they must OWN it (ADR-017 D4 — a share is read visibility, not ownership).
+    they must OWN it (ADR-013 D4, as amended 2026-10-09 — a share is read-only).
     Every test below acts as the case's owner, so this returns a case for them
     and ``None`` for anyone else — the same two meanings ``CaseService.get_case``
     collapses in production.

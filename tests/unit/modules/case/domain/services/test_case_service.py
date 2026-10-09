@@ -745,19 +745,28 @@ class TestTheLinkGatesTheCase:
         )
 
     @pytest.mark.asyncio
-    async def test_a_teammate_holding_a_share_reaches_it(self, mock_repo):
-        """Owner ∪ shared, matching ``submit_turn``: a teammate who may post a
-        turn into a shared case must be able to attach a session to it.
+    async def test_a_teammate_holding_a_share_is_refused(self, mock_repo):
+        """Owner only: a share is read-only until hand-off ships (ADR-013 D4,
+        amended 2026-10-09, #1898).
 
-        The allowlist is matched against the case the repository RETURNED, not
-        against the id that was asked for — so the fixture returns the case it
-        was asked for, as a repository does.
+        The link writes ``cases.last_activity`` and moves the session's
+        current-case pointer. It used to admit a teammate "matching
+        ``submit_turn``", but the turn service has never admitted one. The
+        share IS visible to the teammate here (the allowlist names the case),
+        so the refusal is about ownership and nothing else — and nothing is
+        written.
         """
         case = _make_case(user_id="user_owner")
         mock_repo.get.return_value = case
         svc = self._service_with_share(mock_repo, shared_ids=[case.case_id])
 
-        assert await svc.link_session_to_case("sess_abc", case.case_id, "user_teammate")
+        with pytest.raises(NotFoundError):
+            await svc.link_session_to_case("sess_abc", case.case_id, "user_teammate")
+        mock_repo.update_activity_timestamp.assert_not_awaited()
+        svc.session_store.set.assert_not_awaited()
+        # The positive control on the SAME service: the share is real, so a
+        # read resolves for the teammate.
+        assert await svc.get_case(case.case_id, "user_teammate") is case
 
     @pytest.mark.asyncio
     async def test_a_stranger_is_refused(self, mock_repo):
