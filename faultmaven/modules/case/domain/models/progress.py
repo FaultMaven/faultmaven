@@ -406,10 +406,12 @@ class InvestigationProgress(BaseModel):
     deferred_disposition_declined_signatures: List[str] = Field(
         default_factory=list,
         description=(
-            "Every justifying-state signature the user has REFUSED the "
-            "engine's deferred-implementation disposition offer against "
-            "(empty = never refused). The offer is re-proposed only when the "
-            "current signature is not among these, so a refusal POSTPONES it "
+            "Every justifying-state signature the user has REFUSED a "
+            "deferred-implementation or resolve offer against (empty = never "
+            "refused). The offer is re-proposed only when no entry covers the "
+            "current signature (``covering_declined_signature``: the same "
+            "``verdict|solutions|leg`` prefix and a superset of the current "
+            "qualifying confirmation ids, #1895), so a refusal POSTPONES it "
             "until something about the case actually changes — it never "
             "permanently disarms it. A decline counter would instead teach "
             "the engine to abandon, which is soft-collapse (D4). Persisted in "

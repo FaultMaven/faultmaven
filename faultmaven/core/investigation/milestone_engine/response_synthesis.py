@@ -22,6 +22,14 @@ _DISPOSITION_GATE_ANSWERED_KEY = "disposition_gate_answered_this_turn"
 #: would be taking back an affordance the user just acted on.
 _ENGINE_DISPOSITION_WITHDRAWN_KEY = "engine_disposition_withdrawn_this_turn"
 
+#: Metadata key: a declined RESOLVE was recorded on this turn (#1895).
+#: Turn-scoped and never persisted. Its own key, not
+#: ``_DISPOSITION_GATE_ANSWERED_KEY`` (which a question about the offer sets
+#: too): it drives the decline-turn re-stamp before step 2
+#: (``restamp_resolve_decline``) and the "Mark it resolved" chip at the end of
+#: the turn.
+_RESOLVE_DECLINED_THIS_TURN_KEY = "resolve_declined_this_turn"
+
 #: How many refused deferred-disposition signatures a case carries. Bounds the
 #: progress blob; large enough that an oscillation between a handful of
 #: justifying states cannot evict a signature the user is still refusing.
@@ -44,8 +52,73 @@ def _note_engine_disposition_withdrawn(case: "Case", metadata: dict) -> None:
         metadata[_ENGINE_DISPOSITION_WITHDRAWN_KEY] = True
 
 
+def _append_declined_signature(case: "Case", signature: str) -> bool:
+    """Append ``signature`` to the refusal list unless an entry already covers
+    it (``covering_declined_signature``, the one reader of the list); True when
+    it was appended. Bounded, oldest first."""
+    from faultmaven.core.investigation.terminal_transitions import (
+        covering_declined_signature,
+    )
+
+    declined = case.progress.deferred_disposition_declined_signatures
+    if covering_declined_signature(declined, signature):
+        return False
+    declined.append(signature)
+    # Bounded: a case that oscillates between two justifying states could
+    # otherwise grow the progress blob without limit. Oldest first — the
+    # signatures most likely to recur are the recent ones.
+    del declined[:-_MAX_DECLINED_DISPOSITION_SIGNATURES]
+    return True
+
+
+def restamp_resolve_decline(case: "Case", metadata: dict) -> None:
+    """Re-stamp a resolve decline recorded on THIS turn against the state the
+    turn ends its apply step with (#1895).
+
+    A decline covers every confirmation recorded up to the end of the turn it
+    was given on. Section 0b records it before the model runs, but a
+    deflection ("not yet, it has only been clean for an hour") falls through
+    to the model, which may record the user's own words as a confirmation row
+    on that same turn. Unstamped, that row is "new" to the decline: step 2
+    would take the model's same-turn resolve proposal and the backstop would
+    re-offer on the next turn, both against an answer the user has just given.
+    So, immediately before ``check_automatic_transitions``, the signature is
+    re-derived and appended when no entry covers it.
+
+    Only while the closure verdict is still SUGGEST_RESOLVE — the gate the
+    writer applies to a derived signature. A same-turn disconfirmation that
+    flips the verdict leaves nothing to re-stamp: a HAS_SUBSTANCE entry would
+    suppress no resolve offer and would sit in the space the deferred close
+    reads.
+    """
+    if not metadata.get(_RESOLVE_DECLINED_THIS_TURN_KEY):
+        return
+    if not getattr(case, "progress", None):
+        return
+    from faultmaven.core.investigation.terminal_transitions import (
+        ClosureReadiness,
+        closure_verdict,
+        deferred_disposition_signature,
+    )
+
+    verdict = closure_verdict(case)
+    if verdict != ClosureReadiness.SUGGEST_RESOLVE:
+        return
+    signature = deferred_disposition_signature(case, verdict)
+    if _append_declined_signature(case, signature):
+        logger.info(
+            "Resolve decline re-stamped for case %s against this turn's "
+            "confirmations (signature=%s)",
+            case.case_id,
+            signature,
+        )
+
+
 def _record_deferred_disposition_decline(
-    case: "Case", *, superseded_by: "str | None" = None
+    case: "Case",
+    *,
+    superseded_by: "str | None" = None,
+    metadata: "dict | None" = None,
 ) -> None:
     """Persist that the user refused a disposition offer, against what
     justified it.
@@ -114,6 +187,13 @@ def _record_deferred_disposition_decline(
     re-take those messages would otherwise cause is handled by
     ``_note_engine_disposition_withdrawn`` instead, which expires with the
     turn.
+
+    **A declined RESOLVE marks the turn** (``metadata``, #1895): the marker
+    re-stamps the decline against the confirmations this turn records
+    (``restamp_resolve_decline``) and puts the "Mark it resolved" chip on the
+    turn's reply, on every path that records one — the bare "no", the long
+    deflection that falls through to the model, and a contradicting status
+    pick.
     """
     pending = getattr(case, "pending_transition", None) or {}
     if not getattr(case, "progress", None):
@@ -169,14 +249,10 @@ def _record_deferred_disposition_decline(
             signature = deferred_disposition_signature(case, verdict)
     if not signature:
         return
-    declined = case.progress.deferred_disposition_declined_signatures
-    if signature in declined:
+    if metadata is not None and pending.get("to_state") == CaseState.RESOLVED.value:
+        metadata[_RESOLVE_DECLINED_THIS_TURN_KEY] = True
+    if not _append_declined_signature(case, signature):
         return
-    declined.append(signature)
-    # Bounded: a case that oscillates between two justifying states could
-    # otherwise grow the progress blob without limit. Oldest first — the
-    # signatures most likely to recur are the recent ones.
-    del declined[:-_MAX_DECLINED_DISPOSITION_SIGNATURES]
     logger.info(
         "Engine-proposed disposition refused for case %s; not "
         "re-proposing until the justifying state changes (signature=%s)",

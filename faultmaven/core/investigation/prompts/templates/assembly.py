@@ -79,6 +79,37 @@ def _false_alarm_declined_line(turn: int) -> str:
     )
 
 
+#: The line the prompt carries while the user's decline of the resolution
+#: stands (#1895). Conditional, never a flat ban: a model that obeys a ban
+#: never proposes, so a user who says "ok, mark it resolved" on a client with
+#: no chip on screen would get no refusal and so no chip.
+RESOLVE_DECLINED_LINE = (
+    "**THE USER DECLINED MARKING THIS CASE RESOLVED.** It stays open on their "
+    "answer, and the engine will not offer the resolution again on the "
+    "confirmation already on record. The offer returns when a NEW confirmation "
+    "that the fix held is recorded: if the user reports a new verification "
+    "(not a request), record it as causal_absence_evidence and propose "
+    "resolved in the same turn. If the user asks to mark it resolved without "
+    "a new verification, propose resolved: the engine attaches its 'Mark it "
+    "resolved' action to your reply for them to use. Do not propose it "
+    "unprompted, never record a confirmation row from a request, and do not "
+    "narrate the case as resolved."
+)
+
+
+def _resolve_declined_emphasis(case) -> str:
+    """``RESOLVE_DECLINED_LINE`` while the user's decline of the resolution
+    stands (``terminal_transitions.declined_resolve_entry``), else "".
+    Appended to the focus block on every stage, never replacing it."""
+    from faultmaven.core.investigation.terminal_transitions import (
+        declined_resolve_entry,
+    )
+
+    if declined_resolve_entry(case) is None:
+        return ""
+    return f"\n{RESOLVE_DECLINED_LINE}\n"
+
+
 def _problem_hold_emphasis(case) -> str:
     """The focus block for a case whose problem statement itself is in
     question, or "" when none is. Rendered as ``{focus_emphasis}`` on EVERY
@@ -476,7 +507,9 @@ def get_prompt_for_case(
             # instructions: it moves with the milestones and the wall clock,
             # and the stage instructions close the cached prefix (#613). A
             # problem hold renders on every stage (#1889); the zone emphasis
-            # only on DIAGNOSIS. Empty on a knowledge_query or agent_meta turn.
+            # only on DIAGNOSIS; a standing resolve decline is appended on
+            # every stage (#1895). Empty on a knowledge_query or agent_meta
+            # turn.
             focus_emphasis = ""
             if processing_mode == "knowledge_query":
                 adaptive_instr = KNOWLEDGE_QUERY_INSTRUCTIONS
@@ -497,6 +530,7 @@ def get_prompt_for_case(
                     adaptive_instr = TREATMENT_INSTRUCTIONS
                 else:
                     adaptive_instr = _RCA_DIAGNOSIS_BLOCK
+                focus_emphasis += _resolve_declined_emphasis(case)
 
             # Add stage to context for schema reference
             ctx["stage"] = stage.value if stage else "diagnosis"

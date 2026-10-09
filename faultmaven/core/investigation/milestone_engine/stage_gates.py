@@ -983,3 +983,66 @@ def declined_close_card(side: str) -> dict:
         "body": body,
         "intent": {"type": "status_transition", "to_state": "closed"},
     }
+
+
+#: The "Mark it resolved" chip (#1895): (label, payload, body).
+DECLINED_RESOLVE_CARD_LABEL = "Mark it resolved"
+_DECLINED_RESOLVE_CARD_PAYLOAD = "Mark this case resolved."
+_DECLINED_RESOLVE_CARD_BODY = (
+    "Re-open the resolution the agent proposed. You confirm on the next step."
+)
+
+
+def declined_resolve_card(case) -> Optional[dict]:
+    """The chip that keeps a declined resolution one step away, or None when
+    no resolve decline stands (#1895).
+
+    RESOLVED is earned, never requested: it is not on the status menu, and a
+    user's request never becomes the confirmation row that earns it. So once
+    the user has declined the resolution, neither the engine nor the model
+    offers it again until a NEW confirmation that the fix held is recorded. A
+    user who changes their mind meanwhile needs a deterministic way back on
+    every client, Slack included (which renders only the server's
+    suggestions). This chip is that way: it re-presents the offer the engine
+    made and the user declined, and nothing else.
+
+    Its intent is ``{"type": "status_transition", "to_state": "resolved",
+    "proposal_id": <reopen key>}``, the published ``QueryIntent`` shape, which
+    every client forwards verbatim. ``proposal_id`` is the reopen key
+    (``terminal_transitions.resolve_reopen_key``), a digest of the declined
+    entry the decline stands on. The two places that refuse a RESOLVED
+    ``status_transition`` (the service boundary and the engine's guard) admit
+    it only while that same entry still covers the case
+    (``resolve_reopen_admitted``); the engine then PROPOSES resolved with the
+    usual confirmation pair, and the user confirms (INV-03). A stale chip (a
+    new confirmation has since moved the state) is refused with the 422, and
+    by then the engine is offering the resolution itself.
+
+    It names no standing offer (no ``pending_transition`` stands behind it, so
+    ``offer_intent_fields`` is not called and the #1812 census of confirmation
+    builders does not include it). It is APPENDED to the turn's follow-ups,
+    never substituted for them. Not built while any offer stands (the chip
+    re-opens a declined offer, it does not compete with a live one) or while
+    the problem statement is on hold (no transition is proposed then).
+    """
+    if getattr(case, "pending_transition", None) or problem_on_hold(case):
+        return None
+    from faultmaven.core.investigation.terminal_transitions import (
+        declined_resolve_entry,
+        resolve_reopen_key,
+    )
+
+    entry = declined_resolve_entry(case)
+    if entry is None:
+        return None
+    return {
+        "label": DECLINED_RESOLVE_CARD_LABEL,
+        "action_type": "DECIDE",
+        "payload": _DECLINED_RESOLVE_CARD_PAYLOAD,
+        "body": _DECLINED_RESOLVE_CARD_BODY,
+        "intent": {
+            "type": "status_transition",
+            "to_state": "resolved",
+            "proposal_id": resolve_reopen_key(entry),
+        },
+    }

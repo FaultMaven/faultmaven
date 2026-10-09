@@ -43,11 +43,16 @@ from .progress import summarize_for_turn_record
 from .response_synthesis import (
     _NARRATION_OVERCLAIM_NOTICE,
     _NARRATION_OVERCLAIM_NOTICE_PENDING,
+    _RESOLVE_DECLINED_THIS_TURN_KEY,
     _narration_asserts_disposition,
     _prose_with_gate_notice,
     is_agent_response_synthesized,
 )
-from .stage_gates import _close_confirmation_suggestions, declined_close_card
+from .stage_gates import (
+    _close_confirmation_suggestions,
+    declined_close_card,
+    declined_resolve_card,
+)
 from .statement_revision import revision_presentation
 from .terminal_replies import (
     _build_resolution_confirmation,
@@ -438,6 +443,18 @@ async def _compose_turn_reply(
     declined_side = metadata.get("declined_close_card")
     if declined_side:
         follow_ups = [*follow_ups, declined_close_card(declined_side)]
+    # The resolve side (#1895): the "Mark it resolved" chip, appended the same
+    # way, on a turn whose model re-proposal of a declined resolution step 2
+    # refused, and on every turn that recorded a resolve decline and reached
+    # the model (the long deflection; the bare "no" has its own reply). The
+    # builder returns None unless the decline still stands with no offer
+    # standing.
+    if metadata.get("declined_resolve_card") or metadata.get(
+        _RESOLVE_DECLINED_THIS_TURN_KEY
+    ):
+        resolve_card = declined_resolve_card(case_updated)
+        if resolve_card is not None:
+            follow_ups = [*follow_ups, resolve_card]
 
     # Append the synthesized summary (or skip / failure note) so it
     # appears in chat at the moment of generation. The composed reply
@@ -578,9 +595,13 @@ async def _compose_turn_reply(
             "engine_effective_to_status": _engine_to_status,
             "transition_pivoted": _transition_pivoted,
             "transition_superseded_by_engine": _transition_superseded,
-            # The model's proposal re-asked a close the user declined and was
-            # refused (#1889): ``false_alarm`` or ``deferred``, else None.
-            "transition_refused_as_declined": metadata.get("declined_close_card"),
+            # The model's proposal re-asked a disposition the user declined
+            # and was refused: ``false_alarm`` or ``deferred`` (#1889),
+            # ``resolve`` (#1895), else None.
+            "transition_refused_as_declined": (
+                metadata.get("declined_close_card")
+                or ("resolve" if metadata.get("declined_resolve_card") else None)
+            ),
             "user_confirmed_investigation_emitted": bool(
                 getattr(
                     getattr(response_obj, "state_updates", None),

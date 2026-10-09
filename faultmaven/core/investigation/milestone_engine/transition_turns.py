@@ -1,4 +1,4 @@
-"""The pending-transition confirm/decline turns, the refused confirmation click, and the explicit status_transition intent to 'closed'.
+"""The pending-transition confirm/decline turns, the refused confirmation click, and the explicit status_transition intents: 'closed', and 'resolved' from the reopen chip.
 
 None of these turns writes anything. Each mutates the case in memory and
 returns it; the turn commits once, at the service, with the report rows a
@@ -18,7 +18,10 @@ from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommi
 from faultmaven.core.investigation.milestone_engine.turn_records import (
     _finish_deterministic_turn,
 )
-from faultmaven.core.investigation.problem_status import false_alarm_close_declined_at
+from faultmaven.core.investigation.problem_status import (
+    false_alarm_close_declined_at,
+    problem_on_hold,
+)
 from faultmaven.modules.case.contracts import CaseState
 
 from .cause_state import (
@@ -27,12 +30,17 @@ from .cause_state import (
     _investigation_confirmation_suggestions,
 )
 from .progress import confirmed_transition_arms
-from .stage_gates import _close_confirmation_suggestions, declined_close_card
+from .stage_gates import (
+    _close_confirmation_suggestions,
+    declined_close_card,
+    declined_resolve_card,
+)
 from .statement_revision import (
     revision_confirmation_suggestions,
     revision_presentation,
 )
 from .terminal_replies import (
+    _build_resolution_confirmation,
     _compose_terminal_reply,
     _resolution_confirmation_suggestions,
     _select_ack_follow_ups,
@@ -157,17 +165,34 @@ FALSE_ALARM_HOLD_REPLY = (
 )
 
 
+#: The reply to a bare "no" to a resolution (#1895). It says what brings the
+#: offer back, and where a user who changes their mind finds it: the reopen
+#: chip, the reply's one follow-up.
+RESOLVE_DECLINED_REPLY = (
+    "Understood, the case stays open. I won't ask about resolving again unless "
+    "a new confirmation that the fix held is recorded; if you change your "
+    "mind, use 'Mark it resolved' below."
+)
+
+
 def _decline_bare_reply(*, case, upload_report, user_message):
     """Reply to a bare (non-substantive) decline of a pending transition, leaving the case open.
 
     On a false-alarm close the decline was just recorded on the finding, and
     the reply says what the hold is and how it moves, with the close card
-    (``declined_close_card``) as its one follow-up (#1889).
+    (``declined_close_card``) as its one follow-up (#1889). On a resolution the
+    decline was just recorded against the confirmations on record, and the
+    reply says what brings the offer back, with the "Mark it resolved" chip
+    (``declined_resolve_card``) as its one follow-up (#1895).
     """
     follow_ups: list = []
+    resolve_card = declined_resolve_card(case)
     if false_alarm_close_declined_at(case) is not None:
         agent_response = FALSE_ALARM_HOLD_REPLY
         follow_ups = [declined_close_card("false_alarm")]
+    elif resolve_card is not None:
+        agent_response = RESOLVE_DECLINED_REPLY
+        follow_ups = [resolve_card]
     else:
         agent_response = "Understood. The case remains open for further investigation."
     turn_metadata = _finish_deterministic_turn(
@@ -369,6 +394,84 @@ def _close_on_explicit_intent(
     return {
         "agent_response": closure.message,
         "suggested_follow_ups": _close_confirmation_suggestions(case),
+        "case_updated": case,
+        "metadata": turn_metadata,
+    }
+
+
+def _resolve_on_reopen_chip(*, case, upload_report, user_message):
+    """Handle the "Mark it resolved" chip: re-open the resolution the user
+    declined, as a proposal the user confirms on the next step (#1895).
+
+    Reached only with the chip's key admitted (``resolve_reopen_admitted``, at
+    the service boundary and again at the engine's guard): RESOLVED is not
+    user-selectable, and this is the engine's own declined offer coming back,
+    not a request for the state. It PROPOSES and never confirms (INV-03): the
+    canonical confirmation pair follows, as on every other opener.
+
+    The bar is re-read here: the offer is made only when
+    ``assess_resolution_readiness`` is READY, the bar step 2 applies to the
+    model's proposal, and not while the problem statement is on hold (a
+    revision awaiting the user, when no transition is proposed). Otherwise
+    nothing is proposed or recorded, and the reply says why.
+    """
+    from faultmaven.core.investigation.terminal_transitions import (
+        ResolutionReadiness,
+        assess_resolution_readiness,
+        propose_transition,
+    )
+
+    if problem_on_hold(case):
+        agent_response = (
+            "This case can't be marked resolved while its problem statement is "
+            "in question. Answer the revised statement first."
+        )
+        turn_metadata = _finish_deterministic_turn(
+            case,
+            user_message or "",
+            agent_response,
+            upload_report,
+            progress_made=False,
+        )
+        return {
+            "agent_response": agent_response,
+            "suggested_follow_ups": [],
+            "case_updated": case,
+            "metadata": turn_metadata,
+        }
+
+    readiness = assess_resolution_readiness(case)
+    if readiness.verdict != ResolutionReadiness.READY:
+        logger.info(
+            f"Reopen chip for case {case.case_id} refused: resolution readiness "
+            f"is {readiness.verdict} (missing: {readiness.missing})."
+        )
+        agent_response = (
+            "This case can't be marked resolved right now: the confirmation "
+            "that earned the resolution no longer stands."
+        )
+        if readiness.message:
+            agent_response = f"{agent_response}\n\n{readiness.message}"
+        follow_ups: list = []
+    else:
+        agent_response = _build_resolution_confirmation(case)
+        propose_transition(case=case, to_state="resolved", summary=agent_response)
+        follow_ups = _resolution_confirmation_suggestions(case)
+        logger.info(
+            f"Proposed RESOLVED transition for case {case.case_id} from the "
+            f"reopen chip (pending user confirmation)"
+        )
+
+    turn_metadata = _finish_deterministic_turn(
+        case,
+        user_message or "",
+        agent_response,
+        upload_report,
+        progress_made=False,
+    )
+    return {
+        "agent_response": agent_response,
+        "suggested_follow_ups": follow_ups,
         "case_updated": case,
         "metadata": turn_metadata,
     }

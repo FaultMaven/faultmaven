@@ -1010,7 +1010,11 @@ class QueryIntent(BaseModel):
         description=(
             "For confirmation: the offer this answer is for, as the card that "
             "carried it names it. A confirmation click is executed only when it "
-            "names the offer standing when it arrives."
+            "names the offer standing when it arrives. For status_transition: "
+            "the reopen key a 'Mark it resolved' card carries; a request to "
+            "'resolved' is admitted only with the key of the resolution the "
+            "user declined, while that decline stands, and it proposes the "
+            "resolution for the user to confirm. Forward it as received."
         ),
     )
     file_id: Optional[str] = Field(

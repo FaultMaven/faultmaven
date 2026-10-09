@@ -32,6 +32,9 @@ from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.core.investigation.suggestion_liveness import (
     live_suggestions,
 )
+from faultmaven.core.investigation.terminal_transitions import (
+    resolve_reopen_admitted,
+)
 from faultmaven.core.investigation.turn_budget import (
     TurnDeadlineExceeded,
     check_commit_budget,
@@ -988,6 +991,7 @@ class InvestigationService:
                     user_confirmed=(
                         (intent.user_confirmed or False) if intent else False
                     ),
+                    proposal_id=(intent.proposal_id if intent else None),
                     user_id=user_id,
                     attachments=attachment_metadata or None,
                     typed=intent_minted,
@@ -1087,6 +1091,7 @@ class InvestigationService:
         from_state: Optional[str],
         to_state: Optional[str],
         user_confirmed: bool,
+        proposal_id: Optional[str] = None,
         user_id: Optional[str] = None,
         attachments: Optional[List[Dict[str, Any]]] = None,
         typed: bool = False,
@@ -1098,7 +1103,11 @@ class InvestigationService:
             user_message: User's message explaining the transition
             from_state: Expected current status
             to_state: Requested new status
-            user_confirmed: Whether user confirmed the transition
+            user_confirmed: Whether user confirmed the transition. Read by
+                nothing in the engine: a status pick only ever proposes.
+            proposal_id: The reopen key a "Mark it resolved" chip carries
+                (``QueryIntent.proposal_id``, #1895): the one RESOLVED request
+                admitted, while the decline it names still stands.
             user_id: Authenticated principal for the turn (keys the agent's
                 KB read allowlist)
             attachments: The turn's engine attachment metadata. Passed through
@@ -1150,8 +1159,15 @@ class InvestigationService:
         # DERIVED from ``USER_SELECTABLE_ACTIONS`` rather than restated: the
         # two used to be independent facts that could disagree in either
         # direction with nothing failing.
+        #
+        # One admission, which leaves RESOLVED unselectable (#1895): the
+        # "Mark it resolved" chip re-presents the resolution the user
+        # declined, and its ``proposal_id`` (the reopen key) is let through
+        # only while the declined entry it names still covers the case. A
+        # stale or forged key keeps the 422. The engine then proposes; the
+        # user confirms.
         refusal = earned_edge_refusal(case.state, to_state)
-        if refusal:
+        if refusal and not resolve_reopen_admitted(case, to_state, proposal_id):
             raise ValidationException(refusal, {"field": "to_state", "value": to_state})
 
         # Delegate to milestone engine with structured intent
@@ -1164,6 +1180,7 @@ class InvestigationService:
                 "from_state": from_state,
                 "to_state": to_state,
                 "user_confirmed": user_confirmed,
+                "proposal_id": proposal_id,
             },
             user_id=user_id,
             typed=typed,
