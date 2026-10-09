@@ -220,7 +220,9 @@ async def test_preprocess_refuses_a_runbook_with_already_a_runbook(tmp_path):
     path = tmp_path / "redis-oom.md"
     path.write_text(valid_runbook())
 
-    result = await DocumentPreprocessor().preprocess(path, "text/markdown")
+    result = await DocumentPreprocessor().preprocess(
+        path, "text/markdown", scope_id="conv_test"
+    )
 
     assert result.is_rejected is True
     assert result.error_code == ConversionErrorCode.ALREADY_A_RUNBOOK
@@ -239,7 +241,9 @@ async def test_preprocess_does_not_refuse_an_incident_report(tmp_path):
     path = tmp_path / "INC-4821.md"
     path.write_text(INCIDENT_REPORT)
 
-    result = await DocumentPreprocessor().preprocess(path, "text/markdown")
+    result = await DocumentPreprocessor().preprocess(
+        path, "text/markdown", scope_id="conv_test"
+    )
 
     assert result.error_code != ConversionErrorCode.ALREADY_A_RUNBOOK
 
@@ -360,7 +364,9 @@ async def test_bom_encoded_runbook_is_refused_end_to_end(tmp_path):
     # nothing between the file and the gate removes it.
     path.write_text(valid_runbook(), encoding="utf-8-sig")
 
-    result = await DocumentPreprocessor().preprocess(path, "text/markdown")
+    result = await DocumentPreprocessor().preprocess(
+        path, "text/markdown", scope_id="conv_test"
+    )
 
     assert result.is_rejected is True
     assert result.error_code == ConversionErrorCode.ALREADY_A_RUNBOOK
@@ -507,7 +513,9 @@ async def test_near_runbook_still_warns(tmp_path):
         "Run `SELECT count(*) FROM pg_stat_activity;` to check.\n"
     )
 
-    result = await DocumentPreprocessor().preprocess(path, "text/markdown")
+    result = await DocumentPreprocessor().preprocess(
+        path, "text/markdown", scope_id="conv_test"
+    )
 
     assert result.error_code != ConversionErrorCode.ALREADY_A_RUNBOOK
     assert any("runbook frontmatter" in w for w in result.warnings), result.warnings

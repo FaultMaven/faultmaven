@@ -6,6 +6,7 @@ from pathlib import Path
 
 from faultmaven.infrastructure.llm.json_response import loads_llm_json
 from faultmaven.infrastructure.llm.truncation import generate_with_truncation_retry
+from faultmaven.infrastructure.security.case_redaction import CaseRedactionContext
 from faultmaven.modules.knowledge.domain.models.conversion import (
     AnalysisResult,
     ConversionErrorCode,
@@ -59,17 +60,31 @@ def _knowledge_route_kwargs(settings) -> dict:
 
 
 async def _analyze_document(
-    llm_router, settings, text: str, filename: str
+    llm_router,
+    settings,
+    text: str,
+    filename: str,
+    redaction: CaseRedactionContext,
 ) -> AnalysisResult:
-    """Analyze document for failure modes using KNOWLEDGE_PROVIDER."""
+    """Analyze document for failure modes using KNOWLEDGE_PROVIDER.
+
+    ``redaction`` is applied to everything sent, once, before the truncation
+    retry's closure, so the retry resends the redacted text (#1901). It is a
+    required argument so a new caller cannot send without deciding. A
+    ``RedactionUnavailableError`` propagates: nothing is sent.
+    """
     knowledge_model = settings.llm.get_knowledge_model()
+
+    messages = await redaction.asanitize_messages(
+        [
+            {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
+            {"role": "user", "content": f"Analyze this document:\n\n{text}"},
+        ]
+    )
 
     async def _analyze(cap: int):
         return await llm_router.route(
-            messages=[
-                {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
-                {"role": "user", "content": f"Analyze this document:\n\n{text}"},
-            ],
+            messages=messages,
             model=knowledge_model,
             max_tokens=cap,
             temperature=0.2,

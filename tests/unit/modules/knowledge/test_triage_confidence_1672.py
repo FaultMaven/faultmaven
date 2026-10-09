@@ -105,7 +105,7 @@ async def _triage(tmp_path: Path, confidence_json: str | None):
     path.write_text(_DOCUMENT)
     with patch.object(reliability_metrics, "schema_field_repairs_total") as counter:
         result = await DocumentPreprocessor(stub, _SETTINGS).preprocess(
-            path, "text/markdown"
+            path, "text/markdown", scope_id="conv_test"
         )
     assert stub.calls == 1, "the triage stage never ran"
     return result, counter

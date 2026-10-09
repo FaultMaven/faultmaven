@@ -69,7 +69,7 @@ The Router is a generic LLM abstraction — it routes requests to providers, han
 
 The MilestoneEngine owns the case lifecycle. It has `case_id`, manages the tool loop, and controls what content reaches the LLM. It is the natural owner of the redaction boundary.
 
-The Router retains its existing `_sanitize_if_needed()` as a safety net for non-investigation LLM calls. For investigation turns, the prompt is already redacted by the engine, and the Router's sanitizer sees only placeholders — which don't match any PII pattern, so they pass through unchanged.
+The Router retains its existing `_sanitize_if_needed()` as a safety net for other LLM calls. For investigation turns and the knowledge-authoring paths (below), the prompt is already redacted at the engine layer, and the Router's sanitizer sees only placeholders — which don't match any PII pattern, so they pass through unchanged.
 
 ## Components
 
@@ -122,10 +122,10 @@ Both values are read from `ProtectionSettings` in the constructor. The construct
 
 ### MilestoneEngine Integration
 
-**Files:** `core/investigation/milestone_engine/engine.py` (the main turn path) and
+**Files:** `core/investigation/milestone_engine/turn_generation.py` (the main turn path) and
 `core/investigation/milestone_engine/terminal_turns.py` (`TerminalTurnHandler`,
 the terminal Q&A path) — both build a `CaseRedactionContext` the same way,
-reading `_should_redact()` from `core/investigation/milestone_engine/redaction.py`.
+enabled by `should_redact()` from `infrastructure/security/case_redaction.py`.
 The `StructuredOutputGenerator` collaborator (`generation.py`) redacts the
 prompt and tool results within the shape it owns.
 
@@ -138,7 +138,7 @@ phases:
 4. **Save registry** — after LLM call completes, before returning result, in `_finalize_turn` (`turn_completion.py`). It is not part of the turn's commit and need not be: a pseudonym is a keyed function of the value, so mappings left by a turn that then fails are a harmless superset (#1882)
 5. **Return context** — threaded from `_generate_turn_response` through `_finalize_turn` as a phase input/output, then included in the result dict so `InvestigationService` can reverse-substitute
 
-The `_should_redact()` helper checks `SANITIZE_PII` setting. When `False`, `CaseRedactionContext` is created with `enabled=False` and all operations are no-ops.
+`should_redact()` is the one copy of the decision: a sanitizer is configured (the DI container hands one out) AND `SANITIZE_PII` is on. When it is `False`, `CaseRedactionContext` is created with `enabled=False` and all operations are no-ops. Every path that sends case or document text to a model reads it — `test_every_redaction_context_is_enabled_by_should_redact` fails on a context built any other way.
 
 ### InvestigationService Integration
 
@@ -151,6 +151,18 @@ redaction_ctx = result.get("redaction_ctx")
 if redaction_ctx:
     agent_response_text = redaction_ctx.reverse(agent_response_text)
 ```
+
+### Knowledge-Authoring Paths
+
+**Files:** `modules/knowledge/domain/services/suggestion_service.py` (case→runbook extraction), `modules/knowledge/domain/services/conversion_service/` and `document_preprocessor.py` (case→runbook and document→runbook conversion)
+
+The paths that turn a case or an uploaded document into a runbook send that text to a model too, and apply the same rule at the same layer (#1661, #1901). Each builds its context through `model_boundary_redaction(scope_id, sanitizer)` in `infrastructure/security/case_redaction.py`: the same class, over the same injected sanitizer instance the engine holds, enabled by `should_redact()`. `scope_id` is the case id for a case's text and the conversion's id for an uploaded document, which has no case; placeholders are a keyed function of the value (#971), so the id does not change them.
+
+Every model call is covered: extraction's generate (and its repair turn), and conversion's triage, analysis and per-failure-mode generation. Each redacts its whole outbound message list before the truncation retry, so a retry resends the redacted text, and outside any catch-all, so a `RedactionUnavailableError` stops the run with nothing sent — triage's fail-open guard and conversion's per-failure-mode error handling do not absorb it.
+
+It matters independently of the router. `LLMRouter._sanitize_if_needed()` runs its own pass under the same flag, so a default deployment with `SANITIZE_PII=true` already sent this text redacted — but that pass is a property of the default router, which `LLM_ROUTER_CLASS` can substitute.
+
+No registry is loaded or saved, and nothing is reversed. The investigation path reverses placeholders in the reply it shows the user; a runbook is de-identified knowledge, so the placeholders the model writes are what is persisted — the same text the default router's own pass produced before this layer existed.
 
 ## Configuration
 
@@ -197,19 +209,22 @@ If a user types `<IP_ADDRESS_1>` in their message, `reverse()` would replace it 
 | --- | --- |
 | `infrastructure/security/case_redaction.py` | `CaseRedactionContext`: the case-scoped registry, persisted in Redis |
 | `infrastructure/security/redaction.py` | `DataSanitizer`, including `sanitize_text_with_registry()`, the Presidio settings wiring, and the `\b` word boundary on the password regex |
+| `infrastructure/security/case_redaction.py` | `should_redact()`, the one redaction decision; `model_boundary_redaction()`, the knowledge-authoring paths' context |
 | `core/investigation/milestone_engine/turn_generation.py` | Creates the context and loads its registry (`_generate_turn_response`) |
 | `core/investigation/milestone_engine/generation.py` | Redacts the prompt and each tool result (`StructuredOutputGenerator`) |
 | `core/investigation/milestone_engine/turn_completion.py` | Saves the registry (`_finalize_turn`) |
 | `core/investigation/milestone_engine/terminal_turns.py` | The same lifecycle on the terminal Q&A path |
 | `modules/agent/domain/services/investigation_service/turn_results.py` | Reverse-substitution (`_absorb_engine_result`) |
-| `container/providers/services.py` | Passes the sanitizer and the Redis client to the engine |
+| `modules/knowledge/domain/services/suggestion_service.py` | Redacts the extraction prompt (`_generate_once`) |
+| `modules/knowledge/domain/services/conversion_service/`, `document_preprocessor.py` | Redact conversion's triage, analysis and generation calls |
+| `container/providers/services.py` | Passes the sanitizer and the Redis client to the engine, and the sanitizer to the suggestion and conversion services |
 | `config/settings.py` | `redaction_registry_ttl_hours`, `entities_to_protect`, `min_score_threshold` |
 
 ## What Redaction Does Not Touch
 
 - **Preprocessing**: builds summaries and structural indexes from raw content (see *Not Implemented* above)
 - **Context builder**: assembles raw content; the engine redacts downstream
-- **Router**: its `_sanitize_if_needed()` stays as a safety net for LLM calls outside an investigation turn
+- **Router**: its `_sanitize_if_needed()` stays as a safety net for LLM calls the engine layer does not redact
 - **Tool implementations**: `search_file` and `deep_analysis` read raw content, and the engine redacts their results
 - **Storage**: uploads, evidence and preprocessing artifacts are stored raw, never redacted at rest
 

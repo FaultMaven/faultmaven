@@ -806,7 +806,9 @@ class TestParseFailureClassification:
         pdf = tmp_path / "odd-filter.pdf"
         pdf.write_bytes(_pdf_with_filter(b"Foo"))
 
-        result = await DocumentPreprocessor().preprocess(pdf, "application/pdf")
+        result = await DocumentPreprocessor().preprocess(
+            pdf, "application/pdf", scope_id="conv_test"
+        )
 
         assert result.is_rejected
         assert result.error_code == "FILE_CORRUPT"
@@ -837,7 +839,9 @@ class TestParseFailureClassification:
         notes = tmp_path / "notes.txt"
         notes.write_text("some text that will not be read", encoding="utf-8")
 
-        result = await DocumentPreprocessor().preprocess(notes, "text/plain")
+        result = await DocumentPreprocessor().preprocess(
+            notes, "text/plain", scope_id="conv_test"
+        )
 
         assert result.is_rejected
         assert result.error_code == "ENCODING_ERROR"

@@ -43,14 +43,16 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.core.investigation.milestone_engine.redaction import _should_redact
 from faultmaven.core.investigation.prompts.context_builder.evidence import (
     _evidence_recency_key,
 )
 from faultmaven.exceptions import ConfigurationException, NotFoundError
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.security import case_redaction
-from faultmaven.infrastructure.security.case_redaction import CaseRedactionContext
+from faultmaven.infrastructure.security.case_redaction import (
+    CaseRedactionContext,
+    should_redact,
+)
 from faultmaven.infrastructure.security.redaction import (
     DataSanitizer,
     RedactionUnavailableError,
@@ -499,12 +501,12 @@ def _with_presidio(sanitizer: DataSanitizer) -> DataSanitizer:
 
 def _investigation_path_redaction(case_id: str, sanitizer) -> CaseRedactionContext:
     """The redaction the milestone engine builds for a turn, built the way it
-    builds it: its own ``_should_redact`` decides ``enabled``."""
+    builds it: ``should_redact`` decides ``enabled``."""
     return CaseRedactionContext(
         case_id=case_id,
         sanitizer=sanitizer,
         redis_client=None,
-        enabled=_should_redact(sanitizer),
+        enabled=should_redact(sanitizer),
     )
 
 
@@ -612,25 +614,6 @@ class TestTheExtractionInputIsRedactedAsTheInvestigationPathRedactsIt:
             assert len(provider.prompts) == 1
             assert PII_IP in provider.prompts[0]
 
-    @pytest.mark.parametrize("has_sanitizer", [True, False])
-    async def test_it_redacts_exactly_when_the_investigation_path_does(
-        self, redaction_arm, has_sanitizer
-    ):
-        """One decision, two call sites: the engine's ``_should_redact`` (in a
-        module this change does not touch) and extraction's. The truth table
-        pins them together so neither can move alone."""
-        sanitizer = DataSanitizer() if has_sanitizer else None
-        service = _service(
-            InMemoryCaseRepository(), RecordingProvider(), sanitizer=sanitizer
-        )
-
-        extraction = service._model_boundary_redaction("case_aabb16611661")
-        engine = _investigation_path_redaction("case_aabb16611661", sanitizer)
-
-        assert extraction.enabled is engine.enabled
-        assert extraction.enabled is (redaction_arm and has_sanitizer)
-        assert extraction.sanitizer is sanitizer
-
     def test_the_provider_is_reached_only_through_the_redacting_call(self):
         """Structural, because the tests above can only exercise the calls that
         exist. ``_generate_once`` is where the redaction is applied, so it must
@@ -709,9 +692,11 @@ class TestTheExtractionInputIsRedactedAsTheInvestigationPathRedactsIt:
         ``SANITIZE_PII`` is off and failing the one where it is on (#1661).
 
         Every other read of ``self._sanitizer`` in the service must be one of
-        the two shapes that call nothing: a truthiness test, or handing it to
-        ``CaseRedactionContext`` (whose calls are collected). A new flow — the
-        sanitizer handed to some third collaborator — fails with its line.
+        the shapes that call nothing: a truthiness test, or handing it to
+        ``CaseRedactionContext`` — directly, or through the shared
+        ``model_boundary_redaction`` that builds one (whose calls are
+        collected). A new flow — the sanitizer handed to some third
+        collaborator — fails with its line.
         """
 
         def self_reads(module, attr: str):
@@ -750,6 +735,12 @@ class TestTheExtractionInputIsRedactedAsTheInvestigationPathRedactsIt:
                     == "CaseRedactionContext"
                 ):
                     continue  # collected from case_redaction below
+                elif (
+                    isinstance(parent, ast.Call)
+                    and getattr(parent.func, "id", None) == "model_boundary_redaction"
+                    and node in parent.args
+                ):
+                    continue  # builds a CaseRedactionContext; same collection
                 else:
                     unexplained.append(node.lineno)
             return methods, unexplained

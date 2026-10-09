@@ -84,17 +84,23 @@ decommissioned and 404s. Both predate this corpus and are filed separately.
 There is no driver in `tests/` — the measurement calls a live LLM, so it is not
 a CI test.
 
-Drive `ConversionService._analyze_document` over `documents/` and compare the
-mode counts to the table above. Note it needs the real settings and router (the
-call resolves `settings.llm.get_knowledge_model()` and passes
-`**_knowledge_route_kwargs()`), so construct the service rather than calling the
-prompt directly:
+Drive `_analyze_document` (`conversion_service/pipeline.py`) over `documents/`
+and compare the mode counts to the table above. Note it needs the real settings
+and router (the call resolves `settings.llm.get_knowledge_model()` and passes
+`**_knowledge_route_kwargs()`), and the model-boundary redaction every
+conversion call applies (#1901) — pass the deployment's sanitizer to send what
+production sends, or `None` to send the documents as written:
 
 ```python
-svc = ConversionService.__new__(ConversionService)
-svc._settings = get_settings()
-svc._llm_router = LLMRouter()
-analysis = await svc._analyze_document(path.read_text(), path.name)
+from faultmaven.infrastructure.security.case_redaction import model_boundary_redaction
+
+analysis = await _analyze_document(
+    LLMRouter(),
+    get_settings(),
+    path.read_text(),
+    path.name,
+    model_boundary_redaction("eval", None),
+)
 ```
 
 Do **not** copy the illustrative snippet in

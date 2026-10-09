@@ -1568,6 +1568,9 @@ def register_services(container: BaseDIContainer) -> None:
             # Membership resolver for the team publish target (#854); absent
             # (standalone) -> team-scoped publish is refused.
             team_service=team_service,
+            # The engine's sanitizer: every model call conversion makes is
+            # redacted with it, as an investigation turn's is (#1901).
+            sanitizer=container.get_service("sanitizer", required=True),
         )
     except Exception as conv_err:
         logger.warning(

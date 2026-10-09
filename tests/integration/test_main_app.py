@@ -134,6 +134,22 @@ def test_conversion_service_composition_root_wiring(booted_app_client):
     assert ks._db_session_factory is get_db_session
 
 
+def test_conversion_redacts_with_the_engines_sanitizer(booted_app_client):
+    """#1901: conversion's model calls are redacted at the engine layer with
+    the SAME sanitizer instance the investigation engine redacts with — the
+    service's own, and the document preprocessor's (triage) it builds. A
+    conversion holding none would send in clear under a substituted router
+    whatever ``SANITIZE_PII`` says, and every behavioural test that hands one
+    in by hand would still pass."""
+    from faultmaven.container import container
+
+    cs = app.state.conversion_service
+    sanitizer = container.get_service("sanitizer", required=True)
+    assert app.state.investigation_service.engine.deps.sanitizer is sanitizer
+    assert cs._sanitizer is sanitizer
+    assert cs._preprocessor._sanitizer is sanitizer
+
+
 def test_milestone_engine_holds_the_services_the_app_publishes(booted_app_client):
     """The engine is built with the same services app.state holds (#1722).
 

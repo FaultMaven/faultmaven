@@ -30,6 +30,7 @@ from faultmaven.core.investigation.confidence_repair import (
     count as count_confidence_repair,
 )
 from faultmaven.infrastructure.llm.json_response import loads_llm_json
+from faultmaven.infrastructure.security.case_redaction import model_boundary_redaction
 from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionErrorCode,
     PreprocessingResult,
@@ -553,17 +554,26 @@ def _has_runbook_body(text: str) -> bool:
 class DocumentPreprocessor:
     """Orchestrates the preprocessing pipeline."""
 
-    def __init__(self, llm_router=None, settings=None):
+    def __init__(self, llm_router=None, settings=None, sanitizer=None):
         self._parser = DocumentParser()
         self._llm_router = llm_router
         self._settings = settings
+        # The DI sanitizer the conversion service is handed: what the triage
+        # call sends is redacted with it at this layer (#1901), not left to
+        # whichever router is configured.
+        self._sanitizer = sanitizer
 
     async def preprocess(
         self,
         file_path: Path,
         content_type: str,
+        scope_id: str,
     ) -> PreprocessingResult:
-        """Run the full preprocessing pipeline."""
+        """Run the full preprocessing pipeline.
+
+        ``scope_id`` keys the model-boundary redaction of the triage call — the
+        conversion's id, since an uploaded document has no case.
+        """
         warnings: list[str] = []
 
         # Stage 0: File integrity
@@ -721,7 +731,7 @@ class DocumentPreprocessor:
         source_metadata["token_count"] = token_count
 
         # Stage 6: Content triage (classifier LLM)
-        triage_result = await self._run_content_triage(extracted_text)
+        triage_result = await self._run_content_triage(extracted_text, scope_id)
         if triage_result:
             if (
                 not triage_result.is_actionable
@@ -759,8 +769,18 @@ class DocumentPreprocessor:
             token_count=token_count,
         )
 
-    async def _run_content_triage(self, text: str) -> Optional[TriageResult]:
-        """Stage 6: Send first 2K tokens to classifier to determine if actionable."""
+    async def _run_content_triage(
+        self, text: str, scope_id: str
+    ) -> Optional[TriageResult]:
+        """Stage 6: Send first 2K tokens to classifier to determine if actionable.
+
+        Triage is advisory and fails OPEN — a document that cannot be
+        classified is still converted — with one exception: a redaction that
+        is required and cannot run. That is not a triage failure but a refusal
+        to send, so it is raised between the two fail-open guards below, and a
+        ``RedactionUnavailableError`` stops the conversion with nothing sent
+        (#1901), as it stops an investigation turn.
+        """
         if not self._llm_router or not self._settings:
             return None
 
@@ -777,15 +797,25 @@ class DocumentPreprocessor:
                     sample_text = text
 
             classifier_model = self._settings.llm.get_classifier_model()
+        except Exception as e:
+            logger.warning(f"Content triage failed, proceeding anyway: {e}")
+            return None
 
+        messages = await model_boundary_redaction(
+            scope_id, self._sanitizer
+        ).asanitize_messages(
+            [
+                {"role": "system", "content": TRIAGE_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": f"Classify this document excerpt:\n\n{sample_text}",
+                },
+            ]
+        )
+
+        try:
             response = await self._llm_router.route(
-                messages=[
-                    {"role": "system", "content": TRIAGE_SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": f"Classify this document excerpt:\n\n{sample_text}",
-                    },
-                ],
+                messages=messages,
                 model=classifier_model,
                 max_tokens=256,
                 temperature=0.1,
