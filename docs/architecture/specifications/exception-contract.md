@@ -89,6 +89,28 @@ The handlers surface these fields in the response (`resource_type`,
 `duplicate_username` from `duplicate_email` without regex on a
 free-text message.
 
+`ConflictError` also takes an `error_code`, sent as the response's
+`x-error-code` header, for a conflict a client dispatches on across routes
+before it reads a body. The one such code is `CASE_TERMINAL`
+(`faultmaven/exceptions.py`): every 409 that refuses a request because the
+case is resolved or closed carries it — the close route's `ConflictError` and
+the turn route's and `PUT /cases/{case_id}`'s `HTTPException`s alike (#1907).
+A conflict raised without an `error_code` goes out with no header.
+`tests/unit/api/middleware/test_conflict_labelling.py` fails on a 409
+`JSONResponse` / `HTTPException` that is neither labelled nor classified
+there, so a bare 409 cannot reappear unnoticed on a route whose client reads
+the header.
+
+```python
+raise ConflictError(
+    f"Case {case_id} is already closed",
+    resource_type="Case",
+    resource_id=case_id,
+    conflict_reason="already_closed",
+    error_code=CASE_TERMINAL,
+)
+```
+
 ## Unknown revocation state (every authenticated request)
 
 The one auth-path refusal that is neither 401 nor 403, because it is not a
@@ -330,6 +352,10 @@ async def conflict_exception_handler(request, exc):
         body["resource_id"] = exc.resource_id
     if exc.conflict_reason is not None:
         body["conflict_reason"] = exc.conflict_reason
+    if exc.error_code is not None:
+        return JSONResponse(
+            status_code=409, content=body, headers={"x-error-code": exc.error_code}
+        )
     return JSONResponse(status_code=409, content=body)
 
 @app.exception_handler(ValidationException)

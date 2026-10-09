@@ -229,6 +229,17 @@ TURN_BUDGET_EXHAUSTED = "TURN_BUDGET_EXHAUSTED"
 LLM_CONFIG_ERROR = "LLM_CONFIG_ERROR"
 
 
+# Stable ``x-error-code`` of every 409 that refuses a request because the case
+# is terminal (resolved or closed): new data, a status change or a file
+# reclassification on the turn route, a ``PUT /cases/{case_id}``, and a
+# ``POST /cases/{case_id}/close`` of a case already closed (#1907). One name
+# for one condition, whichever route refuses it. Until this label existed the
+# terminal refusal was the one 409 that went out unlabelled, and clients read
+# "closed" from the header being absent — an inference any other unlabelled
+# 409 would have turned into a false claim about a live case.
+CASE_TERMINAL = "CASE_TERMINAL"
+
+
 # error_codes whose failure is scoped to the ACCOUNT/SERVICE rather than to the
 # individual request: if this request failed for one of these reasons, so will
 # every other request until an operator acts. Only these permanent failures may
@@ -977,6 +988,10 @@ class ConflictError(ServiceError):
         resource_type: Type of the resource
         resource_id: ID of the resource
         conflict_reason: Description of the conflict
+        error_code: The response's ``x-error-code``, when the conflict is one a
+            client dispatches on across routes (``CASE_TERMINAL``). Distinct
+            from ``conflict_reason``, which is a body field scoped to its
+            resource; the header is what a client reads before the body.
     """
 
     def __init__(
@@ -985,16 +1000,19 @@ class ConflictError(ServiceError):
         resource_type: Optional[str] = None,
         resource_id: Optional[str] = None,
         conflict_reason: Optional[str] = None,
+        error_code: Optional[str] = None,
     ):
         self.resource_type = resource_type
         self.resource_id = resource_id
         self.conflict_reason = conflict_reason
+        self.error_code = error_code
         super().__init__(
             message,
             details={
                 "resource_type": resource_type,
                 "resource_id": resource_id,
                 "conflict_reason": conflict_reason,
+                "error_code": error_code,
             },
         )
 

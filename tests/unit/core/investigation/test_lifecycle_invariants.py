@@ -1324,27 +1324,43 @@ class TestINV10_SubmitTurnRejectionRules:
         and ``intent_type == "status_transition"`` — neither of which
         applies to a pure text query.
         """
+        import ast
+        import textwrap
+
         from faultmaven.modules.case.api.routes import conversation
 
-        source = inspect.getsource(conversation.submit_turn)
+        tree = ast.parse(textwrap.dedent(inspect.getsource(conversation.submit_turn)))
 
-        # The terminal-case guard is followed by conditional rejection
-        # branches gated on files / pasted_content / status_transition.
-        # There must NOT be an unconditional "raise HTTPException(409)"
-        # immediately after the `if case.is_terminal:` line.
-        terminal_idx = source.find("if case.is_terminal:")
-        assert terminal_idx >= 0
-        # Look at the ~500 chars following the terminal check: there should
-        # be conditional `if` branches, not an unconditional raise.
-        terminal_block = source[terminal_idx : terminal_idx + 500]
-        # Counts of conditional rejection branches
-        assert terminal_block.count("if files or pasted_content") >= 1
-        assert terminal_block.count('if intent_type == "status_transition"') >= 1
-        # And the block must not blanket-reject queries — there should be
-        # no `if query:` branch that raises 409 inside the terminal guard.
-        assert "if query:" not in terminal_block, (
-            "INV-10 violation: submit_turn appears to blanket-reject "
-            "queries on terminal cases. Text Q&A must be allowed."
+        # Read on the AST, not as a window of source text: the branches' size
+        # is not the invariant, and a fixed-width window broke the first time
+        # a refusal grew a header (#1907).
+        guards = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.If) and ast.unparse(node.test) == "case.is_terminal"
+        ]
+        assert len(guards) == 1, "the terminal-case guard was not found"
+        branches = guards[0].body
+
+        # Every statement in the guard is a conditional rejection: an
+        # unconditional `raise` would blanket-reject text questions.
+        assert all(isinstance(stmt, ast.If) for stmt in branches), (
+            "INV-10 violation: the terminal guard holds an unconditional "
+            "statement; text Q&A must be allowed."
+        )
+        # Nor an `else:` on any of them: `else: raise` would refuse every
+        # turn the earlier conditions let through, the text question included.
+        assert all(not stmt.orelse for stmt in branches), (
+            "INV-10 violation: a terminal-guard branch has an `else`; text "
+            "Q&A must be allowed."
+        )
+        tests = [ast.unparse(stmt.test) for stmt in branches]
+        assert "files or pasted_content" in tests
+        assert "intent_type == 'status_transition'" in tests
+        # And no branch keys on the query itself.
+        assert not any("query" in test for test in tests), (
+            "INV-10 violation: submit_turn appears to reject queries on "
+            f"terminal cases. Text Q&A must be allowed: {tests}"
         )
 
 

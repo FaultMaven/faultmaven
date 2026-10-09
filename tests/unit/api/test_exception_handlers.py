@@ -30,6 +30,7 @@ from faultmaven.api.exception_handlers import (
     validation_exception_handler,
 )
 from faultmaven.exceptions import (
+    CASE_TERMINAL,
     AuthorizationError,
     ConflictError,
     LLMException,
@@ -261,16 +262,28 @@ class TestConflictExceptionHandler:
 
     @pytest.mark.asyncio
     async def test_case_already_closed(self, mock_request):
-        """Test conflict for already closed case."""
+        """A terminal case's refusal is labelled ``CASE_TERMINAL`` (#1907)."""
         exc = ConflictError(
             "Case is already closed",
             resource_type="Case",
             resource_id="case_123",
             conflict_reason="already_closed",
+            error_code=CASE_TERMINAL,
         )
         response = await conflict_exception_handler(mock_request, exc)
         body = response.body.decode()
         assert "already closed" in body
+        assert response.headers["x-error-code"] == CASE_TERMINAL
+
+    @pytest.mark.asyncio
+    async def test_no_error_code_means_no_label(self, mock_request):
+        """The header is the raiser's to name: a conflict that names no code
+        goes out without one, rather than under an invented label."""
+        exc = ConflictError(
+            "Email already registered", conflict_reason="duplicate_email"
+        )
+        response = await conflict_exception_handler(mock_request, exc)
+        assert "x-error-code" not in response.headers
 
     @pytest.mark.asyncio
     async def test_surfaces_structured_metadata(self, mock_request):

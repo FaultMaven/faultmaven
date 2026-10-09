@@ -18,6 +18,7 @@ from typing import Optional
 from fastapi import Depends, HTTPException, Request, status
 
 from faultmaven.api.v1.auth_dependencies import require_authentication
+from faultmaven.exceptions import CASE_TERMINAL
 from faultmaven.infrastructure.llm.router import resolve_chat_provider_name
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.auth.contracts import ISessionService, UserDTO
@@ -184,11 +185,16 @@ def check_case_service_available(case_service: Optional[ICaseService]) -> ICaseS
 
 
 def require_case_not_terminal(case) -> None:
-    """Reject write operations on terminal (RESOLVED/CLOSED) cases."""
+    """Reject write operations on terminal (RESOLVED/CLOSED) cases.
+
+    409 ``x-error-code: CASE_TERMINAL``, the label every terminal-case
+    refusal carries (#1907).
+    """
     if case.is_terminal:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Case is in terminal state and read-only. No further modifications allowed.",
+            headers={"x-error-code": CASE_TERMINAL},
         )
 
 

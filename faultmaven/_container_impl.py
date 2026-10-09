@@ -1001,7 +1001,11 @@ class DIContainer(BaseDIContainer):
                 from faultmaven.core.investigation.terminal_transitions import (
                     execute_user_closure,
                 )
-                from faultmaven.exceptions import ConflictError, NotFoundError
+                from faultmaven.exceptions import (
+                    CASE_TERMINAL,
+                    ConflictError,
+                    NotFoundError,
+                )
 
                 case = self.cases.get(case_id)
                 if not case or case.user_id != user_id:
@@ -1012,6 +1016,7 @@ class DIContainer(BaseDIContainer):
                         resource_type="Case",
                         resource_id=case_id,
                         conflict_reason="already_closed",
+                        error_code=CASE_TERMINAL,
                     )
                 execute_user_closure(case, user_id)
                 return case

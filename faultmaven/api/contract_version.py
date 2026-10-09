@@ -1835,4 +1835,29 @@ asked to accept, and it belongs to a person.
 # (sa#90) sends a key derived from the Slack message identity and maps both
 # codes. faultmaven-dashboard follows its copilot-ui pin. Until then every
 # client survives this unchanged.
-API_CONTRACT_VERSION = "12.2.0"
+
+# 12.3.0 — MINOR. Every 409 that refuses a request because the case is terminal
+# (resolved or closed) carries `x-error-code: CASE_TERMINAL` (#1907):
+#
+# * `POST /cases/{case_id}/turns` — new data, a status change or a file
+#   reclassification on a terminal case (a text-only question is still
+#   answered). The code joins the route's documented 409 `x-error-code` enum,
+#   which no longer says the header is absent for a terminal case;
+# * `PUT /cases/{case_id}` — any update to a terminal case;
+# * `POST /cases/{case_id}/close` — a case that is already terminal. Its
+#   other 409 (the case changed while closing, `conflict_reason:
+#   concurrent_update`) stays unlabelled.
+#
+# The last two routes document their 409 for the first time. MINOR because the
+# status, the body and the condition are unchanged: a header was added to a
+# response a client already handles. Until now the terminal refusal was the one
+# 409 the turn route sent bare, and clients read "closed" from the header being
+# absent — an inference any other unlabelled 409 would have turned into a false
+# claim about a live case.
+#
+# Clients: the Slack agent maps `CASE_TERMINAL` to the same `CaseTerminalError`
+# as the unlabelled 409 since sa#92, so this lands with no window. copilot-ui
+# maps every 409 it does not name (this one included) to the version-conflict
+# error it gave the unlabelled one, and faultmaven-dashboard handles no 409 on
+# these routes directly; both survive this unchanged and only regenerate.
+API_CONTRACT_VERSION = "12.3.0"

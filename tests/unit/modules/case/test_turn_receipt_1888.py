@@ -58,6 +58,7 @@ from faultmaven.core.investigation.milestone_engine.terminal_replies import (
 )
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
 from faultmaven.core.investigation.terminal_transitions import propose_transition
+from faultmaven.exceptions import CASE_TERMINAL
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
@@ -536,6 +537,7 @@ class TestARetryReplaysTheCommittedTurn:
         assert (await world.committed()).state == CaseState.CLOSED, "control"
         unkeyed = await world.post(pick, key=None)
         assert unkeyed.status_code == 409, "control: the gate the retry must skip"
+        assert unkeyed.headers["x-error-code"] == CASE_TERMINAL
 
         retry = await world.post(pick, key="opt_msg_1_pick")
 
@@ -558,6 +560,7 @@ class TestARetryReplaysTheCommittedTurn:
         assert (await world.committed()).state == CaseState.CLOSED, "control"
         unkeyed = await world.post(close, key=None)
         assert unkeyed.status_code == 409, "control: the gate the retry must skip"
+        assert unkeyed.headers["x-error-code"] == CASE_TERMINAL
 
         retry = await world.post(close)
 
