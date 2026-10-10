@@ -85,7 +85,7 @@ def _carries_a_none_part(service, title) -> bool:
     pass ``None``. All four supply a ``str`` — ``conversion_service.py``'s
     ``service_name: str`` / ``title: str``, ``conversion.py``'s
     ``FailureModeAnalysis.service: str = "unknown"`` / ``title: str``,
-    ``suggestion_service.py``'s literal ``"case"``, and its
+    ``case_authoring.py``'s literal ``"case"``, and its
     ``service if isinstance(service, str) else ""`` coercion — so no persisted
     id can have been minted this way.
     """

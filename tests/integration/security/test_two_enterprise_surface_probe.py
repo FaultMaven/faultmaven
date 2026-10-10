@@ -301,7 +301,6 @@ ENTERPRISE_SCOPED_TABLES = frozenset(
         "hypothesis_evidence",
         "investigation_sessions",
         "knowledge_items",
-        "knowledge_suggestions",
         "llm_turn_spend",
         "llm_usage_daily",
         "organization_members",
@@ -848,7 +847,6 @@ SECRET_B_REPORT = f"{SECRET_B}-postmortem"
 SECRET_B_KB_PERSONAL = f"{SECRET_B}-runbook-personal"
 SECRET_B_KB_TEAM = f"{SECRET_B}-runbook-team"
 SECRET_B_DRAFT = f"{SECRET_B}-conversion-draft"
-SECRET_B_SUGGESTION = f"{SECRET_B}-suggestion"
 
 #: A's own row, so a control can show the same call working for A.
 SECRET_A = f"ALPHA-OWN-{_RUN}"
@@ -865,7 +863,6 @@ B_MARKERS = (
     SECRET_B_KB_PERSONAL,
     SECRET_B_KB_TEAM,
     SECRET_B_DRAFT,
-    SECRET_B_SUGGESTION,
 )
 
 #: Arm 2 splits A's content in two. The SHARED half is what B is *supposed* to
@@ -1093,12 +1090,6 @@ def _wire_services(app, chroma) -> None:
     from faultmaven.modules.knowledge.domain.services.knowledge_service import (
         KnowledgeService,
     )
-    from faultmaven.modules.knowledge.domain.services.suggestion_service import (
-        SuggestionService,
-    )
-    from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
-        DatabaseSuggestionRepository,
-    )
     from tests.utils import InMemoryRevocationStore
 
     settings = get_settings()
@@ -1178,12 +1169,6 @@ def _wire_services(app, chroma) -> None:
     # The cross-enterprise operator case list, as the composition root wires it
     # under multi-tenancy (ADR-012 D9).
     app.state.case_metadata_reader = SessionlessCaseMetadataReader()
-    app.state.suggestion_service = SuggestionService(
-        case_repository=case_repository,
-        knowledge_service=knowledge_service,
-        sanitizer=sanitizer,
-        suggestion_repository=DatabaseSuggestionRepository(),
-    )
     app.state.conversion_service = ConversionService(
         llm_router=AsyncMock(),
         settings=settings,
@@ -1490,14 +1475,6 @@ _CONVERSION_DRAFT_INSERT = text("""
             'draft')
     """)
 
-_SUGGESTION_INSERT = text("""
-    INSERT INTO knowledge_suggestions
-        (suggestion_id, enterprise_id, organization_id, case_id, status,
-         suggested_title, suggested_content, extracted_by, source_case_title)
-    VALUES (:id, :enterprise, :org, :case_id, 'pending_review', :title, :content,
-            :by, :title)
-    """)
-
 
 async def _seed_team(session_factory, *, enterprise_id, team_id, name, member_ids):
     """A team and its members, written as the enterprise through the limited role."""
@@ -1572,11 +1549,10 @@ async def _share_case(
             await session.commit()
 
 
-async def _seed_conversion_and_suggestion(session_factory, party) -> None:
-    """The conversion job, its draft, and one knowledge suggestion."""
+async def _seed_conversion(session_factory, party) -> None:
+    """The conversion job and its draft."""
     conversion_id = f"conv_{uuid.uuid4().hex[:12]}"
     draft_id = f"draft_{uuid.uuid4().hex[:12]}"
-    suggestion_id = str(uuid.uuid4())
 
     async with _as_enterprise(party.enterprise_id):
         async with session_factory() as session:
@@ -1603,23 +1579,10 @@ async def _seed_conversion_and_suggestion(session_factory, party) -> None:
                     "path": f"/tmp/{draft_id}.md",
                 },
             )
-            await session.execute(
-                _SUGGESTION_INSERT,
-                {
-                    "id": suggestion_id,
-                    "enterprise": party.enterprise_id,
-                    "org": party.organization_id,
-                    "case_id": party.case.case_id,
-                    "title": f"{party.secret}-suggestion",
-                    "content": f"{party.secret}-suggestion body",
-                    "by": party.user_id,
-                },
-            )
             await session.commit()
 
     party.conversion_id = conversion_id
     party.draft_id = draft_id
-    party.suggestion_id = suggestion_id
 
 
 #: One embedding for every chunk and every query, so cosine similarity excludes
@@ -1738,7 +1701,6 @@ def _forge_token(
 async def _delete_case_rows(conn, case_ids) -> None:
     for case_id in case_ids:
         for table in (
-            "knowledge_suggestions",
             "reports",
             "evidence",
             "uploaded_files",
@@ -2002,8 +1964,8 @@ async def _wall_world(probe_app, arm: str):
             title=f"{SECRET_A}-own-incident",
             secret_prefix=SECRET_A,
         )
-        await _seed_conversion_and_suggestion(session_factory, party_b)
-        await _seed_conversion_and_suggestion(session_factory, party_a)
+        await _seed_conversion(session_factory, party_b)
+        await _seed_conversion(session_factory, party_a)
 
         # A FRESH ChromaDB per test, not the one the module fixture built: the corpus
         # must be a function of this test rather than of everything that ran before
@@ -3306,9 +3268,6 @@ CASE_ADDRESSED_OPERATIONS = [
     ),
     pytest.param("POST", "/api/v1/cases/{case_id}/title", {}, id="title"),
     pytest.param(
-        "POST", "/api/v1/cases/{case_id}/extract-knowledge", {}, id="extract-knowledge"
-    ),
-    pytest.param(
         "POST",
         "/api/v1/cases/{case_id}/reports",
         {"report_type": "closure_summary"},
@@ -3731,57 +3690,6 @@ async def test_a_runbook_cannot_be_published_into_the_other_partys_team(world):
 # predicate; inside one enterprise (arm 3) it admits both parties by design, and
 # a test asserting otherwise would be asserting a boundary the ADR does not
 # claim.
-
-
-async def test_knowledge_suggestions_are_scoped_to_the_operators_own_enterprise(
-    wall_world,
-):
-    """The review inbox. The operator role says WHAT you may do, not WHOSE."""
-    world = wall_world
-    path = "/api/v1/knowledge/suggestions"
-
-    org_admin = await as_a(world, "GET", path)
-    assert org_admin.status_code == 403
-    assert_no_b_content(org_admin, f"GET {path} (organization admin)")
-
-    operator = await _call(world, world.token_operator_a, "GET", path)
-    assert operator.status_code == 200
-    assert world.b.suggestion_id not in _ids(operator.json(), "suggestion_id")
-    assert_no_b_content(operator, f"GET {path} (platform operator bound to E_A)")
-
-    # Bodies are filled in so each call passes its own validation and actually
-    # reaches the tenant resolution. A 400 for a missing field would "refuse" the
-    # attack without ever consulting the boundary.
-    id_addressed = (
-        ("GET", "", None),
-        ("PUT", "", {"suggested_title": "PWNED", "suggested_content": "PWNED"}),
-        ("POST", "/approve", {}),
-        ("POST", "/reject", {"rejection_reason": "probe"}),
-        ("POST", "/remediate-pii", {}),
-    )
-    for method, suffix, json_body in id_addressed:
-        target = f"{path}/{world.b.suggestion_id}{suffix}"
-        response = await _call(
-            world, world.token_operator_a, method, target, json=json_body
-        )
-        assert response.status_code in REFUSED, (
-            f"{method} {target}: a platform operator bound to E_A reached B's "
-            f"suggestion ({response.status_code}): {response.text[:300]}"
-        )
-        assert_no_b_content(response, f"{method} {target}")
-
-    async with world.superuser_engine.begin() as conn:
-        row = (
-            await conn.execute(
-                text(
-                    "SELECT status FROM knowledge_suggestions WHERE suggestion_id = :s"
-                ),
-                {"s": world.b.suggestion_id},
-            )
-        ).first()
-    assert (
-        row is not None and row[0] == "pending_review"
-    ), "a refused approve/reject changed B's suggestion anyway"
 
 
 async def test_the_cross_tenant_case_listing_spans_enterprises_as_metadata_only(
@@ -4605,18 +4513,15 @@ async def test_a_share_grants_read_not_write_on_the_derived_surfaces(shared_worl
 
     A share is read visibility (ADR-013 D4, as amended 2026-10-09), and the
     surfaces above are the ones that name the case row itself. These name
-    something derived from it — an
-    investigation session, the case's report set, a knowledge suggestion — and
-    every one of them was reachable to a teammate, because the gate they
+    something derived from it — an investigation session, the case's report
+    set — and every one of them was reachable to a teammate, because the gate they
     resolved through was the READ allowlist:
 
     * the session routes are gated by one router-level dependency, which asked
       for ``owner ∪ shared`` on every method; the only predicate left downstream
       is ``case.enterprise_id``, and in this arm both parties carry it;
     * report **regeneration** flips ``is_current`` across the owner's reports;
-    * ``POST /reports/generate`` mints report rows against the owner's case;
-    * **extraction** mints a knowledge suggestion out of the owner's transcript
-      and evidence, attributed to whoever asked.
+    * ``POST /reports/generate`` mints report rows against the owner's case.
 
     Asserted against the ROWS, not the responses. The refusals here are 404 and
     the OWNER's own call against an absent session is also 404 — correctly
@@ -4639,14 +4544,6 @@ async def test_a_share_grants_read_not_write_on_the_derived_surfaces(shared_worl
                     {"c": case_id},
                 )
             ).all()
-            suggestions = (
-                await conn.execute(
-                    text(
-                        "SELECT count(*) FROM knowledge_suggestions WHERE case_id = :c"
-                    ),
-                    {"c": case_id},
-                )
-            ).scalar()
             report = (
                 await conn.execute(
                     text(
@@ -4656,7 +4553,7 @@ async def test_a_share_grants_read_not_write_on_the_derived_surfaces(shared_worl
                     {"r": report_id},
                 )
             ).first()
-        return sessions, suggestions, report
+        return sessions, report
 
     # The OWNER opens a session. Control, and the thing the teammate's calls
     # address: a battery aimed at a session id that names nothing would be
@@ -4673,8 +4570,8 @@ async def test_a_share_grants_read_not_write_on_the_derived_surfaces(shared_worl
     )
     session_id = opened.json()["session_id"]
 
-    before_sessions, before_suggestions, before_report = await _rows()
-    assert len(before_sessions) == 1 and before_suggestions == 0
+    before_sessions, before_report = await _rows()
+    assert len(before_sessions) == 1
 
     attacks = (
         ("POST /cases/{id}/sessions", "POST", f"/api/v1/cases/{case_id}/sessions", {}),
@@ -4714,12 +4611,6 @@ async def test_a_share_grants_read_not_write_on_the_derived_surfaces(shared_worl
             f"/api/v1/reports/generate?case_id={case_id}",
             {"report_types": ["closure_summary"]},
         ),
-        (
-            "POST /cases/{id}/extract-knowledge",
-            "POST",
-            f"/api/v1/cases/{case_id}/extract-knowledge",
-            {},
-        ),
     )
 
     for label, method, path, body in attacks:
@@ -4731,17 +4622,13 @@ async def test_a_share_grants_read_not_write_on_the_derived_surfaces(shared_worl
         )
         assert_no_private_content(response, label)
 
-    after_sessions, after_suggestions, after_report = await _rows()
+    after_sessions, after_report = await _rows()
     assert after_sessions == before_sessions, (
         "a refused session call changed the owner's sessions — a new row, a "
         f"moved state, or a rewritten goal: {before_sessions} -> {after_sessions}"
     )
     assert after_sessions[0][1] == "active", "a refused pause/complete moved it"
     assert after_sessions[0][2] == SHARED, "a refused PATCH rewrote the goal"
-    assert after_suggestions == 0, (
-        "a refused extraction minted a knowledge suggestion from the owner's "
-        "transcript and evidence"
-    )
     assert after_report == before_report, (
         "a refused regeneration moved the owner's report set — is_current, the "
         f"version, or the title: {before_report} -> {after_report}"
@@ -4774,22 +4661,6 @@ async def test_a_share_grants_read_not_write_on_the_derived_surfaces(shared_worl
         "control: the owner's own regeneration no longer reaches the state "
         f"check, so the teammate's 404 distinguishes nothing: "
         f"{owner_regenerate.text[:300]}"
-    )
-
-    # And extraction, which WRITES: the count moving 0 -> 1 on the owner's call
-    # is what makes "the teammate wrote none" a measurement rather than an
-    # absence that could have come from a broken route.
-    owner_extract = await as_owner(
-        world, "POST", f"/api/v1/cases/{case_id}/extract-knowledge", json={}
-    )
-    assert owner_extract.status_code == 201, (
-        "control: the owner cannot extract knowledge from their own case, so "
-        f"the teammate's refusal proves nothing: {owner_extract.text[:300]}"
-    )
-    _, suggestions_after_owner, _ = await _rows()
-    assert suggestions_after_owner == 1, (
-        "control: the owner's extraction wrote no suggestion, so the zero "
-        "asserted above is not evidence about the teammate"
     )
 
 
@@ -5254,7 +5125,6 @@ TENANT_SCOPED_PATH_PARAMS = frozenset(
         "invitation_id",
         "report_id",
         "session_id",
-        "suggestion_id",
         "team_id",
         "user_id",
         "username",
@@ -5323,10 +5193,6 @@ SURFACE_INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     ),
     ("POST", "/api/v1/cases/{case_id}/title"): (_PROBED, "case-addressed battery"),
     ("POST", "/api/v1/cases/{case_id}/turns"): (_PROBED, "case-addressed battery"),
-    ("POST", "/api/v1/cases/{case_id}/extract-knowledge"): (
-        _PROBED,
-        "case-addressed battery",
-    ),
     ("POST", "/api/v1/cases/{case_id}/reports"): (_PROBED, "case-addressed battery"),
     ("POST", "/api/v1/cases/{case_id}/team-shares"): (
         _PROBED,
@@ -5477,26 +5343,6 @@ SURFACE_INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
         "job not found' to the draft's OWNER, so an attacker-side failure "
         "would be indistinguishable from the endpoint being broken. The same "
         "rows are probed one at a time through the per-draft verify above.",
-    ),
-    ("GET", "/api/v1/knowledge/suggestions/{suggestion_id}"): (
-        _PROBED,
-        "operator bound to A vs B's suggestion",
-    ),
-    ("PUT", "/api/v1/knowledge/suggestions/{suggestion_id}"): (
-        _PROBED,
-        "operator bound to A vs B's suggestion",
-    ),
-    ("POST", "/api/v1/knowledge/suggestions/{suggestion_id}/approve"): (
-        _PROBED,
-        "operator bound to A vs B's suggestion, row-checked",
-    ),
-    ("POST", "/api/v1/knowledge/suggestions/{suggestion_id}/reject"): (
-        _PROBED,
-        "operator bound to A vs B's suggestion, row-checked",
-    ),
-    ("POST", "/api/v1/knowledge/suggestions/{suggestion_id}/remediate-pii"): (
-        _PROBED,
-        "operator bound to A vs B's suggestion",
     ),
     # --- admin and break-glass --------------------------------------------
     ("GET", "/api/v1/admin/cases/{case_id}"): (

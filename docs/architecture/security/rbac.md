@@ -208,9 +208,9 @@ applies to. That is a separate, mandatory predicate:
 The three parts each close a different way of losing the predicate:
 
 - **By id.** The lookup is split in two: a *trusted* unscoped load with no actor
-  (`KnowledgeService.get_document`, `SuggestionService.get_suggestion`) used by
-  ingestion, extraction and the write-policy check, and an *actor-facing* scoped
-  load (`get_document_visible`, `get_suggestion_visible`) that every route uses.
+  (`KnowledgeService.get_document`) used by ingestion and the write-policy
+  check, and an *actor-facing* scoped load (`get_document_visible`) that every
+  route uses.
   The scoped form takes a required `enterprise_id` and returns nothing for an
   absent id and for an out-of-tenant id alike, so no caller can tell them apart.
   For user ACCOUNTS the uniform 404 no longer hides existence from a platform
@@ -491,23 +491,6 @@ outage cannot stop an admin containing a compromised account (#703/#1043). Under
 watermark for another enterprise's user *is* the cross-tenant mutation — so
 there an account store that cannot answer refuses the revocation instead of
 performing it. Under `single` the ordering is unchanged.
-
-### Suggestion Review
-
-Knowledge suggestions extracted from cases. Every route requires
-`platform_admin` **and** resolves inside the caller's organization per
-[Tenant-Scoped Resolution](#tenant-scoped-resolution): an id belonging to
-another tenant answers 404 and nothing is written. Approval additionally
-publishes at global scope, so it carries the global-tier authoring gate.
-
-| Method | Endpoint | Description | Required Role |
-|--------|----------|-------------|---------------|
-| GET | `/api/v1/knowledge/suggestions` | List the caller's org's suggestions | `platform_admin`, own org only |
-| GET | `/api/v1/knowledge/suggestions/{id}` | Suggestion detail | `platform_admin`; 404 if out of tenant |
-| PUT | `/api/v1/knowledge/suggestions/{id}` | Edit before approval | `platform_admin`; 404 if out of tenant |
-| POST | `/api/v1/knowledge/suggestions/{id}/approve` | Approve → knowledge item | `platform_admin` + global-authoring gate; 404 if out of tenant |
-| POST | `/api/v1/knowledge/suggestions/{id}/reject` | Reject with reason | `platform_admin`; 404 if out of tenant |
-| POST | `/api/v1/knowledge/suggestions/{id}/remediate-pii` | Mark PII remediated | `platform_admin`; 404 if out of tenant |
 
 ### Public Endpoints (All Authenticated Users)
 

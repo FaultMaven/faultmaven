@@ -26,7 +26,7 @@ Investigation activity is recorded in `case_messages` and `case_actions`. `inves
 
 **Turn receipts (#1888):** `turn_receipts` — one row per committed turn that carried an `Idempotency-Key`: the key, the submitting user, a sha256 fingerprint of the turn's inputs (form fields and each file's content), the turn number it committed at, and the `TurnResponse` the client was sent (`json`, not `jsonb`, on PostgreSQL, so a replay is byte-identical). Written in the turn's one transaction by `ICaseRepository.save(case, reports=..., receipt=...)`, so a receipt exists exactly when its turn committed; a retry with the key is answered from it (`.claude/rules/api-contract.md`, the turns row). Keyed on `(enterprise_id, case_id, author_id, idempotency_key)`, the enterprise first because RLS scopes on it. Lifecycle: deleted with its case (`ON DELETE CASCADE`) and with its enterprise (a wipe is `DROP DATABASE`); no retention job — one small row per keyed turn, living as long as the messages it acknowledges.
 
-**Knowledge domain (case-adjacent):** `knowledge_items`, `knowledge_suggestions`
+**Knowledge domain (case-adjacent):** `knowledge_items`
 
 **Tenancy, sharing and usage:** `enterprises`, `sso_org_mappings`, `sso_personal_enterprises`, `resource_shares`, `turn_usage` — semantics in `.claude/rules/data-model.md` and [sso-org-mapping.md](../../architecture/security/sso-org-mapping.md)
 

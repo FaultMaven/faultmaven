@@ -226,9 +226,9 @@ class RunbookCreator:
                 CaseConversionRequest,
             )
 
-            # Case-generated runbooks land in the case owner's personal KB by
-            # default. Global is reserved for platform-curated content; the
-            # owner can promote later via the Dashboard.
+            # Case-generated runbooks land in the case owner's personal KB.
+            # Global is reserved for platform-curated content, and nothing
+            # promotes a case-generated runbook there (#1897).
             request = CaseConversionRequest.from_case(case, scope="personal")
             # Don't await the full pipeline — fire and forget, behind the
             # turn's commit gate. A spawn failure stays here, before the

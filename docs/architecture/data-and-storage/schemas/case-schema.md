@@ -1330,7 +1330,6 @@ WHERE e.case_id = :case_id
 - ✅ `reports`
 - ✅ `investigation_sessions`
 - ✅ `knowledge_items`
-- ✅ `knowledge_suggestions`
 - ✅ `conversion_jobs`
 - ✅ `conversion_drafts`
 

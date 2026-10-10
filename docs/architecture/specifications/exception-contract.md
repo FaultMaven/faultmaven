@@ -12,7 +12,8 @@ investigation-pipeline-followups handoff series:
 - **Conforming**: auth (PR #331), case/routes
   (PR #335), agent/routes, knowledge/verify_draft (PR #334),
   knowledge/routes (`approve_suggestion` and `remediate_pii`,
-  PR #337).
+  PR #337; both handlers were removed with the knowledge-suggestion
+  subsystem in #1897).
 - **Out of scope**: knowledge/conversion_routes keeps its own
   `ConversionRejectedError`/`ConversionErrorCode` contract mapping to
   413/415/422/503; the only Pattern-B remnant in that file (an LLM

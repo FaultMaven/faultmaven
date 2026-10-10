@@ -145,7 +145,6 @@ MUST_BE_EMPTY = frozenset(
         "hypotheses",
         "hypothesis_evidence",
         "investigation_sessions",
-        "knowledge_suggestions",
         "reports",
         "solutions",
         # Turn receipts (#1888): deleted with their case, so a surviving row

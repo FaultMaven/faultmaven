@@ -2,10 +2,10 @@
 
 ``should_redact`` (a sanitizer is configured AND ``SANITIZE_PII`` is on) used to
 exist twice: once in the milestone engine, and once re-stated inline by
-case→runbook extraction, with a test pinning the copy to the original. It now
-lives once, in ``infrastructure/security/case_redaction.py``, beside
-``model_boundary_redaction`` — the context the knowledge-authoring paths
-(extraction, case and document conversion) build from it.
+case→runbook extraction (since removed, #1897), with a test pinning the copy to
+the original. It now lives once, in ``infrastructure/security/case_redaction.py``,
+beside ``model_boundary_redaction`` — the context the knowledge-authoring paths
+(case and document conversion) build from it.
 
 Pinned here, once, for every path that uses it:
 
@@ -28,6 +28,7 @@ import pytest
 import faultmaven
 from faultmaven.infrastructure.security import case_redaction
 from faultmaven.infrastructure.security.case_redaction import (
+    MODEL_BOUNDARY_SCOPE,
     CaseRedactionContext,
     model_boundary_redaction,
     should_redact,
@@ -65,20 +66,21 @@ def test_model_boundary_redaction_is_that_decision_over_that_sanitizer(
 ):
     handed = sanitizer if has_sanitizer else None
 
-    ctx = model_boundary_redaction("conv_1901", handed)
+    ctx = model_boundary_redaction(handed)
 
     assert isinstance(ctx, CaseRedactionContext)
     assert ctx.enabled is should_redact(handed)
     assert ctx.enabled is (redaction_arm and has_sanitizer)
     assert ctx.sanitizer is handed
-    assert ctx.case_id == "conv_1901"
     # No registry: nothing is loaded from or saved to Redis, and so there is
-    # nothing a caller could reverse placeholders from but this call's own.
+    # nothing a caller could reverse placeholders from but this call's own —
+    # which is why the context takes no case or conversion id to key one by.
     assert ctx.redis_client is None
+    assert ctx.case_id == MODEL_BOUNDARY_SCOPE
 
 
 async def test_asanitize_messages_redacts_every_message(redaction_arm, sanitizer):
-    ctx = model_boundary_redaction("conv_1901", sanitizer)
+    ctx = model_boundary_redaction(sanitizer)
     messages = [
         {"role": "system", "content": f"system mentions {PII_IP}"},
         {"role": "user", "content": f"the replica at {PII_IP} refuses"},
@@ -109,7 +111,7 @@ async def test_structured_content_is_refused_not_sent_in_clear(
     walks lists and dicts. So an enabled context refuses a message it cannot
     redact rather than send it in clear. A disabled one redacts nothing and
     checks nothing."""
-    ctx = model_boundary_redaction("conv_1901", sanitizer)
+    ctx = model_boundary_redaction(sanitizer)
     messages = [
         {"role": "system", "content": "fixed"},
         {"role": "user", "content": content},

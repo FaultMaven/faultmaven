@@ -86,8 +86,8 @@ Dashboard's Usage page — is filed as #1764 and #1765.
 **How a call reaches a row.** Inside an engine turn every billed call accrues to
 the turn's tracker, and the end of `process_turn` writes the turn in one
 transaction: one `llm_usage_daily` increment per `(provider, model, outcome)`
-plus the `llm_turn_spend` row. Every other billed call — title generation, a
-KB suggestion, an out-of-band aside, tier-2 preprocessing, and a call made
+plus the `llm_turn_spend` row. Every other billed call — title generation, an
+out-of-band aside, tier-2 preprocessing, and a call made
 after its turn already flushed (the fire-and-forget runbook conversion) —
 writes a daily row of its own. Every billed call lands in exactly one daily
 row. A turn that made no billed call writes no turn row.
