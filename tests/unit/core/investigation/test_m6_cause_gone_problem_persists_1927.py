@@ -1425,3 +1425,107 @@ def test_a_failure_in_the_fixed_causes_own_terms_counts_without_a_validated_root
 
     assert _window_states(case)[-1] == (8, FIX_FAILED)
     assert has_resolution_confirmation(case) is False
+
+
+def test_with_no_cause_identified_a_failure_in_any_candidates_terms_counts():
+    """No root validated and the fix's cause row too terse to say which chain
+    it removed: the frame holds every candidate's chain, so a persistence row
+    phrased in the cause's own terms still fails the fix, and a later relief
+    resolves nothing. M6 has no identified cause to demote, so the wider frame
+    only makes the gate more careful."""
+    case, root, hyp = _identified_case()
+    root.node_state = NodeState.CANDIDATE
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence += [
+        _cause_gone(9),
+        _row(
+            "slots_still_held",
+            EvidenceCategory.SYMPTOM_EVIDENCE,
+            10,
+            "pg_stat_activity: the pool size is still exhausted",
+        ),
+    ]
+    _accept(case, InvestigationActionType.MITIGATION, 10)
+    case.evidence.append(_problem_gone(11, label="restart_relief"))
+
+    assert _window_states(case)[-1] == (8, FIX_FAILED)
+    assert has_resolution_confirmation(case) is False
+
+
+def test_the_cause_recheck_ask_is_not_used_once_the_problem_is_back():
+    """A relief then the problem seen again, with no cause re-check: the
+    problem is not gone, so the ask does not say it is."""
+    case, root, hyp = _identified_case()
+    _accept(case, InvestigationActionType.SOLUTION, 9)
+    case.evidence += [_problem_gone(10), _still_failing(11, label="back_at_11")]
+    message = assess_resolution_readiness(case).message
+
+    assert "cause re-checked after the fix" not in message
+
+
+def test_a_siblings_fix_failing_in_the_siblings_terms_fails_its_window():
+    """The case identifies A, but the latest fix addressed candidate B: its
+    cause row is about B's chain, so B's chain is in the window's frame and a
+    persistence row in B's terms fails the fix. The gate resolves nothing on
+    it; M6 leaves A alone, since a failed fix of B disconfirms B, not A."""
+    case, root, hyp = _identified_case()
+    _add_sibling_chain(case)
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence += [
+        _row(
+            "leak_gone",
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            9,
+            "gunicorn worker memory leak patched, worker RSS now flat",
+        ),
+        _row(
+            "leak_back",
+            EvidenceCategory.SYMPTOM_EVIDENCE,
+            10,
+            "gunicorn worker memory is climbing again",
+        ),
+    ]
+    _recompute_at(case, 10)
+    _mitigate(case, accepted_turn=11, relief_turn=12)
+
+    assert _window_states(case)[-1] == (8, FIX_FAILED)
+    assert has_resolution_confirmation(case) is False
+    assert hyp.state != HypothesisState.REFUTED
+
+
+def test_a_demoted_causes_failure_stands_after_another_cause_is_identified():
+    """A's fix failed in A's own terms and M6 demoted A; the investigation
+    then validates B. A's chain stays in the frame because it carries M6's
+    disconfirmation, so A's window stays FAILED and a relief does not turn it
+    into a success."""
+    case, root, hyp = _identified_case()
+    sibling = _add_sibling_chain(case)
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence += [
+        _cause_gone(9),
+        _row(
+            "pool_still_starved",
+            EvidenceCategory.SYMPTOM_EVIDENCE,
+            10,
+            "max_connections pool size limit still exhausted",
+        ),
+    ]
+    _recompute_at(case, 10)
+    _assert_demoted(case, root, hyp)
+    sibling.node_state = NodeState.VALIDATED
+    _accept(case, InvestigationActionType.MITIGATION, 11)
+    case.evidence.append(_problem_gone(12, label="restart_relief"))
+
+    assert _window_states(case)[-1] == (8, FIX_FAILED)
+    assert has_resolution_confirmation(case) is False
+
+
+def test_a_same_turn_relief_and_persistence_ask_for_the_cause_recheck():
+    """The problem seen gone and still present in one turn after the fix, no
+    cause re-check: the same-turn tie reads as gone (the owner's ruling), so
+    the leg still owed is the cause."""
+    case, root, hyp = _identified_case()
+    _accept(case, InvestigationActionType.SOLUTION, 9)
+    case.evidence += [_problem_gone(10), _still_failing(10, label="also_10")]
+
+    assert "cause re-checked after the fix" in assess_resolution_readiness(case).message

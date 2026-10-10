@@ -769,10 +769,13 @@ def _problem_frame(case: "Case", cause_rows: tuple) -> frozenset[str]:
     validated or not. Not every candidate's: a symptom about a sibling
     candidate or a refuted guess ("gunicorn worker memory is climbing") is not
     the reported problem persisting, and reading it so would fail a fix nobody
-    saw fail and demote the cause it removed. Measured on the stored corpus,
-    134 of 136 symptom rows on cases with a validated root share ≥2 content
-    tokens with the anchors plus that root's chain; a row that misses is not
-    counted as a failure."""
+    saw fail and demote the cause it removed. With no cause identified at all,
+    every candidate's chain is in the frame: nothing tells which one the fix
+    addressed, and M6 has no identified cause to demote, so a wider frame only
+    makes the gate more careful. Measured on the stored corpus, 134 of 136
+    symptom rows on cases with a validated root share ≥2 content tokens with
+    the anchors plus that root's chain; a row that misses is not counted as a
+    failure."""
     frame: set[str] = set()
     for anchor in problem_anchor_statements(case):
         frame |= content_tokens(anchor)
@@ -783,7 +786,7 @@ def _problem_frame(case: "Case", cause_rows: tuple) -> frozenset[str]:
         if node.node_type != NodeType.ROOT or root_id in identified:
             continue
         chain = _root_chain_tokens(case, root_id)
-        if any(
+        if not identified or any(
             len(_row_content_tokens(row) & chain) >= _BEARING_MIN_SHARED_TOKENS
             for row in cause_rows
         ):

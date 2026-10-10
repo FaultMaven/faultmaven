@@ -1231,15 +1231,29 @@ class ResolutionReadiness:
 
 
 def _relief_without_cause_recheck(case: "Case", window) -> bool:
-    """The latest fix window holds a problem-gone row but no cause re-check
-    (#1927): the one leg the user still owes is the cause."""
+    """The latest fix window's latest observation of the problem is a
+    problem-gone row, and the window holds no cause re-check (#1927): the one
+    leg the user still owes is the cause. Not when the problem was seen again
+    after the relief — then it is not gone."""
     if window.fix_turn is None or window.cause_rows:
         return False
-    return any(
-        getattr(e, "category", None) == EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE
-        and getattr(e, "collected_by", None) != ENGINE_EVIDENCE_AUTHOR
-        and window.holds(getattr(e, "collected_at_turn", 0) or 0)
-        for e in case.evidence or []
+    latest: dict = {}
+    for e in case.evidence or []:
+        category = getattr(e, "category", None)
+        turn = getattr(e, "collected_at_turn", 0) or 0
+        if (
+            category
+            in (
+                EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+                EvidenceCategory.SYMPTOM_EVIDENCE,
+            )
+            and getattr(e, "collected_by", None) != ENGINE_EVIDENCE_AUTHOR
+            and window.holds(turn)
+        ):
+            latest[category] = max(latest.get(category, -1), turn)
+    gone = latest.get(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE)
+    return gone is not None and gone >= latest.get(
+        EvidenceCategory.SYMPTOM_EVIDENCE, -1
     )
 
 

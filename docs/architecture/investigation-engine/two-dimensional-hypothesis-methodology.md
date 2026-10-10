@@ -949,10 +949,12 @@ records only what it can substantiate:
     problem anchors plus the identified cause's chain and hypotheses — the
     VALIDATED roots and any root carrying M6's own disconfirmation, so the
     frame is stable across a demotion — plus the chain the window's own
-    cause rows are about, the cause the fix addressed, validated or not: 134
-    of 136 stored symptom rows on cases with a validated root bear; a
-    symptom about a sibling candidate or a refuted guess does not fail the
-    fix).
+    cause rows are about, the cause the fix addressed, validated or not;
+    with no cause identified at all, every candidate's chain, since nothing
+    tells which one the fix addressed and M6 has no identified cause to
+    demote: 134 of 136 stored symptom rows on cases with a validated root
+    bear; once a cause is identified, a symptom about a sibling candidate or
+    a refuted guess does not fail the fix).
   - The first persistence makes the window **FAILED**, and FAILED is final:
     no later relief — a workaround, a delayed effect, a re-check of the
     cause — makes a fix that was seen failing a success. Only a new fix opens
