@@ -1,10 +1,12 @@
-"""RESOLVED requires causal-absence (cause eliminated), not just a solution row.
+"""RESOLVED requires gone ⇒ gone confirmed, not just a solution row.
 
 A case where service was only STABILIZED (failover / workaround / traffic-shift
 — which produce symptom_absence while the cause persists), or where the
 permanent fix is deferred, must CLOSE with the findings documented, not RESOLVE.
-The discriminator is a ``causal_absence_evidence`` row (the cause is confirmed
-eliminated). See investigation-flow-redesign.md §11 / intent-resolution.md §8.
+The discriminator is the pair: a ``causal_absence_evidence`` row (the cause is
+confirmed eliminated) AND a ``symptom_absence_evidence`` row at or after it (the
+reported problem went with it, #1906). See investigation-flow-redesign.md §11 /
+intent-resolution.md §8.
 
 Motivated by the pg-primary-hw-failover scenario: failover restored writes
 (symptom_absence) but the NVMe was still dead (no causal_absence) — yet the case
@@ -13,6 +15,7 @@ RESOLVED under the old ``has_solution``-on-any-row gate.
 
 from types import SimpleNamespace
 
+from faultmaven.core.investigation.cause_assurance import ENGINE_EVIDENCE_AUTHOR
 from faultmaven.core.investigation.terminal_transitions import (
     ClosureReadiness,
     ResolutionReadiness,
@@ -23,6 +26,12 @@ from faultmaven.modules.case.contracts import (
     EvidenceCategory,
     EvidenceStance,
     ProblemStatus,
+)
+
+#: Both legs of a resolution confirmation: the cause gone, the problem gone.
+CONFIRMED = (
+    EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+    EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
 )
 
 
@@ -43,10 +52,8 @@ def _case(*, cats=(), solutions=1, cause=True):
 
 
 class TestResolutionGate:
-    def test_ready_only_when_causal_absence(self):
-        r = assess_resolution_readiness(
-            _case(cats=[EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE])
-        )
+    def test_ready_only_when_both_absence_legs(self):
+        r = assess_resolution_readiness(_case(cats=[*CONFIRMED]))
         assert r.verdict == ResolutionReadiness.READY
 
     def test_stabilized_symptom_absence_only_is_not_ready(self):
@@ -86,15 +93,10 @@ class TestResolutionGate:
 
 
 class TestClosureSuggestResolveSymmetry:
-    def test_suggest_resolve_only_with_causal_absence(self):
-        # close request on a case with cause + solution + causal_absence -> pivot
+    def test_suggest_resolve_only_with_both_absence_legs(self):
+        # close request on a case with cause + solution + both absence legs -> pivot
         r = assess_closure_readiness(
-            _case(
-                cats=[
-                    EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-                    EvidenceCategory.CAUSAL_EVIDENCE,
-                ]
-            )
+            _case(cats=[*CONFIRMED, EvidenceCategory.CAUSAL_EVIDENCE])
         )
         assert r.verdict == ClosureReadiness.SUGGEST_RESOLVE
 
@@ -138,12 +140,10 @@ class TestCauseStateAuthoritative:
             ),
         )
 
-    def test_identified_with_causal_absence_is_ready(self):
-        # k8s-pvc shape: cause known via cause_state, causal_absence recorded,
-        # solution on record, but root_cause_conclusion empty -> READY.
-        r = assess_resolution_readiness(
-            self._identified_case([EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE])
-        )
+    def test_identified_with_both_absence_legs_is_ready(self):
+        # k8s-pvc shape: cause known via cause_state, both absence rows
+        # recorded, solution on record, but root_cause_conclusion empty -> READY.
+        r = assess_resolution_readiness(self._identified_case([*CONFIRMED]))
         assert r.verdict == ResolutionReadiness.READY
 
     def test_identified_without_absence_asks_only_confirmation(self):
@@ -158,11 +158,9 @@ class TestCauseStateAuthoritative:
 
     def test_closure_suggest_resolve_uses_cause_state(self):
         # close request on a resolution-grade case (cause_state IDENTIFIED +
-        # solution + causal_absence) pivots to resolve even with empty
+        # solution + both absence legs) pivots to resolve even with empty
         # root_cause_conclusion.
-        r = assess_closure_readiness(
-            self._identified_case([EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE])
-        )
+        r = assess_closure_readiness(self._identified_case([*CONFIRMED]))
         assert r.verdict == ClosureReadiness.SUGGEST_RESOLVE
 
 
@@ -179,19 +177,17 @@ class TestProposedTransitionCaseNormalization:
         assert ProposedTransition(to_state=" Closed ").to_state == "closed"
 
 
-class TestCausalAbsenceIsSufficient:
-    """causal_absence alone is the resolution bar. Requiring a separate
+class TestTheAbsencePairIsSufficient:
+    """The two absence rows alone are the resolution bar. Requiring a separate
     SolutionToAdd record on top blocked the out-of-band path: the user reports a
-    verbal fix -> agent records causal_absence (user_description) but no solution
-    record -> gate said missing=['solution'] -> stuck-loop -> wrongly CLOSED
-    (case_e5f5849b9e4d, the rate-limit out-of-band scenario).
+    verbal fix -> agent records the absence rows (user_description) but no
+    solution record -> gate said missing=['solution'] -> stuck-loop -> wrongly
+    CLOSED (case_e5f5849b9e4d, the rate-limit out-of-band scenario).
     """
 
-    def test_causal_absence_without_any_solution_record_is_ready(self):
-        # Out-of-band: causal_absence recorded, cause known, but NO solution row.
-        r = assess_resolution_readiness(
-            _case(cats=[EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE], solutions=0)
-        )
+    def test_both_absence_rows_without_any_solution_record_are_ready(self):
+        # Out-of-band: both absence rows recorded, cause known, NO solution row.
+        r = assess_resolution_readiness(_case(cats=[*CONFIRMED], solutions=0))
         assert r.verdict == ResolutionReadiness.READY
 
     def test_no_absence_still_asks_for_essentials(self):
@@ -205,16 +201,14 @@ class TestCausalAbsenceIsSufficient:
 
 class TestClosurePivotMatchesResolutionBar:
     """SUGGEST_RESOLVE (close-request pivot) must use the SAME bar as
-    assess_resolution_readiness READY: causal_absence alone. Otherwise a close
-    request on an out-of-band case (causal_absence, no solution record) wrongly
+    assess_resolution_readiness READY: the two absence rows. Otherwise a close
+    request on an out-of-band case (both rows, no solution record) wrongly
     closes while a resolve request on the same case resolves — the asymmetry the
     'resolved is a safe special case of closed' rule forbids.
     """
 
-    def test_close_pivots_to_resolve_with_causal_absence_no_solution(self):
-        r = assess_closure_readiness(
-            _case(cats=[EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE], solutions=0)
-        )
+    def test_close_pivots_to_resolve_with_both_absence_rows_no_solution(self):
+        r = assess_closure_readiness(_case(cats=[*CONFIRMED], solutions=0))
         assert r.verdict == ClosureReadiness.SUGGEST_RESOLVE
 
     def test_close_does_not_pivot_without_causal_absence(self):
@@ -235,32 +229,54 @@ class TestConfirmationRowQualification:
     """
 
     @staticmethod
-    def _absence(*, collected_by="llm", turn=6, evidence_id="ev_a"):
+    def _absence(
+        *,
+        collected_by="llm",
+        turn=6,
+        evidence_id="ev_a",
+        category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+    ):
         return SimpleNamespace(
-            category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            category=category,
             collected_by=collected_by,
             collected_at_turn=turn,
             evidence_id=evidence_id,
         )
 
+    @staticmethod
+    def _symptom_absence(*, turn=6, evidence_id="ev_s", collected_by="llm"):
+        return TestConfirmationRowQualification._absence(
+            collected_by=collected_by,
+            turn=turn,
+            evidence_id=evidence_id,
+            category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+        )
+
     def test_engine_m6_disconfirmation_row_is_not_ready(self):
+        # Even with the problem leg on record: the engine's row is no cause leg.
         case = _case(cats=[])
-        case.evidence = [self._absence(collected_by="engine")]
+        case.evidence = [
+            self._absence(collected_by="engine"),
+            self._symptom_absence(),
+        ]
         r = assess_resolution_readiness(case)
         assert r.verdict == ResolutionReadiness.NEEDS_INFO
         assert "confirmation the problem is now resolved" in r.missing
 
     def test_engine_m6_disconfirmation_row_does_not_pivot_close(self):
         case = _case(cats=[])
-        case.evidence = [self._absence(collected_by="engine")]
+        case.evidence = [
+            self._absence(collected_by="engine"),
+            self._symptom_absence(),
+        ]
         r = assess_closure_readiness(case)
         assert r.verdict != ClosureReadiness.SUGGEST_RESOLVE
 
     @staticmethod
     def _with_failed_fix_window(premature_turn, fresh_turn=None):
-        """A premature absence row, an ENGINE-known failed-fix disconfirmation
-        (M6 row at turn 5, REFUTES-linked as minted), and optionally a fresh
-        post-failure row."""
+        """A premature confirmation (both legs), an ENGINE-known failed-fix
+        disconfirmation (M6 row at turn 5, REFUTES-linked as minted), and
+        optionally a fresh post-failure confirmation (both legs)."""
         case = _case(cats=[])
         disconfirm = SimpleNamespace(
             category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
@@ -272,12 +288,20 @@ class TestConfirmationRowQualification:
             TestConfirmationRowQualification._absence(
                 turn=premature_turn, evidence_id="ev_premature"
             ),
+            TestConfirmationRowQualification._symptom_absence(
+                turn=premature_turn, evidence_id="ev_premature_s"
+            ),
             disconfirm,
         ]
         if fresh_turn is not None:
             rows.append(
                 TestConfirmationRowQualification._absence(
                     turn=fresh_turn, evidence_id="ev_fresh"
+                )
+            )
+            rows.append(
+                TestConfirmationRowQualification._symptom_absence(
+                    turn=fresh_turn, evidence_id="ev_fresh_s"
                 )
             )
         case.evidence = rows
@@ -308,3 +332,180 @@ class TestConfirmationRowQualification:
         case = self._with_failed_fix_window(premature_turn=4, fresh_turn=5)
         r = assess_resolution_readiness(case)
         assert r.verdict == ResolutionReadiness.READY
+
+
+class TestTheProblemLegIsRequired:
+    """#1906: the cause shown removed is half of gone ⇒ gone. A service shown
+    running again with the corrected ExecStart, the scrape target the user
+    reported down not yet checked, read resolution-READY and the engine told
+    the user "the problem went with it". RESOLVED needs the reported problem
+    observed gone at or after the cause was observed removed."""
+
+    _row = staticmethod(TestConfirmationRowQualification._absence)
+    _symptom = staticmethod(TestConfirmationRowQualification._symptom_absence)
+
+    def _case_with(self, *rows):
+        case = _case(cats=[])
+        case.evidence = list(rows)
+        return case
+
+    def test_the_cause_leg_alone_is_not_ready(self):
+        r = assess_resolution_readiness(self._case_with(self._row(turn=5)))
+        assert r.verdict == ResolutionReadiness.NEEDS_INFO
+        assert "confirmation the problem is now resolved" in r.missing
+
+    def test_the_cause_leg_alone_asks_for_the_original_problem(self):
+        r = assess_resolution_readiness(self._case_with(self._row(turn=5)))
+        assert "Confirmation the original problem is gone" in r.message
+        # Not the generic ask that would have the user re-confirm the fix.
+        assert "Confirmation it's resolved" not in r.message
+
+    def test_without_a_cause_leg_the_generic_ask_stands(self):
+        r = assess_resolution_readiness(
+            _case(cats=[EvidenceCategory.CAUSAL_EVIDENCE], solutions=1)
+        )
+        assert "Confirmation it's resolved" in r.message
+        assert "Confirmation the original problem is gone" not in r.message
+
+    def test_the_cause_leg_alone_does_not_pivot_close(self):
+        r = assess_closure_readiness(self._case_with(self._row(turn=5)))
+        assert r.verdict != ClosureReadiness.SUGGEST_RESOLVE
+
+    def test_a_symptom_row_before_the_cause_was_removed_does_not_count(self):
+        # A mitigation's relief at turn 3, the cause removed at turn 5: nothing
+        # shows the problem gone once the cause is gone.
+        r = assess_resolution_readiness(
+            self._case_with(self._symptom(turn=3), self._row(turn=5))
+        )
+        assert r.verdict == ResolutionReadiness.NEEDS_INFO
+
+    def test_a_symptom_row_at_the_same_turn_counts(self):
+        # "Fixed the path, and the target is UP": one turn, both observations.
+        r = assess_resolution_readiness(
+            self._case_with(self._row(turn=5), self._symptom(turn=5))
+        )
+        assert r.verdict == ResolutionReadiness.READY
+
+    def test_a_symptom_row_after_the_cause_was_removed_counts(self):
+        r = assess_resolution_readiness(
+            self._case_with(self._row(turn=5), self._symptom(turn=6))
+        )
+        assert r.verdict == ResolutionReadiness.READY
+
+    def test_the_earliest_cause_row_anchors_the_problem_leg(self):
+        # The cause re-checked at 5 and again at 7; the target checked at 6.
+        r = assess_resolution_readiness(
+            self._case_with(
+                self._row(turn=5, evidence_id="ev_a5"),
+                self._symptom(turn=6),
+                self._row(turn=7, evidence_id="ev_a7"),
+            )
+        )
+        assert r.verdict == ResolutionReadiness.READY
+
+    def test_an_engine_authored_symptom_row_does_not_count(self):
+        r = assess_resolution_readiness(
+            self._case_with(
+                self._row(turn=5),
+                self._symptom(turn=5, collected_by=ENGINE_EVIDENCE_AUTHOR),
+            )
+        )
+        assert r.verdict == ResolutionReadiness.NEEDS_INFO
+
+    def test_the_problem_leg_alone_is_not_ready(self):
+        r = assess_resolution_readiness(self._case_with(self._symptom(turn=5)))
+        assert r.verdict == ResolutionReadiness.NEEDS_INFO
+
+
+class TestTheProblemLegIsAnchoredOnTheFix:
+    """The problem leg counts from the fix, not from the cause re-check: the
+    recorded execution of the latest fix, or the earliest cause row when the
+    fix was made out of band. A user may check the symptom before the cause,
+    and both are after the fix (PR #1928 review)."""
+
+    _row = staticmethod(TestConfirmationRowQualification._absence)
+    _symptom = staticmethod(TestConfirmationRowQualification._symptom_absence)
+
+    @staticmethod
+    def _executed(turn, action_type="solution"):
+        return SimpleNamespace(
+            state="accepted",
+            action_type=SimpleNamespace(value=action_type),
+            accepted_in_turn=turn,
+        )
+
+    def _case_with(self, *rows, actions=()):
+        case = _case(cats=[])
+        case.evidence = list(rows)
+        case.proposed_actions = list(actions)
+        return case
+
+    def test_the_symptom_checked_before_the_cause_counts_after_a_recorded_fix(self):
+        # Fix run at 4, "the target is UP" at 5, "the config reads 100" at 6.
+        r = assess_resolution_readiness(
+            self._case_with(
+                self._symptom(turn=5),
+                self._row(turn=6),
+                actions=[self._executed(4)],
+            )
+        )
+        assert r.verdict == ResolutionReadiness.READY
+
+    def test_without_a_fix_record_the_cause_row_anchors(self):
+        # An out-of-band fix leaves no execution record: the same order then
+        # has nothing placing the symptom check after the fix.
+        r = assess_resolution_readiness(
+            self._case_with(self._symptom(turn=5), self._row(turn=6))
+        )
+        assert r.verdict == ResolutionReadiness.NEEDS_INFO
+
+    def test_a_symptom_row_before_the_recorded_fix_does_not_count(self):
+        # A mitigation's relief at 3, the fix run at 4, the cause gone at 5.
+        r = assess_resolution_readiness(
+            self._case_with(
+                self._symptom(turn=3),
+                self._row(turn=5),
+                actions=[self._executed(4)],
+            )
+        )
+        assert r.verdict == ResolutionReadiness.NEEDS_INFO
+
+    def test_a_mitigation_is_not_the_fix(self):
+        # An executed MITIGATION at 2 does not move the anchor before its relief.
+        r = assess_resolution_readiness(
+            self._case_with(
+                self._symptom(turn=3),
+                self._row(turn=5),
+                actions=[self._executed(2, action_type="mitigation")],
+            )
+        )
+        assert r.verdict == ResolutionReadiness.NEEDS_INFO
+
+    def test_a_fix_recorded_after_the_cause_row_does_not_move_the_anchor_later(self):
+        # The cause re-checked at 5, the execution stamped at 7, the target at 6.
+        r = assess_resolution_readiness(
+            self._case_with(
+                self._row(turn=5),
+                self._symptom(turn=6),
+                actions=[self._executed(7)],
+            )
+        )
+        assert r.verdict == ResolutionReadiness.READY
+
+    def test_a_symptom_row_inside_a_failed_fix_window_does_not_count(self):
+        # Fix A run at 3 and disconfirmed by M6 at 5 (engine row); fix B made
+        # out of band, its cause re-checked at 6. The "looks stable" row at 4
+        # is from fix A's window: the anchor never falls before the failure.
+        case = self._case_with(
+            self._symptom(turn=4, evidence_id="ev_stable_4"),
+            SimpleNamespace(
+                category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+                collected_by="engine",
+                collected_at_turn=5,
+                evidence_id="ev_failed",
+            ),
+            self._row(turn=6, evidence_id="ev_fix_b"),
+            actions=[self._executed(3)],
+        )
+        r = assess_resolution_readiness(case)
+        assert r.verdict == ResolutionReadiness.NEEDS_INFO

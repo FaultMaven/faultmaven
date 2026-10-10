@@ -270,6 +270,13 @@ structural audit trail and let downstream consumers (e.g., the
 runbook-generation pipeline's `Verification` section) extract
 verification evidence by category.
 
+The two absence categories are the two halves of a resolution: RESOLVED
+needs a `CAUSAL_ABSENCE_EVIDENCE` row (the cause re-checked gone) and a
+`SYMPTOM_ABSENCE_EVIDENCE` row collected at or after it (the reported
+symptom re-checked gone), read by `assess_resolution_readiness` through
+`cause_assurance.resolution_confirmation_rows` (#1906). The cause re-check
+alone says the fix took, not that the problem went with it.
+
 ### 4.4 One Need, Multiple Evidence Rows Across Stages
 
 The same need produces evidence rows of different categories at

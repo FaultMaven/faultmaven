@@ -356,10 +356,11 @@ class TestThroughAProcessedTurn:
         from faultmaven.modules.case.contracts import (
             MESSAGE_METADATA_AGENT_SYNTHESIZED,
         )
-        from faultmaven.modules.case.domain.models.evidence import EvidenceCategory
-        from tests.unit.core.investigation.test_resolution_backstop_turn import _case
+        from tests.unit.core.investigation.test_resolution_backstop_turn import (
+            _confirmed_case,
+        )
 
-        case = _case(absence=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+        case = _confirmed_case()
         result = await _turn_engine(
             _synthesized_diagnosis(StopReason.CONTENT_FILTER)
         ).process_turn(case=case, user_message="yep, the errors are gone now")

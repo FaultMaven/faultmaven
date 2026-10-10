@@ -98,9 +98,10 @@ def base_case():
 def _make_resolution_ready(case):
     """Make a case genuinely RESOLVED-ready.
 
-    Adds root cause + solution AND a ``causal_absence_evidence`` row — the
-    latter is THE gate: RESOLVED requires the root cause to be confirmed
-    ELIMINATED (recorded as a causal_absence_evidence row), not merely that a
+    Adds root cause + solution AND the two absence rows — those are THE gate:
+    RESOLVED requires gone ⇒ gone confirmed, the root cause ELIMINATED (a
+    causal_absence_evidence row) and the reported symptom gone with it (a
+    symptom_absence_evidence row at or after it, #1906), not merely that a
     solution exists. A case that was only stabilized has a solution but no
     causal_absence row and is CLOSE-only.
     """
@@ -126,7 +127,25 @@ def _make_resolution_ready(case):
             longterm_fix="Update pool timeout in application config",
         )
     ]
-    # The required RESOLVED proof: the root cause is confirmed gone after the fix.
+    # The required RESOLVED proof: the root cause is confirmed gone after the
+    # fix, and the reported symptom with it.
+    case.evidence.append(
+        Evidence(
+            evidence_id="ev_ca5a1ab5e0cf",
+            summary="Post-fix checks: the service answers without timeouts",
+            content_ref="postfix.log",
+            category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+            source_type=EvidenceSourceType.LOGS,
+            collected_at=datetime.now(UTC),
+            collected_by="user_123",
+            primary_purpose="Confirm the reported symptom is gone",
+            preprocessed_content="No timeout errors after fix",
+            content_size_bytes=50,
+            preprocessing_method="manual",
+            source_file_id="file_a05f1c000001",
+            collected_at_turn=2,
+        )
+    )
     case.evidence.append(
         Evidence(
             evidence_id="ev_ca5a1ab5e0ce",

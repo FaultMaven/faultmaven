@@ -108,7 +108,7 @@ CATEGORY_MILESTONE_MAP = {
     # *attribution* (intersect category-eligible milestones with what the LLM
     # completed this turn), and these gates are not evidence-attributed.
     # The absence rows' disposition role is read DIRECTLY by the readiness
-    # checks: assess_resolution_readiness/_closure consult _has_causal_absence()
+    # checks: assess_resolution_readiness/_closure consult _resolution_confirmed()
     # to decide RESOLVED vs CLOSED. So absence evidence drives dispositions
     # through readiness, not through this map — keep these at [].
     EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE: [],
@@ -782,7 +782,8 @@ def _apply_stage_gate_signals(
                 "their report; do not ask them to accept it again. If the root "
                 "cause is not established, re-ground it with evidence first. If "
                 "the problem is already resolved, record the confirming "
-                "causal_absence evidence instead.",
+                "evidence instead: causal_absence for the cause gone and "
+                "symptom_absence for the reported problem gone.",
             )
         else:
             p.solution_accepted = True

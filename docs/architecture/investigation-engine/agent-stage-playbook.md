@@ -453,7 +453,7 @@ Verify that the applied fix resolves the problem. If it does not, diagnose the f
 #### Agent Duties — Primary path (fix verified successfully)
 
 1. Analyze post-fix data from the structural index; call `search_file` if specific patterns are needed.
-2. When outcome is confirmed: record a `causal_absence_evidence` row in `evidence_to_add` — the positive proof the root cause is now eliminated (summary "Cause eliminated: [what resolved and how]", source_type: logs | metrics | text). If only the symptom was relieved while the cause persists, record `symptom_absence_evidence` instead. Then proceed to completion.
+2. When outcome is confirmed — the cause is gone and the problem the user reported is gone with it: record two rows in `evidence_to_add`, a `causal_absence_evidence` row (the root cause eliminated; summary "Cause eliminated: [what changed]") and a `symptom_absence_evidence` row (the reported symptom gone; summary "Symptom gone: [what shows it]"), source_type: logs | metrics | text; the same output or words may source both. RESOLVED needs both (#1906). If the cause is shown gone but the reported symptom is not yet re-checked, record the cause row only and ask for that check. If only the symptom was relieved while the cause persists, record `symptom_absence_evidence` only. Then proceed to completion.
 3. Accept subjective confirmation: "it's working", "looks good" is sufficient.
 
 #### Agent Duties — Completion (two-step handshake)

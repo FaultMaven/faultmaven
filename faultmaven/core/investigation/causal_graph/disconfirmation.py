@@ -6,8 +6,9 @@ from uuid import uuid4
 
 from faultmaven.core.investigation.cause_assurance import (
     ENGINE_EVIDENCE_AUTHOR,
+    cause_elimination_rows,
     counterfactual_link_decisive,
-    resolution_confirmation_rows,
+    fix_application_turn,
 )
 from faultmaven.core.investigation.cause_assurance import (
     ENGINE_RCC_AUTHOR as _ENGINE_RCC_AUTHOR,
@@ -153,60 +154,6 @@ def _node_has_engine_counterfactual_refute(node: CausalNode, case: Case) -> bool
     )
 
 
-def _fix_application_turn(case: Case) -> int | None:
-    """The turn at which the case RECORDS that a fix was executed, or ``None``
-    when no such record exists — M6's first precondition (#987).
-
-    The authoritative record is a ``ProposedAction`` in state ``accepted`` whose
-    type is **SOLUTION** — a MITIGATION is by definition not a fix of the cause
-    (INV-42), so a failed workaround must never establish that the cause was
-    addressed. Per ``classify_solution_outcome``, ``accepted`` means the user
-    *executed* it, and the turn is read from ``accepted_in_turn`` (EXECUTION),
-    never ``proposed_in_turn`` (the OFFER). The NEWEST such turn wins — a failed
-    fix is disconfirmed by what happened after the LAST fix, not the first.
-
-    Deliberately NO compliance-gate fallback: ``solution_accepted`` records
-    THAT a fix was executed but not WHEN, and flooring the window at 0 made
-    every pre-fix symptom row on the case read as a post-fix persistence
-    observation. A precondition that cannot be dated cannot establish "what
-    happened after the fix", so it establishes nothing. On the no-ProposedAction
-    shape M6's counterfactual arm simply does not fire — the evidence-based arm
-    is unaffected and still demotes a genuinely refuted cause.
-    """
-    turns = [
-        a.accepted_in_turn
-        for a in (getattr(case, "proposed_actions", None) or [])
-        if getattr(a, "state", None) == "accepted"
-        # SOLUTION only — a MITIGATION is by definition NOT a fix of the cause
-        # (the prompt: a mitigation "does NOT eliminate the root cause, so the
-        # cause is still present"). A workaround that failed to relieve the
-        # symptom says nothing about whether the cause was addressed, so it must
-        # never establish "the cause was addressed yet the problem persisted"
-        # and refute the root at belief 0.
-        #
-        # Enum OR raw string, the same read ``classify_solution_outcome`` does
-        # (its ``_action_type_value`` is private to the domain module, so the
-        # one-line equivalent is inlined rather than crossing the contracts
-        # boundary): reading only ``.value`` would silently miss a string-typed
-        # action and refuse M6 forever on that deployment. Failing closed is the
-        # right DIRECTION for this gate, but not by accident.
-        and getattr(
-            getattr(a, "action_type", None), "value", getattr(a, "action_type", None)
-        )
-        == InvestigationActionType.SOLUTION.value
-        # ``accepted_in_turn`` (EXECUTION), never ``proposed_in_turn`` (the
-        # OFFER): keying on the proposal turn let evidence recorded in the very
-        # turn the fix was offered — before it was ever run — satisfy "the
-        # problem persisted afterwards". Actions accepted before this field
-        # existed carry None and simply do not establish the precondition,
-        # which is the fail-closed direction.
-        and getattr(a, "accepted_in_turn", None) is not None
-    ]
-    if turns:
-        return max(turns)
-    return None
-
-
 def _problem_persistence_observed_after(case: Case, fix_turn: int) -> bool:
     """Does the case OBSERVE the problem still present at/after ``fix_turn``? —
     M6's second precondition (#987).
@@ -284,12 +231,17 @@ def m6_disconfirmation_basis(case: Case) -> tuple[int, str] | None:
     Returns ``(fix_turn, provenance)`` when the case record establishes BOTH
     halves of "the cause was addressed, yet the problem persisted":
 
-    1. a RECORDED fix application (``_fix_application_turn``), and
+    1. a RECORDED fix application (``fix_application_turn``), and
     2. an OBSERVED persistence of the problem at/after it
        (``_problem_persistence_observed_after``), with
-    3. NO qualifying resolution-confirmation row at/after the fix turn — a
-       standing gone⇒gone confirmation is direct evidence the problem did NOT
-       persist, so the failed-fix premise is false on the case's own record.
+    3. NO qualifying cause-elimination row at/after the fix turn
+       (``cause_elimination_rows``). KNOWN GAP (#1927): this was written when
+       one causal_absence row was read as the whole gone⇒gone confirmation.
+       Since #1906 that row records only the cause observed removed, which
+       does not contradict "the problem persisted" — cause gone with the
+       problem still present IS the counterfactual disconfirmation, and this
+       precondition withholds it. Left as it was pending #1927, which owns the
+       redesign of preconditions 2 and 3.
 
     Why this gate exists (#987): M6 previously fired on the mere presence of a
     counterfactual refute and then MINTED a row asserting "the cause was
@@ -321,7 +273,7 @@ def m6_disconfirmation_basis(case: Case) -> tuple[int, str] | None:
     ``cause_state``), and ``retract_disconfirmed_rcc`` still clears a conclusion
     naming it. What is withheld is only the DURABLE engine refutation.
     """
-    fix_turn = _fix_application_turn(case)
+    fix_turn = fix_application_turn(case)
     if fix_turn is None:
         # Two different worlds, separately labeled: nothing was ever tried, vs
         # a fix WAS executed but carries no execution turn — an acceptance
@@ -340,7 +292,7 @@ def m6_disconfirmation_basis(case: Case) -> tuple[int, str] | None:
         return None
     if any(
         (getattr(row, "collected_at_turn", 0) or 0) >= fix_turn
-        for row in resolution_confirmation_rows(case)
+        for row in cause_elimination_rows(case)
     ):
         m6_demotion_refused_total.labels(reason="resolution_confirmed").inc()
         return None
@@ -376,7 +328,7 @@ def _attach_engine_refutation(
     The row records an ENGINE INFERENCE WITH PROVENANCE, never an observation
     (#987). It is engine-authored (``collected_by=ENGINE_EVIDENCE_AUTHOR`` —
     the marker every reader already keys on, and the reason
-    ``resolution_confirmation_rows`` excludes it from ever reading as a
+    ``cause_elimination_rows`` excludes it from ever reading as a
     confirmation), and its text now states what the engine DERIVED and the
     case records it derived it FROM — supplied by ``m6_disconfirmation_basis``,
     which is the only caller and which fires only on ESTABLISHED preconditions.

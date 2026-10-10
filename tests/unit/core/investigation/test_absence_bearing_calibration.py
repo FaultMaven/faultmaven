@@ -6,9 +6,13 @@ Two coupled surfaces, pinned against realistic row content:
    row the RESOLVED confirm-stamp may cite as a root's gone⇒gone proof —
    frame-bearing preferred, generic accepted (the user's handshake is the
    signal), bears-elsewhere refused.
-2. **Gate qualification** (``cause_assurance.resolution_confirmation_rows``):
-   which rows satisfy the resolution-readiness READY bar at all — non-engine,
-   newer than the latest failed-fix disconfirmation.
+2. **Gate qualification** (``cause_assurance.cause_elimination_rows``): which
+   causal_absence rows stand as the cause leg of the resolution-readiness
+   READY bar at all — non-engine, newer than the latest failed-fix
+   disconfirmation. READY also needs the problem leg, a symptom_absence row at
+   or after the cause leg (#1906); tests that read the whole bar
+   (``has_resolution_confirmation``) put that row on the case, so the
+   assertion turns on the cause row under test.
 
 Calibration figures (the ``_BEARING_MIN_SHARED_TOKENS`` floor, the accepted
 lexical limits) live HERE as executable pins; methodology prose: §9.5.
@@ -30,10 +34,10 @@ import pytest
 
 from faultmaven.core.investigation.cause_assurance import (
     CauseAssuranceGrade,
+    cause_elimination_rows,
     confirm_root_from_resolution_absence,
     grade_cause_assurance,
     has_resolution_confirmation,
-    resolution_confirmation_rows,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -73,6 +77,21 @@ def _absence_row(label, summary, *, turn=6, collected_by="llm") -> Evidence:
         category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
         source_type=EvidenceSourceType.USER_DESCRIPTION,
         collected_by=collected_by,
+        collected_at_turn=turn,
+        collected_at=datetime.now(timezone.utc),
+    )
+
+
+def _problem_gone(label, *, turn) -> Evidence:
+    """The problem leg (#1906): the reported symptom observed gone. Placed
+    beside a cause row so a whole-bar assertion turns on that row alone."""
+    return Evidence(
+        evidence_id=_eid(label),
+        summary="payments pods Running, no CrashLoopBackOff",
+        primary_purpose="resolution verification",
+        category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        collected_by="llm",
         collected_at_turn=turn,
         collected_at=datetime.now(timezone.utc),
     )
@@ -367,7 +386,7 @@ def test_row_about_the_sibling_chain_is_refused():
         "Memory pressure on the worker node returned to normal after "
         "eviction tuning",
     )
-    case.evidence.append(row)
+    case.evidence.extend([row, _problem_gone("sibling_row_gone", turn=6)])
     with patch(
         "faultmaven.core.investigation.cause_assurance."
         "absence_confirmation_bearing_rejected_total"
@@ -414,7 +433,7 @@ def test_synonym_paraphrase_of_sibling_escapes_the_veto():
 
 
 # ---------------------------------------------------------------------------
-# Gate qualification (shared metadata bar): resolution_confirmation_rows
+# Gate qualification (shared metadata bar): cause_elimination_rows
 # ---------------------------------------------------------------------------
 
 
@@ -430,6 +449,8 @@ def test_engine_disconfirmation_row_never_qualifies():
             collected_by="engine",
         )
     )
+    case.evidence.append(_problem_gone("m6_row_gone", turn=6))
+    assert cause_elimination_rows(case) == []
     assert has_resolution_confirmation(case) is False
 
 
@@ -445,8 +466,8 @@ def test_premature_row_from_engine_known_failed_fix_never_qualifies():
         turn=5,
         collected_by="engine",
     )
-    case.evidence.extend([premature, m6_row])
-    assert resolution_confirmation_rows(case) == []
+    case.evidence.extend([premature, m6_row, _problem_gone("premature_gone", turn=6)])
+    assert cause_elimination_rows(case) == []
     assert has_resolution_confirmation(case) is False
 
 
@@ -492,6 +513,8 @@ def test_llm_row_refuting_the_engine_marked_cause_never_qualifies():
             stance_confidence=0.3,
         )
     )
+    case.evidence.append(_problem_gone("llm_fail_gone", turn=5))
+    assert cause_elimination_rows(case) == []
     assert has_resolution_confirmation(case) is False
 
 
@@ -508,7 +531,7 @@ def test_sibling_exclusion_link_does_not_disqualify_the_row():
         "theory ruled out",
         turn=8,
     )
-    case.evidence.append(dual_use)
+    case.evidence.extend([dual_use, _problem_gone("dual_use_gone", turn=8)])
     sibling.evidence_links.append(
         NodeEvidenceLink(
             evidence_id=dual_use.evidence_id,
@@ -544,6 +567,8 @@ def test_hypothesis_axis_refutes_link_also_disqualifies():
             stance_confidence=0.9,
         )
     )
+    case.evidence.append(_problem_gone("hyp_linked_fail_gone", turn=5))
+    assert cause_elimination_rows(case) == []
     assert has_resolution_confirmation(case) is False
 
 
@@ -562,10 +587,8 @@ def test_fresh_confirmation_after_a_failed_fix_qualifies():
         "resolv.conf trimmed; CrashLoopBackOff gone on all payments pods",
         turn=6,
     )
-    case.evidence.extend([m6_row, fresh])
-    assert [r.evidence_id for r in resolution_confirmation_rows(case)] == [
-        fresh.evidence_id
-    ]
+    case.evidence.extend([m6_row, fresh, _problem_gone("fresh_gone", turn=6)])
+    assert [r.evidence_id for r in cause_elimination_rows(case)] == [fresh.evidence_id]
     assert confirm_root_from_resolution_absence(case) is True
     assert _stamped_row_id(case, target) == fresh.evidence_id
     # Readiness re-read AFTER the stamp: the now-SUPPORTS-linked row must
@@ -590,7 +613,10 @@ def test_same_turn_disconfirm_and_confirm_qualifies():
         "resolv.conf corrected; pods stable, CrashLoopBackOff gone",
         turn=7,
     )
-    case.evidence.extend([m6_row, confirm])
+    case.evidence.extend([m6_row, confirm, _problem_gone("same_turn_gone", turn=7)])
+    assert [r.evidence_id for r in cause_elimination_rows(case)] == [
+        confirm.evidence_id
+    ]
     assert has_resolution_confirmation(case) is True
 
 
@@ -614,7 +640,7 @@ def test_late_sibling_exclusion_note_does_not_mask_confirmation():
         "theory ruled out",
         turn=9,
     )
-    case.evidence.extend([confirm, exclusion])
+    case.evidence.extend([confirm, exclusion, _problem_gone("confirmed_gone", turn=8)])
     sibling.evidence_links.append(
         NodeEvidenceLink(
             evidence_id=exclusion.evidence_id,
@@ -623,7 +649,7 @@ def test_late_sibling_exclusion_note_does_not_mask_confirmation():
             linked_at_turn=9,
         )
     )
-    qualified = {r.evidence_id for r in resolution_confirmation_rows(case)}
+    qualified = {r.evidence_id for r in cause_elimination_rows(case)}
     assert confirm.evidence_id in qualified
     assert has_resolution_confirmation(case) is True
     assert confirm_root_from_resolution_absence(case) is True
@@ -654,7 +680,7 @@ def test_stamp_refuses_row_at_or_before_a_target_root_refutation():
         "resolv.conf corrected; CrashLoopBackOff gone",
         turn=8,
     )
-    case.evidence.append(same_turn_confirm)
+    case.evidence.extend([same_turn_confirm, _problem_gone("same_turn_gone_8", turn=8)])
     # Gate liveness untouched (the user can still resolve)...
     assert has_resolution_confirmation(case) is True
     # ...but the top-grade mint holds: no candidate is NEWER than the refute.
@@ -725,6 +751,7 @@ def test_finalize_surface_tolerates_bearing_refusal():
             "Memory pressure on the worker node returned to normal",
         )
     )
+    case.evidence.append(_problem_gone("sibling_row_3_gone", turn=6))
     assert finalize_resolution_truth_surface(case) is False
     assert case.progress.cause_assurance == CauseAssuranceGrade.MECHANISTIC
     assert has_resolution_confirmation(case) is True

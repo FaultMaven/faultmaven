@@ -100,9 +100,11 @@ def _attach_solution(case: Case) -> None:
     )
 
 
-def _attach_causal_absence(case: Case) -> None:
-    """The RESOLVED proof: the root cause is confirmed eliminated after the
-    fix, recorded as a ``causal_absence_evidence`` row."""
+def _attach_confirmation(case: Case) -> None:
+    """The RESOLVED proof, gone ⇒ gone: the root cause confirmed eliminated
+    after the fix (a ``causal_absence_evidence`` row) and the reported
+    symptom confirmed gone with it (a ``symptom_absence_evidence`` row at
+    the same turn, #1906)."""
     case.evidence.append(
         Evidence(
             summary="Post-fix logs confirm pool exhaustion no longer occurs",
@@ -111,6 +113,21 @@ def _attach_causal_absence(case: Case) -> None:
             collected_at=datetime.now(UTC),
             collected_by="user_test",
             primary_purpose="Confirm root cause eliminated",
+            preprocessed_content="no pool exhaustion after fix",
+            content_size_bytes=80,
+            preprocessing_method="manual",
+            source_file_id="file_postfix000001",
+            collected_at_turn=3,
+        )
+    )
+    case.evidence.append(
+        Evidence(
+            summary="Post-fix check: the reported symptom no longer occurs",
+            category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+            source_type=EvidenceSourceType.LOGS,
+            collected_at=datetime.now(UTC),
+            collected_by="user_test",
+            primary_purpose="Confirm the reported symptom is gone",
             preprocessed_content="no pool exhaustion after fix",
             content_size_bytes=80,
             preprocessing_method="manual",
@@ -128,7 +145,7 @@ def _resolvable_case_with_pending_close() -> Case:
     case = _make_investigating_case()
     _attach_root_cause(case)
     _attach_solution(case)
-    _attach_causal_absence(case)
+    _attach_confirmation(case)
     # Precondition sanity: this case IS resolvable.
     assert assess_closure_readiness(case).verdict == ClosureReadiness.SUGGEST_RESOLVE
     propose_transition(case, to_state="closed", summary="Closing as unresolved.")
@@ -168,7 +185,7 @@ def test_pivot_message_handles_out_of_band_fix_without_record():
     self-contradictory 'Root cause: Not yet identified' rendering."""
     case = _make_investigating_case()
     case.progress.problem_status = ProblemStatus.VERIFIED
-    _attach_causal_absence(case)  # no root cause, no solution on record
+    _attach_confirmation(case)  # no root cause, no solution on record
     assert assess_closure_readiness(case).verdict == ClosureReadiness.SUGGEST_RESOLVE
     propose_transition(case, to_state="closed", summary="Closing as unresolved.")
 
@@ -207,7 +224,7 @@ def test_confirm_pending_resolve_is_unaffected_by_the_guard():
     case = _make_investigating_case()
     _attach_root_cause(case)
     _attach_solution(case)
-    _attach_causal_absence(case)
+    _attach_confirmation(case)
     propose_transition(case, to_state="resolved", summary="Resolving.")
 
     with patch.object(terminal_transitions, "close_pivoted_to_resolve_total") as ctr:
@@ -256,7 +273,7 @@ def test_pivot_scoped_to_investigating_never_proposes_invalid_inquiry_edge():
     case.atomic_update(state=CaseState.INQUIRY)
     _attach_root_cause(case)
     _attach_solution(case)
-    _attach_causal_absence(case)
+    _attach_confirmation(case)
     propose_transition(case, to_state="closed", summary="Inquiry-only close.")
 
     with patch.object(terminal_transitions, "close_pivoted_to_resolve_total") as ctr:

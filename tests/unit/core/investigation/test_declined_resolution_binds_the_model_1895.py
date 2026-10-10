@@ -22,6 +22,7 @@ import pytest
 
 from faultmaven.core.investigation.cause_assurance import (
     ENGINE_EVIDENCE_AUTHOR,
+    cause_elimination_rows,
     resolution_confirmation_rows,
 )
 from faultmaven.core.investigation.intent_resolver import IntentResolver
@@ -229,6 +230,18 @@ def _user_confirmation(turn: int) -> Evidence:
     )
 
 
+def _user_problem_gone(turn: int) -> Evidence:
+    """The problem leg of a confirmation (#1906): the reported symptom gone."""
+    return Evidence(
+        category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+        primary_purpose="re-check the reported symptom after the fix",
+        summary="The nightly job's AssumeRole calls succeed again.",
+        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        collected_by="user",
+        collected_at_turn=turn,
+    )
+
+
 def _refute(case, evidence_ids: list) -> str:
     """Mark ``evidence_ids`` failed-fix disconfirmations: REFUTES-linked to a
     node the engine's own absence row refutes. Returns the node id."""
@@ -262,7 +275,7 @@ class TestTheSignatureNamesTheConfirmations:
         assert signature == f"{_SR}|1|rcc|{','.join(_qualifying(case))}"
 
     def test_below_suggest_resolve_the_fourth_part_is_empty(self):
-        case = _deferred_case(causal_absence=False)
+        case = _deferred_case(confirmed=False)
         verdict = closure_verdict(case)
         assert verdict != _SR
         assert deferred_disposition_signature(case, verdict).endswith("|")
@@ -480,17 +493,19 @@ class TestANewConfirmationReEarnsTheOffer:
         """The set shrinks: an older row stops qualifying behind a failed-fix
         window. The decline still covers what qualifies, so nothing re-offers."""
         case = _confirmed_case()
-        case.evidence.append(_user_confirmation(turn=3))
+        case.evidence.extend([_user_confirmation(turn=3), _user_problem_gone(turn=3)])
         engine = _engine()
         case.current_turn = 3
         await _turn(engine, case, "errors gone")
         assert case.pending_transition["to_state"] == "resolved"
         await _turn(engine, case, "no")
         before = _qualifying(case)
-        assert len(before) == 2
+        assert len(before) == 4, "premise: both legs, at turn 1 and at turn 3"
 
         case.evidence.append(_engine_disconfirmation(turn=2))
-        assert len(_qualifying(case)) == 1, "premise: the turn-1 row disqualified"
+        assert (
+            len(_qualifying(case)) == 2
+        ), "premise: the turn-1 confirmation (both legs) disqualified"
         assert closure_verdict(case) == _SR
         await _turn(engine, case, "what else should we watch?")
         assert case.pending_transition is None
@@ -504,10 +519,13 @@ class TestANewConfirmationReEarnsTheOffer:
         await _turn(engine, case, "errors gone")
         await _turn(engine, case, "no")
         rows = _qualifying(case)
-        assert len(rows) == 2
+        cause_rows = sorted(e.evidence_id for e in cause_elimination_rows(case))
+        assert len(rows) == 3 and len(cause_rows) == 2
 
-        node_id = _refute(case, [rows[1]])
-        assert _qualifying(case) == rows[:1], "premise: one row disqualified"
+        node_id = _refute(case, [cause_rows[1]])
+        assert _qualifying(case) == [
+            r for r in rows if r != cause_rows[1]
+        ], "premise: one cause row disqualified, the confirmation still stands"
         await _turn(engine, case, "ok, what next?")
         assert case.pending_transition is None
 
@@ -858,7 +876,7 @@ class TestTheRestOfTheSpace:
     async def test_a_declined_deferred_close_still_binds(self):
         """The deferred close is declined below SUGGEST_RESOLVE, where the
         fourth part is empty: its behaviour is unchanged."""
-        case = _deferred_case(causal_absence=False)
+        case = _deferred_case(confirmed=False)
         engine = _engine()
         engine.generator.generate_structured_output = AsyncMock(
             return_value=_deferred_response()
@@ -892,7 +910,7 @@ class TestTheRestOfTheSpace:
             deferred_disposition_signature(case, _SR)
         )
         assert case.pending_transition["justifying_signature"].endswith(
-            _qualifying(case)[0]
+            "|" + ",".join(_qualifying(case))
         )
 
 
@@ -957,7 +975,7 @@ class TestThePromptLine:
 async def _deferred_offer(*, resolvable: bool):
     """The deferred proposer's offer on turn 1: a resolve on a confirmed case,
     the documented close otherwise."""
-    case = _deferred_case(causal_absence=resolvable)
+    case = _deferred_case(confirmed=resolvable)
     engine = _engine()
     engine.generator.generate_structured_output = AsyncMock(
         return_value=_deferred_response()

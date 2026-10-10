@@ -31,6 +31,7 @@ from faultmaven.core.investigation.cause_assurance import (
     CONFIRMED_RCC_LIKELIHOOD_FLOOR,
     CauseAssuranceGrade,
     _graph_hooks,
+    cause_elimination_rows,
     conclusion_overclaims,
     confirm_root_from_resolution_absence,
     grade_cause_assurance,
@@ -263,21 +264,25 @@ def _cause_identified(
     )
 
 
-def _has_causal_absence(case: "Case") -> bool:
-    """Whether a QUALIFYING ``causal_absence_evidence`` row is on the case
-    (``cause_assurance.has_resolution_confirmation`` — the SAME METADATA bar
-    the confirm-stamp's candidate filter uses, so the gate can never call a
-    case confirmable on a row the stamp refuses for metadata; the stamp's
+def _resolution_confirmed(case: "Case") -> bool:
+    """Whether the case CONFIRMS a resolution — gone ⇒ gone (M2), both legs on
+    record (``cause_assurance.has_resolution_confirmation``): a qualifying
+    ``causal_absence_evidence`` row (the cause observed removed) AND a
+    qualifying ``symptom_absence_evidence`` row at or after it (the reported
+    problem observed gone). The cause leg is the SAME METADATA bar the
+    confirm-stamp's candidate filter uses, so the gate can never call a case
+    confirmable on a row the stamp refuses for metadata; the stamp's
     additional content-bearing refusal deliberately does NOT bind the gate —
-    a mis-citable row still evidences that the user confirmed resolution).
+    a mis-citable row still evidences that the user confirmed resolution.
 
-    This is the ground-truth signal that the root cause was confirmed
-    ELIMINATED — not merely that the symptom was relieved (a mitigation /
-    failover / traffic-shift produces ``symptom_absence_evidence`` while the
-    cause persists). It is the discriminator between RESOLVED (cause gone) and
-    CLOSED-with-documented-solution (stabilized, deferred, or unfixed). See
-    investigation-lifecycle-logic.md ("Gate strictness — absence-driven") and
-    the methodology doc §9.5 (INV-30).
+    This is the discriminator between RESOLVED (the cause removed and the
+    problem gone with it) and CLOSED-with-documented-solution: a stabilized
+    case has the problem leg without the cause (a mitigation relieves the
+    symptom while the cause persists), and a fix whose effect on the reported
+    problem is unchecked has the cause leg without the problem (#1906: a
+    service shown running again, the scrape target the user reported down not
+    yet checked). See investigation-lifecycle-logic.md ("Gate strictness —
+    absence-driven") and the methodology doc §9.5 (INV-30).
 
     Qualification matters (#656): the bare any-row read this replaced
     counted the ENGINE's own M6 failed-fix DISCONFIRMATION rows — so a failed
@@ -639,8 +644,9 @@ def derive_closure_reason(case: "Case") -> str:
 #   "suggests_alternative"
 #       Close side only, and it means DO NOT RENDER CLOSE. It is set exactly
 #       when ``assess_closure_readiness`` returns SUGGEST_RESOLVE, which holds
-#       exactly when a qualifying ``causal_absence_evidence`` row is on the
-#       case — the same predicate as resolution READY. On such a case INV-37
+#       exactly when the case confirms a resolution (a qualifying
+#       ``causal_absence_evidence`` row and a ``symptom_absence_evidence`` row
+#       at or after it) — the same predicate as resolution READY. On such a case INV-37
 #       pivots every close to a resolve proposal, at the proposal boundary and
 #       again at the confirm boundary, so a Close control there is one that can
 #       only ever produce "shall I mark this resolved?". The honest rendering
@@ -869,8 +875,9 @@ def declined_resolve_entry(case: Case) -> Optional[str]:
 #: proposes on a request; a user who changes their mind has the engine's chip.
 RESOLVE_DECLINED_RULE = (
     "Do not propose resolved on the evidence already on record. If the user "
-    "reports a NEW verification that the fix held, record it as "
-    "causal_absence_evidence and propose resolved in the same turn. A user who "
+    "reports a NEW verification that the fix held, record it (the cause gone "
+    "as causal_absence_evidence, the problem gone as symptom_absence_evidence) "
+    "and propose resolved in the same turn. A user who "
     "changes their mind without one uses the engine's 'Mark it resolved' "
     "action: point them to it, and never record a confirmation row from a "
     "request."
@@ -976,7 +983,7 @@ def confirm_pending_transition(case: Case, user_id: str) -> bool:
 
     # Closed-gate resolve-preservation (INV-37): a resolvable case must never
     # terminally commit to CLOSED. The SUGGEST_RESOLVE pivot (assess_closure_
-    # readiness) already fires at proposal time, but a qualifying causal_absence
+    # readiness) already fires at proposal time, but a resolution confirmation
     # can land AFTER the close was proposed — so re-check here, at the single
     # execution chokepoint, immediately before the close commits. "resolve =
     # close WITH resolution; close = close WITHOUT resolution": it is always safe
@@ -986,7 +993,7 @@ def confirm_pending_transition(case: Case, user_id: str) -> bool:
     # RESOLVED proposal and report that nothing terminal executed (return False);
     # the caller re-presents the resolve confirmation. Scoped to INVESTIGATING:
     # RESOLVED is not a valid edge from INQUIRY, and an INQUIRY case cannot carry
-    # a qualifying causal_absence anyway.
+    # a resolution confirmation anyway.
     if to_state == "closed" and case.state == CaseState.INVESTIGATING:
         closure = assess_closure_readiness(case)
         if closure.verdict == ClosureReadiness.SUGGEST_RESOLVE:
@@ -1236,13 +1243,15 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
     Returns:
         ResolutionReadiness with verdict, user-facing message, and missing items list
     """
-    # THE resolution bar: the root cause is CONFIRMED eliminated — recorded as a
-    # causal_absence row. That alone makes a case RESOLVED: it implies the cause is
-    # known and a fix took effect, so it is sufficient on its own. A separate
+    # THE resolution bar: gone ⇒ gone, CONFIRMED — the cause observed removed (a
+    # causal_absence row) and the reported problem observed gone after it (a
+    # symptom_absence row). That alone makes a case RESOLVED: it implies the cause
+    # is known and a fix took effect, so it is sufficient on its own. A separate
     # root-cause / solution *record* is for documentation quality (and the higher
     # runbook bar), NOT a resolution gate. Critically, an out-of-band fix the user
-    # reports verbally yields causal_absence (source_type=user_description) with no
-    # SolutionToAdd — and must still resolve. Requiring a solution record here was
+    # reports verbally ("I fixed X, it works now") yields both rows from the same
+    # words (source_type=user_description) with no SolutionToAdd — and must still
+    # resolve. Requiring a solution record here was
     # the documented stuck-loop: the gate refused a clear "yes, it's resolved" and
     # kept demanding a "documented solution" the user did not have, then closed.
     # A false alarm is never resolved: the evidence showed there was nothing to
@@ -1263,7 +1272,7 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
     has_solution = bool(case.solutions and len(case.solutions) > 0)
     has_evidence = bool(case.evidence and len(case.evidence) > 0)
     # Named to avoid shadowing the imported has_resolution_confirmation().
-    resolution_confirmed = _has_causal_absence(case)
+    resolution_confirmed = _resolution_confirmed(case)
 
     if resolution_confirmed:
         return ResolutionReadiness(
@@ -1272,11 +1281,12 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
             missing=[],
         )
 
-    # No causal_absence yet: the user wants to resolve but hasn't confirmed the
-    # cause is gone. This is the documentation-gap-fill ask (common out of band, or
-    # mid-stream) — collect what's needed to document a resolution AND confirm the
-    # cause is actually eliminated. A stabilized/deferred account never confirms it
-    # and converges to Close. Close is offered up front as the alternative.
+    # Not confirmed yet: the user wants to resolve but the case does not show the
+    # cause gone and the problem gone with it. This is the documentation-gap-fill
+    # ask (common out of band, or mid-stream) — collect what's needed to document a
+    # resolution AND confirm the fix actually worked. A stabilized/deferred account
+    # never confirms it and converges to Close. Close is offered up front as the
+    # alternative.
     missing = ["confirmation the problem is now resolved"]
     if not has_cause:
         missing.append("root cause")
@@ -1307,10 +1317,19 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
     if "solution" in missing:
         asks.append("- **What fixed it** — the action that resolved it.")
     if "confirmation the problem is now resolved" in missing:
-        asks.append(
-            "- **Confirmation it's resolved** — that the original problem is "
-            "now gone (e.g. the error no longer occurs in the latest output)."
-        )
+        if cause_elimination_rows(case):
+            # The cause leg stands; only the problem the user reported is
+            # unchecked (#1906). Say so, rather than re-asking for the fix.
+            asks.append(
+                "- **Confirmation the original problem is gone** — the cause is "
+                "shown removed; what you first reported (e.g. the failing check "
+                "or the error) needs to be seen gone too."
+            )
+        else:
+            asks.append(
+                "- **Confirmation it's resolved** — that the original problem is "
+                "now gone (e.g. the error no longer occurs in the latest output)."
+            )
     return ResolutionReadiness(
         verdict=ResolutionReadiness.NEEDS_INFO,
         message=(
@@ -1429,17 +1448,20 @@ def assess_closure_readiness(case: "Case") -> ClosureReadiness:
     # discard the resolution attribution. Engine pivots; user still confirms.
     # Symmetric to ResolutionReadiness.SUGGEST_CLOSE.
     #
-    # Gate on causal_absence — the SAME bar as assess_resolution_readiness READY.
+    # Gate on the resolution confirmation — the SAME bar as
+    # assess_resolution_readiness READY (both legs: cause gone, problem gone).
     # A close request on a resolution-ready case pivots to resolve: "resolved" is
     # a closed case WITH a resolution, and it is always safe to resolve a case the
     # user moved to close. We do NOT require a separate root-cause/solution record
-    # (an out-of-band fix yields causal_absence with neither) — that was the same
-    # over-constraint the resolution gate carried. A merely stabilized case has
-    # symptom_absence but no causal_absence, so it correctly does NOT pivot.
+    # (an out-of-band fix yields the two absence rows with neither) — that was the
+    # same over-constraint the resolution gate carried. A merely stabilized case
+    # has symptom_absence but no causal_absence, and a fix whose effect on the
+    # reported problem is unchecked has causal_absence but no symptom_absence
+    # after it (#1906); neither pivots.
     # Never on a false alarm: there is no cause to have eliminated.
     if (
         case.progress.problem_status != ProblemStatus.INVALIDATED
-        and _has_causal_absence(case)
+        and _resolution_confirmed(case)
     ):
         rc = (
             getattr(case.root_cause_conclusion, "root_cause", None)

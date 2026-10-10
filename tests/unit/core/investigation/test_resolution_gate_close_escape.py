@@ -283,11 +283,17 @@ async def test_steps_zero_ready_reproposal_stands_on_a_real_turn(model_proposes)
             state_updates={
                 "evidence_to_add": [
                     EvidenceToAdd(
-                        summary="p99 back to 40ms since the index was created",
-                        extract="events-* p99: 40ms after CREATE INDEX at 10:02",
+                        summary="Full scans gone since the index was created",
+                        extract="events-* queries use idx_events_ts after 10:02",
                         category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
                         source_type=EvidenceSourceType.USER_DESCRIPTION,
-                    )
+                    ),
+                    EvidenceToAdd(
+                        summary="p99 back to 40ms since the index was created",
+                        extract="events-* p99: 40ms after CREATE INDEX at 10:02",
+                        category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+                        source_type=EvidenceSourceType.USER_DESCRIPTION,
+                    ),
                 ],
                 "proposed_transition": ProposedTransition(to_state=model_proposes),
             },

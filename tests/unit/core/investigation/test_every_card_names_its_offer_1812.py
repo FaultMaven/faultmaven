@@ -221,6 +221,16 @@ def _investigating(*, cause: bool = False, absence: bool = False) -> Case:
                 collected_at_turn=1,
             )
         )
+        case.evidence.append(
+            Evidence(
+                category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+                primary_purpose="re-check the reported symptom after the fix",
+                summary="The checkout requests return 200 again; no 503s since the fix.",
+                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                collected_by="user",
+                collected_at_turn=1,
+            )
+        )
     return case
 
 

@@ -655,8 +655,8 @@ for _via in get_args(TerminalConfirmedVia):
 
 # INV-43 resolution-offer telemetry. The RESOLVED handshake had exactly three
 # openers — the LLM's ``proposed_transition``, the user's own request, and the
-# DEFERRED-feasibility proposer — so a case carrying a QUALIFYING
-# ``causal_absence_evidence`` row (``assess_resolution_readiness`` = READY)
+# DEFERRED-feasibility proposer — so a case carrying a resolution
+# confirmation (``assess_resolution_readiness`` = READY)
 # could sit in INVESTIGATING indefinitely whenever the model recorded the
 # confirmation and omitted the transition the prompt tells it to co-emit. The
 # engine now opens the handshake itself; this counter is what makes that

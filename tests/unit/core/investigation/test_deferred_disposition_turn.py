@@ -67,7 +67,7 @@ def _deferred_response():
     )
 
 
-def _case(*, causal_absence: bool) -> Case:
+def _case(*, confirmed: bool) -> Case:
     case = Case(
         title="Cross-account AssumeRole failures",
         enterprise_id="org_test",
@@ -111,7 +111,9 @@ def _case(*, causal_absence: bool) -> Case:
             longterm_fix="Set the provider ClientIDList to sts.amazonaws.com.",
         )
     ]
-    if causal_absence:
+    if confirmed:
+        # Gone ⇒ gone (#1906): the cause observed removed, and the reported
+        # problem observed gone with it.
         case.evidence.append(
             Evidence(
                 category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
@@ -120,6 +122,16 @@ def _case(*, causal_absence: bool) -> Case:
                     "After the provider client-ID correction the pods obtained "
                     "credentials and the AssumeRole failures stopped."
                 ),
+                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                collected_by="user",
+                collected_at_turn=1,
+            )
+        )
+        case.evidence.append(
+            Evidence(
+                category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+                primary_purpose="re-check the reported symptom after the fix",
+                summary="AssumeRoleWithWebIdentity succeeds for the pods again.",
                 source_type=EvidenceSourceType.USER_DESCRIPTION,
                 collected_by="user",
                 collected_at_turn=1,
@@ -135,7 +147,7 @@ async def test_close_turn_renders_the_reason_with_the_llm_analysis():
     Before the fix the rationale key had no reader, so this turn rendered the
     analysis and two unexplained buttons.
     """
-    case = _case(causal_absence=False)
+    case = _case(confirmed=False)
     engine = _engine(_deferred_response())
 
     result = await engine.process_turn(
@@ -155,7 +167,7 @@ async def test_close_turn_renders_the_reason_with_the_llm_analysis():
 @pytest.mark.asyncio
 async def test_confirmed_case_is_offered_resolve_not_close():
     """With a gone=>gone confirmation the same trigger must offer RESOLVED."""
-    case = _case(causal_absence=True)
+    case = _case(confirmed=True)
     engine = _engine(_deferred_response())
 
     result = await engine.process_turn(
@@ -191,7 +203,7 @@ async def test_the_models_same_turn_proposal_leaves_the_signed_offer(model_propo
     offered the same close again on the next ordinary turn (fm#1122's re-nag).
     A model RESOLVED on this case is not ready, and used to stand in for the
     engine's close as a resolve offer."""
-    case = _case(causal_absence=False)
+    case = _case(confirmed=False)
     engine = _engine(_deferred_response_with(model_proposes))
 
     result = await engine.process_turn(

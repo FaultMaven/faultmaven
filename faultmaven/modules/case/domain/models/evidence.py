@@ -19,7 +19,7 @@ class EvidenceCategory(str, Enum):
     verification quartet: ``symptom_evidence`` (symptom present),
     ``causal_evidence`` (cause present), ``symptom_absence_evidence``
     (symptom gone after a fix), ``causal_absence_evidence`` (cause gone
-    after a fix). Every row is the LLM's deliberate decision to record a
+    after a fix). Every row is the LLM's own decision to record a
     specific extract as evidence for a specific claim, created only during
     INVESTIGATING. Contextual data lives on ``uploaded_files`` — no
     evidence row is needed until the agent extracts a claim-relevant
@@ -30,8 +30,10 @@ class EvidenceCategory(str, Enum):
     are NOT driven by an evidence category — they are set by the LLM via the
     User-Agent Handshake / compliance detection. The absence rows are the
     durable audit trail that the readiness checks consult
-    (``assess_resolution_readiness`` via ``_has_causal_absence``) to decide
-    RESOLVED vs CLOSED. (The pre-migration ``mitigation_evidence`` /
+    (``assess_resolution_readiness`` via ``_resolution_confirmed``) to decide
+    RESOLVED vs CLOSED: RESOLVED needs both a ``causal_absence_evidence`` row
+    and a ``symptom_absence_evidence`` row at or after it — the cause gone and
+    the problem gone with it. (The pre-migration ``mitigation_evidence`` /
     ``solution_evidence`` stage-completion categories were removed in the
     GAP-5 legacy→absence migration.)
     """
