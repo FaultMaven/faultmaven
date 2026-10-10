@@ -433,16 +433,21 @@ class TestStageEvidenceTypeListingsIncludeAbsence:
 
 
 # ============================================================
-# Resolve-proposal sites must require causal_absence emission
+# Resolve-proposal sites must require both absence rows (#1906)
 # ============================================================
+
+
+#: The COMPLETION rule's heading in TREATMENT_INSTRUCTIONS.
+_RESOLVED_RULE_HEADING = "RESOLVED IS BACKED BY BOTH ABSENCE ROWS"
 
 
 @pytest.mark.unit
 class TestResolveProposalRequiresCausalAbsence:
     """Every prompt site that tells the agent to propose ``to_state:
     resolved`` MUST, in the same turn, require a ``causal_absence_evidence``
-    row — the engine gate (``assess_resolution_readiness``) marks a case
-    RESOLVED only when that row is present. A proposal site that omits the
+    row and a ``symptom_absence_evidence`` row — the engine gate
+    (``assess_resolution_readiness``) marks a case RESOLVED only when both are
+    present (#1906). A proposal site that omits the
     requirement makes the engine bounce the transition into a NEEDS_INFO
     loop (suggest-then-bounce). The user's verbal confirmation is an allowed
     source (``user_description``) so the out-of-band path needs no file.
@@ -469,15 +474,15 @@ class TestResolveProposalRequiresCausalAbsence:
     def test_completion_block_requires_causal_absence_for_resolved(self):
         # The governing COMPLETION rule must tie any resolved proposal to a
         # causal_absence emission.
-        assert "RESOLVED IS BACKED BY CAUSAL-ABSENCE" in TREATMENT_INSTRUCTIONS, (
+        assert _RESOLVED_RULE_HEADING in TREATMENT_INSTRUCTIONS, (
             "COMPLETION lost the governing rule that every resolved proposal "
-            "must emit causal_absence_evidence."
+            "must emit causal_absence_evidence and symptom_absence_evidence."
         )
-        rule_start = TREATMENT_INSTRUCTIONS.index(
-            "RESOLVED IS BACKED BY CAUSAL-ABSENCE"
-        )
+        rule_start = TREATMENT_INSTRUCTIONS.index(_RESOLVED_RULE_HEADING)
         rule = TREATMENT_INSTRUCTIONS[rule_start : rule_start + 1200]
         assert "causal_absence_evidence" in rule
+        # #1906: the cause row alone is half of gone => gone.
+        assert "symptom_absence_evidence" in rule
 
     def test_treatment_evidence_types_allow_verbal_causal_absence_source(self):
         # The verbal/out-of-band source allowance is stated once, canonically, in
@@ -491,9 +496,7 @@ class TestResolveProposalRequiresCausalAbsence:
     def test_mitigation_proposes_closed_not_resolved(self):
         # The same rule must route a mitigation to symptom_absence + closed,
         # so the agent only proposes the transition the case can complete.
-        rule_start = TREATMENT_INSTRUCTIONS.index(
-            "RESOLVED IS BACKED BY CAUSAL-ABSENCE"
-        )
+        rule_start = TREATMENT_INSTRUCTIONS.index(_RESOLVED_RULE_HEADING)
         rule = TREATMENT_INSTRUCTIONS[rule_start : rule_start + 2200]
         assert "symptom_absence_evidence" in rule
         assert "closed" in rule, (
@@ -506,9 +509,7 @@ class TestResolveProposalRequiresCausalAbsence:
         # and must never be fabricated to force a resolve. Locks in the
         # "provoked, not solicited" semantics: applied != verified, and an
         # unverified resolve request is solicited (NEEDS_INFO), not manufactured.
-        rule_start = TREATMENT_INSTRUCTIONS.index(
-            "RESOLVED IS BACKED BY CAUSAL-ABSENCE"
-        )
+        rule_start = TREATMENT_INSTRUCTIONS.index(_RESOLVED_RULE_HEADING)
         rule = TREATMENT_INSTRUCTIONS[rule_start : rule_start + 1200]
         assert "solution_accepted" in rule and "stay in TREATMENT" in rule, (
             "The rule must distinguish solution-applied (solution_accepted) from "

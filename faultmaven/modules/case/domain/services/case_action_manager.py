@@ -61,7 +61,9 @@ from faultmaven.utils.serialization import to_json_compatible
 #: user message and fell through to the LLM. Gate 1 performs the edge.
 #:
 #: INVESTIGATING → RESOLVED is earned by a qualifying ``causal_absence_evidence``
-#: row — the cause confirmed eliminated, ``assess_resolution_readiness`` READY.
+#: row and a ``symptom_absence_evidence`` row after the fix — the cause
+#: confirmed eliminated and the problem gone with it,
+#: ``assess_resolution_readiness`` READY.
 #: It was listed here until the engine learned to see that bar for itself
 #: (INV-43), and the listing was never the gate people took it for: this dict
 #: is consulted with no case content whatsoever, so ``valid_next_states``

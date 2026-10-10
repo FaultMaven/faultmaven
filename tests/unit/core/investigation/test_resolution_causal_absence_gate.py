@@ -415,3 +415,97 @@ class TestTheProblemLegIsRequired:
     def test_the_problem_leg_alone_is_not_ready(self):
         r = assess_resolution_readiness(self._case_with(self._symptom(turn=5)))
         assert r.verdict == ResolutionReadiness.NEEDS_INFO
+
+
+class TestTheProblemLegIsAnchoredOnTheFix:
+    """The problem leg counts from the fix, not from the cause re-check: the
+    recorded execution of the latest fix, or the earliest cause row when the
+    fix was made out of band. A user may check the symptom before the cause,
+    and both are after the fix (PR #1928 review)."""
+
+    _row = staticmethod(TestConfirmationRowQualification._absence)
+    _symptom = staticmethod(TestConfirmationRowQualification._symptom_absence)
+
+    @staticmethod
+    def _executed(turn, action_type="solution"):
+        return SimpleNamespace(
+            state="accepted",
+            action_type=SimpleNamespace(value=action_type),
+            accepted_in_turn=turn,
+        )
+
+    def _case_with(self, *rows, actions=()):
+        case = _case(cats=[])
+        case.evidence = list(rows)
+        case.proposed_actions = list(actions)
+        return case
+
+    def test_the_symptom_checked_before_the_cause_counts_after_a_recorded_fix(self):
+        # Fix run at 4, "the target is UP" at 5, "the config reads 100" at 6.
+        r = assess_resolution_readiness(
+            self._case_with(
+                self._symptom(turn=5),
+                self._row(turn=6),
+                actions=[self._executed(4)],
+            )
+        )
+        assert r.verdict == ResolutionReadiness.READY
+
+    def test_without_a_fix_record_the_cause_row_anchors(self):
+        # An out-of-band fix leaves no execution record: the same order then
+        # has nothing placing the symptom check after the fix.
+        r = assess_resolution_readiness(
+            self._case_with(self._symptom(turn=5), self._row(turn=6))
+        )
+        assert r.verdict == ResolutionReadiness.NEEDS_INFO
+
+    def test_a_symptom_row_before_the_recorded_fix_does_not_count(self):
+        # A mitigation's relief at 3, the fix run at 4, the cause gone at 5.
+        r = assess_resolution_readiness(
+            self._case_with(
+                self._symptom(turn=3),
+                self._row(turn=5),
+                actions=[self._executed(4)],
+            )
+        )
+        assert r.verdict == ResolutionReadiness.NEEDS_INFO
+
+    def test_a_mitigation_is_not_the_fix(self):
+        # An executed MITIGATION at 2 does not move the anchor before its relief.
+        r = assess_resolution_readiness(
+            self._case_with(
+                self._symptom(turn=3),
+                self._row(turn=5),
+                actions=[self._executed(2, action_type="mitigation")],
+            )
+        )
+        assert r.verdict == ResolutionReadiness.NEEDS_INFO
+
+    def test_a_fix_recorded_after_the_cause_row_does_not_move_the_anchor_later(self):
+        # The cause re-checked at 5, the execution stamped at 7, the target at 6.
+        r = assess_resolution_readiness(
+            self._case_with(
+                self._row(turn=5),
+                self._symptom(turn=6),
+                actions=[self._executed(7)],
+            )
+        )
+        assert r.verdict == ResolutionReadiness.READY
+
+    def test_a_symptom_row_inside_a_failed_fix_window_does_not_count(self):
+        # Fix A run at 3 and disconfirmed by M6 at 5 (engine row); fix B made
+        # out of band, its cause re-checked at 6. The "looks stable" row at 4
+        # is from fix A's window: the anchor never falls before the failure.
+        case = self._case_with(
+            self._symptom(turn=4, evidence_id="ev_stable_4"),
+            SimpleNamespace(
+                category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+                collected_by="engine",
+                collected_at_turn=5,
+                evidence_id="ev_failed",
+            ),
+            self._row(turn=6, evidence_id="ev_fix_b"),
+            actions=[self._executed(3)],
+        )
+        r = assess_resolution_readiness(case)
+        assert r.verdict == ResolutionReadiness.NEEDS_INFO

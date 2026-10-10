@@ -782,7 +782,8 @@ def _apply_stage_gate_signals(
                 "their report; do not ask them to accept it again. If the root "
                 "cause is not established, re-ground it with evidence first. If "
                 "the problem is already resolved, record the confirming "
-                "causal_absence evidence instead.",
+                "evidence instead: causal_absence for the cause gone and "
+                "symptom_absence for the reported problem gone.",
             )
         else:
             p.solution_accepted = True

@@ -365,7 +365,7 @@ solution_accepted=True) are **additive** to the proposed_transition emitted here
 not alternative. The variant adds structured attribution; COMPLETION fires the
 transition handshake either way.
 
-**RESOLVED IS BACKED BY CAUSAL-ABSENCE (the cause VERIFIED gone):**
+**RESOLVED IS BACKED BY BOTH ABSENCE ROWS (the cause AND the reported problem VERIFIED gone):**
 Propose `to_state: resolved` only once the fix is VERIFIED — the cause is gone AND
 the problem the user reported is gone with it: the user confirms the fix worked,
 or post-fix data shows both. That verification IS the pair of rows, a

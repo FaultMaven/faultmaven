@@ -39,6 +39,7 @@ from faultmaven.modules.case.contracts import (
     EvidenceCategory,
     EvidenceStance,
     HypothesisState,
+    InvestigationActionType,
     NodeEvidenceLink,
     NodeState,
     NodeType,
@@ -65,6 +66,7 @@ __all__ = [
     "counterfactual_link_decisive",
     "evidence_category_map",
     "evidence_datum_key",
+    "fix_application_turn",
     "grade_cause_assurance",
     "has_actionable_solution",
     "has_problem_definition",
@@ -588,10 +590,65 @@ def cause_elimination_rows(case: "Case") -> list:
     ]
 
 
-def symptom_elimination_rows(case: "Case") -> list:
+def fix_application_turn(case: "Case") -> int | None:
+    """The turn at which the case RECORDS that a fix was executed, or ``None``
+    when no such record exists — M6's first precondition (#987), and the
+    anchor of a resolution's problem leg (#1906, ``symptom_elimination_rows``).
+
+    The authoritative record is a ``ProposedAction`` in state ``accepted`` whose
+    type is **SOLUTION** — a MITIGATION is by definition not a fix of the cause
+    (INV-42), so a failed workaround must never establish that the cause was
+    addressed. Per ``classify_solution_outcome``, ``accepted`` means the user
+    *executed* it, and the turn is read from ``accepted_in_turn`` (EXECUTION),
+    never ``proposed_in_turn`` (the OFFER). The NEWEST such turn wins — a failed
+    fix is disconfirmed by what happened after the LAST fix, not the first.
+
+    Deliberately NO compliance-gate fallback: ``solution_accepted`` records
+    THAT a fix was executed but not WHEN, and flooring the window at 0 made
+    every pre-fix symptom row on the case read as a post-fix persistence
+    observation. A precondition that cannot be dated cannot establish "what
+    happened after the fix", so it establishes nothing. On the no-ProposedAction
+    shape M6's counterfactual arm simply does not fire — the evidence-based arm
+    is unaffected and still demotes a genuinely refuted cause.
+    """
+    turns = [
+        a.accepted_in_turn
+        for a in (getattr(case, "proposed_actions", None) or [])
+        if getattr(a, "state", None) == "accepted"
+        # SOLUTION only — a MITIGATION is by definition NOT a fix of the cause
+        # (the prompt: a mitigation "does NOT eliminate the root cause, so the
+        # cause is still present"). A workaround that failed to relieve the
+        # symptom says nothing about whether the cause was addressed, so it must
+        # never establish "the cause was addressed yet the problem persisted"
+        # and refute the root at belief 0.
+        #
+        # Enum OR raw string, the same read ``classify_solution_outcome`` does
+        # (its ``_action_type_value`` is private to the domain module, so the
+        # one-line equivalent is inlined rather than crossing the contracts
+        # boundary): reading only ``.value`` would silently miss a string-typed
+        # action and refuse M6 forever on that deployment. Failing closed is the
+        # right DIRECTION for this gate, but not by accident.
+        and getattr(
+            getattr(a, "action_type", None), "value", getattr(a, "action_type", None)
+        )
+        == InvestigationActionType.SOLUTION.value
+        # ``accepted_in_turn`` (EXECUTION), never ``proposed_in_turn`` (the
+        # OFFER): keying on the proposal turn let evidence recorded in the very
+        # turn the fix was offered — before it was ever run — satisfy "the
+        # problem persisted afterwards". Actions accepted before this field
+        # existed carry None and simply do not establish the precondition,
+        # which is the fail-closed direction.
+        and getattr(a, "accepted_in_turn", None) is not None
+    ]
+    if turns:
+        return max(turns)
+    return None
+
+
+def symptom_elimination_rows(case: "Case", cause_rows: list | None = None) -> list:
     """The case's symptom_absence rows that stand as the PROBLEM leg of a
     resolution confirmation — the reported problem was observed gone after the
-    cause was removed.
+    fix.
 
     Gone ⇒ gone (M2) is two observations, and the evidence vocabulary records
     them as two rows (evidence-needs-design §4.3): a cause re-check yields
@@ -602,42 +659,51 @@ def symptom_elimination_rows(case: "Case") -> list:
     went with it" (#1906).
 
     - Not engine-authored, as for the cause leg.
-    - At or after the EARLIEST cause-elimination row: the problem has to be
-      seen gone once the cause is gone. A symptom_absence row from before the
-      cause was removed is a mitigation's relief, a pre-verification "not
-      there now", or a false-alarm finding; none shows that removing the cause
-      removed the problem. ``>=`` because one turn can carry both
-      observations (the user's "fixed it, the target is UP") and turn
-      granularity cannot order within-turn events. Empty when no cause leg
-      stands, which also places it after the latest failed-fix window, since
-      every cause-elimination row is."""
-    cause_rows = cause_elimination_rows(case)
+    - At or after the FIX: the recorded execution of the latest fix
+      (``fix_application_turn``) or the earliest cause-elimination row,
+      whichever is earlier — the cause row alone for a fix made out of band,
+      which leaves no execution record. A user may check the symptom before the
+      cause ("the target is UP" at turn 5, "the config reads 100" at turn 6);
+      both are after the fix, and anchoring on the cause row would ask them
+      again for what they had already confirmed. A symptom_absence row from
+      before the fix is a mitigation's relief, a pre-verification "not there
+      now", or a false-alarm finding; none shows that removing the cause
+      removed the problem. ``>=`` because one turn can carry both the fix and
+      its observations, and turn granularity cannot order within-turn events.
+    - At or after the latest engine-known failed-fix disconfirmation
+      (``latest_disconfirmation_turn``), as for the cause leg: a "looks
+      stable" row from a fix window that later failed confirms nothing.
+
+    Empty when no cause leg stands. ``cause_rows`` is the caller's
+    ``cause_elimination_rows(case)`` when it already has it."""
+    if cause_rows is None:
+        cause_rows = cause_elimination_rows(case)
     if not cause_rows:
         return []
-    cause_removed_turn = min(
-        (getattr(e, "collected_at_turn", 0) or 0) for e in cause_rows
-    )
+    anchor = min((getattr(e, "collected_at_turn", 0) or 0) for e in cause_rows)
+    fix_turn = fix_application_turn(case)
+    if fix_turn is not None:
+        anchor = min(anchor, fix_turn)
+    anchor = max(anchor, latest_disconfirmation_turn(case))
     return [
         e
         for e in (getattr(case, "evidence", None) or [])
         if getattr(e, "category", None) == EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE
         and getattr(e, "collected_by", None) != ENGINE_EVIDENCE_AUTHOR
-        and (getattr(e, "collected_at_turn", 0) or 0) >= cause_removed_turn
+        and (getattr(e, "collected_at_turn", 0) or 0) >= anchor
     ]
 
 
 def resolution_confirmation_rows(case: "Case") -> list:
     """The rows that CONFIRM a resolution — both legs of gone ⇒ gone, the
     cause-elimination rows then the symptom-elimination rows — or ``[]`` when
-    either leg is missing. The resolution gate's READY bar, the closure→resolve
-    pivot's trigger and the resolve offer's signature all read this, so a
-    cause shown removed with the reported problem unchecked confirms nothing
-    (#1906)."""
+    either leg is missing (``symptom_elimination_rows`` is empty without a
+    cause leg). The resolution gate's READY bar, the closure→resolve pivot's
+    trigger and the resolve offer's signature all read this, so a cause shown
+    removed with the reported problem unchecked confirms nothing (#1906)."""
     cause_rows = cause_elimination_rows(case)
-    symptom_rows = symptom_elimination_rows(case)
-    if not (cause_rows and symptom_rows):
-        return []
-    return cause_rows + symptom_rows
+    symptom_rows = symptom_elimination_rows(case, cause_rows)
+    return cause_rows + symptom_rows if symptom_rows else []
 
 
 def has_resolution_confirmation(case: "Case") -> bool:

@@ -833,8 +833,10 @@ seen gone ("the config now reads 100", "`ExecStart` now names the installed
 binary") says the fix took; only `D` seen gone afterwards says removing the cause
 removed the problem. Each is its own row (`causal_absence_evidence`,
 `symptom_absence_evidence`), and the gate needs both, the symptom row at or after
-the earliest cause row: a symptom row from before the cause was removed is a
-mitigation's relief or a "not there now", not the counterfactual. Reading the
+the fix (the recorded execution of the latest fix, or the earliest cause row when
+the fix was made out of band): a symptom row from before the fix is a mitigation's
+relief or a "not there now", not the counterfactual. The two may be observed in
+either order after the fix. Reading the
 cause row alone as the counterfactual let a service shown running again read
 resolution-ready while the scrape target the user reported down was still
 unchecked, and the engine then told the user the problem had gone with it (#1906).
