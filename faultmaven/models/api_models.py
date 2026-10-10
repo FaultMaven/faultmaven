@@ -1314,7 +1314,13 @@ class TurnResponse(BaseModel):
         "to it. Empty when nothing was pre-fetched — including when the push "
         "is disabled. Runbooks the model fetched itself via the kb_qa tool are "
         "NOT represented: that tool returns a formatted answer string, so "
-        "per-turn identity is not available at the tool boundary.",
+        "per-turn identity is not available at the tool boundary. The turn "
+        "retrieves with the case driver's knowledge; each excerpt is checked "
+        "against the requester when returned, and one of a runbook the "
+        "requester cannot open (no longer shared with them, or never was), or "
+        "one with no `metadata.document_id`, is returned redacted: `type` and "
+        "`new_this_turn` kept, `content` empty, `confidence` null, "
+        'and `metadata` of only `{"access": "restricted"}`.',
     )
 
 

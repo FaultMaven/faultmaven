@@ -1,19 +1,17 @@
 """
 Unified Knowledge Base Q&A Tool
 
-Single tool that searches all KB scopes the user has access to:
-- Global: system-wide runbooks (accessible to all)
-- Owned: user's own runbooks (filtered by owner_id)
-- Team: runbooks shared to the user's teams (resolved from the share table into
-  an id allowlist by the orchestrator; ADR-013 §D4)
+Single tool that searches the case driver's knowledge: global runbooks, the
+driver's personal runbooks and the runbooks shared to the driver's teams
+(``case_retrieval_scope``, #1919; the driver is the case's creator until
+#1898).
 
-The agent doesn't choose a scope — the tool builds a combined filter
-from the user's identity and returns the most relevant results regardless
-of where they came from.
+The agent doesn't choose a scope. The orchestrator resolves the case's scope
+filter into the ``ToolContext``, and the tool searches under it unchanged.
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict
 
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KnowledgeVectorStore,
@@ -21,9 +19,6 @@ from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
 from faultmaven.infrastructure.llm.router import LLMRouter
 from faultmaven.modules.agent.tools.document_qa_tool import DocumentQATool
 from faultmaven.modules.agent.tools.kb_configs.unified_kb_config import UnifiedKBConfig
-from faultmaven.modules.knowledge.domain.services.knowledge_service import (
-    build_kb_scope_filter,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +27,7 @@ class AnswerFromKB(DocumentQATool):
     """
     Unified Q&A tool for the entire knowledge base.
 
-    Searches all scopes the user has access to in a single query.
+    Searches every scope the case driver has access to in a single query.
     Scope filtering is automatic — the agent just asks a question.
     """
 
@@ -65,30 +60,24 @@ global documentation, your personal runbooks, and your team's shared procedures.
     async def _arun(
         self,
         question: str,
-        user_id: str,
-        shared_kb_ids: Optional[List[str]] = None,
+        scope_filter: Dict[str, Any],
         k: int = 5,
     ) -> str:
         """
-        Query knowledge base with automatic scope filtering.
+        Query knowledge base under the case's scope filter.
 
         Args:
             question: Question about troubleshooting, procedures, or best practices
-            user_id: Current user ID (for personal/owned scope filtering)
-            shared_kb_ids: KB item ids shared to the user's teams (ADR-013 §D4),
-                pre-resolved from the share table by the orchestrator — the team
-                arm of the read allowlist
+            scope_filter: The case's KB read filter, built by
+                ``case_retrieval_scope`` and carried on ``ToolContext``
             k: Number of chunks to retrieve (default: 5)
 
         Returns:
-            Relevant documentation with citations from all accessible scopes
+            Relevant documentation with citations from the case's scope
         """
-        # Single source of truth for the KB read allowlist (ADR-013 §D4 /
-        # ADR-011 D3): global ∪ owned ∪ items shared to the user's teams.
-        filters = build_kb_scope_filter(user_id, shared_kb_ids or [])
         return await super()._arun(
             question,
             scope_id=None,
             k=k,
-            filters=filters,
+            filters=scope_filter,
         )

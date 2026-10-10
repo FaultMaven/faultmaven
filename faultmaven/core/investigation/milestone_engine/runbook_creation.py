@@ -7,6 +7,9 @@ from typing import Any
 from faultmaven.core.investigation.milestone_engine.regeneration import (
     _remaining_regens_for,
 )
+from faultmaven.core.investigation.milestone_engine.retrieval_scope import (
+    case_retrieval_scope,
+)
 from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.modules.case.contracts import (
     Case,
@@ -341,44 +344,33 @@ class RunbookCreator:
         }
 
     def _runbook_dedup_scope_resolver(self, case: "Case"):
-        """Build the CASE OWNER's KB-scope resolver for runbook dedup.
+        """Build the resolver for the runbook dedup's KB scope: the case driver's.
 
-        Dedup answers for the principal who will act on the answer — the case
-        owner, whose Dashboard the suggestion points at (owner decision,
-        fm#1030). Scope = global ∪ the owner's personal items ∪ items shared
-        to the owner's teams, the same allowlist shape as the KB
-        pre-fetch (``_prefetch_kb_context``).
+        Dedup answers for the principal who will act on the answer, the case
+        driver (``case.user_id`` until #1898), whose Dashboard the suggestion
+        points at (owner decision, fm#1030). It searches the same scope as the
+        pre-fetch and ``kb_qa`` (``case_retrieval_scope``, #1919): global ∪ the
+        driver's personal KB ∪ the runbooks shared to the driver's teams.
 
-        One deliberate divergence from that pre-fetch: NO try/except around
-        the team arm. The pre-fetch swallows a team-arm failure and degrades
-        to global ∪ personal — correct for seeding, wrong here, because a
+        One deliberate divergence from the pre-fetch: the resolver does NOT
+        degrade (``raise_on_failure=True``). The pre-fetch narrows on a lookup
+        failure, which is correct for seeding and wrong here, because a
         silently narrowed search would underpin a "checked, nothing similar"
         claim it did not establish. A failure raises out of the resolver, and
         ``evaluate_runbook_suggestion`` (which awaits it inside its dedup
         ``try``) takes the failure-caveat branch instead of answering.
 
-        Standalone is not a failure: ``team_service`` is None there, so the
-        team arm resolves empty by construction and the scope collapses to
-        global ∪ owner-personal.
+        Standalone is not a failure: ``team_service`` is None there, and the
+        scope is global ∪ the driver's personal KB.
         """
-        from faultmaven.modules.knowledge.domain.services.knowledge_service import (
-            build_kb_scope_filter,
-            resolve_shared_kb_ids,
-        )
 
         async def _resolve() -> dict:
-            owner_id = getattr(case, "user_id", None)
-            shared_kb_ids: list[str] = []
-            team_service = self.deps.team_service
-            share_repository = self.deps.share_repository
-            if owner_id and team_service and share_repository:
-                owner_team_ids = await team_service.list_all_user_team_ids(owner_id)
-                shared_kb_ids = await resolve_shared_kb_ids(
-                    share_repository,
-                    owner_team_ids,
-                    getattr(case, "enterprise_id", None),
-                )
-            return build_kb_scope_filter(owner_id, shared_kb_ids)
+            return await case_retrieval_scope(
+                case,
+                team_service=self.deps.team_service,
+                share_repository=self.deps.share_repository,
+                raise_on_failure=True,
+            )
 
         return _resolve
 

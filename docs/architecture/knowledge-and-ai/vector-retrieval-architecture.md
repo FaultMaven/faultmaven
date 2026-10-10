@@ -174,7 +174,7 @@ The KB pipeline queries a single ChromaDB collection (`faultmaven_kb`) with a me
 Runbooks have **no collection of their own** and **no parallel index**. `RunbookKnowledgeBase` is constructed over the same `ChromaDBVectorStore` (`faultmaven_kb`) described above, and reads the rows the one live KB writer (`KnowledgeService._index_document_in_vector_store`, reached from `ingest_runbook`) puts there. Two predicates do all the work:
 
 - **`document_type == "runbook"` separates runbooks from other KB documents.** It is what the live writer stamps on every runbook chunk. (The retired `report_type` predicate matched only rows a dead write path would have written, so dedup could only return `[]` — fm#1030.)
-- **The caller-supplied KB scope filter is the isolation.** A similarity query names no id and no owner, so the same visible-id allowlist as every other KB read (`build_kb_scope_filter`: global ∪ owned ∪ team-shared, ADR-011 D3) is the only thing keeping one principal's personal runbooks out of another's results. The filter is built by the CALLER — which principal governs is a per-call-site decision (requester on the report-recommendation route, case owner in the engine) — and `search_runbooks`/`search_by_text` **refuse a falsy filter with a typed error rather than querying unscoped**.
+- **The caller-supplied KB scope filter is the isolation.** A similarity query names no id and no owner, so the same visible-id allowlist as every other KB read (`build_kb_scope_filter`: global ∪ owned ∪ team-shared, ADR-011 D3) is the only thing keeping one principal's personal runbooks out of another's results. The filter is built by the CALLER — which principal governs is a per-call-site decision (requester on the report-recommendation route, the case driver in the engine — the owner until #1898 — via `case_retrieval_scope`, #1919) — and `search_runbooks`/`search_by_text` **refuse a falsy filter with a typed error rather than querying unscoped**.
 
 The clause is `{"$and": [{"document_type": "runbook"}, <scope_filter>]}` — the scope filter composes as one operand whether it is a bare single condition (global-only) or an `$or` of arms. ChromaDB (>= 1.0) validates that a `where` mapping carries exactly one operator, so the multi-key implicit-AND form is rejected outright.
 
@@ -245,10 +245,10 @@ wrong ones on `dashboard`).
 Agent calls: answer_from_kb(question)
   │
   ├── KBToolAdapter.execute_with_context()
-  │     Extracts user_id and shared_kb_ids from ToolContext
+  │     Reads kb_scope_filter from ToolContext: the case driver's scope,
+  │     built by case_retrieval_scope (#1919); refuses when it is None
   │
-  ├── AnswerFromKB._arun(question, user_id, shared_kb_ids)  # kb_qa.py
-  │     Builds combined $or scope filter
+  ├── AnswerFromKB._arun(question, scope_filter)  # kb_qa.py
   │
   ├── DocumentQATool.answer_question(...)
   │     Detects search_mode="hybrid" from UnifiedKBConfig

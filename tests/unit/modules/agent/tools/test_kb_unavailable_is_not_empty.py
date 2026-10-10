@@ -32,6 +32,9 @@ from faultmaven.modules.agent.tools.base import ToolContext
 from faultmaven.modules.agent.tools.kb_configs.unified_kb_config import UnifiedKBConfig
 from faultmaven.modules.agent.tools.kb_qa import AnswerFromKB
 from faultmaven.modules.agent.tools.kb_tool_adapter import KBToolAdapter
+from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+    build_kb_scope_filter,
+)
 
 pytestmark = [pytest.mark.unit]
 
@@ -83,6 +86,7 @@ def _context() -> ToolContext:
         user_id="user-1",
         session_id="session-1",
         enterprise_id="org-1",
+        kb_scope_filter=build_kb_scope_filter("user-1", []),
     )
 
 
