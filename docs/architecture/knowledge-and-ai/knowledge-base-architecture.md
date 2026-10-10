@@ -322,17 +322,17 @@ Three principles govern KB retrieval. The retrieval-pipeline mechanics are canon
 
 KB-arch owns the scope-filter construction. The full tool path (adapter → filter → query → synthesis → return) is canonical in [vector-retrieval-architecture.md §4](./vector-retrieval-architecture.md#4-knowledge-base-retrieval) under Tool Path.
 
-`AnswerFromKB` builds an `$or` scope filter from user context (resolved by `KBToolAdapter` from `ToolContext`):
+`kb_qa` searches under the scope filter `KBToolAdapter` reads off `ToolContext.kb_scope_filter`: the case driver's, built by `case_retrieval_scope` from `build_kb_scope_filter` (#1919):
 
 ```text
 {"$or": [
     {"scope": "global"},                                 # all users
-    {"owner_id": user_id},                               # user's own
-    {"parent_document_id": {"$in": shared_ids}}          # ids shared to user's teams
+    {"owner_id": driver_id},                             # the driver's own
+    {"parent_document_id": {"$in": shared_ids}}          # ids shared to the driver's teams
 ]}
 ```
 
-The `shared_ids` arm is resolved from `resource_shares` (`resolve_shared_kb_ids`) — the personal/global arms come straight from the caller's own ids, so a filter built for one user can never surface another's non-shared content. Empty `shared_ids` collapses the filter to `personal ∪ global`.
+The `shared_ids` arm is resolved from `resource_shares` (`resolve_shared_kb_ids`) — the personal/global arms come straight from the driver's own ids, so a filter built for one user can never surface another's non-shared content. Empty `shared_ids` collapses the filter to `personal ∪ global`.
 
 This filter is passed to the unified `faultmaven_kb` collection in the metadata-`where` argument. The filter-presence check (`_require_kb_filter_present()`) rejects any KB query that arrives naming no scope key at all — see [Storage Architecture](#single-collection-with-metadata-filtering-current).
 
@@ -455,36 +455,22 @@ This flow ensures team knowledge quality is governed by the team admin while ena
 
 ### Implementation Status
 
-Team KB scope filtering is **built on the engine prefetch path, not on the tool path** — the
-filter, the share table and the resolver all exist, but the agent's KB tool never
-receives the resolved ids (see Remaining work 1):
+Team KB scope filtering is built on every retrieval path:
 
 - Team and organization models exist in the auth module (`modules/auth/domain/models/`)
 - `team_members` junction table supports multi-team membership per user
-- `TeamService.list_all_user_team_ids(user_id)` resolves all team memberships across orgs
-- `KbPrefetcher.prefetch_kb_context` (`milestone_engine/kb_prefetch.py`) resolves the **case owner's** teams (keyed on `case.user_id`, deliberately not the session user, so one user's case can never surface another's shares) to shared `knowledge_item` ids via `resolve_shared_kb_ids` against `resource_shares`, and passes them to `build_kb_scope_filter` — so the **engine KB prefetch** does see team-shared items
-- The unified `answer_from_kb` tool builds the combined filter via `build_kb_scope_filter`, whose team arm is `{"parent_document_id": {"$in": shared_ids}}`
+- `TeamService.list_all_user_team_ids(user_id)` resolves all team memberships across orgs, excluding retired teams
+- Inside an investigation, the pre-fetch, `kb_qa` and the runbook dedup take one scope from `case_retrieval_scope(case)` (`core/investigation/milestone_engine/retrieval_scope.py`, #1919): the **case driver's** knowledge, global ∪ the driver's personal KB ∪ the runbooks shared to the driver's teams. Until #1898 the driver is the creator (`case.user_id`), never the session user. `kb_qa` receives it as `ToolContext.kb_scope_filter`
+- `search_documents` and report recommendations build the requesting user's scope with `build_kb_scope_filter`, whose team arm is `{"parent_document_id": {"$in": shared_ids}}`
 - ChromaDB metadata stores only the immutable floor (`scope` = `global`/`personal` + `owner_id`, plus the tenant's `enterprise_id`, #1168) at ingestion time — never `team_id`; team visibility lives in the `resource_shares` table (ADR-013 §D4)
 - API endpoints (`GET /knowledge/documents`) support `scope=team` filter with team membership check
 
+**Stored excerpts are gated per viewer (#1919).** The model's answer written from the driver's knowledge is accepted disclosure to everyone who reads the case. The stored copies of runbook text are not: a turn's `sources` (the excerpts its prompt carried, persisted on the assistant row) are checked against the reader when `GET /cases/{id}/messages` or `POST /cases/{id}/turns` returns them (`gate_kb_sources`, `modules/knowledge/contracts.py`). The check is the id-addressed document read's rule (global, the viewer's own, or shared to one of the viewer's teams; published or the viewer's own), batched as `visible_document_ids`, one query per response. A source the viewer cannot open, or one with no `document_id`, is returned with empty `content` and `metadata` `{"access": "restricted"}`. The operator break-glass transcript (`/admin/cases`) shows the stored copy.
+
 **Remaining work:**
 
-1. **`ToolContext.shared_kb_ids` is never populated on the live turn path.** The
-   `kb_qa` tool reads the team arm from `context.shared_kb_ids`
-   (`kb_tool_adapter.py`), but `StructuredOutputGenerator.build_tool_context` (`milestone_engine/generation.py`) does not set
-   it, so it defaults to `[]` and `build_kb_scope_filter` omits the team arm
-   entirely. The only writer was `AgentOrchestrationService`, deleted in #982 —
-   and that writer sat on the separate `/sessions/execute` surface, never on
-   `/turns`, so the tool has never seen team-shared items on the live path.
-   Deleting the dead writer did not cause this; it removed the last code that
-   made the wiring look present. This **fails closed** (global ∪
-   owner-personal; no cross-tenant exposure), but a team-shared runbook is
-   invisible to the agent's KB tool even though the engine prefetch above finds
-   it. Fixing it means resolving the shared ids where the context is built —
-   `_build_tool_context` is synchronous, so the resolution has to happen upstream
-   and be threaded in.
-2. Team KB management API endpoints (upload, list, delete restricted to team admin role)
-3. Promotion workflow (personal → team: submit, review, approve/reject with team admin approval gate)
+1. Team KB management API endpoints (upload, list, delete restricted to team admin role)
+2. Promotion workflow (personal → team: submit, review, approve/reject with team admin approval gate)
 
 ---
 

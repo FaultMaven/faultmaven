@@ -151,6 +151,14 @@ OTHER_READERS: dict[tuple[str, str], tuple[int, str]] = {
         "the transcript API: a page of rows for a client to render",
     ),
     (
+        "faultmaven/modules/case/api/routes/conversation.py",
+        "_gate_page_sources",
+    ): (
+        1,
+        "gates each row's stored runbook sources for the viewer (#1919); "
+        "reads no message text",
+    ),
+    (
         "faultmaven/modules/case/infrastructure/case_repository.py",
         "InMemoryCaseRepository.get_messages",
     ): (1, _PERSISTENCE),

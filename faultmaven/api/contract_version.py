@@ -1924,4 +1924,30 @@ asked to accept, and it belongs to a person.
 # hand-written `KnowledgeSuggestion` type). The system is pre-user, so there is
 # no deprecation window. Clients only regenerate; the dashboard drops its dead
 # type.
-API_CONTRACT_VERSION = "13.0.0"
+# 13.1.0 — MINOR. A turn's knowledge-base `sources` are gated per viewer (#1919,
+# owner ruling 2026-10-10). A turn retrieves with the case driver's knowledge
+# and stores the runbook excerpts its prompt carried; when `GET
+# /api/v1/cases/{case_id}/messages` (`Message.sources`) or `POST
+# /api/v1/cases/{case_id}/turns` (`TurnResponse.sources`, live or replayed)
+# returns them, each is checked against the requester. A `knowledge_base`
+# source whose runbook the requester cannot open (not global, not theirs, not
+# shared to one of their teams, or unpublished), or one with no
+# `metadata.document_id`, comes back in a new documented shape:
+#
+# * `type` `knowledge_base` and `new_this_turn` kept;
+# * `content` `""`, `confidence` null;
+# * `metadata` exactly `{"access": "restricted"}` — no `title`, `document_id`
+#   or `trigger`.
+#
+# A readable source is unchanged. The operator break-glass transcript
+# (`/api/v1/admin/cases/{case_id}/messages`) is not gated. `GET .../messages`
+# now also answers `Cache-Control: no-cache, no-store, must-revalidate`,
+# `Pragma: no-cache` and `Expires: 0`: its body varies by viewer.
+#
+# MINOR because the `Source` schema is unchanged — a redacted entry is a valid
+# `Source` — and every first-party client survives it: copilot-ui's renderer
+# (which the dashboard shares) reads `metadata` as an open object, shows
+# "Source N" without a title, no link without a `document_id`, and no preview
+# for empty `content`. Clients adopt by showing "a runbook you don't have access
+# to" for `metadata.access == "restricted"`. The Slack agent only regenerates.
+API_CONTRACT_VERSION = "13.1.0"

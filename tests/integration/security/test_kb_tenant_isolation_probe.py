@@ -66,8 +66,8 @@ Mutation (reverted after each run)                              Caught by
                                                                 cases (their question carries the identifier)
 ``_apply_hard_metadata_filter`` returns only its own            ``test_hard_context_filter_cannot_...``
 conditions, dropping the clause it was handed
-``KBToolAdapter`` reads ``user_id``/``shared_kb_ids`` off       ``test_a_prompt_injected_question_...``
-the tool params when present
+``KBToolAdapter`` reads ``kb_scope_filter`` off the tool       ``test_a_prompt_injected_question_...``
+params when present
 ``list_resource_ids`` drops its ``enterprise_id``             ``test_the_share_lookups_sql_...``
 predicate
 ``resolve_shared_kb_ids`` skips ``usable_tenant_id``            ``test_the_share_arm_fails_closed_...`` (both
@@ -101,7 +101,7 @@ order asserts nothing in particular; run this file both alone and alongside
 What this probe found
 ---------------------
 **No cross-tenant read is reachable today.** Every live KB read path that
-carries a filter builds it from ``build_kb_scope_filter``, at one of five origin
+carries a filter builds it from ``build_kb_scope_filter``, at one of three origin
 sites (pinned by ``test_every_kb_read_filter_originates_from_build_kb_scope_filter``),
 and every global-authoring entry point refuses a tenant session. There is
 exactly one live read with no filter at all — the boot-time reconcile
@@ -119,7 +119,7 @@ fix rather than the defect:
   convention checkable. #1167 corrected the check's name and docstring to claim
   only what it checks; the tenant control itself is #1168.
 * **F2 — the shared-id arm is unauthenticated at the vector layer.** Any item id
-  that reaches ``shared_kb_ids`` is read verbatim, foreign tenant or not
+  that reaches the ``parent_document_id`` arm is read verbatim, foreign tenant or not
   (Attack 2). The single tenant predicate protecting it is one SQL ``WHERE``.
 * **F3 — every write-side scope default was ``global``. FIXED (#1166).**
   ``KnowledgeBaseDocument.scope``, ``ingest_runbook``, ``upload_document`` and
@@ -193,7 +193,7 @@ USER_A = "11111111-1111-1111-1111-111111111111"
 USER_B = "22222222-2222-2222-2222-222222222222"
 
 # Item ids. The team arm filters on `parent_document_id`, so these are the
-# values an attacker would want to get into `shared_kb_ids`.
+# values an attacker would want to get into that arm's allowlist.
 DOC_A_PERSONAL = "aaaa1111aaaa1111"
 DOC_B_PERSONAL = "bbbb2222bbbb2222"
 DOC_B_TEAM = "bbbb3333bbbb3333"
@@ -345,9 +345,9 @@ async def store() -> KnowledgeVectorStore:
             scope="global",
             enterprise_id=STANDALONE_ENTERPRISE_ID,
         ),
-        # Nothing writes this today. It is seeded because the tool context
-        # defaults an unresolved principal to the "system" sentinel and builds
-        # an owner arm from it — see the F3-adjacent case in Attack 2.
+        # Nothing writes this today. It is seeded because
+        # build_kb_scope_filter builds an owner arm from any string, the
+        # "system" sentinel included — see the F3-adjacent case in Attack 2.
         _chunk(
             DOC_SYSTEM_OWNED,
             SYSTEM_TEXT,
@@ -509,7 +509,9 @@ def _tool_context(**overrides) -> ToolContext:
         "case_id": "case-1",
         "enterprise_id": ENTERPRISE_A,
         "user_id": USER_A,
-        "shared_kb_ids": [],
+        # What case_retrieval_scope builds for user A's unshared case in a
+        # deployment with no team shares (#1919).
+        "kb_scope_filter": build_kb_scope_filter(USER_A, []),
     }
     base.update(overrides)
     return ToolContext(**base)
@@ -538,8 +540,8 @@ async def test_the_kb_tool_shows_the_model_only_the_callers_own_corpus(store):
 async def test_a_prompt_injected_question_cannot_move_the_filter(store):
     """The question is model-controlled. Can it choose whose KB is read?
 
-    The tool's parameter schema is the boundary: ``user_id`` and the filter are
-    taken from the orchestrator's ``ToolContext``, never from tool arguments.
+    The tool's parameter schema is the boundary: the filter is taken from the
+    orchestrator's ``ToolContext``, never from tool arguments.
     An injected instruction is therefore just text — this pins that it stays
     text, and that the schema offers no lever to promote it.
     """
@@ -566,7 +568,8 @@ async def test_a_prompt_injected_question_cannot_move_the_filter(store):
     params = {
         "question": injected,
         "user_id": USER_B,
-        "shared_kb_ids": [DOC_B_TEAM],
+        "kb_scope_filter": build_kb_scope_filter(USER_B, [DOC_B_TEAM]),
+        "scope_filter": {"owner_id": USER_B},
         "filters": {"owner_id": USER_B},
     }
     with patch.object(KnowledgeVectorStore, "hybrid_search", _spy):
@@ -594,7 +597,7 @@ async def test_a_foreign_item_id_in_the_shared_arm_is_read_verbatim(store):
 
     This is not a reachable leak — it is the statement of what the SQL
     predicate in ``list_resource_ids`` is holding up. If a foreign id ever
-    reaches ``shared_kb_ids``, ChromaDB serves the chunk without a murmur,
+    reaches the shared arm, ChromaDB serves the chunk without a murmur,
     because ``parent_document_id`` is an allowlist entry and allowlists do not
     argue.
     """
@@ -747,14 +750,16 @@ async def test_an_unresolvable_principal_collapses_to_the_platform_tier(
 
 @pytest.mark.asyncio
 async def test_the_system_sentinel_is_a_real_owner_arm_not_an_inert_one(store):
-    """``_build_tool_context`` defaults an unresolved principal to ``"system"``.
+    """``build_kb_scope_filter`` builds an ordinary owner arm from any string.
 
-    Its docstring calls that sentinel one "which matches no owner" — true of
-    today's corpus, and only of today's corpus. It is a claim about DATA, not
-    an enforced invariant: ``build_kb_scope_filter`` builds an ordinary owner
-    arm from it, so any chunk ever stamped ``owner_id="system"`` becomes
-    readable from every tenant's system-initiated turn. Recorded so a writer
-    that starts stamping it trips something.
+    ``build_tool_context`` defaults an unresolved principal to ``"system"``.
+    That sentinel used to key ``kb_qa``'s owner arm; since #1919 the tool's
+    scope is the case driver's knowledge, keyed on the case, and the turn's
+    principal reaches no KB filter. The
+    property below is still true of the builder: "matches no owner" is a claim
+    about DATA, not an enforced invariant, so any chunk ever stamped
+    ``owner_id="system"`` becomes readable to any filter keyed on that string.
+    Recorded so a writer that starts stamping it trips something.
     """
     scope_filter = build_kb_scope_filter("system", [])
 
@@ -1041,19 +1046,17 @@ def _filter_expressions(name: str, node: ast.Call) -> list[ast.AST]:
 
 
 #: Every place a KB read filter is CONSTRUCTED, with the principal it is keyed
-#: on. Five sites; each passes ids belonging to the caller (or, for the two
-#: case-owner paths, to the case's owner — deliberate, so a user's own resolved
-#: cases seed their own future investigations).
+#: on. Three sites; each passes ids belonging to the caller, or, for the
+#: engine's one site, to the case driver (the case owner until #1898 —
+#: deliberate, so a user's own resolved cases seed their own future
+#: investigations).
 _FILTER_ORIGINS = {
-    ("modules/agent/tools/kb_qa.py", "_arun"),  # kb_qa: ToolContext.user_id
     ("modules/knowledge/domain/services/knowledge_service.py", "search_documents"),
+    # The case driver's knowledge (#1919): the pre-fetch, kb_qa and the
+    # runbook dedup all take their filter from here.
     (
-        "core/investigation/milestone_engine/runbook_creation.py",
-        "_runbook_dedup_scope_resolver._resolve",
-    ),
-    (
-        "core/investigation/milestone_engine/kb_prefetch.py",
-        "prefetch_kb_context",
+        "core/investigation/milestone_engine/retrieval_scope.py",
+        "case_retrieval_scope",
     ),
     (
         "modules/report/domain/services/report_recommendation_service.py",
@@ -1071,15 +1074,16 @@ _KB_READ_SITES = {
     ("infrastructure/knowledge/knowledge_vector_store.py", "hybrid_search"),
     ("infrastructure/knowledge/runbook_kb.py", "search_by_text"),
     ("infrastructure/knowledge/runbook_kb.py", "search_runbooks._query"),
-    # tool path: filter built in kb_qa._arun from ToolContext.user_id
+    # tool path: ToolContext.kb_scope_filter, built by case_retrieval_scope
     ("modules/agent/tools/document_qa_tool.py", "_dispatch_search"),
-    # dedup paths: filter built in the two `_resolve_*`/`_runbook_dedup_*` origins
+    # dedup paths: case_retrieval_scope (engine) / _resolve_requester_scope (report)
     ("core/investigation/terminal_transitions.py", "_find_similar_runbooks_for_case"),
     (
         "modules/report/domain/services/report_recommendation_service.py",
         "_find_similar_runbooks",
     ),
-    # service reads: caller-supplied (milestone pre-fetch) or built in place
+    # service reads: caller-supplied (the pre-fetch, from case_retrieval_scope)
+    # or built in place
     ("modules/knowledge/domain/services/knowledge_service.py", "search_knowledge"),
     ("modules/knowledge/domain/services/knowledge_service.py", "search_documents"),
     ("core/investigation/milestone_engine/kb_prefetch.py", "prefetch_kb_context"),
@@ -1128,8 +1132,9 @@ def test_every_kb_read_filter_originates_from_build_kb_scope_filter():
     Attack 3 showed a hand-written clause can satisfy the store's guard and
     return the whole corpus. Nothing in the store can tell such a clause from a
     legitimate one, so the property that keeps it unreachable is a property of
-    the CALL SITES: every filter comes from ``build_kb_scope_filter``, at five
-    places, keyed on ids the caller owns. This pins both halves of that —
+    the CALL SITES: every filter comes from ``build_kb_scope_filter``, at three
+    places, keyed on ids the caller owns or on the case driver's knowledge.
+    This pins both halves of that —
     the set of constructors and the set of forwarders — so a new read path
     fails here until someone states which it is.
     """

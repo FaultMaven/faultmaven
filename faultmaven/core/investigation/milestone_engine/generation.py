@@ -15,6 +15,9 @@ from faultmaven.core.investigation.llm_error_handler import (
     is_truncated_json_error,
 )
 from faultmaven.core.investigation.milestone_engine.errors import MilestoneEngineError
+from faultmaven.core.investigation.milestone_engine.retrieval_scope import (
+    case_retrieval_scope,
+)
 from faultmaven.core.investigation.milestone_engine.structured_output import (
     _fix_enum_violations,
     _normalize_state_updates,
@@ -1186,65 +1189,25 @@ class StructuredOutputGenerator:
             )
         return tools
 
-    async def _resolve_shared_kb_ids(self, user_id: str, enterprise_id: Any) -> list:
-        """KB item ids shared to ``user_id``'s teams — the team arm of the tool
-        path's read allowlist (ADR-013 §D4).
-
-        Keyed on the **session** user, matching the owner arm: ``kb_tool_adapter``
-        passes ``ToolContext.user_id`` to ``build_kb_scope_filter`` as the owner,
-        so both arms must describe the same principal. Keying the team arm on the
-        case owner instead would let a collaborator's turn read the owner's
-        team-shared items — a wider allowlist than the reader is entitled to.
-        (``_prefetch_kb_context`` keys on the case owner precisely because it is
-        not acting for a session user; the two are deliberately different.)
-
-        ``team_service``/``share_repository`` are wired post-construction and are
-        absent in standalone, so a missing collaborator collapses the team arm to
-        empty rather than raising — global ∪ owned still resolves.
-        """
-        if not user_id or user_id == "system":
-            return []
-
-        team_service = self.deps.team_service
-        share_repository = self.deps.share_repository
-        if not team_service or not share_repository:
-            return []
-
-        from faultmaven.modules.knowledge.domain.services.knowledge_service import (
-            resolve_shared_kb_ids,
-        )
-
-        try:
-            team_ids = await team_service.list_all_user_team_ids(user_id)
-            return await resolve_shared_kb_ids(
-                share_repository, team_ids, enterprise_id
-            )
-        except Exception:  # noqa: BLE001
-            # Degrade to global ∪ owned rather than failing the turn. Narrowing
-            # is safe; the alternative would be an unscoped read.
-            logger.warning(
-                "shared_kb_id_resolution_failed",
-                extra={"user_id": user_id},
-                exc_info=True,
-            )
-            return []
-
     async def build_tool_context(self, case: Any, user_id: str | None = None) -> Any:
         """Build ToolContext for tool execution during DA turns.
 
         ``user_id`` is the turn's authenticated principal, threaded down from
-        ``process_turn``. It is the *only* source: it previously came off
-        ``intent_data``, which no caller populates — ``InvestigationService``
-        builds that dict from ``QueryIntent.model_dump()`` (a model with no
-        ``user_id`` field) plus ``query_mode``, so every live turn resolved to
-        ``"system"`` and both arms of the KB read allowlist
-        (``build_kb_scope_filter(user_id, shared_kb_ids)``) collapsed to the
-        global corpus. Reading it from the intent payload would also make the
-        read principal client-settable; the parameter comes from
+        ``process_turn``, for the tools that record who acted (evidence
+        reclassification). It is the *only* source: it previously came off
+        ``intent_data``, which no caller populates, so every live turn resolved
+        to ``"system"``. Reading it from the intent payload would also make the
+        principal client-settable; the parameter comes from
         ``current_user.user_id``.
 
         ``None`` (engine-internal turn, no principal) keeps the historical
-        ``"system"`` sentinel, which matches no owner and resolves no teams.
+        ``"system"`` sentinel.
+
+        The KB scope ``kb_qa`` reads is keyed on the CASE, not on this
+        principal: the case driver's knowledge (``case_retrieval_scope``,
+        #1919), the same scope the pre-fetch and the runbook dedup use. The
+        driver is ``case.user_id`` until #1898, the only user who may submit a
+        turn, so today the two coincide.
         """
         from faultmaven.modules.agent.tools.base import ToolContext
 
@@ -1269,7 +1232,11 @@ class StructuredOutputGenerator:
             case_id=case.case_id,
             enterprise_id=enterprise_id,
             user_id=user_id,
-            shared_kb_ids=await self._resolve_shared_kb_ids(user_id, enterprise_id),
+            kb_scope_filter=await case_retrieval_scope(
+                case,
+                team_service=self.deps.team_service,
+                share_repository=self.deps.share_repository,
+            ),
             case_repository=self.deps.repository,
             metadata=metadata,
             in_memory_case=case,

@@ -613,8 +613,12 @@ class Message(BaseModel):
         description=(
             "On an assistant row: the knowledge-base runbooks that turn's "
             "prompt carried, exactly as the live `TurnResponse.sources` "
-            "returned them, `new_this_turn` included. Null on a row whose "
-            "prompt carried none (and on every user or system row)."
+            "returned them, `new_this_turn` included, and gated the same way "
+            "for the reader making this request: an excerpt of a runbook the "
+            "reader cannot open, or one with no `metadata.document_id`, is "
+            "returned with empty `content`, null `confidence` and "
+            '`metadata` of only `{"access": "restricted"}`. Null on a row '
+            "whose prompt carried none (and on every user or system row)."
         ),
     )
 

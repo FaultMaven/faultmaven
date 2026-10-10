@@ -59,7 +59,7 @@ from faultmaven.infrastructure.protection.tenant_turn_cap import (
     TenantTurnCapExceeded,
     TenantTurnCapUnavailable,
 )
-from faultmaven.models.api import CaseMessagesResponse, DataType
+from faultmaven.models.api import CaseMessagesResponse, DataType, Source
 from faultmaven.models.api_models import IntentType, QueryIntent, TurnResponse
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.auth.contracts import ISessionService, UserDTO
@@ -81,6 +81,7 @@ from faultmaven.modules.case.api.turn_idempotency import (
 )
 from faultmaven.modules.case.contracts import TurnReceiptExistsError
 from faultmaven.modules.case.exceptions import StaleCaseException
+from faultmaven.modules.knowledge.contracts import gate_kb_sources
 
 router = APIRouter(prefix="/cases", tags=["cases"])
 
@@ -91,6 +92,49 @@ logger = logging.getLogger(__name__)
 # Conversation thread retrieval (messages)
 
 
+async def _gate_sources_for_viewer(
+    request: Request, viewer: Any, source_lists: List[Optional[List[Source]]]
+) -> List[Optional[List[Source]]]:
+    """Stored runbook excerpts, each one the viewer may not read redacted.
+
+    The excerpts were retrieved with the case driver's knowledge (#1919); a
+    viewer is shown only those they can open themselves (``gate_kb_sources``).
+    Every surface that returns stored ``sources`` to a case reader calls this;
+    the operator break-glass transcript (``/admin/cases``) deliberately does not.
+    """
+    return await gate_kb_sources(
+        source_lists,
+        viewer=viewer,
+        knowledge_service=getattr(request.app.state, "knowledge_service", None),
+        team_service=getattr(request.app.state, "team_service", None),
+    )
+
+
+async def _gate_page_sources(
+    request: Request, viewer: Any, page: CaseMessagesResponse
+) -> None:
+    """Gate every row's stored ``sources`` on a transcript page, in place.
+
+    One visibility check for the whole page (``gate_kb_sources``).
+    """
+    rows = page.messages
+    gated = await _gate_sources_for_viewer(request, viewer, [r.sources for r in rows])
+    for row, sources in zip(rows, gated):
+        row.sources = sources
+
+
+async def _turn_gated_for_viewer(
+    request: Request, viewer: Any, turn: TurnResponse
+) -> TurnResponse:
+    """The turn's response with its ``sources`` gated for the requester.
+
+    Live and replayed alike: a receipt replays a stored response, and the
+    requester's access is decided now, not when the turn ran.
+    """
+    (sources,) = await _gate_sources_for_viewer(request, viewer, [turn.sources])
+    return turn.model_copy(update={"sources": sources or []})
+
+
 @router.get(
     "/{case_id}/messages",
     response_model=CaseMessagesResponse,
@@ -99,6 +143,7 @@ logger = logging.getLogger(__name__)
 @trace("api_get_case_messages_enhanced")
 async def get_case_messages_enhanced(
     case_id: str,
+    request: Request,
     response: Response,
     limit: int = Query(
         50, le=100, ge=1, description="Maximum number of messages to return"
@@ -117,6 +162,12 @@ async def get_case_messages_enhanced(
     case_service = check_case_service_available(case_service)
     correlation_id = str(uuid.uuid4())
     response.headers["x-correlation-id"] = correlation_id
+    # The body varies by viewer: stored runbook excerpts are gated for the
+    # requester (#1919), so no shared or browser cache may serve one reader's
+    # page to another. The same headers ``list_cases`` sets.
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
 
     try:
         # Verify user has access to the case
@@ -131,6 +182,8 @@ async def get_case_messages_enhanced(
         message_response = await case_service.get_case_messages_enhanced(
             case_id=case_id, limit=limit, offset=offset, include_debug=include_debug
         )
+        # Stored runbook excerpts are checked against THIS viewer (#1919).
+        await _gate_page_sources(request, current_user, message_response)
 
         # Add headers for metadata. X-Total-Count is the canonical pagination
         # header used by every other list endpoint (and expected by the contract
@@ -661,7 +714,7 @@ async def submit_turn(
             if keyed.replay is not None:
                 if http_response is not None:
                     http_response.headers[IDEMPOTENCY_REPLAYED_HEADER] = "true"
-                return keyed.replay
+                return await _turn_gated_for_viewer(request, current_user, keyed.replay)
 
         # Terminal cases: allow text-only Q&A, block evidence and state
         # transitions. Each refusal is labelled `CASE_TERMINAL` (#1907).
@@ -835,7 +888,7 @@ async def submit_turn(
                     )
                     if http_response is not None:
                         http_response.headers[IDEMPOTENCY_REPLAYED_HEADER] = "true"
-                    return replay
+                    return await _turn_gated_for_viewer(request, current_user, replay)
 
             # Name the case from its own content. Called unconditionally: whether
             # the case is *titleable* is decided inside, against the case as it
@@ -854,7 +907,7 @@ async def submit_turn(
                 llm_provider=getattr(request.app.state, "llm_provider", None),
             )
 
-            return response
+            return await _turn_gated_for_viewer(request, current_user, response)
 
         except (asyncio.TimeoutError, TurnDeadlineExceeded) as timed_out:
             # Both mean the same thing to the client, and are answered the
