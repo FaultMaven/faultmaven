@@ -14,9 +14,8 @@ Schema is organized into four domains:
 - **Case domain** — `cases` and its children: evidence, hypotheses, solutions,
   messages, files, actions, tags, entities, sessions, agent
   executions, tool calls, hypothesis-evidence junction, reports.
-- **Knowledge domain** — `knowledge_items` (RAG corpus), `knowledge_suggestions`
-  (HITL pipeline from cases), `conversion_jobs` / `conversion_drafts`
-  (document-to-runbook).
+- **Knowledge domain** — `knowledge_items` (RAG corpus), `conversion_jobs` /
+  `conversion_drafts` (document-to-runbook).
 - **Config domain** — `config_overrides` (dashboard hot-reloaded settings).
 
 Conventions:
@@ -32,7 +31,7 @@ Conventions:
   visibility.
 - `case_id` ON DELETE policy splits by table role:
   * Lifecycle-side (evidence, hypotheses, messages, etc.): `CASCADE` — die with the case.
-  * Permanence-side (knowledge_suggestions, conversion_jobs): `SET NULL` — survive case deletion.
+  * Permanence-side (conversion_jobs): `SET NULL` — survive case deletion.
 - JSON columns use `Text` for cross-dialect compatibility (PG promotes to JSONB
   via dialect-specific migration; SQLite stores as TEXT).
 - Tags: PG-only `TEXT[]` + GIN; SQLite uses comma-separated TEXT with a CHECK
@@ -2905,7 +2904,6 @@ class KnowledgeItemModel(Base):
         nullable=True,
         index=True,
     )
-    source_suggestion_id = Column(String(36), nullable=True, index=True)
 
     title = Column(String(512), nullable=False)
     content = Column(Text, nullable=False)
@@ -2988,133 +2986,10 @@ class KnowledgeItemModel(Base):
     )
 
 
-class KnowledgeSuggestionModel(Base):
-    """Pending KB suggestion extracted from a case. Survives case deletion via
-    SET NULL on case_id (the suggestion's content stays useful even after the
-    source case is gone)."""
-
-    __tablename__ = "knowledge_suggestions"
-
-    suggestion_id = Column(String(36), primary_key=True)
-    enterprise_id = Column(
-        String(36),
-        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    organization_id = Column(
-        String(36),
-        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    case_id = Column(
-        String(36),
-        ForeignKey("cases.case_id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    knowledge_item_id = Column(
-        String(36),
-        ForeignKey("knowledge_items.item_id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-
-    status = Column(
-        String(32), nullable=False, server_default="pending_review", index=True
-    )
-
-    suggested_title = Column(String(512), nullable=False)
-    suggested_content = Column(Text, nullable=False)
-    suggested_type = Column(
-        String(64), nullable=False, server_default="troubleshooting_guide"
-    )
-
-    extracted_by = Column(
-        String(36),
-        ForeignKey("users.user_id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    extracted_at = Column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    include_messages = Column(Boolean, nullable=False, server_default="1")
-    include_evidence = Column(Boolean, nullable=False, server_default="1")
-
-    pii_scan_status = Column(
-        String(32), nullable=False, server_default="not_scanned", index=True
-    )
-    pii_scan_result = Column(JsonBlob, nullable=True)
-    pii_remediated_by = Column(
-        String(36), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True
-    )
-    pii_remediated_at = Column(DateTime(timezone=True), nullable=True)
-
-    source_case_title = Column(String(512), nullable=True)
-    message_count = Column(Integer, nullable=False, server_default="0")
-    evidence_count = Column(Integer, nullable=False, server_default="0")
-
-    reviewed_by = Column(
-        String(36), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True
-    )
-    reviewed_at = Column(DateTime(timezone=True), nullable=True)
-    review_notes = Column(Text, nullable=True)
-    rejection_reason = Column(Text, nullable=True)
-
-    suggestion_metadata = Column(
-        "metadata", JsonBlob, nullable=False, server_default="{}"
-    )
-
-    # Runbook quality gate verdict (#1226 in the domain, migration 045 here).
-    # `validation_passed` is deliberately nullable with NO default: the domain
-    # reads NULL as "not yet evaluated", which is distinct from False
-    # ("evaluated and refused"). Defaulting it would assert a verdict nobody
-    # reached.
-    validation_passed = Column(Boolean, nullable=True)
-    validation_errors = Column(JsonBlob, nullable=False, server_default="[]")
-    validation_warnings = Column(JsonBlob, nullable=False, server_default="[]")
-
-    # Optimistic-concurrency token, mirroring `cases.version` (migration 045).
-    # The store is read as detached copies, so a full-row write from a stale
-    # snapshot would silently revert a concurrent decision; the repository's
-    # UPDATE carries `WHERE version = :loaded` and bumps it.
-    version = Column(Integer, nullable=False, server_default="1")
-
-    created_at = Column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
-    )
-    updated_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
-    __table_args__ = (
-        CheckConstraint(
-            "status IN ('pending_review', 'approved', 'rejected', 'draft')",
-            name="knowledge_suggestions_status_check",
-        ),
-        CheckConstraint(
-            "pii_scan_status IN ('not_scanned', 'scanning', 'clean', "
-            "'pii_detected', 'remediated', 'scan_failed')",
-            name="knowledge_suggestions_pii_scan_status_check",
-        ),
-        CheckConstraint(
-            "message_count >= 0", name="knowledge_suggestions_message_count_check"
-        ),
-        CheckConstraint(
-            "evidence_count >= 0", name="knowledge_suggestions_evidence_count_check"
-        ),
-        CheckConstraint("version >= 1", name="knowledge_suggestions_version_positive"),
-    )
-
-
 class ConversionJobModel(Base):
     """Document-to-runbook conversion job. `case_id` is nullable: most
-    conversions are case-less doc uploads; `convert-from-case` flow sets case_id."""
+    conversions are case-less doc uploads; the chat-triggered case conversion
+    (`ConversionService.convert_from_case`) sets case_id."""
 
     __tablename__ = "conversion_jobs"
 

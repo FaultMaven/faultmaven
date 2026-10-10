@@ -19,9 +19,8 @@ platform-operator action, not a tenant one:
 This is the single source of truth for that policy. It is enforced at EVERY
 point global content is authored:
 
-* the ``convert`` / ``runbooks/create`` / ``documents`` (upload) /
-  ``suggestions/{id}/approve`` routes, where the scope is a request field known
-  at the API layer (via :mod:`faultmaven.modules.knowledge.api.platform_tier`,
+* the ``convert`` / ``runbooks/create`` / ``documents`` (upload) routes, where
+  the scope is a request field known at the API layer (via :mod:`faultmaven.modules.knowledge.api.platform_tier`,
   which reuses :data:`GLOBAL_AUTHORING_MULTI_MSG` from here); and
 * the ``verify_draft`` / ``verify_batch`` / ``scan`` service methods, where a
   draft's scope is only known once the conversion-job row is loaded (or the

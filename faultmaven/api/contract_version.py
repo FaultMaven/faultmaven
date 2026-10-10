@@ -1896,4 +1896,32 @@ asked to accept, and it belongs to a person.
 # sizes its attempts from `turnResponseBoundSeconds`; copilot likewise replaces
 # its policy recovery bound with the published one. faultmaven-dashboard only
 # regenerates.
-API_CONTRACT_VERSION = "12.4.0"
+# 13.0.0 — MAJOR. The knowledge-suggestion subsystem is removed (#1897, owner
+# ruling 2026-10-09). Seven operations go:
+#
+# * `POST /api/v1/cases/{case_id}/extract-knowledge`;
+# * `GET /api/v1/knowledge/suggestions`,
+#   `GET`/`PUT /api/v1/knowledge/suggestions/{suggestion_id}`, and
+#   `POST /api/v1/knowledge/suggestions/{suggestion_id}/approve`, `/reject` and
+#   `/remediate-pii`.
+#
+# And one published property: `KnowledgeBaseDocument.source_suggestion_id`, the
+# lineage link from a knowledge item to the suggestion it came from. Nothing
+# ever wrote it.
+#
+# A case becomes a runbook through one writer, the conversion service
+# (`convert_from_case`, chat-triggered at resolution, into the owner's personal
+# drafts behind the CONFIRMED-cause gate). Extraction was a second writer from
+# an earlier design that targeted the GLOBAL tier through a platform-admin
+# review queue: it skipped the cause gate, and under multi-tenant its rows could
+# never be approved. Extraction was the queue's only writer, so the review
+# routes went with it. No promote action replaces them.
+#
+# MAJOR because operations are removed, which this file names as MAJOR
+# outright. The measured impact is nil: no first-party client calls any of the
+# seven — faultmaven-copilot, faultmaven-dashboard and faultmaven-slack-agent
+# reference them only in GENERATED types (the dashboard also carries an unused
+# hand-written `KnowledgeSuggestion` type). The system is pre-user, so there is
+# no deprecation window. Clients only regenerate; the dashboard drops its dead
+# type.
+API_CONTRACT_VERSION = "13.0.0"

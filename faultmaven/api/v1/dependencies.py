@@ -86,43 +86,6 @@ async def get_preprocessing_service(request: Request) -> PreprocessingService:
     return preprocessing_service
 
 
-#: Answered by every route that needs the suggestion store when the composition
-#: root did not produce one. Defined once so the case side and the knowledge side
-#: cannot drift into saying different things about the same missing service.
-SUGGESTION_SERVICE_UNAVAILABLE = "Knowledge suggestions unavailable"
-
-#: Answered when this organization's review queue is at its ceiling — the store
-#: refuses to add unreviewed work rather than deleting any (#1227; the #1214
-#: version of this evicted decided entries, which over a durable table would
-#: destroy the only case → runbook link there is). A STATIC string,
-#: deliberately: the module's own AST guard forbids interpolating a caught
-#: exception into any 5xx body, and this route's 503 is no exception to that
-#: rule just because the message happens to be ours.
-SUGGESTION_QUEUE_FULL = (
-    "The knowledge suggestion queue is full. Review or reject the pending "
-    "suggestions before extracting more."
-)
-
-
-async def get_suggestion_service(request: Request):
-    """Get the SuggestionService singleton from app.state (Composition Root).
-
-    Shared by the case-side extract route and the knowledge-side review routes.
-    Both used to do this lookup inline — the case route with a
-    ``request: Request = None`` guard and a hand-rolled 503 — which meant two
-    copies of the same policy and a route that could not be overridden in a test
-    the way every sibling can.
-
-    Absent means 503, never a substitute: fabricating a ``SuggestionService()``
-    here is the defect #1214 is about (an empty private store handed out as
-    though it worked).
-    """
-    service = getattr(request.app.state, "suggestion_service", None)
-    if service is None:
-        raise HTTPException(status_code=503, detail=SUGGESTION_SERVICE_UNAVAILABLE)
-    return service
-
-
 async def get_enhanced_agent_service(request: Request):
     """Get EnhancedAgentService instance from app.state (Composition Root)"""
     return request.app.state.enhanced_agent_service

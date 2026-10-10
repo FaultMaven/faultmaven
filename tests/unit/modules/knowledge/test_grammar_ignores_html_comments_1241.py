@@ -52,9 +52,6 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     _cause_fields,
     _iter_cause_blocks,
 )
-from faultmaven.modules.knowledge.domain.services.suggestion_service import (
-    SuggestionService,
-)
 
 pytestmark = pytest.mark.unit
 
@@ -206,14 +203,6 @@ class TestCommentedLabelIsNotTheRealField:
         RunbookValidator()._validate_cause_subfields(content, errors, [])
         for sub in ("Statement", "Indicators", "Interventions"):
             assert f"Cause A: **{sub}:** sub-field is empty" in errors
-
-    def test_the_shipped_fallback_skeleton_is_still_refused(self):
-        result = RunbookValidator().validate_content(
-            SuggestionService.fallback_template("case-1241")
-        )
-        assert not result.passed
-        for sub in ("Statement", "Indicators", "Interventions"):
-            assert f"Cause A: **{sub}:** sub-field is empty" in result.errors
 
 
 # =============================================================================

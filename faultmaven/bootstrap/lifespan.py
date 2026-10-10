@@ -133,22 +133,6 @@ async def lifespan(app: FastAPI):
             logger.info(
                 f"✅ Multi-worker configuration (WORKERS={workers}) with {storage_type} storage"
             )
-            # The knowledge-suggestion store used to be warned about here: it
-            # was an in-process dict on a per-worker singleton, so extract →
-            # approve broke INTERMITTENTLY — whichever worker took the approve
-            # request had never seen the suggestion and answered 404 (#1214).
-            #
-            # Nothing is logged about it now, and nothing should be. The store
-            # is the database-backed one (#1227): ``create_suggestion_service``
-            # picks it off ``persistent_database_configured``, and the
-            # persistent-database gate above has already refused to boot the
-            # API without one (fm#1647), so the API never holds the in-memory
-            # store that factory falls back to. The standing
-            # answer is on GET /admin/config/status as
-            # 'suggestion_store_worker_safe', which reads the composed
-            # repository rather than predicting it here — a startup log line
-            # has rolled out of `kubectl logs` long before anyone investigates
-            # an intermittent 404.
         else:
             logger.debug(f"Using single worker (WORKERS={workers})")
         logger.info("Configuration validated successfully")

@@ -98,8 +98,9 @@ def _case_routes() -> list[ServedRoute]:
     # router's auth would have read as absent.
     routes = iter_served_routes(app)
     # A floor, so a router that failed to mount cannot satisfy either test
-    # below by having nothing to inspect.
-    assert len(routes) > 30, f"only {len(routes)} case routes mounted"
+    # below by having nothing to inspect. 30 since #1897 removed
+    # ``POST /cases/{case_id}/extract-knowledge``.
+    assert len(routes) >= 30, f"only {len(routes)} case routes mounted"
     return routes
 
 

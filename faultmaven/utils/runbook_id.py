@@ -197,8 +197,7 @@ def runbook_filename(title: str | None, document_id: str | None) -> str:
     r"""Safe on-disk filename for a runbook, derived from its ``title``.
 
     ``title`` is caller-supplied — a form field on ``POST /knowledge/documents``
-    and, on the suggestion-approval path, an LLM-generated ``suggested_title`` —
-    so it is untrusted input that used to reach ``Path`` unfiltered. A title of
+    — so it is untrusted input that used to reach ``Path`` unfiltered. A title of
     ``../../../etc/pwned`` produced
     ``data/knowledge/global/../../../etc/pwned-75e6.md``, which resolves outside
     the knowledge tree, and the content was written there (#1213).

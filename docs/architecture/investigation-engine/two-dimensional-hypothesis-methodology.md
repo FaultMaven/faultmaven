@@ -1649,11 +1649,11 @@ into "verified" — and only a `CONFIRMED` root mints `VERIFIED` (floored at
 grade is re-minted (upgrade the turn confirmation arrives; correction of
 pre-cap persisted over-claims).
 
-`CONFIRMED` is the harvest bar, and both entry points refuse to seed an
-unconfirmed cause — the `POST /knowledge/convert-from-case` API rejects with
-422 before conversion, and the chat-side runbook **action** returns
-`NOT_READY` (no draft) when the cause is not confirmed (the suggestion is
-offered, but acting on it is gated). The full gate flow is in
+`CONFIRMED` is the harvest bar, and the one entry point refuses to seed an
+unconfirmed cause: the chat-side runbook **action** returns `NOT_READY` (no
+draft) when the cause is not confirmed (the suggestion is offered, but acting
+on it is gated). There is no case-conversion HTTP endpoint (the former
+`POST /knowledge/convert-from-case` was removed in Phase 5.1). The full gate flow is in
 [document-to-runbook-conversion.md §1.1](../knowledge-and-ai/document-to-runbook-conversion.md#11-soundness-gate-only-an-authority-grounded-cause-may-seed-the-kb-7).
 The three-way grade is deliberate: a single positive bar (`CONFIRMED`) makes the
 two held shapes (`MECHANISTIC`, `NO_ROOT`) distinguishable for the user-facing

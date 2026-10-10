@@ -715,40 +715,6 @@ def _debug_endpoints_are_mounted(app) -> bool:
         return False
 
 
-def _suggestion_store_is_durable(app) -> bool:
-    """Is the composed knowledge-suggestion store durable and worker-shared?
-
-    Asks the object that is actually running, not the settings. ``WORKERS`` was
-    the old proxy for this question, and it stopped being one the moment the
-    store could be a database: ``WORKERS=1`` on a dict-backed process is still
-    a process that loses every pending review on restart, and ``WORKERS=4`` on
-    a database-backed one is fine. What an operator needs to know is which
-    store this process holds.
-
-    ``False`` covers both bad answers — a non-durable store is composed, or no
-    suggestion service is composed at all and the routes answer 503. They have
-    the same consequence for scaling out, and the ``config_hint`` names both.
-    The first is unreachable in the API process that serves this: its boot
-    refuses a non-persistent database (fm#1647), the one configuration that
-    composes the in-memory store. Reported anyway, because this answers from
-    the running object.
-    """
-    service = getattr(getattr(app, "state", None), "suggestion_service", None)
-    repository = getattr(service, "_repository", None) if service else None
-    if repository is None:
-        return False
-    # The store STATES its own durability (``ISuggestionRepository.is_durable``)
-    # rather than being recognised by type. An ``isinstance`` check would be one
-    # more proxy of the same kind as ``WORKERS`` — true of a class, not of the
-    # deployment — and it would go stale the moment a third implementation
-    # appears or the database one is composed over an ephemeral URL. The
-    # composition root is what keeps the claim honest: it picks the in-memory
-    # repository (``is_durable == False``) only when
-    # ``persistent_database_configured`` says there is no database to write to,
-    # which the API's boot refuses (fm#1647).
-    return bool(getattr(repository, "is_durable", False))
-
-
 # ``FeatureStatus.enabled`` is documented as "Feature is active and usable", so
 # every predicate below answers about EFFECT, never about intent. A setting is
 # an instruction; whether the deployment carried it out is a different question,
@@ -1044,10 +1010,9 @@ async def get_env_config_status(
             # ENVIRONMENT is unset there and fell to the settings default
             # `development`.
             #
-            # `enabled` is worded so that True is the safe state, like
-            # `suggestion_store_worker_safe` above and unlike a field called
-            # "bypass headers": an operator scanning the report should not have
-            # to work out which way the boolean points.
+            # `enabled` is worded so that True is the safe state, unlike a
+            # field called "bypass headers": an operator scanning the report
+            # should not have to work out which way the boolean points.
             #
             # False with no limiter installed at all is deliberate, and it is
             # the same call `token_revocation_durable` makes for an absent
@@ -1153,44 +1118,9 @@ async def get_env_config_status(
                     "which prompts nobody)"
                 ),
             ),
-            # The knowledge-suggestion store, reported as the RUNTIME fact it
-            # is (#1227) rather than inferred from a setting. Reported here for
-            # the same reason as the consent skip above: the only other signal
-            # is a startup log line, and startup logs roll out of
-            # `kubectl logs` long before anyone investigates an intermittent
-            # 404.
-            #
-            # It reads False when the composed store is the in-memory double
-            # (#1214's shape — non-durable and per worker, so with WORKERS>1 or
-            # more than one pod an extract and its approve land on different
-            # processes and the approve 404s on an id the API just issued), and
-            # when no suggestion service was composed at all. The API's boot
-            # refuses a non-persistent DATABASE_URL (fm#1647), so in the process
-            # serving this False means the second case, and the hint says so.
-            # It reads True only
-            # when the process actually holds the database-backed store, which
-            # is the point: the field answers "is what is running right now safe
-            # to scale out", and a value derived from WORKERS could not tell
-            # a database-backed deployment from a dict-backed one.
-            "suggestion_store_worker_safe": FeatureStatus(
-                enabled=_suggestion_store_is_durable(request.app),
-                description=(
-                    "Knowledge suggestions are stored durably and shared across "
-                    "API workers and pods (extract → approve cannot land on a "
-                    "process that has never seen the suggestion, and a restart "
-                    "does not drop the review inbox)."
-                ),
-                config_hint=(
-                    "True when the process holds the database-backed suggestion "
-                    "store. False means no suggestion service was composed, so "
-                    "the suggestion routes answer 503. A non-persistent "
-                    "DATABASE_URL cannot be the cause: the API refuses to boot "
-                    "on one."
-                ),
-            ),
         }
 
-        # Reported HERE for the same reason as the two above: the failure is
+        # Reported HERE for the same reason as the consent skip above: the failure is
         # silent. A deployment whose LLM timeout is too large for its turn
         # timeout looks fine until a provider hangs, and then every turn spends
         # its whole budget and answers with an opaque 504. The running ladder

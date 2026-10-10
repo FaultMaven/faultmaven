@@ -406,7 +406,7 @@ Adding a new KB tier requires:
 **Global-authoring enforcement (single source of truth):** every path that authors global-scope content applies one policy —
 `modules/knowledge/domain/global_authoring.py` (`ensure_global_authoring_allowed` / `is_global_authoring_allowed`), reused at the API layer by `modules/knowledge/api/platform_tier.py`. It refuses any tenant session under `TENANT_PROVIDER=multi` (org admins included — global content ships only via the audited `kb_seed` maintenance job, #770) and requires the `admin` role single-tenant. Enforcement points:
 
-- **Creation routes** (`convert`, `runbooks/create`, `documents` upload, `suggestions/{id}/approve`) — the scope is a request field, gated at the route (403).
+- **Creation routes** (`convert`, `runbooks/create`, `documents` upload) — the scope is a request field, gated at the route (403).
 - **Publish / mint** (`verify_draft`, `verify-batch`, `scan`) — the scope is only known after the conversion-job row or on-disk file is inspected, so the gate lives in the service: `verify_draft` refuses to publish a `global` draft (`AuthorizationError` → 403), and `scan` skips global-inferred files a caller may not author while still discovering personal/team ones. This closes the pre-#770 hole where a non-admin could verify a system-owned global draft or mint a global draft via scan.
 
 ### Ingestion Pipeline
@@ -639,93 +639,24 @@ have been removed; live retrieval goes through `search_knowledge()` /
 `search_documents()` (scope-enforcing) and the agent's `answer_from_kb` tool
 (`hybrid_search`). See [vector-retrieval-architecture.md](./vector-retrieval-architecture.md).
 
----
+### Knowledge Suggestions — Removed (#1897)
 
-## Knowledge Suggestions (Case → KB Review Workflow)
+A case becomes a runbook through one writer: `ConversionService.convert_from_case`,
+triggered from chat at resolution behind the CONFIRMED-cause gate, writing a
+draft into the case owner's **personal** scope
+([document-to-runbook-conversion.md](./document-to-runbook-conversion.md)).
 
-Separate from the document-to-runbook *conversion* pipeline, the **suggestion**
-subsystem captures free-form knowledge extracted from a resolved case and routes
-it through human review before it becomes a `KnowledgeItem`. It is a
-human-in-the-loop (HITL) queue with a mandatory PII gate.
-
-**Wiring.** `SuggestionService` is a process singleton composed in the
-composition root (`create_suggestion_service` → `container.get_suggestion_service()`
-→ `app.state.suggestion_service`), holding the real `KnowledgeService` it
-publishes through. Both read sites — the case-side extract route and the
-knowledge-side review routes — resolve it from `app.state` and answer **503**
-when the slot is empty; neither constructs its own. That mattered: the slot was
-read in two places and written in none (#1214), so every request built a
-throwaway service with a private empty store, and a suggestion created by the
-extract request could not be found by the approve request (404).
-
-**Model** (`modules/knowledge/domain/models/suggestion.py`): a
-`KnowledgeSuggestion` carries the suggested
-title/content/type, extraction lineage (source case, who/when, message +
-evidence counts), review metadata, and a bidirectional `knowledge_item_id` link
-set on approval. Two enums drive it:
-
-- `SuggestionStatus`: `PENDING_REVIEW → APPROVED` (creates a `KnowledgeItem`) /
-  `REJECTED` (archived) / `DRAFT` (needs more work).
-- `PIIScanStatus`: `NOT_SCANNED → SCANNING → CLEAN | PII_DETECTED → REMEDIATED`
-  (or `SCAN_FAILED`). A suggestion `is_ready_for_review()` only when the scan is
-  `CLEAN` or `REMEDIATED`.
-
-**PII gate (HITL invariant).** `approve()` raises `ConflictError`
-(`conflict_reason="not_ready_for_review"` → HTTP 409) unless the PII scan is
-clean/remediated; `mark_pii_remediated()` raises 409
-(`conflict_reason="no_pii_detected"`) if there is nothing to remediate. Editing
-content (`update_content`) resets the scan to `NOT_SCANNED` — any edit re-arms
-the gate.
-
-**Quality gate (corpus invariant).** Everything approval publishes becomes a
-`KnowledgeItemType.RUNBOOK`, so approval enforces the same structural standard
-as a runbook upload: `enforce_runbook_quality` runs inside
-`KnowledgeService.upload_document` — the choke point both publish paths share —
-and a draft that fails it is refused with **422**, publishing nothing (the gate
-precedes the first side effect). The gate used to live only at the
-`POST /knowledge/documents` route, which the approval path bypassed. LLM-extracted
-markdown is not publishable as-is: the extraction prompt produces
-`## Problem / ## Root Cause / ## Solution / ## Prevention`, which carries no
-frontmatter and none of the six required sections, so the reviewer edits it into
-a valid runbook (`PUT`) before approving.
-
-**Compensation.** If the link cannot be recorded after a successful publish,
-`KnowledgeService.rollback_uploaded_document` removes **everything
-`upload_document` wrote**: the `knowledge_items` row, its team shares and its
-ChromaDB chunks, *and* the `conversion_drafts` / `conversion_jobs` /
-`uploaded_files` rows and the runbook markdown on disk. Deleting only the
-knowledge item is not enough and was measured leaving a permanent artifact — a
-`status="verified"` draft row pointing at a deleted id, which
-`scan_for_runbooks` then SKIPS (its `file_path` is in `tracked_paths`), so the
-orphaned file is never re-discovered while the row stays visible in
-`GET /knowledge/drafts` and counted by `get_document_statistics`. Each step is
-independent and best-effort; the rollback returns the residue it could not
-remove and the caller logs it by id, naming which store kept what (a failed row
-delete and a failed vector delete leave opposite residue, so the message is
-derived from a probe rather than assumed).
-
-⚠️ **The suggestion store is in-memory**, not the `knowledge_suggestions` table
-(which exists, with an ORM model and no repository behind it). Pending
-suggestions do not survive a restart, and with `WORKERS > 1` or more than one pod
-an extract handled by one worker is invisible to an approve handled by another —
-reported as `suggestion_store_worker_safe` on `GET /admin/config/status`, and
-warned about at startup, because a startup log alone rolls out of `kubectl logs`
-long before anyone investigates an intermittent 404. Because the store is
-process-lifetime-scoped it is also **bounded** (`MAX_STORED_SUGGESTIONS`,
-default 500): at capacity it evicts the oldest *terminal* (approved/rejected)
-entries, and if every entry is still awaiting review, extraction refuses with
-503 rather than silently destroying unreviewed work. The durable,
-worker-shared replacement is #1227.
-
-**Flow & endpoints.** Extraction is initiated from the case side
-(`POST /cases/{case_id}/extract-knowledge` → `SuggestionService.extract_knowledge_from_case`),
-producing a `PENDING_REVIEW` suggestion. Review happens over the knowledge
-routes: `GET /knowledge/suggestions` (list), `GET /knowledge/suggestions/{id}`,
-`PUT /knowledge/suggestions/{id}` (edit — resets PII scan),
-`POST /knowledge/suggestions/{id}/approve` (201; creates the `KnowledgeItem` and
-links it — 422 when the content fails the quality gate, 409 on a second
-approval), `POST /knowledge/suggestions/{id}/reject`, and
-`POST /knowledge/suggestions/{id}/remediate-pii`.
+An earlier second writer — the knowledge-suggestion subsystem
+(`POST /cases/{case_id}/extract-knowledge`, the six `/knowledge/suggestions`
+review routes, and the `knowledge_suggestions` table) — extracted a runbook from
+raw case text into a platform-admin review queue whose approval published at
+**global** scope. It skipped the cause gate, could never publish under
+`TENANT_PROVIDER=multi` (approval is refused there), and had no first-party
+client. It was removed whole, with no replacement (owner ruling 2026-10-09;
+contract 13.0.0; migration `011_remove_knowledge_suggestions`, which also drops
+the never-written `knowledge_items.source_suggestion_id`). Nothing promotes a
+case-generated runbook to the global tier: global content ships through the KB
+pack and the platform-admin authoring routes above.
 
 ---
 

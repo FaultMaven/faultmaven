@@ -1,17 +1,13 @@
-"""How a runbook is authored from a case: the policy both case writers share (#1880).
+"""How a runbook is authored from a case: the case-conversion policy (#1880).
 
-A case is an incident record and a runbook is reusable knowledge. Two paths turn
-one into the other — ``ConversionService.convert_from_case`` (chat-triggered,
-into the owner's personal or team drafts) and
-``SuggestionService.extract_knowledge_from_case`` (``POST
-/cases/{id}/extract-knowledge``, into the global review inbox) — and both hand
-the model material that names the incident: the case title, the statement, the
-evidence. This module is the one statement of what the model is told to do with
-it, and of how the runbook id is minted from what the model wrote. Both paths
-render these constants and call these functions, so the rules cannot drift
-apart the way they did when the extraction path alone carried them.
+A case is an incident record and a runbook is reusable knowledge.
+``ConversionService.convert_from_case`` (chat-triggered, into the owner's
+personal or team drafts) turns one into the other, and it hands the model
+material that names the incident: the case title, the statement, the evidence.
+This module is the one statement of what the model is told to do with it, and
+of how the runbook id is minted from what the model wrote.
 
-Three rules, rendered verbatim into each path's prompt:
+Three rules, rendered verbatim into the prompt:
 
 * :data:`CASE_ID_RULE` — the id comes from the title the model writes, never
   from the case title;
@@ -138,8 +134,9 @@ def mint_case_runbook_id(content: str, case_id: str) -> str:
     ``(service, title)`` mint the document path uses — and deliberately NOT from
     the case title.
 
-    That distinction was measured, not reasoned about. The extraction path's
-    first cut minted from the case title, and the eval's deliberately-noisy
+    That distinction was measured, not reasoned about. An earlier case→runbook
+    writer (the knowledge-suggestion extraction, removed in #1897) first minted
+    from the case title, and the eval's deliberately-noisy
     fixture ("INC-48213: prod-web-07 returning 502 for customer Contoso from
     2026-03-14 02:11 UTC") produced a body the model had de-identified perfectly
     and a frontmatter line reading

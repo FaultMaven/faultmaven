@@ -6,10 +6,11 @@ case→runbook path (``convert_from_case``) used to take its ``service`` from
 runbook carries and nothing wrote, so every case runbook said
 ``service: unknown`` — and to pre-compute its id and its draft title from the
 case title, which carried the incident into both
-(``unknown-checkout-500s-after-deploy``). The sibling extraction path already
-had the policy that prevents both: the model writes a de-identified title and
-infers the technology, and the id is minted from the frontmatter it produced.
-Both paths now render that policy from ``case_authoring`` and mint through it.
+(``unknown-checkout-500s-after-deploy``). The policy that prevents both — the
+model writes a de-identified title and infers the technology, and the id is
+minted from the frontmatter it produced — came from the knowledge-suggestion
+extraction path (removed in #1897). Conversion renders it from
+``case_authoring`` and mints through it.
 
 Pinned here, with the knowledge model stubbed (no live LLM call):
 
@@ -22,17 +23,11 @@ Pinned here, with the knowledge model stubbed (no live LLM call):
    verbatim.
 3. **The id and the draft's title come from the produced frontmatter**, through
    the shared mint, so a noisy case title reaches neither.
-4. **The extraction prompt is pinned byte for byte** to a golden render of
-   the shared rules. Moving them into ``case_authoring`` changed nothing the
-   model reads; the one deliberate change since is the internal-service-name
-   line #1900's review added to ``DE_IDENTIFICATION_RULES``, and the fixture
-   moved with it.
-5. **One predicate says what a title is.** The rule-8 placeholder and a
+4. **One predicate says what a title is.** The rule-8 placeholder and a
    punctuation-only title are no title, for the mint and for the draft's name
-   alike, on both paths.
+   alike.
 """
 
-import string
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -58,15 +53,8 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
-from faultmaven.modules.knowledge.domain.services.suggestion_service import (
-    SuggestionService,
-)
-from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
-    InMemorySuggestionRepository,
-)
 from faultmaven.utils.runbook_id import draft_filename
 from tests.runbook_samples import valid_runbook
-from tests.utils import case_repository_holding
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
@@ -76,13 +64,6 @@ NOISY_TITLE = "INC-48213 prod-web-07 checkout 500s"
 #: technology in ``service`` (``valid_runbook`` carries ``postgresql``).
 PRODUCED_TITLE = "PostgreSQL Connection Pool Exhaustion"
 LEAKS = ("inc-48213", "prod-web-07", "checkout", "unknown")
-
-GOLDEN = (
-    Path(__file__).parent
-    / "fixtures"
-    / "extraction_prompt"
-    / "rendered_with_case_authoring_rules.txt"
-)
 
 #: The line #1900's review added to ``DE_IDENTIFICATION_RULES``: the user's
 #: own service ("checkout") is an incident identifier, not a product name.
@@ -241,28 +222,7 @@ async def test_a_draft_with_no_title_falls_back_to_the_case_stem(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 4. The extraction prompt did not move under the constant move
-# ---------------------------------------------------------------------------
-
-
-def _sentinel_render(template: str) -> str:
-    fields = {f for _, f, _, _ in string.Formatter().parse(template) if f}
-    return template.format(**{f: f"<{f}>" for f in fields})
-
-
-def test_the_extraction_prompt_renders_byte_identically_to_its_golden():
-    assert _sentinel_render(SuggestionService.EXTRACTION_PROMPT) == GOLDEN.read_text(
-        encoding="utf-8"
-    )
-
-
-def test_the_extraction_prompt_renders_the_shared_rules():
-    for rule in (CASE_ID_RULE, TECHNOLOGY_RULE, DE_IDENTIFICATION_RULES):
-        assert rule in SuggestionService.EXTRACTION_PROMPT
-
-
-# ---------------------------------------------------------------------------
-# 5. One "usable title" predicate, both helpers, both paths
+# 4. One "usable title" predicate, both helpers
 # ---------------------------------------------------------------------------
 
 
@@ -286,38 +246,6 @@ async def test_the_case_path_names_such_a_draft_by_the_case_stem(tmp_path, raw_t
     assert draft.runbook_id == case_stem_runbook_id(CASE_ID)
     assert draft.title == draft.runbook_id
     assert f"\nid: {draft.runbook_id}\n" in draft.content
-
-
-class _SameBodyProvider:
-    """Returns one body on every call: the extraction loop retries a draft the
-    gate refuses, and a ``!!!`` title is short enough to be refused."""
-
-    def __init__(self, body: str):
-        self.body = body
-
-    async def generate(self, *, prompt: str, **kwargs) -> SimpleNamespace:
-        return SimpleNamespace(content=self.body, is_truncated=False)
-
-
-@pytest.mark.parametrize("raw_title", NOT_A_TITLE.values(), ids=NOT_A_TITLE.keys())
-async def test_the_extraction_path_mints_such_a_draft_by_the_case_stem(raw_title):
-    service = SuggestionService(
-        case_repository=case_repository_holding(
-            CASE_ID, enterprise_id="ent_1880", title=NOISY_TITLE
-        ),
-        knowledge_service=MagicMock(),
-        sanitizer=None,
-        llm_provider=_SameBodyProvider(_titled(raw_title)),
-        suggestion_repository=InMemorySuggestionRepository(),
-    )
-    suggestion = await service.extract_knowledge_from_case(
-        case_id=CASE_ID, enterprise_id="ent_1880", extracted_by="u_1880"
-    )
-
-    assert f"\nid: {case_stem_runbook_id(CASE_ID)}\n" in suggestion.suggested_content
-    # The draft's "title" was not taken as its name either.
-    assert "!!!" not in suggestion.suggested_title
-    assert "INSUFFICIENT" not in suggestion.suggested_title
 
 
 # ---------------------------------------------------------------------------

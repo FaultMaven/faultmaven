@@ -3,10 +3,9 @@
 The single-case gate has two halves and one flag: ``CaseService.get_case``
 resolves through ``owner ∪ shared-to-my-teams`` by default and through ownership
 alone under ``owner_only=True``. Every route that WRITES owes the second half,
-and three of them were still asking for the first: the report regeneration
-endpoint (which flips ``is_current`` on the owner's reports), the
-knowledge-extraction endpoint (which mints a suggestion attributed to the case)
-and the delete endpoint (which threw away the service's refusal and answered 204).
+and two of them were still asking for the first: the report regeneration
+endpoint (which flips ``is_current`` on the owner's reports) and the delete
+endpoint (which threw away the service's refusal and answered 204).
 
 Inside one enterprise there is nothing else standing between a teammate and the
 owner: RLS admits both rows, so the flag is the whole of the boundary. These
@@ -21,7 +20,6 @@ import pytest
 from fastapi import HTTPException
 
 from faultmaven.modules.case.api.routes.cases import delete_case
-from faultmaven.modules.case.api.routes.knowledge import extract_knowledge_from_case
 from faultmaven.modules.case.api.routes.reports import generate_case_reports
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
@@ -104,31 +102,6 @@ async def test_report_regeneration_still_serves_the_owner():
     )
 
     assert result == {"reports": []}
-
-
-# ---------------------------------------------------------------------------
-# POST /cases/{case_id}/extract-knowledge — mints a suggestion from the owner's
-# transcript and evidence.
-# ---------------------------------------------------------------------------
-
-
-async def test_knowledge_extraction_refuses_a_teammate_with_a_read_share():
-    case_service = _case_service_that_refuses_non_owners()
-    suggestion_service = MagicMock()
-    suggestion_service.extract_knowledge_from_case = AsyncMock()
-
-    with pytest.raises(HTTPException) as exc:
-        await extract_knowledge_from_case(
-            case_id=CASE_ID,
-            request_body=None,
-            case_service=case_service,
-            suggestion_service=suggestion_service,
-            current_user=_user(TEAMMATE),
-        )
-
-    assert exc.value.status_code == 404
-    assert case_service.get_case.await_args.kwargs.get("owner_only") is True
-    suggestion_service.extract_knowledge_from_case.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

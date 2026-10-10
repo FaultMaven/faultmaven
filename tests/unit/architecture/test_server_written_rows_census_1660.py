@@ -4,9 +4,10 @@ accounted for (#1660, #1666).
 #1451's rule — no row the server wrote is rendered to a model as something a
 party SAID — lives at each place that puts those rows in front of a model. PR
 #1658 enforced it on the five surfaces the ruling named. Two more had no check
-(the out-of-band triage prompt and the runbook-extraction prompt), and they
-were found by reading, not by anything that would have failed. This is the
-scan that found them, shipped so a seventh cannot arrive silently.
+(the out-of-band triage prompt and the runbook-extraction prompt, since removed
+with the knowledge-suggestion subsystem, #1897), and they were found by
+reading, not by anything that would have failed. This is the scan that found
+them, shipped so another cannot arrive silently.
 
 The unit is a READ SITE: a function that takes rows out of a case
 (``case.messages``, ``get_messages``) or a summary out of a turn record
@@ -134,11 +135,6 @@ PROMPT_READERS: dict[tuple[str, str], tuple[int, dict[str, frozenset[str]]]] = {
         1,
         {"last_investigation_message": frozenset({_ASSISTANT})},
     ),
-    # The runbook-extraction prompt.
-    (
-        "faultmaven/modules/knowledge/domain/services/suggestion_service.py",
-        "SuggestionService.extract_knowledge_from_case",
-    ): (1, {"_extraction_transcript": _BOTH}),
 }
 
 _PERSISTENCE = "persistence: stores or loads the rows, renders nothing"

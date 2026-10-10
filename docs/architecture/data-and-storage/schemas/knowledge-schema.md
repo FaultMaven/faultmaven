@@ -1,6 +1,6 @@
 # Knowledge Base Storage Schema
 
-**Last Updated**: 2026-04-19
+**Last Updated**: 2026-10-09
 
 This document covers FaultMaven's two knowledge storage systems: the unified Knowledge Base (all scopes) and Case Working Memory.
 
@@ -8,7 +8,7 @@ This document covers FaultMaven's two knowledge storage systems: the unified Kno
 
 > **Read this before interpreting any DDL in this document.**
 
-The relational tables in this document (`knowledge_items`, `knowledge_suggestions`, `conversion_jobs`, `conversion_drafts`) are **Tier 1 (logical schema)** — both SQLite (Local Deployment) and PostgreSQL (Cloud Deployment) implement all columns listed. The following are **Tier 2 (PostgreSQL-only)** augmentations:
+The relational tables in this document (`knowledge_items`, `conversion_jobs`, `conversion_drafts`) are **Tier 1 (logical schema)** — both SQLite (Local Deployment) and PostgreSQL (Cloud Deployment) implement all columns listed. The following are **Tier 2 (PostgreSQL-only)** augmentations:
 
 - `CHECK` constraints on `verification_level` (0–2 range) exist in the live ORM and apply to both dialects for simple integer range checks. The `embedding_vector` column type switch from `TEXT` to `vector(1024)` (pgvector) is Tier 2 (PostgreSQL-only).
 - `config_overrides` — table exists in both schemas but is only populated in Cloud Deployment (`AUTH_MODE` environment, dashboard-managed config). Local Deployment reads from `.env` exclusively. See the per-table applicability matrix in [deployment-schema-strategy.md §2](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
@@ -346,7 +346,7 @@ The `source_type` field distinguishes the two conversion pipelines:
 | Value | Source | Entry Point | Notes |
 | --- | --- | --- | --- |
 | `document` | Uploaded file (PDF, DOCX, MD, etc.) | `POST /knowledge/convert` | Default. Multi-failure-mode analysis. |
-| `case` | Resolved investigation case | `POST /knowledge/convert-from-case` | Single failure mode from case data. `case_id` populated. |
+| `case` | Resolved investigation case | Chat-triggered at resolution (`ConversionService.convert_from_case`; no HTTP endpoint) | Single failure mode from case data, into the owner's personal KB. `case_id` populated. |
 
 Both produce drafts with the canonical runbook template and enter the same review workflow (edit → verify → ingest).
 
@@ -368,13 +368,13 @@ The `VectorMetadata.to_chroma_metadata()` method handles this conversion. The `K
 
 ## 5. Relational Knowledge Tables
 
-The ChromaDB vector store holds chunk embeddings for fast semantic search. The relational tables below hold the authoritative record of each knowledge item and its provenance, and support the human-in-the-loop (HITL) review pipeline.
+The ChromaDB vector store holds chunk embeddings for fast semantic search. The relational table below holds the authoritative record of each knowledge item and its provenance.
 
 ### 5.1 knowledge_items
 
 **Purpose**: The relational KB entry — one row per published or draft knowledge item. Stores full content, verification state, usage counters, and a stub for future pgvector embeddings. This table is the source of truth for item lifecycle; ChromaDB holds the chunked embeddings derived from `content`.
 
-**When written**: Populated three ways, all landing here as the source of truth for the published inventory: (1) the startup KB **bootstrap**, which ingests built-in runbook files directly (`verified_by=NULL`, `verification_level=COMMUNITY`, deterministic `kb_<12 hex>` id); (2) the conversion pipeline (`conversion_drafts` → `verify_draft` → `knowledge_items`, random-UUID id); (3) direct admin/API ingestion. The dashboard inventory surface (`list_documents` / `get_document` / `delete_document`) reads this table — **not** `conversion_drafts`. The `knowledge_item_id` FK on `conversion_drafts` and `knowledge_suggestions` links forward to the promoted item.
+**When written**: Populated three ways, all landing here as the source of truth for the published inventory: (1) the startup KB **bootstrap**, which ingests built-in runbook files directly (`verified_by=NULL`, `verification_level=COMMUNITY`, deterministic `kb_<12 hex>` id); (2) the conversion pipeline (`conversion_drafts` → `verify_draft` → `knowledge_items`, random-UUID id); (3) direct admin/API ingestion. The dashboard inventory surface (`list_documents` / `get_document` / `delete_document`) reads this table — **not** `conversion_drafts`. The `knowledge_item_id` FK on `conversion_drafts` links forward to the promoted item.
 
 > **`verified_by` contract**: FK to `users.user_id` — a real user or `NULL`, **never a sentinel string**. Platform/built-in trust is carried by `verification_level` (COMMUNITY), not a fake verifier.
 
@@ -402,7 +402,6 @@ The ChromaDB vector store holds chunk embeddings for fast semantic search. The r
 | `verification_reason` | VARCHAR(512) nullable | |
 | `verified_by` | VARCHAR(36) nullable | Width updated in storage redesign 2026-04 Phase 4 (FK width normalization to VARCHAR(36)) |
 | `verified_at` | TIMESTAMPTZ nullable | |
-| `source_suggestion_id` | VARCHAR(36) nullable | FK (logical) to `knowledge_suggestions.suggestion_id`. Width updated in storage redesign 2026-04 Phase 4 |
 | `view_count` | INTEGER | Usage counter; CHECK >= 0 |
 | `helpful_count` | INTEGER | Feedback counter; CHECK >= 0 |
 | `not_helpful_count` | INTEGER | Feedback counter; CHECK >= 0 |
@@ -412,47 +411,7 @@ The ChromaDB vector store holds chunk embeddings for fast semantic search. The r
 
 **Applicability**: Both deployments (✅ Both). Cross-reference the unified ChromaDB `faultmaven_kb` collection — chunk embeddings in ChromaDB are derived from `knowledge_items.content`; the `item_id` is stored in ChromaDB chunk metadata as the source document reference.
 
-### 5.2 knowledge_suggestions
-
-**Purpose**: HITL (human-in-the-loop) review pipeline for candidate runbooks extracted from resolved cases. A suggestion moves through PII scanning, human review, and then promotion to a published `knowledge_items` row (or rejection).
-
-**When written**: Created by the conversion service when a case is converted to a runbook draft. Also created by any pathway that surfaces a "candidate KB entry" for admin review.
-
-**PII scanning lifecycle**: `pii_scan_status` moves through `not_scanned` → `scanning` → `clean` (or `pii_detected` → `remediated` or `scan_failed`). Only `clean` or `remediated` suggestions may be reviewed by a human.
-
-**Key columns** (see `models.py:1801`, 26 columns total):
-
-| Column | Type | Notes |
-| --- | --- | --- |
-| `suggestion_id` | VARCHAR(36) PK | Width updated in storage redesign 2026-04 Phase 4 (FK width normalization to VARCHAR(36)) |
-| `enterprise_id` | VARCHAR(36) NOT NULL | The isolation tenant (ADR-017 D1); FK to `enterprises`, `ON DELETE CASCADE` |
-| `organization_id` | VARCHAR(36) nullable | Billing attribution, never a visibility predicate; FK `ON DELETE SET NULL`. Width updated in storage redesign 2026-04 Phase 4 (FK width normalization to VARCHAR(36)) |
-| `case_id` | VARCHAR(36) | Source case (logical FK — no DB constraint). Width updated in storage redesign 2026-04 Phase 4 |
-| `status` | VARCHAR(32) | `pending_review\|approved\|rejected\|draft` |
-| `suggested_title` | VARCHAR(512) NOT NULL | |
-| `suggested_content` | TEXT NOT NULL | |
-| `suggested_type` | VARCHAR(64) | Default `troubleshooting_guide` |
-| `extracted_by` | VARCHAR(36) | User or system that triggered extraction. Width updated in storage redesign 2026-04 Phase 4 |
-| `extracted_at` | TIMESTAMPTZ | |
-| `include_messages` | BOOLEAN | Whether case messages were included in extraction |
-| `include_evidence` | BOOLEAN | Whether evidence was included |
-| `pii_scan_status` | VARCHAR(32) | `not_scanned\|scanning\|clean\|pii_detected\|remediated\|scan_failed` |
-| `pii_scan_result` | TEXT (JSON) nullable | Raw scan output |
-| `pii_remediated_by` | VARCHAR(36) nullable | Width updated in storage redesign 2026-04 Phase 4 |
-| `pii_remediated_at` | TIMESTAMPTZ nullable | |
-| `source_case_title` | VARCHAR(512) nullable | Denormalized for display in review inbox |
-| `message_count` | INTEGER | Lineage counter; CHECK >= 0 |
-| `evidence_count` | INTEGER | Lineage counter; CHECK >= 0 |
-| `reviewed_by` | VARCHAR(36) nullable | Width updated in storage redesign 2026-04 Phase 4 |
-| `reviewed_at` | TIMESTAMPTZ nullable | |
-| `review_notes` | TEXT nullable | |
-| `rejection_reason` | TEXT nullable | |
-| `knowledge_item_id` | VARCHAR(36) nullable | Set when suggestion is promoted to a published item. Width updated in storage redesign 2026-04 Phase 4 |
-| `metadata` | TEXT (JSON) | Stored as `suggestion_metadata` Python attribute |
-
-**Applicability**: Both deployments (✅ Both). The conversion service runs in both Local and Cloud deployments.
-
-### 5.3 config_overrides (Config Domain — Cloud-only behavior)
+### 5.2 config_overrides (Config Domain — Cloud-only behavior)
 
 `config_overrides` (ORM `ConfigOverrideModel`, `__tablename__ = "config_overrides"`) is a Config-domain table (not Knowledge domain) included here for cross-reference completeness. It stores dashboard-applied key/value LLM configuration overrides that take precedence over environment variables.
 
@@ -474,6 +433,7 @@ The ChromaDB vector store holds chunk embeddings for fast semantic search. The r
 
 | Version | Date | Changes |
 | --- | --- | --- |
+| 1.4 | 2026-10-09 | Removed `knowledge_suggestions` (§5.2) and `knowledge_items.source_suggestion_id`: the knowledge-suggestion subsystem was removed whole (#1897, migration `011_remove_knowledge_suggestions`). `config_overrides` is now §5.2. |
 | 1.3 | 2026-04-19 | Audit fix (storage redesign Phase 9): normalized entity-ID column widths from VARCHAR(64) to VARCHAR(36) throughout §5.1 (`knowledge_items`: item\_id, organization\_id, verified\_by, source\_suggestion\_id) and §5.2 (`knowledge_suggestions`: suggestion\_id, organization\_id, case\_id, extracted\_by, pii\_remediated\_by, reviewed\_by, knowledge\_item\_id). Reflects Phase 4 FK width normalization. Non-entity VARCHAR(64) columns (item\_type, suggested\_type) are unchanged. |
 | 1.2 | 2026-04-19 | Aligned with deployment-schema-strategy.md v2.1 (no functional changes to knowledge domain). Consistency check pass: updated all deployment-schema-strategy.md links to GitHub URL format. Confirmed `knowledge_items.embedding_vector` TEXT stub (Tier 1) / `vector(1024)` (Tier 2 PG pgvector) — correct and unchanged. Confirmed `llm_config_overrides` as infrastructure layer (not knowledge domain) per strategy doc §11.3 — unchanged. |
 | 1.1 | 2026-04-18 | Aligned with deployment-schema-strategy.md v1.0. Added Deployment Applicability banner clarifying Tier 1/2 policy, scope-isolation enforcement location (KnowledgeVectorStore wrapper, not ChromaDBVectorStore base), and llm\_config\_overrides Cloud-only behavior. Corrected §1.1 scope-isolation description. Corrected §2.2 ephemeral storage — TTL/scheduled-cleanup is aspirational, not implemented; reactive orphan sweep is the live behavior. Added §4.2 undocumented conversion\_drafts columns (domain, service, severity, tags, document\_type). Added §5 with full narratives for knowledge\_items (29 cols, verification lifecycle, embedding\_vector pgvector stub) and knowledge\_suggestions (26 cols, 6-value pii\_scan\_status HITL pipeline). Added §5.3 llm\_config\_overrides cross-reference. |

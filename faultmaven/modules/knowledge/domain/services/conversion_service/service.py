@@ -300,11 +300,7 @@ class ConversionService:
             },
         )
 
-        # An uploaded document has no case: its text is redacted at the model
-        # boundary under this conversion's id, by the same rule as a case's.
-        preprocessing = await self._preprocessor.preprocess(
-            file_path, content_type, scope_id=conversion_id
-        )
+        preprocessing = await self._preprocessor.preprocess(file_path, content_type)
 
         if preprocessing.is_rejected:
             raise ConversionRejectedError(
@@ -328,7 +324,7 @@ class ConversionService:
             self._settings,
             preprocessing.extracted_text,
             original_filename,
-            model_boundary_redaction(conversion_id, self._sanitizer),
+            model_boundary_redaction(self._sanitizer),
         )
 
         if not analysis.is_actionable or len(analysis.failure_modes) == 0:
@@ -897,17 +893,14 @@ class ConversionService:
         )
 
         # Redacted at the model boundary, under the investigation path's rule
-        # (#1901): a case's text keyed on its case id, a document's on this
-        # conversion's. Here, outside the send step's ``try`` and its retry
+        # (#1901). Here, outside the send step's ``try`` and its retry
         # closure, so the truncation retry resends the redacted messages and a
         # ``RedactionUnavailableError`` keeps its class — the broad ``except``
         # there would launder it into one failure mode's ``ConversionError``.
         # The output is never reversed: the runbook is meant to be
         # de-identified, so the placeholders the model writes are what is
-        # persisted, as on the extraction path.
-        messages = await model_boundary_redaction(
-            case_id if case_id is not None else conversion_id, self._sanitizer
-        ).asanitize_messages(
+        # persisted.
+        messages = await model_boundary_redaction(self._sanitizer).asanitize_messages(
             [
                 {"role": "system", "content": CONVERSION_SYSTEM_PROMPT},
                 {"role": "user", "content": user_message},
@@ -1015,7 +1008,7 @@ class ConversionService:
 
             if case_id is not None:
                 # The case path's id, minted now from the frontmatter the model
-                # wrote — the extraction path's mint, shared (#1880) — and
+                # wrote (``case_authoring.mint_case_runbook_id``, #1880) — and
                 # claimed here, BEFORE the write, for the reason on
                 # ``refuse_if_draft_slot_taken`` below: a slot another case
                 # holds gets this case's stem appended. Everything below keys
