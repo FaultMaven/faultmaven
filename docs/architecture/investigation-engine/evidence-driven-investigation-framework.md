@@ -752,7 +752,7 @@ RESOLVED case
 **Readiness + Deduplication** (`evaluate_runbook_suggestion()` in `terminal_transitions.py`):
 
 1. **Content readiness** (`assess_runbook_readiness`) — Maps case data to the 7 canonical runbook sections. Requires problem definition + root cause with actionable fix (commands/steps). Returns READY, NEEDS_ENRICHMENT, or NOT_SUITABLE.
-2. **No similar runbook exists** — Vector search in ChromaDB via `RunbookKnowledgeBase`, scoped to the case's audience (`case_retrieval_scope`, #1919). A ≥70% best-chunk match → `SIMILAR_FOUND`: stop, name the runbook and score (overlap, not coverage), create only on explicit "generate anyway" confirmation; <70% → no conflict. See [runbook-dedup.md](../knowledge-and-ai/runbook-dedup.md).
+2. **No similar runbook exists** — Vector search in ChromaDB via `RunbookKnowledgeBase`, scoped to the case owner's KB read scope. A ≥70% best-chunk match → `SIMILAR_FOUND`: stop, name the runbook and score (overlap, not coverage), create only on explicit "generate anyway" confirmation; <70% → no conflict. See [runbook-dedup.md](../knowledge-and-ai/runbook-dedup.md).
 
 **Auto-summary generation**: Terminal cases with investigation substance (evidence / hypotheses / completed milestones) get an auto-generated summary (`RESOLUTION_SUMMARY` or `CLOSURE_SUMMARY`), synthesized synchronously on terminal transition and rendered inline in the closure-turn chat reply. See [Investigation Lifecycle Logic §4.5.0](./investigation-lifecycle-logic.md#450-auto-generated-terminal-summary) for the canonical spec (content-focus table, substance gate, regen rules).
 

@@ -1,9 +1,10 @@
 """
 Unified Knowledge Base Q&A Tool
 
-Single tool that searches every KB scope the case may draw on: global
-runbooks, plus the personal and team runbooks the case's audience may read
-(``case_retrieval_scope``, #1919).
+Single tool that searches the case driver's knowledge: global runbooks, the
+driver's personal runbooks and the runbooks shared to the driver's teams
+(``case_retrieval_scope``, #1919; the driver is the case's creator until
+#1898).
 
 The agent doesn't choose a scope. The orchestrator resolves the case's scope
 filter into the ``ToolContext``, and the tool searches under it unchanged.
@@ -26,15 +27,15 @@ class AnswerFromKB(DocumentQATool):
     """
     Unified Q&A tool for the entire knowledge base.
 
-    Searches every scope the case may draw on in a single query. Scope
-    filtering is automatic — the agent just asks a question.
+    Searches every scope the case driver has access to in a single query.
+    Scope filtering is automatic — the agent just asks a question.
     """
 
     name: str = "answer_from_kb"
     description: str = """Search the knowledge base for runbooks, best practices, and documented procedures.
 
-Returns the most relevant results from every source this case may draw on:
-global documentation, plus the personal and team runbooks the case's readers can see.
+Returns the most relevant results from all sources you have access to:
+global documentation, your personal runbooks, and your team's shared procedures.
 
 **When to use**:
 - Need troubleshooting guidance or best practices

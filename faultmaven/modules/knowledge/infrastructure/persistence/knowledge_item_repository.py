@@ -57,7 +57,7 @@ import logging
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -197,6 +197,25 @@ class KnowledgeItemRepository(ABC):
         vectors), so serving an unpublished row by id would hand deleted
         content to any authenticated caller. The owner exemption keeps an
         author's own unpublished draft reachable by id.
+        """
+        pass
+
+    @abstractmethod
+    async def visible_item_ids(
+        self,
+        item_ids: List[str],
+        enterprise_id: str,
+        user_id: Optional[str] = None,
+        team_ids: Optional[List[str]] = None,
+    ) -> Set[str]:
+        """The subset of ``item_ids`` the requester may read, in ONE query (#1919).
+
+        The batched form of :meth:`get_visible_by_id`, with exactly its rule
+        (global ∪ own-org owned ∪ own-org shared-to-my-teams, published or
+        mine): an id is in the result iff ``get_visible_by_id`` would return
+        its row. Absent ids and invisible ids are both left out. Backs the
+        per-viewer gate on stored runbook excerpts (``gate_kb_sources``), which
+        checks a whole response's ids at once.
         """
         pass
 
@@ -608,6 +627,39 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 f"Failed to get visible knowledge item {item_id}: {e}"
             ) from e
 
+    async def visible_item_ids(
+        self,
+        item_ids: List[str],
+        enterprise_id: str,
+        user_id: Optional[str] = None,
+        team_ids: Optional[List[str]] = None,
+    ) -> Set[str]:
+        """The readable subset of ``item_ids``: one SELECT of ids, same rule as
+        ``get_visible_by_id`` (scope predicate plus published-or-mine)."""
+        ids = sorted({i for i in item_ids if i})
+        if not ids:
+            return set()
+        try:
+            published_or_mine = [KnowledgeItemModel.is_published == True]  # noqa: E712
+            if user_id:
+                published_or_mine.append(KnowledgeItemModel.owner_id == user_id)
+
+            stmt = select(KnowledgeItemModel.item_id).where(
+                and_(
+                    KnowledgeItemModel.item_id.in_(ids),
+                    self._inventory_visibility_clause(enterprise_id, user_id, team_ids),
+                    or_(*published_or_mine),
+                )
+            )
+            result = await self.db.execute(stmt)
+            return set(result.scalars().all())
+
+        except Exception as e:
+            logger.error(f"Failed to resolve visible knowledge item ids: {e}")
+            raise KnowledgeItemRepositoryException(
+                f"Failed to resolve visible knowledge item ids: {e}"
+            ) from e
+
     async def search_by_tags(
         self,
         enterprise_id: str,
@@ -931,6 +983,21 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         if not item.is_published and not (user_id and item.owner_id == user_id):
             return None
         return deepcopy(item)
+
+    async def visible_item_ids(
+        self,
+        item_ids: List[str],
+        enterprise_id: str,
+        user_id: Optional[str] = None,
+        team_ids: Optional[List[str]] = None,
+    ) -> Set[str]:
+        """The readable subset of ``item_ids``, by ``get_visible_by_id``'s rule
+        (``team_ids`` unused, as there: this fallback models no share table)."""
+        visible = set()
+        for item_id in {i for i in item_ids if i}:
+            if await self.get_visible_by_id(item_id, enterprise_id, user_id, team_ids):
+                visible.add(item_id)
+        return visible
 
     async def search_by_tags(
         self,

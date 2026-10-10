@@ -322,26 +322,17 @@ Three principles govern KB retrieval. The retrieval-pipeline mechanics are canon
 
 KB-arch owns the scope-filter construction. The full tool path (adapter → filter → query → synthesis → return) is canonical in [vector-retrieval-architecture.md §4](./vector-retrieval-architecture.md#4-knowledge-base-retrieval) under Tool Path.
 
-Every KB read builds its filter with `build_kb_scope_filter(owner_id, shared_ids)`:
+`kb_qa` searches under the scope filter `KBToolAdapter` reads off `ToolContext.kb_scope_filter`: the case driver's, built by `case_retrieval_scope` from `build_kb_scope_filter` (#1919):
 
 ```text
 {"$or": [
     {"scope": "global"},                                 # all users
-    {"owner_id": owner_id},                              # the owner arm (omitted when None)
-    {"parent_document_id": {"$in": shared_ids}}          # ids shared to the given teams
+    {"owner_id": driver_id},                             # the driver's own
+    {"parent_document_id": {"$in": shared_ids}}          # ids shared to the driver's teams
 ]}
 ```
 
-The `shared_ids` arm is resolved from `resource_shares` (`resolve_shared_kb_ids`), never from vector metadata. Empty `shared_ids` drops the arm.
-
-**Inside an investigation the scope is the case's audience, not a user's (#1919).** The pre-fetch, the `kb_qa` tool and the runbook dedup all take their filter from `case_retrieval_scope(case)` (`core/investigation/milestone_engine/retrieval_scope.py`), because what they retrieve lands in the case transcript and every reader of the case reads it:
-
-- **Unshared case** (no share rows; one reader, the creator `cases.user_id`): `owner_id` = the creator, `shared_ids` = runbooks shared to the creator's teams.
-- **Shared case**: no owner arm, `shared_ids` = runbooks shared to the live teams the case is shared with. Nobody's personal KB.
-- **Standalone** (`team_service` is None): no case is shared; `owner_id` = the creator, no team arm.
-- **A lookup fails**: the scope narrows. If the case's own shares cannot be read, it is global only, since whether it is shared is unknown. If a shared case's team arm fails, global only. If an unshared case's team arm fails, global ∪ the creator's personal KB. The runbook dedup re-raises instead (`raise_on_failure=True`) and takes its caveat branch.
-
-`KBToolAdapter` forwards `ToolContext.kb_scope_filter` unchanged, and refuses to search when it is `None`. Outside an investigation, `search_documents` and the report-recommendation route key the filter on the requesting user.
+The `shared_ids` arm is resolved from `resource_shares` (`resolve_shared_kb_ids`) — the personal/global arms come straight from the driver's own ids, so a filter built for one user can never surface another's non-shared content. Empty `shared_ids` collapses the filter to `personal ∪ global`.
 
 This filter is passed to the unified `faultmaven_kb` collection in the metadata-`where` argument. The filter-presence check (`_require_kb_filter_present()`) rejects any KB query that arrives naming no scope key at all — see [Storage Architecture](#single-collection-with-metadata-filtering-current).
 
@@ -468,11 +459,13 @@ Team KB scope filtering is built on every retrieval path:
 
 - Team and organization models exist in the auth module (`modules/auth/domain/models/`)
 - `team_members` junction table supports multi-team membership per user
-- `TeamService.list_all_user_team_ids(user_id)` resolves all team memberships across orgs
-- The engine's three KB reads (pre-fetch, `kb_qa`, runbook dedup) take the case's audience scope from `case_retrieval_scope` (#1919): the creator's personal and team runbooks for an unshared case, the runbooks of the case's live teams for a shared one
+- `TeamService.list_all_user_team_ids(user_id)` resolves all team memberships across orgs, excluding retired teams
+- Inside an investigation, the pre-fetch, `kb_qa` and the runbook dedup take one scope from `case_retrieval_scope(case)` (`core/investigation/milestone_engine/retrieval_scope.py`, #1919): the **case driver's** knowledge, global ∪ the driver's personal KB ∪ the runbooks shared to the driver's teams. Until #1898 the driver is the creator (`case.user_id`), never the session user. `kb_qa` receives it as `ToolContext.kb_scope_filter`
 - `search_documents` and report recommendations build the requesting user's scope with `build_kb_scope_filter`, whose team arm is `{"parent_document_id": {"$in": shared_ids}}`
 - ChromaDB metadata stores only the immutable floor (`scope` = `global`/`personal` + `owner_id`, plus the tenant's `enterprise_id`, #1168) at ingestion time — never `team_id`; team visibility lives in the `resource_shares` table (ADR-013 §D4)
 - API endpoints (`GET /knowledge/documents`) support `scope=team` filter with team membership check
+
+**Stored excerpts are gated per viewer (#1919).** The model's answer written from the driver's knowledge is accepted disclosure to everyone who reads the case. The stored copies of runbook text are not: a turn's `sources` (the excerpts its prompt carried, persisted on the assistant row) are checked against the reader when `GET /cases/{id}/messages` or `POST /cases/{id}/turns` returns them (`gate_kb_sources`, `modules/knowledge/contracts.py`). The check is the id-addressed document read's rule (global, the viewer's own, or shared to one of the viewer's teams; published or the viewer's own), batched as `visible_document_ids`, one query per response. A source the viewer cannot open, or one with no `document_id`, is returned with empty `content` and `metadata` `{"access": "restricted"}`. The operator break-glass transcript (`/admin/cases`) shows the stored copy.
 
 **Remaining work:**
 

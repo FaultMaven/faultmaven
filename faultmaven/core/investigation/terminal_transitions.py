@@ -1802,11 +1802,10 @@ async def evaluate_runbook_suggestion(
         case: RESOLVED case to evaluate.
         runbook_kb: Optional RunbookKnowledgeBase for similarity search.
             If None, deduplication check is skipped (suggestion still based on content).
-        scope_resolver: Zero-arg async callable returning the case's audience
-            KB scope filter (``case_retrieval_scope``, #1919: global ∪ the
-            creator's personal and team runbooks for an unshared case, global ∪
-            the case's teams' runbooks for a shared one). Supplied by the
-            engine, which owns the team-membership and share-table dependencies. Required for dedup to
+        scope_resolver: Zero-arg async callable returning the case driver's
+            KB read scope filter (``case_retrieval_scope``, #1919: global ∪ the
+            driver's personal KB ∪ the driver's team-shared runbooks; the driver
+            is ``case.user_id`` until #1898). Supplied by the engine, which owns the team-membership and share-table dependencies. Required for dedup to
             run: without it the search cannot be honestly scoped, so dedup is
             SKIPPED with the "did not run" caveat rather than quietly searching
             a narrower scope. If the resolver RAISES (e.g. the team arm could
@@ -1982,7 +1981,7 @@ async def _find_similar_runbooks_for_case(
         into ``[]`` is what let an unsearched case reach the plain ``SUGGEST``
         branch, which asserts a dedup result that was never obtained (#944).
 
-    ``scope_filter`` is the case's audience KB scope
+    ``scope_filter`` is the case driver's KB read scope
     (``case_retrieval_scope``), resolved by the caller's ``scope_resolver``. It is passed
     through to ``search_by_text``, which refuses a falsy one with a typed
     error rather than searching unscoped — the fail-closed property that

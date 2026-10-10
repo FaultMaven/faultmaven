@@ -220,9 +220,8 @@ The three parts each close a different way of losing the predicate:
   predicate for either.
 - **By similarity.** A vector query names no id, so the metadata predicate is
   the only isolation there is. `RunbookKnowledgeBase.search_runbooks` requires
-  a KB scope filter built by `build_kb_scope_filter` (the requester's on the
-  report-recommendation route; the case's audience in the engine, via
-  `case_retrieval_scope`, #1919), ANDs it into
+  the searching principal's KB scope filter (`build_kb_scope_filter`: global ∪
+  owned ∪ team-shared, the same allowlist as every other KB read), ANDs it into
   the ChromaDB `where` clause alongside `document_type == "runbook"`, and
   **refuses with a typed error** — never a silent `[]` — when no scope filter
   is supplied (fm#1030).

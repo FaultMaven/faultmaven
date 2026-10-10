@@ -2,11 +2,9 @@
 
 ``_find_similar_runbooks_for_case`` is an **id-free resolution path**: a
 similarity query names no id and no owner, so the caller-supplied KB scope
-filter is the only isolation available. The engine scopes dedup on the case's
-audience (``case_retrieval_scope``, #1919), because the suggestion it produces
-lands in the transcript every reader of the case reads, and resolves that scope
-through ``RunbookCreator._runbook_dedup_scope_resolver``. The shared-case arm is
-pinned in ``test_case_retrieval_scope.py``.
+filter is the only isolation available. The engine scopes dedup on the CASE
+OWNER (the principal who will act on the suggestion) and resolves that scope
+through ``MilestoneEngine._runbook_dedup_scope_resolver``.
 
 Two properties are pinned here that a green "no duplicate found" cannot prove:
 
@@ -214,7 +212,7 @@ async def test_a_kb_without_a_scope_resolver_skips_dedup_with_the_did_not_run_ca
 
 
 # ---------------------------------------------------------------------------
-# The engine's resolver: the case's scope, lookup failures NOT swallowed
+# The engine's resolver: case-owner scope, team arm NOT swallowed
 # ---------------------------------------------------------------------------
 
 
@@ -229,7 +227,7 @@ def _engine(**attrs) -> MilestoneEngine:
 
 @pytest.mark.asyncio
 async def test_the_engine_resolver_builds_the_owner_scope_in_standalone():
-    """No team service (standalone): global ∪ the creator's personal items —
+    """No team service (standalone): global ∪ the OWNER's personal items —
     keyed on ``case.user_id``, so user B's case can never widen into user A's
     personal runbooks."""
     resolver = _engine().runbooks._runbook_dedup_scope_resolver(_case())
@@ -240,12 +238,10 @@ async def test_the_engine_resolver_builds_the_owner_scope_in_standalone():
 
 
 @pytest.mark.asyncio
-async def test_the_engine_resolver_includes_the_creators_team_shared_items():
-    """An unshared case: the creator is its one reader."""
+async def test_the_engine_resolver_includes_the_owners_team_shared_items():
     team_service = MagicMock()
     team_service.list_all_user_team_ids = AsyncMock(return_value=["team-1"])
     share_repository = MagicMock()
-    share_repository.list_scopes_for_resource = AsyncMock(return_value=[])
     share_repository.list_resource_ids = AsyncMock(return_value=["kb-shared-1"])
 
     resolver = _engine(
@@ -260,16 +256,16 @@ async def test_the_engine_resolver_includes_the_creators_team_shared_items():
 
 @pytest.mark.asyncio
 async def test_the_engine_resolver_does_not_swallow_a_team_arm_failure():
-    """The pre-fetch's degrade is deliberately ABSENT here. If the team arm
-    cannot be resolved, the resolver raises, and the dedup caller takes its
-    caveat branch — pinned above. A resolver that caught this and returned a
-    narrower scope would make dedup claim a scope it never searched."""
+    """The pre-fetch's ``except: degrade`` is deliberately ABSENT here. If the
+    team arm cannot be resolved, the resolver raises, and the dedup caller
+    takes its caveat branch — pinned above. A resolver that caught this and
+    returned global ∪ personal would make dedup claim a scope it never
+    searched."""
     team_service = MagicMock()
     team_service.list_all_user_team_ids = AsyncMock(
         side_effect=RuntimeError("team lookup failed")
     )
     share_repository = MagicMock()
-    share_repository.list_scopes_for_resource = AsyncMock(return_value=[])
 
     resolver = _engine(
         team_service=team_service, share_repository=share_repository
@@ -280,12 +276,12 @@ async def test_the_engine_resolver_does_not_swallow_a_team_arm_failure():
 
 
 @pytest.mark.asyncio
-async def test_the_engine_passes_its_injected_kb_and_case_resolver_to_dedup(
+async def test_the_engine_passes_its_injected_kb_and_owner_resolver_to_dedup(
     monkeypatch,
 ):
     """``_handle_runbook_creation`` wires ``self.runbook_kb`` (the explicit
     constructor injection that replaced the permanently-False
-    ``hasattr(knowledge_service, "runbook_kb")`` probe) and the case-scope
+    ``hasattr(knowledge_service, "runbook_kb")`` probe) and the case-owner
     resolver into ``evaluate_runbook_suggestion``."""
     engine = _engine()
     engine.deps.knowledge_service = MagicMock()

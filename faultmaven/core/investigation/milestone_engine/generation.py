@@ -1203,10 +1203,11 @@ class StructuredOutputGenerator:
         ``None`` (engine-internal turn, no principal) keeps the historical
         ``"system"`` sentinel.
 
-        The KB scope ``kb_qa`` reads is NOT keyed on this principal. It is the
-        case's audience scope (``case_retrieval_scope``, #1919), the same one
-        the pre-fetch and the runbook dedup use, because the tool's answer
-        lands in the transcript every reader of the case reads.
+        The KB scope ``kb_qa`` reads is keyed on the CASE, not on this
+        principal: the case driver's knowledge (``case_retrieval_scope``,
+        #1919), the same scope the pre-fetch and the runbook dedup use. The
+        driver is ``case.user_id`` until #1898, the only user who may submit a
+        turn, so today the two coincide.
         """
         from faultmaven.modules.agent.tools.base import ToolContext
 

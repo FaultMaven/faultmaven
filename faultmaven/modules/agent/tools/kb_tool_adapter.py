@@ -4,7 +4,7 @@ Wraps DocumentQATool-based KB tools into the AgentTool interface so they
 can participate in the investigation pipeline's directed analysis tool loop.
 
 Two adapters:
-- KBToolAdapter: unified KB search (every scope the case may draw on)
+- KBToolAdapter: unified KB search (every scope the case driver can access)
 - CaseEvidenceQAAdapter: case-specific evidence forensic search
 """
 
@@ -23,9 +23,9 @@ class KBToolAdapter(AgentTool):
     """Adapter: AnswerFromKB -> AgentTool interface.
 
     Queries the knowledge base for runbooks, best practices, and documented
-    procedures, under the case's scope filter from ``ToolContext`` (the case's
-    audience, #1919). Never under anything the model supplies: the only
-    parameter is the question.
+    procedures, under the case's scope filter from ``ToolContext`` (the case
+    driver's knowledge, #1919). Never under anything the model supplies: the
+    only parameter is the question.
     """
 
     def __init__(self, wrapped_tool: Any):
@@ -39,9 +39,9 @@ class KBToolAdapter(AgentTool):
     def description(self) -> str:
         return (
             "Search the knowledge base for runbooks, best practices, and documented "
-            "procedures. Returns the most relevant results from every source this "
-            "case may draw on: global documentation, plus the personal and team "
-            "runbooks the case's readers can see."
+            "procedures. Returns the most relevant results from all sources you have "
+            "access to: global documentation, your personal runbooks, and your team's "
+            "shared procedures."
         )
 
     @property

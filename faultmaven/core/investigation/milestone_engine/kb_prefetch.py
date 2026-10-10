@@ -193,16 +193,16 @@ class KbPrefetcher:
             return None
 
         try:
-            # The case's audience scope (#1919): excerpts rendered from this
-            # search land in the transcript every reader of the case reads, so
-            # it may search only what all of them may read. An unshared case
-            # searches global ∪ the creator's personal KB ∪ the runbooks shared
-            # to the creator's teams; a shared case searches global ∪ the
-            # runbooks shared to the teams the case is shared with, and nobody's
-            # personal KB. Team-scoped runbooks exist today: KB uploads, the
-            # convert and runbook-create routes and the KB pack can all write
-            # them, so the team arm is live in Cloud. In standalone team_service
-            # is None and the scope is global ∪ the creator's personal KB.
+            # The case driver's knowledge (#1919): global ∪ the driver's
+            # personal KB ∪ the runbooks shared to the driver's teams, keyed on
+            # the case (the driver is ``case.user_id`` until #1898), never on
+            # whoever submitted the turn. The excerpts this stores become the
+            # turn's ``sources``, which each viewer is access-checked against
+            # when they are read back (``gate_kb_sources``). The team arm is
+            # live in Cloud: KB uploads, the convert and runbook-create routes
+            # and the KB pack all write team-shared runbooks. In standalone
+            # team_service is None and the scope is global ∪ the driver's
+            # personal KB.
             scope_filter = await case_retrieval_scope(
                 case,
                 team_service=self.deps.team_service,

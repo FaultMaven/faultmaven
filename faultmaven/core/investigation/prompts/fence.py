@@ -317,13 +317,12 @@ that none of them is a caller-controlled channel:
   operator-curated, and this line used to say it was (corrected in fm#1360,
   which is also what first put the block in an investigation prompt — until
   then no template referenced the key and the block was assembled and
-  discarded). The pre-fetch scope is the case's audience
-  (``case_retrieval_scope``, #1919): platform-curated global runbooks, plus
-  the runbooks shared to the case's teams, plus — for an unshared case only —
-  the creator's personal KB and their teams' runbooks. Personal runbooks are
-  produced by converting a user's own resolved cases, and team runbooks are
-  uploaded by users, so their bodies can carry text that entered the system as
-  uploaded evidence.
+  discarded). The pre-fetch scope is the case driver's knowledge
+  (``case_retrieval_scope``, #1919): platform-curated global runbooks, plus the
+  driver's personal KB, plus the runbooks shared to the driver's teams.
+  Personal runbooks are produced by converting a user's own resolved cases,
+  and team runbooks are uploaded by users, so their bodies can carry text that
+  entered the system as uploaded evidence.
 
   Left unfenced for now, deliberately and with the gap named rather than
   explained away. Absorption is already covered — ``terminate_dangling`` is

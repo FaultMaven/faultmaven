@@ -25,7 +25,7 @@ import asyncio
 import logging
 import re
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 if TYPE_CHECKING:
     # Type-only import; the runtime import stays lazy inside ingest_runbook
@@ -2224,6 +2224,47 @@ class KnowledgeService:
         except Exception as e:
             logger.error(f"Failed to get visible document {document_id}: {e}")
             return None
+
+    async def visible_document_ids(
+        self,
+        document_ids: List[str],
+        user: Optional[Any] = None,
+        team_ids: Optional[List[str]] = None,
+    ) -> Set[str]:
+        """The subset of ``document_ids`` the requester may read, in one query.
+
+        The batched counterpart of :meth:`get_document_visible`, with the same
+        rule and the same ``enterprise_id`` sourcing: an id is in the result iff
+        ``get_document_visible`` would return its document. Fails CLOSED: any
+        error answers the empty set, so a caller gating on it withholds rather
+        than discloses (#1919).
+        """
+        ids = [d for d in document_ids if d]
+        if not ids:
+            return set()
+        try:
+            from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+            from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
+                DatabaseKnowledgeItemRepository,
+            )
+
+            enterprise_id = (
+                getattr(user, "enterprise_id", None) or STANDALONE_ENTERPRISE_ID
+            )
+            user_id = getattr(user, "user_id", None) if user else None
+
+            async with self._db_session_factory() as session:
+                repo = DatabaseKnowledgeItemRepository(session)
+                return await repo.visible_item_ids(
+                    ids,
+                    enterprise_id=enterprise_id,
+                    user_id=user_id,
+                    team_ids=team_ids,
+                )
+
+        except Exception as e:
+            logger.error(f"Failed to resolve visible document ids: {e}")
+            return set()
 
     async def get_runbook_title(self, item_id: str) -> Optional[str]:
         """Return a knowledge item's display title, or None.

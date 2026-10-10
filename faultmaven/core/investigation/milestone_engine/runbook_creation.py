@@ -344,14 +344,13 @@ class RunbookCreator:
         }
 
     def _runbook_dedup_scope_resolver(self, case: "Case"):
-        """Build the resolver for the runbook dedup's KB scope: the case's audience.
+        """Build the resolver for the runbook dedup's KB scope: the case driver's.
 
-        The dedup's answer is shown in the case transcript ("a similar runbook
-        exists: <title>"), which every reader of the case reads, so it searches
-        the same audience scope as the pre-fetch and ``kb_qa``
-        (``case_retrieval_scope``, #1919): global ∪ the creator's personal and
-        team runbooks for an unshared case, global ∪ the runbooks of the teams
-        the case is shared with for a shared one.
+        Dedup answers for the principal who will act on the answer, the case
+        driver (``case.user_id`` until #1898), whose Dashboard the suggestion
+        points at (owner decision, fm#1030). It searches the same scope as the
+        pre-fetch and ``kb_qa`` (``case_retrieval_scope``, #1919): global ∪ the
+        driver's personal KB ∪ the runbooks shared to the driver's teams.
 
         One deliberate divergence from the pre-fetch: the resolver does NOT
         degrade (``raise_on_failure=True``). The pre-fetch narrows on a lookup
@@ -361,8 +360,8 @@ class RunbookCreator:
         ``evaluate_runbook_suggestion`` (which awaits it inside its dedup
         ``try``) takes the failure-caveat branch instead of answering.
 
-        Standalone is not a failure: ``team_service`` is None there, no case
-        is shared, and the scope is global ∪ the creator's personal KB.
+        Standalone is not a failure: ``team_service`` is None there, and the
+        scope is global ∪ the driver's personal KB.
         """
 
         async def _resolve() -> dict:

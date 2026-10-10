@@ -16,10 +16,12 @@ from typing import (
     Optional,
     Protocol,
     Sequence,
+    Set,
     Tuple,
 )
 
 if TYPE_CHECKING:
+    from faultmaven.models.api import Source
     from faultmaven.modules.knowledge.domain.models.knowledge_item import KnowledgeItem
     from faultmaven.modules.knowledge.domain.models.suggestion import (
         KnowledgeSuggestion,
@@ -66,6 +68,19 @@ class IKnowledgeService(Protocol):
         id and for one the requester cannot see, so the two are
         indistinguishable. Implementations that cannot evaluate the rule must
         return None (fail closed), never fall back to the unscoped load.
+        """
+        ...
+
+    async def visible_document_ids(
+        self,
+        document_ids: List[str],
+        user: Optional[Any] = None,
+        team_ids: Optional[List[str]] = None,
+    ) -> "Set[str]":
+        """The subset of ``document_ids`` the requester may read, in ONE query.
+
+        Batched :meth:`get_document_visible`, same rule. Must fail closed: an
+        implementation that cannot evaluate the rule answers the empty set.
         """
         ...
 
@@ -406,3 +421,93 @@ def describe_troubleshooting_scope() -> str:
     """
     lines = [f"- {domain.value}: {_DOMAIN_GLOSSES[domain]}" for domain in RunbookDomain]
     return "\n".join(lines)
+
+
+# ============================================================
+# Read-time gate on stored runbook excerpts (#1919)
+# ============================================================
+
+#: ``Source.metadata["access"]`` on a knowledge-base source withheld from this
+#: viewer. The entry keeps its ``type``, and ``new_this_turn`` where the stored
+#: entry had one; its excerpt, title, document id, score and trigger are gone,
+#: so a client can say "a runbook you don't have access to" and nothing more.
+RESTRICTED_SOURCE_ACCESS = "restricted"
+
+
+async def gate_kb_sources(
+    source_lists: Sequence[Optional[List["Source"]]],
+    *,
+    viewer: Any,
+    knowledge_service: Optional[IKnowledgeService],
+    team_service: Optional[Any],
+) -> List[Optional[List["Source"]]]:
+    """Each list of stored sources, with every runbook excerpt ``viewer`` may
+    not read redacted (owner ruling on #1919, 2026-10-10).
+
+    A turn retrieves with its driver's knowledge, and the excerpts its prompt
+    carried are stored on the assistant row as ``sources``. Anyone who can read
+    the case can read that row, and need not be able to read every runbook it
+    quotes: a teammate on a shared case is not the driver, and a runbook's own
+    share can narrow after the fact. So the copies are checked against the
+    VIEWER when they are read back, by the knowledge module's one visibility
+    rule (:meth:`IKnowledgeService.visible_document_ids`, the batched form of
+    the id-addressed document read): global, the viewer's own, or shared to one
+    of the viewer's teams. A readable source is returned unchanged; any other
+    knowledge-base source is redacted (:data:`RESTRICTED_SOURCE_ACCESS`).
+
+    Fails closed throughout. A knowledge-base source with no ``document_id``
+    cannot be checked, so it is redacted. No knowledge service, or a failed
+    team lookup, gives a narrower answer, never a wider one. Sources of any
+    other type pass unchanged.
+
+    One visibility query for all of ``source_lists`` together, and none when
+    they hold no checkable id: a page of messages is one call, not one per
+    message or per source. Operator break-glass reads (``/admin/cases``) do not
+    call this; they show the stored copy, under their own audit.
+    """
+    from faultmaven.models.api import SourceType
+
+    def _document_id(source: "Source") -> Optional[str]:
+        value = (source.metadata or {}).get("document_id")
+        return value if isinstance(value, str) and value else None
+
+    candidate_ids = sorted(
+        {
+            doc_id
+            for sources in source_lists
+            for source in sources or []
+            if source.type == SourceType.KNOWLEDGE_BASE
+            and (doc_id := _document_id(source))
+        }
+    )
+    readable: Set[str] = set()
+    if candidate_ids and knowledge_service is not None:
+        viewer_id = getattr(viewer, "user_id", None)
+        team_ids: List[str] = []
+        if team_service is not None and viewer_id:
+            try:
+                team_ids = list(await team_service.list_all_user_team_ids(viewer_id))
+            except Exception:  # noqa: BLE001 - narrower is the safe answer
+                team_ids = []
+        readable = set(
+            await knowledge_service.visible_document_ids(
+                candidate_ids, user=viewer, team_ids=team_ids
+            )
+        )
+
+    def _gate(source: "Source") -> "Source":
+        if source.type != SourceType.KNOWLEDGE_BASE:
+            return source
+        if _document_id(source) in readable:
+            return source
+        return source.__class__(
+            type=SourceType.KNOWLEDGE_BASE,
+            content="",
+            metadata={"access": RESTRICTED_SOURCE_ACCESS},
+            new_this_turn=source.new_this_turn,
+        )
+
+    return [
+        None if sources is None else [_gate(source) for source in sources]
+        for sources in source_lists
+    ]
