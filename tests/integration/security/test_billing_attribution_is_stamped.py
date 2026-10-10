@@ -264,56 +264,6 @@ def test_the_knowledge_writer_reads_the_actors_organization():
     )
 
 
-async def test_a_knowledge_suggestion_is_billed_to_the_actors_organization(
-    owner_url, billing_org
-):
-    """``knowledge_suggestions`` — the domain model carries no such field.
-
-    Which is why the value is read in the repository rather than threaded from
-    the caller: nothing constructs a suggestion with an organization in mind, so
-    a parameter would have been one more place for every caller to forget.
-    """
-    from faultmaven.modules.knowledge.domain.models.suggestion import (
-        KnowledgeSuggestion,
-        SuggestionStatus,
-    )
-    from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
-        DELETED_CASE_MARKER,
-        DatabaseSuggestionRepository,
-    )
-
-    suggestion_id = str(uuid.uuid4())
-    try:
-        await DatabaseSuggestionRepository().save(
-            KnowledgeSuggestion(
-                suggestion_id=suggestion_id,
-                enterprise_id=DEFAULT_ENTERPRISE_ID,
-                # The case this was extracted from is gone: the repository
-                # writes the FK as NULL rather than offering it a value that
-                # names no row. Used here so the round trip needs no case.
-                case_id=DELETED_CASE_MARKER,
-                status=SuggestionStatus.PENDING_REVIEW,
-                suggested_title="Billing probe suggestion",
-                suggested_content="body",
-                source_case_title="Billing probe suggestion",
-            )
-        )
-        stored = await _column(
-            owner_url,
-            "SELECT organization_id FROM knowledge_suggestions "
-            "WHERE suggestion_id = :s",
-            s=suggestion_id,
-        )
-        assert stored == billing_org
-    finally:
-        await _column(
-            owner_url,
-            "DELETE FROM knowledge_suggestions WHERE suggestion_id = :s "
-            "RETURNING suggestion_id",
-            s=suggestion_id,
-        )
-
-
 def test_the_remaining_writers_read_the_actors_organization():
     """``cases``, ``investigation_sessions`` and ``conversion_jobs``.
 
@@ -362,7 +312,6 @@ def test_the_remaining_writers_read_the_actors_organization():
 _STAMPED_HERE = (
     "resource_shares",
     "knowledge_items",
-    "knowledge_suggestions",
     "cases",
     "investigation_sessions",
     "conversion_jobs",

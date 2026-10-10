@@ -14,7 +14,7 @@ Two ways a call reaches a row
   turn's end flushes the tracker once (:func:`flush_turn`): one daily increment
   per ``(provider, model, outcome)`` bucket plus the turn row, in one
   transaction, awaited inline in ``MilestoneEngine.process_turn``.
-* **Anywhere else** — title generation, a KB suggestion, an out-of-band aside,
+* **Anywhere else** — title generation, an out-of-band aside,
   tier-2 preprocessing, and a call made AFTER its turn flushed (the
   fire-and-forget runbook conversion a turn spawns) — it writes a row of its own
   (:func:`schedule_call_write`). ``record_provider_call`` is synchronous and must

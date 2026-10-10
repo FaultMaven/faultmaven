@@ -49,9 +49,6 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.prompts imp
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookValidator,
 )
-from faultmaven.modules.knowledge.domain.services.suggestion_service import (
-    SuggestionService,
-)
 from faultmaven.modules.knowledge.taxonomy import (
     TAXONOMY_FIELDS,
     KnowledgeScope,
@@ -201,9 +198,7 @@ def test_member_value_admits_only_exact_members():
 
 # Each prompt is compared with the SPEC's vocabulary, never with
 # ``render_vocabulary`` of the enum: that would compare the code with itself,
-# and a renderer that dropped ``info`` would pass (#1886 review). The case
-# extraction prompt is checked on the real extraction path, in
-# ``test_extraction_emits_v4_schema_1226.py``.
+# and a renderer that dropped ``info`` would pass (#1886 review).
 
 
 def test_the_analysis_prompt_offers_the_spec_vocabularies():

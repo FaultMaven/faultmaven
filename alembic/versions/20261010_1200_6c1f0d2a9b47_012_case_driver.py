@@ -1,4 +1,4 @@
-"""011_case_driver
+"""012_case_driver
 
 The case driver (ADR-020, #1898): ``cases.driver_id``, who holds the case's
 investigation writes.
@@ -35,8 +35,8 @@ change.
 no index names it, which is why the index goes first.
 
 Revision ID: 6c1f0d2a9b47
-Revises: afdd293ca6ab
-Create Date: 2026-10-09 12:00:00
+Revises: 2d05706532a9
+Create Date: 2026-10-10 12:00:00
 """
 
 from typing import Sequence, Union
@@ -47,7 +47,7 @@ from alembic import op
 
 revision: str = "6c1f0d2a9b47"  # pragma: allowlist secret
 down_revision: Union[str, Sequence[str], None] = (
-    "afdd293ca6ab"  # pragma: allowlist secret
+    "2d05706532a9"  # pragma: allowlist secret
 )
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

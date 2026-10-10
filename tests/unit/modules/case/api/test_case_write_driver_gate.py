@@ -4,8 +4,7 @@ governance is the CREATOR's (ADR-020 D2).
 The single-case gate resolves through ``creator ∪ shared-to-my-teams`` by
 default, through the effective driver under ``driver_only=True`` and through
 the creator under ``creator_only=True``. The report regeneration endpoint
-(which flips ``is_current`` on the case's reports) and the knowledge-extraction
-endpoint (which mints a suggestion out of the case) are investigation writes;
+(which flips ``is_current`` on the case's reports) is an investigation write;
 delete is governance, refused by the service for anyone but the creator.
 
 Inside one enterprise there is nothing else standing between two readers: RLS
@@ -21,7 +20,6 @@ import pytest
 from fastapi import HTTPException
 
 from faultmaven.modules.case.api.routes.cases import delete_case
-from faultmaven.modules.case.api.routes.knowledge import extract_knowledge_from_case
 from faultmaven.modules.case.api.routes.reports import generate_case_reports
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
@@ -147,31 +145,6 @@ async def test_report_regeneration_serves_the_assigned_driver():
     )
 
     assert result == {"reports": []}
-
-
-# ---------------------------------------------------------------------------
-# POST /cases/{case_id}/extract-knowledge — mints a suggestion from the owner's
-# transcript and evidence.
-# ---------------------------------------------------------------------------
-
-
-async def test_knowledge_extraction_refuses_a_teammate_with_a_read_share():
-    case_service = _case_service_that_refuses_non_drivers()
-    suggestion_service = MagicMock()
-    suggestion_service.extract_knowledge_from_case = AsyncMock()
-
-    with pytest.raises(HTTPException) as exc:
-        await extract_knowledge_from_case(
-            case_id=CASE_ID,
-            request_body=None,
-            case_service=case_service,
-            suggestion_service=suggestion_service,
-            current_user=_user(TEAMMATE),
-        )
-
-    assert exc.value.status_code == 404
-    assert case_service.get_case.await_args.kwargs.get("driver_only") is True
-    suggestion_service.extract_knowledge_from_case.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

@@ -38,7 +38,7 @@ TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 # the 001-053 chain) plus additive revisions on top of it, so the seed
 # assertions below reverse the whole schema with "downgrade base" and each
 # additive revision is stepped over on its own.
-#: 011_case_driver
+#: 012_case_driver
 HEAD_REVISION = "6c1f0d2a9b47"  # pragma: allowlist secret
 #: The baseline, which every additive revision parents onto.
 BASELINE_REVISION = "a1e0c17bd001"  # 001_enterprise_baseline
@@ -63,7 +63,10 @@ RUNBOOK_SEVERITY_REVISION = "558d7f3cfed1"  # pragma: allowlist secret
 DROP_CASE_CHECKPOINTS_REVISION = "1e713f2d0e74"  # pragma: allowlist secret
 #: ``010_turn_receipts``: one row per committed keyed turn (#1888).
 TURN_RECEIPTS_REVISION = "afdd293ca6ab"  # pragma: allowlist secret
-#: ``011_case_driver``: ``cases.driver_id``, who holds the investigation
+#: ``011_remove_knowledge_suggestions``: the knowledge-suggestion table and
+#: ``knowledge_items.source_suggestion_id`` are dropped (#1897).
+REMOVE_SUGGESTIONS_REVISION = "2d05706532a9"  # pragma: allowlist secret
+#: ``012_case_driver``: ``cases.driver_id``, who holds the investigation
 #: writes (ADR-020, #1898).
 CASE_DRIVER_REVISION = "6c1f0d2a9b47"  # pragma: allowlist secret
 #: The tables 002_llm_usage_ledger adds (#640).
@@ -191,7 +194,8 @@ def get_current_revision(database_url: str) -> str:
 # team forms by. ``token_revocations`` (#828) is where revocation state lives
 # when the cache does not outlive the process. ``case_checkpoints`` is gone:
 # 009 retired case checkpoints (#1882). ``turn_receipts`` is 010's: one row per
-# committed keyed turn (#1888).
+# committed keyed turn (#1888). ``knowledge_suggestions`` is gone: 011 removed
+# the knowledge-suggestion subsystem (#1897).
 EXPECTED_TABLES = [
     "alembic_version",
     "case_actions",
@@ -212,7 +216,6 @@ EXPECTED_TABLES = [
     "hypothesis_evidence",
     "investigation_sessions",
     "knowledge_items",
-    "knowledge_suggestions",
     "config_overrides",
     "llm_turn_spend",
     "llm_usage_daily",
@@ -331,9 +334,7 @@ class TestAlembicMigrationInfrastructure:
         assert len(tables) == len(
             EXPECTED_TABLES
         ), f"Expected {len(EXPECTED_TABLES)} tables after re-application, got {len(tables)}"
-        assert (
-            "knowledge_suggestions" in tables
-        ), "knowledge_suggestions table should be restored"
+        assert "knowledge_items" in tables, "knowledge_items table should be restored"
         assert "config_overrides" in tables, "config_overrides table should be restored"
 
         # Verify revision (should be back at head)
@@ -426,11 +427,11 @@ class TestLlmUsageLedgerRevision:
         result = run_alembic(f"downgrade {BASELINE_REVISION}", database_url)
         assert result.returncode == 0, result.stderr
         assert get_current_revision(database_url) == BASELINE_REVISION
-        # Less the ledger and 010's receipts; plus the table the baseline
-        # creates and 009 drops, which stepping down over 009 restores.
+        # Less the ledger and 010's receipts; plus the tables the baseline
+        # creates and 009 and 011 drop, which stepping down over them restores.
         assert get_tables(TEST_DB) == sorted(
             (set(before) - set(LLM_USAGE_TABLES) - {"turn_receipts"})
-            | {"case_checkpoints"}
+            | {"case_checkpoints", "knowledge_suggestions"}
         )
 
         result = run_alembic("upgrade head", database_url)
@@ -1239,8 +1240,154 @@ class TestTurnReceiptsRevision:
         ) in sql
 
 
+class TestRemoveKnowledgeSuggestionsRevision:
+    """011 removes the knowledge-suggestion subsystem's storage (#1897):
+    ``knowledge_suggestions`` and ``knowledge_items.source_suggestion_id`` are
+    dropped, and the downgrade recreates both, empty, as 010 had them."""
+
+    @staticmethod
+    def _suggestions_schema() -> list:
+        """The table and its indexes, as SQLite stores their DDL."""
+        return query_rows(
+            TEST_DB,
+            "SELECT type, name, sql FROM sqlite_master "
+            "WHERE tbl_name = 'knowledge_suggestions' ORDER BY type, name",
+        )
+
+    @staticmethod
+    def _items_columns() -> list:
+        """``knowledge_items``' columns (name, type, notnull, default, pk),
+        order-free: the downgrade re-adds the column last."""
+        return sorted(
+            row[1:]
+            for row in query_rows(TEST_DB, 'PRAGMA table_info("knowledge_items")')
+        )
+
+    @staticmethod
+    def _items_indexes() -> list:
+        return query_rows(
+            TEST_DB,
+            "SELECT name, sql FROM sqlite_master WHERE type = 'index' "
+            "AND tbl_name = 'knowledge_items' ORDER BY name",
+        )
+
+    def test_upgrade_drops_the_table_and_the_column(self, clean_database, database_url):
+        result = run_alembic(f"upgrade {TURN_RECEIPTS_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        assert self._suggestions_schema(), "positive control: 010 has the table"
+        assert "source_suggestion_id" in [c[0] for c in self._items_columns()]
+        parent_items_indexes = self._items_indexes()
+        assert "ix_knowledge_items_source_suggestion_id" in [
+            name for name, _ in parent_items_indexes
+        ]
+
+        result = run_alembic(f"upgrade {REMOVE_SUGGESTIONS_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        assert self._suggestions_schema() == []
+        assert "source_suggestion_id" not in [c[0] for c in self._items_columns()]
+        # Only the column's own index went; the rest of the table is untouched
+        # (a plain DROP COLUMN, not a rebuild).
+        assert self._items_indexes() == [
+            (name, sql)
+            for name, sql in parent_items_indexes
+            if name != "ix_knowledge_items_source_suggestion_id"
+        ]
+
+    def test_downgrade_recreates_both_as_the_parent_had_them(
+        self, clean_database, database_url
+    ):
+        result = run_alembic(f"upgrade {TURN_RECEIPTS_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        parent_suggestions = self._suggestions_schema()
+        assert [name for kind, name, _ in parent_suggestions if kind == "index"] == [
+            "ix_knowledge_suggestions_case_id",
+            "ix_knowledge_suggestions_created_at",
+            "ix_knowledge_suggestions_enterprise_id",
+            "ix_knowledge_suggestions_extracted_by",
+            "ix_knowledge_suggestions_knowledge_item_id",
+            "ix_knowledge_suggestions_organization_id",
+            "ix_knowledge_suggestions_pii_scan_status",
+            "ix_knowledge_suggestions_status",
+            "sqlite_autoindex_knowledge_suggestions_1",  # the primary key
+        ]
+        parent_columns = self._items_columns()
+        parent_indexes = self._items_indexes()
+
+        result = run_alembic(f"upgrade {REMOVE_SUGGESTIONS_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        result = run_alembic(f"downgrade {TURN_RECEIPTS_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+
+        assert get_current_revision(database_url) == TURN_RECEIPTS_REVISION
+        assert self._suggestions_schema() == parent_suggestions
+        assert self._items_columns() == parent_columns
+        assert self._items_indexes() == parent_indexes
+
+        result = run_alembic(f"upgrade {REMOVE_SUGGESTIONS_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        assert self._suggestions_schema() == []
+
+    def test_no_foreign_key_targets_the_dropped_table(
+        self, clean_database, database_url
+    ):
+        """Why the drop needs no ``PRAGMA foreign_keys`` guard: dropping a
+        table runs ON DELETE actions only for rows that REFERENCE it, and at
+        the parent revision nothing does."""
+        result = run_alembic(f"upgrade {TURN_RECEIPTS_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        referencing = []
+        for (table,) in query_rows(
+            TEST_DB, "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ):
+            for row in query_rows(TEST_DB, f'PRAGMA foreign_key_list("{table}")'):
+                if row[2] == "knowledge_suggestions":
+                    referencing.append(table)
+        assert referencing == []
+
+    def test_the_postgresql_policy_drop_and_restore_are_dialect_guarded(self):
+        """Offline (``--sql``): on PostgreSQL the upgrade drops the table's
+        tenant policy by name before the table, and the downgrade enrols the
+        recreated table in RLS with the baseline's tenant policy. The SQLite
+        runs above are the other arm: they would fail on the policy DDL."""
+        pg = "postgresql://offline@localhost/offline"
+        up = run_alembic(
+            f"upgrade {TURN_RECEIPTS_REVISION}:{REMOVE_SUGGESTIONS_REVISION} --sql",
+            pg,
+        )
+        assert up.returncode == 0, up.stderr
+        sql = up.stdout
+        policy_drop = (
+            'DROP POLICY "knowledge_suggestions_tenant_isolation" '
+            'ON "knowledge_suggestions"'
+        )
+        assert policy_drop in sql
+        assert sql.index(policy_drop) < sql.index("DROP TABLE knowledge_suggestions;")
+        assert "DROP INDEX ix_knowledge_items_source_suggestion_id;" in sql
+        assert "ALTER TABLE knowledge_items DROP COLUMN source_suggestion_id;" in sql
+
+        down = run_alembic(
+            f"downgrade {REMOVE_SUGGESTIONS_REVISION}:{TURN_RECEIPTS_REVISION} --sql",
+            pg,
+        )
+        assert down.returncode == 0, down.stderr
+        sql = down.stdout
+        assert (
+            "ALTER TABLE knowledge_items ADD COLUMN source_suggestion_id VARCHAR(36);"
+            in sql
+        )
+        assert "CREATE TABLE knowledge_suggestions" in sql
+        assert "pii_scan_result JSONB" in sql
+        assert 'ALTER TABLE "knowledge_suggestions" ENABLE ROW LEVEL SECURITY' in sql
+        assert (
+            'CREATE POLICY "knowledge_suggestions_tenant_isolation" '
+            'ON "knowledge_suggestions" '
+            "USING (enterprise_id = current_setting('app.current_enterprise_id', "
+            "true))"
+        ) in sql
+
+
 class TestCaseDriverRevision:
-    """011 adds ``cases.driver_id`` (ADR-020, #1898): one nullable column, its
+    """012 adds ``cases.driver_id`` (ADR-020, #1898): one nullable column, its
     foreign key to ``users`` (ON DELETE SET NULL) and its index; the downgrade
     removes exactly that."""
 
@@ -1268,7 +1415,7 @@ class TestCaseDriverRevision:
     def test_upgrade_adds_the_column_and_downgrade_removes_only_it(
         self, clean_database, database_url
     ):
-        result = run_alembic(f"upgrade {TURN_RECEIPTS_REVISION}", database_url)
+        result = run_alembic(f"upgrade {REMOVE_SUGGESTIONS_REVISION}", database_url)
         assert result.returncode == 0, result.stderr
         tables = get_tables(TEST_DB)
         indexes = self._cases_indexes()
@@ -1287,9 +1434,9 @@ class TestCaseDriverRevision:
             foreign_keys + [("users", "driver_id", "user_id", "SET NULL")]
         )
 
-        result = run_alembic(f"downgrade {TURN_RECEIPTS_REVISION}", database_url)
+        result = run_alembic(f"downgrade {REMOVE_SUGGESTIONS_REVISION}", database_url)
         assert result.returncode == 0, result.stderr
-        assert get_current_revision(database_url) == TURN_RECEIPTS_REVISION
+        assert get_current_revision(database_url) == REMOVE_SUGGESTIONS_REVISION
         assert self._driver_column() == []
         assert self._cases_indexes() == indexes
         assert self._cases_foreign_keys() == foreign_keys
@@ -1331,7 +1478,7 @@ class TestCaseDriverRevision:
     def test_the_postgresql_upgrade_names_the_key_and_changes_no_policy(self):
         pg = "postgresql://offline@localhost/offline"
         up = run_alembic(
-            f"upgrade {TURN_RECEIPTS_REVISION}:{CASE_DRIVER_REVISION} --sql", pg
+            f"upgrade {REMOVE_SUGGESTIONS_REVISION}:{CASE_DRIVER_REVISION} --sql", pg
         )
         assert up.returncode == 0, up.stderr
         sql = up.stdout
@@ -1346,7 +1493,7 @@ class TestCaseDriverRevision:
         assert "CREATE POLICY" not in sql
 
         down = run_alembic(
-            f"downgrade {CASE_DRIVER_REVISION}:{TURN_RECEIPTS_REVISION} --sql", pg
+            f"downgrade {CASE_DRIVER_REVISION}:{REMOVE_SUGGESTIONS_REVISION} --sql", pg
         )
         assert down.returncode == 0, down.stderr
         assert "DROP INDEX ix_cases_driver_id;" in down.stdout

@@ -394,77 +394,6 @@ def create_knowledge_service(
     )
 
 
-def create_suggestion_service(
-    *,
-    case_repository: Any | None,
-    knowledge_service: Any,
-    sanitizer: Any,
-    llm_provider: Any | None,
-    settings: Any,
-) -> Any:
-    """Create the knowledge SuggestionService singleton (#1214, #1227).
-
-    One instance per process, holding a REAL ``knowledge_service`` — the
-    collaborator ``approve_suggestion`` publishes through. Without it the
-    service refuses to approve rather than reporting a success it cannot back.
-
-    The store is ``knowledge_suggestions`` via
-    :class:`DatabaseSuggestionRepository` (#1227). It used to be an in-process
-    dict on this instance: making the service a singleton (#1214) is what made
-    extract → approve work within one worker, but it left the suggestion
-    non-durable across a restart and invisible to every other worker — and the
-    shipped cloud topology runs the API at three replicas with no session
-    affinity, so approve landed on a pod that had never seen the extract on
-    roughly a coin flip. The repository is sessionless (one short transaction
-    per call), which is what a process singleton can hold and what keeps the
-    PostgreSQL RLS tenant binding correct.
-
-    **The choice is keyed off ``persistent_database_configured``** — the ONE
-    shared predicate every factory uses (fm#1128), the same call
-    ``create_user_service`` makes a few hundred lines below. Without it this
-    factory would hand the database repository an ephemeral or absent
-    ``DATABASE_URL``: SQLite in-memory is pooled with ``NullPool``, so each
-    per-operation session of a *sessionless* repository opens a brand-new empty
-    database and every write vanishes before the next read — and with
-    ``case_repository`` degrading to in-memory on the same configuration, the
-    suggestion's ``case_id`` foreign key would have no case row to point at, so
-    extract would 500 where the old dict store worked.
-
-    The API lifespan, the jobs runner and the ``fm-*`` operator CLIs refuse a
-    non-persistent ``DATABASE_URL`` before composing (fm#1647, #1659), so the
-    in-memory arm is a test seam.
-    """
-    from faultmaven.config.settings import persistent_database_configured
-    from faultmaven.modules.knowledge.domain.services.suggestion_service import (
-        SuggestionService,
-    )
-    from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
-        DatabaseSuggestionRepository,
-        InMemorySuggestionRepository,
-    )
-
-    database_url = getattr(getattr(settings, "database", None), "database_url", None)
-    if persistent_database_configured(database_url):
-        suggestion_repository = DatabaseSuggestionRepository()
-        logger.debug("SuggestionService using DatabaseSuggestionRepository")
-    else:
-        suggestion_repository = InMemorySuggestionRepository()
-        logger.warning(
-            "No persistent database is configured, so knowledge suggestions are "
-            "stored in memory: they will NOT survive a restart and are NOT "
-            "shared across workers. Reported as "
-            "suggestion_store_worker_safe=false on GET /admin/config/status."
-        )
-
-    return SuggestionService(
-        case_repository=case_repository,
-        knowledge_service=knowledge_service,
-        sanitizer=sanitizer,
-        llm_provider=llm_provider,
-        suggestion_repository=suggestion_repository,
-    )
-
-
 def create_organization_repository() -> Any | None:
     """Create the sessionless organization repository.
 
@@ -1716,24 +1645,5 @@ def register_services(container: BaseDIContainer) -> None:
         settings,
     )
     container._register_service("data_service", data_service)
-
-    # Suggestion Service — the write side of the knowledge flywheel (#1214),
-    # over the durable ``knowledge_suggestions`` store (#1227).
-    #
-    # This was NEVER registered: ``app.state.suggestion_service`` was read in
-    # two routes and written nowhere, so both fell through to a throwaway
-    # ``SuggestionService()`` per request — no knowledge service, no sanitizer,
-    # and a private empty store. A suggestion created by the extract request
-    # could not be found by the approve request, which answered 404.
-    #
-    # Registered AFTER knowledge_service because it takes it as a collaborator.
-    suggestion_service = create_suggestion_service(
-        case_repository=case_repository,
-        knowledge_service=knowledge_service,
-        sanitizer=container.get_service("sanitizer", required=True),
-        llm_provider=container.get_service("llm_provider", required=False),
-        settings=settings,
-    )
-    container._register_service("suggestion_service", suggestion_service)
 
     logger.info("✅ Service layer registered")

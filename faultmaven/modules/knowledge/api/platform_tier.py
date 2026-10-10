@@ -3,9 +3,9 @@
 This is the thin API-layer adapter over the shared policy in
 :mod:`faultmaven.modules.knowledge.domain.global_authoring`. It is used by the
 routes whose scope is a request field known at the API layer (``convert`` /
-``runbooks/create`` / ``documents`` upload / ``suggestions/{id}/approve``): those
-routes call :func:`require_global_authoring_allowed` (the multi arm) alongside
-their own admin-role check (the single-tenant arm).
+``runbooks/create`` / ``documents`` upload): those routes call
+:func:`require_global_authoring_allowed` (the multi arm) alongside their own
+admin-role check (the single-tenant arm).
 
 The publish/mint points whose scope is only known after a DB/disk lookup
 (``verify_draft`` / ``verify_batch`` / ``scan``) enforce the same policy from the

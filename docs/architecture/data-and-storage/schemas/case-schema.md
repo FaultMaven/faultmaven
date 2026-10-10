@@ -380,7 +380,7 @@ CREATE TABLE cases (
     -- team_id column DROPPED in migration 028 (d0e1f2a3b4c5). Team visibility is
     -- now carried by the polymorphic `resource_shares` table, not a column here.
     user_id VARCHAR(36) REFERENCES users(user_id) ON DELETE SET NULL,
-    -- The DRIVER (ADR-020, migration 011): who holds the investigation writes.
+    -- The DRIVER (ADR-020, migration 012): who holds the investigation writes.
     -- NULL = the creator drives (effective driver = COALESCE(driver_id, user_id)).
     driver_id VARCHAR(36) REFERENCES users(user_id) ON DELETE SET NULL,
     title VARCHAR(200) NOT NULL,
@@ -1335,7 +1335,6 @@ WHERE e.case_id = :case_id
 - ✅ `reports`
 - ✅ `investigation_sessions`
 - ✅ `knowledge_items`
-- ✅ `knowledge_suggestions`
 - ✅ `conversion_jobs`
 - ✅ `conversion_drafts`
 

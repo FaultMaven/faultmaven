@@ -441,7 +441,7 @@ class TestAnalysisPhase:
             service._settings,
             "sample text",
             "test.md",
-            model_boundary_redaction("conv_test", None),
+            model_boundary_redaction(None),
         )
 
         assert isinstance(result, AnalysisResult)
@@ -470,7 +470,7 @@ class TestAnalysisPhase:
             service._settings,
             "sample text",
             "test.md",
-            model_boundary_redaction("conv_test", None),
+            model_boundary_redaction(None),
         )
 
         assert result.source_assessment.content_type == "troubleshooting_guide"
@@ -493,7 +493,7 @@ class TestAnalysisPhase:
                 service._settings,
                 "sample text",
                 "test.md",
-                model_boundary_redaction("conv_test", None),
+                model_boundary_redaction(None),
             )
 
         assert exc.value.error_code == ConversionErrorCode.LLM_PARSE_ERROR

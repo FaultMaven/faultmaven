@@ -370,10 +370,6 @@ async def test_upload_document_stores_lf_on_disk(
 ):
     """What is written must be what was validated.
 
-    This is also the guard for the suggestion-APPROVAL path: it reaches this
-    method as ``upload_document(content=suggestion.suggested_content)``, so a
-    CRLF suggestion becomes a CRLF runbook file without it.
-
     Mutation: drop ``content = normalize_line_endings(content)`` from
     ``upload_document`` — the gate still passes (layer 4 normalises what it
     SEES) and a CRLF file lands on disk, which is exactly the silent split
@@ -429,39 +425,6 @@ async def test_update_document_metadata_reindexes_lf(
 
     indexed = service._index_document_in_vector_store.call_args.args[0]
     assert CR not in indexed.content, repr(indexed.content[:200])
-
-
-@pytest.mark.asyncio
-async def test_update_suggestion_stores_lf():
-    """``PUT /knowledge/suggestions/{id}`` takes an UNTYPED ``dict`` body, so
-    there is no request model a Pydantic validator could normalise on and this
-    service method is the boundary.
-
-    It matters because of where the content goes: ``suggested_content`` is
-    re-validated by the review loop and then handed to ``upload_document``
-    verbatim on approval, so an edit pasted from a Windows editor showed the
-    reviewer six "Missing required section" errors about a document that had
-    all six.
-
-    Mutation: pass ``content`` straight through instead of normalising it.
-    """
-    from faultmaven.modules.knowledge.domain.services.suggestion_service import (
-        SuggestionService,
-    )
-
-    service = SuggestionService(suggestion_repository=AsyncMock())
-    suggestion = MagicMock()
-    suggestion.suggested_title = "T"
-    suggestion.suggested_content = "old"
-    service.get_suggestion_visible = AsyncMock(return_value=suggestion)
-    service._scan_and_record = AsyncMock()
-
-    await service.update_suggestion(
-        "sug-1", content="## Causes\r\n### Cause A: x\r\n", enterprise_id="ent-1"
-    )
-
-    delivered = suggestion.update_content.call_args.kwargs["content"]
-    assert CR not in delivered, repr(delivered)
 
 
 @pytest.mark.asyncio

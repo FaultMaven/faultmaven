@@ -71,7 +71,6 @@ TABLE_DOMAIN = {
     "reports": "case",
     # Knowledge domain
     "knowledge_items": "knowledge",
-    "knowledge_suggestions": "knowledge",
     "conversion_jobs": "knowledge",
     "conversion_drafts": "knowledge",
     # Sharing domain

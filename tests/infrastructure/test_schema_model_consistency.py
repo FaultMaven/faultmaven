@@ -47,7 +47,6 @@ from faultmaven.infrastructure.persistence.models import (
     HypothesisModel,
     InvestigationSessionModel,
     KnowledgeItemModel,
-    KnowledgeSuggestionModel,
     SolutionModel,
     UploadedFileModel,
 )
@@ -316,7 +315,6 @@ class TestSchemaModelConsistency:
             ("case_tags", CaseTagModel),
             ("investigation_sessions", InvestigationSessionModel),
             ("knowledge_items", KnowledgeItemModel),
-            ("knowledge_suggestions", KnowledgeSuggestionModel),
         ],
     )
     def test_table_model_consistency(self, table_name: str, model_class, db_path):

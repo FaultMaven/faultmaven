@@ -48,13 +48,12 @@ def client(booted_app_client):
     return booted_app_client
 
 
-#: Every JSON route that reaches a body-size-bound consumer. Four, not the two
-#: the issue named — the last two take an untyped ``dict`` body, so they have no
+#: Every JSON route that reaches a body-size-bound consumer. Three, not the two
+#: the issue named — the last takes an untyped ``dict`` body, so it has no
 #: request model a field-level bound could have attached to.
 _GUARDED_ROUTES = [
     ("PUT", "/api/v1/knowledge/conversions/conv_x/drafts/draft_x", "content"),
     ("POST", "/api/v1/knowledge/runbooks/create", "causes"),
-    ("PUT", "/api/v1/knowledge/suggestions/sug_x", "content"),
     ("PUT", "/api/v1/knowledge/documents/doc_x", "content"),
 ]
 

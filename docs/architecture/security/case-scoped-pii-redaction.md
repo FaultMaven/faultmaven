@@ -154,11 +154,11 @@ if redaction_ctx:
 
 ### Knowledge-Authoring Paths
 
-**Files:** `modules/knowledge/domain/services/suggestion_service.py` (case→runbook extraction), `modules/knowledge/domain/services/conversion_service/` and `document_preprocessor.py` (case→runbook and document→runbook conversion)
+**Files:** `modules/knowledge/domain/services/conversion_service/` and `document_preprocessor.py` (case→runbook and document→runbook conversion)
 
-The paths that turn a case or an uploaded document into a runbook send that text to a model too, and apply the same rule at the same layer (#1661, #1901). Each builds its context through `model_boundary_redaction(scope_id, sanitizer)` in `infrastructure/security/case_redaction.py`: the same class, over the same injected sanitizer instance the engine holds, enabled by `should_redact()`. `scope_id` is the case id for a case's text and the conversion's id for an uploaded document, which has no case; placeholders are a keyed function of the value (#971), so the id does not change them.
+The paths that turn a case or an uploaded document into a runbook send that text to a model too, and apply the same rule at the same layer (#1661, #1901). Each builds its context through `model_boundary_redaction(sanitizer)` in `infrastructure/security/case_redaction.py`: the same class, over the same injected sanitizer instance the engine holds, enabled by `should_redact()`. It takes no case or conversion id: the context keeps no registry, so an id would key nothing, and placeholders are a keyed function of the value (#971), so they match the investigation's without one.
 
-Every model call is covered: extraction's generate (and its repair turn), and conversion's triage, analysis and per-failure-mode generation. Each redacts its whole outbound message list before the truncation retry, so a retry resends the redacted text, and outside any catch-all, so a `RedactionUnavailableError` stops the run with nothing sent — triage's fail-open guard and conversion's per-failure-mode error handling do not absorb it. A multi-mode conversion redacts every failure mode's request before it sends any (`ConversionService._prepare_conversion`), so a refusal on the third of six modes sends no generation and writes no draft, rather than leaving the first two behind. Only text content is redacted: `CaseRedactionContext.asanitize_messages` refuses a message whose content is not a string (`TypeError`) instead of sending it unredacted.
+Every model call is covered: conversion's triage, analysis and per-failure-mode generation. Each redacts its whole outbound message list before the truncation retry, so a retry resends the redacted text, and outside any catch-all, so a `RedactionUnavailableError` stops the run with nothing sent — triage's fail-open guard and conversion's per-failure-mode error handling do not absorb it. A multi-mode conversion redacts every failure mode's request before it sends any (`ConversionService._prepare_conversion`), so a refusal on the third of six modes sends no generation and writes no draft, rather than leaving the first two behind. Only text content is redacted: `CaseRedactionContext.asanitize_messages` refuses a message whose content is not a string (`TypeError`) instead of sending it unredacted.
 
 It matters independently of the router. `LLMRouter._sanitize_if_needed()` runs its own pass under the same flag, so a default deployment with `SANITIZE_PII=true` already sent this text redacted — but that pass is a property of the default router, which `LLM_ROUTER_CLASS` can substitute.
 
@@ -215,9 +215,8 @@ If a user types `<IP_ADDRESS_1>` in their message, `reverse()` would replace it 
 | `core/investigation/milestone_engine/turn_completion.py` | Saves the registry (`_finalize_turn`) |
 | `core/investigation/milestone_engine/terminal_turns.py` | The same lifecycle on the terminal Q&A path |
 | `modules/agent/domain/services/investigation_service/turn_results.py` | Reverse-substitution (`_absorb_engine_result`) |
-| `modules/knowledge/domain/services/suggestion_service.py` | Redacts the extraction prompt (`_generate_once`) |
 | `modules/knowledge/domain/services/conversion_service/`, `document_preprocessor.py` | Redact conversion's triage, analysis and generation calls |
-| `container/providers/services.py` | Passes the sanitizer and the Redis client to the engine, and the sanitizer to the suggestion and conversion services |
+| `container/providers/services.py` | Passes the sanitizer and the Redis client to the engine, and the sanitizer to the conversion service |
 | `config/settings.py` | `redaction_registry_ttl_hours`, `entities_to_protect`, `min_score_threshold` |
 
 ## What Redaction Does Not Touch

@@ -1,12 +1,12 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-10-09 23:37 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-10-10 02:09 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
 ## Summary
 
-**44 tables** in the schema.
+**43 tables** in the schema.
 
 | Table | Columns | Primary Key | Foreign Keys |
 |-------|---------|-------------|--------------|
@@ -28,8 +28,7 @@
 | `hypotheses` | 26 | `hypothesis_id` | cases, causal_nodes, enterprises, organizations, users |
 | `hypothesis_evidence` | 9 | `hypothesis_id, evidence_id` | enterprises, evidence, hypotheses, organizations, users |
 | `investigation_sessions` | 18 | `session_id` | cases, enterprises, organizations, users |
-| `knowledge_items` | 29 | `item_id` | enterprises, organizations, users |
-| `knowledge_suggestions` | 31 | `suggestion_id` | cases, enterprises, knowledge_items, organizations, users |
+| `knowledge_items` | 28 | `item_id` | enterprises, organizations, users |
 | `llm_turn_spend` | 17 | `enterprise_id, case_id, turn_number` | cases, enterprises |
 | `llm_usage_daily` | 15 | `enterprise_id, usage_date, billing_subject_kind, billing_subject_id, actor_user_id, provider, model, outcome` | enterprises |
 | `oauth_authorization_codes` | 8 | `code` | users |
@@ -363,7 +362,6 @@ erDiagram
         VARCHAR organization_id FK
         VARCHAR scope
         VARCHAR owner_id FK
-        VARCHAR source_suggestion_id
         VARCHAR title
         TEXT content
         VARCHAR item_type
@@ -385,39 +383,6 @@ erDiagram
         DATETIME last_retrieved_at
         BOOLEAN is_published
         TEXT metadata
-        DATETIME created_at
-        DATETIME updated_at
-    }
-    knowledge_suggestions {
-        VARCHAR suggestion_id PK
-        VARCHAR enterprise_id FK
-        VARCHAR organization_id FK
-        VARCHAR case_id FK
-        VARCHAR knowledge_item_id FK
-        VARCHAR status
-        VARCHAR suggested_title
-        TEXT suggested_content
-        VARCHAR suggested_type
-        VARCHAR extracted_by FK
-        DATETIME extracted_at
-        BOOLEAN include_messages
-        BOOLEAN include_evidence
-        VARCHAR pii_scan_status
-        TEXT pii_scan_result
-        VARCHAR pii_remediated_by FK
-        DATETIME pii_remediated_at
-        VARCHAR source_case_title
-        INTEGER message_count
-        INTEGER evidence_count
-        VARCHAR reviewed_by FK
-        DATETIME reviewed_at
-        TEXT review_notes
-        TEXT rejection_reason
-        TEXT metadata
-        BOOLEAN validation_passed
-        TEXT validation_errors
-        TEXT validation_warnings
-        INTEGER version
         DATETIME created_at
         DATETIME updated_at
     }
@@ -747,7 +712,6 @@ erDiagram
     cases ||--o{ evidence_needs : ""
     cases ||--o{ hypotheses : ""
     cases ||--o{ investigation_sessions : ""
-    cases ||--o{ knowledge_suggestions : ""
     cases ||--o{ llm_turn_spend : ""
     cases ||--o{ reports : ""
     cases ||--o{ solutions : ""
@@ -775,7 +739,6 @@ erDiagram
     enterprises ||--o{ hypothesis_evidence : ""
     enterprises ||--o{ investigation_sessions : ""
     enterprises ||--o{ knowledge_items : ""
-    enterprises ||--o{ knowledge_suggestions : ""
     enterprises ||--o{ llm_turn_spend : ""
     enterprises ||--o{ llm_usage_daily : ""
     enterprises ||--o{ organization_members : ""
@@ -801,7 +764,6 @@ erDiagram
     hypotheses ||--o{ hypothesis_evidence : ""
     hypotheses ||--o{ solutions : ""
     knowledge_items ||--o{ conversion_drafts : ""
-    knowledge_items ||--o{ knowledge_suggestions : ""
     organizations ||--o{ case_actions : ""
     organizations ||--o{ case_entities : ""
     organizations ||--o{ case_messages : ""
@@ -819,7 +781,6 @@ erDiagram
     organizations ||--o{ hypothesis_evidence : ""
     organizations ||--o{ investigation_sessions : ""
     organizations ||--o{ knowledge_items : ""
-    organizations ||--o{ knowledge_suggestions : ""
     organizations ||--o{ organization_members : ""
     organizations ||--o{ reports : ""
     organizations ||--o{ resource_shares : ""
@@ -841,7 +802,6 @@ erDiagram
     users ||--o{ hypothesis_evidence : ""
     users ||--o{ investigation_sessions : ""
     users ||--o{ knowledge_items : ""
-    users ||--o{ knowledge_suggestions : ""
     users ||--o{ oauth_authorization_codes : ""
     users ||--o{ organization_members : ""
     users ||--o{ organizations : ""
