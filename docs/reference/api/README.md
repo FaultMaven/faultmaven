@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 13.1.0
+**Version:** 13.2.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -1943,7 +1943,7 @@ Hand the case's investigation writes to another account (ADR-020 D4). The caller
 - `200` — Successful Response ([`CaseSummary`](#casesummary))
 - `403` — The caller reads the case but neither created nor drives it
 - `404` — No such case, or the caller cannot read it
-- `409` — `CASE_TERMINAL`: the case is resolved or closed. `CASE_VERSION_CONFLICT`: the case kept changing; reload and retry
+- `409` — `CASE_VERSION_CONFLICT`: the case kept changing; reload and retry. A resolved or closed case is NOT refused: its driver can still be changed.
 - `422` — The target is not a candidate for this case
 
 ---

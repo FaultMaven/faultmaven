@@ -962,7 +962,11 @@ async def _auto_title_case_if_default(
     turn should be reported as failed because its title could not be made.
     """
     try:
-        case = await case_service.get_case(case_id, user_id)
+        # DRIVER only (ADR-020 D2): naming the case writes its title, an
+        # investigation write. The turn that triggers this was the driver's,
+        # but the case can be handed on before the turn answers; a read gate
+        # here would spend a model call for a caller ``update_case`` refuses.
+        case = await case_service.get_case(case_id, user_id, driver_only=True)
         if not case or not _is_default_case_title(case.title):
             return
 

@@ -50,6 +50,7 @@ from faultmaven.infrastructure.persistence.user_repository import (
     UserRepository,
 )
 from faultmaven.infrastructure.persistence.user_repository import User as RepositoryUser
+from faultmaven.infrastructure.shims.metrics import Counter
 from faultmaven.models.rbac import Role, get_permissions_for_roles
 from faultmaven.modules.auth.domain.models.rbac import effective_roles
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
@@ -138,6 +139,18 @@ RESET_TOKEN_PREFIX = "password_reset:"
 RESET_REFUSED_CODE = "INVALID_RESET_TOKEN"
 RESET_REFUSED_MESSAGE = (
     "Password reset link is invalid or has expired. Please request a new one."
+)
+
+
+#: A driver release that failed around a deactivation (ADR-020 D3). The
+#: deactivation proceeds regardless; a non-zero rate means accounts are being
+#: turned off while still driving cases their creators must reclaim.
+case_driver_release_failed_total = Counter(
+    "faultmaven_case_driver_release_failed_total",
+    "Driver releases that raised around an account deactivation. The account "
+    "is deactivated anyway (the case store never blocks it); the cases it still "
+    "drives refuse it at the driver gate until their creators reclaim them.",
+    ["hook"],
 )
 
 
@@ -773,10 +786,17 @@ class UserService(BaseService):
 
         Every case the account drives is handed back to its creator FIRST
         (ADR-020 D3): the account row commits in the account store, which the
-        case store cannot share a transaction with, and a release after it
-        could leave a deactivated driver pinned to cases nobody else can
-        write. If the deactivation then fails, those cases went back to their
-        creators needlessly, audited, and can be reassigned.
+        case store cannot share a transaction with. If the deactivation then
+        fails, those cases went back to their creators needlessly, audited,
+        and can be reassigned. The release runs AGAIN after the account write,
+        because a reassignment to this account can land in between.
+
+        **The case store never blocks a deactivation.** Turning an account off
+        is a security action; if a release errors it is logged and counted
+        (``faultmaven_case_driver_release_failed_total``) and the account is
+        deactivated anyway. A case it still drives refuses it — the driver gate
+        reads the account's access — and its creator reclaims it with
+        ``PUT /cases/{id}/driver``.
         ``actor_user_id`` is the operator, recorded on the release audit rows.
         """
         self.logger.info(f"Deactivating user: {user_id}")
@@ -785,21 +805,39 @@ class UserService(BaseService):
         if not user:
             raise NotFoundError("User", user_id)
 
-        if self._case_driver_release is not None:
-            await self._case_driver_release.release_driver_before_deactivation(
-                user_id=user_id, actor_user_id=actor_user_id
-            )
+        await self._release_driven_cases(user_id, actor_user_id, "before")
 
         user.is_active = False
         user.deleted_at = datetime.now(timezone.utc)
         user.updated_at = datetime.now(timezone.utc)
 
         deactivated_user = await self.user_repo.save(user)
+        await self._release_driven_cases(user_id, actor_user_id, "after")
 
         # Persist first, then revoke — see reset_password for why the reverse
         # order opens a TOCTOU.
         await self.auth_service.revoke_user_tokens(user_id)
         return deactivated_user
+
+    async def _release_driven_cases(
+        self, user_id: str, actor_user_id: Optional[str], phase: str
+    ) -> None:
+        """Hand the account's driven cases back (ADR-020 D3), never raising."""
+        if self._case_driver_release is None:
+            return
+        try:
+            await self._case_driver_release.release_drivers_for_deactivation(
+                user_id=user_id, actor_user_id=actor_user_id
+            )
+        except Exception:  # noqa: BLE001 - the case store must not block this
+            case_driver_release_failed_total.labels(hook="deactivation").inc()
+            logger.error(
+                "Releasing the cases %s drives failed (%s the deactivation); "
+                "deactivating anyway — their creators can reclaim them",
+                user_id,
+                phase,
+                exc_info=True,
+            )
 
     async def deactivate_user_admin(
         self,

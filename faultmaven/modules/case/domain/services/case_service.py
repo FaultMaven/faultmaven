@@ -2075,16 +2075,24 @@ class CaseService(CaseDriverMixin, ICaseService):
             )
         # Release FIRST (ADR-020 D3): the share row commits in its own store,
         # so the driver is handed back before the write that would cost them
-        # their last read path, never after. If the unshare then fails, the
-        # case has gone back to its creator needlessly, audited, and the
-        # creator can reassign it again.
-        await self.release_driver_before_unshare(case, team_id, actor_user_id)
+        # their last read path. If the unshare then fails, the case has gone
+        # back to its creator needlessly, audited, and the creator can
+        # reassign it again. A second pass follows the write.
+        await self.release_driver_for_unshare(case, team_id, actor_user_id)
         removed = await self.share_repository.unshare(
             resource_type="case",
             resource_id=case_id,
             scope_type="team",
             scope_id=team_id,
         )
+        # The second pass (ADR-020 D3), on a FRESH load: a reassignment can
+        # land between the first pass and the share write, and would leave its
+        # new driver depending on the share just removed. The release is
+        # conditional on the stored driver and audited, so this is idempotent.
+        if removed:
+            fresh = await self.repository.get(case_id)
+            if fresh is not None:
+                await self.release_driver_for_unshare(fresh, team_id, actor_user_id)
         if removed:
             logger.info(
                 "Case %s unshared from team %s by %s",

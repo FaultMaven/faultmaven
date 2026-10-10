@@ -746,8 +746,8 @@ class TestTheLinkGatesTheCase:
 
     @pytest.mark.asyncio
     async def test_a_teammate_holding_a_share_is_refused(self, mock_repo):
-        """Owner only: a share is read-only until hand-off ships (ADR-013 D4,
-        amended 2026-10-09, #1898).
+        """Driver only (ADR-020 D2): a teammate who reads the case but does not
+        drive it is refused.
 
         The link writes ``cases.last_activity`` and moves the session's
         current-case pointer. It used to admit a teammate "matching

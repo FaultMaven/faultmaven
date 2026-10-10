@@ -124,15 +124,15 @@ class TestReassign:
         assert response.status_code == status, response.text
         assert (await stack.repository.get(CASE_ID)).driver_id is None
 
-    async def test_a_terminal_case_is_a_labelled_409(self, stack, call_api):
+    async def test_a_terminal_case_may_change_driver(self, stack, call_api):
         await _case(stack.repository, state=CaseState.CLOSED)
 
         response = await call_api(
             stack.as_user(CREATOR), "PUT", DRIVER_PATH, json={"driver_id": DRIVER}
         )
 
-        assert response.status_code == 409, response.text
-        assert response.headers["x-error-code"] == "CASE_TERMINAL"
+        assert response.status_code == 200, response.text
+        assert response.json()["driver_id"] == DRIVER
 
     async def test_an_empty_target_is_a_validation_error(self, stack, call_api):
         await _case(stack.repository)

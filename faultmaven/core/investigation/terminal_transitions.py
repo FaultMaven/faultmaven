@@ -1805,7 +1805,7 @@ async def evaluate_runbook_suggestion(
         scope_resolver: Zero-arg async callable returning the case driver's
             KB read scope filter (``case_retrieval_scope``, #1919: global ∪ the
             driver's personal KB ∪ the driver's team-shared runbooks; the driver
-            is ``case.user_id`` until #1898). Supplied by the engine, which owns the team-membership and share-table dependencies. Required for dedup to
+            is the case's effective driver, ADR-020). Supplied by the engine, which owns the team-membership and share-table dependencies. Required for dedup to
             run: without it the search cannot be honestly scoped, so dedup is
             SKIPPED with the "did not run" caveat rather than quietly searching
             a narrower scope. If the resolver RAISES (e.g. the team arm could

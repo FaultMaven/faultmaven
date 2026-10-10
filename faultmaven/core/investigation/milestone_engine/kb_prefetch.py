@@ -5,6 +5,7 @@ import re
 
 from faultmaven.core.investigation.milestone_engine.retrieval_scope import (
     case_retrieval_scope,
+    retrieval_principal,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -201,7 +202,7 @@ class KbPrefetcher:
         try:
             # The case driver's knowledge (#1919): global ∪ the driver's
             # personal KB ∪ the runbooks shared to the driver's teams, keyed on
-            # the case (the driver is ``case.user_id`` until #1898), never on
+            # the case (its effective driver, ADR-020 D9), never on
             # whoever submitted the turn. The excerpts this stores become the
             # turn's ``sources``, which each viewer is access-checked against
             # when they are read back (``gate_kb_sources``). The team arm is
@@ -272,7 +273,8 @@ class KbPrefetcher:
                 # from every reader (``kb_push.visible_kb_context``) and
                 # re-run by :meth:`refresh_for_driver` at the next turn.
                 case.kb_context_origin = {
-                    "driver_id": case.effective_driver_id,
+                    # The SAME key the scope above was built on.
+                    "driver_id": retrieval_principal(case),
                     "query": query,
                     "trigger": trigger,
                 }

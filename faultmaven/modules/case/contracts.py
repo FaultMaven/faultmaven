@@ -646,33 +646,39 @@ class ICaseMetadataReader(Protocol):
 
 
 class ICaseDriverRelease(Protocol):
-    """Hand cases back to their creators BEFORE an operation outside the case
-    module takes a driver's read access away (ADR-020 D3).
+    """Hand cases back to their creators around an operation outside the
+    case module that takes a driver's read access away (ADR-020 D3).
 
     Implemented by the case service, called by the auth module's team and
     account services. Each method decides which of the account's driven cases
-    would lose their driver's read access once the caller's own write lands,
-    and releases exactly those — FIRST, in the same request, because the
+    would lose (or have lost) their driver's read access once the caller's own
+    write lands, and releases exactly those. It is called TWICE, because the
     caller's write commits in a store this module cannot share a transaction
-    with. Release-first fails safe: if the caller's write then fails or is
-    refused, the case has handed back to its creator needlessly, with an
-    audited reason, and the creator can reassign it again. Returns how many
-    cases were released.
+    with:
+
+    - FIRST, before the write, so the driver is never left pinned to a case
+      they can no longer read. Release-first fails safe: if the write then
+      fails or is refused, the case has handed back to its creator needlessly,
+      with an audited reason, and the creator can reassign it again.
+    - AGAIN, after the write, because a reassignment can land between the
+      first pass and the write and make a new driver depend on the read path
+      the write removes. Each release is conditional on the stored driver and
+      audited, so the second pass is idempotent.
+
+    Returns how many cases were released.
     """
 
-    async def release_driver_before_team_leave(
+    async def release_drivers_for_team_leave(
         self, *, enterprise_id: str, team_id: str, user_id: str
     ) -> int:
-        """``user_id`` is about to leave ``team_id``: release every case they
-        drive that is shared with ``team_id`` and with no other team of
-        theirs."""
+        """``user_id`` leaves ``team_id``: release every case they drive that is
+        shared with ``team_id`` and with no other team of theirs."""
         ...
 
-    async def release_driver_before_deactivation(
+    async def release_drivers_for_deactivation(
         self, *, user_id: str, actor_user_id: Optional[str]
     ) -> int:
-        """``user_id`` is about to be deactivated: release every case they
-        drive."""
+        """``user_id`` is deactivated: release every case they drive."""
         ...
 
 

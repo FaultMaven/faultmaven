@@ -91,7 +91,7 @@ class ToolContext:
     user_id: str
     # The KB read filter for this case (``case_retrieval_scope``, #1919): the
     # case driver's knowledge, keyed on the case rather than on this turn's
-    # user (the two coincide until #1898 adds a driver). Built by the orchestrator;
+    # user (on a turn they coincide: only the driver submits one, ADR-020). Built by the orchestrator;
     # ``None`` means no scope was resolved, and kb_qa then refuses to search.
     kb_scope_filter: Optional[Dict[str, Any]] = None
     case_repository: Optional[Any] = None

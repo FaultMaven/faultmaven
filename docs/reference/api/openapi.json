@@ -7195,7 +7195,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "13.1.0"
+    "version": "13.2.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -10568,7 +10568,7 @@
             "description": "No such case, or the caller cannot read it"
           },
           "409": {
-            "description": "`CASE_TERMINAL`: the case is resolved or closed. `CASE_VERSION_CONFLICT`: the case kept changing; reload and retry"
+            "description": "`CASE_VERSION_CONFLICT`: the case kept changing; reload and retry. A resolved or closed case is NOT refused: its driver can still be changed."
           },
           "422": {
             "description": "The target is not a candidate for this case"

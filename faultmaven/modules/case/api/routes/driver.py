@@ -8,8 +8,10 @@ creator and its effective driver only; refusals come from the service:
 - a caller who cannot read the case: 404, as on every case route;
 - a reader who is neither creator nor driver: 403;
 - a target who is not a candidate: 422;
-- a terminal case: 409 ``CASE_TERMINAL``; a lost version race: 409
-  ``CASE_VERSION_CONFLICT``.
+- a lost version race: 409 ``CASE_VERSION_CONFLICT``.
+
+A terminal case is not refused: it still has driver-only writes (text
+questions, report regeneration and edits), and its driver can be changed.
 
 Standalone gets no refusal of its own: it has no teams, so the creator is the
 only candidate and any other target is the same 422.
@@ -92,9 +94,9 @@ async def list_driver_candidates(
         **_REFUSALS,
         409: {
             "description": (
-                "`CASE_TERMINAL`: the case is resolved or closed. "
                 "`CASE_VERSION_CONFLICT`: the case kept changing; reload and "
-                "retry"
+                "retry. A resolved or closed case is NOT refused: its driver "
+                "can still be changed."
             )
         },
         422: {"description": "The target is not a candidate for this case"},

@@ -61,11 +61,13 @@ class _Knowledge:
     def __init__(self, fail: bool = False):
         self.fail = fail
         self.calls = []
+        self.filters = []
 
     async def search_knowledge(
         self, query, limit=10, filters=None, use_hybrid=False, min_score=None
     ):
         self.calls.append(query)
+        self.filters.append(filters)
         if self.fail:
             raise RuntimeError("vector store unavailable")
         return [
@@ -139,6 +141,24 @@ class TestTheNextTurnsPrompt:
         assert CURRENT_MARKER in prompt, "control: the re-fetch reached the prompt"
         assert knowledge.calls == ["etcd member"], "re-run with the STORED query"
         assert case.kb_context_origin["driver_id"] == case.user_id
+
+    async def test_a_hand_off_refetches_with_the_new_drivers_key(self):
+        """The case is handed TO ``DRIVER`` after the creator's fetch: the
+        re-fetch searches ``DRIVER``'s scope, not the creator's, and stamps
+        the same key it searched with (review probe P6)."""
+        knowledge = _Knowledge()
+        engine = _wired(knowledge)
+        case = _handed_back_case(None)  # fetched for the creator
+        case.driver_id = DRIVER
+        case.kb_context_origin = {"driver_id": case.user_id, "query": "etcd member"}
+
+        assert await _turn(engine, case, SUBSTANTIVE)
+
+        (scope,) = knowledge.filters
+        assert {"owner_id": DRIVER} in scope["$or"]
+        assert {"owner_id": case.user_id} not in scope["$or"]
+        assert case.kb_context_origin["driver_id"] == DRIVER
+        assert PREVIOUS_MARKER not in _prompt(engine)
 
     async def test_a_failed_refetch_clears_rather_than_keeps_it(self):
         engine = _wired(_Knowledge(fail=True))

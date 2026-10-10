@@ -980,22 +980,9 @@ class DIContainer(BaseDIContainer):
             async def reassign_driver(self, case_id, actor_user_id, target_user_id):
                 # Mirrors CaseService's refusals; the one candidate is the
                 # creator, who already drives, so a valid call changes nothing.
-                from faultmaven.exceptions import (
-                    CASE_TERMINAL,
-                    ConflictError,
-                    ValidationException,
-                )
+                from faultmaven.exceptions import ValidationException
 
                 case = self._case_for_driver_governance(case_id, actor_user_id)
-                if case.state.is_terminal:
-                    raise ConflictError(
-                        f"Case {case_id} is {case.state.value}; its driver no "
-                        "longer changes",
-                        resource_type="Case",
-                        resource_id=case_id,
-                        conflict_reason="case_terminal",
-                        error_code=CASE_TERMINAL,
-                    )
                 if target_user_id != case.user_id:
                     raise ValidationException(
                         "driver_id: not a candidate for this case's driver"

@@ -23,7 +23,6 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Set
 
 from faultmaven.exceptions import (
-    CASE_TERMINAL,
     AuthorizationError,
     ConflictError,
     NotFoundError,
@@ -88,8 +87,10 @@ class CaseDriverMixin:
         return {a.user_id: a for a in accounts}
 
     async def _driver_candidates(self, case: Case) -> List[DriverCandidate]:
-        """The creator, then the active individual members of the case's
-        teams, in the case's enterprise (ADR-020 D4). Without an account reader
+        """The creator (while active), then the active individual members of
+        the case's teams, in the case's enterprise (ADR-020 D4). The members of
+        EVERY team the case is shared with are listed — the case's audience —
+        including teams the caller is not in. Without an account reader
         nothing can be vouched for beyond the creator, so only the creator is
         offered."""
         member_ids = await self._team_member_ids(
@@ -97,8 +98,16 @@ class CaseDriverMixin:
         )
         accounts = await self._accounts(case.enterprise_id, member_ids | {case.user_id})
         candidates: List[DriverCandidate] = []
-        if case.user_id:
-            creator = accounts.get(case.user_id)
+        creator = accounts.get(case.user_id) if case.user_id else None
+        # The creator is a candidate whatever its account KIND, but only while
+        # the account is ACTIVE (ADR-020 D4): handing a case to a deactivated
+        # creator would leave it with no live writer. With no account reader
+        # wired nothing can be vouched for, and the creator stays the one
+        # candidate. A RELEASE is different — it stores NULL whatever the
+        # creator's state, because it is about the driver's read access.
+        if case.user_id and (
+            (creator is not None and creator.is_active) or not self.account_reader
+        ):
             candidates.append(
                 DriverCandidate(
                     user_id=case.user_id,
@@ -192,21 +201,15 @@ class CaseDriverMixin:
             NotFoundError: the case is absent or the caller cannot read it.
             AuthorizationError: the caller reads it but is neither its creator
                 nor its effective driver.
-            ConflictError: the case is terminal (``CASE_TERMINAL``), or the
-                version race was lost repeatedly (``CASE_VERSION_CONFLICT``).
+            ConflictError: the version race was lost repeatedly
+                (``CASE_VERSION_CONFLICT``). A terminal case is NOT refused.
             ValidationException: the target is not a candidate (422).
         """
         for _ in range(_REASSIGN_ATTEMPTS):
+            # A terminal case may change driver too (ADR-020 D4): it still has
+            # driver-only writes — text questions, report regeneration and
+            # edits — and refusing would freeze them on the last driver.
             case = await self._case_for_driver_governance(case_id, actor_user_id)
-            if case.state.is_terminal:
-                raise ConflictError(
-                    f"Case {case_id} is {case.state.value}; its driver no "
-                    "longer changes",
-                    resource_type="Case",
-                    resource_id=case_id,
-                    conflict_reason="case_terminal",
-                    error_code=CASE_TERMINAL,
-                )
             candidates = {c.user_id for c in await self._driver_candidates(case)}
             if target_user_id not in candidates:
                 raise ValidationException(
@@ -284,11 +287,12 @@ class CaseDriverMixin:
         case_teams = set(await self.get_case_team_ids(case_id))
         return bool((case_teams - lost_team_ids) & (driver_team_ids - lost_team_ids))
 
-    async def release_driver_before_unshare(
+    async def release_driver_for_unshare(
         self, case: Case, team_id: str, actor_user_id: str
     ) -> bool:
-        """``case`` is about to be unshared from ``team_id``: release its
-        driver iff that share is the driver's last read path (ADR-020 D3)."""
+        """``case`` is (being) unshared from ``team_id``: release its driver
+        iff that share is, or was, the driver's last read path (ADR-020 D3).
+        Called before the share write and again after it, on a fresh load."""
         if not case.driver_id or case.driver_id == case.user_id:
             return False
         driver_teams = set(await self._resolve_user_team_ids(case.driver_id))
@@ -310,7 +314,7 @@ class CaseDriverMixin:
             actor_user_id,
         )
 
-    async def release_driver_before_team_leave(
+    async def release_drivers_for_team_leave(
         self, *, enterprise_id: str, team_id: str, user_id: str
     ) -> int:
         """``user_id`` is about to leave ``team_id`` (``ICaseDriverRelease``)."""
@@ -332,7 +336,7 @@ class CaseDriverMixin:
                 released += 1
         return released
 
-    async def release_driver_before_deactivation(
+    async def release_drivers_for_deactivation(
         self, *, user_id: str, actor_user_id: Optional[str]
     ) -> int:
         """``user_id`` is about to be deactivated (``ICaseDriverRelease``)."""

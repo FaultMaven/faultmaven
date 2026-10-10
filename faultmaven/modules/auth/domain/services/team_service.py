@@ -326,7 +326,9 @@ class TeamService:
         in that transaction: an offer to a team nobody can see can be neither
         accepted nor declined.
 
-        **The leaver's driven cases are released FIRST** (ADR-020 D3): every
+        **The leaver's driven cases are released FIRST, and again after**
+        (ADR-020 D3; the second pass covers a reassignment landing between
+        them): every
         case shared with this team that the leaver drives and could read only
         through it goes back to its creator, before the membership write. The
         membership commits under the team-row lock in the team repository's
@@ -337,12 +339,24 @@ class TeamService:
         reassign them.
         """
         if self._case_driver_release is not None:
-            await self._case_driver_release.release_driver_before_team_leave(
+            await self._case_driver_release.release_drivers_for_team_leave(
                 enterprise_id=enterprise_id, team_id=team_id, user_id=user_id
             )
         outcome = await self._team_repository.leave_team(
             enterprise_id, team_id, user_id, TEAM_ROLE_ADMIN
         )
+        # The second pass (ADR-020 D3): a reassignment to the leaver can land
+        # between the first pass and the membership write, and would leave
+        # them driving a case they can no longer read. Conditional, idempotent
+        # and audited, so running it again is safe; run only when the leave
+        # actually happened.
+        if self._case_driver_release is not None and outcome in (
+            LeaveOutcome.LEFT,
+            LeaveOutcome.LEFT_AND_RETIRED,
+        ):
+            await self._case_driver_release.release_drivers_for_team_leave(
+                enterprise_id=enterprise_id, team_id=team_id, user_id=user_id
+            )
         if outcome is LeaveOutcome.ABSENT:
             raise _not_found()
         if outcome is LeaveOutcome.LAST_ADMIN:

@@ -4518,7 +4518,7 @@ async def test_a_share_grants_read_not_write(shared_world):
 async def test_a_share_grants_read_not_write_on_the_derived_surfaces(shared_world):
     """The other half of the battery: everything that hangs OFF the case.
 
-    A share is read visibility (ADR-013 D4, as amended 2026-10-09), and the
+    A share is read visibility; the writes are the driver's (ADR-020 D2), and the
     surfaces above are the ones that name the case row itself. These name
     something derived from it — an investigation session, the case's report
     set — and every one of them was reachable to a teammate, because the gate they
@@ -4675,7 +4675,8 @@ async def test_a_share_grants_read_not_write_on_the_derived_surfaces(shared_worl
 # The writes a share used to be thought to grant (#1898)
 # -----------------------------------------------------------------------------
 #
-# A share is read-only until hand-off ships (ADR-013 D4, amended 2026-10-09).
+# A share is read visibility; every investigation write is the DRIVER's
+# (ADR-020 D2), and a teammate drives only once the case is handed to them.
 # The four surfaces below were the ones a teammate still reached: the turn (the
 # route admits them and the SERVICE refuses), and three routes that resolved the
 # case through the READ allowlist — resume, ``/title`` and ``PUT`` — plus the
@@ -4884,7 +4885,7 @@ async def test_a_teammates_turn_is_refused_by_the_service_and_costs_nothing(
 
 
 async def test_a_teammate_cannot_resume_the_owners_case_in_a_session(shared_world):
-    """``POST /cases/sessions/{sid}/resume/{case_id}`` is OWNER only (#1898).
+    """``POST /cases/sessions/{sid}/resume/{case_id}`` is DRIVER only (ADR-020 D2).
 
     It writes ``cases.last_activity_at`` and points the session's
     ``current_case_id`` at the case, and it used to admit a teammate "matching
@@ -5068,11 +5069,11 @@ async def test_a_teammate_put_is_refused_as_an_absent_case_even_when_terminal(
 
 
 async def test_a_teammate_cannot_delete_the_owners_case_data(shared_world):
-    """``DELETE /cases/{id}/data/{data_id}`` is OWNER only (#1898).
+    """``DELETE /cases/{id}/data/{data_id}`` is DRIVER only (ADR-020 D2).
 
     The route is a stub: it deletes nothing and answers 204. Through the read
-    allowlist it told a teammate "deleted"; owner-only, the teammate gets the
-    404 an absent case gets and the owner keeps the stub's 204.
+    allowlist it told a teammate "deleted"; driver-only, the teammate gets the
+    404 an absent case gets and the driver (here the creator) keeps the stub's 204.
     """
     world = shared_world
     path = (

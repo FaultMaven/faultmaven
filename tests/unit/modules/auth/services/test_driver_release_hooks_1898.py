@@ -30,12 +30,12 @@ class _RecordingRelease:
         self.log = log
         self.calls: List[dict] = []
 
-    async def release_driver_before_team_leave(self, **kwargs):
+    async def release_drivers_for_team_leave(self, **kwargs):
         self.log.append("release")
         self.calls.append({"hook": "team_leave", **kwargs})
         return 1
 
-    async def release_driver_before_deactivation(self, **kwargs):
+    async def release_drivers_for_deactivation(self, **kwargs):
         self.log.append("release")
         self.calls.append({"hook": "deactivation", **kwargs})
         return 1
@@ -72,8 +72,10 @@ class TestLeavingATeam:
             enterprise_id=ACME, team_id=team.team_id, user_id=BOB.user_id
         )
 
-        assert log == ["release", "leave"]
-        assert release.calls == [
+        # Before the membership write, and again after it: a reassignment can
+        # land in between (ADR-020 D3).
+        assert log == ["release", "leave", "release"]
+        assert release.calls == 2 * [
             {
                 "hook": "team_leave",
                 "enterprise_id": ACME,
@@ -98,6 +100,7 @@ class TestLeavingATeam:
                 enterprise_id=ACME, team_id=team.team_id, user_id=ALICE.user_id
             )
 
+        # The first pass ran; no second pass for a leave that did not happen.
         assert [c["hook"] for c in release.calls] == ["team_leave"]
         assert teams.has_member(team.team_id, ALICE.user_id)
 
@@ -167,11 +170,50 @@ class TestDeactivation:
             user_id="u-driver", enterprise_id=ACME, admin_user_id="u-admin"
         )
 
-        assert log == ["release", "deactivate"]
-        assert release.calls == [
+        assert log == ["release", "deactivate", "release"]
+        assert release.calls == 2 * [
             {"hook": "deactivation", "user_id": "u-driver", "actor_user_id": "u-admin"}
         ]
         assert user.is_active is False
+
+    async def test_a_failing_release_never_blocks_the_deactivation(self, monkeypatch):
+        """Turning an account off is a security action: if the case store
+        errors, the failure is logged and counted and the account is
+        deactivated anyway. Its creators reclaim the cases it still drives."""
+        from faultmaven.modules.auth.domain.services import user_service as module
+
+        counted = []
+        monkeypatch.setattr(
+            module,
+            "case_driver_release_failed_total",
+            type(
+                "C",
+                (),
+                {
+                    "labels": lambda self, **kw: type(
+                        "L", (), {"inc": lambda s: counted.append(kw)}
+                    )()
+                },
+            )(),
+        )
+        log: List[str] = []
+        service, user = self._service(log)
+
+        class _Broken:
+            async def release_drivers_for_deactivation(self, **kwargs):
+                log.append("release-raised")
+                raise RuntimeError("case store unavailable")
+
+        service.bind_case_driver_release(_Broken())
+
+        await service.deactivate_user_admin(
+            user_id="u-driver", enterprise_id=ACME, admin_user_id="u-admin"
+        )
+
+        assert user.is_active is False
+        assert log == ["release-raised", "deactivate", "release-raised"]
+        assert counted == [{"hook": "deactivation"}] * 2
+        service.auth_service.revoke_user_tokens.assert_awaited_once_with("u-driver")
 
     async def test_an_unknown_account_releases_nothing(self):
         from faultmaven.exceptions import NotFoundError

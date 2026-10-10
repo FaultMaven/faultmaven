@@ -2,8 +2,9 @@
 
 Owner ruling on #1919 (2026-10-10): retrieval applies the knowledge of the
 person driving the investigation, global ∪ the driver's personal KB ∪ the
-runbooks shared to the driver's teams. Until #1898 adds a driver the driver is
-the creator, ``cases.user_id``. ``case_retrieval_scope(case)`` decides it, and
+runbooks shared to the driver's teams. The driver is the case's EFFECTIVE
+driver (ADR-020): ``COALESCE(driver_id, user_id)``, the creator unless the case
+was handed to someone. ``case_retrieval_scope(case)`` decides it, and
 the pre-fetch (push), the ``kb_qa`` tool context (pull) and the runbook dedup
 all take their scope from it. Stored copies of what it retrieved are gated per
 viewer when read back (``test_kb_source_gate.py``).
@@ -295,3 +296,54 @@ async def test_dedup_the_resolver_raises_rather_than_narrowing():
 
     with pytest.raises(RuntimeError, match="team lookup failed"):
         await resolver()
+
+
+# ---------------------------------------------------------------------------
+# After a hand-off (ADR-020 D9): every arm keys on the DRIVER, not the creator
+# ---------------------------------------------------------------------------
+
+
+def _handed_off_case() -> Any:
+    """TEAMMATE created the case and handed it to DRIVER."""
+    case = _case(user_id=TEAMMATE)
+    case.driver_id = DRIVER
+    case.effective_driver_id = DRIVER
+    return case
+
+
+async def test_the_scope_follows_the_driver_not_the_creator():
+    assert (
+        await case_retrieval_scope(
+            _handed_off_case(), team_service=_Teams(), share_repository=_Shares()
+        )
+        == DRIVER_SCOPE
+    )
+
+
+async def test_push_after_a_hand_off_searches_the_drivers_scope_and_stamps_it():
+    from faultmaven.core.investigation.milestone_engine.kb_prefetch import KbPrefetcher
+
+    deps = _deps(_Teams(), _Shares())
+    deps.knowledge_service = _SearchRecorder()
+    case = _handed_off_case()
+
+    await KbPrefetcher(deps=deps).prefetch_kb_context(case, "X fails", "symptom")
+
+    assert deps.knowledge_service.filters_seen == [DRIVER_SCOPE]
+    assert case.kb_context_origin["driver_id"] == DRIVER, "stamp and fetch agree"
+
+
+async def test_pull_after_a_hand_off_carries_the_drivers_scope():
+    context = await _generator(_Teams(), _Shares()).build_tool_context(
+        _handed_off_case(), user_id=DRIVER
+    )
+
+    assert context.kb_scope_filter == DRIVER_SCOPE
+
+
+async def test_dedup_after_a_hand_off_resolves_the_drivers_scope():
+    scope = await _runbook_creator(_Teams(), _Shares())._runbook_dedup_scope_resolver(
+        _handed_off_case()
+    )()
+
+    assert scope == DRIVER_SCOPE

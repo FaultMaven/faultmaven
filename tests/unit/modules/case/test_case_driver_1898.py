@@ -476,12 +476,41 @@ class TestReassignment:
         assert (await world.repository.get(CASE_ID)).driver_id is None
         assert world.repository.driver_changes == []
 
-    async def test_a_terminal_case_keeps_its_driver(self, world):
+    async def test_a_terminal_case_may_change_driver(self, world):
+        """A terminal case still has driver-only writes (text questions,
+        report regeneration and edits); refusing a reassignment would freeze
+        them on the last driver (ADR-020 D4)."""
         await _case(world.repository, state=CaseState.CLOSED)
 
-        with pytest.raises(ConflictError) as refused:
-            await world.service.reassign_driver(CASE_ID, CREATOR, DRIVER)
-        assert refused.value.error_code == CASE_TERMINAL
+        await world.service.reassign_driver(CASE_ID, CREATOR, DRIVER)
+
+        assert (await world.repository.get(CASE_ID)).driver_id == DRIVER
+
+    async def test_a_deactivated_creator_is_not_a_candidate(self, world):
+        """The creator is a candidate only while their account is active
+        (ADR-020 D4): handing a case back to a deactivated creator would leave
+        it with no live writer — a 422, like any non-candidate."""
+        await _case(world.repository, driver_id=DRIVER)
+        world.service.account_reader.accounts[CREATOR].is_active = False
+
+        ids = [
+            c.user_id
+            for c in await world.service.list_driver_candidates(CASE_ID, DRIVER)
+        ]
+        assert CREATOR not in ids
+        with pytest.raises(ValidationException, match="candidate"):
+            await world.service.reassign_driver(CASE_ID, DRIVER, CREATOR)
+        assert (await world.repository.get(CASE_ID)).driver_id == DRIVER
+
+    async def test_a_release_still_hands_back_to_a_deactivated_creator(self, world):
+        """A release is about the DRIVER's read access, so it stores NULL
+        whatever the creator's state (ADR-020 D3; Open item 3 covers it)."""
+        await _case(world.repository, driver_id=TEAMMATE)
+        world.service.account_reader.accounts[CREATOR].is_active = False
+
+        await world.service.unshare_case_from_team(CASE_ID, "t1", CREATOR)
+
+        assert (await world.repository.get(CASE_ID)).driver_id is None
 
     async def test_standalone_refuses_anyone_but_the_creator_with_422(self):
         repository = InMemoryCaseRepository()
@@ -576,6 +605,30 @@ class TestReleaseOnUnshare:
         assert (change.from_driver_id, change.to_driver_id) == (TEAMMATE, CREATOR)
         assert change.actor_user_id == CREATOR
 
+    async def test_a_reassignment_racing_the_unshare_is_caught_after_the_write(
+        self, world
+    ):
+        """The first pass sees the creator driving; a reassignment to TEAMMATE
+        (who reads only through t1) lands before the share write. The second
+        pass, on a fresh load, hands it back (ADR-020 D3)."""
+        await _case(world.repository)
+        real_unshare = world.shares.unshare
+
+        async def racing_unshare(**kw):
+            await world.service.reassign_driver(CASE_ID, CREATOR, TEAMMATE)
+            return await real_unshare(**kw)
+
+        world.shares.unshare = racing_unshare
+
+        await world.service.unshare_case_from_team(CASE_ID, "t1", CREATOR)
+
+        assert (await world.repository.get(CASE_ID)).driver_id is None
+        reasons = [c.reason for c in world.repository.driver_changes]
+        assert reasons == [
+            CaseDriverChangeReason.REASSIGNED,
+            CaseDriverChangeReason.UNSHARED,
+        ]
+
     async def test_a_driver_who_reads_through_another_share_keeps_it(self, world):
         world.shares.shares[CASE_ID] = {"t1", "t2"}
         await _case(world.repository, driver_id=DRIVER)
@@ -625,7 +678,7 @@ class TestReleaseOnTeamLeave:
         await _case(world.repository, driver_id=DRIVER, case_id="case_0000000000d2")
         await _case(world.repository, driver_id=DRIVER, case_id="case_0000000000d3")
 
-        released = await world.service.release_driver_before_team_leave(
+        released = await world.service.release_drivers_for_team_leave(
             enterprise_id=ENTERPRISE, team_id="t1", user_id=DRIVER
         )
 
@@ -645,18 +698,38 @@ class TestReleaseOnTeamLeave:
         world.shares.shares[CASE_ID] = set()
         await _case(world.repository, driver_id=DRIVER)
 
-        released = await world.service.release_driver_before_team_leave(
+        released = await world.service.release_drivers_for_team_leave(
             enterprise_id=ENTERPRISE, team_id="t1", user_id=DRIVER
         )
 
         assert released == 0
         assert world.repository.driver_changes == []
 
+    async def test_a_reassignment_racing_the_leave_is_caught_by_the_second_pass(
+        self, world
+    ):
+        """TeamService runs this before the membership write and again after.
+        A reassignment to the leaver landing in between is released by the
+        second pass, once the leaver's membership is gone."""
+        await _case(world.repository)
+        first = await world.service.release_drivers_for_team_leave(
+            enterprise_id=ENTERPRISE, team_id="t1", user_id=TEAMMATE
+        )
+        await world.service.reassign_driver(CASE_ID, CREATOR, TEAMMATE)
+        world.teams.members["t1"].discard(TEAMMATE)  # the membership write
+
+        second = await world.service.release_drivers_for_team_leave(
+            enterprise_id=ENTERPRISE, team_id="t1", user_id=TEAMMATE
+        )
+
+        assert (first, second) == (0, 1)
+        assert (await world.repository.get(CASE_ID)).driver_id is None
+
     async def test_another_enterprises_case_is_not_touched(self, world):
         await _case(world.repository, driver_id=DRIVER, enterprise_id=OTHER_ENTERPRISE)
 
         assert (
-            await world.service.release_driver_before_team_leave(
+            await world.service.release_drivers_for_team_leave(
                 enterprise_id=ENTERPRISE, team_id="t1", user_id=DRIVER
             )
             == 0
@@ -670,7 +743,7 @@ class TestReleaseOnDeactivation:
         await _case(world.repository, driver_id=DRIVER, case_id="case_0000000000d2")
         await _case(world.repository, case_id="case_0000000000d3")
 
-        released = await world.service.release_driver_before_deactivation(
+        released = await world.service.release_drivers_for_deactivation(
             user_id=DRIVER, actor_user_id="u_admin"
         )
 

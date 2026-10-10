@@ -127,7 +127,7 @@ def test_every_session_route_carries_the_gate():
 #
 # The gate above resolves the case through the READ allowlist, which is right
 # for the three GET routes and wrong for every other one: a teammate holding a
-# read share could create, patch, pause, resume and complete the owner's
+# share could create, patch, pause, resume and complete the case's
 # sessions, because the only predicate downstream is ``case.enterprise_id`` and
 # inside one enterprise that admits both parties. The read/write decision is
 # made in ONE place — here, from the request method — so a session route added

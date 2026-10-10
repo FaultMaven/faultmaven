@@ -358,8 +358,8 @@ class ICaseService(ABC):
             NotFoundError: the case is absent or the caller cannot read it.
             AuthorizationError: a reader who is neither creator nor driver.
             ValidationException: the target is not a candidate.
-            ConflictError: a terminal case (``CASE_TERMINAL``), or a lost
-                version race (``CASE_VERSION_CONFLICT``).
+            ConflictError: a lost version race (``CASE_VERSION_CONFLICT``).
+                A terminal case is not refused.
         """
         pass
 

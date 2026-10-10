@@ -17,9 +17,9 @@ Authentication:
 
 Authorization: two predicates, both required.
 - ``require_case_access`` (router-level) gates on the case named in the path: on a
-  READ the caller must own it or have it shared to one of their teams; on a WRITE
-  the caller must OWN it. Sharing an enterprise with the owner is not enough, and
-  neither is a read share.
+  READ the caller must have created it or have it shared to one of their teams; on
+  a WRITE the caller must DRIVE it (ADR-020 D2). Sharing an enterprise with the
+  creator is not enough, and neither is reading the case.
 - The service binds the session to that same case before mutating it, so a session
   id belonging to another case cannot be reached by naming a case you do own.
 

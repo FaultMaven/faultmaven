@@ -75,9 +75,9 @@ def mock_case_service(mock_user):
     """A case service that grants the authenticated user access to their case.
 
     Session routes are gated on the parent case (#1044): on a READ the caller
-    must own the case or have it shared to one of their teams, and on a WRITE
-    they must OWN it (ADR-013 D4, as amended 2026-10-09 — a share is read-only).
-    Every test below acts as the case's owner, so this returns a case for them
+    must have created the case or have it shared to one of their teams, and on
+    a WRITE they must DRIVE it (ADR-020 D2). Every test below acts as the case's
+    creator, who drives it, so this returns a case for them
     and ``None`` for anyone else — the same two meanings ``CaseService.get_case``
     collapses in production.
 

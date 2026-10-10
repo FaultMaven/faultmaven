@@ -1454,7 +1454,7 @@ def register_services(container: BaseDIContainer) -> None:
     # The driver releases (ADR-020 D3): leaving a team and deactivation hand a
     # driver's cases back to their creators through the case service. Bound
     # here because both services are built before it.
-    if hasattr(case_service, "release_driver_before_team_leave"):
+    if hasattr(case_service, "release_drivers_for_team_leave"):
         if team_service is not None:
             team_service.bind_case_driver_release(case_service)
         user_service = getattr(container, "user_service", None)
