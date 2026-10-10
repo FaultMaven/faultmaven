@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -9,6 +10,7 @@ from faultmaven.core.investigation.cause_assurance import (
     cause_elimination_rows,
     counterfactual_link_decisive,
     fix_application_turn,
+    has_resolution_confirmation,
 )
 from faultmaven.core.investigation.cause_assurance import (
     ENGINE_RCC_AUTHOR as _ENGINE_RCC_AUTHOR,
@@ -20,6 +22,7 @@ from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.lifecycle_metrics import (
     llm_rcc_retracted_disconfirmed_total,
     m6_demotion_refused_total,
+    m6_record_disconfirmation_total,
 )
 from faultmaven.modules.case.contracts import (
     CausalNode,
@@ -69,21 +72,23 @@ def _node_has_counterfactual_refute(
 
 def _disconfirmed_cause_trigger(
     case: Case, *, node_side: bool
-) -> tuple[Hypothesis, str] | None:
-    """Shared M6 trigger for both demote paths. Returns ``(hypothesis, reason)``
-    when a grounded (``cause_state=IDENTIFIED``) case's representative cause is
-    disconfirmed, else None. Disconfirmation is the hypothesis being REFUTED or
-    net-refuted (``_net_refuted``); and — only when ``node_side`` (the chain-mode
-    case the prompt mandates) — its ROOT node carrying a counterfactual
-    (CAUSAL_ABSENCE) refutation even when the flat hypothesis was untouched.
+) -> tuple[Hypothesis, str, str] | None:
+    """Shared M6 trigger for both demote paths. Returns ``(hypothesis, reason,
+    kind)`` when a grounded (``cause_state=IDENTIFIED``) case's representative
+    cause is disconfirmed, else None. Disconfirmation is the hypothesis being
+    REFUTED or net-refuted (``_net_refuted``); and — only when ``node_side``
+    (the chain-mode case the prompt mandates) — its ROOT node carrying a
+    counterfactual (CAUSAL_ABSENCE) refutation, or the case record
+    establishing a failed fix of it, even when the flat hypothesis was
+    untouched.
 
     ``node_side`` is FALSE for the flat path so its behavior is exactly as
     before: a persisted root (reloaded regardless of the flag, e.g. after the
     flag is flipped off) with a counterfactual refute must NOT demote a healthy
     flat hypothesis — node-derived disconfirmation is a chain-mode concept.
 
-    Returns ``(hypothesis, reason, kind)``. **``kind`` distinguishes two
-    materially different claims that share this trigger (#987):**
+    **``kind`` distinguishes the materially different claims that share this
+    trigger (#987):**
 
     - ``"evidence"`` — the hypothesis is REFUTED or net-refuted by its OWN
       evidence links. This asserts nothing about any fix; it is grounded in the
@@ -92,6 +97,15 @@ def _disconfirmed_cause_trigger(
       counterfactual (CAUSAL_ABSENCE) refutation, i.e. "the cause was addressed
       yet the problem persisted". That claim is about events outside the graph,
       so it is the one M6 must ESTABLISH rather than infer.
+
+    - ``"record"`` — the same FAILED-FIX claim, read from the case record
+      rather than from a link (#1927): the cause observed removed after an
+      executed fix, the problem observed present after that
+      (``_record_disconfirms_cause``). The ingest gate leaves the engine as the
+      only author of a node-side counterfactual refute, so ``"counterfactual"``
+      is the LATCH of a disconfirmation M6 already recorded; without this arm
+      a fix that removed the cause but not the problem demoted nothing unless
+      the model refuted the cause itself.
 
     Conflating them is what made the first #987 fix over-broad: gating the whole
     trigger on fix-application evidence silently blocked ordinary evidence-based
@@ -106,19 +120,16 @@ def _disconfirmed_cause_trigger(
     if hyp is None:
         return None
     root = case.causal_nodes.get(hyp.root_node_id) if hyp.root_node_id else None
-    evidence_side = _hypothesis_disconfirmed(hyp)
-    counterfactual_side = (
-        node_side
-        and root is not None
-        and _node_has_counterfactual_refute(root, _evidence_category_map(case))
-    )
-    if not (evidence_side or counterfactual_side):
+    reason = (hyp.refutation_reason or _DISCONFIRMATION_REASON)[:200]
+    if _hypothesis_disconfirmed(hyp):
+        return hyp, reason, "evidence"
+    if not node_side or root is None:
         return None
-    return (
-        hyp,
-        (hyp.refutation_reason or _DISCONFIRMATION_REASON)[:200],
-        "evidence" if evidence_side else "counterfactual",
-    )
+    if _node_has_counterfactual_refute(root, _evidence_category_map(case)):
+        return hyp, reason, "counterfactual"
+    if _record_disconfirms_cause(case, hyp, root):
+        return hyp, reason, "record"
+    return None
 
 
 def any_chain_root_inconclusive(case: Case) -> bool:
@@ -154,16 +165,29 @@ def _node_has_engine_counterfactual_refute(node: CausalNode, case: Case) -> bool
     )
 
 
-def _problem_persistence_observed_after(case: Case, fix_turn: int) -> bool:
-    """Does the case OBSERVE the problem still present at/after ``fix_turn``? —
-    M6's second precondition (#987).
+def _problem_persistence_observed_after(
+    case: Case, fix_turn: int, cause_removal_turn: int | None = None
+) -> bool:
+    """Does the case OBSERVE the problem still present after the fix? — M6's
+    second precondition (#987), ordered after the cause's removal when one was
+    observed (#1927).
 
-    The observation is a ``SYMPTOM_EVIDENCE`` row collected at/after the fix
-    turn: that is exactly the encoding the prompt's TREATMENT FAILURE PATH
-    mandates for a fix that did not hold ("symptom_evidence: New symptoms that
-    emerge after a failed fix"). ``>=`` and not ``>`` because turn granularity
-    cannot order within-turn events — the user's "I ran it, still failing"
-    lands the executed fix and the persisting symptom in ONE turn.
+    The observation is a ``SYMPTOM_EVIDENCE`` row: that is exactly the encoding
+    the prompt's TREATMENT FAILURE PATH mandates for a fix that did not hold
+    ("symptom_evidence: New symptoms that emerge after a failed fix").
+
+    - No cause removal observed (``cause_removal_turn`` None): any such row
+      at/after the fix turn. ``>=`` and not ``>`` because turn granularity
+      cannot order within-turn events — the user's "I ran it, still failing"
+      lands the executed fix and the persisting symptom in ONE turn.
+    - The cause observed removed at ``cause_removal_turn``: the row must be at
+      or after that observation, and in a turn AFTER the fix's execution turn.
+      A row from before the cause row shows the problem present while the
+      cause may still have been there (a mis-applied fix, then corrected), not
+      the problem outliving the cause. A row in the fix's own turn may quote
+      pre-fix lines from the same paste — a pasted journal carries the earlier
+      failures — so it cannot be ordered after the fix. ``>=`` on the cause
+      row, because "config reads 100, still 503" is one turn's observation.
 
     Deliberately a POSITIVE observation, not the absence of a resolution: M6 is
     a destructive transition (it refutes the standing cause, zeroes its root's
@@ -171,10 +195,99 @@ def _problem_persistence_observed_after(case: Case, fix_turn: int) -> bool:
     something the case actually recorded. "Nothing said it was fixed" is not an
     observation that it stayed broken.
     """
-    return any(
-        getattr(e, "category", None) == EvidenceCategory.SYMPTOM_EVIDENCE
-        and (getattr(e, "collected_at_turn", 0) or 0) >= fix_turn
-        for e in (getattr(case, "evidence", None) or [])
+    for e in getattr(case, "evidence", None) or []:
+        if getattr(e, "category", None) != EvidenceCategory.SYMPTOM_EVIDENCE:
+            continue
+        turn = getattr(e, "collected_at_turn", 0) or 0
+        if cause_removal_turn is None:
+            if turn >= fix_turn:
+                return True
+        elif turn >= cause_removal_turn and turn > fix_turn:
+            return True
+    return False
+
+
+def _cause_removal_turn(case: Case, fix_turn: int) -> int | None:
+    """The earliest turn at/after the fix at which a qualifying cause-leg row
+    (``cause_elimination_rows``) observes the cause removed, or None."""
+    turns = [
+        getattr(row, "collected_at_turn", 0) or 0
+        for row in cause_elimination_rows(case)
+        if (getattr(row, "collected_at_turn", 0) or 0) >= fix_turn
+    ]
+    return min(turns, default=None)
+
+
+@dataclass(frozen=True)
+class _FailedFixRecord:
+    """What the case record establishes about the latest fix: the execution
+    turn, the earliest observation of the cause removed after it, and the
+    refusal label when the record does NOT establish a failed fix (None when
+    it does)."""
+
+    fix_turn: int | None
+    cause_removal_turn: int | None
+    refusal: str | None
+
+
+def _failed_fix_record(case: Case) -> _FailedFixRecord:
+    """Read M6's counterfactual preconditions off the case record, unmetered.
+    ``m6_disconfirmation_basis`` meters the refusal; the record trigger
+    (``_record_disconfirms_cause``) evaluates this on every grounded recompute,
+    where a refusal is not a refused demotion but the ordinary state of a case
+    whose fix has not failed."""
+    fix_turn = fix_application_turn(case)
+    if fix_turn is None:
+        # Two different worlds, separately labeled: nothing was ever tried, vs
+        # a fix WAS executed but carries no execution turn — an acceptance
+        # stamped before ``accepted_in_turn`` existed. Both refuse (an undatable
+        # precondition establishes nothing about "after the fix"), but only the
+        # second is a TRANSITION artifact that drains as in-flight cases close.
+        # Folding them into one series would teach operators to read a real
+        # suppression window as the benign "nothing was tried" baseline.
+        refusal = (
+            "undatable_acceptance"
+            if _has_undatable_solution_acceptance(case)
+            else "no_fix_applied"
+        )
+        return _FailedFixRecord(None, None, refusal)
+    if has_resolution_confirmation(case):
+        return _FailedFixRecord(fix_turn, None, "resolution_confirmed")
+    removal_turn = _cause_removal_turn(case, fix_turn)
+    if not _problem_persistence_observed_after(case, fix_turn, removal_turn):
+        refusal = (
+            "no_persistence"
+            if removal_turn is None
+            else "no_persistence_after_cause_removal"
+        )
+        return _FailedFixRecord(fix_turn, removal_turn, refusal)
+    return _FailedFixRecord(fix_turn, removal_turn, None)
+
+
+def _record_disconfirms_cause(case: Case, hyp: Hypothesis, root: CausalNode) -> bool:
+    """Does the case RECORD establish that a fix of this identified cause
+    removed the cause but not the problem? — the ``"record"`` trigger (#1927).
+
+    All of: the hypothesis is still standing and its root VALIDATED (the cause
+    the case identifies, not the representative proxy's guess); the fix ran
+    at/after the hypothesis existed (a fix can only have addressed a cause
+    that existed when it ran — a later cause is not disconfirmed by an earlier
+    fix's record); the cause observed removed after the fix; the problem
+    observed present after that; and no resolution confirmed
+    (``_failed_fix_record``).
+
+    The cause row is REQUIRED here, unlike in ``m6_disconfirmation_basis``: "I
+    ran it, still failing" with no cause re-check may be an implementation
+    error (the FAILURE PATH's first branch — the cause is still present),
+    which disconfirms nothing. The cause observed removed is what makes the
+    persistence a counterfactual."""
+    if hyp.state.is_terminal or root.node_state != NodeState.VALIDATED:
+        return False
+    record = _failed_fix_record(case)
+    return (
+        record.refusal is None
+        and record.cause_removal_turn is not None
+        and (getattr(hyp, "generated_at_turn", 0) or 0) <= record.fix_turn
     )
 
 
@@ -232,16 +345,23 @@ def m6_disconfirmation_basis(case: Case) -> tuple[int, str] | None:
     halves of "the cause was addressed, yet the problem persisted":
 
     1. a RECORDED fix application (``fix_application_turn``), and
-    2. an OBSERVED persistence of the problem at/after it
-       (``_problem_persistence_observed_after``), with
-    3. NO qualifying cause-elimination row at/after the fix turn
-       (``cause_elimination_rows``). KNOWN GAP (#1927): this was written when
-       one causal_absence row was read as the whole gone⇒gone confirmation.
-       Since #1906 that row records only the cause observed removed, which
-       does not contradict "the problem persisted" — cause gone with the
-       problem still present IS the counterfactual disconfirmation, and this
-       precondition withholds it. Left as it was pending #1927, which owns the
-       redesign of preconditions 2 and 3.
+    2. an OBSERVED persistence of the problem after it
+       (``_problem_persistence_observed_after``) — ordered after the cause's
+       removal when a cause-leg row (``cause_elimination_rows``) observes it
+       at/after the fix, and
+    3. NO resolution confirmed (``has_resolution_confirmation``): the problem
+       not observed gone after the fix.
+
+    Precondition 3 is the CONTRADICTION rule (#1927). It used to withhold on
+    any cause-leg row at/after the fix, from when one causal_absence row was
+    read as the whole gone⇒gone confirmation. Since #1906 that row records
+    only the cause observed removed, which does not contradict "the problem
+    persisted" — the cause gone with the problem still present IS the
+    counterfactual disconfirmation, and the cause row is half of it. What
+    contradicts persistence is the problem observed gone, which is the other
+    leg. So a lone cause row followed by persistence is a FAILED fix: under
+    the #1906 contract a lone cause row is the state in which the prompt asks
+    for the symptom check, and a symptom row after it is the answer.
 
     Why this gate exists (#987): M6 previously fired on the mere presence of a
     counterfactual refute and then MINTED a row asserting "the cause was
@@ -273,36 +393,21 @@ def m6_disconfirmation_basis(case: Case) -> tuple[int, str] | None:
     ``cause_state``), and ``retract_disconfirmed_rcc`` still clears a conclusion
     naming it. What is withheld is only the DURABLE engine refutation.
     """
-    fix_turn = fix_application_turn(case)
-    if fix_turn is None:
-        # Two different worlds, separately labeled: nothing was ever tried, vs
-        # a fix WAS executed but carries no execution turn — an acceptance
-        # stamped before ``accepted_in_turn`` existed. Both refuse (an undatable
-        # precondition establishes nothing about "after the fix"), but only the
-        # second is a TRANSITION artifact that drains as in-flight cases close.
-        # Folding them into one series would teach operators to read a real
-        # suppression window as the benign "nothing was tried" baseline.
-        m6_demotion_refused_total.labels(
-            reason=(
-                "undatable_acceptance"
-                if _has_undatable_solution_acceptance(case)
-                else "no_fix_applied"
-            )
-        ).inc()
+    record = _failed_fix_record(case)
+    if record.refusal is not None:
+        m6_demotion_refused_total.labels(reason=record.refusal).inc()
         return None
-    if any(
-        (getattr(row, "collected_at_turn", 0) or 0) >= fix_turn
-        for row in cause_elimination_rows(case)
-    ):
-        m6_demotion_refused_total.labels(reason="resolution_confirmed").inc()
-        return None
-    if not _problem_persistence_observed_after(case, fix_turn):
-        m6_demotion_refused_total.labels(reason="no_persistence").inc()
-        return None
-    return fix_turn, (
-        f"a fix recorded as EXECUTED at turn {fix_turn} did not hold — symptom "
-        f"evidence at/after that turn observes the problem still present, and "
-        f"no resolution confirmation stands"
+    if record.cause_removal_turn is None:
+        return record.fix_turn, (
+            f"a fix recorded as EXECUTED at turn {record.fix_turn} did not hold "
+            f"— symptom evidence at/after that turn observes the problem still "
+            f"present, and no resolution confirmation stands"
+        )
+    return record.fix_turn, (
+        f"a fix recorded as EXECUTED at turn {record.fix_turn} did not hold — "
+        f"the cause was observed removed at turn {record.cause_removal_turn}, "
+        f"symptom evidence after that observes the problem still present, and "
+        f"the problem is not observed gone"
     )
 
 
@@ -373,6 +478,64 @@ def _attach_engine_refutation(
     )
 
 
+def _mark_failed_fix_cause_rows(case: Case, hyp: Hypothesis, node: CausalNode) -> None:
+    """Record the cause rows of the fix that just failed as part of its
+    disconfirmation: an engine REFUTES link from each to the cause's root
+    (#1927).
+
+    A failed fix's cause row ("max_connections now reads 100") observes the
+    cause removed, and after M6 the cause is disconfirmed — so the row must no
+    longer stand as the cause leg of a resolution. The disconfirmation window
+    (``latest_disconfirmation_turn``) cannot drop it when it shares M6's turn:
+    the window's ``>=`` keeps same-turn rows, for the mixed single-turn shape.
+    So without this, a later mitigation's problem-gone row completed both legs
+    on it, and the case read resolution-READY on a cause its own fix had
+    disproven. ``cause_elimination_rows`` already excludes a row REFUTES-linked
+    to a cause the engine marked disconfirmed (``_disconfirmation_row_ids``);
+    this records the link, it does not change the rule.
+
+    Which cause: only the IDENTIFIED one — the caller passes the root only
+    when it was VALIDATED at trigger time. With no conclusion naming its
+    cause, M6's representative is a likelihood proxy that can point at a
+    candidate no fix addressed; marking on its refutation would strip a
+    SUCCEEDED fix's cause row and leave a resolved case unable to resolve.
+
+    Which rows: the qualifying cause-leg rows at/after the latest fix — the
+    fix whose failure disconfirmed this cause. Not when a resolution is
+    confirmed (the rows then confirm something, the mixed shape), not when
+    the fix ran before the hypothesis existed (its rows are about another
+    cause), and not when no fix is recorded. Runs on either disconfirming arm:
+    when the model refuted the cause in the cause row's turn, it has judged
+    the fix failed, and the same row would otherwise survive.
+
+    Engine-minted, as INV-42 requires of every link on an absence row: the
+    model's own links on absence rows are refused at ingest."""
+    fix_turn = fix_application_turn(case)
+    if (
+        fix_turn is None
+        or (getattr(hyp, "generated_at_turn", 0) or 0) > fix_turn
+        or has_resolution_confirmation(case)
+    ):
+        return
+    linked = {link.evidence_id for link in node.evidence_links}
+    for row in cause_elimination_rows(case):
+        if (getattr(row, "collected_at_turn", 0) or 0) < fix_turn:
+            continue
+        if row.evidence_id in linked:
+            continue
+        node.evidence_links.append(
+            NodeEvidenceLink(
+                evidence_id=row.evidence_id,
+                stance=EvidenceStance.REFUTES,
+                reasoning=(
+                    "failed fix: this row observed the cause removed after the "
+                    "fix, and the cause was then disconfirmed"
+                ),
+                linked_at_turn=case.current_turn,
+            )
+        )
+
+
 def demote_disconfirmed_cause_via_evidence(case: Case) -> bool:
     """M6 (Option c): on counterfactual disconfirmation of the grounded cause,
     refute the flat hypothesis AND attach a DURABLE engine refutation to its
@@ -396,37 +559,53 @@ def demote_disconfirmed_cause_via_evidence(case: Case) -> bool:
       evidence-based inference. Gating THIS on fix-application evidence was the
       over-broad first cut of the #987 fix: it left a net-refuted cause standing
       as IDENTIFIED with its conclusion intact.
-    - ``counterfactual`` — the FAILED-FIX claim, about events outside the graph.
-      Fires only on preconditions the case record ESTABLISHES
-      (``m6_disconfirmation_basis``); otherwise the demotion is refused and
-      metered. The engine must never assert a failed fix it did not establish —
-      that assertion, minted as a durable row, is what made #987 permanent.
+    - ``counterfactual`` / ``record`` — the FAILED-FIX claim, about events
+      outside the graph, reached through the root's engine marker (the latch)
+      or read straight off the case record (#1927). Fires only on
+      preconditions the case record ESTABLISHES (``m6_disconfirmation_basis``);
+      otherwise the demotion is refused and metered. The engine must never
+      assert a failed fix it did not establish — that assertion, minted as a
+      durable row, is what made #987 permanent.
 
     Either way the hypothesis's own state still governs downstream, so a
-    genuinely disproven cause stops grounding ``cause_state`` regardless.
+    genuinely disproven cause stops grounding ``cause_state`` regardless, and
+    the failed fix's cause rows stop standing as a resolution's cause leg
+    (``_mark_failed_fix_cause_rows``).
     """
     p = case.progress
     # Chain path: a counterfactual refute on the root NODE also disconfirms the
-    # cause. After #987 the only producer of such a link is the engine's own
-    # durable marker (the category gate at ingest refuses model-authored links
-    # on absence rows), so this arm is what keeps a prior M6 LATCHED across
-    # turns rather than a fresh LLM-driven entry point.
+    # cause. After #987 the only producer of such a link is the engine itself
+    # (the category gate at ingest refuses model-authored links on absence
+    # rows), so that arm is what keeps a prior M6 LATCHED across turns; the
+    # fresh failed-fix entry point is the case record (``kind == "record"``).
     trigger = _disconfirmed_cause_trigger(case, node_side=True)
     if trigger is None:
         return False
     hyp, reason, kind = trigger
+    # Read before anything below refutes it: whether the demoted cause is the
+    # one the case identified, or the representative proxy's unvalidated pick.
+    root = case.causal_nodes.get(hyp.root_node_id) if hyp.root_node_id else None
+    identified_root = (
+        root if root is not None and root.node_state == NodeState.VALIDATED else None
+    )
 
-    if kind == "counterfactual":
+    if kind == "evidence":
+        provenance = _evidence_disconfirmation_provenance(hyp)
+    else:
         basis = m6_disconfirmation_basis(case)
         if basis is None:
             return False
         provenance = basis[1]
-    else:
-        provenance = _evidence_disconfirmation_provenance(hyp)
+        if kind == "record":
+            m6_record_disconfirmation_total.inc()
 
     if hyp.state != HypothesisState.REFUTED:
         HypothesisManager().refute_hypothesis(hyp, case.current_turn, [], reason)
     if hyp.root_node_id:
+        # Mark before the engine row is minted: its turn becomes the
+        # disconfirmation window, and the rows to mark are read through it.
+        if identified_root is not None:
+            _mark_failed_fix_cause_rows(case, hyp, identified_root)
         _attach_engine_refutation(case, hyp.root_node_id, reason, provenance)
     # Retract the conclusion so the disposition layer cannot keep treating the
     # cause as known; the cause_state itself is re-derived from the (now refuted)

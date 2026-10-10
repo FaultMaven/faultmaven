@@ -395,10 +395,16 @@ cause_identification_held_mece_total = Counter(
 #   than hidden inside the benign baseline.
 # - ``no_persistence``   — a fix was applied but nothing observes the problem
 #   still present afterwards (no symptom_evidence at/after the fix turn).
-# - ``resolution_confirmed`` — a QUALIFYING resolution-confirmation row stands
-#   at/after the fix turn: the problem demonstrably did NOT persist. This is the
-#   #987 incident shape, and a nonzero rate here means something upstream is
-#   still routing a successful fix into the failed-fix path.
+# - ``no_persistence_after_cause_removal`` — the cause was observed removed
+#   after the fix, but no symptom_evidence is ordered after that observation:
+#   it predates the cause row, or sits in the fix's own execution turn, where
+#   a pasted journal still carries the pre-fix failures (#1927).
+# - ``resolution_confirmed`` — the case confirms a resolution
+#   (``has_resolution_confirmation``: the cause observed removed AND the
+#   problem observed gone after the fix), so the problem demonstrably did NOT
+#   persist. This is the #987 incident shape, and a nonzero rate here means
+#   something upstream is still routing a successful fix into the failed-fix
+#   path.
 #
 # A sustained ``no_persistence`` rate means the model refutes causes without
 # recording the failed outcome the prompt's FAILURE PATH mandates. A nonzero
@@ -411,6 +417,19 @@ m6_demotion_refused_total = Counter(
     "(recorded fix application + observed problem persistence) could not be "
     "established from the case record (#987). One increment per refusal.",
     ["reason"],
+)
+
+# M6 demoted the identified cause on a failed fix the CASE RECORD established —
+# an executed SOLUTION, the cause observed removed after it, and the problem
+# observed present after that, with no resolution confirmed — while the model
+# had not refuted the cause itself (#1927). The prompt's FAILURE PATH tells the
+# model to refute a cause its fix disproved, so a sustained rate is an
+# elicitation signal: the engine is doing the model's refutation for it.
+m6_record_disconfirmation_total = Counter(
+    "faultmaven_m6_record_disconfirmation_total",
+    "M6 demoted the identified cause because the case record established a "
+    "failed fix (cause observed removed, problem observed present after it) "
+    "that the model had not refuted (#1927). One increment per demotion.",
 )
 
 # #656 bearing check at the resolution confirm-stamp. One increment per

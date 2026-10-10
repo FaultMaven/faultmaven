@@ -125,11 +125,15 @@ Matrix row: INV-30 in `investigation-invariants.md`; methodology §7.3 (decisive
   - `no_fix_applied` — nothing was ever tried: no accepted SOLUTION `ProposedAction`.
   - `undatable_acceptance` — a SOLUTION *was* accepted but carries no `accepted_in_turn`, so "after the fix" cannot be dated. Only reachable on acceptances stamped before that field existed (#987), so this is a **transition** series that drains as in-flight cases close. **While it is nonzero it marks a real, bounded suppression of legitimate failed-fix demotions** — it is deliberately not folded into `no_fix_applied`, which would hide that window inside the benign baseline.
   - `no_persistence` — a dated fix was applied but no `SYMPTOM_EVIDENCE` at/after it observes the problem still present.
-  - `resolution_confirmed` — a qualifying gone⇒gone row stands at/after the fix turn: the problem demonstrably did NOT persist.
+  - `no_persistence_after_cause_removal` — the cause was observed removed after the fix, but no `SYMPTOM_EVIDENCE` is ordered after that observation: it predates the cause row, or sits in the fix's own execution turn, where a pasted journal still carries the pre-fix failures (#1927).
+  - `resolution_confirmed` — the case confirms a resolution (the cause observed removed AND the problem observed gone after the fix): the problem demonstrably did NOT persist. A cause row alone no longer counts here (#1927): it records only the cause side, and followed by persistence it is the failed fix.
+- `faultmaven_m6_record_disconfirmation_total` — M6 demoted the identified cause because the case record established a failed fix (an executed SOLUTION, the cause observed removed after it, the problem observed present after that, no resolution confirmed) that the model had not refuted itself (#1927). One increment per demotion.
 
 **Healthy shape.** `absence_row_link_refused_total` measures **prompt adherence**, not truth — the engine is correct either way; it is metered because the refusal HIDES the emission, and without it a model that routinely mis-links absence rows looks identical to one that follows the contract. A sustained rate on either axis means the stage instructions are not landing and the prompt needs work; `{axis="node",stance="refutes"}` specifically is the #987 incident shape (a success-confirmation row REFUTES-linked to the cause it confirms).
 
-For `m6_demotion_refused_total`, a sustained `no_persistence` rate is an *elicitation* signal — the model refutes causes without recording the failed outcome the prompt's FAILURE PATH mandates. A nonzero **`resolution_confirmed`** rate is a **defect** signal, not an elicitation one: something upstream is still routing a successful fix into the failed-fix path. Investigate rather than tune. **`undatable_acceptance` should trend to zero** as pre-#987 cases close; if it plateaus, acceptances are being written somewhere that does not stamp `accepted_in_turn`, and failed-fix demotions are being silently suppressed on those cases.
+For `m6_demotion_refused_total`, a sustained `no_persistence` rate is an *elicitation* signal — the model refutes causes without recording the failed outcome the prompt's FAILURE PATH mandates. A nonzero **`resolution_confirmed`** rate is a **defect** signal, not an elicitation one: something upstream is still routing a successful fix into the failed-fix path. Investigate rather than tune. **`undatable_acceptance` should trend to zero** as pre-#987 cases close; if it plateaus, acceptances are being written somewhere that does not stamp `accepted_in_turn`, and failed-fix demotions are being silently suppressed on those cases. The refusal labels count refusals on the node-marker (latch) path only: the record trigger evaluates the same preconditions on every grounded recompute, where a refusal is the ordinary state of a case whose fix has not failed, so it is not metered.
+
+A sustained `m6_record_disconfirmation_total` rate is an *elicitation* signal: the prompt's FAILURE PATH tells the model to refute a cause its fix disproved, and the engine is doing that refutation for it.
 
 ```promql
 # Prompt adherence on absence rows, by axis. The refutes/node series is
@@ -138,6 +142,9 @@ sum by (axis, stance) (rate(faultmaven_absence_row_link_refused_total[24h]))
 
 # M6 refusals. 'resolution_confirmed' > 0 is a defect, not drift.
 sum by (reason) (rate(faultmaven_m6_demotion_refused_total[24h]))
+
+# Failed fixes the engine demoted off the record, the model not having refuted.
+rate(faultmaven_m6_record_disconfirmation_total[24h])
 ```
 
 Matrix row: INV-42 in `investigation-invariants.md`; methodology §7.2 (absence rows carry no model stance) and §9.3 (M6 establishes its preconditions).

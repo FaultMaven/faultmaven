@@ -388,10 +388,26 @@ def test_m6_refuses_when_nothing_observes_the_problem_persisting():
     assert m6_disconfirmation_basis(case) is None
 
 
+def _problem_gone_row(turn=9) -> Evidence:
+    """The problem leg the #1906 contract records beside the cause row when a
+    fix is confirmed."""
+    return _evidence(
+        "ev_5a5a5a5a5a5a",
+        EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+        turn,
+        "S3 processing in prod-west-2 completes again after the fix",
+    )
+
+
 def test_m6_refuses_when_a_resolution_confirmation_stands():
-    """The #987 shape: a qualifying gone⇒gone row at/after the fix turn is
-    direct evidence the problem did NOT persist, so the failed-fix premise is
-    false on the case's own record."""
+    """The #987 shape: a resolution confirmed at/after the fix — the cause seen
+    removed AND the problem seen gone — is direct evidence the problem did NOT
+    persist, so the failed-fix premise is false on the case's own record.
+
+    Built as the two rows the #1906 contract records for a confirmed fix. The
+    incident's single cause row is the open question #1927 decided: see
+    ``test_m6_reads_a_lone_cause_row_followed_by_persistence_as_a_failed_fix``.
+    """
     case = _case()
     _fix_applied(case)
     case.evidence.append(
@@ -403,7 +419,133 @@ def test_m6_refuses_when_a_resolution_confirmation_stands():
         )
     )
     case.evidence.append(_success_absence_row())
-    assert m6_disconfirmation_basis(case) is None
+    case.evidence.append(_problem_gone_row())
+    with patch(
+        "faultmaven.core.investigation.causal_graph.disconfirmation.m6_demotion_refused_total"
+    ) as counter:
+        assert m6_disconfirmation_basis(case) is None
+    counter.labels.assert_called_once_with(reason="resolution_confirmed")
+
+
+def test_m6_fires_when_the_cause_is_seen_gone_and_the_problem_persists():
+    """#1927: the cause observed removed with the problem observed still there
+    IS the counterfactual disconfirmation — removing the cause did not remove
+    the problem. A cause row records only the cause side (#1906), so it does
+    not contradict the persistence; it is half of the disconfirmation."""
+    case = _case()
+    _fix_applied(case, turn=8)
+    case.evidence += [
+        _evidence(
+            "ev_c0a5e0000009",
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            9,
+            "max_connections now reads 100",
+        ),
+        _evidence(
+            "ev_5f0000000009",
+            EvidenceCategory.SYMPTOM_EVIDENCE,
+            9,
+            "checkout still returns 503 after the fix",
+        ),
+    ]
+    basis = m6_disconfirmation_basis(case)
+    assert basis is not None
+    fix_turn, provenance = basis
+    assert fix_turn == 8
+    assert "executed at turn 8" in provenance.lower()
+    assert "observed removed at turn 9" in provenance
+
+
+def test_m6_reads_a_lone_cause_row_followed_by_persistence_as_a_failed_fix():
+    """The open question #1927 decided: the #987 incident row alone — a
+    single causal_absence row, even one whose text describes the problem gone
+    too — followed by persistence is a FAILED fix, not a success guarded by
+    an incomplete record.
+
+    Under the #1906 contract a lone cause row is exactly the state in which
+    the prompt asks for the symptom check, and the readiness gate already
+    reads it as unconfirmed. A symptom row after it is that check's answer.
+    M6 reading the lone row as a success would be the one reader still
+    holding the meaning #1906 retired."""
+    case = _case()
+    _fix_applied(case, turn=8)
+    case.evidence.append(_success_absence_row(turn=9))
+    case.evidence.append(
+        _evidence(
+            "ev_f6e5d4c3b2a2",
+            EvidenceCategory.SYMPTOM_EVIDENCE,
+            10,
+            "AssumeRoleWithWebIdentity still returns AccessDenied",
+        )
+    )
+    assert m6_disconfirmation_basis(case) is not None
+
+
+def test_m6_refuses_persistence_from_before_the_cause_was_seen_gone():
+    """Ordered observation: a symptom row from before the cause row shows the
+    problem present while the cause may still have been there (a fix that was
+    mis-applied, then corrected). It does not show the problem outliving the
+    cause's removal."""
+    case = _case()
+    _fix_applied(case, turn=8)
+    case.evidence += [
+        _evidence(
+            "ev_5f0000000009",
+            EvidenceCategory.SYMPTOM_EVIDENCE,
+            9,
+            "checkout still returns 503",
+        ),
+        _evidence(
+            "ev_c0a5e0000010",
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            10,
+            "max_connections now reads 100",
+        ),
+    ]
+    with patch(
+        "faultmaven.core.investigation.causal_graph.disconfirmation.m6_demotion_refused_total"
+    ) as counter:
+        assert m6_disconfirmation_basis(case) is None
+    counter.labels.assert_called_once_with(reason="no_persistence_after_cause_removal")
+
+
+def test_m6_refuses_persistence_in_the_fix_turn_once_the_cause_is_seen_gone():
+    """The same-turn consideration (#1927): a symptom row recorded in the
+    fix's own execution turn may quote pre-fix lines from the same paste (a
+    journal carries the earlier failures). Turn granularity cannot order it
+    after the fix, so beside a cause row it establishes nothing. A symptom
+    row in a later turn does."""
+    case = _case()
+    _fix_applied(case, turn=9)
+    case.evidence += [
+        _evidence(
+            "ev_c0a5e0000009",
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            9,
+            "ExecStart now names /usr/bin/billing-exporter",
+        ),
+        _evidence(
+            "ev_5f0000000009",
+            EvidenceCategory.SYMPTOM_EVIDENCE,
+            9,
+            "billing-exporter exited 203/EXEC at 07:53",
+        ),
+    ]
+    with patch(
+        "faultmaven.core.investigation.causal_graph.disconfirmation.m6_demotion_refused_total"
+    ) as counter:
+        assert m6_disconfirmation_basis(case) is None
+    counter.labels.assert_called_once_with(reason="no_persistence_after_cause_removal")
+
+    case.evidence.append(
+        _evidence(
+            "ev_5f0000000010",
+            EvidenceCategory.SYMPTOM_EVIDENCE,
+            10,
+            "the Prometheus target is still DOWN",
+        )
+    )
+    assert m6_disconfirmation_basis(case) is not None
 
 
 def test_m6_fires_on_a_genuine_failed_fix():
@@ -528,9 +670,16 @@ def test_m6_counterfactual_arm_refuses_when_preconditions_are_unestablished():
 
 
 def test_m6_counterfactual_arm_fires_when_preconditions_hold():
-    """...and the same shape WITH the persistence observation fires."""
+    """...and the same shape WITH the persistence observation fires. It is
+    the latch of a disconfirmation the engine already recorded, not one the
+    record newly established, so the record-demotion counter stays put."""
     case = _counterfactual_case(with_persistence=True)
-    assert demote_disconfirmed_cause_via_evidence(case) is True
+    with patch(
+        "faultmaven.core.investigation.causal_graph.disconfirmation."
+        "m6_record_disconfirmation_total"
+    ) as counter:
+        assert demote_disconfirmed_cause_via_evidence(case) is True
+    counter.inc.assert_not_called()
 
 
 def test_evidence_based_disconfirmation_demotes_without_any_fix_record():
