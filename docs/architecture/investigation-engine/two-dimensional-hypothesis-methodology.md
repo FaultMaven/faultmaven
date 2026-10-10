@@ -122,7 +122,7 @@ LLM-owned gate milestone on the LLM's behalf.
 | **M3** | Every **hypothesis is a causal chain** terminating in a (possibly-candidate) **root-cause node** proposing a mechanism — distinct from `D` and from its intermediate states. A bare intermediate state / symptom-restatement is not a hypothesis. *(Successor to retired INV-17.)* | Enforced at the **validation / solution-attach checkpoint**, not at creation — a partial chain may exist with no root yet (lazy expansion, §8.2). | Schema (checkpoint) |
 | **M4** | A node transitions to **validated** only via empirical evidence (§7.1) **or** deduction over a *certified-exhaustive* set (§7.1.1) — never by assertion, inference, or correlation. | Unobservable + non-exhaustive → node stays candidate; keep searching or escalate. | Engine-guard (extends INV-23) |
 | **M5** | A **remediation `Solution`** may not exist before its root is at least *mechanistically validated*; a diagnostic action is never a Solution. *(Mitigation / defensive state-interceptions are exempt — they precede a known root by design.)* | Pre-validation actions are recorded as **tests / mitigations**, not solutions; flow continues. | Engine-guard (veto, extends INV-23) |
-| **M6** | **Counterfactual disconfirmation** (fix applied, `D` persists) **demotes** the chain root `validated → candidate`, attaches refuting evidence, and recomputes `cause_state` — **deterministically, in the engine**, not awaiting an LLM signal. No "verified" conclusion survives its own disproof. Its FAILED-FIX arm is **destructive and extra-graphical**, so that arm fires only on preconditions the case record ESTABLISHES — an executed SOLUTION, an observed persistence after it, and no standing resolution confirmation (INV-42). The EVIDENCE arm (a hypothesis refuted/net-refuted by its own links) is graph-grounded and demotes unconditionally. Either way the durable record states an engine *inference with provenance*, never an observation it did not make. | New evidence required before re-validating (§7.3); exhaustion → re-expand (R6) / escalate. | Engine (deterministic, derive lane) |
+| **M6** | **Counterfactual disconfirmation** (fix applied, `D` persists) **demotes** the chain root `validated → candidate`, attaches refuting evidence, and recomputes `cause_state` — **deterministically, in the engine**, not awaiting an LLM signal. No "verified" conclusion survives its own disproof. Its FAILED-FIX arm is **destructive and extra-graphical**, so that arm fires only on preconditions the case record ESTABLISHES — an executed SOLUTION, an observed persistence after it (after the cause's observed removal, when one was observed), and no resolution confirmed (INV-42) — and it reads them off the record itself: the cause seen gone after the fix with `D` seen present after that demotes without a model refutation (#1927). The EVIDENCE arm (a hypothesis refuted/net-refuted by its own links) is graph-grounded and demotes unconditionally. Either way the durable record states an engine *inference with provenance*, never an observation it did not make. | New evidence required before re-validating (§7.3); exhaustion → re-expand (R6) / escalate. | Engine (deterministic, derive lane) |
 | **M7** | An **AND-node** is `validated` ⇔ *all* co-necessary members are validated; refuting *any one* member refutes the chain. | Withholds validation until members prove out (normal flow); any refutation prunes. | Schema + engine |
 
 Each F / S / R rule in §4–§7 exists to make one or more of these hold; §9
@@ -920,11 +920,41 @@ records only what it can substantiate:
   establish that the cause was addressed), dated by its **execution** turn and
   not the turn it was offered; a **positive** persistence observation at/after
   it (a `symptom_evidence` row — "nothing said it was fixed" is not an
-  observation that it stayed broken); and **no** qualifying gone⇒gone
-  confirmation at/after that turn, which would be direct evidence the problem
-  did not persist. Refusals are labeled (`m6_demotion_refused_total{reason}`);
-  a nonzero `resolution_confirmed` rate is a *defect* signal, not elicitation
-  drift.
+  observation that it stayed broken); and **no** resolution confirmed
+  (`has_resolution_confirmation`: the problem seen gone after the fix), which
+  would be direct evidence the problem did not persist. Refusals are labeled
+  (`m6_demotion_refused_total{reason}`); a nonzero `resolution_confirmed` rate
+  is a *defect* signal, not elicitation drift.
+
+  **The cause seen gone is half of the disconfirmation, not a contradiction
+  of it (#1927).** Since #1906 a `causal_absence` row records only the cause
+  observed removed; the problem observed gone is the `symptom_absence` leg.
+  So the contradiction is that leg, and a cause row followed by persistence
+  is the counterfactual itself: removing the cause did not remove `D`. A
+  *lone* cause row followed by persistence reads as a failed fix — under the
+  two-row contract it is the state in which the prompt asks for the symptom
+  check, and the symptom row after it is the answer. When the cause was seen
+  removed, the persistence must be **ordered** after that observation (at or
+  after the cause row, and in a turn after the fix's execution turn, whose
+  pasted output may still quote the pre-fix failures); a symptom row from
+  before the cause row shows the problem present while the cause may still
+  have been there.
+
+  **The record is a trigger, not only a precondition (#1927).** The ingest
+  gate leaves the engine as the only author of a node-side counterfactual
+  refute, so a node-keyed trigger can only re-fire a disconfirmation M6
+  already recorded (the latch). The record itself — an executed SOLUTION at
+  or after the hypothesis was proposed, the cause seen removed after it, `D`
+  seen present after that, no resolution confirmed, on the identified
+  (validated, still-standing) cause — demotes without waiting for the model
+  to refute (§9.3). It requires the cause row: "I ran it, still failing"
+  with no cause re-check may be an implementation error (the cause is still
+  present), which disconfirms nothing. When M6 demotes the identified
+  (validated) cause on a recorded fix with no resolution confirmed, by either
+  arm, it also REFUTES-links that fix's cause rows to the root — never on the
+  representative proxy's unvalidated pick, which no fix addressed — so they stop standing as a resolution's cause
+  leg (§9.5) — the disconfirmation window alone keeps a row from M6's own
+  turn.
 
 Refusing the counterfactual arm never leaves a disproven cause standing — the
 hypothesis's own state still governs, so a refuted cause stops grounding
@@ -1529,7 +1559,8 @@ soundness never rests on the chain alone while models under-build it.
   the contamination check, and **recomputes `cause_state`** — it does not wait for
   the LLM to volunteer a refutation. This is the direct fix for the runtime-inert
   lifecycle the assessment found (the LLM never emitted the REFUTES signal, so
-  nothing ever transitioned).
+  nothing ever transitioned). The signal is the case record: the cause seen
+  removed after an executed fix and `D` seen present after that (§7.3, #1927).
 
 ### 9.4 Confidence
 
@@ -1605,7 +1636,11 @@ confirmation must not retroactively mask it; and the mixed single-turn shape
 ("the restart didn't fix it, but correcting the config did") stamps the
 failed fix and the genuine confirmation at the SAME turn — masking that
 confirmation would strand the resolve behind an ask the user just answered.
-The engine marker is reliable because M6 mints its row even when the model
+A failed fix's own cause row in M6's turn is dropped by the disconfirmation
+rule instead: when M6 demotes the identified cause on a recorded fix with no
+resolution confirmed, it REFUTES-links the cause rows recorded since that fix to the
+root (#1927), so a later mitigation's problem-gone row cannot complete both
+legs on them. The engine marker is reliable because M6 mints its row even when the model
 already recorded the failure with its own decisive refute
 (`_attach_engine_refutation` idempotence is scoped to the ENGINE's own row —
 suppressing the mint left the window unset and re-qualified stale premature
