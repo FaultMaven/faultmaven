@@ -517,6 +517,66 @@ def _withdraw_unlicensed_solution_offers(
     return count
 
 
+def _flag_absence_inside_a_failed_fix_window(
+    case: Case, metadata: dict[str, Any] | None
+) -> bool:
+    """Tell the model when it records an absence row this turn inside a fix
+    window that already FAILED (#1927, ``cause_assurance.fix_windows``).
+
+    Such a row confirms nothing: once a fix was seen failing (the cause shown
+    removed, then the problem seen again), only a NEW fix opens a window that
+    can resolve the case. Without this notice the user's "it's fine now" and
+    the model's absence rows would loop against the readiness gate, which no
+    longer counts them. The way forward is a recorded fix: a SolutionToAdd for
+    what the user changed, and ``solution_accepted`` once they say it ran. The
+    M5 license that admits the SolutionToAdd survives the demoted cause through
+    a root_cause_conclusion — on a NEW hypothesis when the cause is the same
+    one re-applied correctly — which is the intended re-licensing path.
+
+    Prepended, like the withdrawal notice: the turn record truncates feedback
+    head-first. Returns whether the notice was added."""
+    from faultmaven.core.investigation.cause_assurance import (
+        ENGINE_EVIDENCE_AUTHOR,
+        FIX_FAILED,
+        latest_fix_window,
+    )
+
+    if metadata is None:
+        return False
+    window = latest_fix_window(case)
+    if window.state != FIX_FAILED:
+        return False
+    absence = (
+        EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+        EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+    )
+    if not any(
+        getattr(e, "category", None) in absence
+        and getattr(e, "collected_by", None) != ENGINE_EVIDENCE_AUTHOR
+        and (getattr(e, "collected_at_turn", 0) or 0) == case.current_turn
+        # After the failure: the rows that established it are not an attempt
+        # to confirm anything.
+        and case.current_turn > window.failure_turn
+        for e in case.evidence or []
+    ):
+        return False
+    _add_system_feedback(
+        metadata,
+        "SYSTEM: The fix executed at turn "
+        f"{window.fix_turn} did not hold: the cause was shown removed, then the "
+        "problem was seen again. Absence evidence recorded after that cannot "
+        "confirm a resolution. If the user has applied (or will apply) a new "
+        "fix, record it: propose it as a SolutionToAdd and set "
+        "solution_accepted once the user says it ran — re-assert the cause with "
+        "a root_cause_conclusion on a new hypothesis if the same cause was "
+        "addressed again — then record the cause gone and the problem gone "
+        "after it. If the problem is only quiet after a workaround, offer to "
+        "close instead.",
+        prepend=True,
+    )
+    return True
+
+
 def _normalise_id_ref(ref: Any) -> Any:
     """Strip whitespace and one enclosing ``[...]`` from a model-emitted id ref.
 

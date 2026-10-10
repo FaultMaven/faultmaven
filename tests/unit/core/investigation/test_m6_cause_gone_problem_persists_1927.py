@@ -28,7 +28,11 @@ from faultmaven.core.investigation.causal_graph.disconfirmation import (
 from faultmaven.core.investigation.causal_graph.ingestion import seed_problem_node
 from faultmaven.core.investigation.cause_assurance import (
     ENGINE_EVIDENCE_AUTHOR,
+    FIX_FAILED,
+    FIX_SUCCEEDED,
+    FIX_UNKNOWN,
     cause_elimination_rows,
+    fix_windows,
     has_resolution_confirmation,
 )
 from faultmaven.core.investigation.milestone_engine.cause_state import (
@@ -284,18 +288,14 @@ def test_a_later_mitigation_does_not_resolve_on_the_failed_fix():
     _assert_not_resolved_on_the_failed_cause(case)
 
 
-@pytest.mark.parametrize(
-    "fix_turn", [8, 9], ids=["fix-a-turn-earlier", "fix-in-the-outcome-turn"]
-)
-def test_a_model_refutation_in_the_cause_rows_turn_closes_the_route_too(fix_turn):
+def test_a_model_refutation_in_the_cause_rows_turn_closes_the_route_too():
     """The FAILURE-PATH-compliant shape: the model refutes the cause in the
     very turn the cause row and the persistence land. The evidence arm fires
     there, and the disconfirmation window's ``>=`` keeps a same-turn cause row
-    qualifying, so the window alone does not close the route. M6 marking the
-    failed fix's cause rows does — including when the fix was executed in
-    that same turn, where the record alone establishes nothing."""
+    qualifying, so that window alone does not close the route. The fix window
+    does: it FAILED, so nothing in it confirms a resolution."""
     case, root, hyp = _identified_case()
-    _failed_fix(case, fix_turn=fix_turn, outcome_turn=9)
+    _failed_fix(case, fix_turn=8, outcome_turn=9)
     hyp.state = HypothesisState.REFUTED
     hyp.refutation_reason = "max_connections reads 100 and checkout still 503s"
     _recompute_at(case, 9)
@@ -441,7 +441,7 @@ def test_a_retired_cause_is_not_refuted_by_the_record():
 
 
 # ---------------------------------------------------------------------------
-# What the marking records, and what it leaves alone.
+# A failed fix window confirms nothing, by derivation: M6 writes no marks.
 # ---------------------------------------------------------------------------
 
 
@@ -453,8 +453,10 @@ def _refuting_row_ids(root):
     }
 
 
-def test_marking_takes_only_the_failed_fixs_cause_rows():
-    """A cause row from before the fix belongs to no fix that failed here."""
+def test_a_failed_window_confirms_nothing_and_m6_marks_no_row():
+    """The failed fix's cause row stops standing as a cause leg because its
+    window FAILED (``fix_windows``), not because M6 linked anything to it; a
+    cause row from before the fix is overtaken by the failure as well."""
     case, root, hyp = _identified_case()
     case.evidence.append(
         _row(
@@ -467,9 +469,9 @@ def test_marking_takes_only_the_failed_fixs_cause_rows():
     _failed_fix(case)
     _recompute_at(case, 9)
 
-    marked = _refuting_row_ids(root)
-    assert _eid("cause_gone") in marked
-    assert _eid("pre_fix_gone") not in marked
+    _assert_demoted(case, root, hyp)
+    assert _refuting_row_ids(root) == {e.evidence_id for e in _engine_rows(case)}
+    assert cause_elimination_rows(case) == []
 
 
 def test_a_confirmed_resolution_survives_a_same_turn_refutation():
@@ -631,8 +633,8 @@ def test_the_problem_seen_gone_in_the_persistence_turn_holds_it_off(mitigated):
     the persistence and the problem-gone row cannot be ordered, and a
     same-turn ambiguity resolves toward the confirmation, as for the
     disconfirmation window and the mixed single-turn shape. With or without a
-    restart recorded that turn, nothing is demoted (the accepted residual of
-    ``_confirmed_from``)."""
+    restart recorded that turn, nothing is demoted: a turn holding both reads
+    as gone (``fix_windows``, the owner's ruling)."""
     case, root, hyp = _identified_case()
     _accept(case, InvestigationActionType.SOLUTION, 8)
     case.evidence.append(_cause_gone(9))
@@ -793,10 +795,10 @@ def test_a_demotion_with_no_failure_observed_marks_no_cause_row():
     assert has_resolution_confirmation(case) is True
 
 
-def test_a_cause_row_the_root_supports_still_gets_its_refutation():
-    """The marking is idempotent on REFUTES links only. A cause row the root
-    already SUPPORTS-links would otherwise keep standing as the cause leg, and
-    a later mitigation's relief would resolve the case on it."""
+def test_a_cause_row_the_root_supports_still_confirms_nothing_once_failed():
+    """The derivation reads the window, not the links: a cause row the root
+    SUPPORTS-links (a stamp) still stops standing as a cause leg once its
+    window failed, and a later mitigation's relief resolves nothing on it."""
     case, root, hyp = _identified_case()
     _accept(case, InvestigationActionType.SOLUTION, 8)
     cause_row = _cause_gone(9)
@@ -813,7 +815,6 @@ def test_a_cause_row_the_root_supports_still_gets_its_refutation():
     _assert_demoted(case, root, hyp)
     _mitigate(case)
 
-    assert cause_row.evidence_id in _refuting_row_ids(root)
     _assert_not_resolved_on_the_failed_cause(case)
 
 
@@ -852,3 +853,575 @@ def test_a_standing_confirmation_with_no_persistence_is_metered_as_one():
     ) as counter:
         assert m6_disconfirmation_basis(case) is None
     counter.labels.assert_called_once_with(reason="resolution_confirmed")
+
+
+# ---------------------------------------------------------------------------
+# One answer to "did the latest fix work?" (``fix_windows``): the readiness
+# gate and M6 read the same window, so they cannot disagree.
+# ---------------------------------------------------------------------------
+
+
+def _window_states(case):
+    return [(w.fix_turn, w.state) for w in fix_windows(case)]
+
+
+def test_a_fresh_cause_recheck_after_a_failure_resolves_nothing():
+    """The fix failed at turn 10 and M6 demoted the cause. At 12 the model
+    re-records the cause gone, beside a restart's relief. The re-check is in
+    the same failed fix window, so it confirms nothing: only a new fix can."""
+    case, root, hyp = _identified_case()
+    _failed_fix(case, outcome_turn=9)
+    case.evidence.append(_still_failing(10, label="still_503_at_10"))
+    _recompute_at(case, 10)
+    _accept(case, InvestigationActionType.MITIGATION, 11)
+    case.evidence += [
+        _row(
+            "cause_rechecked",
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            12,
+            "max_connections still reads 100",
+        ),
+        _problem_gone(12, label="after_restart"),
+    ]
+    _recompute_at(case, 12)
+
+    assert _window_states(case)[-1] == (8, FIX_FAILED)
+    _assert_not_resolved_on_the_failed_cause(case)
+
+
+def test_a_new_fix_after_a_failure_opens_a_window_that_resolves():
+    case, root, hyp = _identified_case()
+    _failed_fix(case)
+    _recompute_at(case, 9)
+    _accept(case, InvestigationActionType.SOLUTION, 12)
+    case.evidence += [
+        _row(
+            "pgbouncer_gone",
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            13,
+            "pgbouncer pool_mode is now transaction",
+        ),
+        _problem_gone(13, label="checkout_ok"),
+    ]
+    _recompute_at(case, 13)
+
+    assert _window_states(case)[1:] == [(8, FIX_FAILED), (12, FIX_SUCCEEDED)]
+    assert assess_resolution_readiness(case).verdict == ResolutionReadiness.READY
+
+
+def test_a_relapse_after_a_relief_fails_the_window():
+    case, root, hyp = _identified_case()
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence += [_cause_gone(9), _problem_gone(10)]
+    assert _window_states(case)[-1] == (8, FIX_SUCCEEDED)
+    case.evidence.append(_still_failing(12, label="back_again"))
+
+    assert _window_states(case)[-1] == (8, FIX_FAILED)
+    assert has_resolution_confirmation(case) is False
+
+
+def test_an_earlier_success_does_not_outlive_a_later_failed_fix():
+    """Fix 1 confirmed at 4-5; at 8 a second fix, its cause seen gone at 9 and
+    the problem there at 10. The gate reads the failure from the windows
+    alone — no M6 recompute runs here — so the first window's confirmation
+    is overtaken whether or not M6 could act."""
+    case, root, hyp = _identified_case()
+    _accept(case, InvestigationActionType.SOLUTION, 3)
+    case.evidence += [
+        _row(
+            "first_cause_gone",
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            4,
+            "max_connections now reads 60 after the first change",
+        ),
+        _problem_gone(5, label="first_relief"),
+    ]
+    assert has_resolution_confirmation(case) is True
+    _failed_fix(case, fix_turn=8, outcome_turn=9)
+    case.evidence.append(_still_failing(10, label="still_503_after_second_fix"))
+
+    assert _window_states(case)[1:] == [(3, FIX_SUCCEEDED), (8, FIX_FAILED)]
+    assert has_resolution_confirmation(case) is False
+
+
+def test_an_out_of_band_confirmation_does_not_outlive_a_later_failed_fix():
+    """Window 0 — no dated fix — confirmed at 4-5, then a dated fix fails."""
+    case, root, hyp = _identified_case()
+    case.evidence += [
+        _row(
+            "oob_cause_gone",
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            4,
+            "max_connections was raised to 60 by hand",
+        ),
+        _problem_gone(5, label="oob_relief"),
+    ]
+    assert has_resolution_confirmation(case) is True
+    _failed_fix(case, fix_turn=8, outcome_turn=9)
+    case.evidence.append(_still_failing(10, label="still_503"))
+
+    assert has_resolution_confirmation(case) is False
+
+
+def test_the_problem_back_in_a_new_fixs_turn_is_the_old_windows_relapse():
+    """ "It's back, so I'm applying the next fix" at turn 8: the persistence row
+    in the new fix's own turn cannot be that fix's failure (it may quote what
+    came before), so it is the previous window's relapse, and that window's
+    confirmation no longer stands."""
+    case, root, hyp = _identified_case()
+    _accept(case, InvestigationActionType.SOLUTION, 3)
+    case.evidence += [
+        _row(
+            "first_cause_gone",
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            4,
+            "max_connections now reads 60 after the first change",
+        ),
+        _problem_gone(5, label="first_relief"),
+    ]
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence.append(_still_failing(8, label="back_at_the_second_fix"))
+
+    assert _window_states(case)[1:] == [(3, FIX_FAILED), (8, FIX_UNKNOWN)]
+    assert has_resolution_confirmation(case) is False
+
+
+def test_after_a_failure_the_gate_asks_for_a_new_fix_not_a_confirmation():
+    """Asking the user to confirm again would loop: nothing they confirm in a
+    failed window counts. The gate names the failure and asks for a new fix."""
+    case, root, hyp = _identified_case()
+    _failed_fix(case)
+    _recompute_at(case, 9)
+    readiness = assess_resolution_readiness(case)
+
+    assert readiness.verdict == ResolutionReadiness.NEEDS_INFO
+    assert readiness.missing[0] == "a new fix after the one that did not hold"
+    assert "didn't hold" in readiness.message
+    assert "just tell me" not in readiness.message
+
+
+def test_an_absence_row_inside_a_failed_window_tells_the_model_to_record_a_fix():
+    from faultmaven.core.investigation.milestone_engine.stage_gates import (
+        _flag_absence_inside_a_failed_fix_window,
+    )
+
+    case, root, hyp = _identified_case()
+    _failed_fix(case)
+    _recompute_at(case, 9)
+    case.current_turn = 10
+    quiet = {}
+    assert _flag_absence_inside_a_failed_fix_window(case, quiet) is False
+    assert quiet == {}
+
+    case.evidence.append(_problem_gone(10, label="fine_now"))
+    metadata = {}
+    assert _flag_absence_inside_a_failed_fix_window(case, metadata) is True
+    feedback = metadata["system_feedback"]
+    assert "did not hold" in feedback
+    assert "SolutionToAdd" in feedback and "solution_accepted" in feedback
+
+
+def test_a_failed_fix_still_proves_the_problem_existed():
+    """The false-alarm refusal reads every cause row, failed window or not: a
+    fix seen failing is the strongest proof the problem was real."""
+    from faultmaven.core.investigation.problem_status import invalidation_refusal
+
+    case, root, hyp = _identified_case()
+    _failed_fix(case)
+    _recompute_at(case, 9)
+    case.evidence.append(_problem_gone(10, label="never_there"))
+    assert cause_elimination_rows(case) == []
+
+    refusal = invalidation_refusal(case, [_eid("never_there")], "logs are clean")
+    assert refusal == "a cause was confirmed eliminated, so the problem existed"
+
+
+def test_a_relief_without_a_cause_recheck_is_not_a_successful_fix():
+    """The problem gone after a fix with no cause re-check does not show the
+    fix worked (a mitigation can relieve it with the cause still there): the
+    window stays UNKNOWN, and M6's refusal names the missing cause check."""
+    case, root, hyp = _identified_case()
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence.append(_problem_gone(9))
+
+    assert _window_states(case)[-1] == (8, FIX_UNKNOWN)
+    with patch(
+        "faultmaven.core.investigation.causal_graph.disconfirmation."
+        "m6_demotion_refused_total"
+    ) as counter:
+        assert m6_disconfirmation_basis(case) is None
+    counter.labels.assert_called_once_with(reason="no_cause_removal")
+
+
+# ---------------------------------------------------------------------------
+# Review round on the fix windows.
+# ---------------------------------------------------------------------------
+
+
+def test_a_failure_reported_with_the_next_fix_is_still_demoted():
+    """ "Still 503, so I'm putting pgbouncer in": the persistence and the next
+    fix's acceptance land in one turn. The next fix has no verdict yet, so it
+    does not erase the failure: M6 demotes the cause whose fix failed, and the
+    gate agrees nothing is confirmed. The next fix's own confirmation later
+    resolves the case."""
+    case, root, hyp = _identified_case()
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence.append(_cause_gone(9))
+    _recompute_at(case, 9)
+    _accept(case, InvestigationActionType.SOLUTION, 10)
+    case.evidence.append(_still_failing(10))
+    _recompute_at(case, 10)
+
+    assert _window_states(case)[1:] == [(8, FIX_FAILED), (10, FIX_UNKNOWN)]
+    _assert_demoted(case, root, hyp)
+    assert has_resolution_confirmation(case) is False
+
+    case.evidence += [
+        _row(
+            "pgbouncer_gone",
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            11,
+            "pgbouncer pool_mode is now transaction",
+        ),
+        _problem_gone(11, label="checkout_ok"),
+    ]
+    _recompute_at(case, 11)
+    assert assess_resolution_readiness(case).verdict == ResolutionReadiness.READY
+
+
+def test_m6_reads_the_latest_fix_not_an_earlier_one():
+    """A first fix that worked, then a second fix whose cause is seen gone and
+    the problem still there: the second fix's failure demotes the cause."""
+    case, root, hyp = _identified_case()
+    _accept(case, InvestigationActionType.SOLUTION, 3)
+    case.evidence += [
+        _row(
+            "first_cause_gone",
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            4,
+            "max_connections now reads 60 after the first change",
+        ),
+        _problem_gone(5, label="first_relief"),
+    ]
+    _recompute_at(case, 5)
+    _failed_fix(case, fix_turn=8, outcome_turn=9)
+    case.evidence.append(_still_failing(10, label="still_503_after_second_fix"))
+    _recompute_at(case, 10)
+
+    _assert_demoted(case, root, hyp)
+
+
+@pytest.mark.parametrize(
+    "statement, symptom",
+    [
+        (
+            "a memory leak in the gunicorn worker",
+            "gunicorn worker memory is climbing again",
+        ),
+        (
+            "the disk is full on the db host",
+            "disk usage on the db host is at 80 percent",
+        ),
+    ],
+    ids=["sibling-candidate", "refuted-guess"],
+)
+def test_a_symptom_about_another_candidate_is_not_the_problem_persisting(
+    statement, symptom
+):
+    """The persistence frame is the problem plus the identified cause's chain,
+    not every candidate's: a symptom that speaks to a sibling candidate or a
+    refuted guess does not fail the fix that removed the identified cause."""
+    case, root, hyp = _identified_case()
+    sibling = _add_sibling_chain(case)
+    sibling.statement = statement
+    case.hypotheses["hyp_00000000eeee"].statement = statement
+    case.hypotheses["hyp_00000000eeee"].state = HypothesisState.REFUTED
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence += [
+        _cause_gone(9),
+        _row("other_symptom", EvidenceCategory.SYMPTOM_EVIDENCE, 10, symptom),
+    ]
+    _recompute_at(case, 10)
+
+    assert _window_states(case)[-1] == (8, FIX_UNKNOWN)
+    assert hyp.state != HypothesisState.REFUTED
+    assert _engine_rows(case) == []
+
+
+def test_a_new_fix_and_its_confirmation_in_one_turn_resolve():
+    """The one-turn recovery: the new fix accepted, its cause seen gone and the
+    problem gone, all in the turn after the failure."""
+    case, root, hyp = _identified_case()
+    _failed_fix(case)
+    _recompute_at(case, 9)
+    _accept(case, InvestigationActionType.SOLUTION, 10)
+    case.evidence += [
+        _row(
+            "pgbouncer_gone",
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            10,
+            "pgbouncer pool_mode is now transaction",
+        ),
+        _problem_gone(10, label="checkout_ok"),
+    ]
+    _recompute_at(case, 10)
+
+    assert assess_resolution_readiness(case).verdict == ResolutionReadiness.READY
+
+
+def test_a_success_between_two_failures_confirms_nothing():
+    """Window 1 failed, window 2 succeeded, window 3 failed, window 4 is a new
+    fix with nothing observed yet: the last observed window failed, so the
+    resolution stands on nothing — not on window 2's rows."""
+    case, root, hyp = _identified_case()
+    for fix, cause, outcome in ((3, 4, 5), (8, 9, None), (12, 13, 14)):
+        _accept(case, InvestigationActionType.SOLUTION, fix)
+        case.evidence.append(
+            _row(
+                f"cause_gone_{cause}",
+                EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+                cause,
+                "max_connections now reads 100 after the config change",
+            )
+        )
+        if outcome:
+            case.evidence.append(_still_failing(outcome, label=f"still_{outcome}"))
+    case.evidence.append(_problem_gone(10, label="ok_10"))
+    _accept(case, InvestigationActionType.SOLUTION, 16)
+
+    assert [w.state for w in fix_windows(case)[1:]] == [
+        FIX_FAILED,
+        FIX_SUCCEEDED,
+        FIX_FAILED,
+        FIX_UNKNOWN,
+    ]
+    assert has_resolution_confirmation(case) is False
+
+
+def test_a_pre_fix_cause_row_does_not_confirm_the_fix_after_it():
+    """The cause recorded gone at 7, before the fix executed at 8; the problem
+    still there at 9; a restart's relief at 10. The fix's own window holds no
+    cause re-check, so nothing confirms it — the turn-7 row is about the state
+    before the fix, and it must not pair with the relief."""
+    case, root, hyp = _identified_case()
+    case.evidence.append(_cause_gone(7))
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence.append(_still_failing(9))
+    _accept(case, InvestigationActionType.MITIGATION, 10)
+    case.evidence.append(_problem_gone(10, label="restart_relief"))
+
+    assert has_resolution_confirmation(case) is False
+
+
+def test_an_out_of_band_confirmation_does_not_confirm_a_later_fix():
+    """An out-of-band fix confirmed at 4-5, the problem back at 8 with a
+    recorded fix, and still there at 9: the out-of-band confirmation says
+    nothing about the recorded fix, as for a recorded first fix."""
+    case, root, hyp = _identified_case()
+    case.evidence += [
+        _row(
+            "oob_cause_gone",
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            4,
+            "max_connections was raised to 60 by hand",
+        ),
+        _problem_gone(5, label="oob_relief"),
+    ]
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence += [
+        _still_failing(8, label="back_at_8"),
+        _still_failing(9, label="still_9"),
+    ]
+
+    assert has_resolution_confirmation(case) is False
+
+
+def test_an_unobserved_newer_fix_leaves_the_confirmation_standing():
+    """A fix confirmed, then another fix recorded with nothing observed after
+    it yet: the newer fix has no verdict, so the window before it still
+    answers (an execution stamp can lag the user's report)."""
+    case, root, hyp = _identified_case()
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence += [_cause_gone(9), _problem_gone(10)]
+    _accept(case, InvestigationActionType.SOLUTION, 12)
+
+    assert has_resolution_confirmation(case) is True
+
+
+def test_the_notice_is_not_sent_on_the_turn_that_establishes_the_failure():
+    from faultmaven.core.investigation.milestone_engine.stage_gates import (
+        _flag_absence_inside_a_failed_fix_window,
+    )
+
+    case, root, hyp = _identified_case()
+    _failed_fix(case)
+    case.current_turn = 9
+    metadata = {}
+    assert _flag_absence_inside_a_failed_fix_window(case, metadata) is False
+    assert metadata == {}
+
+
+def test_a_failure_seen_through_the_causes_chain_outlives_the_demotion():
+    """The persistence row speaks to the identified cause's chain, not to the
+    problem statement's words. Once M6 demotes that cause, its chain stays in
+    the frame (it carries the engine's disconfirmation), so the window stays
+    FAILED and a later relief resolves nothing."""
+    case, root, hyp = _identified_case()
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence += [
+        _cause_gone(9),
+        _row(
+            "pool_still_starved",
+            EvidenceCategory.SYMPTOM_EVIDENCE,
+            10,
+            "max_connections pool size limit still exhausted",
+        ),
+    ]
+    _recompute_at(case, 10)
+    _assert_demoted(case, root, hyp)
+    _mitigate(case, accepted_turn=11, relief_turn=12)
+
+    assert _window_states(case)[-1] == (8, FIX_FAILED)
+    _assert_not_resolved_on_the_failed_cause(case)
+
+
+def test_back_then_a_new_fix_then_up_in_one_turn_fails_the_old_fix():
+    """ "It came back, so I applied the pool change, and now it's up" in one
+    turn: the relapse is the old fix's (it cannot be the new fix's failure),
+    the relief the new fix's (a window starts at its fix's execution turn).
+    The old fix failed, so M6 demotes its cause; the new fix still needs its
+    own cause check before anything resolves."""
+    case, root, hyp = _identified_case()
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence.append(_cause_gone(9))
+    _recompute_at(case, 9)
+    _accept(case, InvestigationActionType.SOLUTION, 12)
+    case.evidence += [_still_failing(12, label="back"), _problem_gone(12, label="up")]
+    _recompute_at(case, 12)
+
+    assert _window_states(case)[1:] == [(8, FIX_FAILED), (12, FIX_UNKNOWN)]
+    _assert_demoted(case, root, hyp)
+    assert has_resolution_confirmation(case) is False
+
+
+# ---------------------------------------------------------------------------
+# A newer fix answers only once its outcome was looked at.
+# ---------------------------------------------------------------------------
+
+
+def test_a_stamp_lagging_the_cause_check_still_resolves_on_the_next_turn():
+    """ "The config reads 100" at 7, the acceptance stamped at 8, "checkout
+    works" at 9. A problem-gone row alone does not look at the stamped fix,
+    so the window before it — holding the cause check — still answers."""
+    case, root, hyp = _identified_case()
+    case.evidence.append(_cause_gone(7))
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence.append(_problem_gone(9))
+
+    assert assess_resolution_readiness(case).verdict == ResolutionReadiness.READY
+
+
+@pytest.mark.parametrize(
+    "later",
+    ["relief", "unrelated_symptom"],
+)
+def test_a_later_fix_seen_only_by_a_relief_or_an_aside_keeps_the_resolution(later):
+    """A fix confirmed (cause at 9, problem gone at 10), then a hardening fix
+    at 12 followed by only a relief or an unrelated remark: the later fix's
+    outcome was not looked at, so the confirmed resolution stands."""
+    case, root, hyp = _identified_case()
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence += [_cause_gone(9), _problem_gone(10)]
+    _accept(case, InvestigationActionType.SOLUTION, 12)
+    if later == "relief":
+        case.evidence.append(_problem_gone(13, label="still_fine"))
+    else:
+        case.evidence.append(
+            _row(
+                "aside",
+                EvidenceCategory.SYMPTOM_EVIDENCE,
+                12,
+                "also seeing latency on the billing service",
+            )
+        )
+
+    assert assess_resolution_readiness(case).verdict == ResolutionReadiness.READY
+
+
+def test_the_cause_check_between_two_fixes_still_confirms_a_later_relief():
+    """Fix at 8, the cause seen gone at 9, another fix stamped at 10, the
+    problem gone at 13: the newer fix was not looked at, so the cause check
+    before it and the relief after it confirm the resolution, as on main."""
+    case, root, hyp = _identified_case()
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence.append(_cause_gone(9))
+    _accept(case, InvestigationActionType.SOLUTION, 10)
+    case.evidence.append(_problem_gone(13))
+
+    assert assess_resolution_readiness(case).verdict == ResolutionReadiness.READY
+
+
+def test_the_problem_leg_counts_from_the_confirmed_fix_not_a_newer_stamp():
+    """Fix at 8, "the target is up" at 9, "the config reads 100" at 10, then an
+    unobserved fix stamped at 12: the problem leg counts from the fix the
+    resolution confirms, so the turn-9 row still stands."""
+    case, root, hyp = _identified_case()
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence += [_problem_gone(9), _cause_gone(10)]
+    _accept(case, InvestigationActionType.SOLUTION, 12)
+
+    assert assess_resolution_readiness(case).verdict == ResolutionReadiness.READY
+
+
+def test_after_a_failure_a_relief_alone_asks_for_the_cause_recheck():
+    """The fix failed; a new fix at 12 is followed only by the problem gone.
+    The new fix is unconfirmed, and the ask names the missing leg — the cause
+    re-checked after the fix — not the problem-gone leg already given."""
+    case, root, hyp = _identified_case()
+    _failed_fix(case)
+    _recompute_at(case, 9)
+    _accept(case, InvestigationActionType.SOLUTION, 12)
+    case.evidence.append(_problem_gone(13, label="up_after_fix_2"))
+    readiness = assess_resolution_readiness(case)
+
+    assert readiness.verdict == ResolutionReadiness.NEEDS_INFO
+    assert "cause re-checked after the fix" in readiness.message
+
+    case.evidence.append(
+        _row(
+            "pgbouncer_gone",
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            14,
+            "pgbouncer pool_mode is now transaction",
+        )
+    )
+    assert assess_resolution_readiness(case).verdict == ResolutionReadiness.READY
+
+
+def test_a_failure_in_the_fixed_causes_own_terms_counts_without_a_validated_root():
+    """No root is validated (the cause was never grounded), so the frame has
+    no identified chain. The persistence row speaks in the terms of the cause
+    the fix addressed — the chain its cause row is about — so it still fails
+    the fix, and a later relief resolves nothing."""
+    case, root, hyp = _identified_case()
+    root.node_state = NodeState.CANDIDATE
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    case.evidence += [
+        _row(
+            "pool_raised",
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            9,
+            "max_connections raised above the checkout pool size",
+        ),
+        _row(
+            "slots_still_held",
+            EvidenceCategory.SYMPTOM_EVIDENCE,
+            10,
+            "pg_stat_activity: max_connections pool size still exhausted",
+        ),
+    ]
+    _accept(case, InvestigationActionType.MITIGATION, 10)
+    case.evidence.append(_problem_gone(11, label="restart_relief"))
+
+    assert _window_states(case)[-1] == (8, FIX_FAILED)
+    assert has_resolution_confirmation(case) is False

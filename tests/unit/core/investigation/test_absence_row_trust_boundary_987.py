@@ -439,13 +439,13 @@ def test_m6_fires_when_the_cause_is_seen_gone_and_the_problem_persists():
             "ev_c0a5e0000009",
             EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
             9,
-            "max_connections now reads 100",
+            "the OIDC provider audience now lists sts.amazonaws.com",
         ),
         _evidence(
             "ev_5f0000000009",
             EvidenceCategory.SYMPTOM_EVIDENCE,
             9,
-            "checkout still returns 503 after the fix",
+            "AssumeRoleWithWebIdentity still fails in prod-west-2 after the fix",
         ),
     ]
     basis = m6_disconfirmation_basis(case)
@@ -475,7 +475,7 @@ def test_m6_reads_a_lone_cause_row_followed_by_persistence_as_a_failed_fix():
             "ev_f6e5d4c3b2a2",
             EvidenceCategory.SYMPTOM_EVIDENCE,
             10,
-            "AssumeRoleWithWebIdentity still returns AccessDenied",
+            "AssumeRoleWithWebIdentity still fails in prod-west-2",
         )
     )
     assert m6_disconfirmation_basis(case) is not None
@@ -493,20 +493,20 @@ def test_m6_refuses_persistence_from_before_the_cause_was_seen_gone():
             "ev_5f0000000009",
             EvidenceCategory.SYMPTOM_EVIDENCE,
             9,
-            "checkout still returns 503",
+            "AssumeRoleWithWebIdentity still fails in prod-west-2",
         ),
         _evidence(
             "ev_c0a5e0000010",
             EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
             10,
-            "max_connections now reads 100",
+            "the OIDC provider audience now lists sts.amazonaws.com",
         ),
     ]
     with patch(
         "faultmaven.core.investigation.causal_graph.disconfirmation.m6_demotion_refused_total"
     ) as counter:
         assert m6_disconfirmation_basis(case) is None
-    counter.labels.assert_called_once_with(reason="no_persistence_after_cause_removal")
+    counter.labels.assert_called_once_with(reason="no_persistence")
 
 
 def test_m6_refuses_persistence_in_the_fix_turn_once_the_cause_is_seen_gone():
@@ -522,27 +522,27 @@ def test_m6_refuses_persistence_in_the_fix_turn_once_the_cause_is_seen_gone():
             "ev_c0a5e0000009",
             EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
             9,
-            "ExecStart now names /usr/bin/billing-exporter",
+            "the OIDC provider audience now lists sts.amazonaws.com",
         ),
         _evidence(
             "ev_5f0000000009",
             EvidenceCategory.SYMPTOM_EVIDENCE,
             9,
-            "billing-exporter exited 203/EXEC at 07:53",
+            "AssumeRoleWithWebIdentity fails in prod-west-2 at 07:53",
         ),
     ]
     with patch(
         "faultmaven.core.investigation.causal_graph.disconfirmation.m6_demotion_refused_total"
     ) as counter:
         assert m6_disconfirmation_basis(case) is None
-    counter.labels.assert_called_once_with(reason="no_persistence_after_cause_removal")
+    counter.labels.assert_called_once_with(reason="no_persistence")
 
     case.evidence.append(
         _evidence(
             "ev_5f0000000010",
             EvidenceCategory.SYMPTOM_EVIDENCE,
             10,
-            "the Prometheus target is still DOWN",
+            "AssumeRoleWithWebIdentity still fails in prod-west-2",
         )
     )
     assert m6_disconfirmation_basis(case) is not None
@@ -550,17 +550,29 @@ def test_m6_refuses_persistence_in_the_fix_turn_once_the_cause_is_seen_gone():
 
 def test_m6_fires_on_a_genuine_failed_fix():
     """The gate must still PASS the case it exists for — otherwise it is a
-    silent disabling of M6 rather than a precondition."""
+    silent disabling of M6 rather than a precondition.
+
+    A genuine failed fix is the #1906 record of one: the cause re-checked gone
+    after the fix, and the problem still there. One definition of a failed fix
+    serves the readiness gate and M6 (#1927, ``fix_windows``); "still failing"
+    with no cause re-check may be an implementation error and fails nothing
+    (``test_a_fix_with_no_cause_recheck_establishes_no_failure``)."""
     case = _case()
     _fix_applied(case, turn=8)
-    case.evidence.append(
+    case.evidence += [
+        _evidence(
+            "ev_c0a5e000000f",
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            9,
+            "the OIDC provider audience now lists sts.amazonaws.com",
+        ),
         _evidence(
             "ev_a1b2c3d4e5f6",
             EvidenceCategory.SYMPTOM_EVIDENCE,
             9,
-            "AssumeRoleWithWebIdentity still returns AccessDenied after the fix",
-        )
-    )
+            "AssumeRoleWithWebIdentity still fails in prod-west-2 after the fix",
+        ),
+    ]
     basis = m6_disconfirmation_basis(case)
     assert basis is not None
     fix_turn, provenance = basis
@@ -621,14 +633,20 @@ def _counterfactual_case(*, with_persistence: bool):
     case = _case()
     _fix_applied(case, turn=8)
     if with_persistence:
-        case.evidence.append(
+        case.evidence += [
+            _evidence(
+                "ev_c0a5e000000f",
+                EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+                9,
+                "the OIDC provider audience now lists sts.amazonaws.com",
+            ),
             _evidence(
                 "ev_a1b2c3d4e5f6",
                 EvidenceCategory.SYMPTOM_EVIDENCE,
                 9,
-                "AssumeRoleWithWebIdentity still returns AccessDenied after the fix",
-            )
-        )
+                "AssumeRoleWithWebIdentity still fails in prod-west-2 after the fix",
+            ),
+        ]
     seed_problem_node(case)
     created = ingest_emitted_chain(
         case,
@@ -942,24 +960,56 @@ def test_mitigation_never_establishes_that_the_cause_was_addressed():
     """A workaround is by definition NOT a fix of the cause, so a failed
     mitigation must never establish "the cause was addressed yet the problem
     persisted" and refute the root at belief 0."""
+
+    def _rows():
+        return [
+            _evidence(
+                "ev_c0a5e000000f",
+                EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+                9,
+                "the OIDC provider audience now lists sts.amazonaws.com",
+            ),
+            _evidence(
+                "ev_a1b2c3d4e5f6",
+                EvidenceCategory.SYMPTOM_EVIDENCE,
+                9,
+                "AssumeRoleWithWebIdentity still fails in prod-west-2",
+            ),
+        ]
+
     case = _case()
     _fix_applied(case, turn=8, action_type=InvestigationActionType.MITIGATION)
-    case.evidence.append(
-        _evidence(
-            "ev_a1b2c3d4e5f6", EvidenceCategory.SYMPTOM_EVIDENCE, 9, "still failing"
-        )
-    )
+    case.evidence += _rows()
     assert m6_disconfirmation_basis(case) is None
 
     # ...and the identical shape with a SOLUTION does establish it.
     case2 = _case()
     _fix_applied(case2, turn=8, action_type=InvestigationActionType.SOLUTION)
-    case2.evidence.append(
+    case2.evidence += _rows()
+    assert m6_disconfirmation_basis(case2) is not None
+
+
+def test_a_fix_with_no_cause_recheck_establishes_no_failure():
+    """ "I ran it, still failing" with no cause re-check may be an
+    implementation error (the FAILURE PATH's first branch: the cause is still
+    present), which disconfirms nothing. One definition of a failed fix
+    (#1927): it needs the cause observed removed after the fix."""
+    case = _case()
+    _fix_applied(case, turn=8)
+    case.evidence.append(
         _evidence(
-            "ev_a1b2c3d4e5f6", EvidenceCategory.SYMPTOM_EVIDENCE, 9, "still failing"
+            "ev_a1b2c3d4e5f6",
+            EvidenceCategory.SYMPTOM_EVIDENCE,
+            9,
+            "AssumeRoleWithWebIdentity still fails in prod-west-2",
         )
     )
-    assert m6_disconfirmation_basis(case2) is not None
+    with patch(
+        "faultmaven.core.investigation.causal_graph.disconfirmation."
+        "m6_demotion_refused_total"
+    ) as counter:
+        assert m6_disconfirmation_basis(case) is None
+    counter.labels.assert_called_once_with(reason="no_cause_removal")
 
 
 def test_persistence_window_keys_on_execution_not_the_offer_turn():

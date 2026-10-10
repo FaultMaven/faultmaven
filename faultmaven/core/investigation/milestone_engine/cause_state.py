@@ -43,6 +43,7 @@ from faultmaven.core.investigation.working_conclusion_generator import (
 from faultmaven.modules.case.contracts import Case, CauseState
 
 from .stage_gates import (
+    _flag_absence_inside_a_failed_fix_window,
     _refresh_working_conclusion,
     _withdraw_unlicensed_solution_offers,
 )
@@ -558,6 +559,7 @@ def _recompute_assessment_state(
     # M6 demotion can refute the very hypothesis a license rests on (fm#1679).
     _refresh_working_conclusion(case)
     _withdraw_unlicensed_solution_offers(case, metadata)
+    _flag_absence_inside_a_failed_fix_window(case, metadata)
     derive_solution_surface(case)
 
     # Assurance grade + verification status LAST — after the cause_state
