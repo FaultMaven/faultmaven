@@ -393,15 +393,26 @@ cause_identification_held_mece_total = Counter(
 #   marks a real, bounded suppression of legitimate failed-fix demotions. Kept
 #   separate from ``no_fix_applied`` precisely so that window is visible rather
 #   than hidden inside the benign baseline.
-# - ``no_persistence``   — a fix was applied but nothing observes the problem
-#   still present afterwards (no symptom_evidence at/after the fix turn).
-# - ``resolution_confirmed`` — a QUALIFYING resolution-confirmation row stands
-#   at/after the fix turn: the problem demonstrably did NOT persist. This is the
-#   #987 incident shape, and a nonzero rate here means something upstream is
-#   still routing a successful fix into the failed-fix path.
+# The remaining labels read the latest fix window's outcome
+# (``cause_assurance.fix_windows``, #1927), the one answer the readiness gate
+# shares:
 #
-# A sustained ``no_persistence`` rate means the model refutes causes without
-# recording the failed outcome the prompt's FAILURE PATH mandates. A nonzero
+# - ``no_cause_removal`` — the fix ran but no causal_absence row after it
+#   observes the cause removed: "I ran it, still failing" with no cause
+#   re-check may be an implementation error, which disconfirms nothing.
+# - ``no_persistence``   — the cause was observed removed after the fix, but no
+#   symptom_evidence bearing on the problem is ordered after that observation
+#   (it predates the cause row, sits in the fix's own execution turn — where a
+#   pasted journal still carries the pre-fix failures — or is about something
+#   else).
+# - ``resolution_confirmed`` — the window SUCCEEDED: the cause observed removed
+#   and the problem observed gone, with no persistence before the relief. This
+#   is the #987 incident shape, and a nonzero rate here means something
+#   upstream is still routing a successful fix into the failed-fix path.
+#
+# A sustained ``no_cause_removal`` or ``no_persistence`` rate means the model
+# refutes causes without recording the failed outcome the prompt's FAILURE
+# PATH mandates. A nonzero
 # ``resolution_confirmed`` rate is a defect signal, not an elicitation one.
 # ``undatable_acceptance`` should trend to zero; if it does not, acceptances are
 # being written somewhere that does not stamp the execution turn.
@@ -411,6 +422,20 @@ m6_demotion_refused_total = Counter(
     "(recorded fix application + observed problem persistence) could not be "
     "established from the case record (#987). One increment per refusal.",
     ["reason"],
+)
+
+# M6 demoted the identified cause because the latest fix window FAILED
+# (``cause_assurance.fix_windows``: an executed SOLUTION, the cause observed
+# removed after it, then the problem observed persisting with no relief before
+# it), for a fix of that cause, while the model had not refuted the cause
+# itself (#1927). The prompt's FAILURE PATH tells the
+# model to refute a cause its fix disproved, so a sustained rate is an
+# elicitation signal: the engine is doing the model's refutation for it.
+m6_record_disconfirmation_total = Counter(
+    "faultmaven_m6_record_disconfirmation_total",
+    "M6 demoted the identified cause because the case record established a "
+    "failed fix (cause observed removed, problem observed present after it) "
+    "that the model had not refuted (#1927). One increment per demotion.",
 )
 
 # #656 bearing check at the resolution confirm-stamp. One increment per

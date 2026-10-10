@@ -122,7 +122,7 @@ LLM-owned gate milestone on the LLM's behalf.
 | **M3** | Every **hypothesis is a causal chain** terminating in a (possibly-candidate) **root-cause node** proposing a mechanism — distinct from `D` and from its intermediate states. A bare intermediate state / symptom-restatement is not a hypothesis. *(Successor to retired INV-17.)* | Enforced at the **validation / solution-attach checkpoint**, not at creation — a partial chain may exist with no root yet (lazy expansion, §8.2). | Schema (checkpoint) |
 | **M4** | A node transitions to **validated** only via empirical evidence (§7.1) **or** deduction over a *certified-exhaustive* set (§7.1.1) — never by assertion, inference, or correlation. | Unobservable + non-exhaustive → node stays candidate; keep searching or escalate. | Engine-guard (extends INV-23) |
 | **M5** | A **remediation `Solution`** may not exist before its root is at least *mechanistically validated*; a diagnostic action is never a Solution. *(Mitigation / defensive state-interceptions are exempt — they precede a known root by design.)* | Pre-validation actions are recorded as **tests / mitigations**, not solutions; flow continues. | Engine-guard (veto, extends INV-23) |
-| **M6** | **Counterfactual disconfirmation** (fix applied, `D` persists) **demotes** the chain root `validated → candidate`, attaches refuting evidence, and recomputes `cause_state` — **deterministically, in the engine**, not awaiting an LLM signal. No "verified" conclusion survives its own disproof. Its FAILED-FIX arm is **destructive and extra-graphical**, so that arm fires only on preconditions the case record ESTABLISHES — an executed SOLUTION, an observed persistence after it, and no standing resolution confirmation (INV-42). The EVIDENCE arm (a hypothesis refuted/net-refuted by its own links) is graph-grounded and demotes unconditionally. Either way the durable record states an engine *inference with provenance*, never an observation it did not make. | New evidence required before re-validating (§7.3); exhaustion → re-expand (R6) / escalate. | Engine (deterministic, derive lane) |
+| **M6** | **Counterfactual disconfirmation** (fix applied, `D` persists) **demotes** the chain root `validated → candidate`, attaches refuting evidence, and recomputes `cause_state` — **deterministically, in the engine**, not awaiting an LLM signal. No "verified" conclusion survives its own disproof. Its FAILED-FIX arm is **destructive and extra-graphical**, so that arm fires only on preconditions the case record ESTABLISHES — the latest fix window FAILED — an executed SOLUTION, the cause seen removed after it, then `D` seen persisting with no problem-gone row before it (INV-42) — and it reads that off the record itself, without a model refutation. The readiness gate reads the same windows, so the two cannot disagree about whether a fix FAILED (§7.3, #1927). The EVIDENCE arm (a hypothesis refuted/net-refuted by its own links) is graph-grounded and demotes unconditionally. Either way the durable record states an engine *inference with provenance*, never an observation it did not make. | New evidence required before re-validating (§7.3); exhaustion → re-expand (R6) / escalate. | Engine (deterministic, derive lane) |
 | **M7** | An **AND-node** is `validated` ⇔ *all* co-necessary members are validated; refuting *any one* member refutes the chain. | Withholds validation until members prove out (normal flow); any refutation prunes. | Schema + engine |
 
 Each F / S / R rule in §4–§7 exists to make one or more of these hold; §9
@@ -920,11 +920,105 @@ records only what it can substantiate:
   establish that the cause was addressed), dated by its **execution** turn and
   not the turn it was offered; a **positive** persistence observation at/after
   it (a `symptom_evidence` row — "nothing said it was fixed" is not an
-  observation that it stayed broken); and **no** qualifying gone⇒gone
-  confirmation at/after that turn, which would be direct evidence the problem
-  did not persist. Refusals are labeled (`m6_demotion_refused_total{reason}`);
+  observation that it stayed broken), after the cause was seen removed; and
+  no problem-gone row before that persistence. Those preconditions are the
+  latest **fix window**'s outcome, defined once below and shared with the
+  readiness gate. Refusals are labeled (`m6_demotion_refused_total{reason}`);
   a nonzero `resolution_confirmed` rate is a *defect* signal, not elicitation
   drift.
+
+  **One answer to "did the latest fix work?" (#1927).** The readiness gate
+  (§9.5) and M6 used to answer that question separately, from the same rows:
+  the gate "it worked" (both legs), M6 "it failed". They were coupled only by
+  marks M6 wrote into the rows the gate reads (its engine row's window,
+  REFUTES links), and every defect in the #987 → #1906 → #1927 chain was a
+  state where the two disagreed — each new row shape that escaped the marks
+  reopened it. Both now read one predicate, `cause_assurance.fix_windows`:
+
+  - Each executed SOLUTION (dated by `accepted_in_turn`) opens a **window**
+    that runs to the next one; rows before any dated fix are window 0, which
+    never fails (nothing dated was seen failing).
+  - Inside a window, read in turn order from the window's raw, non-engine
+    rows: the cause seen removed (a `causal_absence` row); the problem seen
+    gone (a `symptom_absence` row); the problem seen **persisting** — a
+    `symptom_evidence` row at or after the cause's removal, in a turn after
+    the fix's execution turn (a row in that turn may quote pre-fix lines from
+    the same paste), up to and including the next fix's execution turn
+    (there, "it's back" is this window's relapse, not the next fix's
+    failure), bearing on the problem (≥2 shared content tokens with the
+    problem anchors plus the identified cause's chain and hypotheses — the
+    VALIDATED roots and any root carrying M6's own disconfirmation, so the
+    frame is stable across a demotion — plus the chain the window's own
+    cause rows are about, the cause the fix addressed, validated or not;
+    with no cause identified at all, every candidate's chain, since nothing
+    tells which one the fix addressed and M6 has no identified cause to
+    demote: 134 of 136 stored symptom rows on cases with a validated root
+    bear; once a cause is identified, a symptom about a sibling candidate or
+    a refuted guess does not fail the fix).
+  - The first persistence makes the window **FAILED**, and FAILED is final:
+    no later relief — a workaround, a delayed effect, a re-check of the
+    cause — makes a fix that was seen failing a success. Only a new fix opens
+    a window that can. A turn with both a problem-gone row and a persistence
+    row reads as gone: turn granularity cannot order them, and a same-turn
+    ambiguity resolves toward the confirmation, as for the disconfirmation
+    window and the mixed single-turn shape. A relief followed by a later
+    persistence is a relapse, FAILED. **SUCCEEDED** needs the cause seen
+    removed in the window too; otherwise the window stays UNKNOWN.
+
+  The readiness gate confirms a resolution only inside the **latest observed
+  window** (`confirming_window`), and not when that window FAILED. A window
+  is observed when its fix's outcome was looked at: the cause re-checked, or
+  the problem seen persisting after the fix. A resolution confirms the
+  latest fix, so rows from before a newer, observed fix — an earlier fix's,
+  an out-of-band one's, a pre-fix cause observation — confirm nothing about
+  it. A newer fix nobody has looked at yet has no verdict, so the window
+  before it still answers: the execution stamp can lag the user's report,
+  and a problem-gone row alone (possibly a workaround's relief) does not
+  look at the fix. When the latest fix shows only that relief, the gate asks
+  for the cause re-check, the one leg still owed. The problem leg counts
+  from the confirming window's fix. The gate reads a failed fix the same
+  whether or not M6 could act on it, so the two cannot disagree about
+  whether a fix failed. M6's record trigger demotes the identified
+  (validated, still-standing) cause when the latest window *with a verdict*
+  FAILED (a newer fix still unobserved does not erase that: "still 503, so
+  I'm putting pgbouncer in" records the failure and the next fix in one
+  turn),
+  the fix ran at or after the hypothesis was proposed, and the fix was a fix
+  *of* that cause — not every cause row of the window is affirmatively about
+  another candidate chain (`BearingFrame.about_another_chain`, the confirm
+  stamp's mis-citation guard); a failed fix of another candidate is no
+  resolution either, but it disconfirms that candidate, not this one. It
+  demotes without waiting for the model to refute (§9.3). It needs the cause
+  row: "I ran it, still failing" with no cause re-check may be an
+  implementation error (the cause is still present), which disconfirms
+  nothing — that window stays UNKNOWN, for the gate and for M6 alike. A
+  cause row followed by persistence is the counterfactual itself, never a
+  contradiction of it: since #1906 that row records only the cause removed,
+  and removing the cause did not remove `D`. M6 writes no marks for any of
+  this: the failed window's rows stop confirming by derivation.
+
+  **After a failure.** The gate's ask names the failed fix and asks for a
+  new one rather than another confirmation, which would loop. When the model
+  records absence evidence inside a failed window, the engine tells it to
+  record the new fix instead (a `SolutionToAdd`, then `solution_accepted`
+  once the user says it ran). The M5 license that admits that SolutionToAdd
+  survives the demoted cause through a `root_cause_conclusion` — on a new
+  hypothesis when the same cause was addressed again, correctly this time —
+  which is the intended re-licensing path. A case whose problem only went
+  quiet (a workaround) is closed, not resolved.
+
+  Costs, by ruling rather than gap: a fix that took effect late after it was
+  seen failing cannot resolve without a new recorded fix; a persistence row
+  in the fix's own turn fails nothing; a same-turn relief beside a
+  persistence reads as success; a persistence row sharing fewer than two
+  content tokens with the problem frame fails nothing; a newer recorded fix
+  needs its own cause and problem observations before it resolves. Window 0
+  — the rows before any dated fix — never fails: there a causal_absence row
+  is as likely a diagnosis-time exclusion ("DNS ruled out") as a fix's
+  outcome, and the problem is ongoing by definition. One more reader of the
+  rows remains by design: the evidence arm's engine row still sets the
+  disconfirmation window (§9.5), which can hold a SUCCEEDED window's rows
+  back when the cause is refuted by its own links.
 
 Refusing the counterfactual arm never leaves a disproven cause standing — the
 hypothesis's own state still governs, so a refuted cause stops grounding
@@ -1529,7 +1623,8 @@ soundness never rests on the chain alone while models under-build it.
   the contamination check, and **recomputes `cause_state`** — it does not wait for
   the LLM to volunteer a refutation. This is the direct fix for the runtime-inert
   lifecycle the assessment found (the LLM never emitted the REFUTES signal, so
-  nothing ever transitioned).
+  nothing ever transitioned). The signal is the case record: the cause seen
+  removed after an executed fix and `D` seen persisting after that — the latest fix window FAILED (§7.3, #1927).
 
 ### 9.4 Confidence
 
@@ -1605,7 +1700,10 @@ confirmation must not retroactively mask it; and the mixed single-turn shape
 ("the restart didn't fix it, but correcting the config did") stamps the
 failed fix and the genuine confirmation at the SAME turn — masking that
 confirmation would strand the resolve behind an ask the user just answered.
-The engine marker is reliable because M6 mints its row even when the model
+A failed fix's own rows — including a cause row in M6's own turn, which this
+window keeps — are excluded by the fix windows instead (§7.3, #1927): the
+legs read only the latest observed fix window, and nothing when it failed,
+so a later mitigation's problem-gone row cannot complete both legs on them. The engine marker is reliable because M6 mints its row even when the model
 already recorded the failure with its own decisive refute
 (`_attach_engine_refutation` idempotence is scoped to the ENGINE's own row —
 suppressing the mint left the window unset and re-qualified stale premature

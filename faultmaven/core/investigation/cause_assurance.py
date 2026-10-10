@@ -25,6 +25,7 @@ imports and re-exports it.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
@@ -56,8 +57,14 @@ __all__ = [
     "ENGINE_EVIDENCE_AUTHOR",
     "ENGINE_RCC_AUTHOR",
     "MECHANISTIC_RCC_LIKELIHOOD",
+    "FIX_FAILED",
+    "FIX_SUCCEEDED",
+    "FIX_UNKNOWN",
+    "BearingFrame",
     "CauseAssuranceGrade",
+    "FixWindow",
     "absence_row_link_refused",
+    "bearing_frame",
     "cached_content_tokens",
     "cause_elimination_rows",
     "conclusion_overclaims",
@@ -67,12 +74,16 @@ __all__ = [
     "evidence_category_map",
     "evidence_datum_key",
     "fix_application_turn",
+    "fix_windows",
     "grade_cause_assurance",
     "has_actionable_solution",
     "has_problem_definition",
     "has_resolution_confirmation",
     "has_root_cause_record",
     "latest_disconfirmation_turn",
+    "latest_decided_fix_window",
+    "confirming_window",
+    "latest_fix_window",
     "problem_anchor_statements",
     "resolution_confirmation_rows",
     "root_counterfactually_confirmed",
@@ -456,7 +467,8 @@ def root_counterfactually_confirmed(
 # has two legs (#1906): the cause observed removed (``cause_elimination_rows``,
 # the stamp's candidates) and the reported problem observed gone after it
 # (``symptom_elimination_rows``); the gate and the pivot need both
-# (``resolution_confirmation_rows``).
+# (``resolution_confirmation_rows``). Neither leg admits what a failed fix
+# window holds (``fix_windows``, #1927).
 # ---------------------------------------------------------------------------
 
 
@@ -569,6 +581,14 @@ def cause_elimination_rows(case: "Case") -> list:
       (NO-COLLAPSE), while the handshake still guards the truth surface. The
       LLM's own same-turn failed-fix row is excluded by the disconfirmation
       rule above, not by the window.
+    - In the latest fix window, and not a failed one (``confirming_window``,
+      read off ``fix_windows``): a resolution confirms the latest fix, so rows
+      from before it confirm nothing about it, and a fix seen failing — the
+      cause shown removed, then the problem seen again — confirms nothing,
+      whatever is recorded in its window afterwards. Only a new recorded fix
+      opens a window that can confirm (#1927). M6 demotes on the same
+      windows, so the gate and M6 cannot disagree about whether a fix
+      failed.
 
     Content-level bearing on a specific root and the per-root refutation
     window are the stamp's additional, root-scoped concerns
@@ -580,6 +600,9 @@ def cause_elimination_rows(case: "Case") -> list:
     cause is the other leg, ``symptom_elimination_rows`` (#1906)."""
     disconfirmation_ids = _disconfirmation_row_ids(case)
     last_disconfirm = latest_disconfirmation_turn(case)
+    window = confirming_window(case)
+    if window is None:
+        return []
     return [
         e
         for e in (getattr(case, "evidence", None) or [])
@@ -587,6 +610,7 @@ def cause_elimination_rows(case: "Case") -> list:
         and getattr(e, "collected_by", None) != ENGINE_EVIDENCE_AUTHOR
         and getattr(e, "evidence_id", None) not in disconfirmation_ids
         and (getattr(e, "collected_at_turn", 0) or 0) >= last_disconfirm
+        and window.holds(getattr(e, "collected_at_turn", 0) or 0)
     ]
 
 
@@ -611,7 +635,15 @@ def fix_application_turn(case: "Case") -> int | None:
     shape M6's counterfactual arm simply does not fire — the evidence-based arm
     is unaffected and still demotes a genuinely refuted cause.
     """
-    turns = [
+    turns = _dated_fix_turns(case)
+    return turns[-1] if turns else None
+
+
+def _dated_fix_turns(case: "Case") -> list[int]:
+    """The execution turns of every accepted SOLUTION, ascending and distinct —
+    the fix record ``fix_application_turn`` and the fix windows
+    (``fix_windows``) both read."""
+    turns = {
         a.accepted_in_turn
         for a in (getattr(case, "proposed_actions", None) or [])
         if getattr(a, "state", None) == "accepted"
@@ -639,9 +671,265 @@ def fix_application_turn(case: "Case") -> int | None:
         # existed carry None and simply do not establish the precondition,
         # which is the fail-closed direction.
         and getattr(a, "accepted_in_turn", None) is not None
+    }
+    return sorted(turns)
+
+
+# ---------------------------------------------------------------------------
+# Fix windows: THE one answer to "did the latest fix work?" (#1927).
+#
+# The readiness gate and M6 used to answer it separately from the same rows —
+# the gate "it worked" (both legs), M6 "it failed" — coupled only by marks M6
+# wrote into the rows the gate reads (an engine row's window, REFUTES links).
+# Every defect in the #987 → #1906 → #1927 chain was a state where the two
+# disagreed, and each new row shape that escaped the marks reopened it. Both
+# now read this predicate: the gate's legs exclude what a failed fix window
+# holds, and M6 demotes on a failed window.
+# ---------------------------------------------------------------------------
+
+FIX_UNKNOWN = "unknown"
+FIX_SUCCEEDED = "succeeded"
+FIX_FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class FixWindow:
+    """One dated fix and what the case observed after it, until the next.
+
+    ``fix_turn`` is the fix's execution turn (``accepted_in_turn``); ``None``
+    for window 0, the rows before any dated fix (an out-of-band fix leaves no
+    execution record). ``end_turn`` is the next fix's execution turn, or None
+    for the latest. ``cause_rows`` are the window's non-engine causal_absence
+    rows; ``failure_turn`` is the turn the problem was observed persisting
+    after the cause's removal, when ``state`` is ``FIX_FAILED``. ``observed``:
+    the fix's outcome was looked at — a cause row in the window, or a
+    persistence row bearing on the problem after the fix."""
+
+    fix_turn: int | None
+    end_turn: int | None
+    cause_rows: tuple
+    state: str
+    failure_turn: int | None = None
+    observed: bool = False
+
+    @property
+    def cause_removal_turn(self) -> int | None:
+        return min(
+            ((getattr(r, "collected_at_turn", 0) or 0) for r in self.cause_rows),
+            default=None,
+        )
+
+    def holds(self, turn: int) -> bool:
+        """Whether an observation at ``turn`` belongs to this window."""
+        return (self.fix_turn is None or turn >= self.fix_turn) and (
+            self.end_turn is None or turn < self.end_turn
+        )
+
+
+def _identified_root_ids(case: "Case") -> set[str]:
+    """The roots that stand, or stood, as the case's identified cause: VALIDATED
+    roots, and roots carrying the engine's own disconfirmation (an
+    engine-authored absence REFUTES — only M6 mints one, on the cause it
+    demoted). Stable across a demotion, so a failure observed through a
+    cause's frame stays observed once M6 refutes that cause."""
+    engine_ids = _engine_absence_row_ids(case)
+    return {
+        node_id
+        for node_id, node in (getattr(case, "causal_nodes", None) or {}).items()
+        if node.node_type == NodeType.ROOT
+        and (
+            node.node_state == NodeState.VALIDATED
+            or any(
+                link.stance == EvidenceStance.REFUTES and link.evidence_id in engine_ids
+                for link in node.evidence_links
+            )
+        )
+    }
+
+
+def _root_chain_tokens(case: "Case", root_id: str) -> frozenset[str]:
+    """A root's statement, its chain's mechanism rungs and its attached
+    hypotheses, as content tokens."""
+    tokens: set[str] = set()
+    nodes = getattr(case, "causal_nodes", None) or {}
+    for node_id in {root_id} | _chain_descendant_ids(case, root_id):
+        node = nodes.get(node_id)
+        if node is not None and node.node_type != NodeType.PROBLEM:
+            tokens |= content_tokens(node.statement or "")
+    for hyp in (getattr(case, "hypotheses", None) or {}).values():
+        if hyp is not None and hyp.statement and hyp.root_node_id == root_id:
+            tokens |= content_tokens(hyp.statement)
+    return frozenset(tokens)
+
+
+def _problem_frame(case: "Case", cause_rows: tuple) -> frozenset[str]:
+    """What a persistence row may talk about, for one fix window: the problem
+    anchors, the identified cause's chain (``_identified_root_ids``), and the
+    chain the window's own cause rows are about — the cause the fix addressed,
+    validated or not. Not every candidate's: a symptom about a sibling
+    candidate or a refuted guess ("gunicorn worker memory is climbing") is not
+    the reported problem persisting, and reading it so would fail a fix nobody
+    saw fail and demote the cause it removed. With no cause identified at all,
+    every candidate's chain is in the frame: nothing tells which one the fix
+    addressed, and M6 has no identified cause to demote, so a wider frame only
+    makes the gate more careful. Measured on the stored corpus, 134 of 136
+    symptom rows on cases with a validated root share ≥2 content tokens with
+    the anchors plus that root's chain; a row that misses is not counted as a
+    failure."""
+    frame: set[str] = set()
+    for anchor in problem_anchor_statements(case):
+        frame |= content_tokens(anchor)
+    identified = _identified_root_ids(case)
+    for root_id in identified:
+        frame |= _root_chain_tokens(case, root_id)
+    for root_id, node in (getattr(case, "causal_nodes", None) or {}).items():
+        if node.node_type != NodeType.ROOT or root_id in identified:
+            continue
+        chain = _root_chain_tokens(case, root_id)
+        if not identified or any(
+            len(_row_content_tokens(row) & chain) >= _BEARING_MIN_SHARED_TOKENS
+            for row in cause_rows
+        ):
+            frame |= chain
+    return frozenset(frame)
+
+
+def fix_windows(case: "Case") -> list[FixWindow]:
+    """Every fix window on the case, oldest first: window 0 (the rows before any
+    dated fix — an out-of-band fix leaves no execution record), then one per
+    dated fix (``_dated_fix_turns``).
+
+    A window's outcome is read from raw observations (non-engine rows; no
+    engine window or REFUTES mark is consulted, so the derivation stands on
+    its own):
+
+    - the cause observed removed: a causal_absence row in the window;
+    - the problem observed gone: a symptom_absence row in the window;
+    - the problem observed persisting: a SYMPTOM_EVIDENCE row at or after the
+      cause's removal and in a turn AFTER the fix's execution turn — a row in
+      that turn may quote pre-fix lines from the same paste (the owner's
+      ruling) — up to and INCLUDING the next fix's
+      execution turn: a "the problem is back" row in that turn cannot be the
+      next fix's failure for the same reason, so it is this window's relapse.
+      It must bear on the problem (``_problem_frame``).
+
+    Read in turn order, the first persistence after the cause's removal makes
+    the window FAILED, and FAILED is final: no later relief — a mitigation, a
+    delayed effect, a re-check of the cause — makes a fix that was seen
+    failing a success. Only a new fix opens a window that can. A turn holding
+    both a problem-gone row and a persistence row reads as gone: turn
+    granularity cannot order them, and a same-turn ambiguity resolves toward
+    the confirmation (NO-COLLAPSE), as for the disconfirmation window and the
+    mixed single-turn shape. A relief followed by a later persistence is a
+    relapse, FAILED. SUCCEEDED needs the cause observed removed as well;
+    without a cause row the window stays UNKNOWN ("I ran it, still failing"
+    with no cause re-check may be an implementation error).
+
+    Window 0 never fails: before any dated fix, a causal_absence row is as
+    likely a diagnosis-time exclusion ("DNS ruled out") as a fix's outcome, and
+    the problem is ongoing by definition."""
+    fixes = _dated_fix_turns(case)
+    rows = [
+        e
+        for e in (getattr(case, "evidence", None) or [])
+        if getattr(e, "collected_by", None) != ENGINE_EVIDENCE_AUTHOR
     ]
-    if turns:
-        return max(turns)
+    starts: list[int | None] = [None, *fixes]
+    ends: list[int | None] = [*fixes, None]
+    windows: list[FixWindow] = []
+    for fix_turn, end_turn in zip(starts, ends):
+        shell = FixWindow(fix_turn, end_turn, (), FIX_UNKNOWN)
+        cause_rows = tuple(
+            e
+            for e in rows
+            if getattr(e, "category", None) == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+            and shell.holds(getattr(e, "collected_at_turn", 0) or 0)
+        )
+        gone_turns = {
+            turn
+            for e in rows
+            if getattr(e, "category", None) == EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE
+            and shell.holds(turn := getattr(e, "collected_at_turn", 0) or 0)
+        }
+        # The problem observed after the fix, bearing on it: in a turn after
+        # the fix's execution turn, up to and including the next one's.
+        after_fix: set[int] = set()
+        if fix_turn is not None:
+            frame: frozenset[str] | None = None
+            for e in rows:
+                if getattr(e, "category", None) != EvidenceCategory.SYMPTOM_EVIDENCE:
+                    continue
+                turn = getattr(e, "collected_at_turn", 0) or 0
+                if turn <= fix_turn or (end_turn is not None and turn > end_turn):
+                    continue
+                if frame is None:
+                    frame = _problem_frame(case, cause_rows)
+                if len(_row_content_tokens(e) & frame) >= _BEARING_MIN_SHARED_TOKENS:
+                    after_fix.add(turn)
+        # A failure needs the cause observed removed first.
+        persist_turns: set[int] = set()
+        if cause_rows:
+            removal = min((getattr(r, "collected_at_turn", 0) or 0) for r in cause_rows)
+            persist_turns = {turn for turn in after_fix if turn >= removal}
+        state, failure_turn, relieved = FIX_UNKNOWN, None, False
+        for turn in sorted(gone_turns | persist_turns):
+            if turn in gone_turns:
+                relieved = True
+            else:
+                state, failure_turn = FIX_FAILED, turn
+                break
+        if state != FIX_FAILED and relieved and cause_rows:
+            state = FIX_SUCCEEDED
+        windows.append(
+            FixWindow(
+                fix_turn,
+                end_turn,
+                cause_rows,
+                state,
+                failure_turn,
+                observed=bool(cause_rows or after_fix),
+            )
+        )
+    return windows
+
+
+def latest_fix_window(case: "Case") -> FixWindow:
+    """The latest fix window — window 0 when no fix is dated."""
+    return fix_windows(case)[-1]
+
+
+def latest_decided_fix_window(case: "Case") -> FixWindow | None:
+    """The latest window with a verdict (SUCCEEDED or FAILED), or None. A
+    newer window whose fix has not been observed yet does not erase an older
+    window's failure: "still 503, so I'm putting pgbouncer in" records the
+    failure and the next fix in one turn."""
+    for window in reversed(fix_windows(case)):
+        if window.state != FIX_UNKNOWN:
+            return window
+    return None
+
+
+def confirming_window(case: "Case") -> FixWindow | None:
+    """The fix window a resolution must be confirmed in, or None.
+
+    "Did the latest fix work?" is the question, so it is the latest window
+    whose fix's outcome was looked at (``FixWindow.observed``: the cause
+    re-checked, or the problem seen persisting after the fix), and None when
+    that window FAILED: a fix seen failing confirms nothing, and only a new
+    fix opens a window that can. Rows from before a newer, observed fix
+    confirm nothing about it — an earlier fix's, an out-of-band one's, a
+    pre-fix cause observation. A newer fix whose outcome nobody looked at yet
+    has no verdict, so the window before it still answers: the execution
+    stamp can lag the user's report ("the config reads 100", the acceptance,
+    then "checkout works"), and a problem-gone row alone — a relief, possibly
+    a workaround's — does not look at the fix. Read off ``fix_windows`` alone,
+    so the gate reads a failed fix the same whether or not M6 could act on
+    it. With no dated fix it is window 0, the whole case, and an out-of-band
+    fix confirms as before. None when nothing was observed at all (no leg can
+    stand then)."""
+    for window in reversed(fix_windows(case)):
+        if window.observed:
+            return None if window.state == FIX_FAILED else window
     return None
 
 
@@ -659,8 +947,8 @@ def symptom_elimination_rows(case: "Case", cause_rows: list | None = None) -> li
     went with it" (#1906).
 
     - Not engine-authored, as for the cause leg.
-    - At or after the FIX: the recorded execution of the latest fix
-      (``fix_application_turn``) or the earliest cause-elimination row,
+    - At or after the FIX: the recorded execution of the fix the resolution
+      confirms (``confirming_window``) or the earliest cause-elimination row,
       whichever is earlier — the cause row alone for a fix made out of band,
       which leaves no execution record. A user may check the symptom before the
       cause ("the target is UP" at turn 5, "the config reads 100" at turn 6);
@@ -681,9 +969,12 @@ def symptom_elimination_rows(case: "Case", cause_rows: list | None = None) -> li
     if not cause_rows:
         return []
     anchor = min((getattr(e, "collected_at_turn", 0) or 0) for e in cause_rows)
-    fix_turn = fix_application_turn(case)
-    if fix_turn is not None:
-        anchor = min(anchor, fix_turn)
+    window = confirming_window(case)
+    if window is not None and window.fix_turn is not None:
+        anchor = min(anchor, window.fix_turn)
+    # No window check of its own: the cause leg admits rows only from the
+    # confirming window (``confirming_window``), and the anchor is at or after
+    # that window's start (its fix's execution turn).
     anchor = max(anchor, latest_disconfirmation_turn(case))
     return [
         e
@@ -802,6 +1093,48 @@ def _select_bearing_row(case: "Case", root: "CausalNode", candidates: list):
     INCONCLUSIVE and no conclusion is minted).
 
     Returns None when every candidate is refused."""
+    bearing = bearing_frame(case, root)
+    survivors: list = []
+    for row in candidates:
+        if bearing.about_another_chain(row):
+            absence_confirmation_bearing_rejected_total.inc()
+            continue
+        survivors.append(row)
+    if not survivors:
+        return None
+    return max(survivors, key=lambda e: e.collected_at_turn or 0)
+
+
+@dataclass(frozen=True)
+class BearingFrame:
+    """What a row about ``root`` may legitimately talk about (``frame``), and
+    the rest of the graph's statements (``elsewhere``), as content-token sets.
+    Built by ``bearing_frame``; read by the confirm stamp's mis-citation guard
+    (``_select_bearing_row``) and by M6's failed-fix record (#1927)."""
+
+    frame: frozenset[str]
+    elsewhere: tuple[frozenset[str], ...]
+
+    def bears(self, row) -> bool:
+        """The row shares at least ``_BEARING_MIN_SHARED_TOKENS`` content
+        tokens with the frame."""
+        return len(_row_content_tokens(row) & self.frame) >= _BEARING_MIN_SHARED_TOKENS
+
+    def about_another_chain(self, row) -> bool:
+        """The row bears on another chain while bearing on nothing in the
+        frame: affirmatively about a DIFFERENT candidate cause. A terse row
+        bearing on neither is not refused."""
+        row_tokens = _row_content_tokens(row)
+        return len(row_tokens & self.frame) < _BEARING_MIN_SHARED_TOKENS and any(
+            len(row_tokens & other) >= _BEARING_MIN_SHARED_TOKENS
+            for other in self.elsewhere
+        )
+
+
+def bearing_frame(case: "Case", root: "CausalNode") -> BearingFrame:
+    """``root``'s bearing frame: the problem anchors, the root's statement, its
+    chain's mechanism rungs and its attached hypotheses; ``elsewhere`` is every
+    other non-problem node and every hypothesis attached to another root."""
     frame: set[str] = set()
     for anchor in problem_anchor_statements(case):
         frame |= content_tokens(anchor)
@@ -831,20 +1164,9 @@ def _select_bearing_row(case: "Case", root: "CausalNode", candidates: list):
             toks = content_tokens(h.statement)
             if toks:
                 elsewhere_sets.append(toks)
-
-    survivors: list = []
-    for row in candidates:
-        row_tokens = _row_content_tokens(row)
-        if len(row_tokens & frame) < _BEARING_MIN_SHARED_TOKENS and any(
-            len(row_tokens & other) >= _BEARING_MIN_SHARED_TOKENS
-            for other in elsewhere_sets
-        ):
-            absence_confirmation_bearing_rejected_total.inc()
-            continue
-        survivors.append(row)
-    if not survivors:
-        return None
-    return max(survivors, key=lambda e: e.collected_at_turn or 0)
+    return BearingFrame(
+        frozenset(frame), tuple(frozenset(toks) for toks in elsewhere_sets)
+    )
 
 
 def _chain_descendant_ids(case: "Case", root_id: str) -> set[str]:

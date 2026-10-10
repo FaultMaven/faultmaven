@@ -29,6 +29,8 @@ from typing import Any, Optional
 
 from faultmaven.core.investigation.cause_assurance import (
     CONFIRMED_RCC_LIKELIHOOD_FLOOR,
+    ENGINE_EVIDENCE_AUTHOR,
+    FIX_FAILED,
     CauseAssuranceGrade,
     _graph_hooks,
     cause_elimination_rows,
@@ -39,6 +41,7 @@ from faultmaven.core.investigation.cause_assurance import (
     has_problem_definition,
     has_resolution_confirmation,
     has_root_cause_record,
+    latest_fix_window,
     resolution_confirmation_rows,
 )
 from faultmaven.core.investigation.lifecycle_metrics import (
@@ -55,6 +58,7 @@ from faultmaven.modules.case.contracts import (
     CaseAction,
     CaseState,
     CauseState,
+    EvidenceCategory,
     InvestigationActionType,
     ProblemStatus,
     SolutionState,
@@ -1226,6 +1230,33 @@ class ResolutionReadiness:
         self.missing = missing
 
 
+def _relief_without_cause_recheck(case: "Case", window) -> bool:
+    """The latest fix window's latest observation of the problem is a
+    problem-gone row, and the window holds no cause re-check (#1927): the one
+    leg the user still owes is the cause. Not when the problem was seen again
+    after the relief — then it is not gone."""
+    if window.fix_turn is None or window.cause_rows:
+        return False
+    latest: dict = {}
+    for e in case.evidence or []:
+        category = getattr(e, "category", None)
+        turn = getattr(e, "collected_at_turn", 0) or 0
+        if (
+            category
+            in (
+                EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+                EvidenceCategory.SYMPTOM_EVIDENCE,
+            )
+            and getattr(e, "collected_by", None) != ENGINE_EVIDENCE_AUTHOR
+            and window.holds(turn)
+        ):
+            latest[category] = max(latest.get(category, -1), turn)
+    gone = latest.get(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE)
+    return gone is not None and gone >= latest.get(
+        EvidenceCategory.SYMPTOM_EVIDENCE, -1
+    )
+
+
 def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
     """Check whether a case meets minimum criteria for RESOLVED status.
 
@@ -1308,6 +1339,29 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
             missing=missing,
         )
 
+    # The latest fix was seen failing (#1927): the cause shown removed, then the
+    # problem seen again. Nothing observed in that fix's window can confirm a
+    # resolution any more — not a relief after a workaround, a later re-check of
+    # the cause, or "it's fine now" — so asking the user to confirm again would
+    # loop. A resolution needs a NEW fix, recorded, then seen working.
+    window = latest_fix_window(case)
+    if window.state == FIX_FAILED:
+        return ResolutionReadiness(
+            verdict=ResolutionReadiness.NEEDS_INFO,
+            message=(
+                "The last fix didn't hold: the cause was shown removed, but the "
+                "problem was seen again afterwards. To mark this **resolved** I "
+                "need a **new fix** — tell me what you changed (or what you plan "
+                "to change), and once it's applied, show the cause gone and the "
+                "original problem gone with it.\n\n"
+                "If the problem is only quiet for now (a restart, a failover or "
+                "another workaround), or the real fix is **deferred**, you can "
+                "**close** the case instead — that keeps the investigation on "
+                "record without claiming the fix worked."
+            ),
+            missing=["a new fix after the one that did not hold", *missing],
+        )
+
     # Otherwise: ask the user to fill the documentation gaps. The problem may
     # have been resolved out of band — invite the missing essentials rather than
     # rejecting the request.
@@ -1317,7 +1371,18 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
     if "solution" in missing:
         asks.append("- **What fixed it** — the action that resolved it.")
     if "confirmation the problem is now resolved" in missing:
-        if cause_elimination_rows(case):
+        if _relief_without_cause_recheck(case, window):
+            # The latest fix's window shows the problem gone but no cause
+            # re-check (#1927): a relief alone may be a workaround's, so the fix
+            # is unconfirmed. Ask for the leg that is missing, not the one the
+            # user just gave.
+            asks.append(
+                "- **The cause re-checked after the fix** — what you reported "
+                "is shown gone; the cause the fix addressed needs to be seen "
+                "removed too (e.g. the setting now reads the new value, or the "
+                "corrected process is the one running)."
+            )
+        elif cause_elimination_rows(case):
             # The cause leg stands; only the problem the user reported is
             # unchecked (#1906). Say so, rather than re-asking for the fix.
             asks.append(
